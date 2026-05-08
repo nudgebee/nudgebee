@@ -1124,10 +1124,6 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     (tab: string) => {
       const returningToEditor = tab === 'editor' && currentMode === 'executions';
       setCurrentMode(tab as 'editor' | 'json' | 'executions');
-      // Auto-show JSON panel when switching to editor mode
-      if (tab === 'editor') {
-        setJsonPanelVisible(true);
-      }
       // When the user comes back from the Executions tab, wipe the execution badges/colors that
       // were painted on the canvas by updateNodeStatusesFromTasks — the editor should present a
       // clean canvas, not a frozen view of the last run.
