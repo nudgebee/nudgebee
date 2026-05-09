@@ -1,0 +1,278 @@
+table:
+  name: tickets
+  schema: public
+object_relationships:
+  - name: integration
+    using:
+      foreign_key_constraint_on: integration_id
+  - name: tenantByTenant
+    using:
+      foreign_key_constraint_on: tenant
+  - name: user
+    using:
+      foreign_key_constraint_on: created_by
+insert_permissions:
+  - role: account_admin
+    permission:
+      check:
+        _and:
+          - tenant:
+              _eq: X-Hasura-User-Tenant-Id
+          - account_id:
+              _in: x-hasura-user-account-ids
+      set:
+        created_by: x-hasura-User-Id
+        tenant: x-hasura-User-Tenant-Id
+      columns:
+        - assignee
+        - integration_id
+        - error_message
+        - project_key
+        - reference_id
+        - status
+        - ticket_id
+        - ticket_type
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      check:
+        _and:
+          - tenant:
+              _eq: X-Hasura-User-Tenant-Id
+          - account_id:
+              _in: x-hasura-user-namespaced-account-ids
+      set:
+        created_by: x-hasura-User-Id
+        tenant: x-hasura-User-Tenant-Id
+      columns:
+        - account_id
+        - assignee
+        - integration_id
+        - description
+        - error_message
+        - is_new
+        - platform
+        - project_key
+        - reference_id
+        - severity
+        - status
+        - tags
+        - ticket_type
+        - title
+    comment: ""
+  - role: tenant_admin
+    permission:
+      check:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        created_by: x-hasura-User-Id
+        tenant: x-hasura-User-Tenant-Id
+      columns:
+        - assignee
+        - integration_id
+        - error_message
+        - project_key
+        - reference_id
+        - status
+        - ticket_id
+        - ticket_type
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - is_new
+        - assignee
+        - description
+        - error_message
+        - platform
+        - project_key
+        - reporter
+        - severity
+        - source
+        - status
+        - tags
+        - ticket_id
+        - ticket_type
+        - title
+        - url
+        - created_at
+        - updated_at
+        - account_id
+        - integration_id
+        - created_by
+        - id
+        - reference_id
+        - tenant
+      filter:
+        _and:
+          - tenant:
+              _eq: X-Hasura-User-Tenant-Id
+          - account_id:
+              _in: x-hasura-user-account-ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - is_new
+        - assignee
+        - description
+        - error_message
+        - platform
+        - project_key
+        - reporter
+        - severity
+        - source
+        - status
+        - tags
+        - ticket_id
+        - ticket_type
+        - title
+        - url
+        - created_at
+        - updated_at
+        - account_id
+        - integration_id
+        - created_by
+        - id
+        - reference_id
+        - tenant
+      filter:
+        _and:
+          - tenant:
+              _eq: X-Hasura-User-Tenant-Id
+          - account_id:
+              _in: x-hasura-user-readonly-account-ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - is_new
+        - assignee
+        - description
+        - error_message
+        - platform
+        - project_key
+        - reporter
+        - severity
+        - source
+        - status
+        - tags
+        - ticket_id
+        - ticket_type
+        - title
+        - url
+        - created_at
+        - updated_at
+        - account_id
+        - integration_id
+        - created_by
+        - id
+        - reference_id
+        - tenant
+      filter:
+        _and:
+          - tenant:
+              _eq: X-Hasura-User-Tenant-Id
+          - account_id:
+              _in: x-hasura-user-namespaced-account-ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - is_new
+        - assignee
+        - description
+        - error_message
+        - platform
+        - project_key
+        - reporter
+        - severity
+        - source
+        - status
+        - tags
+        - ticket_id
+        - ticket_type
+        - title
+        - url
+        - created_at
+        - updated_at
+        - account_id
+        - integration_id
+        - created_by
+        - id
+        - reference_id
+        - tenant
+      filter:
+        _and:
+          - tenant:
+              _eq: X-Hasura-User-Tenant-Id
+          - account_id:
+              _in: x-hasura-user-namespaced-readonly-account-ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - account_id
+        - assignee
+        - integration_id
+        - created_at
+        - created_by
+        - description
+        - error_message
+        - id
+        - platform
+        - project_key
+        - reference_id
+        - reporter
+        - severity
+        - source
+        - status
+        - tags
+        - tenant
+        - ticket_id
+        - ticket_type
+        - title
+        - updated_at
+        - url
+      filter:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - account_id
+        - assignee
+        - integration_id
+        - created_at
+        - created_by
+        - description
+        - error_message
+        - id
+        - platform
+        - project_key
+        - reference_id
+        - reporter
+        - severity
+        - source
+        - status
+        - tags
+        - tenant
+        - ticket_id
+        - ticket_type
+        - title
+        - updated_at
+        - url
+      filter:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true

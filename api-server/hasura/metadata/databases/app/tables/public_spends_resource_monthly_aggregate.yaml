@@ -1,0 +1,30 @@
+table:
+  name: spends_resource_monthly_aggregate
+  schema: public
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - date_month
+        - date_year
+        - sum
+        - cloud_account
+        - cloud_resource_id
+        - tenant
+      filter:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - date_month
+        - date_year
+        - sum
+        - cloud_account
+        - cloud_resource_id
+        - tenant
+      filter:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true

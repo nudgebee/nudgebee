@@ -1,0 +1,18 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is the combination of excessively long task timeouts and missing error handling in the Step Functions state
+  machine. The ProcessPayment task has TimeoutSeconds=7200 (2 hours) with no Retry or Catch blocks. When the Lambda encounters
+  a transient error (payment gateway timeout), the Step Function has no retry logic. The task''s 2-hour timeout means the
+  execution waits the full duration before failing. Check: aws stepfunctions describe-state-machine --state-machine-arn <arn>
+  to examine the definition — look for TimeoutSeconds=7200 and the absence of Retry/Catch blocks. The fix requires: (1) reducing
+  TimeoutSeconds to a reasonable value like 60 seconds, (2) adding Retry with exponential backoff for transient errors, (3)
+  adding Catch to handle non-retryable failures gracefully.'
+scenario: H14
+tags:
+- command
+- aws
+- hard
+type: rca
+user_prompt: Our Step Function 'h14-order-pipeline' in us-east-1 executions hang at the 'ProcessPayment' step for hours before
+  eventually failing. The Lambda function for that step completes in under 10 seconds when tested directly. Executions used
+  to complete in 30 seconds but now take 2+ hours. What's causing the hang?

@@ -1,0 +1,28 @@
+user_prompt: "What is the issue with job typescript-transpiler in namespace `ts-46`"
+tags:
+  - logs
+  - hard
+expected_output: The job failed because it could not connect to the database at `prod-db:3333`. The error shows "no available connection and the queue has reached its max size 256".
+
+port_forwards:
+  - namespace: loki
+    service: loki-gateway
+    local_port: 3146
+    remote_port: 80
+
+before_test: |
+  kubectl create namespace ts-46
+  kubectl label namespace ts-46 benchmark=true --overwrite || true
+  kubectl apply -f ./manifest.yaml
+  # Wait for the job to run and produce logs
+  echo "Waiting for job to run and log errors..."
+  sleep 70
+  # Delete the job — agent must find the answer from Loki logs
+  kubectl delete -f ./manifest.yaml
+  sleep 10
+
+after_test: |
+  kubectl delete namespace ts-46 --ignore-not-found
+
+evaluation:
+  correctness: 0

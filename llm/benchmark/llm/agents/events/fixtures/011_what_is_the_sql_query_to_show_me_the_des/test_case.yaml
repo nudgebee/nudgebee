@@ -1,0 +1,10 @@
+user_prompt: What is the SQL query to show me the description and evidence for the
+  latest 'pod_oom_killer_enricher' event?
+expected_output:
+- SELECT description, evidences   FROM events   WHERE aggregation_key = 'pod_oom_killer_enricher'   ORDER
+  BY starts_at DESC   LIMIT 1;
+- SELECT * FROM events   WHERE aggregation_key = 'pod_oom_killer_enricher'   ORDER
+  BY starts_at DESC   LIMIT 1;
+tags:
+- command
+- events

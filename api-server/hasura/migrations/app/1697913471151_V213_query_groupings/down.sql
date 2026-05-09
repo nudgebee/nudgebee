@@ -1,0 +1,149 @@
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- CREATE OR REPLACE FUNCTION public.dw_query_groupings(group_by text[] DEFAULT '{}'::text[], "where" json DEFAULT NULL::json, date_unit text DEFAULT 'date' :: text, "limit" integer DEFAULT 100, "offset" integer DEFAULT 0, hasura_session json DEFAULT '{}'::json)
+--  RETURNS SETOF dw_query_groupings_type
+--  LANGUAGE sql
+--  STABLE
+-- AS $function$
+--   SELECT
+--     (CASE WHEN 'tenant_id' = ANY(group_by) THEN tenant_id ELSE NULL END) AS tenant_id,
+--     (CASE WHEN 'account_id' = ANY(group_by) THEN account_id ELSE NULL END) AS account_id,
+--     (CASE WHEN 'resource_id' = ANY(group_by) THEN resource_id ELSE NULL END) AS resource_id,
+--     (CASE WHEN 'database_name' = ANY(group_by) THEN database_name ELSE NULL END) AS database_name,
+--     (CASE WHEN 'db_username' = ANY(group_by) THEN db_username ELSE NULL END) AS db_username,
+--     (CASE WHEN 'query_type' = ANY(group_by) THEN query_type ELSE NULL END) AS query_type,
+--     (CASE WHEN 'query_started_at' = ANY(group_by) THEN date_trunc(date_unit, query_started_at) ELSE NULL END) AS query_started_at,
+--     (CASE WHEN 'query_status' = ANY(group_by) THEN query_status ELSE NULL END) AS query_status,
+--     (CASE WHEN 'warehouse_name' = ANY(group_by) THEN tags ->> 'warehouse_name' ELSE NULL END) AS warehouse_name,
+--     avg(dw_queries.query_exec_duration_micro) AS avg_query_exec_duration_micro,
+--     max(dw_queries.query_exec_duration_micro) AS max_query_exec_duration_micro,
+--     sum(dw_queries.query_exec_duration_micro) AS sum_query_exec_duration_micro,
+--     avg(dw_queries.bill) AS avg_bill,
+--     max(dw_queries.bill) AS max_bill,
+--     sum(dw_queries.bill) AS sum_bill,
+--     avg(dw_queries.bytes_spilled_locally) as avg_bytes_spilled_locally,
+--     max(dw_queries.bytes_spilled_locally) as max_bytes_spilled_locally,
+--     sum(dw_queries.bytes_spilled_locally) as sum_bytes_spilled_locally,
+--     avg(dw_queries.bytes_spilled_remotely) as avg_bytes_spilled_remotely,
+--     max(dw_queries.bytes_spilled_remotely) as max_bytes_spilled_remotely,
+--     sum(dw_queries.bytes_spilled_remotely) as sum_bytes_spilled_remotely,
+--     avg(dw_queries.bytes_scanned) as avg_bytes_scanned,
+--     max(dw_queries.bytes_scanned) as max_bytes_scanned,
+--     sum(dw_queries.bytes_scanned) as sum_bytes_scanned,
+--     avg(dw_queries.partitions_scanned) as avg_partitions_scanned,
+--     max(dw_queries.partitions_scanned) as max_partitions_scanned,
+--     sum(dw_queries.partitions_scanned) as sum_partitions_scanned,
+--     avg(dw_queries.query_planning_duration_micro) as avg_query_planning_duration_micro,
+--     max(dw_queries.query_planning_duration_micro) as max_query_planning_duration_micro,
+--     sum(dw_queries.query_planning_duration_micro) as sum_query_planning_duration_micro,
+--     avg(dw_queries.query_queue_duration_micro) as avg_query_queue_duration_micro,
+--     max(dw_queries.query_queue_duration_micro) as max_query_queue_duration_micro,
+--     sum(dw_queries.query_queue_duration_micro) as sum_query_queue_duration_micro,
+--     avg(dw_queries.query_returned_bytes) as avg_query_returned_bytes,
+--     max(dw_queries.query_returned_bytes) as max_query_returned_bytes,
+--     sum(dw_queries.query_returned_bytes) as sum_query_returned_bytes,
+--     avg(dw_queries.query_returned_rows) as avg_query_returned_rows,
+--     max(dw_queries.query_returned_rows) as max_query_returned_rows,
+--     sum(dw_queries.query_returned_rows) as sum_query_returned_rows,
+--     avg(dw_queries.rpu) as avg_rpu,
+--     max(dw_queries.rpu) as max_rpu,
+--     sum(dw_queries.rpu) as sum_rpu,
+--     count(*) AS query_count
+--   FROM dw_queries
+--   WHERE
+--       ("hasura_session" ->> 'x-hasura-user-tenant-id' IS NULL OR ("tenant_id" = ("hasura_session" ->> 'x-hasura-user-tenant-id')::uuid))
+--       AND
+--       ("where" #>> '{account_id,_eq}' IS NULL OR ("account_id" = ("where" #>> '{account_id,_eq}')::uuid))
+--       AND
+--       ("where" #>> '{resource_id,_eq}' IS NULL OR ("resource_id" = ("where" #>> '{resource_id,_eq}')::uuid))
+--       AND
+--       ("where" #>> '{database_name,_eq}' IS NULL OR ("database_name" = ("where" #>> '{database_name,_eq}')))
+--       AND
+--       ("where" #>> '{db_username,_eq}' IS NULL OR ("db_username" = ("where" #>> '{db_username,_eq}')))
+--       AND
+--       ("where" #>> '{query_type,_eq}' IS NULL OR ("query_type" = ("where" #>> '{query_type,_eq}')))
+--       and
+--       ("where" #>> '{query_status,_eq}' IS NULL OR ("query_status" = ("where" #>> '{query_status,_eq}')))
+--       AND
+--       ("where" #>> '{query_started_at,_gt}' IS NULL OR ("query_started_at" > ("where" #>> '{query_started_at,_gt}')::timestamp))
+--       AND
+--       ("where" #>> '{query_started_at,_lt}' IS NULL OR ("query_started_at" > ("where" #>> '{query_started_at,_lt}')::timestamp))
+--       AND
+--       ("where" #>> '{query_started_at,_le}' IS NULL OR ("query_started_at" <= ("where" #>> '{query_started_at,_le}')::timestamp))
+--       AND
+--       ("where" #>> '{query_started_at,_ge}' IS NULL OR ("query_started_at" >= ("where" #>> '{query_started_at,_ge}')::timestamp))
+--   GROUP BY
+--     (CASE WHEN 'tenant_id' = ANY(group_by) THEN tenant_id END),
+--     (CASE WHEN 'account_id' = ANY(group_by) THEN account_id END),
+--     (CASE WHEN 'resource_id' = ANY(group_by) THEN resource_id END),
+--     (CASE WHEN 'database_name' = ANY(group_by) THEN database_name END),
+--     (CASE WHEN 'db_username' = ANY(group_by) THEN db_username END),
+--     (CASE WHEN 'query_type' = ANY(group_by) THEN query_type END),
+--     (CASE WHEN 'query_status' = ANY(group_by) THEN query_status END),
+--     (CASE WHEN 'query_started_at' = ANY(group_by) THEN date_trunc(date_unit, query_started_at) END),
+--     (CASE WHEN 'warehouse_name' = ANY(group_by) THEN tags ->> 'warehouse_name' END)
+--   ORDER BY query_started_at DESC
+--   LIMIT "limit" OFFSET "offset";
+-- $function$;
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- CREATE OR REPLACE VIEW "public"."dw_query_groupings_type" AS
+--  SELECT
+--     dw_queries.tenant_id,
+--     dw_queries.account_id,
+--     dw_queries.resource_id,
+--     dw_queries.database_name,
+--     dw_queries.db_username,
+--     dw_queries.query_type,
+--     dw_queries.query_started_at,
+--     dw_queries.query_status,
+--     (dw_queries.tags ->> 'warehouse_name'::text) AS warehouse_name,
+--     avg(dw_queries.query_exec_duration_micro) AS avg_query_exec_duration_micro,
+--     max(dw_queries.query_exec_duration_micro) AS max_query_exec_duration_micro,
+--     sum(dw_queries.query_exec_duration_micro) AS sum_query_exec_duration_micro,
+--     avg(dw_queries.bill) AS avg_bill,
+--     max(dw_queries.bill) AS max_bill,
+--     sum(dw_queries.bill) AS sum_bill,
+--     avg(dw_queries.bytes_spilled_locally) as avg_bytes_spilled_locally,
+--     max(dw_queries.bytes_spilled_locally) as max_bytes_spilled_locally,
+--     sum(dw_queries.bytes_spilled_locally) as sum_bytes_spilled_locally,
+--     avg(dw_queries.bytes_spilled_remotely) as avg_bytes_spilled_remotely,
+--     max(dw_queries.bytes_spilled_remotely) as max_bytes_spilled_remotely,
+--     sum(dw_queries.bytes_spilled_remotely) as sum_bytes_spilled_remotely,
+--     avg(dw_queries.bytes_scanned) as avg_bytes_scanned,
+--     max(dw_queries.bytes_scanned) as max_bytes_scanned,
+--     sum(dw_queries.bytes_scanned) as sum_bytes_scanned,
+--     avg(dw_queries.partitions_scanned) as avg_partitions_scanned,
+--     max(dw_queries.partitions_scanned) as max_partitions_scanned,
+--     sum(dw_queries.partitions_scanned) as sum_partitions_scanned,
+--     avg(dw_queries.query_planning_duration_micro) as avg_query_planning_duration_micro,
+--     max(dw_queries.query_planning_duration_micro) as max_query_planning_duration_micro,
+--     sum(dw_queries.query_planning_duration_micro) as sum_query_planning_duration_micro,
+--     avg(dw_queries.query_queue_duration_micro) as avg_query_queue_duration_micro,
+--     max(dw_queries.query_queue_duration_micro) as max_query_queue_duration_micro,
+--     sum(dw_queries.query_queue_duration_micro) as sum_query_queue_duration_micro,
+--     avg(dw_queries.query_returned_bytes) as avg_query_returned_bytes,
+--     max(dw_queries.query_returned_bytes) as max_query_returned_bytes,
+--     sum(dw_queries.query_returned_bytes) as sum_query_returned_bytes,
+--     avg(dw_queries.query_returned_rows) as avg_query_returned_rows,
+--     max(dw_queries.query_returned_rows) as max_query_returned_rows,
+--     sum(dw_queries.query_returned_rows) as sum_query_returned_rows,
+--     avg(dw_queries.rpu) as avg_rpu,
+--     max(dw_queries.rpu) as max_rpu,
+--     sum(dw_queries.rpu) as sum_rpu,
+--     count(*) AS query_count
+--   FROM dw_queries
+--   WHERE false
+--   GROUP BY dw_queries.tenant_id, dw_queries.account_id, dw_queries.resource_id, dw_queries.database_name, dw_queries.db_username, dw_queries.query_type, query_started_at, query_status, (dw_queries.tags ->> 'warehouse_name'::text)
+--   ORDER BY query_started_at desc
+-- ;
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- drop view dw_query_groupings_type;
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- drop function dw_query_groupings;

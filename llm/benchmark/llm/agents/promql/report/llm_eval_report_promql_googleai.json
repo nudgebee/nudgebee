@@ -1,0 +1,634 @@
+{
+    "Total Queries": 31,
+    "Metrics": {
+        "context_recall": [
+            0.5,
+            1.0,
+            0.5,
+            0.5,
+            0.5,
+            0.0,
+            0.5,
+            0.5,
+            0.5,
+            0.0,
+            1.0,
+            0.0,
+            0.5,
+            0.5,
+            1.0,
+            0.0,
+            0.5,
+            1.0,
+            0.5,
+            0.5,
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            0.5
+        ],
+        "context_precision": [
+            0.0,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.0,
+            0.0,
+            0.9999999999,
+            0.0,
+            0.9999999999,
+            0.0,
+            0.0,
+            0.0,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.0,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.0,
+            0.9999999999,
+            0.9999999999,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "faithfulness": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.8333333333333334,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.5,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "answer_relevancy": [
+            0,
+            0,
+            0.8453610761431013,
+            0,
+            0.8939355593198243,
+            0.7324400202350531,
+            0.8517887813024583,
+            0.8440329765041804,
+            0.7808099787532328,
+            0.0,
+            0.8703655967425797,
+            0.7907796705493544,
+            0.9018515952352238,
+            0.8766925014708263,
+            0.8697501304767505,
+            0.9635223748612199,
+            0.9418802280509743,
+            0.8828316290528324,
+            0.821860545973038,
+            0.81598922525077,
+            0.9546094619448171,
+            0.9003543354464633,
+            0.9090555618159138,
+            0.9664178119142979,
+            0.8252837709538076,
+            0.9344209177369506,
+            0.9490927672682004,
+            0.8629899080585336,
+            0.8843891387968755,
+            0.9653213641679436,
+            0.9416653207404079
+        ]
+    },
+    "Evaluations": [
+        {
+            "query": "what is my cluster memory usage",
+            "retrieved_contexts": [
+                "sum(container_memory_usage_bytes)\n"
+            ],
+            "expected_contexts": [
+                "sum(container_memory_usage_bytes)"
+            ],
+            "generated_answer": "sum(container_memory_usage_bytes)\n",
+            "ground_truth": [
+                [
+                    "sum(container_memory_usage_bytes)",
+                    "sum(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / sum(node_memory_MemTotal_bytes) * 100"
+                ]
+            ]
+        },
+        {
+            "query": "can you tell me memory usage by app-dev in nudgebee namespace",
+            "retrieved_contexts": [
+                "container_memory_usage_bytes{namespace=~\"(?i)nudgebee\", pod=~\"(?i)app.*dev.*\"}\n"
+            ],
+            "expected_contexts": [
+                "container_memory_usage_bytes{namespace=~\"(?i)nudgebee\",pod=~\"(?i)app-dev.*\"}",
+                "sum by (pod) (container_memory_working_set_bytes{namespace=\"nudgebee\", pod=~\"app-dev.*\", container!=\"\"})"
+            ],
+            "generated_answer": "container_memory_usage_bytes{namespace=~\"(?i)nudgebee\", pod=~\"(?i)app.*dev.*\"}\n",
+            "ground_truth": [
+                [
+                    "container_memory_usage_bytes{namespace=~\"(?i)nudgebee\",pod=~\"(?i)app-dev.*\"}"
+                ]
+            ]
+        },
+        {
+            "query": "can you tell me max memory usage by app-dev in nudgebee namespace",
+            "retrieved_contexts": [
+                "max by (pod) (container_memory_usage_bytes{namespace=~\"(?i)nudgebee\", pod=~\"(?i)app.*dev.*\"})\n"
+            ],
+            "expected_contexts": [
+                "max by (pod) (container_memory_usage_bytes{namespace=~\"(?i)nudgebee\", pod=~\"(?i)app-dev.*\"})"
+            ],
+            "generated_answer": "max by (pod) (container_memory_usage_bytes{namespace=~\"(?i)nudgebee\", pod=~\"(?i)app.*dev.*\"})\n",
+            "ground_truth": [
+                [
+                    "max by (pod) (container_memory_usage_bytes{namespace=~\"(?i)nudgebee\", pod=~\"(?i)app-dev.*\"})",
+                    "max by (pod) (container_memory_working_set_bytes{namespace=~\"(?i)nudgebee\", pod=~\"(?i)app-dev.*\"})"
+                ]
+            ]
+        },
+        {
+            "query": "can you tell me memory usage by namespace",
+            "retrieved_contexts": [
+                "sum by (namespace) (container_memory_usage_bytes)\n"
+            ],
+            "expected_contexts": [
+                "sum by (namespace) (container_memory_usage_bytes)"
+            ],
+            "generated_answer": "sum by (namespace) (container_memory_usage_bytes)\n",
+            "ground_truth": [
+                [
+                    "sum by (namespace) (container_memory_usage_bytes)",
+                    "sum by (namespace) (container_memory_working_set_bytes)"
+                ]
+            ]
+        },
+        {
+            "query": "can you you tell me memory usage of apps in nudgebee-test namespace",
+            "retrieved_contexts": [
+                "container_memory_usage_bytes{namespace=~\"nudgebee-test\",resource_type=\"apps\"}\n"
+            ],
+            "expected_contexts": [
+                "container_memory_usage_bytes{namespace=~\"nudgebee-test\"}"
+            ],
+            "generated_answer": "container_memory_usage_bytes{namespace=~\"nudgebee-test\",resource_type=\"apps\"}\n",
+            "ground_truth": [
+                [
+                    "container_memory_usage_bytes{namespace=~\"nudgebee-test\"}",
+                    "sum by (pod) (container_memory_usage_bytes{namespace=~\"nudgebee-test\"})"
+                ]
+            ]
+        },
+        {
+            "query": "cna you tell me which pod is taking most memory in nudgebee-test namespace",
+            "retrieved_contexts": [
+                "sort_desc(sum by (pod) (container_memory_usage_bytes{namespace=\"nudgebee-test\"})[60m])\n"
+            ],
+            "expected_contexts": [
+                "sort_desc(sum by (pod) (container_memory_usage_bytes{namespace=~\"(?i)nudgebee-test\"})[10m])"
+            ],
+            "generated_answer": "sort_desc(sum by (pod) (container_memory_usage_bytes{namespace=\"nudgebee-test\"})[60m])\n",
+            "ground_truth": [
+                [
+                    "sort_desc(sum by (pod) (container_memory_usage_bytes{namespace=~\"(?i)nudgebee-test\"})[10m])",
+                    "topk(1, sum by (pod) (container_memory_usage_bytes{namespace=~\"(?i)nudgebee-test\"}))[10m]"
+                ]
+            ]
+        },
+        {
+            "query": "Can you tell me which pod is taking most of the memory in my cluster?",
+            "retrieved_contexts": [
+                "sort_desc(max(container_memory_usage_bytes) by (pod))\n"
+            ],
+            "expected_contexts": [
+                "sort_desc(max(container_memory_usage_bytes) by (pod))"
+            ],
+            "generated_answer": "sort_desc(max(container_memory_usage_bytes) by (pod))\n",
+            "ground_truth": [
+                [
+                    "sort_desc(max(container_memory_usage_bytes) by (pod))",
+                    "topk(1, max by (pod) (container_memory_usage_bytes))"
+                ]
+            ]
+        },
+        {
+            "query": "Get me which deployment is using highest cpu?",
+            "retrieved_contexts": [
+                "topk(1, sum by (pod) (rate(container_cpu_usage_seconds_total{container!~\"POD|\"}[1m])) * on (pod, namespace) group_left(node) kube_pod_info{type=\"Deployment\"})\n"
+            ],
+            "expected_contexts": [
+                "topk(1, sum by (pod) (rate(container_cpu_usage_seconds_total{container!~\"POD|\"}[1m])) * on (pod, namespace) group_left(node) kube_pod_info{type=\"Deployment\"})"
+            ],
+            "generated_answer": "topk(1, sum by (pod) (rate(container_cpu_usage_seconds_total{container!~\"POD|\"}[1m])) * on (pod, namespace) group_left(node) kube_pod_info{type=\"Deployment\"})\n",
+            "ground_truth": [
+                [
+                    "topk(1, sum by (pod) (rate(container_cpu_usage_seconds_total{container!~\"POD|\"}[1m])) * on (pod, namespace) group_left(node) kube_pod_info{type=\"Deployment\"})",
+                    "sort_desc(sum by (deployment) (rate(container_cpu_usage_seconds_total{container!~\"POD|\"}[1m])))"
+                ]
+            ]
+        },
+        {
+            "query": "Get me which deployment is using highest memory?",
+            "retrieved_contexts": [
+                "sum(container_memory_usage_bytes{container!=\"POD\"} by (namespace, pod)) by (sum)\n"
+            ],
+            "expected_contexts": [
+                "sum(container_memory_usage_bytes{container!=\"POD\"} by (namespace, pod)) by (sum)"
+            ],
+            "generated_answer": "sum(container_memory_usage_bytes{container!=\"POD\"} by (namespace, pod)) by (sum)\n",
+            "ground_truth": [
+                [
+                    "sum(container_memory_usage_bytes{container!=\"POD\"} by (namespace, pod)) by (sum)",
+                    "topk(1, sum by (deployment) (container_memory_usage_bytes{container!=\"POD\"}))"
+                ]
+            ]
+        },
+        {
+            "query": "How many HTTP requests per second is services-server receiving?",
+            "retrieved_contexts": [
+                "I have found multiple namespaces for your query, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "rate(container_http_requests_duration_seconds_total_bucket{destination_workload_name=\"services-server\"}[1m])"
+            ],
+            "generated_answer": "I have found multiple namespaces for your query, please select the one you are looking for:",
+            "ground_truth": [
+                [
+                    "rate(container_http_requests_duration_seconds_total_bucket{destination_workload_name=\"services-server\"}[1m])",
+                    "sum(rate(http_requests_total{job=\"services-server\"}[1m]))"
+                ]
+            ]
+        },
+        {
+            "query": "What is my cluster memory usage for each node?",
+            "retrieved_contexts": [
+                "sum(container_memory_usage_bytes) by (kubernetes_node)\n"
+            ],
+            "expected_contexts": [
+                "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100"
+            ],
+            "generated_answer": "sum(container_memory_usage_bytes) by (kubernetes_node)\n",
+            "ground_truth": [
+                [
+                    "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100",
+                    "sum by (instance) ((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100)"
+                ]
+            ]
+        },
+        {
+            "query": "Resources experiencing resource constraints or bottlenecks based on the current CPU usage?",
+            "retrieved_contexts": [
+                "rate(container_cpu_cfs_throttled_periods_total{namespace!=\"(.*)kube(.*)system(.*)\", container!=\"POD\"}[5m]) / rate(container_cpu_cfs_periods_total{namespace!=\"(.*)kube(.*)system(.*)\", container!=\"POD\"}[5m]) > 0.02\n"
+            ],
+            "expected_contexts": [
+                "(rate(container_cpu_cfs_throttled_periods_total{job=\"kubelet\", container!=\"POD\"}[5m]) / rate(container_cpu_cfs_periods_total{job=\"kubelet\", container!=\"POD\"}[5m])) * 100"
+            ],
+            "generated_answer": "rate(container_cpu_cfs_throttled_periods_total{namespace!=\"(.*)kube(.*)system(.*)\", container!=\"POD\"}[5m]) / rate(container_cpu_cfs_periods_total{namespace!=\"(.*)kube(.*)system(.*)\", container!=\"POD\"}[5m]) > 0.02\n",
+            "ground_truth": [
+                [
+                    "(rate(container_cpu_cfs_throttled_periods_total{job=\"kubelet\", container!=\"POD\"}[5m]) / rate(container_cpu_cfs_periods_total{job=\"kubelet\", container!=\"POD\"}[5m])) * 100",
+                    "topk(5, (rate(container_cpu_cfs_throttled_periods_total{job=\"kubelet\", container!=\"POD\"}[5m]) / rate(container_cpu_cfs_periods_total{job=\"kubelet\", container!=\"POD\"}[5m])) * 100)"
+                ]
+            ]
+        },
+        {
+            "query": "Total CPU usage across all machines in the last 15 minutes?",
+            "retrieved_contexts": [
+                "sum(rate(node_cpu_seconds_total{mode!=\"idle\"}[15m]))\n"
+            ],
+            "expected_contexts": [
+                "sum(rate(node_cpu_seconds_total[15m]))"
+            ],
+            "generated_answer": "sum(rate(node_cpu_seconds_total{mode!=\"idle\"}[15m]))\n",
+            "ground_truth": [
+                [
+                    "sum(rate(node_cpu_seconds_total[15m]))",
+                    "sum by (instance) (rate(node_cpu_seconds_total[15m]))"
+                ]
+            ]
+        },
+        {
+            "query": "Average response time for API endpoint /generate in the last hour?",
+            "retrieved_contexts": [
+                "avg(rate(container_http_requests_duration_seconds_total_sum{path=\"/generate\"}[1h])) / avg(rate(container_http_requests_duration_seconds_total_count{path=\"/generate\"}[1h]))\n"
+            ],
+            "expected_contexts": [
+                "avg(rate(container_http_requests_duration_seconds_total_sum{path=\"/generate\"}[1h])) / avg(rate(container_http_requests_duration_seconds_total_count{path=\"/generate\"}[1h]))"
+            ],
+            "generated_answer": "avg(rate(container_http_requests_duration_seconds_total_sum{path=\"/generate\"}[1h])) / avg(rate(container_http_requests_duration_seconds_total_count{path=\"/generate\"}[1h]))\n",
+            "ground_truth": [
+                [
+                    "avg(rate(container_http_requests_duration_seconds_total_sum{path=\"/generate\"}[1h])) / avg(rate(container_http_requests_duration_seconds_total_count{path=\"/generate\"}[1h]))",
+                    "histogram_quantile(0.5, rate(container_http_requests_duration_seconds_bucket{path=\"/generate\"}[1h]))"
+                ]
+            ]
+        },
+        {
+            "query": "What is the CPU usage rate on node-1?",
+            "retrieved_contexts": [
+                "sum(rate(node_cpu_seconds_total{instance=~\".*node.1.*\",mode!=\"idle\"}[5m]))\n"
+            ],
+            "expected_contexts": [
+                "rate(node_cpu_seconds_total{instance=\"node-1\", mode=\"user\"}[5m])"
+            ],
+            "generated_answer": "sum(rate(node_cpu_seconds_total{instance=~\".*node.1.*\",mode!=\"idle\"}[5m]))\n",
+            "ground_truth": [
+                [
+                    "rate(node_cpu_seconds_total{instance=\"node-1\", mode=\"user\"}[5m])",
+                    "sum(rate(node_cpu_seconds_total{instance=\"node-1\"}[5m]))"
+                ]
+            ]
+        },
+        {
+            "query": "What is the total memory available on node-2?",
+            "retrieved_contexts": [
+                "node_memory_MemAvailable_bytes{node=\"node-2\"}\n"
+            ],
+            "expected_contexts": [
+                "node_memory_MemTotal_bytes{instance=\"node-2\"}"
+            ],
+            "generated_answer": "node_memory_MemAvailable_bytes{node=\"node-2\"}\n",
+            "ground_truth": [
+                [
+                    "node_memory_MemTotal_bytes{instance=\"node-2\"}",
+                    "sum by (instance) (node_memory_MemTotal_bytes{instance=\"node-2\"})"
+                ]
+            ]
+        },
+        {
+            "query": "How much memory is free on node-1?",
+            "retrieved_contexts": [
+                "node_memory_MemAvailable_bytes{node=\"node-1\"}\n"
+            ],
+            "expected_contexts": [
+                "node_memory_MemAvailable_bytes{instance=\"node-1\"}"
+            ],
+            "generated_answer": "node_memory_MemAvailable_bytes{node=\"node-1\"}\n",
+            "ground_truth": [
+                [
+                    "node_memory_MemAvailable_bytes{instance=\"node-1\"}",
+                    "sum by (instance) (node_memory_MemAvailable_bytes{instance=\"node-1\"})"
+                ]
+            ]
+        },
+        {
+            "query": "What is the disk usage on the root filesystem of node-3?",
+            "retrieved_contexts": [
+                "(1 - (node_filesystem_avail_bytes{mountpoint=\"/\",instance=~\".*node.3.*\"} / node_filesystem_size_bytes{mountpoint=\"/\",instance=~\".*node.3.*\"})) * 100\n"
+            ],
+            "expected_contexts": [
+                "node_filesystem_size_bytes{mountpoint=\"/\", instance=\"node-3\"} - node_filesystem_free_bytes{mountpoint=\"/\", instance=\"node-3\"}"
+            ],
+            "generated_answer": "(1 - (node_filesystem_avail_bytes{mountpoint=\"/\",instance=~\".*node.3.*\"} / node_filesystem_size_bytes{mountpoint=\"/\",instance=~\".*node.3.*\"})) * 100\n",
+            "ground_truth": [
+                [
+                    "node_filesystem_size_bytes{mountpoint=\"/\", instance=\"node-3\"} - node_filesystem_free_bytes{mountpoint=\"/\", instance=\"node-3\"}",
+                    "sum by (instance) (node_filesystem_size_bytes{mountpoint=\"/\", instance=\"node-3\"} - node_filesystem_free_bytes{mountpoint=\"/\", instance=\"node-3\"})"
+                ]
+            ]
+        },
+        {
+            "query": "What is the network transmit rate on eth0 for node-4?",
+            "retrieved_contexts": [
+                "rate(node_network_transmit_bytes_total{instance=\"node-4\", device=\"eth0\"}[5m])\n"
+            ],
+            "expected_contexts": [
+                "rate(node_network_transmit_bytes_total{instance=\"node-4\", device=\"eth0\"}[5m])"
+            ],
+            "generated_answer": "rate(node_network_transmit_bytes_total{instance=\"node-4\", device=\"eth0\"}[5m])\n",
+            "ground_truth": [
+                [
+                    "rate(node_network_transmit_bytes_total{instance=\"node-4\", device=\"eth0\"}[5m])",
+                    "sum by (instance) (rate(node_network_transmit_bytes_total{device=\"eth0\"}[5m]))"
+                ]
+            ]
+        },
+        {
+            "query": "What is the network receive rate on eth0 for node-5?",
+            "retrieved_contexts": [
+                "rate(node_network_receive_bytes_total{instance=\"node-5\", device=\"eth0\"}[5m])\n"
+            ],
+            "expected_contexts": [
+                "rate(node_network_receive_bytes_total{instance=\"node-5\", device=\"eth0\"}[5m])"
+            ],
+            "generated_answer": "rate(node_network_receive_bytes_total{instance=\"node-5\", device=\"eth0\"}[5m])\n",
+            "ground_truth": [
+                [
+                    "rate(node_network_receive_bytes_total{instance=\"node-5\", device=\"eth0\"}[5m])",
+                    "sum by (instance) (rate(node_network_receive_bytes_total{device=\"eth0\"}[5m]))"
+                ]
+            ]
+        },
+        {
+            "query": "What is the number of running pods in the production namespace?",
+            "retrieved_contexts": [
+                "count(kube_pod_info{namespace=\"production\", pod=~\".+\"})\n"
+            ],
+            "expected_contexts": [
+                "count(kube_pod_status_phase{namespace=\"production\", phase=\"Running\"})"
+            ],
+            "generated_answer": "count(kube_pod_info{namespace=\"production\", pod=~\".+\"})\n",
+            "ground_truth": [
+                [
+                    "count(kube_pod_status_phase{namespace=\"production\", phase=\"Running\"})",
+                    "sum by (namespace) (kube_pod_status_phase{namespace=\"production\", phase=\"Running\"})"
+                ]
+            ]
+        },
+        {
+            "query": "What is the total number of replicas for the nginx deployment?",
+            "retrieved_contexts": [
+                "kube_deployment_spec_replicas{deployment=~\".*nginx.*\"}\n"
+            ],
+            "expected_contexts": [
+                "kube_deployment_spec_replicas{deployment=\"nginx\"}"
+            ],
+            "generated_answer": "kube_deployment_spec_replicas{deployment=~\".*nginx.*\"}\n",
+            "ground_truth": [
+                [
+                    "kube_deployment_spec_replicas{deployment=\"nginx\"}",
+                    "sum(kube_deployment_spec_replicas{deployment=\"nginx\"})"
+                ]
+            ]
+        },
+        {
+            "query": "How many nodes are ready in the Kubernetes cluster?",
+            "retrieved_contexts": [
+                "sum(kube_node_status_condition{condition=\"Ready\",status=\"true\"})\n"
+            ],
+            "expected_contexts": [
+                "count(kube_node_status_condition{condition=\"Ready\", status=\"true\"})"
+            ],
+            "generated_answer": "sum(kube_node_status_condition{condition=\"Ready\",status=\"true\"})\n",
+            "ground_truth": [
+                [
+                    "count(kube_node_status_condition{condition=\"Ready\", status=\"true\"})"
+                ]
+            ]
+        },
+        {
+            "query": "What is the disk usage percentage on node-6?",
+            "retrieved_contexts": [
+                "(node_filesystem_size_bytes{node=~\".*node.6.*\"} - node_filesystem_avail_bytes{node=~\".*node.6.*\"}) / node_filesystem_size_bytes{node=~\".*node.6.*\"} * 100\n"
+            ],
+            "expected_contexts": [
+                "(node_filesystem_size_bytes{instance=\"node-6\", mountpoint=\"/\"} - node_filesystem_free_bytes{instance=\"node-6\", mountpoint=\"/\"}) / node_filesystem_size_bytes{instance=\"node-6\", mountpoint=\"/\"} * 100"
+            ],
+            "generated_answer": "(node_filesystem_size_bytes{node=~\".*node.6.*\"} - node_filesystem_avail_bytes{node=~\".*node.6.*\"}) / node_filesystem_size_bytes{node=~\".*node.6.*\"} * 100\n",
+            "ground_truth": [
+                [
+                    "(node_filesystem_size_bytes{instance=\"node-6\", mountpoint=\"/\"} - node_filesystem_free_bytes{instance=\"node-6\", mountpoint=\"/\"}) / node_filesystem_size_bytes{instance=\"node-6\", mountpoint=\"/\"} * 100"
+                ]
+            ]
+        },
+        {
+            "query": "What is the total CPU usage on node-2, including all modes?",
+            "retrieved_contexts": [
+                "sum(rate(node_cpu_seconds_total{instance=~\".*node.2.*\"}[5m]))\n"
+            ],
+            "expected_contexts": [
+                "sum(rate(node_cpu_seconds_total{instance=\"node-2\"}[1m]))"
+            ],
+            "generated_answer": "sum(rate(node_cpu_seconds_total{instance=~\".*node.2.*\"}[5m]))\n",
+            "ground_truth": [
+                [
+                    "sum(rate(node_cpu_seconds_total{instance=\"node-2\"}[1m]))",
+                    "sum(rate(node_cpu_seconds_total{instance=\"node-2\", mode!=\"idle\"}[1m]))"
+                ]
+            ]
+        },
+        {
+            "query": "How many persistent volume claims are bound in the staging namespace?",
+            "retrieved_contexts": [
+                "sum(kube_persistentvolumeclaim_status_phase{phase=\"Bound\", namespace=\"staging\"})\n"
+            ],
+            "expected_contexts": [
+                "count(kube_persistentvolumeclaim_status_phase{namespace=\"staging\", phase=\"Bound\"})"
+            ],
+            "generated_answer": "sum(kube_persistentvolumeclaim_status_phase{phase=\"Bound\", namespace=\"staging\"})\n",
+            "ground_truth": [
+                [
+                    "count(kube_persistentvolumeclaim_status_phase{namespace=\"staging\", phase=\"Bound\"})"
+                ]
+            ]
+        },
+        {
+            "query": "What is the memory usage percentage on node-3?",
+            "retrieved_contexts": [
+                "(1 - (node_memory_MemAvailable_bytes{node=~\".*node.3.*\"} / node_memory_MemTotal_bytes{node=~\".*node.3.*\"})) * 100\n"
+            ],
+            "expected_contexts": [
+                "(node_memory_MemTotal_bytes{instance=\"node-3\"} - node_memory_MemAvailable_bytes{instance=\"node-3\"}) / node_memory_MemTotal_bytes{instance=\"node-3\"} * 100"
+            ],
+            "generated_answer": "(1 - (node_memory_MemAvailable_bytes{node=~\".*node.3.*\"} / node_memory_MemTotal_bytes{node=~\".*node.3.*\"})) * 100\n",
+            "ground_truth": [
+                [
+                    "(node_memory_MemTotal_bytes{instance=\"node-3\"} - node_memory_MemAvailable_bytes{instance=\"node-3\"}) / node_memory_MemTotal_bytes{instance=\"node-3\"} * 100"
+                ]
+            ]
+        },
+        {
+            "query": "How many HTTP 200 responses occurred for the nginx pod?",
+            "retrieved_contexts": [
+                "sum(rate(container_http_requests_total{pod=~\".*nginx.*\", status=\"200\"}[5m]))\n"
+            ],
+            "expected_contexts": [
+                "increase(container_http_requests_total{pod=\"nginx\", status=\"200\"}[5m])"
+            ],
+            "generated_answer": "sum(rate(container_http_requests_total{pod=~\".*nginx.*\", status=\"200\"}[5m]))\n",
+            "ground_truth": [
+                [
+                    "increase(container_http_requests_total{pod=\"nginx\", status=\"200\"}[5m])",
+                    "sum by (pod) (increase(container_http_requests_total{status=\"200\"}[5m]))"
+                ]
+            ]
+        },
+        {
+            "query": "What is the total CPU usage for the Kubernetes API server?",
+            "retrieved_contexts": [
+                "sum(rate(container_cpu_usage_seconds_total{pod=~\".*kube.*apiserver.*\"}[5m]))\n"
+            ],
+            "expected_contexts": [
+                "sum(rate(process_cpu_seconds_total{job=\"kube-apiserver\"}[1m]))"
+            ],
+            "generated_answer": "sum(rate(container_cpu_usage_seconds_total{pod=~\".*kube.*apiserver.*\"}[5m]))\n",
+            "ground_truth": [
+                [
+                    "sum(rate(process_cpu_seconds_total{job=\"kube-apiserver\"}[1m]))"
+                ]
+            ]
+        },
+        {
+            "query": "What is the uptime for the node-exporter service on node-1?",
+            "retrieved_contexts": [
+                "uptime{job=\"node-exporter\",instance=\"node-1\"}\n"
+            ],
+            "expected_contexts": [
+                "up{job=\"node-exporter\", instance=\"node-1\"}"
+            ],
+            "generated_answer": "uptime{job=\"node-exporter\",instance=\"node-1\"}\n",
+            "ground_truth": [
+                [
+                    "up{job=\"node-exporter\", instance=\"node-1\"}"
+                ]
+            ]
+        },
+        {
+            "query": "How many pods are in a failed state in the dev namespace?",
+            "retrieved_contexts": [
+                "count(kube_pod_status_phase{namespace=\"dev\", phase=\"Failed\"})\n"
+            ],
+            "expected_contexts": [
+                "count(kube_pod_status_phase{namespace=\"dev\", phase=\"Failed\"})"
+            ],
+            "generated_answer": "count(kube_pod_status_phase{namespace=\"dev\", phase=\"Failed\"})\n",
+            "ground_truth": [
+                [
+                    "count(kube_pod_status_phase{namespace=\"dev\", phase=\"Failed\"})",
+                    "sum by (namespace) (kube_pod_status_phase{namespace=\"dev\", phase=\"Failed\"})"
+                ]
+            ]
+        }
+    ],
+    "Context Recall": 59.67741935483871,
+    "Context Precision": 58.06451612322579,
+    "Faithfulness": 97.8494623655914,
+    "Answer Relevancy": 84.91961517416298,
+    "Accuracy": 75.12775325445473
+}

@@ -1,0 +1,203 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H19: Cognito pre-signup trigger throttled — new signups fail with 500.
+  User complaint: "Existing users can log in fine, but new user signups on our app
+  return HTTP 500 errors intermittently. The error rate correlates with traffic
+  spikes. Cognito user pool 'h19-app-users' and Lambda 'h19-signup-validator'
+  seem healthy individually. API Gateway returns 500 not 429."
+  Root cause: Cognito pre-signup trigger Lambda 'h19-signup-validator' has
+  ReservedConcurrentExecutions=1. During signup bursts, Lambda throttles.
+  Cognito treats throttled trigger as failure and returns error to API Gateway.
+  API Gateway maps Cognito errors to 500, hiding the throttling root cause.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Pre-signup Lambda ReservedConcurrentExecutions=1 (throttles on burst).
+      Fixed = ReservedConcurrentExecutions=50 (handles burst traffic).
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: h19-app-users
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      LambdaConfig:
+        PreSignUp: !GetAtt SignupValidatorFunction.Arn
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+      UserPoolTags:
+        Environment: production
+        Application: customer-portal
+
+  AppClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: h19-web-client
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  ValidatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h19-signup-validator-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  # THE BUG: ReservedConcurrentExecutions=1 causes throttling under burst signup traffic
+  SignupValidatorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h19-signup-validator
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ValidatorRole.Arn
+      Timeout: 5
+      MemorySize: 128
+      ReservedConcurrentExecutions: !If [IsFixed, 50, 1]
+      Code:
+        ZipFile: |
+          import json
+          import re
+
+          BLOCKED_DOMAINS = ['tempmail.com', 'throwaway.email', 'guerrillamail.com']
+
+          def handler(event, context):
+              email = event['request']['userAttributes'].get('email', '')
+              domain = email.split('@')[-1].lower()
+
+              if domain in BLOCKED_DOMAINS:
+                  raise Exception(f"Signups from {domain} are not allowed")
+
+              if not re.match(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$', email):
+                  raise Exception("Invalid email format")
+
+              event['response']['autoConfirmUser'] = False
+              event['response']['autoVerifyEmail'] = False
+              return event
+      Tags:
+        - Key: Name
+          Value: h19-signup-validator
+        - Key: Environment
+          Value: production
+
+  CognitoLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SignupValidatorFunction
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt UserPool.Arn
+
+  # API Gateway that fronts auth (returns 500 not 429 for Cognito errors)
+  AuthApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: h19-auth-api
+      Description: Authentication API for customer portal
+
+  SignupResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref AuthApi
+      ParentId: !GetAtt AuthApi.RootResourceId
+      PathPart: signup
+
+  SignupMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref AuthApi
+      ResourceId: !Ref SignupResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:cognito-idp:action/SignUp'
+        Credentials: !GetAtt ApiGatewayRole.Arn
+        RequestTemplates:
+          application/json: |
+            {
+              "ClientId": "$input.path('$.clientId')",
+              "Username": "$input.path('$.email')",
+              "Password": "$input.path('$.password')",
+              "UserAttributes": [
+                {"Name": "email", "Value": "$input.path('$.email')"}
+              ]
+            }
+        IntegrationResponses:
+          - StatusCode: '200'
+            ResponseTemplates:
+              application/json: '{"message": "User created"}'
+          - StatusCode: '500'
+            SelectionPattern: '.*'
+            ResponseTemplates:
+              application/json: '{"error": "Internal server error"}'
+      MethodResponses:
+        - StatusCode: '200'
+        - StatusCode: '500'
+
+  ApiGatewayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h19-api-cognito-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: cognito-signup
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: cognito-idp:SignUp
+                Resource: !GetAtt UserPool.Arn
+
+Outputs:
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref UserPool
+  AppClientId:
+    Description: App Client ID
+    Value: !Ref AppClient
+  ValidatorFunctionName:
+    Description: Pre-signup trigger Lambda
+    Value: !Ref SignupValidatorFunction
+  ReservedConcurrency:
+    Description: Lambda reserved concurrency (too low in Broken mode)
+    Value: !If [IsFixed, '50', '1 (causes throttling on burst signups)']
+  ApiName:
+    Description: API Gateway name
+    Value: h19-auth-api
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

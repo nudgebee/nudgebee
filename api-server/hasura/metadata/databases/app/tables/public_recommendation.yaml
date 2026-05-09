@@ -1,0 +1,214 @@
+table:
+  name: recommendation
+  schema: public
+object_relationships:
+  - name: cloud_account
+    using:
+      foreign_key_constraint_on: cloud_account_id
+  - name: cloud_resourse
+    using:
+      foreign_key_constraint_on: resource_id
+  - name: recommendation__status
+    using:
+      foreign_key_constraint_on: status
+  - name: recommendation_action_type
+    using:
+      foreign_key_constraint_on: recommendation_action
+  - name: recommendation_category_type
+    using:
+      foreign_key_constraint_on: category
+  - name: recommendation_severity
+    using:
+      foreign_key_constraint_on: severity
+  - name: tenant
+    using:
+      foreign_key_constraint_on: tenant_id
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - account_object_id
+        - category
+        - cloud_account_id
+        - created_at
+        - dismissed_reason
+        - estimated_savings
+        - id
+        - is_dismissed
+        - note
+        - recommendation
+        - recommendation_action
+        - resource_id
+        - rule_name
+        - severity
+        - status
+        - tenant_id
+        - updated_at
+        - updated_by
+        - finops_score
+        - finops_band
+        - finops_score_breakdown
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: X-Hasura-User-Account-Ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - account_object_id
+        - category
+        - cloud_account_id
+        - created_at
+        - dismissed_reason
+        - estimated_savings
+        - id
+        - is_dismissed
+        - note
+        - recommendation
+        - recommendation_action
+        - resource_id
+        - rule_name
+        - severity
+        - status
+        - tenant_id
+        - updated_at
+        - updated_by
+        - finops_score
+        - finops_band
+        - finops_score_breakdown
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: X-Hasura-User-Readonly-Account-Ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - account_object_id
+        - category
+        - cloud_account_id
+        - created_at
+        - dismissed_reason
+        - estimated_savings
+        - id
+        - is_dismissed
+        - note
+        - recommendation
+        - recommendation_action
+        - resource_id
+        - rule_name
+        - severity
+        - status
+        - tenant_id
+        - updated_at
+        - updated_by
+        - finops_score
+        - finops_band
+        - finops_score_breakdown
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: x-hasura-user-namespaced-account-ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - account_object_id
+        - category
+        - cloud_account_id
+        - created_at
+        - dismissed_reason
+        - estimated_savings
+        - id
+        - is_dismissed
+        - note
+        - recommendation
+        - recommendation_action
+        - resource_id
+        - rule_name
+        - severity
+        - status
+        - tenant_id
+        - updated_at
+        - updated_by
+        - finops_score
+        - finops_band
+        - finops_score_breakdown
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: x-hasura-user-namespaced-readonly-account-ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - account_object_id
+        - category
+        - cloud_account_id
+        - created_at
+        - dismissed_reason
+        - estimated_savings
+        - id
+        - is_dismissed
+        - note
+        - recommendation
+        - recommendation_action
+        - resource_id
+        - rule_name
+        - severity
+        - status
+        - tenant_id
+        - updated_at
+        - updated_by
+        - finops_score
+        - finops_band
+        - finops_score_breakdown
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - account_object_id
+        - category
+        - cloud_account_id
+        - created_at
+        - dismissed_reason
+        - estimated_savings
+        - id
+        - is_dismissed
+        - note
+        - recommendation
+        - recommendation_action
+        - resource_id
+        - rule_name
+        - severity
+        - status
+        - tenant_id
+        - updated_at
+        - updated_by
+        - finops_score
+        - finops_band
+        - finops_score_breakdown
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true

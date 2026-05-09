@@ -1,0 +1,176 @@
+table:
+  name: integrations
+  schema: public
+object_relationships:
+  - name: integration_source
+    using:
+      foreign_key_constraint_on: source
+  - name: integration_status
+    using:
+      foreign_key_constraint_on: status
+  - name: integration_type
+    using:
+      foreign_key_constraint_on: type
+  - name: user
+    using:
+      foreign_key_constraint_on: updated_by
+  - name: userCreatedBy
+    using:
+      manual_configuration:
+        column_mapping:
+          created_by: id
+        insertion_order: null
+        remote_table:
+          name: users
+          schema: public
+array_relationships:
+  - name: integration_config_values
+    using:
+      foreign_key_constraint_on:
+        column: integration_id
+        table:
+          name: integration_config_values
+          schema: public
+  - name: integrations_cloud_accounts
+    using:
+      foreign_key_constraint_on:
+        column: integration_id
+        table:
+          name: integrations_cloud_accounts
+          schema: public
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - created_at
+        - created_by
+        - id
+        - labels
+        - name
+        - source
+        - status
+        - tenant_id
+        - type
+        - updated_at
+        - updated_by
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - created_at
+        - created_by
+        - id
+        - labels
+        - name
+        - source
+        - status
+        - tenant_id
+        - type
+        - updated_at
+        - updated_by
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - created_at
+        - created_by
+        - id
+        - labels
+        - name
+        - source
+        - status
+        - tenant_id
+        - type
+        - updated_at
+        - updated_by
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - created_at
+        - created_by
+        - id
+        - labels
+        - name
+        - source
+        - status
+        - tenant_id
+        - type
+        - updated_at
+        - updated_by
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - created_at
+        - created_by
+        - id
+        - labels
+        - name
+        - source
+        - status
+        - tenant_id
+        - type
+        - updated_at
+        - updated_by
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 200
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - created_at
+        - created_by
+        - id
+        - labels
+        - name
+        - source
+        - status
+        - tenant_id
+        - type
+        - updated_at
+        - updated_by
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+update_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - status
+        - updated_at
+        - updated_by
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        updated_by: x-hasura-User-Id

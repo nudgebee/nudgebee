@@ -1,0 +1,11 @@
+table:
+  name: auto_pilot_approval_status
+  schema: public
+array_relationships:
+- name: auto_pilot_approvals
+  using:
+    foreign_key_constraint_on:
+      column: status
+      table:
+        name: auto_pilot_approvals
+        schema: public

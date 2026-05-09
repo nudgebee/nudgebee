@@ -1,0 +1,264 @@
+table:
+  name: tenant
+  schema: public
+object_relationships:
+  - name: user
+    using:
+      foreign_key_constraint_on: created_by
+  - name: userByUpdatedBy
+    using:
+      foreign_key_constraint_on: updated_by
+array_relationships:
+  - name: business_units
+    using:
+      foreign_key_constraint_on:
+        column: tenant
+        table:
+          name: business_unit
+          schema: public
+  - name: businessunit_funding_sources
+    using:
+      foreign_key_constraint_on:
+        column: tenant
+        table:
+          name: businessunit_funding
+          schema: public
+  - name: cloud_accounts
+    using:
+      foreign_key_constraint_on:
+        column: tenant
+        table:
+          name: cloud_accounts
+          schema: public
+  - name: cloud_resourses
+    using:
+      foreign_key_constraint_on:
+        column: tenant
+        table:
+          name: cloud_resourses
+          schema: public
+  - name: funding_sources
+    using:
+      foreign_key_constraint_on:
+        column: tenant
+        table:
+          name: funding_sources
+          schema: public
+  - name: jira_configurations
+    using:
+      foreign_key_constraint_on:
+        column: tenant
+        table:
+          name: jira_configurations
+          schema: public
+  - name: notifications
+    using:
+      foreign_key_constraint_on:
+        column: tenant
+        table:
+          name: notifications
+          schema: public
+  - name: projects
+    using:
+      foreign_key_constraint_on:
+        column: tenant
+        table:
+          name: projects
+          schema: public
+  - name: recommendations
+    using:
+      foreign_key_constraint_on:
+        column: tenant_id
+        table:
+          name: recommendation
+          schema: public
+  - name: spends
+    using:
+      foreign_key_constraint_on:
+        column: tenant
+        table:
+          name: spends
+          schema: public
+  - name: tenant_attrs
+    using:
+      foreign_key_constraint_on:
+        column: tenant_id
+        table:
+          name: tenant_attrs
+          schema: public
+  - name: tenant_users
+    using:
+      foreign_key_constraint_on:
+        column: tenant
+        table:
+          name: tenant_users
+          schema: public
+  - name: tickets
+    using:
+      foreign_key_constraint_on:
+        column: tenant
+        table:
+          name: tickets
+          schema: public
+  - name: user_groups
+    using:
+      foreign_key_constraint_on:
+        column: tenant
+        table:
+          name: user_groups
+          schema: public
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - created_at
+        - id
+        - name
+        - type
+        - updated_at
+      filter:
+        _exists:
+          _table:
+            name: tenant_users
+            schema: public
+          _where:
+            _or:
+              - user:
+                  _eq: X-Hasura-User-Id
+              - tenant:
+                  _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - created_at
+        - id
+        - name
+        - type
+        - updated_at
+      filter:
+        _exists:
+          _table:
+            name: tenant_users
+            schema: public
+          _where:
+            _or:
+              - user:
+                  _eq: X-Hasura-User-Id
+              - tenant:
+                  _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - created_at
+        - id
+        - name
+        - type
+        - updated_at
+      filter:
+        _exists:
+          _table:
+            name: tenant_users
+            schema: public
+          _where:
+            _or:
+              - user:
+                  _eq: X-Hasura-User-Id
+              - tenant:
+                  _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - created_at
+        - id
+        - name
+        - type
+        - updated_at
+      filter:
+        _exists:
+          _table:
+            name: tenant_users
+            schema: public
+          _where:
+            _or:
+              - user:
+                  _eq: X-Hasura-User-Id
+              - tenant:
+                  _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+  - role: tenant_admin
+    permission:
+      columns:
+        - created_at
+        - id
+        - name
+        - type
+        - updated_at
+      filter:
+        _exists:
+          _table:
+            name: tenant_users
+            schema: public
+          _where:
+            _or:
+              - user:
+                  _eq: X-Hasura-User-Id
+              - tenant:
+                  _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - created_at
+        - id
+        - name
+        - type
+        - updated_at
+      filter:
+        _exists:
+          _table:
+            name: tenant_users
+            schema: public
+          _where:
+            _or:
+              - user:
+                  _eq: X-Hasura-User-Id
+              - tenant:
+                  _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+  - role: tenant_usage
+    permission:
+      columns:
+        - created_at
+        - id
+        - name
+        - type
+        - updated_at
+      filter:
+        _exists:
+          _table:
+            name: tenant_users
+            schema: public
+          _where:
+            _or:
+              - user:
+                  _eq: X-Hasura-User-Id
+              - tenant:
+                  _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+update_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - name
+      filter:
+        id:
+          _eq: X-Hasura-User-Tenant-Id
+      check: null
+      set:
+        updated_at: now()
+        updated_by: x-hasura-user-id
+    comment: ""

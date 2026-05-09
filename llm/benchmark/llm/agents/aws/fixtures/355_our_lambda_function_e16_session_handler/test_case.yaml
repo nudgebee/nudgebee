@@ -1,0 +1,21 @@
+user_prompt: Our Lambda function 'e16-session-handler' in us-east-1 times out trying
+  to connect to our ElastiCache Redis cluster 'e16-sessions-redis'. The Lambda is
+  deployed in our VPC but can't reach Redis. Connection timeout after 5 seconds.
+  Can you investigate why the Lambda can't connect to Redis?
+expected_output:
+- The root cause is that the security group attached to the ElastiCache Redis cluster
+  'e16-sessions-redis' has no inbound/ingress rules allowing TCP port 6379 from the
+  Lambda function's security group. The Lambda function 'e16-session-handler' is in a
+  VPC with its own security group, but the Redis security group has an empty ingress
+  rule list, meaning all inbound traffic is denied by default. The Lambda can reach
+  the Redis subnet via VPC networking, but the security group blocks the connection
+  on port 6379, causing a timeout. The fix is to add an inbound rule to the Redis
+  security group allowing TCP port 6379 from the Lambda security group.
+tags:
+- rca
+- aws
+- elasticache
+- lambda
+- security-group
+type: rca
+agent: aws_debug

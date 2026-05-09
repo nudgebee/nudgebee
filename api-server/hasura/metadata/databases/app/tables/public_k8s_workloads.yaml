@@ -1,0 +1,158 @@
+table:
+  name: k8s_workloads
+  schema: public
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - is_active
+        - ready_pods
+        - total_pods
+        - labels
+        - meta
+        - external_id
+        - kind
+        - name
+        - namespace
+        - creation_time
+        - last_seen
+        - updated_at
+        - cloud_account_id
+        - cloud_resource_id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: X-Hasura-User-Account-Ids
+      limit: 96
+      allow_aggregations: true
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - is_active
+        - ready_pods
+        - total_pods
+        - labels
+        - meta
+        - external_id
+        - kind
+        - name
+        - namespace
+        - creation_time
+        - last_seen
+        - updated_at
+        - cloud_account_id
+        - cloud_resource_id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: X-Hasura-User-Readonly-Account-Ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - is_active
+        - ready_pods
+        - total_pods
+        - labels
+        - meta
+        - external_id
+        - kind
+        - name
+        - namespace
+        - creation_time
+        - last_seen
+        - updated_at
+        - cloud_account_id
+        - cloud_resource_id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: x-hasura-user-namespaced-account-ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - is_active
+        - ready_pods
+        - total_pods
+        - labels
+        - meta
+        - external_id
+        - kind
+        - name
+        - namespace
+        - creation_time
+        - last_seen
+        - updated_at
+        - cloud_account_id
+        - cloud_resource_id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: x-hasura-user-namespaced-readonly-account-ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - is_active
+        - ready_pods
+        - total_pods
+        - labels
+        - meta
+        - external_id
+        - kind
+        - name
+        - namespace
+        - creation_time
+        - last_seen
+        - cloud_account_id
+        - cloud_resource_id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 1000
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - is_active
+        - ready_pods
+        - total_pods
+        - labels
+        - meta
+        - external_id
+        - kind
+        - name
+        - namespace
+        - creation_time
+        - last_seen
+        - cloud_account_id
+        - cloud_resource_id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 1000
+      allow_aggregations: true
+    comment: ""

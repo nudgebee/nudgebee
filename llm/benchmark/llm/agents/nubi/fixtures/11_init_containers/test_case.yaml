@@ -1,0 +1,14 @@
+user_prompt: "What is the issue with logging-agent?"
+expected_output:
+  - The command `wge` is not found
+  - The answer should suggests `wge` may be a typo for `wget`.
+before_test: |
+  kubectl create namespace app-11 || true
+  kubectl label namespace app-11 benchmark=true --overwrite || true
+  kubectl apply -f manifest.yaml -n app-11
+  sleep 40
+after_test: |
+  kubectl delete -f manifest.yaml -n app-11
+  kubectl delete namespace app-11 || true
+tags:
+  - easy

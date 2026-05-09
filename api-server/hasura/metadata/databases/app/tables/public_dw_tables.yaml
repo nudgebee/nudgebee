@@ -1,0 +1,62 @@
+table:
+  name: dw_tables
+  schema: public
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - cloud_account_id
+        - database_name
+        - db_type
+        - id
+        - last_altered_at
+        - last_ddl_at
+        - last_dml_at
+        - row_count
+        - schema_name
+        - table_created_at
+        - table_deleted
+        - table_dropped
+        - table_fail_safe_byte
+        - table_id
+        - table_name
+        - table_reclone_bytes
+        - table_size
+        - table_type
+        - tenant_id
+        - time_travel_bytes
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 1000
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - cloud_account_id
+        - database_name
+        - db_type
+        - id
+        - last_altered_at
+        - last_ddl_at
+        - last_dml_at
+        - row_count
+        - schema_name
+        - table_created_at
+        - table_deleted
+        - table_dropped
+        - table_fail_safe_byte
+        - table_id
+        - table_name
+        - table_reclone_bytes
+        - table_size
+        - table_type
+        - tenant_id
+        - time_travel_bytes
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 1000
+      allow_aggregations: true
+    comment: ""

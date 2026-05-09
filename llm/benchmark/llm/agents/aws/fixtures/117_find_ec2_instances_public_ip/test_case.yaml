@@ -1,0 +1,6 @@
+user_prompt: Find EC2 instance's public IP.
+expected_output:
+- aws ec2 describe-instances
+tags:
+- command
+- aws

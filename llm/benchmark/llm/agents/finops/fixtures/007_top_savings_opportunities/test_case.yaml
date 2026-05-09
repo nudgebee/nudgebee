@@ -1,0 +1,15 @@
+user_prompt: "What are my top 5 savings opportunities right now?"
+expected_output:
+  - |
+    The agent should call the recommendations tool requesting the top 5 OPEN
+    recommendations ordered by estimated_saving descending, and return them
+    in a ranked list. Each entry should include resource name, namespace,
+    category, severity, estimated monthly savings in dollars, and a risk
+    assessment. The total potential savings should be summarized at the top
+    in dollars. Closed/Archive recommendations must be excluded. Cite
+    [recommendations] for each savings figure.
+tags:
+  - optimization
+  - recommendations
+  - easy
+  - finops

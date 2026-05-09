@@ -1,0 +1,35 @@
+{
+    "details": [
+        {
+            "query": "How do I get all logs for nginx pod?",
+            "retrieved_contexts": [
+                "I'm NuBi, and I'm here to help you with Kubernetes, Helm, Events, Logs, Metrics, Recommendations, and Security. I can help you by using these agents: UpdateAgent, NuBiFirstMCP, debugger_non_kubectl, k8s_debug, codeagent, llm, rabbitmq, datadog_service, loganalysis, postgres, prometheus, prompt_refinement, datadog_events, datadog_incident, helm, argocd, aws_debug, gcp, logs, service_dependency_graph, datadog_logs, datadog_software_catalog, gcp_debug, tickets, datadog_metrics, datadog_traces, events, agent_code_2, security, traces, datadog_hosts, signoz_logs, websearch, clickhouse, aws, mysql, recommendations, redis, resource_search, runbook, server, kubectl, datadog_containers, datadog_debug, docs, github."
+            ],
+            "expected_contexts": [
+                "{pod=\"nginx\"}"
+            ],
+            "ground_truth": "{pod=\"nginx\"}{namespace=\"default\"} |= \"nginx\"",
+            "answer_similarity": 61.19,
+            "answer_relevancy": 34.95
+        },
+        {
+            "query": "How can I fetch logs for production namespace?",
+            "retrieved_contexts": [
+                "Hello! I'm NuBi, and I'm here to help you. You can ask me questions related to Kubernetes, Helm, Events, Logs, Metrics, Recommendations, and Security. I can help you by using these agents: UpdateAgent, NuBiFirstMCP, debugger_non_kubectl, k8s_debug, prompt_refinement, datadog_events, datadog_incident, helm, argocd, aws_debug, gcp, logs, service_dependency_graph, datadog_logs, datadog_software_catalog, gcp_debug, tickets, datadog_metrics, datadog_traces, events, agent_code_2, security, traces, datadog_hosts, signoz_logs, websearch, clickhouse, aws, mysql, recommendations, redis, resource_search, runbook, server, kubectl, datadog_containers, datadog_debug, docs, github, codeagent, llm, rabbitmq, datadog_service, loganalysis, postgres, prometheus. How can I help you?"
+            ],
+            "expected_contexts": [
+                "{namespace=\"production\"}"
+            ],
+            "ground_truth": "{namespace=\"production\"}{job=\"kubernetes-logs\", namespace=\"production\"}",
+            "answer_similarity": 64.74,
+            "answer_relevancy": 35.79
+        }
+    ],
+    "summary": {
+        "total_queries": 2,
+        "answer_similarity": 62.97,
+        "answer_relevancy": 35.37,
+        "overall_accuracy": 49.17,
+        "failed_indices_after_retries": []
+    }
+}

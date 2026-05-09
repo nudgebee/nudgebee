@@ -1,0 +1,6 @@
+user_prompt: Delete a CodeBuild project.
+expected_output:
+- aws codebuild delete-project --name <project-name>
+tags:
+- command
+- aws

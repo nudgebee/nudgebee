@@ -1,0 +1,28 @@
+{
+    "details": [
+        {
+            "query": "Add a user to an IAM group.",
+            "query_type": "command",
+            "retrieved_contexts": [
+                "I was unable to add the user to the IAM group due to insufficient permissions.\n\n**Execution Details:**\n- **Command:** `aws iam add-user-to-group --user-name \"abhay.pandey@nudgebee.com\" --group-name \"Admin\"`\n- **Error:** `An error occurred (AccessDenied) when calling the AddUserToGroup operation: User: arn:aws:sts::864186153326:assumed-role/... is not authorized to perform: iam:AddUserToGroup on resource: group Admin because no identity-based policy allows the iam:AddUserToGroup action`\n\n**Root Cause:**\n- **Category:** Configuration (IAM Permissions)\n- **Details:** The execution environment's IAM role lacks the `iam:AddUserToGroup` permission required to modify group memberships."
+            ],
+            "expected_contexts": [
+                "aws iam add-user-to-group --group-name <group-name> --user-name <user-name>"
+            ],
+            "ground_truth": "aws iam add-user-to-group --group-name <group-name> --user-name <user-name>",
+            "answer_similarity": 86.21,
+            "answer_relevancy": 76.82,
+            "rca_quality_score": null,
+            "rca_quality_normalized": null
+        }
+    ],
+    "summary": {
+        "total_queries": 1,
+        "answer_similarity": 86.21,
+        "answer_relevancy": 76.82,
+        "overall_accuracy": 81.51,
+        "rca_scenarios_count": 0,
+        "avg_rca_quality_score": null,
+        "failed_indices_after_retries": []
+    }
+}

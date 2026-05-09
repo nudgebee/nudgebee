@@ -1,0 +1,7 @@
+user_prompt: Revert to the previous version of the nudgebee-gateway deployment since
+  the last one had issues.
+expected_output:
+- kubectl rollout undo deployment/api-gateway
+tags:
+- command
+- kubernetes

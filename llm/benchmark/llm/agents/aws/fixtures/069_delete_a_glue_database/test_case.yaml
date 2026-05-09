@@ -1,0 +1,6 @@
+user_prompt: Delete a Glue database.
+expected_output:
+- aws glue delete-database --name <database-name>
+tags:
+- command
+- aws

@@ -1,0 +1,7 @@
+user_prompt: Find recommendations with severity 'Medium' or 'Low'.
+expected_output:
+- SELECT namespace, name, category, severity from recommendation_view WHERE severity
+  IN ('Medium', 'Low');
+tags:
+- command
+- recommendations

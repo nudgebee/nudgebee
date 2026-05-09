@@ -1,0 +1,24 @@
+table:
+  name: spends_resource_group_types
+  schema: public
+object_relationships:
+  - name: cloudProviderByCloudProvider
+    using:
+      foreign_key_constraint_on: cloud_provider
+array_relationships:
+  - name: spends
+    using:
+      foreign_key_constraint_on:
+        column: resource_group
+        table:
+          name: spends
+          schema: public
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - value
+        - description
+        - cloud_provider
+      filter: {}
+      allow_aggregations: true

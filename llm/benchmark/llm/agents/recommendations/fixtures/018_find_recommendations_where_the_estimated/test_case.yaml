@@ -1,0 +1,7 @@
+user_prompt: Find recommendations where the estimated saving amount is not provided.
+expected_output:
+- SELECT namespace, name, category, rule_name from recommendation_view WHERE estimated_saving
+  IS NULL;
+tags:
+- command
+- recommendations

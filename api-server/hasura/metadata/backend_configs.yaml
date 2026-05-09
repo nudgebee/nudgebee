@@ -1,0 +1,3 @@
+dataconnector:
+  clickhouse:
+    uri: http://hasura-clickhouse-data-connector

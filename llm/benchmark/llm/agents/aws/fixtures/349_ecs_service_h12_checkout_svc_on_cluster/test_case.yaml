@@ -1,0 +1,18 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is two compounding issues: (1) The container HEALTHCHECK in the task definition checks port 8080 (curl -f
+  http://localhost:8080/) but the nginx container listens on port 80. Health checks fail, ECS marks tasks unhealthy and kills
+  them. (2) The deployment circuit breaker is disabled (Enable=false, Rollback=false), so ECS never auto-rolls back to the
+  previous working version — it retries indefinitely. Check: (1) aws ecs describe-task-definition --task-definition h12-checkout-api
+  to see the HEALTHCHECK command references port 8080, (2) aws ecs describe-services --cluster h12-checkout-cluster --services
+  h12-checkout-svc to see deploymentCircuitBreaker is disabled and deployment is stuck. The fix requires updating the healthcheck
+  to port 80 AND enabling the circuit breaker for future safety.'
+scenario: H12
+tags:
+- command
+- aws
+- hard
+type: rca
+user_prompt: ECS service 'h12-checkout-svc' on cluster 'h12-checkout-cluster' in us-east-1 deployment has been stuck for over
+  30 minutes. New tasks keep starting and stopping. The old version is still serving traffic. The new container image is correct
+  and works locally. What's blocking the deployment?

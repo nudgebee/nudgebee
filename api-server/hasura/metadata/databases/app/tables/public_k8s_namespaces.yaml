@@ -1,0 +1,112 @@
+table:
+  name: k8s_namespaces
+  schema: public
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - is_active
+        - pod_count
+        - workload_count
+        - cloud_account_id
+        - name
+        - tenant_id
+        - creation_time
+        - updated_at
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 1000
+      allow_aggregations: true
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - is_active
+        - pod_count
+        - workload_count
+        - cloud_account_id
+        - name
+        - tenant_id
+        - creation_time
+        - updated_at
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 1000
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - is_active
+        - pod_count
+        - workload_count
+        - cloud_account_id
+        - name
+        - tenant_id
+        - creation_time
+        - updated_at
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 1000
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - is_active
+        - pod_count
+        - workload_count
+        - cloud_account_id
+        - name
+        - tenant_id
+        - creation_time
+        - updated_at
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 1000
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - is_active
+        - pod_count
+        - workload_count
+        - cloud_account_id
+        - name
+        - tenant_id
+        - creation_time
+        - updated_at
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 1000
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - is_active
+        - pod_count
+        - workload_count
+        - cloud_account_id
+        - name
+        - tenant_id
+        - creation_time
+        - updated_at
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 1000
+      allow_aggregations: true
+    comment: ""

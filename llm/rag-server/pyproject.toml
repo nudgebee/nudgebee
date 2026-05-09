@@ -1,0 +1,140 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+
+
+[project]
+name = "RAGServer"
+version = "0.1.0"
+description = ""
+authors = [{ name = "Hemasundar", email = "hemasundar.nallapaneni@nudgebee.com" }]
+requires-python = ">=3.10,<=3.14"
+dependencies = [
+    # --- Core framework ---
+    "aiofiles==24.1.0",
+    "fastapi==0.135.3",
+    "uvicorn[standard]==0.44.0",
+    "python-multipart==0.0.26",
+    "python-dotenv==1.2.2",
+    "asgiref==3.8.1",
+
+    # --- Observability ---
+    "opentelemetry-distro==0.61b0",
+    "opentelemetry-exporter-otlp==1.40.0",
+    "python-json-logger==4.0.0",
+
+    # --- Vector database ---
+    "qdrant-client>=1.16.0,<1.17.0",
+
+    # --- Database & storage ---
+    "psycopg2-binary==2.9.10",
+    "boto3==1.42.74",
+    "botocore==1.42.74",
+    "s3transfer==0.16.0",
+    "sqlalchemy==2.0.49",
+    "pymongo==4.11.3",
+
+    # --- AI/LLM SDKs (direct, no langchain) ---
+    "openai>=1.97.0",
+    "anthropic>=0.40.0",
+    "azure-ai-inference>=1.0.0b9",
+    "google-genai>=1.66.0",
+
+    # --- On-device embeddings ---
+    "sentence-transformers[onnx]>=3.4.0",
+    "huggingface-hub==0.30.1",
+    "hf_xet>=1.1.0",
+    "numpy>=1.26.0",
+
+    # --- Document processing ---
+    "tiktoken==0.12.0",
+    "beautifulsoup4==4.13.4",
+    "unstructured==0.18.18",
+    "pymupdf==1.27.2.2",
+    "jq==1.10.0",
+
+    # --- External integrations ---
+    "atlassian-python-api==4.0.7",
+    "pysnow==0.7.17",
+    "kubernetes==32.0.1",
+
+    # --- Utilities ---
+    "filelock==3.20.3",
+    "httpcore==1.0.9",
+    "psutil==7.2.2",
+    "pydantic>=2.11.2",
+    "pydantic-settings>=2.10.1",
+    "orjson==3.11.8",
+    "validators==0.34.0",
+    "cryptography==46.0.7",
+    "certifi==2026.2.25",
+    "charset-normalizer==3.4.1",
+    "click==8.2.1",
+    "durationpy==0.10",
+    "frozenlist==1.5.0",
+    "fsspec==2024.12.0",
+    "httpx-sse==0.4.1",
+    "monotonic==1.6",
+    "msal==1.34.0",
+    "multidict==6.7.1",
+    "mypy-extensions==1.1.0",
+    "propcache==0.3.1",
+    "pydantic-core==2.33.1",
+    "pygments==2.19.2",
+    "rsa==4.9",
+    "simsimd==6.2.1",
+    "soupsieve==2.8.3",
+    "sympy==1.13.3",
+    "typer==0.24.1",
+    "typing-extensions==4.13.2",
+    "typing-inspection==0.4.2",
+    "watchfiles==1.1.1",
+    "yarl==1.19.0",
+    "zipp==3.21.0",
+
+    # --- Type stubs ---
+    "types-aiofiles==25.1.0.20251011",
+    "types-requests==2.32.4.20250913",
+    "types-botocore==1.0.2",
+    "types-beautifulsoup4==4.12.0.20250516",
+    "types-psutil==7.2.2.20260130",
+    "types-awscrt==0.31.3",
+    "types-html5lib==1.1.11.20260402",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pre-commit==3.4.0",
+    "black==26.3.1",
+    "mypy==1.16.1",
+    "flake8==6.1.0"
+]
+test = [
+    "pytest==9.0.3",
+    "pytest-benchmark==5.1.0"
+]
+
+[tool.mypy]
+namespace_packages = true
+exclude = ['venv', '.venv']
+
+[tool.black]
+line-length = 120
+exclude = '''
+/(
+    \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | \.ml-env
+  | _build
+  | buck-out
+  | build
+  | dist
+  | notebooks
+)/
+'''

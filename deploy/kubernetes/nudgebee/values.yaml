@@ -1,0 +1,429 @@
+global:
+  image:
+    registry: 'registry.nudgebee.com'
+  imagePullSecrets:
+    - name: nudgebee-registry-secret
+  existingNudgebeeSecretName: ''
+nudgebee_registry_secret:
+  enabled: true
+  username: 'nudgebee'
+  password: ''
+  existingSecretName: ''
+nudgebee_secret:
+  BASE_URL: 'http://localhost:3000'
+  EMAIL_FROM: ''
+  EMAIL_SERVER_HOST: ''
+  EMAIL_SERVER_PASSWORD: ''
+  EMAIL_SERVER_USER: ''
+  APP_DATABASE_URL: 'postgresql://postgres:password@postgresql:5432/postgres?sslmode=disable'
+  # Note: If you change APP_DATABASE_URL, ensure you also update the 'temporal.server.config.persistence' section below
+  # to match the host, port, user, and SSL settings.
+  JWT_PUBLIC_KEY: |
+    {"type":"RS256","key": "-----BEGIN PUBLIC KEY-----\nMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA01J5+bNA9UOhgYsqvQGk\ncCn94EIAmARtal5PYIkTd42YUuH0pbUWA2h4IxyZmA+InDN++ULAfnFSPlv1XFyx\nBHtYBCM0FzaOTDmDpx8TzfAHOQWa6pbmHbI4+RMl65kpkBZJ+jaCLlC10MZE6QE/\n6uIo4omOfbfP0K6WGw+l8oGW9ngkBsat5sUpUEgKMcHEshY5lvhZL0DSbWkjhicE\nsSgCOG7awg62zYL2PxUcdghIB+bcrnj7qwJk0nl8Lcsu9LeoxEpUEqnWzQVEfbxx\nVtiYE1bF3p4rMp7K4Lo1VB2qgMreqnc00kLqfxHhMZ57AnH5cKT10uWM1iooEmYD\nGxvAVJmEc4pQGKUJKUf+lhP8csBTJAnSbrKcZN4tRcHBNx0DY/DBQoNCVlTJrDFl\nREid3sCEs9Ftxnfd8HGm4MhX2/2TGKxHSAx88BukOh2PUmfEVd4fdHkxkmTEiK+k\nOPk2fz1l3lJQx9f9HZt0e5PpDBme5dEi2hvqSTnfxVAYlJAS5izhCMPHpY2ztBJl\nK5zWZlLZ9JSsNfe1SLN0SYOefqPN49wyfQnCMCmAwcGrVEOoms5bYBmsoIuzlIER\nkLVlZpmQyVMZ6Ro17pUnAl7WddpXJeMGQUZLXyyfmVVQqhZTxcWQq3WeBd0uJ0Sp\nXwLt8zgSpLmK4lctXABPwjMCAwEAAQ==\n-----END PUBLIC KEY-----","claims_format": "stringified_json"}
+  JWT_PRIVATE_KEY: |
+    -----BEGIN PRIVATE KEY-----
+    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
+    n6CyHiH8Y4k3DB49LWu/rTV61akh
+    -----END PRIVATE KEY-----
+  NUDGEBEE_ENCRYPTION_KEY: '3030303030303030303030303030303030303030303030303030303030303030'
+  NUDGEBEE_LICENSE: ''
+  RELAY_SERVER_SECRET_KEY: ''
+  AWS_TEMPLATE_URL: 'https://nudgebee-prod-documents.s3.amazonaws.com/nudgebee-aws-cloud-formation.json'
+  NUDGEBEE_INSTANCE_ROLE: ''
+  AWS_ORG_TEMPLATE_URL: ''
+  AWS_ORG_SNS_TOPIC_ARN: ''
+  CLOUD_COLLECTOR_ORG_REGISTRATION_SQS: ''
+  CLOUD_COLLECTOR_AWS_EVENTBRIDGE_SQS: ''
+  NEXTAUTH_DUMMY_CREDS_ENABLED: true
+  TEMPORAL_DB_PASSWORD: 'password'
+  TEMPORAL_GRPC_ENDPOINT: 'temporal-frontend:7233'
+
+
+postgresql:
+  enabled: true
+  fullnameOverride: postgresql
+  auth:
+    existingSecret: 'postgresql'
+    database: 'postgres'
+  image:
+    registry: registry.nudgebee.com
+    repository: postgres
+    tag: '16.1.0-debian-11-r16'
+  metrics:
+    enabled: true
+    image:
+      registry: registry.nudgebee.com
+      repository: postgres-exporter
+      tag: '0.15.0-debian-11-r3'
+    serviceMonitor:
+      enabled: true
+    prometheusRule:
+      enabled: true
+      additionalRules:
+        - name: postgres.rules
+          groups:
+            - name: postgres.rules
+              rules:
+                - alert: PostgresInstanceDown
+                  expr: up{job="postgresql"} == 0
+                  for: 2m
+                  labels:
+                    severity: critical
+                  annotations:
+                    summary: 'PostgreSQL instance is down'
+                    description: 'No metrics received from PostgreSQL (instance: {{ $labels.instance }})'
+
+                - alert: PostgresTooManyConnections
+                  expr: pg_stat_activity_count{job="postgresql"} > 100
+                  for: 5m
+                  labels:
+                    severity: warning
+                  annotations:
+                    summary: 'PostgreSQL too many connections'
+                    description: 'Instance {{ $labels.instance }} has over 100 active connections'
+
+                - alert: PostgresReplicationLag
+                  expr: pg_replication_lag{job="postgresql"} > 10000000
+                  for: 5m
+                  labels:
+                    severity: warning
+                  annotations:
+                    summary: 'PostgreSQL replication lag detected'
+                    description: 'Replication lag on {{ $labels.instance }} > 10MB'
+
+                - alert: PostgresLongRunningQuery
+                  expr: pg_stat_activity_max_tx_duration_seconds{job="postgresql"} > 300
+                  for: 5m
+                  labels:
+                    severity: warning
+                  annotations:
+                    summary: 'Long-running query'
+                    description: 'A query has been running > 5 minutes on {{ $labels.instance }}'
+
+clickhouse:
+  enabled: false
+  fullnameOverride: clickhouse
+  shards: 2
+  replicaCount: 1
+  auth:
+    existingSecret: 'clickhouse'
+    existingSecretKey: 'admin-password'
+redis:
+  enabled: true
+  fullnameOverride: redis
+  image:
+    registry: registry.nudgebee.com
+    repository: redis
+    tag: 7.0.12-debian-11-r0
+  auth:
+    password: 'password'
+    existingSecret: 'redis'
+    existingSecretPasswordKey: 'redis-password'
+  replica:
+    replicaCount: 0
+rabbitmq:
+  enabled: true
+  fullnameOverride: rabbitmq
+  image:
+    registry: registry.nudgebee.com
+    repository: rabbitmq
+    tag: 3.13.7-debian-12-r5-nb-3
+  extraConfiguration: |-
+    consumer_timeout = 3600000
+  auth:
+    password: 'password'
+    securePassword: false
+    existingPasswordSecret: 'rabbitmq'
+    existingErlangSecret: 'rabbitmq'
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      path: /metrics/per-object
+    prometheusRule:
+      enabled: true
+      rules:
+        - alert: RabbitmqNodeDown
+          expr: 'sum(rabbitmq_build_info{namespace="{{ .Release.Namespace }}"}) < {{ .Values.replicaCount }}'
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: RabbitMQ node down
+            description: 'Less than {{ .Values.replicaCount }} nodes running in RabbitMQ cluster'
+        - alert: RabbitmqInstancesDifferentVersions
+          expr: 'count(count(rabbitmq_build_info{namespace="{{ .Release.Namespace }}"}) by (rabbitmq_version)) > 1'
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: RabbitMQ instances different versions
+            description: 'Running different version of RabbitMQ in the same cluster, can lead to failure.'
+        - alert: RabbitmqMemoryHigh
+          expr: 'rabbitmq_process_resident_memory_bytes{namespace="{{ .Release.Namespace }}"} / rabbitmq_resident_memory_limit_bytes{namespace="{{ .Release.Namespace }}"} * 100 > 90'
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: RabbitMQ memory high
+            description: 'A node use more than 90% of allocated RAM'
+
+        - alert: RabbitmqFileDescriptorsUsage
+          expr: 'rabbitmq_process_open_fds{namespace="{{ .Release.Namespace }}"} / rabbitmq_process_max_fds{namespace="{{ .Release.Namespace }}"} * 100 > 90'
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: RabbitMQ file descriptors usage
+            description: 'A node use more than 90% of file descriptors'
+
+        - alert: RabbitmqTooManyReadyMessages
+          expr: 'sum(rabbitmq_queue_messages_ready{namespace="{{ .Release.Namespace }}"}) BY (queue, pod, namespace) > 10'
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: RabbitMQ too many ready messages
+            description: 'RabbitMQ too many ready messages'
+
+        - alert: RabbitmqTooManyUnackMessages
+          expr: 'sum(rabbitmq_queue_messages_unacked{namespace="{{ .Release.Namespace }}"}) BY (queue, pod, namespace) > 10'
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: RabbitMQ too many unack messages
+            description: 'Too many unacknowledged messages'
+
+        - alert: RabbitmqTooManyConnections
+          expr: 'rabbitmq_connections{namespace="{{ .Release.Namespace }}"} > 100'
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: RabbitMQ too many connections
+            description: 'The total connections of a node is too high'
+
+        - alert: RabbitmqNoQueueConsumer
+          expr: 'rabbitmq_queue_consumers < 1'
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: RabbitMQ no queue consumers
+            description: 'A queue has less than 1 consumer'
+
+        - alert: RabbitmqUnroutableMessages
+          expr: 'increase(rabbitmq_channel_messages_unroutable_returned_total{namespace="{{ .Release.Namespace }}"}[1m]) > 0 or increase(rabbitmq_channel_messages_unroutable_dropped_total{namespace="{{ .Release.Namespace }}"}[1m]) > 0'
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: RabbitMQ unroutable messages
+            description: 'A queue has unroutable messages'
+hasura:
+  fullnameOverride: hasura
+  replicaCount: 1
+  image:
+    repository: hasura/graphql-engine
+    tag: 'v2.36.1-ce'
+services-server:
+  fullnameOverride: services-server
+  image:
+    repository: nudgebee-services-server
+    tag: 2024-03-21T04-15-30_fb7ea8b95c031a27386773c6aac8feb5618c9d06
+k8s-collector:
+  fullnameOverride: k8s-collector
+  image:
+    repository: nudgebee-k8s-collector
+    tag: '2024-03-17T15-15-10_90add293389950139c709848cd1da68e7c6e313f'
+relay-server:
+  fullnameOverride: relay-server
+  image:
+    repository: nudgebee-relay-server
+    tag: '2024-03-14T03-57-19_5bb622b3a3a22993c1d3e4614ab5a6d59dd2bd46'
+app:
+  fullnameOverride: app
+  replicaCount: 1
+  image:
+    repository: nudgebee-app
+    tag: '0.7.0-snapshot-20240321093300-62c7d30d'
+notifications:
+  enabled: true
+  fullnameOverride: notifications
+  image:
+    repository: nudgebee-notifications
+    tag: '2024-03-20T13-44-54_3131d1ca2516e1ab26d5b19559b4087e93f80189'
+ticket-server:
+  enabled: true
+  fullnameOverride: ticket-server
+  image:
+    repository: nudgebee-ticket-server
+    tag: '2024-03-15T13-03-03_4b25313a74f83436fd8fc3dba1b849fbfe0eb25d'
+ml-k8s-server:
+  enabled: true
+  fullnameOverride: ml-server
+  image:
+    repository: nudgebee-ml-k8s-server
+    tag: '2024-03-05T07-49-52_6b67c2793c17596e425a96aeb17174d002c8f6d3'
+postgres_migrations:
+  fullnameOverride: postgres_migrations
+  image:
+    repository: nudgebee-hasura-migrations
+    tag: '2024-03-21T12-16-59_fde05c69cb8583dfcdd68c0b19016edceee1dfd1'
+llm-server:
+  enabled: true
+  fullnameOverride: llm-server
+  image:
+    repository: nudgebee-llm-server
+    tag: '2024-10-24T08-31-06_5ef812c2e39cf483c8db474c4d3488fce0f27af4'
+  env:
+    LLM_SERVER_AGENT_CODEAGENT_IMAGE: 'registry.nudgebee.com/code-analysis-agent:latest'
+    LLM_SERVER_AGENT_CODEAGENT_IMAGE_PULL_SECRET: 'nudgebee-registry-secret'
+rag-server:
+  enabled: true
+  fullnameOverride: rag-server
+  image:
+    repository: nudgebee-rag-server
+    tag: '2024-10-24T08-33-49_5ef812c2e39cf483c8db474c4d3488fce0f27af4'
+cloud-collector-server:
+  enabled: true
+  fullnameOverride: cloud-collector-server
+  image:
+    repository: nudgebee-cloud-collector-server
+    tag: latest
+nudgebee-qdrant-server:
+  enabled: true
+  fullnameOverride: nudgebee-qdrant-server
+  image:
+    repository: qdrant/qdrant
+    tag: 'v1.16.0'
+temporal:
+  enabled: true
+  fullnameOverride: temporal
+  web:
+    enabled: true
+  admintools:
+    enabled: true
+  server:
+    enabled: true
+    replicaCount: 1
+    dynamicConfig:
+      limit.customSearchAttributes.keyword:
+        - value: 100
+          constraints: {}
+      frontend.validSearchAttributes:
+        - value:
+            nb_tenant_id: 'Keyword'
+            nb_account_id: 'Keyword'
+            nb_workflow_id: 'Keyword'
+            nb_workflow_trigger: 'Keyword'
+            nb_triggered_by: 'Keyword'
+            parent_workflow_id: 'Keyword'
+            parent_run_id: 'Keyword'
+            nb_execution_tags: 'KeywordList'
+            nb_event_type: 'Keyword'
+            nb_event_id: 'Keyword'
+            nb_parent_workflow_id: 'Keyword'
+    config:
+      namespaces:
+        create: true
+        namespace:
+          - name: default
+            retention: 10d
+      persistence:
+        default:
+          driver: 'sql'
+          sql:
+            driver: 'postgres12'
+            host: 'postgresql'
+            port: 5432
+            database: 'temporal'
+            user: 'postgres'
+            existingSecret: 'nudgebee-temporal'
+            tls:
+              enabled: false
+              enableHostVerification: false
+        visibility:
+          driver: 'sql'
+          sql:
+            driver: 'postgres12'
+            host: 'postgresql'
+            port: 5432
+            database: 'temporal_visibility'
+            user: 'postgres'
+            existingSecret: 'nudgebee-temporal'
+            tls:
+              enabled: false
+              enableHostVerification: false
+  schema:
+    createDatabase:
+      enabled: true
+    setup:
+      enabled: true
+    update:
+      enabled: true
+  cassandra:
+    enabled: false
+  mysql:
+    enabled: false
+  elasticsearch:
+    enabled: false
+  prometheus:
+    enabled: false
+  grafana:
+    enabled: false
+workflow-server:
+  enabled: true
+  fullnameOverride: workflow-server
+  image:
+    repository: nudgebee-workflow-server
+    tag: 'latest'

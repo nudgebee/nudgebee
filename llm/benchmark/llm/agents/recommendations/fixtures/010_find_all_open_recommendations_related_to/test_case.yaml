@@ -1,0 +1,7 @@
+user_prompt: Find all 'Open' recommendations related to Kubernetes Persistent Volumes.
+expected_output:
+- SELECT namespace, name, recommendation, severity from recommendation_view WHERE
+  category = 'K8sPersistentVolumeRecommendation' AND status = 'Open';
+tags:
+- command
+- recommendations

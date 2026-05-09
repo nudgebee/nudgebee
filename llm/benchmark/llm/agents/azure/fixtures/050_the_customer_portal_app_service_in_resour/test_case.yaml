@@ -1,0 +1,18 @@
+user_prompt: The customer portal App Service in resource group 'azure-agent-test-P01'
+  is rejecting connections from mobile clients and older API integrations. Desktop
+  Chrome works fine but mobile apps and partner systems get TLS handshake failures.
+  Also, some users report being able to access the site over plain HTTP which should
+  not be allowed. What is misconfigured?
+expected_output:
+- 'Two issues found: (1) The App Service has minTlsVersion set to ''1.3'', which rejects
+  connections from clients that only support TLS 1.2 (most mobile SDKs and older integrations).
+  Fix: Change minTlsVersion to ''1.2''. (2) The App Service has httpsOnly set to false,
+  allowing unencrypted HTTP access. Fix: Set httpsOnly to true to enforce HTTPS-only
+  connections.'
+agent: azure_debug
+scenario: P01
+type: rca
+tags:
+- rca
+- hard
+- azure

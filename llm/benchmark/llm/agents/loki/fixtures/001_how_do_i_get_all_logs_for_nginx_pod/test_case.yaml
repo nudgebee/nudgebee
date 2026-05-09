@@ -1,0 +1,7 @@
+user_prompt: How do I get all logs for nginx pod?
+expected_output:
+- '{pod="nginx"}'
+- '{namespace="default"} |= "nginx"'
+tags:
+- command
+- loki

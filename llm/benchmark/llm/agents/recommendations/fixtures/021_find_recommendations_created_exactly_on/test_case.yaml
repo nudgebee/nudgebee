@@ -1,0 +1,7 @@
+user_prompt: Find recommendations created exactly on '2024-10-15'.
+expected_output:
+- SELECT namespace, name, category, rule_name from recommendation_view WHERE DATE(created_at)
+  = '2024-10-15';
+tags:
+- command
+- recommendations

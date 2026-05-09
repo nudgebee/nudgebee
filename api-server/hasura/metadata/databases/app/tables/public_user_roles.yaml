@@ -1,0 +1,27 @@
+table:
+  name: user_roles
+  schema: public
+object_relationships:
+- name: roleByRole
+  using:
+    foreign_key_constraint_on: role
+- name: user
+  using:
+    foreign_key_constraint_on: user_id
+delete_permissions:
+- role: account_admin
+  permission:
+    filter:
+      user:
+        tenantUsersByUser:
+          tenant:
+            _eq: X-Hasura-User-Tenant-Id
+  comment: ''
+- role: tenant_admin
+  permission:
+    filter:
+      user:
+        tenantUsersByUser:
+          tenant:
+            _eq: X-Hasura-User-Tenant-Id
+  comment: ''

@@ -1,0 +1,220 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H20: EFS burst credits exhausted — ECS tasks hang under sustained write load.
+  User complaint: "Our ECS Fargate service 'h20-log-aggregator' on cluster
+  'h20-logging-cluster' becomes unresponsive under sustained load. Tasks appear
+  RUNNING and health checks pass (TCP port check), but the application freezes.
+  New tasks are started but they also become unresponsive after a few hours.
+  Restarting temporarily fixes it but the problem returns."
+  Root cause: EFS filesystem 'h20-shared-logs' uses 'bursting' throughput mode.
+  Under sustained write load, burst credits exhaust. EFS throughput drops to
+  baseline (proportional to size, ~50KB/s for a small filesystem). All file I/O
+  operations block, causing the app to hang. TCP health checks pass because the
+  network stack responds, but the application thread is frozen on file I/O.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = EFS throughput mode 'bursting' (exhausts credits under load).
+      Fixed = EFS throughput mode 'elastic' (scales automatically).
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ECS task security group
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 10.0.0.0/16
+      Tags:
+        - Key: Name
+          Value: h20-task-sg
+
+  EfsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: EFS mount target security group
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref TaskSecurityGroup
+      Tags:
+        - Key: Name
+          Value: h20-efs-sg
+
+  # THE BUG: Bursting throughput mode exhausts credits under sustained write load
+  SharedLogsFs:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      PerformanceMode: generalPurpose
+      ThroughputMode: !If [IsFixed, 'elastic', 'bursting']
+      Encrypted: true
+      FileSystemTags:
+        - Key: Name
+          Value: h20-shared-logs
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: log-aggregation
+
+  MountTargetA:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref SharedLogsFs
+      SubnetId: !ImportValue aws-agent-test-private-subnet-a
+      SecurityGroups:
+        - !Ref EfsSecurityGroup
+
+  MountTargetB:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref SharedLogsFs
+      SubnetId: !ImportValue aws-agent-test-private-subnet-b
+      SecurityGroups:
+        - !Ref EfsSecurityGroup
+
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: h20-logging-cluster
+      Tags:
+        - Key: Name
+          Value: h20-logging-cluster
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/h20-log-aggregator
+      RetentionInDays: 7
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h20-task-exec-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h20-task-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: h20-log-aggregator
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '512'
+      Memory: '1024'
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      Volumes:
+        - Name: shared-logs
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref SharedLogsFs
+            TransitEncryption: ENABLED
+      ContainerDefinitions:
+        - Name: log-aggregator
+          Image: public.ecr.aws/amazonlinux/amazonlinux:2023
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          MountPoints:
+            - SourceVolume: shared-logs
+              ContainerPath: /mnt/logs
+              ReadOnly: false
+          Command:
+            - /bin/sh
+            - -c
+            - |
+              python3 -c "
+              from http.server import HTTPServer, BaseHTTPRequestHandler
+              import json, os, time, threading
+
+              def write_logs():
+                  while True:
+                      with open('/mnt/logs/aggregate.log', 'a') as f:
+                          f.write(f'{time.time()} log entry\n')
+                      time.sleep(0.01)
+
+              threading.Thread(target=write_logs, daemon=True).start()
+
+              class H(BaseHTTPRequestHandler):
+                  def do_GET(self):
+                      self.send_response(200)
+                      self.end_headers()
+                      self.wfile.write(b'ok')
+                  def log_message(self, *a): pass
+
+              HTTPServer(('0.0.0.0', 8080), H).serve_forever()
+              "
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: ecs
+
+  EcsService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: h20-log-aggregator
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 2
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref TaskSecurityGroup
+          Subnets:
+            - !ImportValue aws-agent-test-public-subnet-a
+            - !ImportValue aws-agent-test-public-subnet-b
+
+Outputs:
+  ClusterName:
+    Description: ECS Cluster Name
+    Value: !Ref EcsCluster
+  ServiceName:
+    Description: ECS Service Name
+    Value: h20-log-aggregator
+  FileSystemId:
+    Description: EFS File System ID
+    Value: !Ref SharedLogsFs
+  ThroughputMode:
+    Description: EFS throughput mode (bursting exhausts credits in Broken mode)
+    Value: !If [IsFixed, 'elastic (auto-scales)', 'bursting (exhausts credits under sustained load)']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

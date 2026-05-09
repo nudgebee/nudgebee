@@ -1,0 +1,29 @@
+package api
+
+import (
+	"log/slog"
+
+	"github.com/gin-gonic/gin"
+
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
+)
+
+func ConfigureRoutes(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {
+	handleHasuraApis(r, tracer, meter, logger)
+	handleHasuraWebhooks(r, tracer, meter, logger)
+	handleHasuraCrons(r, tracer, meter, logger)
+	handleHeathCheckApis(r, tracer, meter, logger)
+	handleAuditApis(r, tracer, meter, logger)
+	handleAuthzApis(r, tracer, meter, logger)
+	handleCacheApis(r, tracer, meter, logger)
+	handleMarketplaceEvents(r, tracer, meter, logger)
+	handleMigrationApis(r, tracer, meter, logger)
+	handleIntegrationApis(r, tracer, meter, logger)
+	handlePublicWebhooksApis(r, tracer, meter, logger)
+	handleEventRuleApis(r, tracer, meter, logger)
+	handleHasuraTriageApis(r, tracer, meter, logger)
+	handleExportApis(r, tracer, meter, logger)
+	handleEntitlementApis(r, tracer, meter, logger)
+	handleRelayApis(r, tracer, meter, logger)
+}

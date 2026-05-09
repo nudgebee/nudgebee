@@ -1,0 +1,16 @@
+user_prompt: "What are we spending across our cloud accounts this month?"
+expected_output:
+  - |
+    The answer should lead with a headline of total monthly cloud spend in dollars
+    (e.g. "Your cloud spend is $X/month, up/down Y% from last month") followed by
+    a per-account or per-service breakdown table with current spend, previous
+    period spend, and percentage change. Every dollar figure must cite the
+    source tool [spend_summary]. The response should close with the available
+    savings from open recommendations and suggested drill-down areas. The agent
+    must call spend_summary as its first action — empty input is not allowed,
+    minimum {"group_by":"cloud_account"}.
+tags:
+  - spend
+  - overview
+  - easy
+  - finops

@@ -1,0 +1,8 @@
+user_prompt: Which day of the week sees the most new 'RightSizing' recommendations?
+expected_output:
+- SELECT TO_CHAR(created_at, 'Day') AS day_of_week, COUNT(*) AS recommendation_count
+  FROM recommendation_view WHERE category = 'RightSizing' GROUP BY day_of_week ORDER
+  BY recommendation_count DESC LIMIT 1;
+tags:
+- command
+- recommendations

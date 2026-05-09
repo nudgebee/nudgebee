@@ -1,0 +1,94 @@
+table:
+  name: application_group_mapping
+  schema: public
+object_relationships:
+- name: application_group
+  using:
+    foreign_key_constraint_on: group_id
+- name: cloud_account
+  using:
+    foreign_key_constraint_on: account_id
+- name: k8s_workload
+  using:
+    foreign_key_constraint_on:
+    - account_id
+    - workload_kind
+    - namespace_name
+    - workload_name
+- name: tenant
+  using:
+    foreign_key_constraint_on: tenant_id
+insert_permissions:
+- role: account_admin
+  permission:
+    check:
+      _and:
+      - tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      - account_id:
+          _in: X-Hasura-User-Account-Ids
+    set:
+      tenant_id: x-hasura-User-Tenant-Id
+    columns:
+    - account_id
+    - cloud_resource_id
+    - group_id
+    - namespace_name
+    - tenant_id
+    - workload_kind
+    - workload_name
+  comment: ''
+- role: tenant_admin
+  permission:
+    check:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+    set:
+      tenant_id: x-hasura-User-Tenant-Id
+    columns:
+    - account_id
+    - cloud_resource_id
+    - group_id
+    - namespace_name
+    - workload_kind
+    - workload_name
+  comment: ''
+update_permissions:
+- role: account_admin
+  permission:
+    columns:
+    - account_id
+    - cloud_resource_id
+    - group_id
+    - namespace_name
+    - workload_kind
+    - workload_name
+    filter:
+      _and:
+      - tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      - account_id:
+          _in: X-Hasura-User-Account-Ids
+    check: null
+  comment: ''
+- role: tenant_admin
+  permission:
+    columns:
+    - account_id
+    - cloud_resource_id
+    - group_id
+    - namespace_name
+    - workload_kind
+    - workload_name
+    filter:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+    check: {}
+  comment: ''
+delete_permissions:
+- role: tenant_admin
+  permission:
+    filter:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+  comment: ''

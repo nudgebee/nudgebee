@@ -1,0 +1,41 @@
+table:
+  name: ms_teams_installations
+  schema: public
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - access_token
+        - client_id
+        - email
+        - refresh_token
+        - team_id
+        - username
+        - created_at
+        - updated_at
+        - created_by
+        - id
+        - tenant_id
+        - updated_by
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - client_id
+        - created_at
+        - created_by
+        - email
+        - id
+        - team_id
+        - tenant_id
+        - updated_at
+        - updated_by
+        - username
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""

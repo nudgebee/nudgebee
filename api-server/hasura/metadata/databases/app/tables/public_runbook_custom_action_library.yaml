@@ -1,0 +1,51 @@
+table:
+  name: runbook_custom_action_library
+  schema: public
+insert_permissions:
+  - role: account_admin
+    permission:
+      check: {}
+      columns: []
+    comment: ""
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - created_at
+        - id
+        - library_name
+      filter: {}
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - created_at
+        - id
+        - library_name
+      filter: {}
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - created_at
+        - id
+        - library_name
+      filter: {}
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - created_at
+        - id
+        - library_name
+      filter: {}
+    comment: ""
+update_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - library_name
+      filter: {}
+      check: null
+    comment: ""

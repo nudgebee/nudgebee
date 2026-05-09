@@ -1,0 +1,6 @@
+user_prompt: Safely remove all pods from 'node-02' before shutting it down.
+expected_output:
+- kubectl drain node-02 --ignore-daemonsets
+tags:
+- command
+- kubernetes

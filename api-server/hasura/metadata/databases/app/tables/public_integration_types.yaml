@@ -1,0 +1,52 @@
+table:
+  name: integration_types
+  schema: public
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - category
+        - description
+        - name
+      filter: {}
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - category
+        - description
+        - name
+      filter: {}
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - category
+        - description
+        - name
+      filter: {}
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - category
+        - description
+        - name
+      filter: {}
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - category
+        - description
+        - name
+      filter: {}
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - category
+        - description
+        - name
+      filter: {}
+    comment: ""

@@ -1,0 +1,48 @@
+table:
+  name: alert_rule
+  schema: public
+insert_permissions:
+- role: tenant_admin
+  permission:
+    check:
+      tenant:
+        _eq: X-Hasura-User-Tenant-Id
+    set:
+      created_by: x-hasura-User-Id
+      tenant: x-hasura-User-Tenant-Id
+      updated_by: x-hasura-User-Id
+    columns:
+    - description
+    - evaluate_at
+    - label
+    - rule
+    - source
+    - state
+    - status
+    - title
+update_permissions:
+- role: tenant_admin
+  permission:
+    columns:
+    - description
+    - evaluate_at
+    - label
+    - rule
+    - source
+    - state
+    - status
+    - title
+    filter:
+      tenant:
+        _eq: X-Hasura-User-Tenant-Id
+    check:
+      tenant:
+        _eq: X-Hasura-User-Tenant-Id
+    set:
+      updated_by: x-hasura-User-Id
+delete_permissions:
+- role: tenant_admin
+  permission:
+    filter:
+      tenant:
+        _eq: X-Hasura-User-Tenant-Id

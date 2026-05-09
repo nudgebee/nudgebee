@@ -1,0 +1,6 @@
+user_prompt: Stop an ECS task.
+expected_output:
+- aws ecs stop-task --cluster <cluster-name> --task <task-id>
+tags:
+- command
+- aws

@@ -1,0 +1,84 @@
+table:
+  name: knowledge_base
+  schema: public
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - description
+        - diagnosis
+        - impact
+        - mitigation
+        - rule_name
+        - created_at
+        - updated_at
+        - id
+      filter: {}
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - description
+        - diagnosis
+        - impact
+        - mitigation
+        - rule_name
+        - created_at
+        - updated_at
+        - id
+      filter: {}
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - description
+        - diagnosis
+        - impact
+        - mitigation
+        - rule_name
+        - created_at
+        - updated_at
+        - id
+      filter: {}
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - description
+        - diagnosis
+        - impact
+        - mitigation
+        - rule_name
+        - created_at
+        - updated_at
+        - id
+      filter: {}
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - description
+        - diagnosis
+        - impact
+        - mitigation
+        - rule_name
+        - created_at
+        - updated_at
+        - id
+      filter: {}
+      limit: 10
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - description
+        - diagnosis
+        - impact
+        - mitigation
+        - rule_name
+        - created_at
+        - updated_at
+        - id
+      filter: {}
+      limit: 10
+    comment: ""

@@ -1,0 +1,90 @@
+table:
+  name: applications_grouping
+  schema: public
+insert_permissions:
+- role: account_admin
+  permission:
+    check:
+      _or:
+      - tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      - tenant_id:
+          _eq: null
+    columns:
+    - description
+    - group_name
+  comment: ''
+- role: k8s_namespace_admin
+  permission:
+    check:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+    columns:
+    - description
+    - group_name
+  comment: ''
+- role: tenant_admin
+  permission:
+    check:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+    columns:
+    - description
+    - group_name
+  comment: ''
+update_permissions:
+- role: account_admin
+  permission:
+    columns:
+    - description
+    - group_name
+    filter:
+      _or:
+      - tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      - tenant_id:
+          _eq: null
+    check: null
+  comment: ''
+- role: k8s_namespace_admin
+  permission:
+    columns:
+    - description
+    - group_name
+    filter:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+    check: null
+  comment: ''
+- role: tenant_admin
+  permission:
+    columns:
+    - description
+    - group_name
+    filter:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+    check: null
+  comment: ''
+delete_permissions:
+- role: account_admin
+  permission:
+    filter:
+      _or:
+      - tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      - tenant_id:
+          _eq: null
+  comment: ''
+- role: k8s_namespace_admin
+  permission:
+    filter:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+  comment: ''
+- role: tenant_admin
+  permission:
+    filter:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+  comment: ''

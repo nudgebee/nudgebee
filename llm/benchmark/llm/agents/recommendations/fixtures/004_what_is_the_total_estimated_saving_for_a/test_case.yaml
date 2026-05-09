@@ -1,0 +1,8 @@
+user_prompt: What is the total estimated saving for all 'Open' recommendations in
+  the 'K8sSpotRecommendation' category?
+expected_output:
+- SELECT SUM(estimated_saving) AS total_estimated_saving from recommendation_view
+  WHERE category = 'K8sSpotRecommendation' AND status = 'Open';
+tags:
+- command
+- recommendations

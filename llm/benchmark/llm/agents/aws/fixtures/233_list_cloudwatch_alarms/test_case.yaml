@@ -1,0 +1,6 @@
+user_prompt: List CloudWatch alarms.
+expected_output:
+- aws cloudwatch describe-alarms
+tags:
+- command
+- aws

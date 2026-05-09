@@ -1,0 +1,18 @@
+# Asserts the agent passes range="7d" rather than re-issuing 7 separate queries.
+user_prompt: Show CPU and memory usage for deployment relay-server in namespace nudgebee over the last 7 days
+expected_output:
+  - sum(rate(container_cpu_usage_seconds_total{pod=~"relay-server.*", namespace="nudgebee"}[5m])) by (pod)
+  - container_memory_usage_bytes{pod=~"relay-server.*", namespace="nudgebee"}
+expected_metrics:
+  - container_cpu_usage_seconds_total
+  - container_memory_usage_bytes
+expected_tools:
+  - prometheus_execute
+forbidden_tools:
+  - shell_execute
+  - search_metrics
+expected_max_tool_calls: 4
+tags:
+  - fast_path
+  - time_range
+  - regression

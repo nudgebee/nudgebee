@@ -1,0 +1,27 @@
+table:
+  name: llm_functions
+  schema: public
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - version
+        - variable_defaults
+        - variables
+        - description
+        - name
+        - prompt
+        - status
+        - created_at
+        - updated_at
+        - account_id
+        - created_by
+        - id
+        - tenant_id
+        - updated_by
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 81
+      allow_aggregations: true
+    comment: ""

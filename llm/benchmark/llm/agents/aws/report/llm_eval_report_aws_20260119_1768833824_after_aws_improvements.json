@@ -1,0 +1,143 @@
+{
+    "details": [
+        {
+            "query": "Give me command Add a user to an IAM group.",
+            "retrieved_contexts": [
+                "To add a user to an IAM group, you can use the `aws iam add-user-to-group` command.\n\n**Command Syntax:**\n\n```bash\naws iam add-user-to-group --user-name <value> --group-name <value>\n```\n\n**Parameters:**\n\n*   `--user-name`: The name of the user you want to add.\n*   `--group-name`: The name of the group to which you want to add the user.\n\n**Example:**\n\nThis example adds the user named `Blink` to the IAM group named `Admins`.\n\n```bash\naws iam add-user-to-group --user-name Blink --group-name Admins\n```\n\nUpon successful execution, this command does not return any output. You can verify the user has been added by using the `aws iam get-group --group-name Admins` command."
+            ],
+            "expected_contexts": [
+                "aws iam add-user-to-group --group-name <group-name> --user-name <user-name>"
+            ],
+            "ground_truth": "aws iam add-user-to-group --group-name <group-name> --user-name <user-name>",
+            "answer_similarity": 90.14,
+            "answer_relevancy": 78.33
+        },
+        {
+            "query": "Show me the command Add an inbound rule to a security group.",
+            "retrieved_contexts": [
+                "To add an inbound rule to an AWS Security Group, you use the `aws ec2 authorize-security-group-ingress` command.\n\n### Command Syntax\n\n```bash\naws ec2 authorize-security-group-ingress --group-id <value> --protocol <value> --port <value> --cidr <value>\n```\n\n### Key Parameters\n\n*   `--group-id`: The ID of the security group you want to modify (e.g., `sg-1234567890abcdef0`).\n*   `--protocol`: The protocol to allow. Common values are `tcp`, `udp`, `icmp`, or `all`.\n*   `--port`: The port number or range (e.g., `22`, `80`, `443`, `3306`). For all ports, use `-1`.\n*   `--cidr`: The source IPv4 CIDR block to allow traffic from (e.g., `203.0.113.0/24`). To allow traffic from any IP address, use `0.0.0.0/0`.\n*   `--source-group`: Alternatively, instead of `--cidr`, you can specify another security group ID to allow traffic from resources within that group.\n\n---\n\n### Example 1: Allow SSH access from a specific IP address\n\nThis command adds a rule to the security group `sg-12345678` to allow inbound TCP traffic on port `22` (SSH) from the IP address range `203.0.113.0/24`.\n\n```bash\naws ec2 authorize-security-group-ingress --group-id sg-12345678 --protocol tcp --port 22 --cidr 203.0.113.0/24\n```\n\n### Example 2: Allow HTTP access from another Security Group\n\nThis command allows inbound TCP traffic on port `80` (HTTP) from any resource that is associated with the source security group `sg-87654321`. This is a common pattern for allowing traffic between application tiers (e.g., from a web server security group to a database security group).\n\n```bash\naws ec2 authorize-security-group-ingress --group-id sg-12345678 --protocol tcp --port 80 --source-group sg-87654321\n```\n\n### Example 3: Allow all inbound traffic from anywhere (Use with caution)\n\nThis command allows all protocols and all ports from any IP address. This is generally not recommended for production environments as it exposes the resource to the entire internet.\n\n```bash\naws ec2 authorize-security-group-ingress --group-id sg-12345678 --protocol all --port -1 --cidr 0.0.0.0/0\n```"
+            ],
+            "expected_contexts": [
+                "aws ec2 authorize-security-group-ingress"
+            ],
+            "ground_truth": "aws ec2 authorize-security-group-ingress",
+            "answer_similarity": 84.03,
+            "answer_relevancy": 79.31
+        },
+        {
+            "query": "Show me the command to Attach an IAM policy to a user.",
+            "retrieved_contexts": [
+                "Of course. Here is the AWS CLI command to attach an IAM policy to a user, along with explanations for the placeholders.\n\n### Command\n\nTo attach an IAM policy to an IAM user, you can use the `attach-user-policy` command.\n\n```bash\naws iam attach-user-policy --user-name <YOUR_USER_NAME> --policy-arn <YOUR_POLICY_ARN>\n```\n\n### Placeholders Explained\n\n*   `--user-name <YOUR_USER_NAME>`: Replace `<YOUR_USER_NAME>` with the name of the IAM user to whom you want to attach the policy.\n*   `--policy-arn <YOUR_POLICY_ARN>`: Replace `<YOUR_POLICY_ARN>` with the Amazon Resource Name (ARN) of the IAM policy you want to attach.\n\n### Example\n\nHere is a practical example of attaching the AWS-managed `AmazonS3ReadOnlyAccess` policy to a user named `data-scientist`.\n\n```bash\naws iam attach-user-policy --user-name data-scientist --policy-arn arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess\n```\n\n### Verification\n\nAfter running the command, you can verify that the policy was successfully attached by using the `list-attached-user-policies` command:\n\n```bash\naws iam list-attached-user-policies --user-name <YOUR_USER_NAME>\n```\n\n**Example Verification:**\n\n```bash\naws iam list-attached-user-policies --user-name data-scientist\n```"
+            ],
+            "expected_contexts": [
+                "aws iam attach-user-policy --user-name <user-name> --policy-arn <policy-arn>"
+            ],
+            "ground_truth": "aws iam attach-user-policy --user-name <user-name> --policy-arn <policy-arn>",
+            "answer_similarity": 87.44,
+            "answer_relevancy": 82.02
+        },
+        {
+            "query": "Show me the command to Boost DynamoDB capacity.",
+            "retrieved_contexts": [
+                "To boost DynamoDB capacity using the AWS CLI, you can either increase the provisioned throughput for your table and its indexes or switch the table to on-demand capacity mode.\n\n### 1. Increase Provisioned Throughput for a Table\n\nThis command modifies the Read Capacity Units (RCUs) and Write Capacity Units (WCUs) for a table operating in provisioned mode.\n\n```bash\naws dynamodb update-table \\\n    --table-name YourTableName \\\n    --provisioned-throughput ReadCapacityUnits=200,WriteCapacityUnits=100 \\\n    --region us-east-1\n```\n*   Replace `YourTableName` with the name of your table.\n*   Adjust the `ReadCapacityUnits` and `WriteCapacityUnits` values to your desired new capacity.\n\n### 2. Increase Provisioned Throughput for a Global Secondary Index (GSI)\n\nIf your table has Global Secondary Indexes (GSIs), you may need to scale their capacity independently from the main table.\n\n```bash\naws dynamodb update-table \\\n    --table-name YourTableName \\\n    --global-secondary-index-updates '[{\n        \"Update\": {\n            \"IndexName\": \"YourIndexName\",\n            \"ProvisionedThroughput\": {\n                \"ReadCapacityUnits\": 100,\n                \"WriteCapacityUnits\": 50\n            }\n        }\n    }]' \\\n    --region us-east-1\n```\n*   Replace `YourTableName` and `YourIndexName` with your table and index names.\n*   Adjust the RCU and WCU values for the specific index. You can update multiple indexes in a single command by adding more objects to the JSON array.\n\n### 3. Switch to On-Demand Capacity Mode\n\nFor workloads that are unpredictable or spiky, switching to on-demand mode allows DynamoDB to automatically scale capacity to meet the demand. This is often the simplest way to \"boost\" capacity.\n\n```bash\naws dynamodb update-table \\\n    --table-name YourTableName \\\n    --billing-mode PAY_PER_REQUEST \\\n    --region us-east-1\n```\n*   This command changes the table's billing mode. You no longer need to specify RCUs or WCUs.\n*   To switch back to provisioned mode, set `--billing-mode` to `PROVISIONED` and provide the `--provisioned-throughput` parameter with your desired RCU/WCU values."
+            ],
+            "expected_contexts": [
+                "aws dynamodb update-table --table-name <table-name> --provisioned-throughput ..."
+            ],
+            "ground_truth": "aws dynamodb update-table --table-name <table-name> --provisioned-throughput ...",
+            "answer_similarity": 85.76,
+            "answer_relevancy": 79.79
+        },
+        {
+            "query": "Show me the command to check ECR and how many repos dont have secret scanning enabled",
+            "retrieved_contexts": [
+                "aws ecr describe-repositories --region us-east-1"
+            ],
+            "expected_contexts": [
+                "aws ecr describe-repositories --output json | jq '.repositories | map(select(.imageScanningConfiguration.scanOnPush == true))'"
+            ],
+            "ground_truth": "aws ecr describe-repositories --output json | jq '.repositories | map(select(.imageScanningConfiguration.scanOnPush == true))'",
+            "answer_similarity": 80.79,
+            "answer_relevancy": 62.99
+        },
+        {
+            "query": "Give me the command to Change S3 object storage class.",
+            "retrieved_contexts": [
+                "To change the storage class of an S3 object, you use the `aws s3 cp` command to copy the object over itself, specifying the new storage class.\n\n### To Change a Single Object's Storage Class:\n\nThis command copies the object to the same location, effectively modifying its metadata, including the storage class.\n\n**Command:**\n```bash\naws s3 cp s3://BUCKET_NAME/OBJECT_KEY s3://BUCKET_NAME/OBJECT_KEY --storage-class <NEW_STORAGE_CLASS>\n```\n\n**Example:**\nTo change `my-file.txt` in `my-bucket` to the `INTELLIGENT_TIERING` storage class:\n```bash\naws s3 cp s3://my-bucket/my-file.txt s3://my-bucket/my-file.txt --storage-class INTELLIGENT_TIERING\n```\n\n---\n\n### To Change Storage Class for Multiple Objects (Recursively):\n\nTo change the storage class for all objects under a specific prefix (folder), add the `--recursive` flag.\n\n**Command:**\n```bash\naws s3 cp s3://BUCKET_NAME/PREFIX/ s3://BUCKET_NAME/PREFIX/ --storage-class <NEW_STORAGE_CLASS> --recursive\n```\n\n**Example:**\nTo change all objects in the `documents/` folder of `my-bucket` to `STANDARD_IA`:\n```bash\naws s3 cp s3://my-bucket/documents/ s3://my-bucket/documents/ --storage-class STANDARD_IA --recursive\n```\n\n---\n\n### Common Storage Class Values:\n\nYou can replace `<NEW_STORAGE_CLASS>` with one of the following:\n*   `STANDARD`\n*   `REDUCED_REDUNDANCY`\n*   `STANDARD_IA` (Standard-Infrequent Access)\n*   `ONEZONE_IA` (One Zone-Infrequent Access)\n*   `INTELLIGENT_TIERING`\n*   `GLACIER`\n*   `DEEP_ARCHIVE`\n*   `GLACIER_IR` (Glacier Instant Retrieval)"
+            ],
+            "expected_contexts": [
+                "aws s3api copy-object --bucket <bucket-name> --copy-source <bucket-name>/<object-key> --key <object-key> --storage-class <storage-class>"
+            ],
+            "ground_truth": "aws s3api copy-object --bucket <bucket-name> --copy-source <bucket-name>/<object-key> --key <object-key> --storage-class <storage-class>",
+            "answer_similarity": 81.91,
+            "answer_relevancy": 79.83
+        },
+        {
+            "query": "Generate the command to change the default AWS region.",
+            "retrieved_contexts": [
+                "To change the default AWS region for your AWS CLI profile, you can use one of the following commands.\n\n### 1. Set the Default Region Directly\n\nThis command updates your AWS config file (`~/.aws/config`) to set the default region for your current profile.\n\n```bash\naws configure set region <your-region-name>\n```\n**Example:**\n```bash\naws configure set region us-west-2\n```\n\n---\n\n### 2. Use the Interactive `configure` Command\n\nRun `aws configure` and the CLI will prompt you to enter your credentials and the default region. You can press Enter to keep the existing values for other settings.\n\n```bash\naws configure\n```\n**Example Interaction:**\n```\nAWS Access Key ID [****************ABCD]:\nAWS Secret Access Key [****************XYZ]:\nDefault region name [us-east-1]: us-west-2\nDefault output format [json]:\n```\n\n---\n\n### 3. Use an Environment Variable (Temporary)\n\nYou can set the `AWS_REGION` environment variable. This will override the default region set in your config file for the current terminal session only.\n\n**For Linux/macOS:**\n```bash\nexport AWS_REGION=<your-region-name>\n```\n\n**For Windows (Command Prompt):**\n```bash\nset AWS_REGION=<your-region-name>\n```\n\n**For Windows (PowerShell):**\n```bash\n$env:AWS_REGION=\"<your-region-name>\"\n```\n\n**Note on Precedence:**\nThe AWS CLI resolves the region in the following order:\n1.  `--region` flag on a specific command (e.g., `aws s3 ls --region us-west-2`).\n2.  `AWS_REGION` environment variable.\n3.  The `region` setting in your active AWS CLI profile (`~/.aws/config`)."
+            ],
+            "expected_contexts": [
+                "AWS_DEFAULT_REGION"
+            ],
+            "ground_truth": "AWS_DEFAULT_REGION--region",
+            "answer_similarity": 80.96,
+            "answer_relevancy": 74.58
+        },
+        {
+            "query": "Give command to check for updates to the AWS CLI.",
+            "retrieved_contexts": [
+                "The command to update the AWS CLI depends on how you originally installed it. There isn't a single, universal command like `aws cli update`.\n\nHere are the update instructions for the most common installation methods:\n\n### Method 1: If you installed using `pip`\n\nThis is a very common method for Python developers.\n\n1.  **Check your current version (optional):**\n    ```bash\n    aws --version\n    ```\n2.  **Upgrade the `awscli` package:**\n    ```bash\n    pip install --upgrade awscli\n    ```\n    If you are using `pip3`, use that command instead:\n    ```bash\n    pip3 install --upgrade awscli\n    ```\n\n### Method 2: If you used the macOS or Linux bundled installer (AWS CLI v2)\n\nYou need to re-run the installation process, which will handle the update.\n\n**For Linux:**\n```bash\ncurl \"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\" -o \"awscliv2.zip\"\nunzip awscliv2.zip\nsudo ./aws/install --update\n```\n\n**For macOS:**\n```bash\ncurl \"https://awscli.amazonaws.com/AWSCLIV2.pkg\" -o \"AWSCLIV2.pkg\"\nsudo installer -pkg AWSCLIV2.pkg -target /\n```\n\n### Method 3: If you used the MSI installer on Windows (AWS CLI v2)\n\n1.  Download the latest version of the AWS CLI MSI installer from the official AWS documentation.\n2.  Run the downloaded `.msi` file. The installer will automatically detect the existing version and upgrade it in place. You do not need to uninstall the old version first.\n\nTo find out how you installed it, you can try running `which aws` on Linux/macOS or `where aws` on Windows, which might give you a clue based on the installation path."
+            ],
+            "expected_contexts": [
+                "pip list --outdated awscli"
+            ],
+            "ground_truth": "pip list --outdated awscli",
+            "answer_similarity": 80.66,
+            "answer_relevancy": 77.0
+        },
+        {
+            "query": "Give me the command to Configure AWS CLI credentials.",
+            "retrieved_contexts": [
+                "The command to configure your AWS CLI credentials is `aws configure`.\n\nWhen you run this command, the CLI will prompt you for four pieces of information:\n\n1.  **AWS Access Key ID:** Your access key.\n2.  **AWS Secret Access Key:** Your secret key.\n3.  **Default region name:** The AWS Region to send requests to by default (e.g., `us-east-1`).\n4.  **Default output format:** The default format for command output (e.g., `json`, `text`, `table`).\n\n### Command\n```bash\naws configure\n```\n\n### Interactive Session Example\n```\n$ aws configure\nAWS Access Key ID [None]: AKIAIOSFODNN7EXAMPLE\nAWS Secret Access Key [None]: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\nDefault region name [None]: us-east-1\nDefault output format [None]: json\n```\n\n### Configuring a Named Profile\nFor managing multiple AWS accounts or roles, it is a best practice to use named profiles. You can configure a specific profile using the `--profile` flag.\n\n**Command:**\n```bash\naws configure --profile your-profile-name\n```\n\n**Example:**\n```\n$ aws configure --profile development\nAWS Access Key ID [None]: AKIAI44QH8DHBEXAMPLE\nAWS Secret Access Key [None]: je7MtGbClwBF/2Zp9Utk/h3yCo8nvbEXAMPLEKEY\nDefault region name [None]: us-west-2\nDefault output format [None]: text\n```\n\nAfter configuration, the credentials will be stored in the `~/.aws/credentials` file, and the default region and output format will be stored in the `~/.aws/config` file on your local machine."
+            ],
+            "expected_contexts": [
+                "aws configure"
+            ],
+            "ground_truth": "aws configure",
+            "answer_similarity": 73.17,
+            "answer_relevancy": 77.97
+        },
+        {
+            "query": "Show me the command copy local file to S3.",
+            "retrieved_contexts": [
+                "To copy a local file to an S3 bucket, you use the `aws s3 cp` command.\n\n**Command Syntax:**\n\n```bash\naws s3 cp <LocalPath> <S3Uri>\n```\n\n**Example:**\n\nThis command copies a file named `my-local-file.txt` from the current directory to the root of a bucket named `my-bucket`.\n\n```bash\naws s3 cp my-local-file.txt s3://my-bucket/\n```\n\n**Example with a specific path in the bucket:**\n\nThis command copies the same file into a folder named `documents` inside the `my-bucket` bucket.\n\n```bash\naws s3 cp my-local-file.txt s3://my-bucket/documents/\n```\n\n**Arguments:**\n\n*   `<LocalPath>`: The path to the file on your local machine.\n*   `<S3Uri>`: The destination S3 path, which must start with `s3://` followed by the bucket name and an optional path (prefix)."
+            ],
+            "expected_contexts": [
+                "aws s3 cp localfile s3://bucket/remotefile"
+            ],
+            "ground_truth": "aws s3 cp localfile s3://bucket/remotefile",
+            "answer_similarity": 89.27,
+            "answer_relevancy": 76.6
+        },
+        {
+            "query": "Show me the command to create a CloudFront distribution.",
+            "retrieved_contexts": [
+                "Of course. As an SRE/DevOps expert, I can provide you with the AWS CLI command and a sample configuration file to create a CloudFront distribution with an S3 bucket as the origin.\n\nThe AWS CLI command to create a CloudFront distribution is `create-distribution`. This command requires a JSON file that contains all the configuration details for the distribution.\n\n### AWS CLI Command\n\nYou will use the following command structure. You must first create the JSON configuration file and then reference it using the `--distribution-config` parameter.\n\n```bash\naws cloudfront create-distribution --distribution-config file://distribution-config.json\n```\n\n### Example `distribution-config.json` File\n\nHere is a basic example of a `distribution-config.json` file. This configuration sets up a CloudFront distribution that serves content from an S3 bucket.\n\nSave the following content to a file named `distribution-config.json`.\n\n```json\n{\n    \"Comment\": \"My S3 static content distribution\",\n    \"CallerReference\": \"your-unique-caller-reference-20260119\",\n    \"Enabled\": true,\n    \"Origins\": {\n        \"Quantity\": 1,\n        \"Items\": [\n            {\n                \"Id\": \"S3-my-static-website-bucket\",\n                \"DomainName\": \"your-bucket-name.s3.amazonaws.com\",\n                \"S3OriginConfig\": {\n                    \"OriginAccessIdentity\": \"\"\n                }\n            }\n        ]\n    },\n    \"DefaultCacheBehavior\": {\n        \"TargetOriginId\": \"S3-my-static-website-bucket\",\n        \"ViewerProtocolPolicy\": \"redirect-to-https\",\n        \"TrustedSigners\": {\n            \"Enabled\": false,\n            \"Quantity\": 0\n        },\n        \"ForwardedValues\": {\n            \"QueryString\": false,\n            \"Cookies\": {\n                \"Forward\": \"none\"\n            }\n        },\n        \"MinTTL\": 0,\n        \"AllowedMethods\": {\n            \"Quantity\": 2,\n            \"Items\": [\n                \"GET\",\n                \"HEAD\"\n            ],\n            \"CachedMethods\": {\n                \"Quantity\": 2,\n                \"Items\": [\n                    \"GET\",\n                    \"HEAD\"\n                ]\n            }\n        }\n    },\n    \"DefaultRootObject\": \"index.html\"\n}\n```\n\n### Explanation of Key Configuration Fields\n\nBefore running the command, you need to update the following placeholders in the JSON file:\n\n*   `\"CallerReference\"`: This must be a unique string for each `create-distribution` request. A timestamp or a UUID is a good choice. It prevents you from accidentally creating the same distribution twice.\n*   `\"DomainName\"`: Replace `your-bucket-name.s3.amazonaws.com` with the actual domain name of your S3 bucket.\n*   `\"Id\"` and `\"TargetOriginId\"`: These values link the cache behavior to the origin. `S3-my-static-website-bucket` is a descriptive ID you create. The `TargetOriginId` in `DefaultCacheBehavior` must match the `Id` in the `Origins` item.\n*   `\"S3OriginConfig\"`: In this basic example, `\"OriginAccessIdentity\": \"\"` assumes your S3 bucket objects are publicly readable. For a more secure setup where the S3 bucket is private, you would create an Origin Access Identity (OAI) and specify its ID here (e.g., `\"origin-access-identity/cloudfront/E1234567890ABC\"`).\n*   `\"ViewerProtocolPolicy\"`: Set to `\"redirect-to-https\"` to enforce HTTPS, which is a best practice.\n*   `\"DefaultRootObject\"`: This is the file CloudFront will request from your origin when a viewer requests the root URL of your distribution (e.g., `https://d111111abcdef8.cloudfront.net/`).\n\nAfter customizing and saving your `distribution-config.json` file, you can run the `aws cloudfront create-distribution` command shown above to create your distribution."
+            ],
+            "expected_contexts": [
+                "aws cloudfront create-distribution --distribution-config <distribution-config>"
+            ],
+            "ground_truth": "aws cloudfront create-distribution --distribution-config <distribution-config>",
+            "answer_similarity": 85.15,
+            "answer_relevancy": 75.75
+        }
+    ],
+    "summary": {
+        "total_queries": 11,
+        "answer_similarity": 83.57,
+        "answer_relevancy": 76.74,
+        "overall_accuracy": 80.16,
+        "failed_indices_after_retries": []
+    }
+}

@@ -1,0 +1,50 @@
+name: llm-server-PROD-GKE CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ["prod"]
+    paths:
+      - llm/llm-server/**
+      - .github/workflows/llm-server-prod.yaml
+      - deploy/kubernetes/llm-server/**
+
+jobs:
+  lint:
+    name: Go Lint
+    runs-on: [self-hosted, X64]
+    outputs:
+      image_tag: ${{ steps.set-tag.outputs.IMAGE_TAG }}
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Set Image Tag
+        id: set-tag
+        run: |
+          IMAGE_TAG="$(date +'%Y%m%d%H%M00')-$(git rev-parse --short HEAD)"
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: llm/llm-server/go.sum
+
+      - name: Cache Go build
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: ${{ runner.os }}-go-build-${{ hashFiles('llm/llm-server/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.9.0
+          working-directory: llm/llm-server
+          only-new-issues: true
+          args: --timeout 20m

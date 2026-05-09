@@ -1,0 +1,56 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "E10: App Service DB_HOST set to empty string. User complaint: Application crashes on startup - 'database host not configured'. DB_HOST env var exists but is empty so connection string is malformed. Uses shared App Service Plan from bootstrap."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "appName": "[concat('e10app', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "dbHost": "[if(equals(parameters('scenarioMode'), 'Fixed'), 'e10-postgres.postgres.database.azure.com', '')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('appName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "app",
+      "tags": {
+        "Name": "e10-orders-service",
+        "Environment": "production",
+        "Team": "orders",
+        "Scenario": "E10",
+        "ScenarioMode": "[parameters('scenarioMode')]"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "siteConfig": {
+          "appSettings": [
+            { "name": "DB_HOST", "value": "[variables('dbHost')]" },
+            { "name": "DB_PORT", "value": "5432" },
+            { "name": "DB_NAME", "value": "orders" },
+            { "name": "DB_USER", "value": "ordersapp@e10-postgres" },
+            { "name": "APP_ENV", "value": "production" }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "AppServiceName": { "type": "string", "value": "[variables('appName')]" },
+    "DbHost": { "type": "string", "value": "[variables('dbHost')]" },
+    "BugNote": { "type": "string", "value": "App Service DB_HOST is empty string - connection string malformed on startup" },
+    "ScenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

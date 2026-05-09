@@ -1,0 +1,55 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "postgres-migration-job"
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  ttlSecondsAfterFinished: 7200
+  backoffLimit: 1
+  template:
+    spec:
+      {{- if .Values.serviceAccountName }}
+      serviceAccountName: {{ .Values.serviceAccountName }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      restartPolicy: Never
+      {{- with (( default .Values.global.imagePullSecrets .Values.imagePullSecrets )) }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+      - name: wait-for-api-server
+        image: registry.nudgebee.com/curl:latest
+        command: ['sh', '-c']
+        args:
+          - |
+            until curl -f $SERVICE_API_SERVER_URL/health; do
+              echo "Waiting for API server to be ready..."
+              sleep 5
+            done
+            echo "API server is ready"
+        envFrom:
+          - secretRef:
+              name: {{ include "nudgebee.secretName" . | quote }}
+      containers:
+      - name: postgres-migration-job
+        image: {{ include "imageName" . }}
+        envFrom:
+          - secretRef:
+              name: {{ include "nudgebee.secretName" . | quote }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

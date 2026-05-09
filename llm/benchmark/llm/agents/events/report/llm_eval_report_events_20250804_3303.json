@@ -1,0 +1,425 @@
+{
+    "details": [
+        {
+            "query": "Show me all events that started in the last hour.",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE starts_at >= NOW() - INTERVAL '1 hour' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE starts_at >= NOW() - INTERVAL '1 hour';"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE starts_at >= NOW() - INTERVAL '1 hour';",
+                    "SELECT * FROM events   WHERE starts_at >= NOW() - INTERVAL '1 hour';"
+                ]
+            ],
+            "answer_similarity": 91.11,
+            "answer_relevancy": 66.86
+        },
+        {
+            "query": "What are the details for event ID 'evt-a1b2c3d4'?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE id = 'evt-a1b2c3d4'"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, description, starts_at, updated_at, ends_at, status, priority, source, aggregation_key, finding_type, subject_type, subject_name, subject_namespace, subject_node, fingerprint, evidences, cloud_account_id   FROM events   WHERE id = 'evt-a1b2c3d4';"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, title, description, starts_at, updated_at, ends_at, status, priority, source, aggregation_key, finding_type, subject_type, subject_name, subject_namespace, subject_node, fingerprint, evidences, cloud_account_id   FROM events   WHERE id = 'evt-a1b2c3d4';",
+                    "SELECT * FROM events   WHERE id = 'evt-a1b2c3d4';"
+                ]
+            ],
+            "answer_similarity": 87.11,
+            "answer_relevancy": 62.34
+        },
+        {
+            "query": "List all HIGH priority issues currently firing.",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE priority = 'HIGH' AND finding_type = 'issue' AND status = 'FIRING' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, subject_name, subject_namespace   FROM events   WHERE priority = 'HIGH'     AND finding_type = 'issue'     AND status = 'FIRING';"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, title, starts_at, subject_name, subject_namespace   FROM events   WHERE priority = 'HIGH'     AND finding_type = 'issue'     AND status = 'FIRING';",
+                    "SELECT * FROM events   WHERE priority = 'HIGH'     AND finding_type = 'issue'     AND status = 'FIRING';"
+                ]
+            ],
+            "answer_similarity": 92.15,
+            "answer_relevancy": 67.65
+        },
+        {
+            "query": "Are there any 'KubePodCrashLooping' events in the 'production' namespace?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE aggregation_key = 'KubePodCrashLooping' AND subject_namespace = 'production' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT COUNT(*)   FROM events   WHERE aggregation_key = 'KubePodCrashLooping'     AND subject_namespace = 'production';"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT COUNT(*)   FROM events   WHERE aggregation_key = 'KubePodCrashLooping'     AND subject_namespace = 'production';",
+                    "SELECT * FROM events   WHERE aggregation_key = 'KubePodCrashLooping'     AND subject_namespace = 'production';"
+                ]
+            ],
+            "answer_similarity": 93.54,
+            "answer_relevancy": 70.94
+        },
+        {
+            "query": "Show me configuration changes related to 'deployments'.",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE finding_type = 'configuration_change' AND subject_type = 'deployment' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, subject_name, subject_namespace   FROM events   WHERE finding_type = 'configuration_change'     AND subject_type = 'deployment';"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, title, starts_at, subject_name, subject_namespace   FROM events   WHERE finding_type = 'configuration_change'     AND subject_type = 'deployment';",
+                    "SELECT * FROM events   WHERE finding_type = 'configuration_change'     AND subject_type = 'deployment';"
+                ]
+            ],
+            "answer_similarity": 93.86,
+            "answer_relevancy": 70.68
+        },
+        {
+            "query": "What events occurred on node 'worker-node-5' yesterday?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE subject_node = 'worker-node-5' AND starts_at BETWEEN '2025-08-03T00:00:00.000Z' AND '2025-08-03T23:59:59.999Z' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, priority, status   FROM events   WHERE subject_node = 'worker-node-5'     AND starts_at >= CURRENT_DATE - INTERVAL '1 day'     AND starts_at < CURRENT_DATE;"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, title, starts_at, priority, status   FROM events   WHERE subject_node = 'worker-node-5'     AND starts_at >= CURRENT_DATE - INTERVAL '1 day'     AND starts_at < CURRENT_DATE;",
+                    "SELECT * FROM events   WHERE subject_node = 'worker-node-5'     AND starts_at >= CURRENT_DATE - INTERVAL '1 day'     AND starts_at < CURRENT_DATE;"
+                ]
+            ],
+            "answer_similarity": 92.76,
+            "answer_relevancy": 70.13
+        },
+        {
+            "query": "List all 'ServiceDown' events.",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE aggregation_key = 'ServiceDown' AND finding_type = 'issue' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE aggregation_key = 'ServiceDown';"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE aggregation_key = 'ServiceDown';",
+                    "SELECT * FROM events   WHERE aggregation_key = 'ServiceDown';"
+                ]
+            ],
+            "answer_similarity": 92.83,
+            "answer_relevancy": 66.22
+        },
+        {
+            "query": "Show me any 'Service Unavailable' incidents.",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE aggregation_key='ServiceDown' AND finding_type='issue' AND priority='HIGH' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE aggregation_key = 'ServiceDown';"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE aggregation_key = 'ServiceDown';",
+                    "SELECT * FROM events   WHERE aggregation_key = 'ServiceDown';"
+                ]
+            ],
+            "answer_similarity": 92.73,
+            "answer_relevancy": 60.81
+        },
+        {
+            "query": "Find events with priority MEDIUM or HIGH.",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE priority IN ('MEDIUM', 'HIGH') ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE priority IN ('MEDIUM', 'HIGH');"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE priority IN ('MEDIUM', 'HIGH');",
+                    "SELECT * FROM events   WHERE priority IN ('MEDIUM', 'HIGH');"
+                ]
+            ],
+            "answer_similarity": 92.77,
+            "answer_relevancy": 74.89
+        },
+        {
+            "query": "What was the duration of the event with fingerprint 'fp-x7y8z9'?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "SELECT id, starts_at, ends_at, status, (ends_at - starts_at) AS duration FROM events   WHERE fingerprint = 'fp-x7y8z9';"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, starts_at, ends_at, status, (ends_at - starts_at) AS duration FROM events   WHERE fingerprint = 'fp-x7y8z9';"
+                ]
+            ],
+            "answer_similarity": 62.38,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Show me the description and evidence for the latest 'pod_oom_killer_enricher' event.",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE aggregation_key='pod_oom_killer_enricher' ORDER BY starts_at DESC LIMIT 1"
+            ],
+            "expected_contexts": [
+                "SELECT description, evidences   FROM events   WHERE aggregation_key = 'pod_oom_killer_enricher'   ORDER BY starts_at DESC   LIMIT 1;"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT description, evidences   FROM events   WHERE aggregation_key = 'pod_oom_killer_enricher'   ORDER BY starts_at DESC   LIMIT 1;",
+                    "SELECT * FROM events   WHERE aggregation_key = 'pod_oom_killer_enricher'   ORDER BY starts_at DESC   LIMIT 1;"
+                ]
+            ],
+            "answer_similarity": 95.37,
+            "answer_relevancy": 71.38
+        },
+        {
+            "query": "List all events that are currently closed.",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE status = 'CLOSED' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, ends_at, priority, subject_name   FROM events   WHERE status = 'CLOSED';"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, title, starts_at, ends_at, priority, subject_name   FROM events   WHERE status = 'CLOSED';",
+                    "SELECT * FROM events   WHERE status = 'CLOSED';"
+                ]
+            ],
+            "answer_similarity": 91.03,
+            "answer_relevancy": 59.01
+        },
+        {
+            "query": "Are there any 'out of memory' events related to the 'data-processor' job?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE aggregation_key='pod_oom_killer_enricher' AND subject_name ILIKE 'data-processor%' AND finding_type='issue' AND priority='HIGH' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority   FROM events   WHERE aggregation_key = 'pod_oom_killer_enricher' AND subject_type = 'job'     AND subject_name = 'data-processor';"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, title, starts_at, status, priority   FROM events   WHERE aggregation_key = 'pod_oom_killer_enricher' AND subject_type = 'job'     AND subject_name = 'data-processor';",
+                    "SELECT * FROM events   WHERE aggregation_key = 'pod_oom_killer_enricher' AND subject_type = 'job'     AND subject_name = 'data-processor';"
+                ]
+            ],
+            "answer_similarity": 92.75,
+            "answer_relevancy": 55.82
+        },
+        {
+            "query": "Show me all Kubernetes Warning Events.",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE aggregation_key = 'KubernetesWarningEvent' ORDER BY starts_at DESC"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, description, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE aggregation_key IN ('KubernetesWarningEvent', 'Kubernetes Warning Event');"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, title, description, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE aggregation_key IN ('KubernetesWarningEvent', 'Kubernetes Warning Event');",
+                    "SELECT * FROM events   WHERE aggregation_key IN ('KubernetesWarningEvent', 'Kubernetes Warning Event');"
+                ]
+            ],
+            "answer_similarity": 94.34,
+            "answer_relevancy": 69.24
+        },
+        {
+            "query": "Find any 'Target Unreachable' alerts.",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "SELECT id, title, description, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE aggregation_key = 'TargetDown';"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, title, description, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE aggregation_key = 'TargetDown';",
+                    "SELECT * FROM events   WHERE aggregation_key = 'TargetDown';"
+                ]
+            ],
+            "answer_similarity": 65.0,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "List events triggered by 'Prometheus' source.",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE source = 'Prometheus' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, aggregation_key   FROM events   WHERE source LIKE '%Prometheus%';"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, title, starts_at, status, priority, aggregation_key   FROM events   WHERE source LIKE '%Prometheus%';",
+                    "SELECT * FROM events   WHERE source LIKE '%Prometheus%';"
+                ]
+            ],
+            "answer_similarity": 89.62,
+            "answer_relevancy": 69.61
+        },
+        {
+            "query": "What are the distinct subject types present in the events?",
+            "retrieved_contexts": [
+                "SELECT DISTINCT subject_type FROM events"
+            ],
+            "expected_contexts": [
+                "SELECT DISTINCT subject_type   FROM events;"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT DISTINCT subject_type   FROM events;"
+                ]
+            ],
+            "answer_similarity": 99.73,
+            "answer_relevancy": 59.96
+        },
+        {
+            "query": "Show events updated in the last 24 hours.",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE updated_at >= '2025-08-03T00:00:00.000Z' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, updated_at, status, priority   FROM events   WHERE updated_at >= NOW() - INTERVAL '24 hours';"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, title, updated_at, status, priority   FROM events   WHERE updated_at >= NOW() - INTERVAL '24 hours';",
+                    "SELECT * FROM events   WHERE updated_at >= NOW() - INTERVAL '24 hours';"
+                ]
+            ],
+            "answer_similarity": 90.06,
+            "answer_relevancy": 60.86
+        },
+        {
+            "query": "List all firing events that haven't ended yet.",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE status = 'FIRING' AND ends_at IS NULL ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, priority, subject_name   FROM events   WHERE status = 'FIRING' AND ends_at IS NULL;"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, title, starts_at, priority, subject_name   FROM events   WHERE status = 'FIRING' AND ends_at IS NULL;",
+                    "SELECT * FROM events   WHERE status = 'FIRING' AND ends_at IS NULL;"
+                ]
+            ],
+            "answer_similarity": 90.93,
+            "answer_relevancy": 63.37
+        },
+        {
+            "query": "Find issues with 'database' in the title.",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE finding_type = 'issue' AND title ILIKE '%database%' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority   FROM events   WHERE finding_type = 'issue' AND title LIKE '%database%';"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, title, starts_at, status, priority   FROM events   WHERE finding_type = 'issue' AND title LIKE '%database%';",
+                    "SELECT * FROM events   WHERE finding_type = 'issue' AND title LIKE '%database%';"
+                ]
+            ],
+            "answer_similarity": 94.4,
+            "answer_relevancy": 79.47
+        },
+        {
+            "query": "Count the number of events for each priority level.",
+            "retrieved_contexts": [
+                "SELECT priority, count(*) AS event_count FROM events GROUP BY priority"
+            ],
+            "expected_contexts": [
+                "SELECT priority, COUNT(*) AS event_count   FROM events   GROUP BY priority   ORDER BY event_count DESC;"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT priority, COUNT(*) AS event_count   FROM events   GROUP BY priority   ORDER BY event_count DESC;"
+                ]
+            ],
+            "answer_similarity": 96.74,
+            "answer_relevancy": 75.56
+        },
+        {
+            "query": "Show the top 5 most frequent aggregation keys for firing events.",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "SELECT aggregation_key, COUNT(*) AS frequency   FROM events   WHERE status = 'FIRING'   GROUP BY aggregation_key   ORDER BY frequency DESC   LIMIT 5;"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT aggregation_key, COUNT(*) AS frequency   FROM events   WHERE status = 'FIRING'   GROUP BY aggregation_key   ORDER BY frequency DESC   LIMIT 5;"
+                ]
+            ],
+            "answer_similarity": 54.86,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "List all 'crash loop' events.",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE aggregation_key='report_crash_loop' AND finding_type='issue' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE aggregation_key = 'report_crash_loop';"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE aggregation_key = 'report_crash_loop';",
+                    "SELECT * FROM events   WHERE aggregation_key = 'report_crash_loop';"
+                ]
+            ],
+            "answer_similarity": 93.66,
+            "answer_relevancy": 65.78
+        },
+        {
+            "query": "Find HIGH priority 'KubeNodeNotReady' events.",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE priority = 'HIGH' AND aggregation_key = 'KubeNodeNotReady' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, subject_node   FROM events   WHERE priority = 'HIGH' AND aggregation_key = 'KubeNodeNotReady';"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, title, starts_at, status, subject_node   FROM events   WHERE priority = 'HIGH' AND aggregation_key = 'KubeNodeNotReady';",
+                    "SELECT * FROM events   WHERE priority = 'HIGH' AND aggregation_key = 'KubeNodeNotReady';"
+                ]
+            ],
+            "answer_similarity": 95.11,
+            "answer_relevancy": 75.27
+        },
+        {
+            "query": "Show events related to 'statefulset' subjects.",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE subject_type = 'statefulset' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE subject_type = 'statefulset';"
+            ],
+            "ground_truth": [
+                [
+                    "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE subject_type = 'statefulset';",
+                    "SELECT * FROM events   WHERE subject_type = 'statefulset';"
+                ]
+            ],
+            "answer_similarity": 92.63,
+            "answer_relevancy": 69.14
+        }
+    ],
+    "summary": {
+        "total_queries": 25,
+        "answer_similarity": 89.1,
+        "answer_relevancy": 59.4,
+        "overall_accuracy": 74.25
+    }
+}

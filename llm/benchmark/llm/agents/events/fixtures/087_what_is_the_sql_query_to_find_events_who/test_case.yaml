@@ -1,0 +1,9 @@
+user_prompt: What is the SQL query to find events whose aggregation key matches a
+  pattern like %Kube%Warning%?
+expected_output:
+- SELECT id, title, starts_at, status, priority, subject_node FROM events WHERE aggregation_key
+  LIKE '%Kube%Warning%';
+- SELECT * FROM events WHERE aggregation_key LIKE '%Kube%Warning%';
+tags:
+- command
+- events

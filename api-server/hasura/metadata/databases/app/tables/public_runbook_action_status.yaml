@@ -1,0 +1,3 @@
+table:
+  name: runbook_action_status
+  schema: public

@@ -1,0 +1,40 @@
+table:
+  name: slack_installations
+  schema: public
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - app_id
+        - bot_id
+        - bot_user_id
+        - client_id
+        - enterprise_id
+        - id
+        - installed_at
+        - team_id
+        - team_name
+        - tenant_id
+        - user_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - app_id
+        - bot_id
+        - bot_user_id
+        - client_id
+        - enterprise_id
+        - id
+        - installed_at
+        - team_id
+        - team_name
+        - tenant_id
+        - user_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""

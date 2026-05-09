@@ -1,0 +1,28 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- UPDATE
+--     auto_playbook_executions
+-- SET
+--     attribute = jsonb_set(
+--         attribute :: jsonb,
+--         '{runbook_account_type}',
+--         '"K8s"'
+--     );
+--
+-- UPDATE
+--     auto_playbook_task
+-- SET
+--     attributes = jsonb_set(
+--         attributes :: jsonb,
+--         '{runbook_account_type}',
+--         '"K8s"'
+--     );
+--
+-- UPDATE
+--     auto_playbook
+-- SET
+--     attributes = jsonb_set(
+--         attributes :: jsonb,
+--         '{runbook_account_type}',
+--         '"K8s"'
+--     );

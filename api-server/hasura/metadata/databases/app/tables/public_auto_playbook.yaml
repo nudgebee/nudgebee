@@ -1,0 +1,44 @@
+table:
+  name: auto_playbook
+  schema: public
+object_relationships:
+- name: auto_playbook_status
+  using:
+    foreign_key_constraint_on: status
+- name: cloud_account
+  using:
+    foreign_key_constraint_on: account_id
+- name: tenant
+  using:
+    foreign_key_constraint_on: tenant_id
+- name: updated_by_user
+  using:
+    foreign_key_constraint_on: updated_by
+- name: user
+  using:
+    foreign_key_constraint_on: created_by
+array_relationships:
+- name: auto_playbook_executions
+  using:
+    foreign_key_constraint_on:
+      column: auto_playbook_id
+      table:
+        name: auto_playbook_executions
+        schema: public
+- name: auto_playbook_tasks
+  using:
+    foreign_key_constraint_on:
+      column: auto_playbook_id
+      table:
+        name: auto_playbook_task
+        schema: public
+update_permissions:
+- role: tenant_admin
+  permission:
+    columns:
+    - status
+    filter:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+    check: null
+  comment: ''

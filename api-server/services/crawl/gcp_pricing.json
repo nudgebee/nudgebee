@@ -1,0 +1,872 @@
+[
+    {"type": "c4a-standard-1", "core": 1, "memory": "4", "cost": 0.03118},
+    {"type": "c4a-standard-2", "core": 2, "memory": "8", "cost": 0.06236},
+    {"type": "c4a-standard-4", "core": 4, "memory": "16", "cost": 0.12472},
+    {"type": "c4a-standard-8", "core": 8, "memory": "32", "cost": 0.24944},
+    {"type": "c4a-standard-16", "core": 16, "memory": "64", "cost": 0.49888},
+    {"type": "c4a-standard-32", "core": 32, "memory": "128", "cost": 0.99776},
+    {"type": "c4a-standard-48", "core": 48, "memory": "192", "cost": 1.49664},
+    {"type": "c4a-standard-72", "core": 72, "memory": "288", "cost": 2.24496},
+    {"type": "c4a-highmem-1", "core": 1, "memory": "8", "cost": 0.03868},
+    {"type": "c4a-highmem-2", "core": 2, "memory": "16", "cost": 0.07737},
+    {"type": "c4a-highmem-4", "core": 4, "memory": "32", "cost": 0.15474},
+    {"type": "c4a-highmem-8", "core": 8, "memory": "64", "cost": 0.30948},
+    {"type": "c4a-highmem-16", "core": 16, "memory": "128", "cost": 0.61896},
+    {"type": "c4a-highmem-32", "core": 32, "memory": "256", "cost": 1.23792},
+    {"type": "c4a-highmem-48", "core": 48, "memory": "384", "cost": 1.85688},
+    {"type": "c4a-highmem-72", "core": 72, "memory": "576", "cost": 2.78532},
+    {"type": "c4a-highcpu-1", "core": 1, "memory": "2", "cost": 0.02368},
+    {"type": "c4a-highcpu-2", "core": 2, "memory": "4", "cost": 0.04736},
+    {"type": "c4a-highcpu-4", "core": 4, "memory": "8", "cost": 0.09472},
+    {"type": "c4a-highcpu-8", "core": 8, "memory": "16", "cost": 0.18944},
+    {"type": "c4a-highcpu-16", "core": 16, "memory": "32", "cost": 0.37888},
+    {"type": "c4a-highcpu-32", "core": 32, "memory": "64", "cost": 0.75776},
+    {"type": "c4a-highcpu-48", "core": 48, "memory": "96", "cost": 1.13664},
+    {"type": "c4a-highcpu-72", "core": 72, "memory": "144", "cost": 1.70496},
+    {
+        "type": "c4-standard-2",
+        "core": 2,
+        "memory": "7",
+        "cost": 0.10074064
+    },
+    {
+        "type": "c4-standard-4",
+        "core": 4,
+        "memory": "15",
+        "cost": 0.2055768
+    },
+    {
+        "type": "c4-standard-8",
+        "core": 8,
+        "memory": "30",
+        "cost": 0.4111536
+    },
+    {
+        "type": "c4-standard-16",
+        "core": 16,
+        "memory": "60",
+        "cost": 0.8223072
+    },
+    {
+        "type": "c4-standard-32",
+        "core": 32,
+        "memory": "120",
+        "cost": 1.6446144
+    },
+    {
+        "type": "c4-standard-48",
+        "core": 48,
+        "memory": "180",
+        "cost": 2.4669216
+    },
+    {
+        "type": "c4-standard-96",
+        "core": 96,
+        "memory": "360",
+        "cost": 4.9338432
+    },
+    {
+        "type": "c4-standard-192",
+        "core": 192,
+        "memory": "720",
+        "cost": 9.8676864
+    },
+    {
+        "type": "c4-highmem-2",
+        "core": 2,
+        "memory": "15",
+        "cost": 0.1335048
+    },
+    {
+        "type": "c4-highmem-4",
+        "core": 4,
+        "memory": "31",
+        "cost": 0.27110512
+    },
+    {
+        "type": "c4-highmem-8",
+        "core": 8,
+        "memory": "62",
+        "cost": 0.54221024
+    },
+    {
+        "type": "c4-highmem-16",
+        "core": 16,
+        "memory": "124",
+        "cost": 1.08442048
+    },
+    {
+        "type": "c4-highmem-32",
+        "core": 32,
+        "memory": "248",
+        "cost": 2.16884096
+    },
+    {
+        "type": "c4-highmem-48",
+        "core": 48,
+        "memory": "372",
+        "cost": 3.25326144
+    },
+    {
+        "type": "c4-highmem-96",
+        "core": 96,
+        "memory": "744",
+        "cost": 6.50652288
+    },
+    {
+        "type": "c4-highmem-192",
+        "core": 192,
+        "memory": "1488",
+        "cost": 13.01304576
+    },
+    {
+        "type": "c4-highcpu-2",
+        "core": 2,
+        "memory": "4",
+        "cost": 0.08845408
+    },
+    {
+        "type": "c4-highcpu-4",
+        "core": 4,
+        "memory": "8",
+        "cost": 0.17690816
+    },
+    {
+        "type": "c4-highcpu-8",
+        "core": 8,
+        "memory": "16",
+        "cost": 0.35381632
+    },
+    {
+        "type": "c4-highcpu-16",
+        "core": 16,
+        "memory": "32",
+        "cost": 0.70763264
+    },
+    {
+        "type": "c4-highcpu-32",
+        "core": 32,
+        "memory": "64",
+        "cost": 1.41526528
+    },
+    {
+        "type": "c4-highcpu-48",
+        "core": 48,
+        "memory": "96",
+        "cost": 2.12289792
+    },
+    {
+        "type": "c4-highcpu-96",
+        "core": 96,
+        "memory": "192",
+        "cost": 4.24579584
+    },
+    {
+        "type": "c4-highcpu-192",
+        "core": 192,
+        "memory": "384",
+        "cost": 8.49159168
+    },
+    {
+        "type": "n4-standard-2",
+        "core": 2,
+        "memory": "8",
+        "cost": 0.09856288
+    },
+    {
+        "type": "n4-standard-4",
+        "core": 4,
+        "memory": "16",
+        "cost": 0.19712576
+    },
+    {
+        "type": "n4-standard-8",
+        "core": 8,
+        "memory": "32",
+        "cost": 0.39425152
+    },
+    {
+        "type": "n4-standard-16",
+        "core": 16,
+        "memory": "64",
+        "cost": 0.78850304
+    },
+    {
+        "type": "n4-standard-32",
+        "core": 32,
+        "memory": "128",
+        "cost": 1.57700608
+    },
+    {
+        "type": "n4-standard-48",
+        "core": 48,
+        "memory": "192",
+        "cost": 2.36550912
+    },
+    {
+        "type": "n4-standard-64",
+        "core": 64,
+        "memory": "256",
+        "cost": 3.15401216
+    },
+    {
+        "type": "n4-standard-80",
+        "core": 80,
+        "memory": "320",
+        "cost": 3.9425152
+    },
+    {
+        "type": "n4-highmem-2",
+        "core": 2,
+        "memory": "16",
+        "cost": 0.12936352
+    },
+    {
+        "type": "n4-highmem-4",
+        "core": 4,
+        "memory": "32",
+        "cost": 0.25872704
+    },
+    {
+        "type": "n4-highmem-8",
+        "core": 8,
+        "memory": "64",
+        "cost": 0.51745408
+    },
+    {
+        "type": "n4-highmem-16",
+        "core": 16,
+        "memory": "128",
+        "cost": 1.03490816
+    },
+    {
+        "type": "n4-highmem-32",
+        "core": 32,
+        "memory": "256",
+        "cost": 2.06981632
+    },
+    {
+        "type": "n4-highmem-48",
+        "core": 48,
+        "memory": "384",
+        "cost": 3.10472448
+    },
+    {
+        "type": "n4-highmem-64",
+        "core": 64,
+        "memory": "512",
+        "cost": 4.13963264
+    },
+    {
+        "type": "n4-highmem-80",
+        "core": 80,
+        "memory": "640",
+        "cost": 5.1745408
+    },
+    {
+        "type": "n4-highcpu-2",
+        "core": 2,
+        "memory": "4",
+        "cost": 0.08316256
+    },
+    {
+        "type": "n4-highcpu-4",
+        "core": 4,
+        "memory": "8",
+        "cost": 0.16632512
+    },
+    {
+        "type": "n4-highcpu-8",
+        "core": 8,
+        "memory": "16",
+        "cost": 0.33265024
+    },
+    {
+        "type": "n4-highcpu-16",
+        "core": 16,
+        "memory": "32",
+        "cost": 0.66530048
+    },
+    {
+        "type": "n4-highcpu-32",
+        "core": 32,
+        "memory": "64",
+        "cost": 1.33060096
+    },
+    {
+        "type": "n4-highcpu-48",
+        "core": 48,
+        "memory": "96",
+        "cost": 1.99590144
+    },
+    {
+        "type": "n4-highcpu-64",
+        "core": 64,
+        "memory": "128",
+        "cost": 2.66120192
+    },
+    {
+        "type": "n4-highcpu-80",
+        "core": 80,
+        "memory": "160",
+        "cost": 3.3265024
+    },
+    {
+        "type": "c3d-standard-4",
+        "core": 4,
+        "memory": "16",
+        "cost": 0.18885984
+    },
+    {
+        "type": "c3d-standard-8",
+        "core": 8,
+        "memory": "32",
+        "cost": 0.37771968
+    },
+    {
+        "type": "c3d-standard-16",
+        "core": 16,
+        "memory": "64",
+        "cost": 0.75543936
+    },
+    {
+        "type": "c3d-standard-30",
+        "core": 30,
+        "memory": "120",
+        "cost": 1.4164488
+    },
+    {
+        "type": "c3d-standard-60",
+        "core": 60,
+        "memory": "240",
+        "cost": 2.8328976
+    },
+    {
+        "type": "c3d-standard-90",
+        "core": 90,
+        "memory": "360",
+        "cost": 4.2493464
+    },
+    {
+        "type": "c3d-standard-180",
+        "core": 180,
+        "memory": "720",
+        "cost": 8.4986928
+    },
+    {
+        "type": "c3d-standard-360",
+        "core": 360,
+        "memory": "1440",
+        "cost": 16.9973856
+    },
+    {
+        "type": "c3d-highmem-4",
+        "core": 4,
+        "memory": "32",
+        "cost": 0.2547376
+    },
+    {
+        "type": "c3d-highmem-8",
+        "core": 8,
+        "memory": "64",
+        "cost": 0.5094752
+    },
+    {
+        "type": "c3d-highmem-16",
+        "core": 16,
+        "memory": "128",
+        "cost": 1.0189504
+    },
+    {
+        "type": "c3d-highmem-30",
+        "core": 30,
+        "memory": "240",
+        "cost": 1.910532
+    },
+    {
+        "type": "c3d-highmem-60",
+        "core": 60,
+        "memory": "480",
+        "cost": 3.821064
+    },
+    {
+        "type": "c3d-highmem-90",
+        "core": 90,
+        "memory": "720",
+        "cost": 5.731596
+    },
+    {
+        "type": "c3d-highmem-180",
+        "core": 180,
+        "memory": "1440",
+        "cost": 11.463192
+    },
+    {
+        "type": "c3d-highmem-360",
+        "core": 360,
+        "memory": "2880",
+        "cost": 22.926384
+    },
+    {
+        "type": "c3d-highcpu-4",
+        "core": 4,
+        "memory": "8",
+        "cost": 0.15592096
+    },
+    {
+        "type": "c3d-highcpu-8",
+        "core": 8,
+        "memory": "16",
+        "cost": 0.31184192
+    },
+    {
+        "type": "c3d-highcpu-16",
+        "core": 16,
+        "memory": "32",
+        "cost": 0.62368384
+    },
+    {
+        "type": "c3d-highcpu-30",
+        "core": 30,
+        "memory": "60",
+        "cost": 1.1694072
+    },
+    {
+        "type": "c3d-highcpu-60",
+        "core": 60,
+        "memory": "120",
+        "cost": 2.3388144
+    },
+    {
+        "type": "c3d-highcpu-90",
+        "core": 90,
+        "memory": "180",
+        "cost": 3.5082216
+    },
+    {
+        "type": "c3d-highcpu-180",
+        "core": 180,
+        "memory": "360",
+        "cost": 7.0164432
+    },
+    {
+        "type": "c3d-highcpu-360",
+        "core": 360,
+        "memory": "720",
+        "cost": 14.0328864
+    },
+    {
+        "type": "e2-standard-2",
+        "core": 2,
+        "memory": "8",
+        "cost": 0.080486
+    },
+    {
+        "type": "e2-standard-4",
+        "core": 4,
+        "memory": "16",
+        "cost": 0.160972
+    },
+    {
+        "type": "e2-standard-8",
+        "core": 8,
+        "memory": "32",
+        "cost": 0.321944
+    },
+    {
+        "type": "e2-standard-16",
+        "core": 16,
+        "memory": "64",
+        "cost": 0.643888
+    },
+    {
+        "type": "e2-standard-32",
+        "core": 32,
+        "memory": "128",
+        "cost": 1.287776
+    },
+    {
+        "type": "e2-highmem-2",
+        "core": 2,
+        "memory": "16",
+        "cost": 0.108574
+    },
+    {
+        "type": "e2-highmem-4",
+        "core": 4,
+        "memory": "32",
+        "cost": 0.217148
+    },
+    {
+        "type": "e2-highmem-8",
+        "core": 8,
+        "memory": "64",
+        "cost": 0.434296
+    },
+    {
+        "type": "e2-highmem-16",
+        "core": 16,
+        "memory": "128",
+        "cost": 0.868592
+    },
+    {
+        "type": "e2-highcpu-2",
+        "core": 2,
+        "memory": "2",
+        "cost": 0.05942
+    },
+    {
+        "type": "e2-highcpu-4",
+        "core": 4,
+        "memory": "4",
+        "cost": 0.11884
+    },
+    {
+        "type": "e2-highcpu-8",
+        "core": 8,
+        "memory": "8",
+        "cost": 0.23768
+    },
+    {
+        "type": "e2-highcpu-16",
+        "core": 16,
+        "memory": "16",
+        "cost": 0.47536
+    },
+    {
+        "type": "e2-highcpu-32",
+        "core": 32,
+        "memory": "32",
+        "cost": 0.95072
+    },
+    {
+        "type": "n2-standard-2",
+        "core": 2,
+        "memory": "8",
+        "cost": 0.116644
+    },
+    {
+        "type": "n2-standard-4",
+        "core": 4,
+        "memory": "16",
+        "cost": 0.233288
+    },
+    {
+        "type": "n2-standard-8",
+        "core": 8,
+        "memory": "32",
+        "cost": 0.466576
+    },
+    {
+        "type": "n2-standard-16",
+        "core": 16,
+        "memory": "64",
+        "cost": 0.933152
+    },
+    {
+        "type": "n2-standard-32",
+        "core": 32,
+        "memory": "128",
+        "cost": 1.866304
+    },
+    {
+        "type": "n2-standard-48",
+        "core": 48,
+        "memory": "192",
+        "cost": 2.799456
+    },
+    {
+        "type": "n2-standard-64",
+        "core": 64,
+        "memory": "256",
+        "cost": 3.732608
+    },
+    {
+        "type": "n2-standard-80",
+        "core": 80,
+        "memory": "320",
+        "cost": 4.66576
+    },
+    {
+        "type": "n2-highmem-2",
+        "core": 2,
+        "memory": "16",
+        "cost": 0.157348
+    },
+    {
+        "type": "n2-highmem-4",
+        "core": 4,
+        "memory": "32",
+        "cost": 0.314696
+    },
+    {
+        "type": "n2-highmem-8",
+        "core": 8,
+        "memory": "64",
+        "cost": 0.629392
+    },
+    {
+        "type": "n2-highmem-16",
+        "core": 16,
+        "memory": "128",
+        "cost": 1.258784
+    },
+    {
+        "type": "n2-highmem-32",
+        "core": 32,
+        "memory": "256",
+        "cost": 2.517568
+    },
+    {
+        "type": "n2-highmem-48",
+        "core": 48,
+        "memory": "384",
+        "cost": 3.776352
+    },
+    {
+        "type": "n2-highmem-64",
+        "core": 64,
+        "memory": "512",
+        "cost": 5.035136
+    },
+    {
+        "type": "n2-highmem-80",
+        "core": 80,
+        "memory": "640",
+        "cost": 6.29392
+    },
+    {
+        "type": "n2-highcpu-2",
+        "core": 2,
+        "memory": "2",
+        "cost": 0.086116
+    },
+    {
+        "type": "n2-highcpu-4",
+        "core": 4,
+        "memory": "4",
+        "cost": 0.172232
+    },
+    {
+        "type": "n2-highcpu-8",
+        "core": 8,
+        "memory": "8",
+        "cost": 0.344464
+    },
+    {
+        "type": "n2-highcpu-16",
+        "core": 16,
+        "memory": "16",
+        "cost": 0.688928
+    },
+    {
+        "type": "n2-highcpu-32",
+        "core": 32,
+        "memory": "32",
+        "cost": 1.377856
+    },
+    {
+        "type": "n2-highcpu-48",
+        "core": 48,
+        "memory": "48",
+        "cost": 2.066784
+    },
+    {
+        "type": "n2-highcpu-64",
+        "core": 64,
+        "memory": "64",
+        "cost": 2.755712
+    },
+    {
+        "type": "n2-highcpu-80",
+        "core": 80,
+        "memory": "80",
+        "cost": 3.44464
+    },
+    {
+        "type": "n2d-standard-2",
+        "core": 2,
+        "memory": "8",
+        "cost": 0.055764
+    },
+    {
+        "type": "n2d-standard-4",
+        "core": 4,
+        "memory": "16",
+        "cost": 0.111528
+    },
+    {
+        "type": "n2d-standard-8",
+        "core": 8,
+        "memory": "32",
+        "cost": 0.223056
+    },
+    {
+        "type": "n2d-standard-16",
+        "core": 16,
+        "memory": "64",
+        "cost": 0.446112
+    },
+    {
+        "type": "n2d-standard-32",
+        "core": 32,
+        "memory": "128",
+        "cost": 0.892224
+    },
+    {
+        "type": "n2d-standard-48",
+        "core": 48,
+        "memory": "192",
+        "cost": 1.338336
+    },
+    {
+        "type": "n2d-standard-64",
+        "core": 64,
+        "memory": "256",
+        "cost": 1.784448
+    },
+    {
+        "type": "n2d-standard-80",
+        "core": 80,
+        "memory": "320",
+        "cost": 2.23056
+    },
+    {
+        "type": "n2d-standard-96",
+        "core": 96,
+        "memory": "384",
+        "cost": 2.676672
+    },
+    {
+        "type": "n2d-standard-128",
+        "core": 128,
+        "memory": "512",
+        "cost": 3.568896
+    },
+    {
+        "type": "n2d-standard-224",
+        "core": 224,
+        "memory": "896",
+        "cost": 6.245568
+    },
+    {
+        "type": "n2d-highmem-2",
+        "core": 2,
+        "memory": "16",
+        "cost": 0.075228
+    },
+    {
+        "type": "n2d-highmem-4",
+        "core": 4,
+        "memory": "32",
+        "cost": 0.150456
+    },
+    {
+        "type": "n2d-highmem-8",
+        "core": 8,
+        "memory": "64",
+        "cost": 0.300912
+    },
+    {
+        "type": "n2d-highmem-16",
+        "core": 16,
+        "memory": "128",
+        "cost": 0.601824
+    },
+    {
+        "type": "n2d-highmem-32",
+        "core": 32,
+        "memory": "256",
+        "cost": 1.203648
+    },
+    {
+        "type": "n2d-highmem-48",
+        "core": 48,
+        "memory": "384",
+        "cost": 1.805472
+    },
+    {
+        "type": "n2d-highmem-64",
+        "core": 64,
+        "memory": "512",
+        "cost": 2.407296
+    },
+    {
+        "type": "n2d-highmem-80",
+        "core": 80,
+        "memory": "640",
+        "cost": 3.00912
+    },
+    {
+        "type": "n2d-highmem-96",
+        "core": 96,
+        "memory": "768",
+        "cost": 3.610944
+    },
+    {
+        "type": "n2d-highcpu-2",
+        "core": 2,
+        "memory": "2",
+        "cost": 0.041166
+    },
+    {
+        "type": "n2d-highcpu-4",
+        "core": 4,
+        "memory": "4",
+        "cost": 0.082332
+    },
+    {
+        "type": "n2d-highcpu-8",
+        "core": 8,
+        "memory": "8",
+        "cost": 0.164664
+    },
+    {
+        "type": "n2d-highcpu-16",
+        "core": 16,
+        "memory": "16",
+        "cost": 0.329328
+    },
+    {
+        "type": "n2d-highcpu-32",
+        "core": 32,
+        "memory": "32",
+        "cost": 0.658656
+    },
+    {
+        "type": "n2d-highcpu-48",
+        "core": 48,
+        "memory": "48",
+        "cost": 0.987984
+    },
+    {
+        "type": "n2d-highcpu-64",
+        "core": 64,
+        "memory": "64",
+        "cost": 1.317312
+    },
+    {
+        "type": "n2d-highcpu-80",
+        "core": 80,
+        "memory": "80",
+        "cost": 1.64664
+    },
+    {
+        "type": "n2d-highcpu-96",
+        "core": 96,
+        "memory": "96",
+        "cost": 1.975968
+    },
+    {
+        "type": "n2d-highcpu-128",
+        "core": 128,
+        "memory": "128",
+        "cost": 2.634624
+    },
+    {
+        "type": "n2d-highcpu-224",
+        "core": 224,
+        "memory": "224",
+        "cost": 4.610592
+    }
+]

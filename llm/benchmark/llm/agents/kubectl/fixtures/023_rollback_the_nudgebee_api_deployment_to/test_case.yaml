@@ -1,0 +1,6 @@
+user_prompt: Rollback the nudgebee-api deployment to the previous revision.
+expected_output:
+- kubectl rollout undo deployment/<deployment-name>
+tags:
+- command
+- kubernetes

@@ -1,0 +1,28 @@
+{
+    "details": [
+        {
+            "query": "The on-call team in resource group 'azure-agent-test-E09' never receives alerts for the commerce API even during production incidents with high error rates. The alert rule 'e09-http-error-alert' exists. Why does it never fire?",
+            "query_type": "rca",
+            "retrieved_command": "Conversation terminated by user",
+            "retrieved_response": "Conversation terminated by user",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-E09. A metric alert 'e09-http-error-alert' targets the App Service and monitors Http5xx errors. The alert is enabled. During recent incidents with hundreds of 5xx errors, no notifications were triggered.",
+                "az monitor metrics alert show --name e09-http-error-alert --resource-group azure-agent-test-E09"
+            ],
+            "ground_truth": "The metric alert 'e09-http-error-alert' has its Http5xx threshold set to 9999, meaning it only fires if the app generates more than 9999 server errors in a 5-minute window - an unrealistically high value that is never reached. Fix: Lower the threshold to a reasonable value like 10.",
+            "answer_similarity": 69.44,
+            "answer_relevancy": 59.07,
+            "rca_quality_score": 1.0,
+            "rca_quality_normalized": 20.0
+        }
+    ],
+    "summary": {
+        "total_queries": 1,
+        "answer_similarity": 69.44,
+        "answer_relevancy": 59.07,
+        "overall_accuracy": 64.25,
+        "rca_scenarios_count": 1,
+        "avg_rca_quality_score": 20.0,
+        "failed_indices_after_retries": []
+    }
+}

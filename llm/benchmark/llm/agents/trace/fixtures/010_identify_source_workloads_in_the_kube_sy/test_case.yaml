@@ -1,0 +1,9 @@
+user_prompt: Identify source workloads in the 'kube-system' namespace sending requests
+  to destinations outside 'kube-system'.
+expected_output:
+- SELECT DISTINCT workload_name, destination_workload_namespace, destination_workload_name
+  FROM traces_view WHERE workload_namespace = 'kube-system' AND destination_workload_namespace
+  != 'kube-system';
+tags:
+- command
+- trace

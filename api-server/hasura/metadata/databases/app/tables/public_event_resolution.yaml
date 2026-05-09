@@ -1,0 +1,182 @@
+table:
+  name: event_resolution
+  schema: public
+object_relationships:
+  - name: event
+    using:
+      manual_configuration:
+        column_mapping:
+          event_id: id
+        insertion_order: null
+        remote_table:
+          name: events
+          schema: public
+computed_fields:
+  - name: resolver_user
+    definition:
+      function:
+        name: get_event_resolution_resolver_user
+        schema: public
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - data
+        - resolver_id
+        - resolver_type
+        - status
+        - status_message
+        - type
+        - type_reference_id
+        - created_at
+        - updated_at
+        - id
+        - event_id
+        - pr_iteration_count
+        - pr_lifecycle_state
+        - last_pr_check_at
+      filter:
+        _and:
+          - event:
+              tenant:
+                _eq: X-Hasura-User-Tenant-Id
+          - event:
+              cloud_account_id:
+                _in: X-Hasura-User-Account-Ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - data
+        - resolver_id
+        - resolver_type
+        - status
+        - status_message
+        - type
+        - type_reference_id
+        - created_at
+        - updated_at
+        - id
+        - event_id
+        - pr_iteration_count
+        - pr_lifecycle_state
+        - last_pr_check_at
+      filter:
+        _and:
+          - event:
+              tenant:
+                _eq: X-Hasura-User-Tenant-Id
+          - event:
+              cloud_account_id:
+                _in: X-Hasura-User-Readonly-Account-Ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - data
+        - resolver_id
+        - resolver_type
+        - status
+        - status_message
+        - type
+        - type_reference_id
+        - created_at
+        - updated_at
+        - id
+        - event_id
+        - pr_iteration_count
+        - pr_lifecycle_state
+        - last_pr_check_at
+      filter:
+        _and:
+          - event:
+              tenant:
+                _eq: X-Hasura-User-Tenant-Id
+          - event:
+              cloud_account_id:
+                _in: x-hasura-user-namespaced-account-ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - data
+        - resolver_id
+        - resolver_type
+        - status
+        - status_message
+        - type
+        - type_reference_id
+        - created_at
+        - updated_at
+        - id
+        - event_id
+        - pr_iteration_count
+        - pr_lifecycle_state
+        - last_pr_check_at
+      filter:
+        _and:
+          - event:
+              tenant:
+                _eq: X-Hasura-User-Tenant-Id
+          - event:
+              cloud_account_id:
+                _in: x-hasura-user-namespaced-readonly-account-ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - data
+        - resolver_id
+        - resolver_type
+        - status
+        - status_message
+        - type
+        - type_reference_id
+        - created_at
+        - updated_at
+        - id
+        - event_id
+        - pr_iteration_count
+        - pr_lifecycle_state
+        - last_pr_check_at
+      filter:
+        _and:
+          - event:
+              tenant:
+                _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - data
+        - resolver_id
+        - resolver_type
+        - status
+        - status_message
+        - type
+        - type_reference_id
+        - created_at
+        - updated_at
+        - id
+        - event_id
+        - pr_iteration_count
+        - pr_lifecycle_state
+        - last_pr_check_at
+      filter:
+        _and:
+          - event:
+              tenant:
+                _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+    comment: ""

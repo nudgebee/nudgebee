@@ -1,0 +1,3 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- delete from recommendation_category_type where value in ( 'K8sMissingAttribute', 'K8sInstanceRecommendation', 'WarehouseComputeOptimization', 'WarehouseTableOptimization', 'WarehouseQueryOptimization', 'PodRightSizing', 'MissingAttribute');

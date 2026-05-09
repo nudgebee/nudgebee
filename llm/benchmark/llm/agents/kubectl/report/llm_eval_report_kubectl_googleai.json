@@ -1,0 +1,525 @@
+{
+    "Total Queries": 26,
+    "Metrics": {
+        "context_recall": [
+            1.0,
+            0.5,
+            0.5,
+            0.0,
+            0.0,
+            0.5,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.5,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0
+        ],
+        "context_precision": [
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.0,
+            0.0,
+            0.9999999999,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.9999999999,
+            0.0,
+            0.0,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.0,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.0,
+            0.0,
+            0.9999999999,
+            0.0,
+            0.0
+        ],
+        "faithfulness": [
+            0,
+            1.0,
+            0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.6666666666666666,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.5,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.6666666666666666,
+            1.0,
+            1.0,
+            0.5
+        ],
+        "answer_relevancy": [
+            0.9432952441449188,
+            0.9468589644003093,
+            0.9469612757013882,
+            0.0,
+            0.0,
+            0.962766228283772,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.9237721629584574,
+            0.0,
+            0.937523831815059,
+            0.9695937516237104,
+            0.982540120140123,
+            0.8460630849276404,
+            0.0,
+            0.9103164858474427,
+            0.888166816907742,
+            0.8273951925851614,
+            0.0,
+            0.0,
+            0.971968996660714,
+            0.0,
+            0.0
+        ]
+    },
+    "Evaluations": [
+        {
+            "query": "What command shows cluster information?",
+            "retrieved_contexts": [
+                ": The command to show cluster information is `kubectl cluster-info`.\n"
+            ],
+            "expected_contexts": [
+                "kubectl cluster-info"
+            ],
+            "generated_answer": ": The command to show cluster information is `kubectl cluster-info`.\n",
+            "ground_truth": [
+                [
+                    "kubectl cluster-info"
+                ]
+            ]
+        },
+        {
+            "query": "How do I list all nodes in the cluster?",
+            "retrieved_contexts": [
+                ": To list all nodes in the cluster, use the command `kubectl get nodes`. This will display a table with information about each node, including its name, status, roles, age, and Kubernetes version.\n\n```\nNAME                                                STATUS   ROLES    AGE   VERSION\nk3s-nudgebee-dev-e606-2246bc-node-pool-4196-532gd   Ready    <none>   10d   v1.30.5+k3s1\nk3s-nudgebee-dev-e606-2246bc-node-pool-4196-6w59o   Ready    <none>   15d   v1.30.5+k3s1\nk3s-nudgebee-dev-e606-2246bc-node-pool-4196-dr4oz   Ready    <none>   13d   v1.30.5+k3s1\nk3s-nudgebee-dev-e606-2246bc-node-pool-4196-e2avu   Ready    <none>   2d    v1.30.5+k3s1\nk3s-nudgebee-dev-e606-2246bc-node-pool-4196-i4ynf   Ready    <none>   14d   v1.30.5+k3s1\nk3s-nudgebee-dev-e606-2246bc-node-pool-4196-r6gel   Ready    <none>   9d    v1.30.5+k3s1\n```"
+            ],
+            "expected_contexts": [
+                "kubectl get nodes"
+            ],
+            "generated_answer": ": To list all nodes in the cluster, use the command `kubectl get nodes`. This will display a table with information about each node, including its name, status, roles, age, and Kubernetes version.\n\n```\nNAME                                                STATUS   ROLES    AGE   VERSION\nk3s-nudgebee-dev-e606-2246bc-node-pool-4196-532gd   Ready    <none>   10d   v1.30.5+k3s1\nk3s-nudgebee-dev-e606-2246bc-node-pool-4196-6w59o   Ready    <none>   15d   v1.30.5+k3s1\nk3s-nudgebee-dev-e606-2246bc-node-pool-4196-dr4oz   Ready    <none>   13d   v1.30.5+k3s1\nk3s-nudgebee-dev-e606-2246bc-node-pool-4196-e2avu   Ready    <none>   2d    v1.30.5+k3s1\nk3s-nudgebee-dev-e606-2246bc-node-pool-4196-i4ynf   Ready    <none>   14d   v1.30.5+k3s1\nk3s-nudgebee-dev-e606-2246bc-node-pool-4196-r6gel   Ready    <none>   9d    v1.30.5+k3s1\n```",
+            "ground_truth": [
+                [
+                    "kubectl get nodes",
+                    "kubectl get no"
+                ]
+            ]
+        },
+        {
+            "query": "Which command lists all namespaces?",
+            "retrieved_contexts": [
+                ": The command to list all namespaces is: `kubectl get namespaces`\n"
+            ],
+            "expected_contexts": [
+                "kubectl get namespaces"
+            ],
+            "generated_answer": ": The command to list all namespaces is: `kubectl get namespaces`\n",
+            "ground_truth": [
+                [
+                    "kubectl get namespaces",
+                    "kubectl get ns"
+                ]
+            ]
+        },
+        {
+            "query": "How can I see all running pods in the default namespace?",
+            "retrieved_contexts": [
+                "run not supported in chain that returns value that is not string"
+            ],
+            "expected_contexts": [
+                "kubectl get pods"
+            ],
+            "generated_answer": "run not supported in chain that returns value that is not string",
+            "ground_truth": [
+                [
+                    "kubectl get pods",
+                    "kubectl get po"
+                ]
+            ]
+        },
+        {
+            "query": "What command lists pods in a specific namespace?",
+            "retrieved_contexts": [
+                "run not supported in chain that returns value that is not string"
+            ],
+            "expected_contexts": [
+                "kubectl get pods -n <namespace>"
+            ],
+            "generated_answer": "run not supported in chain that returns value that is not string",
+            "ground_truth": [
+                [
+                    "kubectl get pods -n <namespace>",
+                    "kubectl get po -n <namespace>"
+                ]
+            ]
+        },
+        {
+            "query": "How do I describe a specific pod?",
+            "retrieved_contexts": [
+                ": You can describe a specific pod using the command:\n\n```\nkubectl describe pod <pod_name> -n <namespace>\n```\n\nRemember to replace `<pod_name>` with the actual name of the pod you want to inspect and `<namespace>` with the namespace where the pod is running. This command will provide detailed information about the pod, which can be helpful for troubleshooting and understanding its configuration.\n"
+            ],
+            "expected_contexts": [
+                "kubectl describe pod <pod-name>"
+            ],
+            "generated_answer": ": You can describe a specific pod using the command:\n\n```\nkubectl describe pod <pod_name> -n <namespace>\n```\n\nRemember to replace `<pod_name>` with the actual name of the pod you want to inspect and `<namespace>` with the namespace where the pod is running. This command will provide detailed information about the pod, which can be helpful for troubleshooting and understanding its configuration.\n",
+            "ground_truth": [
+                [
+                    "kubectl describe pod <pod-name>",
+                    "kubectl describe po <pod-name>"
+                ]
+            ]
+        },
+        {
+            "query": "Which command gives details about a specific node?",
+            "retrieved_contexts": [
+                "run not supported in chain that returns value that is not string"
+            ],
+            "expected_contexts": [
+                "kubectl describe node <node-name>"
+            ],
+            "generated_answer": "run not supported in chain that returns value that is not string",
+            "ground_truth": [
+                [
+                    "kubectl describe node <node-name>",
+                    "kubectl describe no <node-name>"
+                ]
+            ]
+        },
+        {
+            "query": "How do I create a new deployment?",
+            "retrieved_contexts": [
+                "run not supported in chain that returns value that is not string"
+            ],
+            "expected_contexts": [
+                "kubectl create deployment <deployment-name> --image=<image-name>"
+            ],
+            "generated_answer": "run not supported in chain that returns value that is not string",
+            "ground_truth": [
+                [
+                    "kubectl create deployment <deployment-name> --image=<image-name>"
+                ]
+            ]
+        },
+        {
+            "query": "Which command scales a deployment to 3 replicas?",
+            "retrieved_contexts": [
+                "run not supported in chain that returns value that is not string"
+            ],
+            "expected_contexts": [
+                "kubectl scale deployment <deployment-name> --replicas=3"
+            ],
+            "generated_answer": "run not supported in chain that returns value that is not string",
+            "ground_truth": [
+                [
+                    "kubectl scale deployment <deployment-name> --replicas=3"
+                ]
+            ]
+        },
+        {
+            "query": "How can I delete a deployment?",
+            "retrieved_contexts": [
+                "run not supported in chain that returns value that is not string"
+            ],
+            "expected_contexts": [
+                "kubectl delete deployment <deployment-name>"
+            ],
+            "generated_answer": "run not supported in chain that returns value that is not string",
+            "ground_truth": [
+                [
+                    "kubectl delete deployment <deployment-name>",
+                    "kubectl delete deploy <deployment-name>"
+                ]
+            ]
+        },
+        {
+            "query": "How do I update the image of a deployment?",
+            "retrieved_contexts": [
+                "run not supported in chain that returns value that is not string"
+            ],
+            "expected_contexts": [
+                "kubectl set image deployment/<deployment-name> <container-name>=<new-image>"
+            ],
+            "generated_answer": "run not supported in chain that returns value that is not string",
+            "ground_truth": [
+                [
+                    "kubectl set image deployment/<deployment-name> <container-name>=<new-image>"
+                ]
+            ]
+        },
+        {
+            "query": "Which command lists all services?",
+            "retrieved_contexts": [
+                ": The command to list all services is `kubectl get services`.\n"
+            ],
+            "expected_contexts": [
+                "kubectl get services"
+            ],
+            "generated_answer": ": The command to list all services is `kubectl get services`.\n",
+            "ground_truth": [
+                [
+                    "kubectl get services",
+                    "kubectl get svc"
+                ]
+            ]
+        },
+        {
+            "query": "How do I expose a deployment as a service?",
+            "retrieved_contexts": [
+                ": The command failed because the user does not have permission to create services in the `actions-runner-system-1` namespace. You need to ensure that the user or service account you are using has the appropriate permissions (RBAC roles and role bindings) to create services in the specified namespace. Unfortunately, I cannot proceed further without the necessary permissions.\n"
+            ],
+            "expected_contexts": [
+                "kubectl expose deployment <deployment-name> --type=NodePort --port=80"
+            ],
+            "generated_answer": ": The command failed because the user does not have permission to create services in the `actions-runner-system-1` namespace. You need to ensure that the user or service account you are using has the appropriate permissions (RBAC roles and role bindings) to create services in the specified namespace. Unfortunately, I cannot proceed further without the necessary permissions.\n",
+            "ground_truth": [
+                [
+                    "kubectl expose deployment <deployment-name> --type=NodePort --port=80"
+                ]
+            ]
+        },
+        {
+            "query": "How do I port forward a pod to my local machine?",
+            "retrieved_contexts": [
+                ": The command to port forward a pod to your local machine using `kubectl` is:\n\n```bash\nkubectl port-forward <pod_name> <local_port>:<pod_port>\n```\n\n**Explanation:**\n\n*   **`kubectl port-forward`**:  This is the core command for creating a port forwarding tunnel.\n*   **`<pod_name>`**:  Replace this with the actual name of the pod you want to forward traffic to. You can find the pod name using `kubectl get pods`.  You can also target a pod using selectors with `--selector` (see examples below).\n*   **`<local_port>`**:  The port on your local machine that you want to use to access the pod.  Choose an unused port (e.g., 8080, 9000, 3000).\n*   **`<pod_port>`**:  The port on the pod that you want to forward traffic to.  This is the port that the application running inside the pod is listening on.\n\n**Example:**\n\nLet's say you have a pod named `my-app-pod` that's running a web server listening on port 8080.  You want to access this web server from your local machine using port 9000.  The command would be:\n\n```bash\nkubectl port-forward my-app-pod 9000:8080\n```\n\nAfter running this command, you can open your web browser and go to `http://localhost:9000` to access the web server running inside the `my-app-pod`.\n\n**Important Considerations:**\n\n*   **Keep the terminal open:** The `kubectl port-forward` command creates a tunnel that remains active as long as the command is running.  Close the terminal window or press `Ctrl+C` to stop the port forwarding.\n*   **Pod Selection:**\n    *   **Specific Pod:**  Use the pod name directly as shown above.\n    *   **Using Selectors:** If you want to forward to a pod based on its labels (e.g., you want to forward to *any* pod with the label `app=my-app`), you can use the `--selector` flag:\n\n        ```bash\n        kubectl port-forward --selector=\"app=my-app\" 9000:8080\n        ```\n\n        This will forward to *one* of the pods matching the selector. If multiple pods match, it will pick one arbitrarily.  If no pods match, it will wait until a matching pod appears.\n\n*   **Namespace:** If the pod is in a different namespace than your currently configured namespace, you need to specify the namespace using the `-n` or `--namespace` flag:\n\n    ```bash\n    kubectl port-forward -n my-namespace my-app-pod 9000:8080\n    ```\n\n*   **Binding Address:** By default, `kubectl port-forward` binds to `127.0.0.1` (localhost).  If you want to make the forwarded port accessible from other machines on your network, you can use the `--address` flag:\n\n    ```bash\n    kubectl port-forward --address 0.0.0.0 my-app-pod 9000:8080\n    ```\n\n    **Warning:**  Binding to `0.0.0.0` makes the service accessible from anywhere on your network.  Be cautious about security implications when doing this.\n\n*   **Multiple Ports:** You can forward multiple ports at the same time:\n\n    ```bash\n    kubectl port-forward my-app-pod 9000:8080 9001:8081\n    ```\n\n*   **Using Service Names:** While less common, you *can* technically port-forward to a service name *if* the service is backed by a single pod.  Kubernetes will resolve the service to the underlying pod.  However, it's generally better to forward directly to the pod for clarity and to avoid unexpected behavior if the service's backing pods change.\n\n**Troubleshooting:**\n\n*   **\"address already in use\" error:**  This means the local port you're trying to use is already being used by another application.  Choose a different local port.\n*   **Connection refused:**  This usually means the pod isn't running, the application inside the pod isn't listening on the specified port, or there's a firewall issue.  Double-check the pod status, the application configuration, and your firewall settings.\n*   **No pods match selector:**  Verify that the labels on your pod match the selector you're using.  Use `kubectl get pods --show-labels` to see the labels on your pods.\n\nRemember to replace the placeholders with your actual pod name, local port, and pod port.  This command is a powerful tool for debugging and interacting with applications running in your Kubernetes cluster.\n"
+            ],
+            "expected_contexts": [
+                "kubectl port-forward pod/<pod-name> 8080:80"
+            ],
+            "generated_answer": ": The command to port forward a pod to your local machine using `kubectl` is:\n\n```bash\nkubectl port-forward <pod_name> <local_port>:<pod_port>\n```\n\n**Explanation:**\n\n*   **`kubectl port-forward`**:  This is the core command for creating a port forwarding tunnel.\n*   **`<pod_name>`**:  Replace this with the actual name of the pod you want to forward traffic to. You can find the pod name using `kubectl get pods`.  You can also target a pod using selectors with `--selector` (see examples below).\n*   **`<local_port>`**:  The port on your local machine that you want to use to access the pod.  Choose an unused port (e.g., 8080, 9000, 3000).\n*   **`<pod_port>`**:  The port on the pod that you want to forward traffic to.  This is the port that the application running inside the pod is listening on.\n\n**Example:**\n\nLet's say you have a pod named `my-app-pod` that's running a web server listening on port 8080.  You want to access this web server from your local machine using port 9000.  The command would be:\n\n```bash\nkubectl port-forward my-app-pod 9000:8080\n```\n\nAfter running this command, you can open your web browser and go to `http://localhost:9000` to access the web server running inside the `my-app-pod`.\n\n**Important Considerations:**\n\n*   **Keep the terminal open:** The `kubectl port-forward` command creates a tunnel that remains active as long as the command is running.  Close the terminal window or press `Ctrl+C` to stop the port forwarding.\n*   **Pod Selection:**\n    *   **Specific Pod:**  Use the pod name directly as shown above.\n    *   **Using Selectors:** If you want to forward to a pod based on its labels (e.g., you want to forward to *any* pod with the label `app=my-app`), you can use the `--selector` flag:\n\n        ```bash\n        kubectl port-forward --selector=\"app=my-app\" 9000:8080\n        ```\n\n        This will forward to *one* of the pods matching the selector. If multiple pods match, it will pick one arbitrarily.  If no pods match, it will wait until a matching pod appears.\n\n*   **Namespace:** If the pod is in a different namespace than your currently configured namespace, you need to specify the namespace using the `-n` or `--namespace` flag:\n\n    ```bash\n    kubectl port-forward -n my-namespace my-app-pod 9000:8080\n    ```\n\n*   **Binding Address:** By default, `kubectl port-forward` binds to `127.0.0.1` (localhost).  If you want to make the forwarded port accessible from other machines on your network, you can use the `--address` flag:\n\n    ```bash\n    kubectl port-forward --address 0.0.0.0 my-app-pod 9000:8080\n    ```\n\n    **Warning:**  Binding to `0.0.0.0` makes the service accessible from anywhere on your network.  Be cautious about security implications when doing this.\n\n*   **Multiple Ports:** You can forward multiple ports at the same time:\n\n    ```bash\n    kubectl port-forward my-app-pod 9000:8080 9001:8081\n    ```\n\n*   **Using Service Names:** While less common, you *can* technically port-forward to a service name *if* the service is backed by a single pod.  Kubernetes will resolve the service to the underlying pod.  However, it's generally better to forward directly to the pod for clarity and to avoid unexpected behavior if the service's backing pods change.\n\n**Troubleshooting:**\n\n*   **\"address already in use\" error:**  This means the local port you're trying to use is already being used by another application.  Choose a different local port.\n*   **Connection refused:**  This usually means the pod isn't running, the application inside the pod isn't listening on the specified port, or there's a firewall issue.  Double-check the pod status, the application configuration, and your firewall settings.\n*   **No pods match selector:**  Verify that the labels on your pod match the selector you're using.  Use `kubectl get pods --show-labels` to see the labels on your pods.\n\nRemember to replace the placeholders with your actual pod name, local port, and pod port.  This command is a powerful tool for debugging and interacting with applications running in your Kubernetes cluster.\n",
+            "ground_truth": [
+                [
+                    "kubectl port-forward pod/<pod-name> 8080:80"
+                ]
+            ]
+        },
+        {
+            "query": "What is the command to get logs from a specific pod?",
+            "retrieved_contexts": [
+                ": The command to get logs from a specific pod is:\n\n```bash\nkubectl logs <pod_name> -n <namespace>\n```\n\nReplace `<pod_name>` with the actual name of the pod and `<namespace>` with the namespace the pod is in.\n\nIf you do not know the namespace of the pod, you can find it using the following command:\n\n```bash\nkubectl get pod <pod_name> -o go-template='{{.metadata.namespace}}'\n```\n\nOr by describing the pod:\n\n```bash\nkubectl describe pod <pod_name>\n```\n\nand looking for the `Namespace:` field in the output."
+            ],
+            "expected_contexts": [
+                "kubectl logs <pod-name>"
+            ],
+            "generated_answer": ": The command to get logs from a specific pod is:\n\n```bash\nkubectl logs <pod_name> -n <namespace>\n```\n\nReplace `<pod_name>` with the actual name of the pod and `<namespace>` with the namespace the pod is in.\n\nIf you do not know the namespace of the pod, you can find it using the following command:\n\n```bash\nkubectl get pod <pod_name> -o go-template='{{.metadata.namespace}}'\n```\n\nOr by describing the pod:\n\n```bash\nkubectl describe pod <pod_name>\n```\n\nand looking for the `Namespace:` field in the output.",
+            "ground_truth": [
+                [
+                    "kubectl logs <pod-name>"
+                ]
+            ]
+        },
+        {
+            "query": "How can I stream logs from a pod?",
+            "retrieved_contexts": [
+                ": To stream logs from a pod, you can use the `kubectl logs` command with the `-f` option to follow the logs. Here's an example:\n\n```bash\nkubectl logs -f <pod_name> -n <namespace>\n```\n\nReplace `<pod_name>` with the name of the pod and `<namespace>` with the namespace the pod is in. For example:\n\n```bash\nkubectl logs -f my-app-pod -n default\n```\n\nThis command will continuously stream the logs from the `my-app-pod` in the `default` namespace.\n"
+            ],
+            "expected_contexts": [
+                "kubectl logs -f <pod-name>"
+            ],
+            "generated_answer": ": To stream logs from a pod, you can use the `kubectl logs` command with the `-f` option to follow the logs. Here's an example:\n\n```bash\nkubectl logs -f <pod_name> -n <namespace>\n```\n\nReplace `<pod_name>` with the name of the pod and `<namespace>` with the namespace the pod is in. For example:\n\n```bash\nkubectl logs -f my-app-pod -n default\n```\n\nThis command will continuously stream the logs from the `my-app-pod` in the `default` namespace.\n",
+            "ground_truth": [
+                [
+                    "kubectl logs -f <pod-name>"
+                ]
+            ]
+        },
+        {
+            "query": "Which command executes a shell inside a running pod?",
+            "retrieved_contexts": [
+                ": `kubectl exec` executes a command, such as a shell, inside a container within a running pod.\n"
+            ],
+            "expected_contexts": [
+                "kubectl exec -it <pod-name> -- /bin/sh"
+            ],
+            "generated_answer": ": `kubectl exec` executes a command, such as a shell, inside a container within a running pod.\n",
+            "ground_truth": [
+                [
+                    "kubectl exec -it <pod-name> -- /bin/sh",
+                    "kubectl exec -it <pod-name> -- /bin/bash"
+                ]
+            ]
+        },
+        {
+            "query": "How do I get events in a specific namespace?",
+            "retrieved_contexts": [
+                "run not supported in chain that returns value that is not string"
+            ],
+            "expected_contexts": [
+                "kubectl get events -n <namespace>"
+            ],
+            "generated_answer": "run not supported in chain that returns value that is not string",
+            "ground_truth": [
+                [
+                    "kubectl get events -n <namespace>"
+                ]
+            ]
+        },
+        {
+            "query": "What is the command to list all ConfigMaps?",
+            "retrieved_contexts": [
+                ": kubectl get configmaps\n"
+            ],
+            "expected_contexts": [
+                "kubectl get configmaps"
+            ],
+            "generated_answer": ": kubectl get configmaps\n",
+            "ground_truth": [
+                [
+                    "kubectl get configmaps",
+                    "kubectl get cm"
+                ]
+            ]
+        },
+        {
+            "query": "How can I list all secrets?",
+            "retrieved_contexts": [
+                ": To list all secrets in the \"production\" namespace, you would use the following command:\n\n```bash\nkubectl get secrets -n production\n```\n"
+            ],
+            "expected_contexts": [
+                "kubectl get secrets"
+            ],
+            "generated_answer": ": To list all secrets in the \"production\" namespace, you would use the following command:\n\n```bash\nkubectl get secrets -n production\n```\n",
+            "ground_truth": [
+                [
+                    "kubectl get secrets"
+                ]
+            ]
+        },
+        {
+            "query": "Which command creates a secret from literal values?",
+            "retrieved_contexts": [
+                ": kubectl create secret generic my-secret --from-literal=key1=supersecret --from-literal=key2=topsecret\n"
+            ],
+            "expected_contexts": [
+                "kubectl create secret generic my-secret --from-literal=username=admin --from-literal=password=secret"
+            ],
+            "generated_answer": ": kubectl create secret generic my-secret --from-literal=key1=supersecret --from-literal=key2=topsecret\n",
+            "ground_truth": [
+                [
+                    "kubectl create secret generic my-secret --from-literal=username=admin --from-literal=password=secret"
+                ]
+            ]
+        },
+        {
+            "query": "How do I apply a YAML configuration file?",
+            "retrieved_contexts": [
+                "run not supported in chain that returns value that is not string"
+            ],
+            "expected_contexts": [
+                "kubectl apply -f <file-name>.yaml"
+            ],
+            "generated_answer": "run not supported in chain that returns value that is not string",
+            "ground_truth": [
+                [
+                    "kubectl apply -f <file-name>.yaml"
+                ]
+            ]
+        },
+        {
+            "query": "How do I check the cluster health?",
+            "retrieved_contexts": [
+                "run not supported in chain that returns value that is not string"
+            ],
+            "expected_contexts": [
+                "kubectl get componentstatuses"
+            ],
+            "generated_answer": "run not supported in chain that returns value that is not string",
+            "ground_truth": [
+                [
+                    "kubectl get componentstatuses",
+                    "kubectl get cs"
+                ]
+            ]
+        },
+        {
+            "query": "Which command lists only running pods?",
+            "retrieved_contexts": [
+                ": The command to list only running pods is: `kubectl get pods --field-selector=status.phase=Running --all-namespaces`"
+            ],
+            "expected_contexts": [
+                "kubectl get pods --field-selector=status.phase=Running"
+            ],
+            "generated_answer": ": The command to list only running pods is: `kubectl get pods --field-selector=status.phase=Running --all-namespaces`",
+            "ground_truth": [
+                [
+                    "kubectl get pods --field-selector=status.phase=Running"
+                ]
+            ]
+        },
+        {
+            "query": "How can I check the status of a deployment rollout?",
+            "retrieved_contexts": [
+                "run not supported in chain that returns value that is not string"
+            ],
+            "expected_contexts": [
+                "kubectl rollout status deployment/<deployment-name>"
+            ],
+            "generated_answer": "run not supported in chain that returns value that is not string",
+            "ground_truth": [
+                [
+                    "kubectl rollout status deployment/<deployment-name>"
+                ]
+            ]
+        },
+        {
+            "query": "What is the command to rollback a deployment to the previous revision?",
+            "retrieved_contexts": [
+                "run not supported in chain that returns value that is not string"
+            ],
+            "expected_contexts": [
+                "kubectl rollout undo deployment/<deployment-name>"
+            ],
+            "generated_answer": "run not supported in chain that returns value that is not string",
+            "ground_truth": [
+                [
+                    "kubectl rollout undo deployment/<deployment-name>"
+                ]
+            ]
+        }
+    ],
+    "Context Recall": 34.61538461538461,
+    "Context Precision": 46.15384614923077,
+    "Faithfulness": 93.05555555555554,
+    "Answer Relevancy": 46.37393136921707,
+    "Accuracy": 55.049679422347
+}

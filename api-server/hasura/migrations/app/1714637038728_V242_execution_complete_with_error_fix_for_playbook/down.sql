@@ -1,0 +1,26 @@
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- update
+--     auto_playbook_executions a
+-- set
+--     status = 'COMPLETE'
+-- where
+--     a.status = 'COMPLETE_WITH_ERROR'
+--     and exists (
+--         select
+--             *
+--         from
+--             auto_playbook_task
+--         where
+--             status in ('Complete', 'Skipped')
+--             and execution_id = a.id
+--             and status not in (
+--                 select
+--                     value
+--                 from
+--                     auto_playbook_task_status apes
+--                 where
+--                     value not in ('Complete', 'Skipped')
+--             )
+--     );

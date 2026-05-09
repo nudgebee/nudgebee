@@ -1,0 +1,6 @@
+user_prompt: List ECR repositories.
+expected_output:
+- aws ecr describe-repositories
+tags:
+- command
+- aws

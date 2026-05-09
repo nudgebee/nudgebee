@@ -1,0 +1,6 @@
+user_prompt: Configure AWS CLI credentials.
+expected_output:
+- aws configure
+tags:
+- command
+- aws

@@ -1,0 +1,6 @@
+user_prompt: Create a new S3 bucket.
+expected_output:
+- aws s3 mb s3://bucket-name
+tags:
+- command
+- aws

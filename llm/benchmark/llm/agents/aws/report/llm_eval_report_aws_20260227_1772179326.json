@@ -1,0 +1,45 @@
+{
+    "details": [
+        {
+            "query": "Add a user to an IAM group.",
+            "query_type": "command",
+            "retrieved_contexts": [
+                "auth: tool not found - shell_execute, agent - aws"
+            ],
+            "expected_contexts": [
+                "aws iam add-user-to-group --group-name <group-name> --user-name <user-name>"
+            ],
+            "ground_truth": "aws iam add-user-to-group --group-name <group-name> --user-name <user-name>",
+            "answer_similarity": 74.79,
+            "answer_relevancy": 61.49,
+            "rca_quality_score": null,
+            "rca_quality_normalized": null
+        },
+        {
+            "query": "Add an inbound rule to a security group.",
+            "query_type": "command",
+            "retrieved_contexts": [
+                "I have identified the available security groups in your account and inspected the rules for the security group named `no-ingress-sg` (`sg-0517563bf76b30ba6`).\n\nHowever, **no inbound rule was added** because the specific details for the rule (such as the protocol, port range, and source IP address) were not specified, and the action was not finalized.\n\nTo proceed, please provide the following information:\n1. The **ID** of the security group you wish to modify.\n2. The **Protocol** (e.g., TCP, UDP, ICMP).\n3. The **Port** or port range (e.g., 22 for SSH, 80 for HTTP).\n4. The **Source IP range** (CIDR) that should be allowed (e.g., `0.0.0.0/0` for all or a specific IP)."
+            ],
+            "expected_contexts": [
+                "aws ec2 authorize-security-group-ingress"
+            ],
+            "ground_truth": "aws ec2 authorize-security-group-ingress",
+            "answer_similarity": 84.19,
+            "answer_relevancy": 81.0,
+            "rca_quality_score": null,
+            "rca_quality_normalized": null
+        }
+    ],
+    "summary": {
+        "total_queries": 2,
+        "answer_similarity": 79.49,
+        "answer_relevancy": 71.24,
+        "overall_accuracy": 75.37,
+        "rca_scenarios_count": 0,
+        "avg_rca_quality_score": null,
+        "failed_indices_after_retries": [
+            2
+        ]
+    }
+}

@@ -1,0 +1,3 @@
+table:
+  name: event_triage_rule_overrides
+  schema: public

@@ -1,0 +1,24 @@
+user_prompt: Our Glue ETL job 'm23-data-transform' completes with SUCCEEDED status
+  but the output S3 path has zero files. The job runs for about 2 minutes and shows
+  no errors in logs. The source bucket has data in the 'raw/' prefix. The Glue role
+  has S3 permissions. Why does the job succeed but produce no output?
+expected_output:
+- The root cause is that the Glue job's IAM role is missing the s3:GetObject permission
+  on the source bucket. The role has s3:ListBucket on the source bucket (so Glue can
+  see that objects exist) and full permissions on the output bucket, but it cannot
+  actually read the source objects. When Glue tries to read the source data, it gets
+  an AccessDenied error on GetObject, but the Glue ETL framework treats this as an
+  empty dataset rather than a hard failure. With zero input records, the transformation
+  produces zero output records, and the job completes with SUCCEEDED status. This is a
+  silent failure because Glue considers processing zero records a valid success. The fix
+  is to add s3:GetObject permission on the source bucket and its objects to the Glue
+  job role.
+tags:
+- rca
+- aws
+- glue
+- s3
+- iam
+- silent-failure
+type: rca
+agent: aws_debug

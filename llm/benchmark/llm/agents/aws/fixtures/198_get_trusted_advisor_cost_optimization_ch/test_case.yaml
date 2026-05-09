@@ -1,0 +1,7 @@
+user_prompt: Get Trusted Advisor cost optimization checks.
+expected_output:
+- aws support describe-trusted-advisor-checks --language en | jq '.checks[] | select(.category
+  == \cost_optimizing\")'
+tags:
+- command
+- aws

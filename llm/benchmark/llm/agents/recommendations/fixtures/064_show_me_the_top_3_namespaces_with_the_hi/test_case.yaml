@@ -1,0 +1,9 @@
+user_prompt: Show me the top 3 namespaces with the highest total estimated savings
+  from open recommendations.
+expected_output:
+- SELECT namespace, SUM(estimated_saving) AS total_savings FROM recommendation_view
+  WHERE status = 'Open' AND estimated_saving IS NOT NULL GROUP BY namespace ORDER
+  BY total_savings DESC LIMIT 3;
+tags:
+- command
+- recommendations

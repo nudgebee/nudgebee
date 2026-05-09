@@ -1,0 +1,4 @@
+table:
+  name: slo_status
+  schema: public
+is_enum: true

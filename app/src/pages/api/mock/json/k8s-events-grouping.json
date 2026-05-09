@@ -1,0 +1,94 @@
+{
+  "aggregation_key": {
+    "data": {
+      "event_groupings": [
+        {
+          "max_created_at": "2024-04-04T06:22:51.752984",
+          "event_count": 10,
+          "aggregation_key": "HighErrorCriticalLogs"
+        },
+        {
+          "max_created_at": "2024-04-04T06:07:48.647494",
+          "event_count": 10,
+          "aggregation_key": "Kubernetes Warning Event"
+        },
+        {
+          "max_created_at": "2024-04-04T06:23:11.849225",
+          "event_count": 10,
+          "aggregation_key": "PodMemoryReachingLimit"
+        },
+        {
+          "max_created_at": "2024-04-04T07:25:53.837102",
+          "event_count": 10,
+          "aggregation_key": "KubeDeploymentReplicasMismatch"
+        },
+        {
+          "max_created_at": "2024-04-04T04:05:54.578337",
+          "event_count": 10,
+          "aggregation_key": "KubePodCrashLooping"
+        },
+        {
+          "max_created_at": "2024-04-04T06:15:18.980957",
+          "event_count": 10,
+          "aggregation_key": "ApplicationAPIFailures"
+        },
+        {
+          "max_created_at": "2024-04-04T05:32:04.851644",
+          "event_count": 10,
+          "aggregation_key": "image_pull_backoff_reporter"
+        }
+      ],
+      "event_groupings_aggregate": {
+        "aggregate": {
+          "count": 7
+        }
+      }
+    }
+  },
+  "subject_name": {
+    "data": {
+      "event_groupings": [
+        {
+          "max_created_at": "2024-03-28T18:31:50.004254",
+          "event_count": 292,
+          "subject_name": "notifications-7b465bc6f7-s5zht"
+        },
+        {
+          "max_created_at": "2024-03-28T11:11:01.107659",
+          "event_count": 88,
+          "subject_name": "notifications-6bcd9698d6-fzv4f"
+        },
+        {
+          "max_created_at": "2024-03-28T11:09:51.462234",
+          "event_count": 107,
+          "subject_name": "auto-pilot-worker-6c7f696dcd-2jsl4"
+        },
+        {
+          "max_created_at": "2024-03-28T10:46:55.539945",
+          "event_count": 50,
+          "subject_name": "hasura-c59f5bf8c-p9n2h"
+        },
+        {
+          "max_created_at": "2024-03-28T16:46:50.098252",
+          "event_count": 92,
+          "subject_name": "auto-pilot-worker-7f85c49979-vlp9g"
+        },
+        {
+          "max_created_at": "2024-03-28T19:34:55.667901",
+          "event_count": 92,
+          "subject_name": "notifications-785b9868d-g64n4"
+        },
+        {
+          "max_created_at": "2024-03-28T10:12:23.730266",
+          "event_count": 12,
+          "subject_name": "hasura-c59f5bf8c-8pbwm"
+        }
+      ],
+      "event_groupings_aggregate": {
+        "aggregate": {
+          "count": 10
+        }
+      }
+    }
+  }
+}

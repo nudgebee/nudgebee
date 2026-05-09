@@ -1,0 +1,6 @@
+user_prompt: Get the current status of an ECS service.
+expected_output:
+- aws ecs describe-services --cluster <cluster-name> --services <service-name>
+tags:
+- command
+- aws

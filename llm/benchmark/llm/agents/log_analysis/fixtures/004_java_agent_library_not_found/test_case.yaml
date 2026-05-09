@@ -1,0 +1,12 @@
+user_prompt: |
+  Error occurred during initialization of VM
+  Could not find agent library /opt/dynatrace/oneagent-paas/agent/bin/1.333.55.20260317-092136/linux-musl-x86-64/liboneagentjava.so in absolute path, with error: Error relocating /opt/dynatrace/oneagent-paas/agent/bin/1.333.55.20260317-092136/linux-musl-x86-64/liboneagentjava.so: getrandom: symbol not found
+  namespace: sock-shop, pod: queue-master-7cbf497c6c-28k4d, container: queue-master
+expected_output:
+  - The queue-master pod in the sock-shop namespace fails to start because the JVM cannot load the Dynatrace OneAgent Java library. The error indicates a symbol relocation failure — the 'getrandom' symbol is not found, which means the Dynatrace agent binary (liboneagentjava.so) is incompatible with the container's musl libc version (linux-musl-x86-64). This is a known issue when Dynatrace agent binaries built for newer musl/glibc versions are injected into containers using older Alpine/musl base images. Suggested actions include updating the container base image to a newer Alpine version, using a glibc-based image, or configuring the Dynatrace operator to skip injection for this workload.
+tags:
+  - java
+  - jvm
+  - dynatrace
+  - sock-shop
+type: log_analysis

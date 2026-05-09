@@ -1,0 +1,539 @@
+{
+    "details": [
+        {
+            "query": "What command shows cluster information?",
+            "retrieved_contexts": [
+                "\n         kubectl cluster-info\n       "
+            ],
+            "expected_contexts": [
+                "kubectl cluster-info"
+            ],
+            "ground_truth": "kubectl cluster-info",
+            "answer_similarity": 100.0,
+            "answer_relevancy": 88.37
+        },
+        {
+            "query": "Show me the command to see all running pods in the default namespace?",
+            "retrieved_contexts": [
+                "kubectl get pods --field-selector=status.phase=Running -n default"
+            ],
+            "expected_contexts": [
+                "kubectl get pods"
+            ],
+            "ground_truth": "kubectl get podskubectl get po",
+            "answer_similarity": 91.22,
+            "answer_relevancy": 94.68
+        },
+        {
+            "query": "What command lists pods in a specific namespace?",
+            "retrieved_contexts": [
+                "\n         kubectl get pods -n <namespace>\n       "
+            ],
+            "expected_contexts": [
+                "kubectl get pods -n <namespace>"
+            ],
+            "ground_truth": "kubectl get pods -n <namespace>kubectl get po -n <namespace>",
+            "answer_similarity": 98.4,
+            "answer_relevancy": 95.31
+        },
+        {
+            "query": "What is the command to describe a specific pod?",
+            "retrieved_contexts": [
+                "\n         kubectl describe pod <pod-name> -n <namespace>\n       "
+            ],
+            "expected_contexts": [
+                "kubectl describe pod <pod-name>"
+            ],
+            "ground_truth": "kubectl describe pod <pod-name>kubectl describe po <pod-name>",
+            "answer_similarity": 96.02,
+            "answer_relevancy": 87.06
+        },
+        {
+            "query": "Which command gives details about a specific node?",
+            "retrieved_contexts": [
+                "\n         kubectl describe node <node-name>\n       "
+            ],
+            "expected_contexts": [
+                "kubectl describe node <node-name>"
+            ],
+            "ground_truth": "kubectl describe node <node-name>kubectl describe no <node-name>",
+            "answer_similarity": 99.22,
+            "answer_relevancy": 86.15
+        },
+        {
+            "query": "How do I create a new deployment?",
+            "retrieved_contexts": [
+                " \n         kubectl create deployment <deployment-name> --image=<image-name> -n <namespace>\n       "
+            ],
+            "expected_contexts": [
+                "kubectl create deployment <deployment-name> --image=<image-name>"
+            ],
+            "ground_truth": "kubectl create deployment <deployment-name> --image=<image-name>",
+            "answer_similarity": 98.62,
+            "answer_relevancy": 78.12
+        },
+        {
+            "query": "Which command scales a deployment to 3 replicas?",
+            "retrieved_contexts": [
+                "\n         kubectl scale deployment <deployment-name> -n <namespace> --replicas=3\n       "
+            ],
+            "expected_contexts": [
+                "kubectl scale deployment <deployment-name> --replicas=3"
+            ],
+            "ground_truth": "kubectl scale deployment <deployment-name> --replicas=3",
+            "answer_similarity": 99.36,
+            "answer_relevancy": 89.1
+        },
+        {
+            "query": "What is command to delete a deployment?",
+            "retrieved_contexts": [
+                "\n         kubectl delete deployment <deployment-name> -n <namespace>\n       "
+            ],
+            "expected_contexts": [
+                "kubectl delete deployment <deployment-name>"
+            ],
+            "ground_truth": "kubectl delete deployment <deployment-name>kubectl delete deploy <deployment-name>",
+            "answer_similarity": 98.79,
+            "answer_relevancy": 88.62
+        },
+        {
+            "query": "What is command to update the image of a deployment?",
+            "retrieved_contexts": [
+                "\n         `kubectl set image deployment/<deployment-name> <container-name>=<new-image> -n <namespace>`\n       "
+            ],
+            "expected_contexts": [
+                "kubectl set image deployment/<deployment-name> <container-name>=<new-image>"
+            ],
+            "ground_truth": "kubectl set image deployment/<deployment-name> <container-name>=<new-image>",
+            "answer_similarity": 97.82,
+            "answer_relevancy": 89.44
+        },
+        {
+            "query": "Which command lists all services?",
+            "retrieved_contexts": [
+                "kubectl get services"
+            ],
+            "expected_contexts": [
+                "kubectl get services"
+            ],
+            "ground_truth": "kubectl get serviceskubectl get svc",
+            "answer_similarity": 98.87,
+            "answer_relevancy": 85.7
+        },
+        {
+            "query": "What is command to expose a deployment as a service?",
+            "retrieved_contexts": [
+                "\n         kubectl expose deployment <deployment-name> --port=<port> --target-port=<target-port> -n <namespace>\n       "
+            ],
+            "expected_contexts": [
+                "kubectl expose deployment <deployment-name> --type=NodePort --port=80"
+            ],
+            "ground_truth": "kubectl expose deployment <deployment-name> --type=NodePort --port=80",
+            "answer_similarity": 94.91,
+            "answer_relevancy": 90.95
+        },
+        {
+            "query": "What is command to port forward a pod to my local machine?",
+            "retrieved_contexts": [
+                "\n         `kubectl port-forward <pod-name> <local-port>:<remote-port> -n <namespace>`\n       "
+            ],
+            "expected_contexts": [
+                "kubectl port-forward pod/<pod-name> 8080:80"
+            ],
+            "ground_truth": "kubectl port-forward pod/<pod-name> 8080:80",
+            "answer_similarity": 94.49,
+            "answer_relevancy": 91.26
+        },
+        {
+            "query": "What is the command to get logs from a specific pod?",
+            "retrieved_contexts": [
+                "\n         kubectl logs <pod-name> -n <namespace>\n       "
+            ],
+            "expected_contexts": [
+                "kubectl logs <pod-name>"
+            ],
+            "ground_truth": "kubectl logs <pod-name>",
+            "answer_similarity": 97.57,
+            "answer_relevancy": 92.31
+        },
+        {
+            "query": "What is command to stream logs from a pod?",
+            "retrieved_contexts": [
+                "\n         kubectl logs -f <pod-name> -n <namespace>\n       "
+            ],
+            "expected_contexts": [
+                "kubectl logs -f <pod-name>"
+            ],
+            "ground_truth": "kubectl logs -f <pod-name>",
+            "answer_similarity": 98.09,
+            "answer_relevancy": 92.55
+        },
+        {
+            "query": "Which command executes a shell inside a running pod?",
+            "retrieved_contexts": [
+                "\n         `kubectl exec -it <pod-name> -n <namespace> -- /bin/bash`\n       "
+            ],
+            "expected_contexts": [
+                "kubectl exec -it <pod-name> -- /bin/sh"
+            ],
+            "ground_truth": "kubectl exec -it <pod-name> -- /bin/shkubectl exec -it <pod-name> -- /bin/bash",
+            "answer_similarity": 97.2,
+            "answer_relevancy": 92.13
+        },
+        {
+            "query": "Which is command to get events in a specific namespace?",
+            "retrieved_contexts": [
+                "\n         kubectl get events -n <namespace>\n       "
+            ],
+            "expected_contexts": [
+                "kubectl get events -n <namespace>"
+            ],
+            "ground_truth": "kubectl get events -n <namespace>",
+            "answer_similarity": 100.0,
+            "answer_relevancy": 86.99
+        },
+        {
+            "query": "What is the command to list all ConfigMaps?",
+            "retrieved_contexts": [
+                " kubectl get configmaps --all-namespaces "
+            ],
+            "expected_contexts": [
+                "kubectl get configmaps"
+            ],
+            "ground_truth": "kubectl get configmapskubectl get cm",
+            "answer_similarity": 96.41,
+            "answer_relevancy": 87.82
+        },
+        {
+            "query": "what is command to list all secrets?",
+            "retrieved_contexts": [
+                " kubectl get secrets "
+            ],
+            "expected_contexts": [
+                "kubectl get secrets"
+            ],
+            "ground_truth": "kubectl get secrets",
+            "answer_similarity": 100.0,
+            "answer_relevancy": 89.5
+        },
+        {
+            "query": "Which command creates a secret from literal values?",
+            "retrieved_contexts": [
+                " kubectl create secret generic <secret-name> --from-literal=<key1>=<value1> --from-literal=<key2>=<value2> -n <namespace> "
+            ],
+            "expected_contexts": [
+                "kubectl create secret generic my-secret --from-literal=username=admin --from-literal=password=secret"
+            ],
+            "ground_truth": "kubectl create secret generic my-secret --from-literal=username=admin --from-literal=password=secret",
+            "answer_similarity": 96.04,
+            "answer_relevancy": 81.92
+        },
+        {
+            "query": "what is command to apply a YAML configuration file?",
+            "retrieved_contexts": [
+                " kubectl apply -f <file-name.yaml> "
+            ],
+            "expected_contexts": [
+                "kubectl apply -f <file-name>.yaml"
+            ],
+            "ground_truth": "kubectl apply -f <file-name>.yaml",
+            "answer_similarity": 99.9,
+            "answer_relevancy": 88.94
+        },
+        {
+            "query": "Which command lists only running pods?",
+            "retrieved_contexts": [
+                "kubectl get pods --field-selector=status.phase=Running -n <namespace>"
+            ],
+            "expected_contexts": [
+                "kubectl get pods --field-selector=status.phase=Running"
+            ],
+            "ground_truth": "kubectl get pods --field-selector=status.phase=Running",
+            "answer_similarity": 98.56,
+            "answer_relevancy": 90.06
+        },
+        {
+            "query": "Which is command to check the status of a deployment rollout?",
+            "retrieved_contexts": [
+                "\n         kubectl rollout status deployment <deployment-name> -n <namespace>\n       "
+            ],
+            "expected_contexts": [
+                "kubectl rollout status deployment/<deployment-name>"
+            ],
+            "ground_truth": "kubectl rollout status deployment/<deployment-name>",
+            "answer_similarity": 98.35,
+            "answer_relevancy": 89.57
+        },
+        {
+            "query": "What is the command to rollback a deployment to the previous revision?",
+            "retrieved_contexts": [
+                "\n         kubectl rollout undo deployment <deployment-name> -n <namespace>\n       "
+            ],
+            "expected_contexts": [
+                "kubectl rollout undo deployment/<deployment-name>"
+            ],
+            "ground_truth": "kubectl rollout undo deployment/<deployment-name>",
+            "answer_similarity": 98.98,
+            "answer_relevancy": 90.52
+        },
+        {
+            "query": "How I see the CPU and memory usage for all my nodes.",
+            "retrieved_contexts": [
+                "kubectl top nodes"
+            ],
+            "expected_contexts": [
+                "kubectl top node"
+            ],
+            "ground_truth": "kubectl top node",
+            "answer_similarity": 97.86,
+            "answer_relevancy": 81.53
+        },
+        {
+            "query": "Show me how much CPU and memory each of my running pods is consuming.",
+            "retrieved_contexts": [
+                "kubectl top pods --all-namespaces"
+            ],
+            "expected_contexts": [
+                "kubectl top pod"
+            ],
+            "ground_truth": "kubectl top pod",
+            "answer_similarity": 94.85,
+            "answer_relevancy": 84.42
+        },
+        {
+            "query": "Show me way to safely remove all pods from 'node-02' before shutting it down.",
+            "retrieved_contexts": [
+                "Tool(kubectl_execute) is trying to update cluster resources. Do you want to continue?\nCommand - kubectl drain node-02 --ignore-daemonsets --delete-emptydir-data"
+            ],
+            "expected_contexts": [
+                "kubectl drain node-02 --ignore-daemonsets"
+            ],
+            "ground_truth": "kubectl drain node-02 --ignore-daemonsets",
+            "answer_similarity": 92.39,
+            "answer_relevancy": 87.35
+        },
+        {
+            "query": "How can I look up the documentation for a specific field in a Pod's YAML, like 'spec.containers'?",
+            "retrieved_contexts": [
+                "kubectl explain pod.spec.containers"
+            ],
+            "expected_contexts": [
+                "kubectl explain pod.spec.containers"
+            ],
+            "ground_truth": "kubectl explain pod.spec.containers",
+            "answer_similarity": 100.0,
+            "answer_relevancy": 90.79
+        },
+        {
+            "query": "How to tag the pod 'my-app-pod' with the label 'env=production'.",
+            "retrieved_contexts": [
+                "Tool(kubectl_execute) is trying to update cluster resources. Do you want to continue?\nCommand - kubectl label pod my-app-pod env=production -n <namespace>"
+            ],
+            "expected_contexts": [
+                "kubectl label pod my-app-pod env=production"
+            ],
+            "ground_truth": "kubectl label pod my-app-pod env=production",
+            "answer_similarity": 90.32,
+            "answer_relevancy": 93.76
+        },
+        {
+            "query": "How can I add a note or description to the 'my-app-deployment'?",
+            "retrieved_contexts": [
+                "Tool(kubectl_execute) is trying to update cluster resources. Do you want to continue?\nCommand - kubectl annotate deployment my-app-deployment -n <namespace> description=\"Your note or description here\""
+            ],
+            "expected_contexts": [
+                "kubectl annotate deployment my-app-deployment description='This is the main web server'"
+            ],
+            "ground_truth": "kubectl annotate deployment my-app-deployment description='This is the main web server'",
+            "answer_similarity": 88.39,
+            "answer_relevancy": 92.39
+        },
+        {
+            "query": "How do I go back to the previous version?, When something went wrong with my last deployment.",
+            "retrieved_contexts": [
+                "\n         `kubectl rollout undo deployment <deployment-name> -n <namespace>`\n       "
+            ],
+            "expected_contexts": [
+                "kubectl rollout undo deployment/api-gateway"
+            ],
+            "ground_truth": "kubectl rollout undo deployment/api-gateway",
+            "answer_similarity": 94.61,
+            "answer_relevancy": 79.2
+        },
+        {
+            "query": "How to open the configuration for 'my-service' in my default editor to make a live change.",
+            "retrieved_contexts": [
+                "\n         kubectl edit service my-service -n <namespace>\n       "
+            ],
+            "expected_contexts": [
+                "kubectl edit service my-service"
+            ],
+            "ground_truth": "kubectl edit service my-servicekubectl edit svc my-service",
+            "answer_similarity": 95.89,
+            "answer_relevancy": 75.66
+        },
+        {
+            "query": "What is command to List all the different kinds of resources I can create in my cluster, along with their short names.",
+            "retrieved_contexts": [
+                "kubectl api-resources"
+            ],
+            "expected_contexts": [
+                "kubectl api-resources"
+            ],
+            "ground_truth": "kubectl api-resources",
+            "answer_similarity": 100.0,
+            "answer_relevancy": 79.38
+        },
+        {
+            "query": "How can I find all pods that have the label 'app=backend'?",
+            "retrieved_contexts": [
+                "kubectl get pods -l app=backend -n <namespace>"
+            ],
+            "expected_contexts": [
+                "kubectl get pods -l app=backend"
+            ],
+            "ground_truth": "kubectl get pods --selector=app=backendkubectl get pods -l app=backend",
+            "answer_similarity": 96.78,
+            "answer_relevancy": 92.59
+        },
+        {
+            "query": "How to generate the YAML for an nginx deployment without actually creating it.",
+            "retrieved_contexts": [
+                "\n         `kubectl create deployment nginx --image=nginx --dry-run=client -o yaml`\n       "
+            ],
+            "expected_contexts": [
+                "kubectl create deployment nginx --image=nginx --dry-run=client -o yaml"
+            ],
+            "ground_truth": "kubectl create deployment nginx --image=nginx --dry-run=client -o yaml",
+            "answer_similarity": 99.72,
+            "answer_relevancy": 89.0
+        },
+        {
+            "query": "How copy a file from my local machine to a pod.",
+            "retrieved_contexts": [
+                "\n         `kubectl cp <local-file-path> <namespace>/<pod-name>:<pod-file-path>`\n       "
+            ],
+            "expected_contexts": [
+                "kubectl cp /path/to/local/file <pod-name>:/path/in/pod"
+            ],
+            "ground_truth": "kubectl cp /path/to/local/file <pod-name>:/path/in/pod",
+            "answer_similarity": 98.09,
+            "answer_relevancy": 89.6
+        },
+        {
+            "query": "How can I get a file from a running container back to my computer?",
+            "retrieved_contexts": [
+                "\n         `kubectl cp <namespace>/<pod-name>:<container-path/file> <local-path/file>`\n       "
+            ],
+            "expected_contexts": [
+                "kubectl cp <pod-name>:/path/in/pod /path/to/local/file"
+            ],
+            "ground_truth": "kubectl cp <pod-name>:/path/in/pod /path/to/local/file",
+            "answer_similarity": 98.31,
+            "answer_relevancy": 85.29
+        },
+        {
+            "query": "Which context am I currently using?",
+            "retrieved_contexts": [
+                "kubectl config current-context"
+            ],
+            "expected_contexts": [
+                "kubectl config current-context"
+            ],
+            "ground_truth": "kubectl config current-context",
+            "answer_similarity": 100.0,
+            "answer_relevancy": 74.29
+        },
+        {
+            "query": "How to switch my kubectl to interact with the 'staging-cluster'.",
+            "retrieved_contexts": [
+                " kubectl config use-context staging-cluster "
+            ],
+            "expected_contexts": [
+                "kubectl config use-context staging-cluster"
+            ],
+            "ground_truth": "kubectl config use-context staging-cluster",
+            "answer_similarity": 100.0,
+            "answer_relevancy": 94.08
+        },
+        {
+            "query": "Show me a list of all persistent volume claims in the 'storage' namespace.",
+            "retrieved_contexts": [
+                "kubectl get pvc -n storage"
+            ],
+            "expected_contexts": [
+                "kubectl get persistentvolumeclaims -n storage"
+            ],
+            "ground_truth": "kubectl get persistentvolumeclaims -n storagekubectl get pvc -n storage",
+            "answer_similarity": 95.03,
+            "answer_relevancy": 93.95
+        },
+        {
+            "query": "How do I get logs from a specific one called 'sidecar'?, if my pod has multiple containers.",
+            "retrieved_contexts": [
+                " kubectl logs <pod-name> -c sidecar -n <namespace> "
+            ],
+            "expected_contexts": [
+                "kubectl logs <pod-name> -c sidecar"
+            ],
+            "ground_truth": "kubectl logs <pod-name> -c sidecarkubectl logs <pod-name> --container sidecar",
+            "answer_similarity": 97.52,
+            "answer_relevancy": 91.15
+        },
+        {
+            "query": "How to see all resources of any type that have the label 'owner=team-alpha'.",
+            "retrieved_contexts": [
+                "\n         kubectl get all --all-namespaces -l owner=team-alpha\n       "
+            ],
+            "expected_contexts": [
+                "kubectl get all -l owner=team-alpha"
+            ],
+            "ground_truth": "kubectl get all -l owner=team-alpha",
+            "answer_similarity": 97.76,
+            "answer_relevancy": 86.25
+        },
+        {
+            "query": "How do I force delete a pod that is stuck in the 'Terminating' state?",
+            "retrieved_contexts": [
+                "\n         ### Force Delete a Terminating Pod\n        To force delete a pod that is stuck in the 'Terminating' state, you can use the following `kubectl` command:\n\n        `kubectl delete pod <pod-name> --force --grace-period=0 -n <namespace>`\n\n        **Explanation:**\n        - `kubectl delete pod <pod-name>`: Specifies the pod to be deleted.\n        - `--force`: Forces the deletion of the resource.\n        - `--grace-period=0`: Sets the grace period to 0 seconds, meaning the pod will be terminated immediately without waiting for a graceful shutdown.\n        - `-n <namespace>`: Specifies the namespace where the pod resides. Replace `<pod-name>` and `<namespace>` with the actual name of your pod and its namespace.\n       "
+            ],
+            "expected_contexts": [
+                "kubectl delete pod <pod-name> --grace-period=0 --force"
+            ],
+            "ground_truth": "kubectl delete pod <pod-name> --grace-period=0 --force",
+            "answer_similarity": 92.26,
+            "answer_relevancy": 95.95
+        },
+        {
+            "query": "How to set up automatic scaling for my deployment 'worker-pool' to have between 2 and 10 pods, targeting 80% CPU usage.",
+            "retrieved_contexts": [
+                "Tool(kubectl_execute) is trying to update cluster resources. Do you want to continue?\nCommand - kubectl autoscale deployment worker-pool --min=2 --max=10 --cpu-percent=80 -n <namespace>"
+            ],
+            "expected_contexts": [
+                "kubectl autoscale deployment worker-pool --min=2 --max=10 --cpu-percent=80"
+            ],
+            "ground_truth": "kubectl autoscale deployment worker-pool --min=2 --max=10 --cpu-percent=80",
+            "answer_similarity": 91.8,
+            "answer_relevancy": 93.27
+        },
+        {
+            "query": "What is command show me all the ingresses in my cluster.",
+            "retrieved_contexts": [
+                "\n         kubectl get ingresses --all-namespaces\n       "
+            ],
+            "expected_contexts": [
+                "kubectl get ingress"
+            ],
+            "ground_truth": "kubectl get ingresskubectl get ing",
+            "answer_similarity": 95.77,
+            "answer_relevancy": 90.23
+        }
+    ],
+    "summary": {
+        "total_queries": 44,
+        "answer_similarity": 96.96,
+        "answer_relevancy": 88.35,
+        "overall_accuracy": 92.65,
+        "failed_indices_after_retries": []
+    }
+}

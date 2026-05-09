@@ -1,0 +1,6 @@
+user_prompt: Get cost and usage report for last month.
+expected_output:
+- aws ce get-cost-and-usage --time-period Start=<start-date>,End=<end-date>
+tags:
+- command
+- aws

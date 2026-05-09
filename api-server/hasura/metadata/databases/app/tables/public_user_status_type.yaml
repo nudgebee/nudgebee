@@ -1,0 +1,19 @@
+table:
+  name: user_status_type
+  schema: public
+is_enum: true
+array_relationships:
+- name: user_auths
+  using:
+    foreign_key_constraint_on:
+      column: status
+      table:
+        name: user_auths
+        schema: public
+- name: users
+  using:
+    foreign_key_constraint_on:
+      column: status
+      table:
+        name: users
+        schema: public

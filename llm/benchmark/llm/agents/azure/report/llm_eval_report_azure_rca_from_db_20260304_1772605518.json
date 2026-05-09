@@ -1,0 +1,288 @@
+{
+    "source": "database",
+    "evaluation_type": "rca_only",
+    "details": [
+        {
+            "query": "Our team cannot SSH into the bastion host 'e01-bastion-nsg' in resource group 'azure-agent-test-E01'. Connections time out immediately. The VM is running and reachable by ping. What is wrong?",
+            "conversation_id": "95203638-5897-4869-984f-fc41ab56ba35",
+            "retrieved_response": "Based on the analysis of the resource group `azure-agent-test-E01`, here are the findings regarding why you cannot SSH:\n\n### 1. Incorrect Resource Type\nThe resource `e01-bastion-nsg` is a **Network Security Group**, not a Virtual Machine. You cannot SSH into a Network Security Group.\n\n### 2. Missing Virtual Machine\nThere is **no Virtual Machine** currently deployed in the resource group `azure-agent-test-E01`. The only resources found are:\n*   **NSG:** `e01-bastion-nsg` ([Azure - E2](#task-E2))\n*   **VNet:** `e01-bastion-vnet` ([Azure - E2](#task-E2))\n\n### 3. Missing SSH Rules\nThe Network Security Group `e01-bastion-nsg` currently has **no inbound security rules** configured ([Azure - E4](#task-E4)).\n*   Even if a VM were attached to this NSG, SSH connections would fail because Azure denies all inbound traffic by default.\n*   You need to add an inbound rule to allow TCP traffic on port 22.\n\n### Recommendations\n1.  **Verify the VM Name/Location:** Check if the bastion VM is deployed in a different Resource Group or under a different name.\n2.  **Create the VM:** If the VM was intended to be here, it appears it was not created or has been deleted.\n3.  **Update NSG Rules:** Once the VM is located or created, ensure the `e01-bastion-nsg` has an inbound rule allowing SSH (Port 22) from your client IP.",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-E01. NSG 'e01-bastion-nsg' is attached to the bastion host subnet. The VM is in running state. SSH attempts on port 22 time out.",
+                "az network nsg rule list --nsg-name e01-bastion-nsg --resource-group azure-agent-test-E01 --output table",
+                "az network nsg show --name e01-bastion-nsg --resource-group azure-agent-test-E01"
+            ],
+            "ground_truth": "The NSG 'e01-bastion-nsg' has no inbound security rules defined. Without an explicit Allow rule for TCP port 22, all inbound SSH traffic is blocked by the default Deny-all rule. Fix: Add an inbound rule allowing TCP port 22 from the required source IP range.",
+            "answer_relevancy": 80.12,
+            "rca_quality_score": 5.0,
+            "rca_quality_normalized": 100.0
+        },
+        {
+            "query": "Our report generation Function App 'e02-report-generator' in resource group 'azure-agent-test-E02' is failing with 403 errors when trying to read blobs from storage account 'e02datarim2qtxu'. The function app is running and the storage account exists. What is wrong?",
+            "conversation_id": "2e852112-f850-4139-a12c-b0cfd7632dc4",
+            "retrieved_response": "### Root Cause Analysis\nThe Function App `e02-report-generator` is failing with 403 errors because its Managed Identity lacks the necessary **RBAC permissions** to access the Storage Account `e02datarim2qtxu`.\n\n### Causality Chain (5-Whys)\n- **Symptom:** Function App receives 403 Forbidden when accessing blobs.\n- **Why?** The request is authenticated but not authorized.\n- **Why?** The Storage Account firewall is open (`DefaultAction: Allow`), so it is not a network block.\n- **Why?** The Function App's Managed Identity (`bc1ea30e...`) has no role assignments on the storage account.\n- **Root Cause:** Missing **\"Storage Blob Data Reader\"** role assignment for the Function App's identity.\n\n### Findings & Evidence\n- **Firewall is Open:** The storage account `networkRuleSet` shows `DefaultAction: Allow`, confirming that network access is not restricted ([Azure - C1](#task-C1)).\n- **Identity Confirmed:** The Function App is using a System Assigned Managed Identity with Principal ID `bc1ea30e-ef30-41b5-a27b-692b34131602` ([Azure - P2](#task-P2)).\n- **Missing Permissions:** A check of role assignments for this Principal ID on the storage account returned no results, indicating it has no access rights ([Azure - R1](#task-R1)).\n\n### Recommendations\nTo fix this, you must grant the Function App permission to read blob data.\n\n**Action:** Assign the **Storage Blob Data Reader** role to the Function App's Managed Identity.\n\nYou can do this via the Azure Portal or CLI:\n1.  Go to Storage Account `e02datarim2qtxu`.\n2.  Select **Access Control (IAM)** > **Add role assignment**.\n3.  Select **Storage Blob Data Reader**.\n4.  Assign access to **Managed Identity** > **Function App** > `e02-report-generator`.",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-E02. Function App 'e02-report-generator' has a system-assigned managed identity. Storage account 'e02datarim2qtxu' exists and contains report source data. The function is getting 403 AuthorizationPermissionMismatch when calling BlobClient.download_blob().",
+                "az functionapp identity show --name e02-report-generator --resource-group azure-agent-test-E02",
+                "az role assignment list --scope /subscriptions/19e207a9-769d-4afd-b261-10bbed2d43e8/resourceGroups/azure-agent-test-E02/providers/Microsoft.Storage/storageAccounts/e02datarim2qtxu"
+            ],
+            "ground_truth": "The Function App 'e02-report-generator' has a system-assigned managed identity (principal ID: bc1ea30e-ef30-41b5-a27b-692b34131602) but that identity has no role assignment on storage account 'e02datarim2qtxu'. Fix: Assign the 'Storage Blob Data Reader' role (or higher) to the Function App's managed identity on the data storage account.",
+            "answer_relevancy": 88.1,
+            "rca_quality_score": 5.0,
+            "rca_quality_normalized": 100.0
+        },
+        {
+            "query": "Our application cannot connect to the Azure SQL database 'e03-app-database'. The app keeps getting connection timeout errors. The SQL Server exists and the database is online. What is wrong?",
+            "conversation_id": "8bd7adb1-9a82-4486-b67a-352fadf89b75",
+            "retrieved_response": "Please run the following Azure CLI commands using the `azure` tool:\n\n    1.  **Get SQL Server Firewall Rules:**\n        `az sql server firewall-rule list --resource-group azure-agent-test-E03 --server e03sql6xz4cc5w --output table`\n\n    2.  **Check SQL Server Network Settings (Public Access):**\n        `az sql server show --resource-group azure-agent-test-E03 --name e03sql6xz4cc5w --query \"{publicNetworkAccess:publicNetworkAccess, privateEndpointConnections:privateEndpointConnections}\" --output json`\n\n    3.  **Search for the missing Application (VMs or Containers):**\n        `az vm list --query \"[].{Name:name, Group:resourceGroup, Location:location}\" --output table`\n        `az container list --query \"[].{Name:name, Group:resourceGroup, Location:location}\" --output table`",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-E03. SQL Server 'e03sql6xz4cc5w' in eastus2. Database 'e03-app-database' is online. Application connection string points to 'e03sql6xz4cc5w.database.windows.net'. Connection attempts time out with 'Cannot open server' error.",
+                "az sql server firewall-rule list --server e03sql6xz4cc5w --resource-group azure-agent-test-E03",
+                "az sql server show --name e03sql6xz4cc5w --resource-group azure-agent-test-E03"
+            ],
+            "ground_truth": "The SQL Server 'e03sql6xz4cc5w' has no firewall rules configured. Azure SQL Server blocks all inbound connections by default unless an explicit firewall rule allows the source IP. Fix: Add a firewall rule allowing the application's IP range (or 0.0.0.0-255.255.255.255 for Azure services).",
+            "answer_relevancy": 72.28,
+            "rca_quality_score": 3.0,
+            "rca_quality_normalized": 60.0
+        },
+        {
+            "query": "The product API app in resource group 'azure-agent-test-E04' cannot connect to its PostgreSQL database. Logs show 'Connection refused' on the configured port. The database server is healthy. What is the misconfiguration?",
+            "conversation_id": "20d8ea1f-4314-4cc4-b2da-b7e8623e5154",
+            "retrieved_response": "### Root Cause: Missing Firewall Rule for Azure Services\nThe connection is failing because the PostgreSQL server's firewall is blocking traffic from the App Service.\n\n### Findings & Evidence\n*   **App Service Configuration:** The App Service `e04apiycregy5m` is not integrated with a Virtual Network (`virtualNetworkSubnetId` is null in [Azure - E8](#task-E8)). Therefore, it attempts to connect to the database over the public Azure network.\n*   **Database Firewall:** The PostgreSQL server `azure-agent-test-E04` has **no firewall rules** configured ([Azure - E6](#task-E6)).\n*   **The Misconfiguration:** By default, Azure Database for PostgreSQL denies all external connections. To allow a standard Azure App Service to connect, the **\"Allow access to Azure services\"** option must be enabled. The absence of any firewall rules confirms this setting is currently disabled.\n\n### Recommendations\nTo fix the connectivity issue, you must update the PostgreSQL server's firewall configuration.\n\n**Option 1: Allow all Azure Services (Easiest)**\nEnable the \"Allow access to Azure services\" setting. This creates a firewall exception for internal Azure IPs.\n```bash\naz postgres server firewall-rule create \\\n  --resource-group azure-agent-test-E04 \\\n  --server-name azure-agent-test-E04 \\\n  --name AllowAzureIPs \\\n  --start-ip-address 0.0.0.0 \\\n  --end-ip-address 0.0.0.0\n```\n\n**Option 2: Allow Specific App Service IPs (More Secure)**\nAdd the specific outbound IP addresses of the App Service (found in [Azure - E8](#task-E8)) to the firewall allowlist.\n*   IPs to add: `20.62.146.70`, `20.62.146.81`, `20.62.146.190`, `20.62.146.222`, `20.62.146.231`, `20.62.147.3`, `20.49.104.44`",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-E04. App Service running a product API. PostgreSQL Flexible Server is healthy at 'e04-postgres.postgres.database.azure.com'. App logs show connection refused errors. DB_ENGINE is set to 'postgresql'.",
+                "az webapp config appsettings list --name e04apiycregy5m --resource-group azure-agent-test-E04"
+            ],
+            "ground_truth": "The App Service has DB_PORT=3306 (MySQL default port) but the backend is PostgreSQL which listens on port 5432. Fix: Change the DB_PORT app setting from '3306' to '5432'.",
+            "answer_relevancy": 80.67,
+            "rca_quality_score": 5.0,
+            "rca_quality_normalized": 100.0
+        },
+        {
+            "query": "The config service App Service in resource group 'azure-agent-test-E05' is getting 403 Forbidden when trying to fetch secrets from Key Vault. The app has a managed identity enabled. What is missing?",
+            "conversation_id": "587d5a14-fd43-45ed-9d6c-b816a6674b1a",
+            "retrieved_response": "The App Service is receiving a 403 Forbidden error because the Key Vault is configured to use **Azure RBAC** for authorization, but the App Service's managed identity has not been assigned the necessary role.\n\n### Findings & Evidence\n*   **RBAC is Enabled:** The Key Vault `e05kv4iwx4yni` has `enableRbacAuthorization` set to `true` (found in [Azure - E4](#task-E4)). This means legacy Access Policies are ignored, and permissions must be granted via Azure IAM roles.\n*   **Missing Role Assignment:** A check of the role assignments for the App Service's managed identity (Principal ID: `e0312222-9108-4406-9bbe-ae654eaa5800`) on the Key Vault returned no results (found in [Azure - E5](#task-E5)).\n\n### Root Cause\nThe App Service lacks the required Azure RBAC role to read secrets. Because the Key Vault enforces RBAC, simply enabling the Managed Identity is not enough; you must explicitly assign a data-plane role.\n\n### Recommendations\nAssign the **Key Vault Secrets User** role to the App Service's managed identity.\n\nYou can fix this by running the following command:\n\n```bash\naz role assignment create \\\n    --assignee \"e0312222-9108-4406-9bbe-ae654eaa5800\" \\\n    --role \"Key Vault Secrets User\" \\\n    --scope \"/subscriptions/a3f24626-a242-4cc7-b3fe-4e2e76e805b6/resourceGroups/azure-agent-test-E05/providers/Microsoft.KeyVault/vaults/e05kv4iwx4yni\"\n```",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-E05. App Service 'e05app4iwx4yni' has a system-assigned managed identity. Key Vault 'e05kv4iwx4yni' exists with RBAC authorization enabled. App setting KEY_VAULT_URI is correctly set. Secret reads return 403.",
+                "az webapp identity show --name e05app4iwx4yni --resource-group azure-agent-test-E05",
+                "az role assignment list --scope /subscriptions/19e207a9-769d-4afd-b261-10bbed2d43e8/resourceGroups/azure-agent-test-E05/providers/Microsoft.KeyVault/vaults/e05kv4iwx4yni"
+            ],
+            "ground_truth": "The App Service managed identity has no role assignment on Key Vault 'e05kv4iwx4yni'. The Key Vault uses RBAC authorization, so the identity needs the 'Key Vault Secrets User' role (ID: 4633458b-17de-408a-b874-0445c86b69e0). Fix: Assign the Key Vault Secrets User role to the App Service's managed identity on the Key Vault.",
+            "answer_relevancy": 81.93,
+            "rca_quality_score": 5.0,
+            "rca_quality_normalized": 100.0
+        },
+        {
+            "query": "Our media application in resource group 'azure-agent-test-E06' is getting 403 AuthorizationFailure errors when trying to read blobs from storage. The storage account exists and the container has public blob access. What is blocking access?",
+            "conversation_id": "ce75c0b5-75c5-4335-bdc6-4dd8fd74b9f9",
+            "retrieved_response": "### Causality Chain (5-Whys)\n- **Symptom:** The media application receives a 403 AuthorizationFailure when reading blobs.\n- **Why?** The request is being blocked by the Storage Account's network layer.\n- **Why?** The Storage Account Firewall is configured with `DefaultAction: Deny`.\n- **Why?** There are no IP addresses or Virtual Networks whitelisted in the `IPRules` to bypass this restriction.\n- **Root Cause:** The **Storage Account Firewall** is blocking all network traffic, which overrides the `AllowBlobPublicAccess: true` setting.\n\n### Findings & Evidence\nThe investigation of the resource group `azure-agent-test-E06` revealed the following:\n\n1.  **Firewall Blocking Access:**\n    The storage account `e06sap3wibvoy` has its network rule set to **Deny** by default with **zero** allowed IP rules.\n    *   Evidence: `DefaultAction: \"Deny\"`, `IPRules: []` seen in [Azure - S1](#task-S1).\n\n2.  **Configuration Conflict:**\n    While the setting `AllowBlobPublicAccess` is set to `true`, this only configures the *data plane* permissions. The *network plane* (Firewall) takes precedence. Since the firewall denies the connection, the public access setting is never evaluated.\n    *   Evidence: `AllowBlobPublicAccess: true` seen in [Azure - S1](#task-S1).\n\n3.  **Missing Application Resource:**\n    The \"media application\" mentioned was not found in this specific resource group. This suggests the traffic is coming from an external source or a different Azure resource group, making the firewall block inevitable since its IP is not whitelisted.\n    *   Evidence: Only the storage account was listed in [Azure - S2](#task-S2).\n\n### Recommendations\nTo restore access, you must modify the Networking settings of the storage account `e06sap3wibvoy`:\n\n1.  **If the data should be truly public:**\n    *   Change the **Firewall and virtual networks** setting to **\"Enabled from all networks\"**. This changes the `DefaultAction` to `Allow`.\n\n2.  **If the data should be restricted to the application:**\n    *   Identify the Public IP address or Virtual Network of your media application.\n    *   Add that specific IP or VNet to the **Firewall allow list** on the storage account.\n    *   Keep the default action as \"Deny\" to maintain security.",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-E06. Storage account exists with a public 'assets' container. Blob reads return 403 AuthorizationFailure. The storage account name starts with 'e06sa'.",
+                "az storage account show --resource-group azure-agent-test-E06 --query networkRuleSet",
+                "az storage account list --resource-group azure-agent-test-E06"
+            ],
+            "ground_truth": "The storage account has networkAcls.defaultAction=Deny with no IP rules or VNet rules configured. This blocks all public network access regardless of container-level public access settings. Fix: Change networkAcls.defaultAction to 'Allow', or add specific IP/VNet rules to permit legitimate access.",
+            "answer_relevancy": 86.67,
+            "rca_quality_score": 5.0,
+            "rca_quality_normalized": 100.0
+        },
+        {
+            "query": "ETL functions in the Function App in resource group 'azure-agent-test-E07' are being killed mid-execution after exactly 1 minute, even though they need up to 5 minutes to process large datasets. What configuration is causing this?",
+            "conversation_id": "345394f0-9a8f-4fe6-90a6-b4510365cca7",
+            "retrieved_response": "1. Run `az appservice plan show --name e07-etl-plan --resource-group azure-agent-test-E07` to get the SKU and tier.\n2. Run `az functionapp function list --name e07funcke2jgrrx --resource-group azure-agent-test-E07 --output json` to identify the function names and trigger types.",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-E07. Function App is on a Consumption (Y1) plan. Functions are processing batches of 1000 records. They are consistently killed after 60 seconds with a timeout exception. Default Consumption plan timeout is 5 minutes.",
+                "az functionapp config appsettings list --resource-group azure-agent-test-E07"
+            ],
+            "ground_truth": "The Function App has the app setting AzureFunctionsJobHost__functionTimeout=00:01:00 which overrides the default timeout and kills functions after 1 minute. Fix: Change AzureFunctionsJobHost__functionTimeout to '00:10:00' (or remove it to use the default 5-minute Consumption plan timeout).",
+            "answer_relevancy": 62.23,
+            "rca_quality_score": 2.0,
+            "rca_quality_normalized": 40.0
+        },
+        {
+            "query": "The metrics API App Service in resource group 'azure-agent-test-E08' is not sending any telemetry to Application Insights. The Application Insights resource 'e08-telemetry' exists and is active. What is misconfigured?",
+            "conversation_id": "6fbf5d86-d531-44cf-a17e-e2880003bb49",
+            "retrieved_response": "1. List the installed extensions for the web app 'e08appqkfgurcv' in resource group 'azure-agent-test-E08' using `az webapp extension list`.\n2. Check the diagnostic settings for the web app 'e08appqkfgurcv' using `az monitor diagnostic-settings list`.\n3. Check the 'requests/count' metric for the Application Insights resource 'e08-telemetry' to confirm if any data has been received in the last hour.",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-E08. App Service is running. Application Insights resource 'e08-telemetry' exists and shows no incoming telemetry. APPINSIGHTS_INSTRUMENTATIONKEY is set in app settings but no data arrives.",
+                "az webapp config appsettings list --resource-group azure-agent-test-E08",
+                "az monitor app-insights component show --app e08-telemetry --resource-group azure-agent-test-E08"
+            ],
+            "ground_truth": "The App Service APPINSIGHTS_INSTRUMENTATIONKEY is set to '00000000-0000-0000-0000-000000000000' (a fake/null GUID) instead of the actual instrumentation key from the 'e08-telemetry' Application Insights resource. Fix: Update APPINSIGHTS_INSTRUMENTATIONKEY to the real instrumentation key from az monitor app-insights component show.",
+            "answer_relevancy": 74.16,
+            "rca_quality_score": 3.0,
+            "rca_quality_normalized": 60.0
+        },
+        {
+            "query": "The on-call team in resource group 'azure-agent-test-E09' never receives alerts for the commerce API even during production incidents with high error rates. The alert rule 'e09-http-error-alert' exists. Why does it never fire?",
+            "conversation_id": "7b52d15a-a46b-41f1-9053-091a4d52cf57",
+            "retrieved_response": "The alert rule `e09-http-error-alert` is failing to fire and notify the team due to two critical misconfigurations found in the rule definition.\n\n### Causality Chain (5-Whys)\n- **Symptom:** The on-call team never receives alerts for the commerce API, even during incidents.\n- **Why?** The alert rule never triggers (fires), and even if it did, it has no instructions on who to notify.\n- **Why (Firing Issue)?** The trigger threshold is set to `9999` errors in 5 minutes.\n- **Why (Notification Issue)?** The `actions` list in the alert configuration is empty.\n- **Root Cause:** The alert rule was created with an unrealistically high threshold (`9999`) and was never linked to an Action Group.\n\n### Findings & Evidence\nThe configuration retrieved in **[Azure Alert Config - E5](#task-E5)** reveals the following issues:\n\n1.  **Unreachable Threshold:**\n    The rule is configured to trigger only when `Http5xx` errors exceed **9,999** within a 5-minute window.\n    ```json\n    \"threshold\": 9999.0,\n    \"operator\": \"GreaterThan\",\n    \"windowSize\": \"PT5M\"\n    ```\n    Unless the API is experiencing massive traffic (>33 errors/second), this condition will never be met.\n\n2.  **No Action Group Linked:**\n    The `actions` array is empty, meaning no email, SMS, or ITSM tool is configured to receive the alert.\n    ```json\n    \"actions\": []\n    ```\n\n### Recommendations\nTo fix this, you must update the alert rule:\n\n1.  **Lower the Threshold:** Change the threshold to a realistic value for your traffic volume (e.g., `GreaterThan 50` or `GreaterThan 100` depending on your tolerance).\n2.  **Add an Action Group:** Link the \"on-call team\" Action Group to this alert rule so notifications are actually sent when the threshold is breached.",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-E09. A metric alert 'e09-http-error-alert' targets the App Service and monitors Http5xx errors. The alert is enabled. During recent incidents with hundreds of 5xx errors, no notifications were triggered.",
+                "az monitor metrics alert show --name e09-http-error-alert --resource-group azure-agent-test-E09"
+            ],
+            "ground_truth": "The metric alert 'e09-http-error-alert' has its Http5xx threshold set to 9999, meaning it only fires if the app generates more than 9999 server errors in a 5-minute window - an unrealistically high value that is never reached. Fix: Lower the threshold to a reasonable value like 10.",
+            "answer_relevancy": 84.57,
+            "rca_quality_score": 4.0,
+            "rca_quality_normalized": 80.0
+        },
+        {
+            "query": "The orders service App Service in resource group 'azure-agent-test-E10' crashes on startup with the error 'database host not configured'. The database is healthy and other environment variables are correct. What is wrong?",
+            "conversation_id": "347aec72-e61b-4b56-9d59-dec0f0b8904a",
+            "retrieved_response": "1. Use the `github` tool to search for the exact string \"database host not configured\" to identify the repository and the code responsible for this error.\n2. Use `shell_execute` to run `cat ~/.azure/azureProfile.json` to check if a valid Azure subscription configuration exists on the file system.",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-E10. App Service crashes immediately on startup. Error: 'database host not configured - DB_HOST is empty'. DB_PORT=5432, DB_NAME=orders, DB_USER are all set correctly. The PostgreSQL server is healthy.",
+                "az webapp config appsettings list --resource-group azure-agent-test-E10"
+            ],
+            "ground_truth": "The App Service app setting DB_HOST is set to an empty string. The application requires a valid hostname to build its database connection string, and an empty DB_HOST causes startup failure. Fix: Set DB_HOST to the correct PostgreSQL server FQDN, e.g. 'e10-postgres.postgres.database.azure.com'.",
+            "answer_relevancy": 77.68,
+            "rca_quality_score": 1.0,
+            "rca_quality_normalized": 20.0
+        },
+        {
+            "query": "The order processing service App Service in resource group 'azure-agent-test-M01' is failing to read messages from the Service Bus queue. All message processing has stopped. What is wrong?",
+            "conversation_id": "e978fb38-e7f0-43da-abe7-9ab5666b3181",
+            "retrieved_response": "### Root Cause Identified: App Service \"Always On\" Disabled\n\nThe order processing failure is caused by the **App Service idling out**, which has stopped the background message listener.\n\n### Causality Chain (5-Whys)\n- **Symptom:** Message processing has stopped, and the App Service is not reading from the queue.\n- **Why?** The App Service process is not running (Metrics show 0 CPU usage).\n- **Why?** The application unloaded from memory due to inactivity.\n- **Why?** The **\"Always On\"** configuration setting is set to `False`.\n- **Root Cause:** When \"Always On\" is disabled, App Services unload after approximately 20 minutes of no incoming HTTP requests, killing any background threads (like Service Bus listeners).\n\n### Findings & Evidence\n*   **App Service Idle:** The configuration shows `AlwaysOn: False` in **[Azure - E3](#task-E3)**. Correspondingly, runtime metrics show `0` CPU Time and `0` Requests in **[Azure - E4](#task-E4)**, confirming the app is asleep.\n*   **Missing Messages:** The queue `orders-incoming` currently has `0` active messages (**[Azure - E2](#task-E2)**).\n    *   *Note:* Since the consumer is down, messages *should* be piling up. The fact that they are gone is due to the **1 Day Time-To-Live (TTL)** setting (`P1D`) observed in **[Azure - E2](#task-E2)**. Messages sent more than 24 hours ago have expired and been deleted.\n\n### Recommendations\n1.  **Enable \"Always On\":** Update the App Service configuration to set \"Always On\" to `true`. This ensures the background listener remains active even without HTTP traffic.\n    *   *Requirement:* This setting requires a Basic, Standard, or Premium App Service plan (not available on Free/Shared tiers).\n2.  **Review Message Retention:** The current TTL is set to 1 day. Consider increasing the `DefaultMessageTimeToLive` on the Service Bus queue to prevent data loss during future outages (e.g., to 3 or 7 days).\n3.  **Restart Application:** After enabling \"Always On\", restart the App Service to re-initialize the Service Bus listener.",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-M01. App Service 'm01appn5d6ivuq' reads from Service Bus namespace 'm01sbn5d6ivuq'. Message processing has stopped. The app setting SERVICE_BUS_QUEUE is configured.",
+                "az webapp config appsettings list --resource-group azure-agent-test-M01 --name m01appn5d6ivuq",
+                "az servicebus queue list --namespace-name m01sbn5d6ivuq --resource-group azure-agent-test-M01"
+            ],
+            "ground_truth": "The App Service setting SERVICE_BUS_QUEUE is set to 'orders-incomin' (missing final 'g') but the actual Service Bus queue is named 'orders-incoming'. The queue name typo causes the SDK to look for a non-existent queue, silently failing to consume messages. Fix: Update SERVICE_BUS_QUEUE to 'orders-incoming'.",
+            "answer_relevancy": 73.95,
+            "rca_quality_score": 5.0,
+            "rca_quality_normalized": 100.0
+        },
+        {
+            "query": "The App Service 'm02appc7nrzw3h' in resource group 'azure-agent-test-M02' is experiencing random instance restarts every few minutes. Users report intermittent 503 errors. The application code looks correct. What is causing the restarts?",
+            "conversation_id": "4c586455-81e6-4fb3-89b0-c174bff272ea",
+            "retrieved_response": "### Root Cause: Shared App Service Plan Limitations\nThe issues are caused by the limitations of the **Shared App Service Plan** hosting the application.\n\n#### Causality Chain\n- **Symptom:** Random instance restarts and intermittent 503 errors.\n- **Why?** The application is unloading from memory and potentially hitting resource limits.\n- **Why?** The **Shared** hosting plan does not support the **`AlwaysOn`** feature and enforces strict **CPU Quotas**.\n- **Root Cause:** The infrastructure tier (`shared-app-plan`) is insufficient for the application's availability requirements.\n\n### Findings & Evidence\n- **Idle Timeouts (Restarts):** The app configuration shows `AlwaysOn: false` [Azure - E2](#task-E2). On Shared plans, apps are unloaded from memory after ~20 minutes of inactivity. The \"restarts\" are actually **Cold Starts** occurring when traffic resumes.\n- **Service Unavailable (503s):** Shared plans enforce a strict CPU limit (e.g., 60 minutes/day). Once exceeded, the platform stops the site, returning 503 errors.\n- **Zero Activity:** Metrics for CPU, Memory, and Requests have been **0** for the past hour [Azure - E3](#task-E3), confirming the app is currently unloaded or stopped by the platform.\n\n### Recommendations\n1.  **Scale Up the Plan:** Upgrade the App Service Plan to **Basic (B1)** or **Standard (S1)**.\n    - This allows you to enable **`AlwaysOn`**, preventing idle timeouts and cold starts.\n    - These tiers do not have the strict daily CPU time quotas that cause the app to stop and throw 503 errors.\n2.  **Enable Always On:** Once scaled up, ensure the `AlwaysOn` setting is switched to `true` in the Configuration blade.",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-M02. App Service 'm02appc7nrzw3h' instances are restarting every few minutes. Application logs show no crash. Users report 503 errors. Health check is configured.",
+                "az webapp show --resource-group azure-agent-test-M02 --name m02appc7nrzw3h --query 'siteConfig'",
+                "az webapp config show --resource-group azure-agent-test-M02 --name m02appc7nrzw3h"
+            ],
+            "ground_truth": "The App Service has a health check path configured as '/health', but the application does not expose a '/health' endpoint (it returns 404). Azure's health check mechanism marks the instance as unhealthy after repeated 404 responses and restarts it. Fix: Either implement a '/health' endpoint that returns 200, or clear the healthCheckPath setting.",
+            "answer_relevancy": 84.67,
+            "rca_quality_score": 5.0,
+            "rca_quality_normalized": 100.0
+        },
+        {
+            "query": "Mobile app users are getting TLS handshake errors when connecting to the App Service 'm03apps33hfrvk' in resource group 'azure-agent-test-M03'. Desktop browsers work fine. What is wrong?",
+            "conversation_id": "ade33a37-c316-476c-9892-87d1a186164b",
+            "retrieved_response": "The issue is that the App Service **'m03apps33hfrvk'** is configured to require **TLS 1.3** as the minimum version. \n\nWhile most modern desktop browsers support TLS 1.3, many mobile operating systems, older devices, and certain mobile networking libraries still rely on TLS 1.2. When these mobile clients attempt to connect, the App Service rejects the handshake because it does not meet the TLS 1.3 requirement, resulting in the connection errors you are seeing.\n\n### Findings:\n*   **Configuration:** The `minTlsVersion` for the App Service is currently set to **\"1.3\"**.\n*   **Verification:** Testing the endpoint with a TLS 1.2 handshake confirmed that the server immediately terminates the connection with a `protocol version` alert.\n*   **Impact:** Desktop browsers work because they successfully negotiate TLS 1.3, whereas mobile clients failing the handshake are likely limited to TLS 1.2.\n\n### Resolution:\nTo fix this, the minimum TLS version should be lowered to **1.2** to maintain compatibility with mobile clients while still ensuring a high level of security.\n\n**Note:** I attempted to remediate this setting; however, the update was **NOT completed** due to environment restrictions. You will need to manually update the configuration via the Azure Portal or CLI:\n\n**Azure CLI Command:**\n```bash\naz webapp config set --resource-group azure-agent-test-M03 --name m03apps33hfrvk --min-tls-version 1.2\n```",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-M03. App Service 'm03apps33hfrvk' serves the mobile API. Mobile clients (iOS and Android) report TLS handshake failures. Desktop browsers work. The app is running and reachable.",
+                "az webapp show --resource-group azure-agent-test-M03 --name m03apps33hfrvk --query 'siteConfig.minTlsVersion'",
+                "az webapp config show --resource-group azure-agent-test-M03 --name m03apps33hfrvk"
+            ],
+            "ground_truth": "The App Service has minTlsVersion set to '1.3'. Mobile clients and many partner integrations only support TLS 1.2. By requiring TLS 1.3, the server rejects TLS 1.2 handshakes, causing connection failures on older clients. Fix: Change minTlsVersion to '1.2' to accept both TLS 1.2 and TLS 1.3 connections.",
+            "answer_relevancy": 82.1,
+            "rca_quality_score": 5.0,
+            "rca_quality_normalized": 100.0
+        },
+        {
+            "query": "The Function App 'm04funckry4fvhc' in resource group 'azure-agent-test-M04' is returning HTTP 500 errors for all function invocations. The Python function code was recently deployed. What is wrong?",
+            "conversation_id": "3af44525-3d5d-4aec-96dc-070ee160669f",
+            "retrieved_response": "Hey there! It looks like your Function App is running, but the specific Python worker process required to execute your code is crashing. This is likely due to an issue introduced in the recent deployment.\n\nHere is the breakdown of the issue:\n\n### Causality Chain (5-Whys)\n*   **Symptom:** The Function App returns HTTP 500 Internal Server Error for all function invocations.\n*   **Why?** The Azure Function Host is unable to hand off execution to the language worker.\n*   **Why?** The Python Language Worker process failed to initialize or crashed on startup.\n*   **Why?** The worker process encountered a fatal error while loading the function code or dependencies.\n*   **Root Cause:** **Worker Process Failure** caused by the recent deployment. This is typically due to a syntax error in the Python code (e.g., `__init__.py`) or a missing dependency in `requirements.txt`.\n\n### Findings & Evidence\n*   **Host Status:** The Function App host is active and reachable. A `curl` request to the root endpoint (`https://m04funckry4fvhc.azurewebsites.net`) returned **200 OK** [Curl_Root - Curl_Root](#task-Curl_Root). This rules out a complete infrastructure outage; the server is up, but it cannot run your specific code.\n*   **Error Identification:** External data for this resource explicitly identifies the error as: **\"The worker process failed to start\"** [Search_GH_Func - Search_GH_Func](#task-Search_GH_Func).\n*   **Correlation:** The issue began immediately after the recent Python code deployment, strongly suggesting the deployment introduced the breaking change.\n\n### Recommendations\n1.  **Inspect Local Logs:** Since Azure CLI access is currently restricted, run the function locally using `func start` to see the specific Python syntax error or `ModuleNotFoundError`.\n2.  **Check Dependencies:** Verify that all packages imported in the code are listed in `requirements.txt`.\n3.  **Verify Syntax:** Check `__init__.py` for syntax errors that would prevent the Python interpreter from loading the module.",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-M04. Function App 'm04funckry4fvhc' returns 500 for all invocations. Python code was deployed successfully. The function app is in running state. Error: 'The worker process failed to start'.",
+                "az functionapp config appsettings list --resource-group azure-agent-test-M04 --name m04funckry4fvhc",
+                "az functionapp show --resource-group azure-agent-test-M04 --name m04funckry4fvhc"
+            ],
+            "ground_truth": "The Function App setting FUNCTIONS_WORKER_RUNTIME is set to 'dotnet' but the deployed code is Python. The Azure Functions host loads the .NET worker, which cannot execute Python code, causing all invocations to fail with 500. Fix: Change FUNCTIONS_WORKER_RUNTIME to 'python'.",
+            "answer_relevancy": 78.34,
+            "rca_quality_score": 5.0,
+            "rca_quality_normalized": 100.0
+        },
+        {
+            "query": "The SRE team in resource group 'azure-agent-test-M05' cannot query logs from more than 30 days ago in Log Analytics workspace 'm05-platform-logs'. A compliance audit requires 90 days of log history. What is wrong?",
+            "conversation_id": "f4e1b3fc-7c90-4d68-b592-1429c7616325",
+            "retrieved_response": "The issue is that the **Log Analytics workspace data retention period is explicitly configured to 30 days**, which causes any logs older than that to be purged or become unavailable.\n\n### Findings & Evidence\n*   **Current Configuration:** The workspace `m05-platform-logs` has a retention policy set to **30 days**.\n*   **Evidence:** This was confirmed via the Azure CLI command in [Azure - E1](#task-E1), which returned:\n    ```text\n    Name               RetentionInDays    ProvisioningState\n    -----------------  -----------------  -------------------\n    m05-platform-logs  30                 Succeeded\n    ```\n\n### Recommendations\nTo satisfy the compliance audit requirement of 90 days, you must update the retention period for the workspace.\n\nYou can update this setting using the following Azure CLI command:\n\n```bash\naz monitor log-analytics workspace update \\\n  --resource-group azure-agent-test-M05 \\\n  --workspace-name m05-platform-logs \\\n  --retention-time 90\n```",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-M05. Log Analytics workspace 'm05-platform-logs' is used for all platform logs. Security audit requires 90 days retention. Queries for logs older than 30 days return no results.",
+                "az monitor log-analytics workspace show --resource-group azure-agent-test-M05 --workspace-name m05-platform-logs",
+                "az monitor log-analytics workspace show --resource-group azure-agent-test-M05 --workspace-name m05-platform-logs --query 'retentionInDays'"
+            ],
+            "ground_truth": "The Log Analytics workspace 'm05-platform-logs' has retentionInDays set to 30 (minimum default). Logs older than 30 days are automatically purged, making them unavailable for compliance audits that require 90 days. Fix: Update retentionInDays to 90 to meet the compliance requirement.",
+            "answer_relevancy": 83.72,
+            "rca_quality_score": 4.0,
+            "rca_quality_normalized": 80.0
+        },
+        {
+            "query": "The analytics team reports that Application Insights for App Service 'm06appn5oka6hg' in resource group 'azure-agent-test-M06' is only showing about 1% of expected requests and traces. Errors are nearly impossible to diagnose. What is wrong?",
+            "conversation_id": "dae9a776-8638-455d-bf26-a1cf7ec38d97",
+            "retrieved_response": "Please run the following Azure CLI commands to retrieve the full configuration and billing status in JSON format:\n\n1. `az monitor app-insights component show --app m06-api-insights --resource-group azure-agent-test-M06 --output json`\n2. `az monitor app-insights component billing show --app m06-api-insights --resource-group azure-agent-test-M06 --output json`",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-M06. App Service 'm06appn5oka6hg' has Application Insights 'm06-api-insights' configured. Only 1 in 100 requests appear in App Insights. Error rates seem artificially low. App settings include APPINSIGHTS_SAMPLING_PERCENTAGE.",
+                "az webapp config appsettings list --resource-group azure-agent-test-M06 --name m06appn5oka6hg",
+                "az monitor app-insights component show --resource-group azure-agent-test-M06 --app m06-api-insights"
+            ],
+            "ground_truth": "The App Service has APPINSIGHTS_SAMPLING_PERCENTAGE set to 1, meaning only 1% of telemetry (requests, traces, exceptions) is sent to Application Insights. 99% of data is discarded at the SDK level. Fix: Set APPINSIGHTS_SAMPLING_PERCENTAGE to 100 to capture all telemetry, or to an appropriate value like 10-25 for high-traffic services.",
+            "answer_relevancy": 68.34,
+            "rca_quality_score": 1.0,
+            "rca_quality_normalized": 20.0
+        },
+        {
+            "query": "The reporting API App Service 'm07appcve46lqs' in resource group 'azure-agent-test-M07' returns 404 for all report download requests. The reports were uploaded to storage yesterday. What is wrong?",
+            "conversation_id": "4a88016d-99ea-4589-b1b2-637671030da5",
+            "retrieved_response": "Please list the blobs in the 'reports' container of storage account 'm07sacve46lqs' to verify if the files uploaded yesterday exist.",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-M07. App Service 'm07appcve46lqs' downloads report files from storage account 'm07sacve46lqs'. All download requests return 404 ContainerNotFound. The storage account is accessible. Reports are confirmed uploaded.",
+                "az webapp config appsettings list --resource-group azure-agent-test-M07 --name m07appcve46lqs",
+                "az storage container list --account-name m07sacve46lqs --auth-mode login"
+            ],
+            "ground_truth": "The App Service has STORAGE_CONTAINER set to 'reports-archive', but the actual blob container in storage account 'm07sacve46lqs' is named 'reports'. The mismatch causes all blob read operations to return 404 ContainerNotFound. Fix: Update STORAGE_CONTAINER to 'reports' to match the actual container name.",
+            "answer_relevancy": 72.91,
+            "rca_quality_score": 2.0,
+            "rca_quality_normalized": 40.0
+        },
+        {
+            "query": "Users of the user API App Service 'm08appjfzqv75w' in resource group 'azure-agent-test-M08' report that the first request after a quiet period takes 20-30 seconds. Subsequent requests are fast. The app is on a paid B1 plan. What is wrong?",
+            "conversation_id": "d7fe7dde-da7f-46d7-85b6-a2214919ef0d",
+            "retrieved_response": "### Root Cause Identified: \"Always On\" is Disabled\n        \n        The issue is caused by the **Always On** setting being set to `False` on your App Service.\n        \n        **Evidence:**\n        - The configuration query returned `False` for the `alwaysOn` setting [Azure - E2](#task-E2).\n        \n        **Explanation:**\n        Although your App Service is on a **B1 (Basic)** plan which supports the \"Always On\" feature, it is currently disabled. \n        - When \"Always On\" is off, Azure automatically unloads your application after approximately 20 minutes of inactivity to conserve resources.\n        - The \"first request\" you mentioned triggers a **cold start**, where Azure must allocate resources and restart the application process. This initialization phase is responsible for the 20-30 second delay.\n        - Subsequent requests are fast because the application is already loaded in memory.\n        \n        ### Recommendation\n        \n        To fix this, you should enable the \"Always On\" feature. This will keep the application loaded even during quiet periods.\n        \n        You can enable it via the Azure Portal (under Configuration > General settings) or by asking the planner to run the following command:\n        \n        ```bash\n        az webapp config set --resource-group azure-agent-test-M08 --name m08appjfzqv75w --always-on true\n        ```",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-M08. App Service 'm08appjfzqv75w' is on a B1 (Basic) paid plan. First request after ~20 minutes of inactivity takes 20-30 seconds (cold start). Subsequent requests respond normally in milliseconds.",
+                "az webapp show --resource-group azure-agent-test-M08 --name m08appjfzqv75w --query 'siteConfig.alwaysOn'",
+                "az webapp config show --resource-group azure-agent-test-M08 --name m08appjfzqv75w"
+            ],
+            "ground_truth": "The App Service has alwaysOn set to false. Despite being on a paid B1 plan (which supports Always On), the app is allowed to go idle after 20 minutes of inactivity. When a request arrives, Azure must cold-start the application, causing 20-30 second delays. Fix: Set alwaysOn to true to keep the app warm at all times.",
+            "answer_relevancy": 79.4,
+            "rca_quality_score": 5.0,
+            "rca_quality_normalized": 100.0
+        },
+        {
+            "query": "The backend API App Service 'm09app375gflqd' in resource group 'azure-agent-test-M09' is sending telemetry to the wrong Application Insights workspace. Two App Insights resources exist: 'm09-telemetry' (active) and 'm09-legacy-telemetry' (decommissioned). What is wrong?",
+            "conversation_id": "6c91bf54-bb0e-4318-9503-abf6ef9ab40b",
+            "retrieved_response": "Hello! To determine why the App Service is sending telemetry to the decommissioned workspace, we need to investigate the deployment history and source code configuration.\n\n### Causality Chain (5-Whys)\n*   **Symptom:** The App Service `m09app375gflqd` is sending telemetry to the wrong Application Insights workspace (`m09-legacy-telemetry`).\n*   **Why?** The application is likely configured with the incorrect Instrumentation Key (`9260b3e5...`) instead of the active one (`cef5413e...`).\n*   **Why?** The configuration source (Deployment template or Source Code) likely retains the old value.\n*   **Why?** We need to inspect the deployment history and the associated GitHub repository to identify where the stale configuration is coming from.\n\n### Investigation Steps\nPlease execute the following commands to gather the necessary information:\n\n1.  **Check Deployment History**\n    Run this command to review recent deployments, which may reveal the initial configuration:\n    ```bash\n    az group deployment list --resource-group azure-agent-test-M09 --query \"sort_by([], &properties.timestamp) | reverse([]) | [0:5].{Name:name, Timestamp:properties.timestamp, ProvisioningState:properties.provisioningState}\" -o table\n    ```\n\n2.  **Search GitHub**\n    Search for the repository matching the App Service tag or name to inspect the source code:\n    *   Query: `m09-backend-api`\n    *   Query: `m09app375gflqd`\n\n3.  **Check Application Reachability**\n    Verify if the application is reachable and exposing health information:\n    ```bash\n    curl -I https://m09app375gflqd.azurewebsites.net\n    curl https://m09app375gflqd.azurewebsites.net/health\n    ```",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-M09. App Service 'm09app375gflqd' has APPLICATIONINSIGHTS_CONNECTION_STRING configured. Two App Insights exist: 'm09-telemetry' (tagged Status=active) and 'm09-legacy-telemetry' (tagged Status=legacy-decommissioned). Telemetry is not appearing in 'm09-telemetry'.",
+                "az webapp config appsettings list --resource-group azure-agent-test-M09 --name m09app375gflqd",
+                "az monitor app-insights component list --resource-group azure-agent-test-M09"
+            ],
+            "ground_truth": "The App Service APPLICATIONINSIGHTS_CONNECTION_STRING points to the 'm09-legacy-telemetry' App Insights resource (decommissioned) instead of the active 'm09-telemetry' resource. The InstrumentationKey in the connection string matches 'm09-legacy-telemetry', not 'm09-telemetry'. Fix: Update APPLICATIONINSIGHTS_CONNECTION_STRING to use the connection string from 'm09-telemetry'.",
+            "answer_relevancy": 81.63,
+            "rca_quality_score": 2.0,
+            "rca_quality_normalized": 40.0
+        },
+        {
+            "query": "The on-call team for resource group 'azure-agent-test-M10' is not receiving alert notifications even though Azure Monitor metric alerts are firing. The payment API has been experiencing 5xx errors. What is wrong?",
+            "conversation_id": "4be270a9-cd9b-498c-836e-0f011cba6783",
+            "retrieved_response": "### Causality Chain (5-Whys)\n\n**Issue 1: Missing Notifications**\n- **Symptom:** On-call team is not receiving alert emails.\n- **Why?** The Action Group `m10-oncall-team` is sending emails to the wrong address.\n- **Root Cause:** The Action Group is configured with `oncall@old-company-name.com` instead of the correct corporate domain.\n\n**Issue 2: Payment API 5xx Errors**\n- **Symptom:** Payment API is experiencing 5xx errors and firing alerts.\n- **Why?** The application is timing out or returning 503s during request processing.\n- **Why?** The App Service process is unloading (shutting down) during idle periods.\n- **Why?** The `AlwaysOn` configuration setting is set to `false`.\n- **Root Cause:** Misconfiguration of the App Service `m10apppulvvesb` where `AlwaysOn` is disabled in a production environment.\n\n### Findings & Evidence\n\n1.  **Notification Misconfiguration:**\n    *   The Action Group **m10-oncall-team** is configured with the email receiver `oncall@old-company-name.com`.\n    *   Evidence: [azure - E2](#task-E2) (`az monitor action-group show`).\n\n2.  **App Service Instability (5xx Errors):**\n    *   The App Service **m10apppulvvesb** has **`\"alwaysOn\": false`**. In production, this setting must be `true` to keep the app loaded.\n    *   Evidence: [azure - E5](#task-E5) (`az webapp config show`).\n    *   **Resource Exhaustion/Idle State:** The metrics for `CpuTime` and `MemoryWorkingSet` are flat at **0** for the last hour. This confirms the application has completely unloaded/stopped due to inactivity. Any new request will trigger a slow \"cold start,\" causing the 5xx errors.\n    *   Evidence: [azure - E4](#task-E4) (`az monitor metrics list`).\n\n### Recommendations\n\n1.  **Fix Alert Notifications:**\n    *   Update the **m10-oncall-team** Action Group to use the correct on-call email address.\n\n2.  **Stabilize Payment API:**\n    *   Enable **Always On** for the App Service `m10apppulvvesb`.\n    *   Command: `az webapp config set --resource-group azure-agent-test-M10 --name m10apppulvvesb --always-on true`",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-M10. Metric alert 'm10-payment-error-alert' is firing (severity 1) on App Service 'm10apppulvvesb' for Http5xx > 5. The action group 'm10-oncall-team' is configured. On-call engineers report receiving no email pages.",
+                "az monitor metrics alert show --resource-group azure-agent-test-M10 --name m10-payment-error-alert",
+                "az monitor action-group show --resource-group azure-agent-test-M10 --name m10-oncall-team"
+            ],
+            "ground_truth": "The action group 'm10-oncall-team' has the email receiver 'OnCallEngineer' configured with address 'oncall@old-company-name.com', which is a dead mailbox from the old company domain. Alerts fire correctly but notifications are delivered to a non-existent email address. Fix: Update the email receiver in action group 'm10-oncall-team' to the current on-call address, e.g. 'oncall@company.com'.",
+            "answer_relevancy": 80.8,
+            "rca_quality_score": 5.0,
+            "rca_quality_normalized": 100.0
+        }
+    ],
+    "summary": {
+        "total_rca_queries": 20,
+        "answer_relevancy": 78.71,
+        "avg_rca_quality_score": 77.0,
+        "failed_indices_no_db_data": []
+    }
+}

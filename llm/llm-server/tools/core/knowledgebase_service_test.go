@@ -1,0 +1,111 @@
+package core
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
+
+// cdataExtract pulls every character that the standard CDATA parsing rules
+// would expose from a correctly framed payload. It walks the string, respects
+// `<![CDATA[` / `]]>` markers, and returns the concatenated visible text.
+// Used by the tests below to prove that escapeCDATA preserves the net user
+// content byte-for-byte regardless of how many times `]]>` appears.
+func cdataExtract(t *testing.T, wrapped string) string {
+	t.Helper()
+	const open = "<![CDATA["
+	const close = "]]>"
+	var out strings.Builder
+	i := 0
+	for i < len(wrapped) {
+		openIdx := strings.Index(wrapped[i:], open)
+		assert.GreaterOrEqual(t, openIdx, 0, "wrapped content must open with CDATA")
+		i += openIdx + len(open)
+		closeIdx := strings.Index(wrapped[i:], close)
+		assert.GreaterOrEqual(t, closeIdx, 0, "every CDATA section must close")
+		out.WriteString(wrapped[i : i+closeIdx])
+		i += closeIdx + len(close)
+		if i >= len(wrapped) {
+			break
+		}
+		// The only thing that can live BETWEEN two CDATA sections in our
+		// escaping scheme is nothing at all — the next section must open
+		// immediately. If anything else is there, the test fails.
+		assert.True(t, strings.HasPrefix(wrapped[i:], open),
+			"after closing CDATA we must either end or reopen immediately, got %q", wrapped[i:])
+	}
+	return out.String()
+}
+
+func TestEscapeCDATA_NoMarker(t *testing.T) {
+	// Fast path: no `]]>` means no allocation, no change.
+	in := "just a regular skill body with <tags> and lots of text\nand newlines"
+	got := escapeCDATA(in)
+	assert.Equal(t, in, got, "input without `]]>` must be returned verbatim")
+}
+
+func TestEscapeCDATA_Empty(t *testing.T) {
+	assert.Equal(t, "", escapeCDATA(""))
+}
+
+func TestEscapeCDATA_SingleMarker(t *testing.T) {
+	in := "foo]]>bar"
+	got := escapeCDATA(in)
+	assert.Equal(t, "foo]]]]><![CDATA[>bar", got)
+
+	// Wrap it in a real CDATA section and verify a parser would reassemble
+	// the exact original bytes.
+	wrapped := "<![CDATA[" + got + "]]>"
+	assert.Equal(t, in, cdataExtract(t, wrapped),
+		"escaped payload inside a CDATA section must round-trip to the original bytes")
+}
+
+func TestEscapeCDATA_MultipleMarkers(t *testing.T) {
+	in := "prefix]]>middle]]>suffix"
+	got := escapeCDATA(in)
+	wrapped := "<![CDATA[" + got + "]]>"
+	assert.Equal(t, in, cdataExtract(t, wrapped))
+}
+
+func TestEscapeCDATA_AdjacentMarkers(t *testing.T) {
+	// Back-to-back markers must also round-trip. Nasty edge case for naive
+	// replacements that split on the first match and then miss the rest.
+	in := "]]>]]>"
+	got := escapeCDATA(in)
+	wrapped := "<![CDATA[" + got + "]]>"
+	assert.Equal(t, in, cdataExtract(t, wrapped))
+}
+
+func TestEscapeCDATA_AtBoundaries(t *testing.T) {
+	cases := []string{
+		"]]>starts with marker",
+		"ends with marker]]>",
+		"]]>",
+	}
+	for _, in := range cases {
+		got := escapeCDATA(in)
+		wrapped := "<![CDATA[" + got + "]]>"
+		assert.Equal(t, in, cdataExtract(t, wrapped), "case %q must round-trip", in)
+	}
+}
+
+func TestEscapeCDATA_PartialMarkerSequenceNotMistaken(t *testing.T) {
+	// A lone `]]` or a `]>` must NOT be escaped — only the full `]]>` is the
+	// CDATA terminator. This guards against an over-eager escape that would
+	// mangle skill bodies containing closing brackets in prose.
+	in := "one bracket ] two brackets ]] gt > all fine, neither ]> nor ] alone"
+	got := escapeCDATA(in)
+	assert.Equal(t, in, got)
+}
+
+func TestEscapeCDATA_XmlSkillExample(t *testing.T) {
+	// Realistic scenario: a skill body that literally teaches CDATA usage
+	// and therefore contains an embedded closing marker in sample text.
+	in := "To embed raw text in XML use `<![CDATA[hello]]>` — everything\n" +
+		"between the open and close is treated as literal characters."
+	got := escapeCDATA(in)
+	wrapped := "<![CDATA[" + got + "]]>"
+	assert.Equal(t, in, cdataExtract(t, wrapped),
+		"a skill that teaches CDATA must still round-trip inside our wrapper")
+}

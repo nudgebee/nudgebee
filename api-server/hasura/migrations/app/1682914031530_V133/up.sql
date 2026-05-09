@@ -1,0 +1,36 @@
+
+CREATE
+OR REPLACE VIEW "public"."alert_metrices_view" AS
+SELECT
+    rm.timestamp as timestamp,
+    rm.metric as metric,
+    rm.value as value,
+    rm.cloud_resource_id as resource_id,
+    cr.service_name as resource_service_name,
+    cr.meta as resource_meta,
+    cr.tags as resource_tags,
+    cr.name as resource_name,
+    cr.account as account_id,
+    cr.tenant as tenant_id
+FROM
+  (
+    cloud_resource_metrics rm
+    LEFT JOIN cloud_resourses cr ON ((rm.cloud_resource_id = cr.id))
+    
+  )
+LIMIT 1
+;
+
+CREATE OR REPLACE VIEW "public"."alert_metrices_view" AS 
+ SELECT rm."timestamp",
+    rm.metric,
+    rm.value,
+    rm.cloud_resource_id AS resource_id,
+    cr.service_name AS resource_service_name,
+    cr.meta AS resource_meta,
+    cr.tags AS resource_tags,
+    cr.name AS resource_name,
+    cr.account AS account_id,
+    cr.tenant AS tenant_id
+   FROM (cloud_resource_metrics rm
+     LEFT JOIN cloud_resourses cr ON ((rm.cloud_resource_id = cr.id)));

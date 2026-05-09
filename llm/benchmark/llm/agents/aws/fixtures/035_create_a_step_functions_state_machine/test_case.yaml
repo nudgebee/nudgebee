@@ -1,0 +1,7 @@
+user_prompt: Create a Step Functions state machine.
+expected_output:
+- aws stepfunctions create-state-machine --name <state-machine-name> --definition
+  <state-machine-definition> --role-arn <role-arn>
+tags:
+- command
+- aws

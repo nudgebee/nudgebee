@@ -1,0 +1,110 @@
+table:
+  name: k8s_account_resource_usage
+  schema: public
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - avg_cpu_request
+        - avg_cpu_usage
+        - avg_egress
+        - avg_ingress
+        - avg_mem_request
+        - avg_mem_usage
+        - cloud_account_id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: X-Hasura-User-Account-Ids
+      limit: 95
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - avg_cpu_request
+        - avg_cpu_usage
+        - avg_egress
+        - avg_ingress
+        - avg_mem_request
+        - avg_mem_usage
+        - cloud_account_id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: X-Hasura-User-Readonly-Account-Ids
+      limit: 95
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - avg_cpu_request
+        - avg_cpu_usage
+        - avg_egress
+        - avg_ingress
+        - avg_mem_request
+        - avg_mem_usage
+        - cloud_account_id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: x-hasura-user-namespaced-account-ids
+      limit: 95
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - avg_cpu_request
+        - avg_cpu_usage
+        - avg_egress
+        - avg_ingress
+        - avg_mem_request
+        - avg_mem_usage
+        - cloud_account_id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: x-hasura-user-namespaced-readonly-account-ids
+      limit: 95
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - avg_cpu_request
+        - avg_cpu_usage
+        - avg_egress
+        - avg_ingress
+        - avg_mem_request
+        - avg_mem_usage
+        - cloud_account_id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - avg_cpu_request
+        - avg_cpu_usage
+        - avg_egress
+        - avg_ingress
+        - avg_mem_request
+        - avg_mem_usage
+        - cloud_account_id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""

@@ -1,0 +1,7 @@
+user_prompt: Show me all the ingresses in my cluster.
+expected_output:
+- kubectl get ingress
+- kubectl get ing
+tags:
+- command
+- kubernetes

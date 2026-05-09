@@ -1,0 +1,212 @@
+table:
+  name: slo_report
+  schema: public
+object_relationships:
+  - name: slo_config
+    using:
+      foreign_key_constraint_on: config_id
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - bad_events_count
+        - error_budget_burn_rate
+        - error_budget_burn_rate_threshold
+        - error_budget_consumed_ratio
+        - error_budget_measurement
+        - error_budget_minutes
+        - error_budget_remaining_minutes
+        - error_budget_target
+        - error_minutes
+        - events_count
+        - gap
+        - good_events_count
+        - sli_measurement
+        - status
+        - workload_name
+        - workload_namespace
+        - timestamp
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - config_id
+        - id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: x-hasura-user-account-ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - bad_events_count
+        - error_budget_burn_rate
+        - error_budget_burn_rate_threshold
+        - error_budget_consumed_ratio
+        - error_budget_measurement
+        - error_budget_minutes
+        - error_budget_remaining_minutes
+        - error_budget_target
+        - error_minutes
+        - events_count
+        - gap
+        - good_events_count
+        - sli_measurement
+        - status
+        - workload_name
+        - workload_namespace
+        - timestamp
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - config_id
+        - id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: x-hasura-user-readonly-account-ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - bad_events_count
+        - error_budget_burn_rate
+        - error_budget_burn_rate_threshold
+        - error_budget_consumed_ratio
+        - error_budget_measurement
+        - error_budget_minutes
+        - error_budget_remaining_minutes
+        - error_budget_target
+        - error_minutes
+        - events_count
+        - gap
+        - good_events_count
+        - sli_measurement
+        - status
+        - workload_name
+        - workload_namespace
+        - timestamp
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - config_id
+        - id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: x-hasura-user-namespaced-account-ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - bad_events_count
+        - error_budget_burn_rate
+        - error_budget_burn_rate_threshold
+        - error_budget_consumed_ratio
+        - error_budget_measurement
+        - error_budget_minutes
+        - error_budget_remaining_minutes
+        - error_budget_target
+        - error_minutes
+        - events_count
+        - gap
+        - good_events_count
+        - sli_measurement
+        - status
+        - workload_name
+        - workload_namespace
+        - timestamp
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - config_id
+        - id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: x-hasura-user-namespaced-readonly-account-ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - bad_events_count
+        - error_budget_burn_rate
+        - error_budget_burn_rate_threshold
+        - error_budget_consumed_ratio
+        - error_budget_measurement
+        - error_budget_minutes
+        - error_budget_remaining_minutes
+        - error_budget_target
+        - error_minutes
+        - events_count
+        - gap
+        - good_events_count
+        - sli_measurement
+        - status
+        - workload_name
+        - workload_namespace
+        - timestamp
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - config_id
+        - id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - bad_events_count
+        - error_budget_burn_rate
+        - error_budget_burn_rate_threshold
+        - error_budget_consumed_ratio
+        - error_budget_measurement
+        - error_budget_minutes
+        - error_budget_remaining_minutes
+        - error_budget_target
+        - error_minutes
+        - events_count
+        - gap
+        - good_events_count
+        - sli_measurement
+        - status
+        - workload_name
+        - workload_namespace
+        - timestamp
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - config_id
+        - id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+    comment: ""

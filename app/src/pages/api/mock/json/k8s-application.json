@@ -1,0 +1,827 @@
+{
+  "k8s_workloads_list": {
+    "data": {
+      "k8s_workloads_aggregate": {
+        "aggregate": {
+          "count": 10
+        }
+      },
+      "k8s_workloads": [
+        {
+          "namespace": "testenv52",
+          "name": "testenv52-forwarder",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-18T12:46:41",
+          "total_pods": 1,
+          "ready_pods": 1,
+          "cloud_resource_id": "9d08c266-c122-5a8b-8a8a-e11fde4ffa33",
+          "tenant_id": "demo",
+          "meta": {
+            "node": null,
+            "config": {
+              "ip": null,
+              "owner": [],
+              "labels": {
+                "app.kubernetes.io/managed-by": "Helm"
+              },
+              "volumes": [
+                {
+                  "name": "kubewatch-config",
+                  "persistent_volume_claim": null
+                }
+              ],
+              "affinity": {},
+              "qos_class": null,
+              "conditions": [],
+              "containers": [
+                {
+                  "env": [
+                    {
+                      "name": "KW_CONFIG",
+                      "value": "/config"
+                    },
+                    {
+                      "name": "ENABLE_PPROF",
+                      "value": "true"
+                    }
+                  ],
+                  "name": "kubewatch",
+                  "image": "us-central1-docker.pkg.dev/genuine-flight-317411/devel/kubewatch:v2.5",
+                  "ports": [],
+                  "resources": {
+                    "limits": {
+                      "memory": "512Mi"
+                    },
+                    "requests": {
+                      "cpu": "10m",
+                      "memory": "512Mi"
+                    }
+                  }
+                }
+              ],
+              "toleration": [],
+              "annotations": {
+                "meta.helm.sh/release-name": "testenv52",
+                "meta.helm.sh/release-namespace": "testenv52",
+                "deployment.kubernetes.io/revision": "1"
+              },
+              "service_account": null
+            },
+            "status": null,
+            "namespace": "testenv52",
+            "ready_pods": 1,
+            "total_pods": 1,
+            "restart_count": null,
+            "controllerKind": "Deployment",
+            "is_helm_release": true
+          }
+        },
+        {
+          "namespace": "testenv52",
+          "name": "testenv52-opencost",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-18T12:46:41",
+          "total_pods": 1,
+          "ready_pods": 1,
+          "cloud_resource_id": "80e5b46c-8b8f-5b9e-9d3e-772c2e9506c5",
+          "tenant_id": "demo",
+          "meta": {
+            "node": null,
+            "config": {
+              "ip": null,
+              "owner": [],
+              "labels": {
+                "helm.sh/chart": "opencost-1.28.0",
+                "app.kubernetes.io/name": "opencost",
+                "app.kubernetes.io/part-of": "opencost",
+                "app.kubernetes.io/version": "1.108.0",
+                "app.kubernetes.io/instance": "testenv52",
+                "app.kubernetes.io/managed-by": "Helm"
+              },
+              "volumes": [],
+              "affinity": {},
+              "qos_class": null,
+              "conditions": [],
+              "containers": [
+                {
+                  "env": [
+                    {
+                      "name": "API_PORT",
+                      "value": "9003"
+                    },
+                    {
+                      "name": "PROMETHEUS_SERVER_ENDPOINT",
+                      "value": "http://prometheus-kube-prometheus-prometheus.prometheus.svc.cluster.local:9090"
+                    },
+                    {
+                      "name": "CLUSTER_ID",
+                      "value": "default-cluster"
+                    },
+                    {
+                      "name": "DATA_RETENTION_DAILY_RESOLUTION_DAYS",
+                      "value": "15"
+                    },
+                    {
+                      "name": "CLOUD_COST_ENABLED",
+                      "value": "false"
+                    },
+                    {
+                      "name": "CLOUD_COST_MONTH_TO_DATE_INTERVAL",
+                      "value": "6"
+                    },
+                    {
+                      "name": "CLOUD_COST_REFRESH_RATE_HOURS",
+                      "value": "6"
+                    },
+                    {
+                      "name": "CLOUD_COST_QUERY_WINDOW_DAYS",
+                      "value": "7"
+                    },
+                    {
+                      "name": "CLOUD_COST_RUN_WINDOW_DAYS",
+                      "value": "3"
+                    }
+                  ],
+                  "name": "testenv52-opencost",
+                  "image": "quay.io/kubecost1/kubecost-cost-model:prod-1.108.0",
+                  "ports": [9003],
+                  "resources": {
+                    "limits": {
+                      "cpu": "999m",
+                      "memory": "1Gi"
+                    },
+                    "requests": {
+                      "cpu": "10m",
+                      "memory": "55Mi"
+                    }
+                  }
+                }
+              ],
+              "toleration": [],
+              "annotations": {
+                "meta.helm.sh/release-name": "testenv52",
+                "meta.helm.sh/release-namespace": "testenv52",
+                "deployment.kubernetes.io/revision": "1"
+              },
+              "service_account": null
+            },
+            "status": null,
+            "namespace": "testenv52",
+            "ready_pods": 1,
+            "total_pods": 1,
+            "restart_count": null,
+            "controllerKind": "Deployment",
+            "is_helm_release": true
+          }
+        },
+        {
+          "namespace": "testenv52",
+          "name": "testenv52-runner",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-18T12:46:41",
+          "total_pods": 1,
+          "ready_pods": 1,
+          "cloud_resource_id": "308495d1-9338-57c3-93fa-3f949cada179",
+          "tenant_id": "demo",
+          "meta": {
+            "node": null,
+            "config": {
+              "ip": null,
+              "owner": [],
+              "labels": {
+                "app": "testenv52-runner",
+                "app.kubernetes.io/managed-by": "Helm"
+              },
+              "volumes": [
+                {
+                  "name": "playbooks-config-secret",
+                  "persistent_volume_claim": null
+                },
+                {
+                  "name": "auth-config-secret",
+                  "persistent_volume_claim": null
+                }
+              ],
+              "affinity": {},
+              "qos_class": null,
+              "conditions": [],
+              "containers": [
+                {
+                  "env": [
+                    {
+                      "name": "PLAYBOOKS_CONFIG_FILE_PATH",
+                      "value": "/etc/robusta/config/active_playbooks.yaml"
+                    },
+                    {
+                      "name": "RELEASE_NAME",
+                      "value": "testenv52"
+                    },
+                    {
+                      "name": "LOG_LEVEL",
+                      "value": "INFO"
+                    },
+                    {
+                      "name": "DISABLE_HELM_MONITORING",
+                      "value": "True"
+                    },
+                    {
+                      "name": "RUNNER_VERSION",
+                      "value": "0.0.33"
+                    },
+                    {
+                      "name": "KRR_IMAGE_OVERRIDE",
+                      "value": "krr-public:v1.0.0"
+                    },
+                    {
+                      "name": "IMAGE_REGISTRY",
+                      "value": "registry.test.nudgebee.pollux.in"
+                    },
+                    {
+                      "name": "WEBSOCKET_RELAY_ADDRESS",
+                      "value": "wss://relay.test.nudgebee.pollux.in/register"
+                    }
+                  ],
+                  "name": "runner",
+                  "image": "registry.dev.nudgebee.pollux.in/nudgebee-agent:2024-03-15T10-00-46_6b8b80b644db9ec9e7044eb9f5f25f696289e56e",
+                  "ports": [],
+                  "resources": {
+                    "limits": {
+                      "memory": "1Gi"
+                    },
+                    "requests": {
+                      "cpu": "250m",
+                      "memory": "1Gi"
+                    }
+                  }
+                }
+              ],
+              "toleration": [],
+              "annotations": {
+                "meta.helm.sh/release-name": "testenv52",
+                "meta.helm.sh/release-namespace": "testenv52",
+                "deployment.kubernetes.io/revision": "1"
+              },
+              "service_account": null
+            },
+            "status": null,
+            "namespace": "testenv52",
+            "ready_pods": 1,
+            "total_pods": 1,
+            "restart_count": null,
+            "controllerKind": "Deployment",
+            "is_helm_release": true
+          }
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-runner",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-18T10:23:18",
+          "total_pods": 1,
+          "ready_pods": 1,
+          "cloud_resource_id": "78885d96-5a13-5b8b-84f9-5eb237704d11",
+          "tenant_id": "demo",
+          "meta": {
+            "node": null,
+            "config": {
+              "ip": null,
+              "owner": [],
+              "labels": {
+                "app": "nudgebee-agent-runner",
+                "app.kubernetes.io/managed-by": "Helm",
+                "k8slens-edit-resource-version": "v1"
+              },
+              "volumes": [
+                {
+                  "name": "playbooks-config-secret",
+                  "persistent_volume_claim": null
+                },
+                {
+                  "name": "auth-config-secret",
+                  "persistent_volume_claim": null
+                }
+              ],
+              "affinity": {},
+              "qos_class": null,
+              "conditions": [],
+              "containers": [
+                {
+                  "env": [
+                    {
+                      "name": "PLAYBOOKS_CONFIG_FILE_PATH",
+                      "value": "/etc/robusta/config/active_playbooks.yaml"
+                    },
+                    {
+                      "name": "RELEASE_NAME",
+                      "value": "nudgebee-agent"
+                    },
+                    {
+                      "name": "LOG_LEVEL",
+                      "value": "INFO"
+                    },
+                    {
+                      "name": "DISABLE_HELM_MONITORING",
+                      "value": "True"
+                    },
+                    {
+                      "name": "RUNNER_VERSION",
+                      "value": "0.0.33"
+                    },
+                    {
+                      "name": "KRR_IMAGE_OVERRIDE",
+                      "value": "krr-public:v1.0.0"
+                    },
+                    {
+                      "name": "IMAGE_REGISTRY",
+                      "value": "registry.nudgebee.com"
+                    },
+                    {
+                      "name": "WEBSOCKET_RELAY_ADDRESS",
+                      "value": "wss://relay.dev.nudgebee.pollux.in/register"
+                    }
+                  ],
+                  "name": "runner",
+                  "image": "280501305789.dkr.ecr.us-east-1.amazonaws.com/nudgebee-agent:2024-03-19T18-20-28_d6031b8a6b8a52c7d0c5766aa38c6219975dcb06",
+                  "ports": [],
+                  "resources": {
+                    "limits": {
+                      "memory": "1Gi"
+                    },
+                    "requests": {
+                      "cpu": "250m",
+                      "memory": "1Gi"
+                    }
+                  }
+                }
+              ],
+              "toleration": [],
+              "annotations": {
+                "meta.helm.sh/release-name": "nudgebee-agent",
+                "meta.helm.sh/release-namespace": "nudgebee-agent",
+                "deployment.kubernetes.io/revision": "11"
+              },
+              "service_account": null
+            },
+            "status": null,
+            "namespace": "nudgebee-agent",
+            "ready_pods": 1,
+            "total_pods": 1,
+            "restart_count": null,
+            "controllerKind": "Deployment",
+            "is_helm_release": true
+          }
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-opencost",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-18T10:23:18",
+          "total_pods": 1,
+          "ready_pods": 1,
+          "cloud_resource_id": "5e5171fc-214a-5784-bad7-242e99b2c732",
+          "tenant_id": "demo",
+          "meta": {
+            "node": null,
+            "config": {
+              "ip": null,
+              "owner": [],
+              "labels": {
+                "helm.sh/chart": "opencost-1.28.0",
+                "app.kubernetes.io/name": "opencost",
+                "app.kubernetes.io/part-of": "opencost",
+                "app.kubernetes.io/version": "1.108.0",
+                "app.kubernetes.io/instance": "nudgebee-agent",
+                "app.kubernetes.io/managed-by": "Helm"
+              },
+              "volumes": [],
+              "affinity": {},
+              "qos_class": null,
+              "conditions": [],
+              "containers": [
+                {
+                  "env": [
+                    {
+                      "name": "API_PORT",
+                      "value": "9003"
+                    },
+                    {
+                      "name": "PROMETHEUS_SERVER_ENDPOINT",
+                      "value": "http://prometheus-kube-prometheus-prometheus.prometheus.svc.cluster.local:9090"
+                    },
+                    {
+                      "name": "CLUSTER_ID",
+                      "value": "default-cluster"
+                    },
+                    {
+                      "name": "DATA_RETENTION_DAILY_RESOLUTION_DAYS",
+                      "value": "15"
+                    },
+                    {
+                      "name": "CLOUD_COST_ENABLED",
+                      "value": "false"
+                    },
+                    {
+                      "name": "CLOUD_COST_MONTH_TO_DATE_INTERVAL",
+                      "value": "6"
+                    },
+                    {
+                      "name": "CLOUD_COST_REFRESH_RATE_HOURS",
+                      "value": "6"
+                    },
+                    {
+                      "name": "CLOUD_COST_QUERY_WINDOW_DAYS",
+                      "value": "7"
+                    },
+                    {
+                      "name": "CLOUD_COST_RUN_WINDOW_DAYS",
+                      "value": "3"
+                    }
+                  ],
+                  "name": "nudgebee-agent-opencost",
+                  "image": "quay.io/kubecost1/kubecost-cost-model:prod-1.108.0",
+                  "ports": [9003],
+                  "resources": {
+                    "limits": {
+                      "cpu": "999m",
+                      "memory": "1Gi"
+                    },
+                    "requests": {
+                      "cpu": "10m",
+                      "memory": "55Mi"
+                    }
+                  }
+                }
+              ],
+              "toleration": [],
+              "annotations": {
+                "meta.helm.sh/release-name": "nudgebee-agent",
+                "meta.helm.sh/release-namespace": "nudgebee-agent",
+                "deployment.kubernetes.io/revision": "1"
+              },
+              "service_account": null
+            },
+            "status": null,
+            "namespace": "nudgebee-agent",
+            "ready_pods": 1,
+            "total_pods": 1,
+            "restart_count": null,
+            "controllerKind": "Deployment",
+            "is_helm_release": true
+          }
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-opentelemetry-collector",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-18T10:23:18",
+          "total_pods": 1,
+          "ready_pods": 1,
+          "cloud_resource_id": "3cd036e4-3345-5e36-84ba-2092e7507365",
+          "tenant_id": "demo",
+          "meta": {
+            "node": null,
+            "config": {
+              "ip": null,
+              "owner": [],
+              "labels": {
+                "helm.sh/chart": "opentelemetry-collector-0.52.1",
+                "app.kubernetes.io/name": "opentelemetry-collector",
+                "app.kubernetes.io/version": "0.75.0",
+                "app.kubernetes.io/instance": "nudgebee-agent",
+                "app.kubernetes.io/managed-by": "Helm"
+              },
+              "volumes": [
+                {
+                  "name": "opentelemetry-collector-configmap",
+                  "persistent_volume_claim": null
+                }
+              ],
+              "affinity": {},
+              "qos_class": null,
+              "conditions": [],
+              "containers": [
+                {
+                  "env": [],
+                  "name": "opentelemetry-collector",
+                  "image": "otel/opentelemetry-collector-contrib:0.75.0",
+                  "ports": [4317, 4318],
+                  "resources": {
+                    "limits": {
+                      "cpu": "256m",
+                      "memory": "512Mi"
+                    },
+                    "requests": {}
+                  }
+                }
+              ],
+              "toleration": [],
+              "annotations": {
+                "meta.helm.sh/release-name": "nudgebee-agent",
+                "meta.helm.sh/release-namespace": "nudgebee-agent",
+                "deployment.kubernetes.io/revision": "1"
+              },
+              "service_account": null
+            },
+            "status": null,
+            "namespace": "nudgebee-agent",
+            "ready_pods": 1,
+            "total_pods": 1,
+            "restart_count": null,
+            "controllerKind": "Deployment",
+            "is_helm_release": true
+          }
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "auto-pilot-worker",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-12T12:56:51",
+          "total_pods": 1,
+          "ready_pods": 1,
+          "cloud_resource_id": "44cc2169-37d7-54f8-abc8-ec4d59412de9",
+          "tenant_id": "demo",
+          "meta": {
+            "node": null,
+            "config": {
+              "ip": null,
+              "owner": [],
+              "labels": {
+                "helm.sh/chart": "auto-pilot-0.1.0",
+                "app.kubernetes.io/name": "auto-pilot-worker",
+                "app.kubernetes.io/version": "1.16.0",
+                "app.kubernetes.io/instance": "auto-pilot",
+                "app.kubernetes.io/managed-by": "Helm"
+              },
+              "volumes": [],
+              "affinity": {},
+              "qos_class": null,
+              "conditions": [],
+              "containers": [
+                {
+                  "env": [
+                    {
+                      "name": "APP_MODE",
+                      "value": "worker"
+                    }
+                  ],
+                  "name": "auto-pilot-worker",
+                  "image": "280501305789.dkr.ecr.us-east-1.amazonaws.com/nudgebee-auto-pilot:2024-03-19T14-48-12_d9645ffacb655d19f7cf1b62dca7fae4020f7bee",
+                  "ports": [9988],
+                  "resources": {
+                    "limits": {
+                      "memory": "1Gi"
+                    },
+                    "requests": {
+                      "cpu": "100m",
+                      "memory": "400Mi"
+                    }
+                  }
+                }
+              ],
+              "toleration": [],
+              "annotations": {
+                "meta.helm.sh/release-name": "auto-pilot",
+                "meta.helm.sh/release-namespace": "nudgebee",
+                "workloads.nudgebee.com/git.hash": "d9645ffacb655d19f7cf1b62dca7fae4020f7bee",
+                "workloads.nudgebee.com/git.repo": "https://github.com/nudgebee/nudgebee",
+                "deployment.kubernetes.io/revision": "34",
+                "workloads.nudgebee.com/autopilot.id": "394c8eee-eb5a-4d97-bb3a-9e7d4ea1a875",
+                "workloads.nudgebee.com/autopilot.time": "2024-03-19 07:00",
+                "workloads.nudgebee.com/autopilot.service": "AutoOptimise",
+                "workloads.nudgebee.com/auto-pilot-worker.cpu_request": "0.1",
+                "workloads.nudgebee.com/auto-pilot-worker.memory_limit": "100Mi",
+                "workloads.nudgebee.com/auto-pilot-worker.memory_request": "100Mi",
+                "workloads.nudgebee.com/auto-pilot-worker.prev_cpu_request": "0.1",
+                "workloads.nudgebee.com/auto-pilot-worker.prev_memory_limit": "1.0Gi",
+                "workloads.nudgebee.com/auto-pilot-worker.prev_memory_request": "400Mi"
+              },
+              "service_account": null
+            },
+            "status": null,
+            "namespace": "nudgebee",
+            "ready_pods": 1,
+            "total_pods": 1,
+            "restart_count": null,
+            "controllerKind": "Deployment",
+            "is_helm_release": true
+          }
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "auto-pilot-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-12T12:56:51",
+          "total_pods": 1,
+          "ready_pods": 1,
+          "cloud_resource_id": "6c9b349d-0dc9-5137-abf8-fbd802e247aa",
+          "tenant_id": "demo",
+          "meta": {
+            "node": null,
+            "config": {
+              "ip": null,
+              "owner": [],
+              "labels": {
+                "helm.sh/chart": "auto-pilot-0.1.0",
+                "app.kubernetes.io/name": "auto-pilot-server",
+                "app.kubernetes.io/version": "1.16.0",
+                "app.kubernetes.io/instance": "auto-pilot",
+                "app.kubernetes.io/managed-by": "Helm"
+              },
+              "volumes": [],
+              "affinity": {},
+              "qos_class": null,
+              "conditions": [],
+              "containers": [
+                {
+                  "env": [
+                    {
+                      "name": "APP_MODE",
+                      "value": "server"
+                    }
+                  ],
+                  "name": "auto-pilot-server",
+                  "image": "280501305789.dkr.ecr.us-east-1.amazonaws.com/nudgebee-auto-pilot:2024-03-19T14-48-12_d9645ffacb655d19f7cf1b62dca7fae4020f7bee",
+                  "ports": [9988],
+                  "resources": {
+                    "limits": {
+                      "memory": "1Gi"
+                    },
+                    "requests": {
+                      "cpu": "100m",
+                      "memory": "400Mi"
+                    }
+                  }
+                }
+              ],
+              "toleration": [],
+              "annotations": {
+                "meta.helm.sh/release-name": "auto-pilot",
+                "meta.helm.sh/release-namespace": "nudgebee",
+                "workloads.nudgebee.com/git.hash": "d9645ffacb655d19f7cf1b62dca7fae4020f7bee",
+                "workloads.nudgebee.com/git.repo": "https://github.com/nudgebee/nudgebee",
+                "deployment.kubernetes.io/revision": "34",
+                "workloads.nudgebee.com/autopilot.id": "394c8eee-eb5a-4d97-bb3a-9e7d4ea1a875",
+                "workloads.nudgebee.com/autopilot.time": "2024-03-19 07:00",
+                "workloads.nudgebee.com/autopilot.service": "AutoOptimise",
+                "workloads.nudgebee.com/auto-pilot-server.cpu_request": "0.1",
+                "workloads.nudgebee.com/auto-pilot-server.memory_limit": "163Mi",
+                "workloads.nudgebee.com/auto-pilot-server.memory_request": "163Mi",
+                "workloads.nudgebee.com/auto-pilot-server.prev_cpu_request": "0.1",
+                "workloads.nudgebee.com/auto-pilot-server.prev_memory_limit": "1.0Gi",
+                "workloads.nudgebee.com/auto-pilot-server.prev_memory_request": "400Mi"
+              },
+              "service_account": null
+            },
+            "status": null,
+            "namespace": "nudgebee",
+            "ready_pods": 1,
+            "total_pods": 1,
+            "restart_count": null,
+            "controllerKind": "Deployment",
+            "is_helm_release": true
+          }
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "auto-pilot-worker",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-08T13:30:33",
+          "total_pods": 1,
+          "ready_pods": 1,
+          "cloud_resource_id": "4f94e3a1-0501-58d9-b3ca-ecfdbda6fd92",
+          "tenant_id": "demo",
+          "meta": {
+            "node": null,
+            "config": {
+              "ip": null,
+              "owner": [],
+              "labels": {
+                "helm.sh/chart": "auto-pilot-0.1.0",
+                "app.kubernetes.io/name": "auto-pilot-worker",
+                "app.kubernetes.io/version": "1.16.0",
+                "app.kubernetes.io/instance": "auto-pilot",
+                "app.kubernetes.io/managed-by": "Helm"
+              },
+              "volumes": [],
+              "affinity": {},
+              "qos_class": null,
+              "conditions": [],
+              "containers": [
+                {
+                  "env": [
+                    {
+                      "name": "APP_MODE",
+                      "value": "worker"
+                    }
+                  ],
+                  "name": "auto-pilot-worker",
+                  "image": "280501305789.dkr.ecr.us-east-1.amazonaws.com/nudgebee-auto-pilot:2024-03-19T10-24-48_e1884ef3199055c736cf02b9af85ef5cb3262194",
+                  "ports": [9988],
+                  "resources": {
+                    "limits": {
+                      "memory": "1Gi"
+                    },
+                    "requests": {
+                      "memory": "400Mi"
+                    }
+                  }
+                }
+              ],
+              "toleration": [],
+              "annotations": {
+                "meta.helm.sh/release-name": "auto-pilot",
+                "meta.helm.sh/release-namespace": "nudgebee-test",
+                "workloads.nudgebee.com/git.hash": "e1884ef3199055c736cf02b9af85ef5cb3262194",
+                "workloads.nudgebee.com/git.repo": "https://github.com/nudgebee/nudgebee",
+                "deployment.kubernetes.io/revision": "20"
+              },
+              "service_account": null
+            },
+            "status": null,
+            "namespace": "nudgebee-test",
+            "ready_pods": 1,
+            "total_pods": 1,
+            "restart_count": null,
+            "controllerKind": "Deployment",
+            "is_helm_release": true
+          }
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "auto-pilot-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-08T13:30:33",
+          "total_pods": 1,
+          "ready_pods": 1,
+          "cloud_resource_id": "4385d173-4a31-5d0d-9119-639ab94c1c50",
+          "tenant_id": "demo",
+          "meta": {
+            "node": null,
+            "config": {
+              "ip": null,
+              "owner": [],
+              "labels": {
+                "helm.sh/chart": "auto-pilot-0.1.0",
+                "app.kubernetes.io/name": "auto-pilot-server",
+                "app.kubernetes.io/version": "1.16.0",
+                "app.kubernetes.io/instance": "auto-pilot",
+                "app.kubernetes.io/managed-by": "Helm"
+              },
+              "volumes": [],
+              "affinity": {},
+              "qos_class": null,
+              "conditions": [],
+              "containers": [
+                {
+                  "env": [
+                    {
+                      "name": "APP_MODE",
+                      "value": "server"
+                    }
+                  ],
+                  "name": "auto-pilot-server",
+                  "image": "280501305789.dkr.ecr.us-east-1.amazonaws.com/nudgebee-auto-pilot:2024-03-19T10-24-48_e1884ef3199055c736cf02b9af85ef5cb3262194",
+                  "ports": [9988],
+                  "resources": {
+                    "limits": {
+                      "memory": "1Gi"
+                    },
+                    "requests": {
+                      "memory": "400Mi"
+                    }
+                  }
+                }
+              ],
+              "toleration": [],
+              "annotations": {
+                "meta.helm.sh/release-name": "auto-pilot",
+                "meta.helm.sh/release-namespace": "nudgebee-test",
+                "workloads.nudgebee.com/git.hash": "e1884ef3199055c736cf02b9af85ef5cb3262194",
+                "workloads.nudgebee.com/git.repo": "https://github.com/nudgebee/nudgebee",
+                "deployment.kubernetes.io/revision": "20"
+              },
+              "service_account": null
+            },
+            "status": null,
+            "namespace": "nudgebee-test",
+            "ready_pods": 1,
+            "total_pods": 1,
+            "restart_count": null,
+            "controllerKind": "Deployment",
+            "is_helm_release": true
+          }
+        }
+      ]
+    }
+  }
+}

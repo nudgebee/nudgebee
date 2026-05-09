@@ -1,0 +1,55 @@
+replicaCount: 1
+
+image:
+  repository: 864186153326.dkr.ecr.us-east-1.amazonaws.com/e2e-dashboard
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: false
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext: {}
+
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+  hosts:
+    - host: dev.nudgebee.pollux.in
+      paths:
+        - path: /e2e-dashboard(/|$)(.*)
+          pathType: ImplementationSpecific
+  tls: []
+
+resources:
+  limits:
+    memory: 256Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+env:
+  GIN_MODE: release
+  PORT: "8080"

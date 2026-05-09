@@ -1,0 +1,9 @@
+user_prompt: Show DTU or CPU metrics for SQL database nudgebee-dev/master.
+expected_output:
+- az monitor metrics list --resource nudgebee-dev --resource-type Microsoft.Sql/servers/databases
+  --resource-group NUDGEBEE-DEV_GROUP --resource-parent master --metric "dtu_consumption_percent"
+  --output table
+type: command
+tags:
+- command
+- azure

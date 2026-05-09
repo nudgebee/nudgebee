@@ -1,0 +1,28 @@
+{
+    "details": [
+        {
+            "query": "Add a user to an IAM group.",
+            "query_type": "command",
+            "retrieved_contexts": [
+                "I have successfully retrieved the list of IAM users and groups from your AWS account. \n\n**Summary of Actions:**\n1.  **List Users and Groups:** I queried the IAM service to identify the available users and groups.\n\n**Users Identified:**\n*   abhay.pandey@nudgebee.com\n*   bedrock_access\n*   gautam.bhagat@nudgebee.com\n*   github.actions\n*   hemasundar.nallapaneni@nudgebee.com\n*   kankshit.majhodkar@nudgebee.com\n*   mangglesh.dagar@nudgebee.com\n*   mayank.pande@nudgebee.com\n*   nudgebee_dev_civo\n*   piyush.bhavsar@nudgebee.com\n*   raman.kharche@nudgebee.com\n*   rohitutekar412@gmail.com\n*   saiprasad.potdar@nudgebee.com\n*   ses-smtp-user.nudgebee-dev-qa\n*   shivpratap.singh@nudgebee.com\n*   utsav.lanjewar@nudgebee.com\n*   vanshika.khokle@nudgebee.com\n\n**Groups Identified:**\n*   Admin\n*   AWSSESSendingGroupDoNotRename\n\n**What was NOT completed:**\nThe request to **add a user to a group was NOT executed** because the specific user and group names were not provided. \n\nPlease specify which user you would like to add to which group to proceed."
+            ],
+            "expected_contexts": [
+                "aws iam add-user-to-group --group-name <group-name> --user-name <user-name>"
+            ],
+            "ground_truth": "aws iam add-user-to-group --group-name <group-name> --user-name <user-name>",
+            "answer_similarity": 81.8,
+            "answer_relevancy": 76.35,
+            "rca_quality_score": null,
+            "rca_quality_normalized": null
+        }
+    ],
+    "summary": {
+        "total_queries": 1,
+        "answer_similarity": 81.8,
+        "answer_relevancy": 76.35,
+        "overall_accuracy": 79.08,
+        "rca_scenarios_count": 0,
+        "avg_rca_quality_score": null,
+        "failed_indices_after_retries": []
+    }
+}

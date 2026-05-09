@@ -1,0 +1,38 @@
+table:
+  name: insights_summary
+  schema: public
+object_relationships:
+  - name: insights_summary_tenant
+    using:
+      foreign_key_constraint_on: tenant_id
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - description
+        - entity_id
+        - entity_name
+        - entity_type
+        - id
+        - insight_type
+        - name
+        - tenant_id
+        - updated_at
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - description
+        - entity_id
+        - entity_name
+        - entity_type
+        - id
+        - insight_type
+        - name
+        - tenant_id
+        - updated_at
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id

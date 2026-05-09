@@ -1,0 +1,96 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E07: Lambda Timeout due to low memory.
+  User complaint: "Lambda times out on every invocation."
+  Root cause: Memory set to 128MB, function does CPU-heavy work needing 512MB+.
+  Lambda CPU scales linearly with memory - 128MB gets 1/8th of a vCPU.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Lambda memory 128MB, timeout 5s - function can't finish in time.
+      Fixed = Lambda memory 512MB, timeout 30s.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: e07-image-processor-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  ImageProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: e07-image-processor
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: !If [IsFixed, 30, 5]
+      MemorySize: !If [IsFixed, 512, 128]
+      Environment:
+        Variables:
+          PROCESSING_MODE: full
+      Code:
+        ZipFile: |
+          import json
+          import time
+          import hashlib
+
+          def handler(event, context):
+              # Simulate CPU-heavy image processing work
+              # With 128MB (1/8 vCPU), this takes ~8-10s -> timeout at 5s
+              # With 512MB (1/2 vCPU), this takes ~2-3s -> succeeds
+              results = []
+              for i in range(50000):
+                  data = (str(i) * 500).encode()
+                  for j in range(50):
+                      data = hashlib.sha256(data).digest()
+                  results.append(data.hex()[:8])
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({
+                      'status': 'processed',
+                      'memory_allocated': context.memory_limit_in_mb,
+                      'remaining_time_ms': context.get_remaining_time_in_millis()
+                  })
+              }
+      Tags:
+        - Key: Name
+          Value: e07-image-processor
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: media
+        - Key: Application
+          Value: image-pipeline
+
+Outputs:
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref ImageProcessorFunction
+  MemorySize:
+    Description: Configured memory
+    Value: !If [IsFixed, '512', '128']
+  Timeout:
+    Description: Configured timeout
+    Value: !If [IsFixed, '30', '5']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

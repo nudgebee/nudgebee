@@ -1,0 +1,334 @@
+table:
+  name: llm_conversation_feedback
+  schema: public
+insert_permissions:
+  - role: account_admin
+    permission:
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        tenant_id: x-hasura-User-Tenant-Id
+        user_id: x-hasura-user-id
+      columns:
+        - additional_notes
+        - cloud_account_id
+        - conversation_id
+        - created_at
+        - id
+        - llm_response
+        - module
+        - question
+        - session_id
+        - tenant_id
+        - updated_at
+        - useful
+        - user_corrected_response
+        - user_id
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        tenant_id: x-hasura-User-Tenant-Id
+        user_id: x-hasura-user-id
+      columns:
+        - useful
+        - id
+        - additional_notes
+        - conversation_id
+        - llm_response
+        - module
+        - question
+        - session_id
+        - user_corrected_response
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - tenant_id
+        - user_id
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        tenant_id: x-hasura-User-Tenant-Id
+        user_id: x-hasura-user-id
+      columns:
+        - useful
+        - id
+        - additional_notes
+        - conversation_id
+        - llm_response
+        - module
+        - question
+        - session_id
+        - user_corrected_response
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - tenant_id
+        - user_id
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        tenant_id: x-hasura-User-Tenant-Id
+        user_id: x-hasura-user-id
+      columns:
+        - useful
+        - id
+        - additional_notes
+        - conversation_id
+        - llm_response
+        - module
+        - question
+        - session_id
+        - user_corrected_response
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - tenant_id
+        - user_id
+    comment: ""
+  - role: tenant_admin
+    permission:
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        tenant_id: x-hasura-User-Tenant-Id
+        user_id: x-hasura-user-id
+      columns:
+        - useful
+        - id
+        - additional_notes
+        - conversation_id
+        - llm_response
+        - module
+        - question
+        - session_id
+        - user_corrected_response
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - tenant_id
+        - user_id
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        tenant_id: x-hasura-User-Tenant-Id
+        user_id: x-hasura-user-id
+      columns:
+        - useful
+        - id
+        - additional_notes
+        - conversation_id
+        - llm_response
+        - module
+        - question
+        - session_id
+        - user_corrected_response
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - tenant_id
+        - user_id
+    comment: ""
+  - role: tenant_usage
+    permission:
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        tenant_id: x-hasura-User-Tenant-Id
+        user_id: x-hasura-user-id
+      columns:
+        - useful
+        - id
+        - additional_notes
+        - conversation_id
+        - llm_response
+        - module
+        - question
+        - session_id
+        - user_corrected_response
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - tenant_id
+        - user_id
+    comment: ""
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - useful
+        - id
+        - additional_notes
+        - conversation_id
+        - llm_response
+        - module
+        - question
+        - session_id
+        - user_corrected_response
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - tenant_id
+        - user_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - useful
+        - id
+        - additional_notes
+        - conversation_id
+        - llm_response
+        - module
+        - question
+        - session_id
+        - user_corrected_response
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - tenant_id
+        - user_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - useful
+        - id
+        - additional_notes
+        - conversation_id
+        - llm_response
+        - module
+        - question
+        - session_id
+        - user_corrected_response
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - tenant_id
+        - user_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - useful
+        - id
+        - additional_notes
+        - conversation_id
+        - llm_response
+        - module
+        - question
+        - session_id
+        - user_corrected_response
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - tenant_id
+        - user_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - useful
+        - id
+        - additional_notes
+        - conversation_id
+        - llm_response
+        - module
+        - question
+        - session_id
+        - user_corrected_response
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - tenant_id
+        - user_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - useful
+        - id
+        - additional_notes
+        - conversation_id
+        - llm_response
+        - module
+        - question
+        - session_id
+        - user_corrected_response
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - tenant_id
+        - user_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: tenant_usage
+    permission:
+      columns:
+        - useful
+        - id
+        - additional_notes
+        - conversation_id
+        - llm_response
+        - module
+        - question
+        - session_id
+        - user_corrected_response
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - tenant_id
+        - user_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""

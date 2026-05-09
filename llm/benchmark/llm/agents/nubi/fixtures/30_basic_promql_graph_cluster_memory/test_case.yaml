@@ -1,0 +1,10 @@
+user_prompt: "Show me a graph (with prometheus) of the memory usage for the kubernetes cluster over the last 30 minutes"
+
+expected_output:
+  - The response must include a PromQL query that aggregates memory usage across the cluster.
+  - Acceptable forms include sum(container_memory_working_set_bytes), sum(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes), or 1 - sum(node_memory_MemAvailable_bytes) / sum(node_memory_MemTotal_bytes).
+  - The agent must invoke the prometheus_execute tool with that query (a generated query without execution is not sufficient).
+
+tags:
+  - prometheus
+  - easy

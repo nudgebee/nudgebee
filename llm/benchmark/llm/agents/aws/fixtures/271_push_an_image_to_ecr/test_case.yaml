@@ -1,0 +1,7 @@
+user_prompt: Push an image to ECR.
+expected_output:
+- docker tag <local-image>:<tag> <account_id>.dkr.ecr.<region>.amazonaws.com/<repository-name>:<tag>
+- docker push <account_id>.dkr.ecr.<region>.amazonaws.com/<repository-name>:<tag>
+tags:
+- command
+- aws

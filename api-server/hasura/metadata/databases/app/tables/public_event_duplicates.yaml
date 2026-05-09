@@ -1,0 +1,152 @@
+table:
+  name: event_duplicates
+  schema: public
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - id
+        - event_id
+        - fingerprint
+        - cloud_account_id
+        - tenant_id
+        - first_event_id
+        - previous_event_id
+        - occurrence_number
+        - time_since_first_seconds
+        - time_since_previous_seconds
+        - created_at
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: X-Hasura-User-Account-Ids
+      allow_aggregations: true
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - id
+        - event_id
+        - fingerprint
+        - cloud_account_id
+        - tenant_id
+        - first_event_id
+        - previous_event_id
+        - occurrence_number
+        - time_since_first_seconds
+        - time_since_previous_seconds
+        - created_at
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: X-Hasura-User-Readonly-Account-Ids
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - id
+        - event_id
+        - fingerprint
+        - cloud_account_id
+        - tenant_id
+        - first_event_id
+        - previous_event_id
+        - occurrence_number
+        - time_since_first_seconds
+        - time_since_previous_seconds
+        - created_at
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: x-hasura-user-namespaced-account-ids
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - id
+        - event_id
+        - fingerprint
+        - cloud_account_id
+        - tenant_id
+        - first_event_id
+        - previous_event_id
+        - occurrence_number
+        - time_since_first_seconds
+        - time_since_previous_seconds
+        - created_at
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: x-hasura-user-namespaced-readonly-account-ids
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - id
+        - event_id
+        - fingerprint
+        - cloud_account_id
+        - tenant_id
+        - first_event_id
+        - previous_event_id
+        - occurrence_number
+        - time_since_first_seconds
+        - time_since_previous_seconds
+        - created_at
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - id
+        - event_id
+        - fingerprint
+        - cloud_account_id
+        - tenant_id
+        - first_event_id
+        - previous_event_id
+        - occurrence_number
+        - time_since_first_seconds
+        - time_since_previous_seconds
+        - created_at
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_usage
+    permission:
+      columns:
+        - id
+        - event_id
+        - fingerprint
+        - cloud_account_id
+        - tenant_id
+        - first_event_id
+        - previous_event_id
+        - occurrence_number
+        - time_since_first_seconds
+        - time_since_previous_seconds
+        - created_at
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+    comment: ""

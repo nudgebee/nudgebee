@@ -1,0 +1,6 @@
+user_prompt: Create a new IAM user.
+expected_output:
+- aws iam create-user --user-name <user-name>
+tags:
+- command
+- aws

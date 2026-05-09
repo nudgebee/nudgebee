@@ -1,0 +1,2202 @@
+{
+  "ListAllWorkloads": {
+    "data": {
+      "k8s_workloads": [
+        {
+          "namespace": "actions-runner-system-1",
+          "name": "actions-runner-controller",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T17:45:12",
+          "cloud_resource_id": "1f4af094-ee83-597e-a368-30b9ccf750fe"
+        },
+        {
+          "namespace": "actions-runner-system-1",
+          "name": "actions-runner-controller-69f55bb87c",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T17:46:35",
+          "cloud_resource_id": "3341963f-fdd5-5970-bfe0-a82e0d381b63"
+        },
+        {
+          "namespace": "prometheus",
+          "name": "alertmanager-prometheus-kube-prometheus-alertmanager",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:18:34",
+          "cloud_resource_id": "1ef7c4a7-1c3c-51b8-8e47-4ee1248e8c4b"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "app-dev",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T17:07:17",
+          "cloud_resource_id": "6aa8ea23-58ac-5b47-9337-0aeb9b6caced"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "app-dev-5665db9b87",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T17:44:32",
+          "cloud_resource_id": "458986ac-0c14-53b1-8d26-88088935735a"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "app-test",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T13:46:29",
+          "cloud_resource_id": "e278b6a9-c558-57dc-8044-782c60a1288f"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "app-test-5894fc494b",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T14:25:27",
+          "cloud_resource_id": "c5f4ce1d-9925-599b-8b0b-c9f9ae205621"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "auto-pilot-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-08T13:30:33",
+          "cloud_resource_id": "4385d173-4a31-5d0d-9119-639ab94c1c50"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "auto-pilot-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-12T12:56:51",
+          "cloud_resource_id": "6c9b349d-0dc9-5137-abf8-fbd802e247aa"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "auto-pilot-server-6558bd6745",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T14:50:58",
+          "cloud_resource_id": "1587133e-110a-52d5-b4c8-c3de85f476b1"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "auto-pilot-server-7df8b599",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T10:30:57",
+          "cloud_resource_id": "4962257b-666f-512a-b972-53ab809c3de7"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "auto-pilot-worker",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-08T13:30:33",
+          "cloud_resource_id": "4f94e3a1-0501-58d9-b3ca-ecfdbda6fd92"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "auto-pilot-worker",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-12T12:56:51",
+          "cloud_resource_id": "44cc2169-37d7-54f8-abc8-ec4d59412de9"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "auto-pilot-worker-7d78849644",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T10:30:57",
+          "cloud_resource_id": "350e3d0a-c65f-510e-a490-8ed86ec0c587"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "auto-pilot-worker-7f5c66564b",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T14:50:58",
+          "cloud_resource_id": "f2d8a8e9-8231-5337-ad84-001dd756dc1b"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "aws-node",
+          "kind": "DaemonSet",
+          "is_active": true,
+          "creation_time": null,
+          "cloud_resource_id": "294c11de-2eb0-5488-b503-6323d5a3dd4d"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "aws-node-termination-handler",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2023-06-25T03:50:55",
+          "cloud_resource_id": "ba02eb87-169e-57fa-9530-691ece68fc10"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "aws-node-termination-handler-8597bfd4db",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-25T07:28:12",
+          "cloud_resource_id": "644ecd3a-9877-506c-8738-2a48e68d6be9"
+        },
+        {
+          "namespace": "default",
+          "name": "back-end-service",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-29T06:02:30",
+          "cloud_resource_id": "7a17dec1-e20b-5ee3-943b-56927f668e6c"
+        },
+        {
+          "namespace": "default",
+          "name": "back-end-service-78bf56c8f",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-29T06:29:53",
+          "cloud_resource_id": "9340fcf7-680e-56e1-8540-bda54adcaae9"
+        },
+        {
+          "namespace": "cert-manager",
+          "name": "cert-manager",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T15:56:24",
+          "cloud_resource_id": "ec3597a4-a9b0-5211-808f-33632321a4d9"
+        },
+        {
+          "namespace": "cert-manager",
+          "name": "cert-manager-784cbb4ffc",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T15:56:24",
+          "cloud_resource_id": "73db19fd-9f3b-5003-b810-dbac0dfbf6cd"
+        },
+        {
+          "namespace": "cert-manager",
+          "name": "cert-manager-cainjector",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T15:56:23",
+          "cloud_resource_id": "f63a4df5-7505-54e9-8f4f-e2b9a19678ab"
+        },
+        {
+          "namespace": "cert-manager",
+          "name": "cert-manager-cainjector-6d747888bf",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T15:56:23",
+          "cloud_resource_id": "639c4186-4784-5821-8c4a-453dca305ec5"
+        },
+        {
+          "namespace": "cert-manager",
+          "name": "cert-manager-webhook",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T15:56:24",
+          "cloud_resource_id": "0a266f97-b22e-5242-a777-2f90717d2900"
+        },
+        {
+          "namespace": "cert-manager",
+          "name": "cert-manager-webhook-7789b78667",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T15:56:24",
+          "cloud_resource_id": "613c1cb6-3670-53d7-8fcc-f460f21667a4"
+        },
+        {
+          "namespace": "clickhouse-test",
+          "name": "clickhouse-shard0",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T09:19:12",
+          "cloud_resource_id": "ade619aa-dc79-5889-b37c-c4d5c377a651"
+        },
+        {
+          "namespace": "clickhouse",
+          "name": "clickhouse-shard0",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T16:46:57",
+          "cloud_resource_id": "ce491461-01c1-5da0-9571-40f7111f9195"
+        },
+        {
+          "namespace": "clickhouse",
+          "name": "clickhouse-shard1",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T16:46:58",
+          "cloud_resource_id": "8b718c72-fb91-5a5b-b2f7-5626beb7e3ac"
+        },
+        {
+          "namespace": "clickhouse-test",
+          "name": "clickhouse-shard1",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T09:19:12",
+          "cloud_resource_id": "6cdb7b7a-6543-599e-8be9-d2be5045c7d3"
+        },
+        {
+          "namespace": "clickhouse-test",
+          "name": "clickhouse-zookeeper",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T09:19:12",
+          "cloud_resource_id": "7ba6e527-e05e-51fa-bfc7-cff60370a590"
+        },
+        {
+          "namespace": "clickhouse",
+          "name": "clickhouse-zookeeper",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T16:46:56",
+          "cloud_resource_id": "86ac6a90-c62b-5ad1-aea9-71e1f0e565e0"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "cluster-autoscaler-aws-cluster-autoscaler",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2023-06-25T11:16:43",
+          "cloud_resource_id": "7bba887a-ea18-5b9c-acf4-ae31fd9ed180"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "coredns",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2023-01-10T20:09:37",
+          "cloud_resource_id": "8d7e28c8-e712-5008-bdad-fa225c35ded8"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "coredns-69f5ff7796",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-01-24T10:46:34",
+          "cloud_resource_id": "efa03dc2-867c-5615-9b5a-62a567a8ce44"
+        },
+        {
+          "namespace": "ops",
+          "name": "dev-hasura-db-cleanup-28513500",
+          "kind": "Job",
+          "is_active": true,
+          "creation_time": "2024-03-19T01:00:00",
+          "cloud_resource_id": "4c7b68cf-b88e-53da-b775-019072057dcd"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "ebs-csi-controller",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2023-01-24T15:50:37",
+          "cloud_resource_id": "59ffea4f-6159-5b24-abf6-ee6c8f405a08"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "ebs-csi-controller-6cfd9fc44b",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-01-24T19:57:17",
+          "cloud_resource_id": "0a4bcce1-9b69-5224-95b7-b492a9ce1917"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "ebs-csi-node",
+          "kind": "DaemonSet",
+          "is_active": true,
+          "creation_time": null,
+          "cloud_resource_id": "e74a9926-24c1-5386-87a5-debfa6b75bea"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "ebs-csi-node-windows",
+          "kind": "DaemonSet",
+          "is_active": true,
+          "creation_time": "2023-01-24T15:50:37",
+          "cloud_resource_id": "51b7a3fe-913c-5d27-85e4-583b5dc0ef49"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "ecr-proxy-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-19T08:40:36",
+          "cloud_resource_id": "1f1dc496-7ac5-5202-b40a-77a24405bcdd"
+        },
+        {
+          "namespace": "default",
+          "name": "front-end-service",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-29T06:03:31",
+          "cloud_resource_id": "bbb62ab9-b7ea-5584-bb58-66d24d0d6bed"
+        },
+        {
+          "namespace": "default",
+          "name": "front-end-service-669cbd577d",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-29T06:29:50",
+          "cloud_resource_id": "a6745402-3951-53b6-945f-994861e4b90c"
+        },
+        {
+          "namespace": "grafana",
+          "name": "grafana",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:17:40",
+          "cloud_resource_id": "a296b3c8-2832-50b4-8aa7-88d148b5d042"
+        },
+        {
+          "namespace": "grafana",
+          "name": "grafana-6bcd4fd5cb",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:17:40",
+          "cloud_resource_id": "f57865a4-b9b2-52a1-97aa-1565f1603485"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "hasura",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T17:58:17",
+          "cloud_resource_id": "2cd953b1-e652-5788-8d29-e33a2f4a1e90"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "hasura",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T13:32:02",
+          "cloud_resource_id": "7039eb73-9549-5f16-9016-c9dc8950aeb0"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "hasura-5775b6cf89",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:04:13",
+          "cloud_resource_id": "c34d59b0-ba53-527a-b5c6-2323c4e664cd"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "hasura-bbb8b5dc5",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:51:39",
+          "cloud_resource_id": "b1dd5cfc-4e17-5106-8810-f15eb4b873ef"
+        },
+        {
+          "namespace": "ingress-nginx",
+          "name": "ingress-nginx-controller",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T19:26:02",
+          "cloud_resource_id": "b97c2c03-9265-50fa-81a1-d2536c8ab8b7"
+        },
+        {
+          "namespace": "ingress-nginx",
+          "name": "ingress-nginx-controller-85d994b6b4",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T19:26:02",
+          "cloud_resource_id": "01a98f0f-5e7e-531f-97da-cfc3cfcce7d3"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "k8s-collector",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T13:33:49",
+          "cloud_resource_id": "9bcdc09a-2fc1-58e4-9dd2-db0d1f2c8775"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "k8s-collector",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T03:20:02",
+          "cloud_resource_id": "886d9547-4b64-5bae-8555-17549af5c0b2"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "k8s-collector-5885cd5cb6",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:51:39",
+          "cloud_resource_id": "1ef47902-7519-591c-ac0b-0353c7976dc0"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "k8s-collector-6bdf4f8bc9",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:04:13",
+          "cloud_resource_id": "0d3a07dd-4c2e-56af-a0e8-8e8a419aee9b"
+        },
+        {
+          "namespace": "karpenter",
+          "name": "karpenter",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T04:32:55",
+          "cloud_resource_id": "bc02105b-9c73-5353-a6ce-0b1f32187c6c"
+        },
+        {
+          "namespace": "karpenter",
+          "name": "karpenter-955b497ff",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T04:37:25",
+          "cloud_resource_id": "7cc72efb-6553-5d6c-9f3e-b519197a08f9"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "kube-proxy",
+          "kind": "DaemonSet",
+          "is_active": true,
+          "creation_time": null,
+          "cloud_resource_id": "aa3406e9-fb31-59a8-9bcd-e859c0845a62"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "kubernetes-dashboard",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2023-04-26T07:35:51",
+          "cloud_resource_id": "a7cbd51a-4ee9-5ec0-9a0d-4ae9b2238a7a"
+        },
+        {
+          "namespace": "grafana",
+          "name": "loki",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:19:47",
+          "cloud_resource_id": "bdb4657a-ba01-5314-868f-7b4c5fa0bc3c"
+        },
+        {
+          "namespace": "grafana",
+          "name": "loki-gateway",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:19:47",
+          "cloud_resource_id": "449cbae0-e92e-5c8e-bfb0-a190c2d6cc4f"
+        },
+        {
+          "namespace": "grafana",
+          "name": "loki-gateway-5485c9f7fd",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:19:47",
+          "cloud_resource_id": "a5c68508-61c7-53a0-94db-1e5e28a74621"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "metrics-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2023-03-24T10:21:10",
+          "cloud_resource_id": "eeb41407-e8eb-5546-8bbb-4611d1de4269"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "metrics-server-6bf466fbf5",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2023-03-24T10:21:10",
+          "cloud_resource_id": "2237c89c-1e1c-5119-92d5-8316132cb636"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "ml-k8s-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": null,
+          "cloud_resource_id": "9c320970-e1ce-5aac-acde-84d4c5a3b3a0"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "ml-k8s-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-20T04:29:44",
+          "cloud_resource_id": "c6a23bb9-04d8-5224-ab90-87448483791b"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "ml-k8s-server-67d6744468",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:04:13",
+          "cloud_resource_id": "48c6d7aa-b8fd-5ec8-8122-7a5f7e000f81"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "ml-k8s-server-f98c67d78",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:51:39",
+          "cloud_resource_id": "ec789826-3b17-54e9-b4e3-71eca3a5b621"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "notifications",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T18:27:59",
+          "cloud_resource_id": "3b63f040-a042-5ce1-8bb1-9919a8aac1d6"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "notifications",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T13:29:13",
+          "cloud_resource_id": "cd021221-2a2b-564a-b63f-47787417efb3"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "notifications-6f9fcf478b",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T17:42:59",
+          "cloud_resource_id": "989f5f2f-2625-5050-ac2d-91da86621ef4"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "notifications-775cb5975d",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:51:39",
+          "cloud_resource_id": "e7b4e6d1-e003-5f15-8244-5af0829148e5"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent",
+          "kind": "DaemonSet",
+          "is_active": true,
+          "creation_time": null,
+          "cloud_resource_id": "25cf93b0-bbfa-53f7-a1e5-3d714a212bcc"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-clickhouse-shard0",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T10:23:18",
+          "cloud_resource_id": "1b30161c-efc8-5eba-993c-5cfccb73df08"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-forwarder",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T05:42:04",
+          "cloud_resource_id": "f861c2f0-dc0b-5d15-b10e-86b2e4b3cc64"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-forwarder-f9d445955",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T05:42:04",
+          "cloud_resource_id": "5a4875f5-5c35-561a-bd98-7ed8c76f0342"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-opencost",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-18T10:23:18",
+          "cloud_resource_id": "5e5171fc-214a-5784-bad7-242e99b2c732"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-opencost-5d664f6d76",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T10:23:18",
+          "cloud_resource_id": "c74c6191-528d-5aeb-9d1d-ab85fa15954e"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-opentelemetry-collector",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-18T10:23:18",
+          "cloud_resource_id": "3cd036e4-3345-5e36-84ba-2092e7507365"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-opentelemetry-collector-868b4fc9df",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T10:23:18",
+          "cloud_resource_id": "9ded69b1-7a44-5da3-84c7-1abae3bd8655"
+        },
+        {
+          "namespace": "nudgebee-agent-prod",
+          "name": "nudgebee-agent-prod",
+          "kind": "DaemonSet",
+          "is_active": true,
+          "creation_time": null,
+          "cloud_resource_id": "00918c4e-a9d0-554b-a4e0-922a76be8c84"
+        },
+        {
+          "namespace": "nudgebee-agent-prod",
+          "name": "nudgebee-agent-prod-forwarder",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-07T15:05:59",
+          "cloud_resource_id": "0abcda7b-f705-5e23-8972-b5d4bb0249bc"
+        },
+        {
+          "namespace": "nudgebee-agent-prod",
+          "name": "nudgebee-agent-prod-forwarder-89bc4d9cb",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-07T15:05:59",
+          "cloud_resource_id": "97087717-f252-5e3b-be4b-b9f1bd85aef9"
+        },
+        {
+          "namespace": "nudgebee-agent-prod",
+          "name": "nudgebee-agent-prod-runner",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-07T15:05:59",
+          "cloud_resource_id": "1b8e090a-343e-5b9a-909a-d7c1814a7396"
+        },
+        {
+          "namespace": "nudgebee-agent-prod",
+          "name": "nudgebee-agent-prod-runner-7c7998668f",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-07T15:05:59",
+          "cloud_resource_id": "d06aa8bd-10a9-59ce-a3e3-896efc5220de"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-runner",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-18T10:23:18",
+          "cloud_resource_id": "78885d96-5a13-5b8b-84f9-5eb237704d11"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-runner-5d758dcb4f",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T06:22:04",
+          "cloud_resource_id": "b2f7c78e-55d8-5d3c-a016-649045c43298"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "nudgebee-doc-docs",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T13:40:49",
+          "cloud_resource_id": "a37ae754-779f-5ed2-820a-618ea66a97da"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "nudgebee-doc-docs",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-19T09:10:01",
+          "cloud_resource_id": "1a069037-e3ac-5b4e-8b51-d6093134d63f"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "nudgebee-doc-docs-57495f98cb",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:51:39",
+          "cloud_resource_id": "3497b4d1-3268-5c28-83ef-6f7f95c29267"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "nudgebee-doc-docs-8895bd765",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:04:14",
+          "cloud_resource_id": "6778b7e1-b1a4-5fd0-a7ec-35172df41b27"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-image-scanner-cce1ee97-baaa-4ee4-b323-f4fbaddb6f1d-171",
+          "kind": "Job",
+          "is_active": true,
+          "creation_time": "2024-03-19T14:02:00",
+          "cloud_resource_id": "3f92cb9a-74cd-5def-82bf-11ec480e0e13"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "oom-kill-cronjob-28514460",
+          "kind": "Job",
+          "is_active": true,
+          "creation_time": "2024-03-19T17:00:00",
+          "cloud_resource_id": "e7668c71-5927-5e87-b378-c9a3032e9850"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "oom-kill-cronjob-28514520",
+          "kind": "Job",
+          "is_active": true,
+          "creation_time": "2024-03-19T18:00:00",
+          "cloud_resource_id": "8c5104bd-235e-56e9-b30f-a8793cff3364"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "pg-main-proxy",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T19:50:51",
+          "cloud_resource_id": "d8d80dd5-1d71-5876-937b-7626323b91d1"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "pg-main-proxy",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-25T07:21:43",
+          "cloud_resource_id": "215f43b5-958f-5a88-b98e-f279fa4188c4"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "pg-main-proxy-57d665d7bb",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:51:39",
+          "cloud_resource_id": "3b9e5e5a-769b-5a73-925e-76748d7ec8a3"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "pg-main-proxy-77555c57dd",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:04:14",
+          "cloud_resource_id": "062c2883-4faa-537e-a488-7ea6acc40bf8"
+        },
+        {
+          "namespace": "prometheus",
+          "name": "prometheus-kube-prometheus-operator",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:18:32",
+          "cloud_resource_id": "6d893f58-4212-5547-bc6a-84afa0a5e048"
+        },
+        {
+          "namespace": "prometheus",
+          "name": "prometheus-kube-prometheus-operator-67c6f44454",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:18:32",
+          "cloud_resource_id": "9955fedc-dc7b-507f-86dc-29faa8b1a173"
+        },
+        {
+          "namespace": "prometheus",
+          "name": "prometheus-kube-state-metrics",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:18:32",
+          "cloud_resource_id": "38a6f5c0-f3e6-5313-bbf7-ab95b7f793c8"
+        },
+        {
+          "namespace": "prometheus",
+          "name": "prometheus-kube-state-metrics-745879484f",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:18:32",
+          "cloud_resource_id": "28a5353a-8a70-5ab4-94f0-e46201e08ecc"
+        },
+        {
+          "namespace": "prometheus",
+          "name": "prometheus-prometheus-kube-prometheus-prometheus",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:18:35",
+          "cloud_resource_id": "286e73d5-b814-56a8-8dd8-3012f1a7a865"
+        },
+        {
+          "namespace": "prometheus",
+          "name": "prometheus-prometheus-node-exporter",
+          "kind": "DaemonSet",
+          "is_active": true,
+          "creation_time": null,
+          "cloud_resource_id": "921eb1ea-7436-51ec-aa8d-f8371a581869"
+        },
+        {
+          "namespace": "grafana",
+          "name": "promtail",
+          "kind": "DaemonSet",
+          "is_active": true,
+          "creation_time": null,
+          "cloud_resource_id": "e2dd7663-5f0d-5eb7-8039-82460f20ebac"
+        },
+        {
+          "namespace": "rabbit",
+          "name": "rabbitmq",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T16:11:26",
+          "cloud_resource_id": "d676cafd-d585-5f1f-9384-dae8f68a3cae"
+        },
+        {
+          "namespace": "rabbit-test",
+          "name": "rabbitmq",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T09:37:15",
+          "cloud_resource_id": "3aafd2d7-0d7e-53cb-9004-ba58645f32e3"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "relay-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T15:57:51",
+          "cloud_resource_id": "e7d63813-51c5-59a4-b2df-7df601e74ce6"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "relay-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T19:14:59",
+          "cloud_resource_id": "c9bfd77d-09a4-5696-9990-3dcd15ff0594"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "relay-server-5d78b476c5",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:51:39",
+          "cloud_resource_id": "ad73b86d-e5da-5861-82a7-011c8b626a49"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "relay-server-6cd4b79df9",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:04:14",
+          "cloud_resource_id": "82f625c4-cae7-5713-9aa1-88707fc753f5"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "services-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T09:13:40",
+          "cloud_resource_id": "0baddff6-e47f-5195-adc9-876951a22088"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "services-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T13:25:44",
+          "cloud_resource_id": "6af3e9d2-acb2-57b3-a931-5c9d2e94dccc"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "services-server-64ffc5f76b",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T17:36:31",
+          "cloud_resource_id": "4562780b-6be1-57f7-9eb0-6cee0e2fe16e"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "services-server-68b96f6847",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:52:03",
+          "cloud_resource_id": "92b9effe-d7fc-5139-9297-da26878ed717"
+        },
+        {
+          "namespace": "sonarqube",
+          "name": "sonarqube-postgresql",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T18:41:18",
+          "cloud_resource_id": "8093a30c-2ce2-5a7b-97fa-a6fd627250a3"
+        },
+        {
+          "namespace": "sonarqube",
+          "name": "sonarqube-sonarqube",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T18:41:19",
+          "cloud_resource_id": "716070db-2d23-55df-9110-57670320e70d"
+        },
+        {
+          "namespace": "testenv52",
+          "name": "testenv52-forwarder",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-18T12:46:41",
+          "cloud_resource_id": "9d08c266-c122-5a8b-8a8a-e11fde4ffa33"
+        },
+        {
+          "namespace": "testenv52",
+          "name": "testenv52-forwarder-5889f8d566",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T12:46:41",
+          "cloud_resource_id": "ed69d091-c529-5c1e-a8d6-22d06971d139"
+        },
+        {
+          "namespace": "testenv52",
+          "name": "testenv52-opencost",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-18T12:46:41",
+          "cloud_resource_id": "80e5b46c-8b8f-5b9e-9d3e-772c2e9506c5"
+        },
+        {
+          "namespace": "testenv52",
+          "name": "testenv52-opencost-67859d6b64",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T12:46:41",
+          "cloud_resource_id": "a31a2ee1-7afe-5ebe-87e0-c8cb4694f36b"
+        },
+        {
+          "namespace": "testenv52",
+          "name": "testenv52-runner",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-18T12:46:41",
+          "cloud_resource_id": "308495d1-9338-57c3-93fa-3f949cada179"
+        },
+        {
+          "namespace": "testenv52",
+          "name": "testenv52-runner-6778f857dc",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T12:46:41",
+          "cloud_resource_id": "4624aea3-ad7c-5af3-b631-fd14fa048d55"
+        },
+        {
+          "namespace": "ops",
+          "name": "test-hasura-db-cleanup-28513500",
+          "kind": "Job",
+          "is_active": true,
+          "creation_time": "2024-03-19T01:00:00",
+          "cloud_resource_id": "278e43fd-f3ec-5d13-bd23-101c70f482a5"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "ticket-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-20T05:00:04",
+          "cloud_resource_id": "55e263bc-f571-5812-bb9c-c8c1bffb591b"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "ticket-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T13:24:55",
+          "cloud_resource_id": "dd36a824-3db6-5b80-a61f-10ac5445e57a"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "ticket-server-5dd8488766",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:04:14",
+          "cloud_resource_id": "74d7ad50-7978-5544-a149-43f047b7eb5d"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "ticket-server-847b796879",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:51:40",
+          "cloud_resource_id": "6e7da0cd-ad01-5f53-a0ec-800f65a3a6bc"
+        }
+      ]
+    }
+  },
+  "autopilotListing": {
+    "data": {
+      "auto_pilot_listing": [
+        {
+          "name": "generic auto pilot for nudgebee np",
+          "schedule_time": "0 * * * *",
+          "next_schedule_time": "2024-03-19T19:00:00",
+          "status": "ACTIVE",
+          "category": "vertical_rightsize",
+          "account_id": "demo",
+          "last_executed_time": "2024-03-19T14:55:08.895008",
+          "id": "394c8eee-eb5a-4d97-bb3a-9e7d4ea1a875",
+          "created_by": "5b195690-b393-4937-ab07-690a751f40c5",
+          "creation_date": "2024-02-27T10:56:07.58533",
+          "rule": {
+            "rules": {
+              "cpu": {
+                "algo": "NBALGO",
+                "trigger": {
+                  "change_pct": 10
+                },
+                "buffer_pct": 5
+              },
+              "memory": {
+                "algo": "max",
+                "unit": "GB",
+                "trigger": {
+                  "change_pct": 10
+                },
+                "buffer_pct": 0
+              }
+            },
+            "resource_filter": {
+              "namespace": {
+                "exclusion": [],
+                "inclusion": ["nudgebee"]
+              }
+            }
+          },
+          "user": {
+            "username": "ramankharche@gmail.com",
+            "display_name": "Raman Kharche"
+          }
+        },
+        {
+          "name": "autopilot for Deployment auto-pilot-worker",
+          "schedule_time": "50 * * * *",
+          "next_schedule_time": "2024-03-19T18:50:00",
+          "status": "ACTIVE",
+          "category": "horizontal_rightsize",
+          "account_id": "demo",
+          "last_executed_time": null,
+          "id": "a1fc2f05-462f-4f6b-9a5b-6acd060bcfc3",
+          "created_by": "8257d220-0610-4839-83c8-586b31e7c2d6",
+          "creation_date": "2024-03-11T05:58:54.039124",
+          "rule": {
+            "rules": {},
+            "resource_filter": {
+              "id": "44cc2169-37d7-54f8-abc8-ec4d59412de9"
+            }
+          },
+          "user": {
+            "username": "hemasundar.nallapaneni@nudgebee.com",
+            "display_name": "Hemasundar"
+          }
+        },
+        {
+          "name": "autopilot for Deployment ecr-proxy-server",
+          "schedule_time": "50 * * * *",
+          "next_schedule_time": "2024-03-19T18:50:00",
+          "status": "ACTIVE",
+          "category": "horizontal_rightsize",
+          "account_id": "demo",
+          "last_executed_time": null,
+          "id": "16ecc206-89a8-4c27-bc9d-d96ba9d03ee2",
+          "created_by": "8257d220-0610-4839-83c8-586b31e7c2d6",
+          "creation_date": "2024-03-12T11:06:08.41485",
+          "rule": {
+            "rules": {},
+            "resource_filter": {
+              "id": "1f1dc496-7ac5-5202-b40a-77a24405bcdd"
+            }
+          },
+          "user": {
+            "username": "hemasundar.nallapaneni@nudgebee.com",
+            "display_name": "Hemasundar"
+          }
+        },
+        {
+          "name": "autopilot for Deployment ecr-proxy-server",
+          "schedule_time": "50 * * * *",
+          "next_schedule_time": "2024-03-19T18:50:00",
+          "status": "ACTIVE",
+          "category": "horizontal_rightsize",
+          "account_id": "demo",
+          "last_executed_time": null,
+          "id": "f932eb3b-2692-4f54-9fae-5ffb597e1c1a",
+          "created_by": "8257d220-0610-4839-83c8-586b31e7c2d6",
+          "creation_date": "2024-03-07T13:04:05.625646",
+          "rule": {
+            "rules": {},
+            "resource_filter": {
+              "id": "1f1dc496-7ac5-5202-b40a-77a24405bcdd"
+            }
+          },
+          "user": {
+            "username": "hemasundar.nallapaneni@nudgebee.com",
+            "display_name": "Hemasundar"
+          }
+        },
+        {
+          "name": "autopilot for Deployment services-server",
+          "schedule_time": "50 * * * *",
+          "next_schedule_time": "2024-03-19T18:50:00",
+          "status": "ACTIVE",
+          "category": "horizontal_rightsize",
+          "account_id": "demo",
+          "last_executed_time": null,
+          "id": "76ba310b-b468-45a2-9ca5-e4eea4024cbb",
+          "created_by": "8257d220-0610-4839-83c8-586b31e7c2d6",
+          "creation_date": "2024-03-05T05:44:47.704315",
+          "rule": {
+            "rules": {},
+            "resource_filter": {
+              "id": "0baddff6-e47f-5195-adc9-876951a22088"
+            }
+          },
+          "user": {
+            "username": "hemasundar.nallapaneni@nudgebee.com",
+            "display_name": "Hemasundar"
+          }
+        }
+      ],
+      "auto_pilot_aggregate": {
+        "aggregate": {
+          "count": 5
+        }
+      }
+    }
+  },
+  "ListAllWorkloads": {
+    "data": {
+      "k8s_workloads": [
+        {
+          "namespace": "actions-runner-system-1",
+          "name": "actions-runner-controller",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T17:45:12",
+          "cloud_resource_id": "1f4af094-ee83-597e-a368-30b9ccf750fe"
+        },
+        {
+          "namespace": "actions-runner-system-1",
+          "name": "actions-runner-controller-69f55bb87c",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T17:46:35",
+          "cloud_resource_id": "3341963f-fdd5-5970-bfe0-a82e0d381b63"
+        },
+        {
+          "namespace": "prometheus",
+          "name": "alertmanager-prometheus-kube-prometheus-alertmanager",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:18:34",
+          "cloud_resource_id": "1ef7c4a7-1c3c-51b8-8e47-4ee1248e8c4b"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "app-dev",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T17:07:17",
+          "cloud_resource_id": "6aa8ea23-58ac-5b47-9337-0aeb9b6caced"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "app-dev-5665db9b87",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T17:44:32",
+          "cloud_resource_id": "458986ac-0c14-53b1-8d26-88088935735a"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "app-test",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T13:46:29",
+          "cloud_resource_id": "e278b6a9-c558-57dc-8044-782c60a1288f"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "app-test-5894fc494b",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T14:25:27",
+          "cloud_resource_id": "c5f4ce1d-9925-599b-8b0b-c9f9ae205621"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "auto-pilot-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-08T13:30:33",
+          "cloud_resource_id": "4385d173-4a31-5d0d-9119-639ab94c1c50"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "auto-pilot-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-12T12:56:51",
+          "cloud_resource_id": "6c9b349d-0dc9-5137-abf8-fbd802e247aa"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "auto-pilot-server-6558bd6745",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T14:50:58",
+          "cloud_resource_id": "1587133e-110a-52d5-b4c8-c3de85f476b1"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "auto-pilot-server-7df8b599",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T10:30:57",
+          "cloud_resource_id": "4962257b-666f-512a-b972-53ab809c3de7"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "auto-pilot-worker",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-08T13:30:33",
+          "cloud_resource_id": "4f94e3a1-0501-58d9-b3ca-ecfdbda6fd92"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "auto-pilot-worker",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-12T12:56:51",
+          "cloud_resource_id": "44cc2169-37d7-54f8-abc8-ec4d59412de9"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "auto-pilot-worker-7d78849644",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T10:30:57",
+          "cloud_resource_id": "350e3d0a-c65f-510e-a490-8ed86ec0c587"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "auto-pilot-worker-7f5c66564b",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T14:50:58",
+          "cloud_resource_id": "f2d8a8e9-8231-5337-ad84-001dd756dc1b"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "aws-node",
+          "kind": "DaemonSet",
+          "is_active": true,
+          "creation_time": null,
+          "cloud_resource_id": "294c11de-2eb0-5488-b503-6323d5a3dd4d"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "aws-node-termination-handler",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2023-06-25T03:50:55",
+          "cloud_resource_id": "ba02eb87-169e-57fa-9530-691ece68fc10"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "aws-node-termination-handler-8597bfd4db",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-25T07:28:12",
+          "cloud_resource_id": "644ecd3a-9877-506c-8738-2a48e68d6be9"
+        },
+        {
+          "namespace": "default",
+          "name": "back-end-service",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-29T06:02:30",
+          "cloud_resource_id": "7a17dec1-e20b-5ee3-943b-56927f668e6c"
+        },
+        {
+          "namespace": "default",
+          "name": "back-end-service-78bf56c8f",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-29T06:29:53",
+          "cloud_resource_id": "9340fcf7-680e-56e1-8540-bda54adcaae9"
+        },
+        {
+          "namespace": "cert-manager",
+          "name": "cert-manager",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T15:56:24",
+          "cloud_resource_id": "ec3597a4-a9b0-5211-808f-33632321a4d9"
+        },
+        {
+          "namespace": "cert-manager",
+          "name": "cert-manager-784cbb4ffc",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T15:56:24",
+          "cloud_resource_id": "73db19fd-9f3b-5003-b810-dbac0dfbf6cd"
+        },
+        {
+          "namespace": "cert-manager",
+          "name": "cert-manager-cainjector",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T15:56:23",
+          "cloud_resource_id": "f63a4df5-7505-54e9-8f4f-e2b9a19678ab"
+        },
+        {
+          "namespace": "cert-manager",
+          "name": "cert-manager-cainjector-6d747888bf",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T15:56:23",
+          "cloud_resource_id": "639c4186-4784-5821-8c4a-453dca305ec5"
+        },
+        {
+          "namespace": "cert-manager",
+          "name": "cert-manager-webhook",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T15:56:24",
+          "cloud_resource_id": "0a266f97-b22e-5242-a777-2f90717d2900"
+        },
+        {
+          "namespace": "cert-manager",
+          "name": "cert-manager-webhook-7789b78667",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T15:56:24",
+          "cloud_resource_id": "613c1cb6-3670-53d7-8fcc-f460f21667a4"
+        },
+        {
+          "namespace": "clickhouse-test",
+          "name": "clickhouse-shard0",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T09:19:12",
+          "cloud_resource_id": "ade619aa-dc79-5889-b37c-c4d5c377a651"
+        },
+        {
+          "namespace": "clickhouse",
+          "name": "clickhouse-shard0",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T16:46:57",
+          "cloud_resource_id": "ce491461-01c1-5da0-9571-40f7111f9195"
+        },
+        {
+          "namespace": "clickhouse",
+          "name": "clickhouse-shard1",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T16:46:58",
+          "cloud_resource_id": "8b718c72-fb91-5a5b-b2f7-5626beb7e3ac"
+        },
+        {
+          "namespace": "clickhouse-test",
+          "name": "clickhouse-shard1",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T09:19:12",
+          "cloud_resource_id": "6cdb7b7a-6543-599e-8be9-d2be5045c7d3"
+        },
+        {
+          "namespace": "clickhouse-test",
+          "name": "clickhouse-zookeeper",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T09:19:12",
+          "cloud_resource_id": "7ba6e527-e05e-51fa-bfc7-cff60370a590"
+        },
+        {
+          "namespace": "clickhouse",
+          "name": "clickhouse-zookeeper",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T16:46:56",
+          "cloud_resource_id": "86ac6a90-c62b-5ad1-aea9-71e1f0e565e0"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "cluster-autoscaler-aws-cluster-autoscaler",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2023-06-25T11:16:43",
+          "cloud_resource_id": "7bba887a-ea18-5b9c-acf4-ae31fd9ed180"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "coredns",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2023-01-10T20:09:37",
+          "cloud_resource_id": "8d7e28c8-e712-5008-bdad-fa225c35ded8"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "coredns-69f5ff7796",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-01-24T10:46:34",
+          "cloud_resource_id": "efa03dc2-867c-5615-9b5a-62a567a8ce44"
+        },
+        {
+          "namespace": "ops",
+          "name": "dev-hasura-db-cleanup-28513500",
+          "kind": "Job",
+          "is_active": true,
+          "creation_time": "2024-03-19T01:00:00",
+          "cloud_resource_id": "4c7b68cf-b88e-53da-b775-019072057dcd"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "ebs-csi-controller",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2023-01-24T15:50:37",
+          "cloud_resource_id": "59ffea4f-6159-5b24-abf6-ee6c8f405a08"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "ebs-csi-controller-6cfd9fc44b",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-01-24T19:57:17",
+          "cloud_resource_id": "0a4bcce1-9b69-5224-95b7-b492a9ce1917"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "ebs-csi-node",
+          "kind": "DaemonSet",
+          "is_active": true,
+          "creation_time": null,
+          "cloud_resource_id": "e74a9926-24c1-5386-87a5-debfa6b75bea"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "ebs-csi-node-windows",
+          "kind": "DaemonSet",
+          "is_active": true,
+          "creation_time": "2023-01-24T15:50:37",
+          "cloud_resource_id": "51b7a3fe-913c-5d27-85e4-583b5dc0ef49"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "ecr-proxy-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-19T08:40:36",
+          "cloud_resource_id": "1f1dc496-7ac5-5202-b40a-77a24405bcdd"
+        },
+        {
+          "namespace": "default",
+          "name": "front-end-service",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-29T06:03:31",
+          "cloud_resource_id": "bbb62ab9-b7ea-5584-bb58-66d24d0d6bed"
+        },
+        {
+          "namespace": "default",
+          "name": "front-end-service-669cbd577d",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-29T06:29:50",
+          "cloud_resource_id": "a6745402-3951-53b6-945f-994861e4b90c"
+        },
+        {
+          "namespace": "grafana",
+          "name": "grafana",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:17:40",
+          "cloud_resource_id": "a296b3c8-2832-50b4-8aa7-88d148b5d042"
+        },
+        {
+          "namespace": "grafana",
+          "name": "grafana-6bcd4fd5cb",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:17:40",
+          "cloud_resource_id": "f57865a4-b9b2-52a1-97aa-1565f1603485"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "hasura",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T17:58:17",
+          "cloud_resource_id": "2cd953b1-e652-5788-8d29-e33a2f4a1e90"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "hasura",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T13:32:02",
+          "cloud_resource_id": "7039eb73-9549-5f16-9016-c9dc8950aeb0"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "hasura-5775b6cf89",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:04:13",
+          "cloud_resource_id": "c34d59b0-ba53-527a-b5c6-2323c4e664cd"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "hasura-bbb8b5dc5",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:51:39",
+          "cloud_resource_id": "b1dd5cfc-4e17-5106-8810-f15eb4b873ef"
+        },
+        {
+          "namespace": "ingress-nginx",
+          "name": "ingress-nginx-controller",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T19:26:02",
+          "cloud_resource_id": "b97c2c03-9265-50fa-81a1-d2536c8ab8b7"
+        },
+        {
+          "namespace": "ingress-nginx",
+          "name": "ingress-nginx-controller-85d994b6b4",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T19:26:02",
+          "cloud_resource_id": "01a98f0f-5e7e-531f-97da-cfc3cfcce7d3"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "k8s-collector",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T13:33:49",
+          "cloud_resource_id": "9bcdc09a-2fc1-58e4-9dd2-db0d1f2c8775"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "k8s-collector",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T03:20:02",
+          "cloud_resource_id": "886d9547-4b64-5bae-8555-17549af5c0b2"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "k8s-collector-5885cd5cb6",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:51:39",
+          "cloud_resource_id": "1ef47902-7519-591c-ac0b-0353c7976dc0"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "k8s-collector-6bdf4f8bc9",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:04:13",
+          "cloud_resource_id": "0d3a07dd-4c2e-56af-a0e8-8e8a419aee9b"
+        },
+        {
+          "namespace": "karpenter",
+          "name": "karpenter",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T04:32:55",
+          "cloud_resource_id": "bc02105b-9c73-5353-a6ce-0b1f32187c6c"
+        },
+        {
+          "namespace": "karpenter",
+          "name": "karpenter-955b497ff",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T04:37:25",
+          "cloud_resource_id": "7cc72efb-6553-5d6c-9f3e-b519197a08f9"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "kube-proxy",
+          "kind": "DaemonSet",
+          "is_active": true,
+          "creation_time": null,
+          "cloud_resource_id": "aa3406e9-fb31-59a8-9bcd-e859c0845a62"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "kubernetes-dashboard",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2023-04-26T07:35:51",
+          "cloud_resource_id": "a7cbd51a-4ee9-5ec0-9a0d-4ae9b2238a7a"
+        },
+        {
+          "namespace": "grafana",
+          "name": "loki",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:19:47",
+          "cloud_resource_id": "bdb4657a-ba01-5314-868f-7b4c5fa0bc3c"
+        },
+        {
+          "namespace": "grafana",
+          "name": "loki-gateway",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:19:47",
+          "cloud_resource_id": "449cbae0-e92e-5c8e-bfb0-a190c2d6cc4f"
+        },
+        {
+          "namespace": "grafana",
+          "name": "loki-gateway-5485c9f7fd",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:19:47",
+          "cloud_resource_id": "a5c68508-61c7-53a0-94db-1e5e28a74621"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "metrics-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2023-03-24T10:21:10",
+          "cloud_resource_id": "eeb41407-e8eb-5546-8bbb-4611d1de4269"
+        },
+        {
+          "namespace": "kube-system",
+          "name": "metrics-server-6bf466fbf5",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2023-03-24T10:21:10",
+          "cloud_resource_id": "2237c89c-1e1c-5119-92d5-8316132cb636"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "ml-k8s-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": null,
+          "cloud_resource_id": "9c320970-e1ce-5aac-acde-84d4c5a3b3a0"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "ml-k8s-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-20T04:29:44",
+          "cloud_resource_id": "c6a23bb9-04d8-5224-ab90-87448483791b"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "ml-k8s-server-67d6744468",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:04:13",
+          "cloud_resource_id": "48c6d7aa-b8fd-5ec8-8122-7a5f7e000f81"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "ml-k8s-server-f98c67d78",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:51:39",
+          "cloud_resource_id": "ec789826-3b17-54e9-b4e3-71eca3a5b621"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "notifications",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T18:27:59",
+          "cloud_resource_id": "3b63f040-a042-5ce1-8bb1-9919a8aac1d6"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "notifications",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T13:29:13",
+          "cloud_resource_id": "cd021221-2a2b-564a-b63f-47787417efb3"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "notifications-6f9fcf478b",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T17:42:59",
+          "cloud_resource_id": "989f5f2f-2625-5050-ac2d-91da86621ef4"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "notifications-775cb5975d",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:51:39",
+          "cloud_resource_id": "e7b4e6d1-e003-5f15-8244-5af0829148e5"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent",
+          "kind": "DaemonSet",
+          "is_active": true,
+          "creation_time": null,
+          "cloud_resource_id": "25cf93b0-bbfa-53f7-a1e5-3d714a212bcc"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-clickhouse-shard0",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T10:23:18",
+          "cloud_resource_id": "1b30161c-efc8-5eba-993c-5cfccb73df08"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-forwarder",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T05:42:04",
+          "cloud_resource_id": "f861c2f0-dc0b-5d15-b10e-86b2e4b3cc64"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-forwarder-f9d445955",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T05:42:04",
+          "cloud_resource_id": "5a4875f5-5c35-561a-bd98-7ed8c76f0342"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-opencost",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-18T10:23:18",
+          "cloud_resource_id": "5e5171fc-214a-5784-bad7-242e99b2c732"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-opencost-5d664f6d76",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T10:23:18",
+          "cloud_resource_id": "c74c6191-528d-5aeb-9d1d-ab85fa15954e"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-opentelemetry-collector",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-18T10:23:18",
+          "cloud_resource_id": "3cd036e4-3345-5e36-84ba-2092e7507365"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-opentelemetry-collector-868b4fc9df",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T10:23:18",
+          "cloud_resource_id": "9ded69b1-7a44-5da3-84c7-1abae3bd8655"
+        },
+        {
+          "namespace": "nudgebee-agent-prod",
+          "name": "nudgebee-agent-prod",
+          "kind": "DaemonSet",
+          "is_active": true,
+          "creation_time": null,
+          "cloud_resource_id": "00918c4e-a9d0-554b-a4e0-922a76be8c84"
+        },
+        {
+          "namespace": "nudgebee-agent-prod",
+          "name": "nudgebee-agent-prod-forwarder",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-07T15:05:59",
+          "cloud_resource_id": "0abcda7b-f705-5e23-8972-b5d4bb0249bc"
+        },
+        {
+          "namespace": "nudgebee-agent-prod",
+          "name": "nudgebee-agent-prod-forwarder-89bc4d9cb",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-07T15:05:59",
+          "cloud_resource_id": "97087717-f252-5e3b-be4b-b9f1bd85aef9"
+        },
+        {
+          "namespace": "nudgebee-agent-prod",
+          "name": "nudgebee-agent-prod-runner",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-07T15:05:59",
+          "cloud_resource_id": "1b8e090a-343e-5b9a-909a-d7c1814a7396"
+        },
+        {
+          "namespace": "nudgebee-agent-prod",
+          "name": "nudgebee-agent-prod-runner-7c7998668f",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-07T15:05:59",
+          "cloud_resource_id": "d06aa8bd-10a9-59ce-a3e3-896efc5220de"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-runner",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-18T10:23:18",
+          "cloud_resource_id": "78885d96-5a13-5b8b-84f9-5eb237704d11"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-agent-runner-5d758dcb4f",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T06:22:04",
+          "cloud_resource_id": "b2f7c78e-55d8-5d3c-a016-649045c43298"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "nudgebee-doc-docs",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T13:40:49",
+          "cloud_resource_id": "a37ae754-779f-5ed2-820a-618ea66a97da"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "nudgebee-doc-docs",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-19T09:10:01",
+          "cloud_resource_id": "1a069037-e3ac-5b4e-8b51-d6093134d63f"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "nudgebee-doc-docs-57495f98cb",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:51:39",
+          "cloud_resource_id": "3497b4d1-3268-5c28-83ef-6f7f95c29267"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "nudgebee-doc-docs-8895bd765",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:04:14",
+          "cloud_resource_id": "6778b7e1-b1a4-5fd0-a7ec-35172df41b27"
+        },
+        {
+          "namespace": "nudgebee-agent",
+          "name": "nudgebee-image-scanner-cce1ee97-baaa-4ee4-b323-f4fbaddb6f1d-171",
+          "kind": "Job",
+          "is_active": true,
+          "creation_time": "2024-03-19T14:02:00",
+          "cloud_resource_id": "3f92cb9a-74cd-5def-82bf-11ec480e0e13"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "oom-kill-cronjob-28514460",
+          "kind": "Job",
+          "is_active": true,
+          "creation_time": "2024-03-19T17:00:00",
+          "cloud_resource_id": "e7668c71-5927-5e87-b378-c9a3032e9850"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "oom-kill-cronjob-28514520",
+          "kind": "Job",
+          "is_active": true,
+          "creation_time": "2024-03-19T18:00:00",
+          "cloud_resource_id": "8c5104bd-235e-56e9-b30f-a8793cff3364"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "pg-main-proxy",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T19:50:51",
+          "cloud_resource_id": "d8d80dd5-1d71-5876-937b-7626323b91d1"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "pg-main-proxy",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-25T07:21:43",
+          "cloud_resource_id": "215f43b5-958f-5a88-b98e-f279fa4188c4"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "pg-main-proxy-57d665d7bb",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:51:39",
+          "cloud_resource_id": "3b9e5e5a-769b-5a73-925e-76748d7ec8a3"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "pg-main-proxy-77555c57dd",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:04:14",
+          "cloud_resource_id": "062c2883-4faa-537e-a488-7ea6acc40bf8"
+        },
+        {
+          "namespace": "prometheus",
+          "name": "prometheus-kube-prometheus-operator",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:18:32",
+          "cloud_resource_id": "6d893f58-4212-5547-bc6a-84afa0a5e048"
+        },
+        {
+          "namespace": "prometheus",
+          "name": "prometheus-kube-prometheus-operator-67c6f44454",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:18:32",
+          "cloud_resource_id": "9955fedc-dc7b-507f-86dc-29faa8b1a173"
+        },
+        {
+          "namespace": "prometheus",
+          "name": "prometheus-kube-state-metrics",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:18:32",
+          "cloud_resource_id": "38a6f5c0-f3e6-5313-bbf7-ab95b7f793c8"
+        },
+        {
+          "namespace": "prometheus",
+          "name": "prometheus-kube-state-metrics-745879484f",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:18:32",
+          "cloud_resource_id": "28a5353a-8a70-5ab4-94f0-e46201e08ecc"
+        },
+        {
+          "namespace": "prometheus",
+          "name": "prometheus-prometheus-kube-prometheus-prometheus",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T02:18:35",
+          "cloud_resource_id": "286e73d5-b814-56a8-8dd8-3012f1a7a865"
+        },
+        {
+          "namespace": "prometheus",
+          "name": "prometheus-prometheus-node-exporter",
+          "kind": "DaemonSet",
+          "is_active": true,
+          "creation_time": null,
+          "cloud_resource_id": "921eb1ea-7436-51ec-aa8d-f8371a581869"
+        },
+        {
+          "namespace": "grafana",
+          "name": "promtail",
+          "kind": "DaemonSet",
+          "is_active": true,
+          "creation_time": null,
+          "cloud_resource_id": "e2dd7663-5f0d-5eb7-8039-82460f20ebac"
+        },
+        {
+          "namespace": "rabbit",
+          "name": "rabbitmq",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T16:11:26",
+          "cloud_resource_id": "d676cafd-d585-5f1f-9384-dae8f68a3cae"
+        },
+        {
+          "namespace": "rabbit-test",
+          "name": "rabbitmq",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-18T09:37:15",
+          "cloud_resource_id": "3aafd2d7-0d7e-53cb-9004-ba58645f32e3"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "relay-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T15:57:51",
+          "cloud_resource_id": "e7d63813-51c5-59a4-b2df-7df601e74ce6"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "relay-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-17T19:14:59",
+          "cloud_resource_id": "c9bfd77d-09a4-5696-9990-3dcd15ff0594"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "relay-server-5d78b476c5",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:51:39",
+          "cloud_resource_id": "ad73b86d-e5da-5861-82a7-011c8b626a49"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "relay-server-6cd4b79df9",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:04:14",
+          "cloud_resource_id": "82f625c4-cae7-5713-9aa1-88707fc753f5"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "services-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T09:13:40",
+          "cloud_resource_id": "0baddff6-e47f-5195-adc9-876951a22088"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "services-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T13:25:44",
+          "cloud_resource_id": "6af3e9d2-acb2-57b3-a931-5c9d2e94dccc"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "services-server-64ffc5f76b",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-19T17:36:31",
+          "cloud_resource_id": "4562780b-6be1-57f7-9eb0-6cee0e2fe16e"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "services-server-68b96f6847",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:52:03",
+          "cloud_resource_id": "92b9effe-d7fc-5139-9297-da26878ed717"
+        },
+        {
+          "namespace": "sonarqube",
+          "name": "sonarqube-postgresql",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T18:41:18",
+          "cloud_resource_id": "8093a30c-2ce2-5a7b-97fa-a6fd627250a3"
+        },
+        {
+          "namespace": "sonarqube",
+          "name": "sonarqube-sonarqube",
+          "kind": "StatefulSet",
+          "is_active": true,
+          "creation_time": "2024-02-17T18:41:19",
+          "cloud_resource_id": "716070db-2d23-55df-9110-57670320e70d"
+        },
+        {
+          "namespace": "testenv52",
+          "name": "testenv52-forwarder",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-18T12:46:41",
+          "cloud_resource_id": "9d08c266-c122-5a8b-8a8a-e11fde4ffa33"
+        },
+        {
+          "namespace": "testenv52",
+          "name": "testenv52-forwarder-5889f8d566",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T12:46:41",
+          "cloud_resource_id": "ed69d091-c529-5c1e-a8d6-22d06971d139"
+        },
+        {
+          "namespace": "testenv52",
+          "name": "testenv52-opencost",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-18T12:46:41",
+          "cloud_resource_id": "80e5b46c-8b8f-5b9e-9d3e-772c2e9506c5"
+        },
+        {
+          "namespace": "testenv52",
+          "name": "testenv52-opencost-67859d6b64",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T12:46:41",
+          "cloud_resource_id": "a31a2ee1-7afe-5ebe-87e0-c8cb4694f36b"
+        },
+        {
+          "namespace": "testenv52",
+          "name": "testenv52-runner",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-03-18T12:46:41",
+          "cloud_resource_id": "308495d1-9338-57c3-93fa-3f949cada179"
+        },
+        {
+          "namespace": "testenv52",
+          "name": "testenv52-runner-6778f857dc",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T12:46:41",
+          "cloud_resource_id": "4624aea3-ad7c-5af3-b631-fd14fa048d55"
+        },
+        {
+          "namespace": "ops",
+          "name": "test-hasura-db-cleanup-28513500",
+          "kind": "Job",
+          "is_active": true,
+          "creation_time": "2024-03-19T01:00:00",
+          "cloud_resource_id": "278e43fd-f3ec-5d13-bd23-101c70f482a5"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "ticket-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-20T05:00:04",
+          "cloud_resource_id": "55e263bc-f571-5812-bb9c-c8c1bffb591b"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "ticket-server",
+          "kind": "Deployment",
+          "is_active": true,
+          "creation_time": "2024-02-18T13:24:55",
+          "cloud_resource_id": "dd36a824-3db6-5b80-a61f-10ac5445e57a"
+        },
+        {
+          "namespace": "nudgebee",
+          "name": "ticket-server-5dd8488766",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:04:14",
+          "cloud_resource_id": "74d7ad50-7978-5544-a149-43f047b7eb5d"
+        },
+        {
+          "namespace": "nudgebee-test",
+          "name": "ticket-server-847b796879",
+          "kind": "ReplicaSet",
+          "is_active": true,
+          "creation_time": "2024-03-18T19:51:40",
+          "cloud_resource_id": "6e7da0cd-ad01-5f53-a0ec-800f65a3a6bc"
+        }
+      ]
+    }
+  }
+}

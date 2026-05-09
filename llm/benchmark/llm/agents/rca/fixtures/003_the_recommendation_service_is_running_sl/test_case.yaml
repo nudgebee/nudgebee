@@ -1,0 +1,27 @@
+agent: k8s_debug
+expected_output:
+- The recommendationservice cache has failed due to the recommendationCacheFailure feature flag, causing a memory leak and
+  performance degradation. Without caching, the service must recompute recommendations for each request, leading to increased
+  memory consumption and slower response times.
+expected_root_cause:
+  affected_service: recommendationservice
+  issue_type: cache_failure_memory_leak
+  symptoms:
+  - slow recommendation loading
+  - stale recommendations
+  - increasing memory usage
+  - service performance degradation
+  telemetry_signals:
+    logs: cache miss errors or cache failure logs in recommendationservice
+    metrics: increasing memory usage metrics, cache hit rate dropping, response time increasing
+    traces: slow traces in GetRecommendations with increased latency
+feature_flag: recommendationCacheFailure
+flag_variant: 'on'
+scenario_id: recommendation_cache_failure
+tags:
+- rca
+- kubernetes
+type: rca
+user_prompt: The recommendation service is running slow and users are seeing stale product recommendations. Diagnose issues
+  with the recommendation deployment in nudgebee-demo namespace.
+wait_time_seconds: 90

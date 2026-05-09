@@ -1,0 +1,114 @@
+table:
+  name: dw_queries
+  schema: public
+object_relationships:
+  - name: cloud_account
+    using:
+      foreign_key_constraint_on: account_id
+  - name: cloud_resourse
+    using:
+      foreign_key_constraint_on: resource_id
+  - name: tenant
+    using:
+      foreign_key_constraint_on: tenant_id
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - account_id
+        - bill
+        - bill_interval_from
+        - bill_interval_to
+        - bill_total_duration_micro
+        - bytes_scanned
+        - bytes_spilled_locally
+        - bytes_spilled_remotely
+        - created_at
+        - database_name
+        - db_username
+        - id
+        - partitions_scanned
+        - query_ended_at
+        - query_error_message
+        - query_exec_duration_micro
+        - query_id
+        - query_md5
+        - query_normalized
+        - query_normalized_md5
+        - query_planning_duration_micro
+        - query_queue_duration_micro
+        - query_remote_ip
+        - query_result_cache_hit
+        - query_returned_bytes
+        - query_returned_rows
+        - query_session_id
+        - query_started_at
+        - query_status
+        - query_text
+        - query_transaction_id
+        - query_type
+        - query_usage_limit
+        - queue_overload_time
+        - queue_provision_time
+        - queue_repair_time
+        - resource_id
+        - rpu
+        - table_names
+        - tags
+        - tenant_id
+        - transaction_block_time
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 1000
+      allow_aggregations: true
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - account_id
+        - bill
+        - bill_interval_from
+        - bill_interval_to
+        - bill_total_duration_micro
+        - bytes_scanned
+        - bytes_spilled_locally
+        - bytes_spilled_remotely
+        - created_at
+        - database_name
+        - db_username
+        - id
+        - partitions_scanned
+        - query_ended_at
+        - query_error_message
+        - query_exec_duration_micro
+        - query_id
+        - query_md5
+        - query_normalized
+        - query_normalized_md5
+        - query_planning_duration_micro
+        - query_queue_duration_micro
+        - query_remote_ip
+        - query_result_cache_hit
+        - query_returned_bytes
+        - query_returned_rows
+        - query_session_id
+        - query_started_at
+        - query_status
+        - query_text
+        - query_transaction_id
+        - query_type
+        - query_usage_limit
+        - queue_overload_time
+        - queue_provision_time
+        - queue_repair_time
+        - resource_id
+        - rpu
+        - table_names
+        - tags
+        - tenant_id
+        - transaction_block_time
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 1000
+      allow_aggregations: true

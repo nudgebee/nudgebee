@@ -1,0 +1,142 @@
+table:
+  name: notification_rules
+  schema: public
+object_relationships:
+  - name: cloud_account
+    using:
+      foreign_key_constraint_on: account_id
+  - name: user
+    using:
+      foreign_key_constraint_on: created_by
+  - name: user_updated_by
+    using:
+      foreign_key_constraint_on: updated_by
+array_relationships:
+  - name: notification_rule_mappings
+    using:
+      foreign_key_constraint_on:
+        column: rule_id
+        table:
+          name: notification_rule_mappings
+          schema: public
+insert_permissions:
+  - role: tenant_admin
+    permission:
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        created_by: x-hasura-user-id
+        tenant_id: x-hasura-User-Tenant-Id
+        updated_by: x-hasura-user-id
+      columns:
+        - account_id
+        - aggregation_key
+        - cluster
+        - created_by
+        - delivery_mode
+        - description
+        - expires_at
+        - frequency
+        - is_active
+        - is_suppressed
+        - name
+        - namespace
+        - severity
+        - source
+        - updated_by
+        - workload
+    comment: ""
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - account_id
+        - aggregation_key
+        - cluster
+        - created_at
+        - created_by
+        - delivery_mode
+        - description
+        - expires_at
+        - frequency
+        - id
+        - is_active
+        - is_suppressed
+        - name
+        - namespace
+        - severity
+        - source
+        - tenant_id
+        - updated_at
+        - updated_by
+        - workload
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - account_id
+        - aggregation_key
+        - cluster
+        - created_at
+        - created_by
+        - delivery_mode
+        - description
+        - expires_at
+        - frequency
+        - id
+        - is_active
+        - is_suppressed
+        - name
+        - namespace
+        - severity
+        - source
+        - tenant_id
+        - updated_at
+        - updated_by
+        - workload
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+    comment: ""
+update_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - account_id
+        - aggregation_key
+        - cluster
+        - delivery_mode
+        - description
+        - expires_at
+        - frequency
+        - is_active
+        - is_suppressed
+        - name
+        - namespace
+        - severity
+        - source
+        - updated_at
+        - updated_by
+        - workload
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        updated_by: x-hasura-user-id
+    comment: ""
+delete_permissions:
+  - role: tenant_admin
+    permission:
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""

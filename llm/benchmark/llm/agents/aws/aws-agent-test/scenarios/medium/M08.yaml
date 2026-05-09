@@ -1,0 +1,125 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M08: EventBridge scheduled rule is DISABLED.
+  User complaint: "Scheduled Lambda hasn't run in days. Cron schedule looks correct."
+  Root cause: EventBridge rule exists but is in DISABLED state.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = EventBridge rule in DISABLED state.
+      Fixed = EventBridge rule ENABLED.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m08-backup-job-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  BackupJobFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: m08-nightly-backup-job
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 300
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          import json
+          from datetime import datetime
+
+          def handler(event, context):
+              print(f"Backup job started at {datetime.utcnow().isoformat()}")
+              # Simulate backup processing
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({
+                      'status': 'backup_complete',
+                      'timestamp': datetime.utcnow().isoformat()
+                  })
+              }
+      Tags:
+        - Key: Name
+          Value: m08-nightly-backup-job
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: data-engineering
+        - Key: Application
+          Value: backup-pipeline
+
+  EventBridgeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m08-eventbridge-invoker-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: invoke-lambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt BackupJobFunction.Arn
+
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref BackupJobFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt BackupScheduleRule.Arn
+
+  # THE BUG: rule is DISABLED
+  BackupScheduleRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: m08-nightly-backup-schedule
+      Description: Nightly backup job at 2 AM UTC
+      ScheduleExpression: cron(0 2 * * ? *)
+      State: !If [IsFixed, 'ENABLED', 'DISABLED']
+      Targets:
+        - Id: BackupJobTarget
+          Arn: !GetAtt BackupJobFunction.Arn
+
+Outputs:
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref BackupJobFunction
+  RuleName:
+    Description: EventBridge Rule Name
+    Value: !Ref BackupScheduleRule
+  RuleState:
+    Description: EventBridge Rule State
+    Value: !If [IsFixed, 'ENABLED', 'DISABLED']
+  RuleSchedule:
+    Description: Rule Schedule
+    Value: 'cron(0 2 * * ? *)'
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

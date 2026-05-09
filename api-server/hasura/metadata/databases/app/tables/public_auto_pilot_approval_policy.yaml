@@ -1,0 +1,46 @@
+table:
+  name: auto_pilot_approval_policy
+  schema: public
+object_relationships:
+- name: cloud_account
+  using:
+    foreign_key_constraint_on: account_id
+- name: create_by_user
+  using:
+    foreign_key_constraint_on: created_by
+- name: tenant
+  using:
+    foreign_key_constraint_on: tenant_id
+- name: user
+  using:
+    foreign_key_constraint_on: updated_by
+array_relationships:
+- name: auto_pilot_approvals
+  using:
+    foreign_key_constraint_on:
+      column: policy_id
+      table:
+        name: auto_pilot_approvals
+        schema: public
+- name: auto_pilot_reviewees
+  using:
+    foreign_key_constraint_on:
+      column: policy_id
+      table:
+        name: auto_pilot_reviewee
+        schema: public
+- name: auto_pilot_reviewers
+  using:
+    foreign_key_constraint_on:
+      column: policy_id
+      table:
+        name: auto_pilot_reviewers
+        schema: public
+delete_permissions:
+- role: tenant_admin
+  permission:
+    filter:
+      _and:
+      - tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+  comment: ''

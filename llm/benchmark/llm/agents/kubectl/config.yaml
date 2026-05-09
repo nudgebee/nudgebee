@@ -1,0 +1,5 @@
+# Kubectl agent benchmark configuration
+agent: kubectl
+tool_names:
+  - kubectl_execute
+db_tool_name: kubectl_execute

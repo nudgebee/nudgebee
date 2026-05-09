@@ -1,0 +1,56 @@
+table:
+  name: application_group
+  schema: public
+object_relationships:
+- name: created_by_user
+  using:
+    foreign_key_constraint_on: created_by
+- name: tenant
+  using:
+    foreign_key_constraint_on: tenant_id
+- name: updated_by_user
+  using:
+    foreign_key_constraint_on: updated_by
+array_relationships:
+- name: application_group_mappings
+  using:
+    foreign_key_constraint_on:
+      column: group_id
+      table:
+        name: application_group_mapping
+        schema: public
+insert_permissions:
+- role: tenant_admin
+  permission:
+    check:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+    set:
+      created_at: now()
+      created_by: x-hasura-User-id
+      tenant_id: x-hasura-User-Tenant-Id
+    columns:
+    - description
+    - name
+  comment: ''
+update_permissions:
+- role: tenant_admin
+  permission:
+    columns:
+    - description
+    - name
+    filter:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+    check: null
+    set:
+      updated_at: now()
+      updated_by: x-hasura-User-id
+  comment: ''
+delete_permissions:
+- role: tenant_admin
+  permission:
+    filter:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+  comment: ''

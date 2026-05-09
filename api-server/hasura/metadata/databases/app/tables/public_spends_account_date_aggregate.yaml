@@ -1,0 +1,34 @@
+table:
+  name: spends_account_date_aggregate
+  schema: public
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - account_name
+        - cloud_account
+        - date
+        - date_day
+        - date_month
+        - date_year
+        - sum
+        - tenant
+      filter:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - account_name
+        - cloud_account
+        - date
+        - date_day
+        - date_month
+        - date_year
+        - sum
+        - tenant
+      filter:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true

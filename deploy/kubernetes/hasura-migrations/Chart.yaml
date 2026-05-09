@@ -1,0 +1,7 @@
+apiVersion: v2
+name: hasura-migrations
+keywords:
+  - hasura
+type: application
+version: "0.1"
+appVersion: "V0.1"

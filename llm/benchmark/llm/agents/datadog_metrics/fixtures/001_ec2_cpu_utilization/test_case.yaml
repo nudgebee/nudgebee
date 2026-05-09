@@ -1,0 +1,9 @@
+user_prompt: What is the average CPU utilization across all EC2 instances?
+expected_output:
+  - "avg:aws.ec2.cpuutilization{*}"
+  - "avg:aws.ec2.cpuutilization{*} by {host}"
+tags:
+  - command
+  - aws
+  - ec2
+  - cpu

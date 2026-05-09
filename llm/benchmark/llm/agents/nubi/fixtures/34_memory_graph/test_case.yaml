@@ -1,0 +1,9 @@
+user_prompt: "Give me a graph of `container_memory_working_set_bytes`"
+
+expected_output:
+  - The response must include a PromQL query that uses the metric container_memory_working_set_bytes.
+  - The agent must invoke the prometheus_execute tool with that query.
+
+tags:
+  - prometheus
+  - easy

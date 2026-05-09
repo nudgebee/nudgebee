@@ -1,0 +1,7 @@
+user_prompt: Show all Azure Storage accounts and their replication types.
+expected_output:
+- az storage account list --output table
+type: command
+tags:
+- command
+- azure

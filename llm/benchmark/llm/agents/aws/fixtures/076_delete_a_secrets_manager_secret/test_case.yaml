@@ -1,0 +1,6 @@
+user_prompt: Delete a Secrets Manager secret.
+expected_output:
+- aws secretsmanager delete-secret --secret-id <secret-id> --force-delete-without-recovery
+tags:
+- command
+- aws

@@ -1,0 +1,6 @@
+user_prompt: Get API Gateway stage details.
+expected_output:
+- aws apigateway get-stage --rest-api-id <api-id> --stage-name <stage-name>
+tags:
+- command
+- aws

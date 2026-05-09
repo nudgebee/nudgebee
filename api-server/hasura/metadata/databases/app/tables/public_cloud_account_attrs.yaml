@@ -1,0 +1,71 @@
+table:
+  name: cloud_account_attrs
+  schema: public
+object_relationships:
+- name: cloud_account
+  using:
+    foreign_key_constraint_on: cloud_account_id
+insert_permissions:
+- role: account_admin
+  permission:
+    check:
+      _and:
+      - cloud_account:
+          tenant:
+            _eq: X-Hasura-User-Tenant-Id
+    columns:
+    - name
+    - value
+    - created_at
+    - updated_at
+    - cloud_account_id
+    - id
+  comment: ''
+- role: tenant_admin
+  permission:
+    check:
+      _and:
+      - cloud_account:
+          tenant:
+            _eq: X-Hasura-User-Tenant-Id
+    columns:
+    - name
+    - value
+    - created_at
+    - updated_at
+    - cloud_account_id
+    - id
+  comment: ''
+update_permissions:
+- role: account_admin
+  permission:
+    columns:
+    - name
+    - value
+    - created_at
+    - updated_at
+    - cloud_account_id
+    - id
+    filter:
+      _and:
+      - cloud_account:
+          tenant:
+            _eq: X-Hasura-User-Tenant-Id
+    check: {}
+  comment: ''
+- role: tenant_admin
+  permission:
+    columns:
+    - name
+    - value
+    - created_at
+    - updated_at
+    - cloud_account_id
+    - id
+    filter:
+      _and:
+      - cloud_account:
+          tenant:
+            _eq: X-Hasura-User-Tenant-Id
+    check: {}
+  comment: ''

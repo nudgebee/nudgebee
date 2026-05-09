@@ -1,0 +1,31 @@
+# Pod with two containers: one healthy sidecar (noisy but harmless), and one
+# failing main container. kubectl_log must pick the right container's logs.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inventory-sync
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: inventory-sync}}
+  template:
+    metadata:
+      labels: {app: inventory-sync}
+    spec:
+      containers:
+      - name: sidecar-metrics
+        image: busybox:1.36
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            while true; do
+              echo "$(date -Iseconds) INFO metrics-exporter tick"
+              sleep 5
+            done
+      - name: inventory-sync
+        image: busybox:1.36
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "$(date -Iseconds) FATAL schema-migration-failed: column 'sku' missing on inventory.items"
+            sleep 2
+            exit 1

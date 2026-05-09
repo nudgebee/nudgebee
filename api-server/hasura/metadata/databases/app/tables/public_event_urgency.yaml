@@ -1,0 +1,4 @@
+table:
+  name: event_urgency
+  schema: public
+is_enum: true

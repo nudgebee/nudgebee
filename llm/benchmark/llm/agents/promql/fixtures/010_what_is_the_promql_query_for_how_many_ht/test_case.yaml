@@ -1,0 +1,8 @@
+user_prompt: what is the promql query for how many HTTP requests per second is services-server
+  in nudgebee namespace is receiving?
+expected_output:
+- rate(container_http_requests_duration_seconds_total_bucket{destination_workload_name="services-server"}[1m])
+- sum(rate(http_requests_total{job="services-server"}[1m]))
+tags:
+- command
+- promql

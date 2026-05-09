@@ -1,0 +1,755 @@
+{
+    "details": [
+        {
+            "query": "Find all traces in the 'production' namespace from the last hour.",
+            "retrieved_contexts": [
+                "SELECT timestamp, trace_id, span_id, workload_name, destination_workload_name, http_status_code, duration_ns, resource FROM traces_view WHERE destination_workload_name ilike '%services-server%' AND http_status_code >= 500 AND timestamp >= (NOW() - toIntervalHour(1)) ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_namespace = 'production' AND timestamp >= now() - interval 1 hour;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_namespace = 'production' AND timestamp >= now() - interval 1 hour;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_namespace = 'production' AND timestamp >= now() - interval 1 hour;",
+            "answer_similarity": 93.14,
+            "answer_relevancy": 78.22
+        },
+        {
+            "query": "Show traces for the 'api-gateway' workload with duration longer than 500 milliseconds.",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE destination_workload_name ilike 'services-server%' AND span_kind = 'SERVER' AND http_status_code BETWEEN 500 AND 599 AND duration_ns > 1000000000 ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%api-gateway%' AND duration_ns > 500 ORDER BY timestamp DESC;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%api-gateway%' AND duration_ns > 500 ORDER BY timestamp DESC;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%api-gateway%' AND duration_ns > 500 ORDER BY timestamp DESC;",
+            "answer_similarity": 90.3,
+            "answer_relevancy": 83.91
+        },
+        {
+            "query": "List all failed requests (HTTP status code >= 400) in the 'staging' namespace today.",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE http_status_code = 500 AND destination_workload_name ilike '%services-server%' AND destination_workload_namespace = 'staging' ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_namespace = 'staging' AND http_status_code >= 400 AND timestamp >= toStartOfDay(now()) ORDER BY timestamp DESC;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_namespace = 'staging' AND http_status_code >= 400 AND timestamp >= toStartOfDay(now()) ORDER BY timestamp DESC;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_namespace = 'staging' AND http_status_code >= 400 AND timestamp >= toStartOfDay(now()) ORDER BY timestamp DESC;",
+            "answer_similarity": 93.36,
+            "answer_relevancy": 81.68
+        },
+        {
+            "query": "Find traces originating from 'frontend-service' and targeting 'backend-service' in the 'production' namespace.",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name ilike 'services-server%' AND http_status_code in (500, 503, 504) AND duration_ns > 10000000000 ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%frontend-service%' AND destination_workload_name LIKE '%backend-service%' AND workload_namespace = 'production' AND destination_workload_namespace = 'production';"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%frontend-service%' AND destination_workload_name LIKE '%backend-service%' AND workload_namespace = 'production' AND destination_workload_namespace = 'production';SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%frontend-service%' AND destination_workload_name LIKE '%backend-service%' AND workload_namespace = 'production' AND destination_workload_namespace = 'production';",
+            "answer_similarity": 88.17,
+            "answer_relevancy": 75.98
+        },
+        {
+            "query": "What are the top 5 slowest resources accessed in the last 6 hours across all namespaces?",
+            "retrieved_contexts": [
+                "SELECT timestamp, trace_id, span_id, workload_name, destination_workload_name, http_status_code, message FROM traces_view WHERE http_status_code = 500 AND destination_workload_name ilike 'Services Server%' AND message ilike '%unable to execute query%' AND destination_workload_namespace IN ('services-server-69649b785f', 'services-server-789d55679f', 'services-server-66b78fc5f4', 'services-server-7cf5cb44d') AND timestamp >= (NOW() - toIntervalHour(1)) ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT resource, avg(duration_ns) as avg_duration, count(*) as request_count FROM traces_view WHERE timestamp >= now() - interval 6 hour GROUP BY resource ORDER BY avg_duration DESC LIMIT 5;"
+            ],
+            "ground_truth": "SELECT resource, avg(duration_ns) as avg_duration, count(*) as request_count FROM traces_view WHERE timestamp >= now() - interval 6 hour GROUP BY resource ORDER BY avg_duration DESC LIMIT 5;",
+            "answer_similarity": 82.71,
+            "answer_relevancy": 75.63
+        },
+        {
+            "query": "Show requests to the '/api/v1/users' resource that resulted in a 404 error.",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE (destination_workload_name ilike '%Services Server%' OR destination_workload_namespace ilike '%Services Server%') AND (http_status_code = 500) AND (resource ilike '%unable to execute query%' OR trace_state ilike '%unable to execute query%') ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE resource = '/api/v1/users' AND http_status_code = 404 ORDER BY timestamp DESC;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE resource = '/api/v1/users' AND http_status_code = 404 ORDER BY timestamp DESC;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE resource = '/api/v1/users' AND http_status_code = 404 ORDER BY timestamp DESC;",
+            "answer_similarity": 88.95,
+            "answer_relevancy": 74.47
+        },
+        {
+            "query": "List distinct destination workloads called by 'data-processor' in the 'default' namespace.",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE (destination_workload_name ilike '%Services Server%' OR workload_name ilike '%Services Server%') AND (destination_workload_namespace = 'nudgebee' OR workload_namespace = 'nudgebee') AND http_status_code BETWEEN 500 AND 599 AND resource ilike '%unable to execute query%' ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT DISTINCT destination_workload_name, destination_workload_namespace FROM traces_view WHERE workload_name LIKE '%data-processor%' AND workload_namespace = 'default';"
+            ],
+            "ground_truth": "SELECT DISTINCT destination_workload_name, destination_workload_namespace FROM traces_view WHERE workload_name LIKE '%data-processor%' AND workload_namespace = 'default';",
+            "answer_similarity": 79.46,
+            "answer_relevancy": 67.55
+        },
+        {
+            "query": "Find traces with duration between 100ms and 200ms for the 'payment-service'.",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE destination_workload_name ilike 'services-server%' AND destination_workload_namespace IN ('nudgebee-on-prem-test', 'nudgebee-test', 'nudgebee') AND trace_state = 'ERROR' ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%payment-service%' AND duration_ns BETWEEN 100 AND 200 ORDER BY timestamp DESC;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%payment-service%' AND duration_ns BETWEEN 100 AND 200 ORDER BY timestamp DESC;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%payment-service%' AND duration_ns BETWEEN 100 AND 200 ORDER BY timestamp DESC;",
+            "answer_similarity": 86.56,
+            "answer_relevancy": 69.19
+        },
+        {
+            "query": "Count the number of requests per HTTP status code for the 'auth-service' in the 'security' namespace over the last day.",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE http_status_code = 500 AND destination_workload_name ilike '%services-server%' AND timestamp >= (NOW() - toIntervalHour(2)) ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT http_status_code, count(*) as count FROM traces_view WHERE workload_name LIKE '%auth-service%' AND workload_namespace = 'security' AND timestamp >= now() - interval 1 day GROUP BY http_status_code ORDER BY http_status_code;"
+            ],
+            "ground_truth": "SELECT http_status_code, count(*) as count FROM traces_view WHERE workload_name LIKE '%auth-service%' AND workload_namespace = 'security' AND timestamp >= now() - interval 1 day GROUP BY http_status_code ORDER BY http_status_code;",
+            "answer_similarity": 87.09,
+            "answer_relevancy": 78.07
+        },
+        {
+            "query": "Identify source workloads in the 'kube-system' namespace sending requests to destinations outside 'kube-system'.",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE destination_workload_name ilike 'Services Server%' AND destination_workload_namespace ilike 'services-server-%' AND http_status_code in (500, 503, 504) AND trace_state ilike '%unable to execute query%' ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT DISTINCT workload_name, destination_workload_namespace, destination_workload_name FROM traces_view WHERE workload_namespace = 'kube-system' AND destination_workload_namespace != 'kube-system';"
+            ],
+            "ground_truth": "SELECT DISTINCT workload_name, destination_workload_namespace, destination_workload_name FROM traces_view WHERE workload_namespace = 'kube-system' AND destination_workload_namespace != 'kube-system';",
+            "answer_similarity": 81.51,
+            "answer_relevancy": 71.66
+        },
+        {
+            "query": "Find traces with duration longer than 1 second in the last 1 hour for 'clickhouse' workload in 'nudgebee-agent' namespace.",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE destination_workload_name ilike 'services-server%' AND destination_workload_namespace ilike 'services-server%' AND http_status_code IN (500, 502, 503, 504) AND trace_state ilike '%\"message\":\"unable to execute query\"%' AND timestamp >= (NOW() - toIntervalHour(1)) ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE duration_ns > 1000 AND timestamp >= now() - interval 1 hour AND workload_name LIKE '%clickhouse%' AND workload_namespace = 'nudgebee-agent';"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE duration_ns > 1000 AND timestamp >= now() - interval 1 hour AND workload_name LIKE '%clickhouse%' AND workload_namespace = 'nudgebee-agent';SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE duration_ns > 1000 AND timestamp >= now() - interval 1 hour AND workload_name LIKE '%clickhouse%' AND workload_namespace = 'nudgebee-agent';",
+            "answer_similarity": 82.2,
+            "answer_relevancy": 73.89
+        },
+        {
+            "query": "Check traces for 'relay-server' deployment in 'nudgebee' namespace to identify unusual duration traces.",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE destination_workload_name ilike 'services-server%' AND http_status_code >= 500 AND http_status_code < 600 AND endpoint ilike '%query%' ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%relay-server%' AND workload_namespace = 'nudgebee' ORDER BY duration_ns DESC LIMIT 100;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%relay-server%' AND workload_namespace = 'nudgebee' ORDER BY duration_ns DESC LIMIT 100;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%relay-server%' AND workload_namespace = 'nudgebee' ORDER BY duration_ns DESC LIMIT 100;",
+            "answer_similarity": 85.29,
+            "answer_relevancy": 71.18
+        },
+        {
+            "query": "Find source workloads calling specific APIs (e.g., '/hasura/query', 'amazonaws.com') in 'nudgebee' namespace in the last day.",
+            "retrieved_contexts": [
+                "SELECT timestamp, trace_id, workload_name, destination_workload_name, endpoint, duration_ns FROM traces_view WHERE http_status_code = 500 AND destination_workload_name ilike '%services-server%' AND endpoint ilike '%/query%' AND timestamp >= (NOW() - toIntervalHour(2)) ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT DISTINCT workload_name, resource FROM traces_view WHERE workload_namespace = 'nudgebee' AND timestamp >= now() - interval 1 day AND (resource LIKE '%/hasura/query%' OR resource LIKE '%amazonaws.com%' OR resource LIKE '%/rest/api/2/issue%');"
+            ],
+            "ground_truth": "SELECT DISTINCT workload_name, resource FROM traces_view WHERE workload_namespace = 'nudgebee' AND timestamp >= now() - interval 1 day AND (resource LIKE '%/hasura/query%' OR resource LIKE '%amazonaws.com%' OR resource LIKE '%/rest/api/2/issue%');",
+            "answer_similarity": 83.79,
+            "answer_relevancy": 72.64
+        },
+        {
+            "query": "Show the top 10 failing APIs (resources) in the 'nudgebee' namespace over the last 1 day.",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE destination_workload_namespace = 'services-server-69649b785f' AND http_status_code = 500 AND endpoint ilike '%query%' AND resource ilike '%query%' AND timestamp >= (NOW() - toIntervalHour(1)) ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT resource, count(*) as failure_count FROM traces_view WHERE workload_namespace = 'nudgebee' AND http_status_code >= 400 AND timestamp >= now() - interval 1 day GROUP BY resource ORDER BY failure_count DESC LIMIT 10;"
+            ],
+            "ground_truth": "SELECT resource, count(*) as failure_count FROM traces_view WHERE workload_namespace = 'nudgebee' AND http_status_code >= 400 AND timestamp >= now() - interval 1 day GROUP BY resource ORDER BY failure_count DESC LIMIT 10;",
+            "answer_similarity": 87.71,
+            "answer_relevancy": 74.43
+        },
+        {
+            "query": "Recent traces for 'relay-server' in 'nudgebee' namespace with duration longer than 5 seconds.",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE destination_workload_name ilike '%services-server%' AND http_status_code IN (500, 502, 503, 504) AND endpoint ilike '%query%' ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%relay-server%' AND workload_namespace = 'nudgebee' AND duration_ns > 5000 ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%relay-server%' AND workload_namespace = 'nudgebee' AND duration_ns > 5000 ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%relay-server%' AND workload_namespace = 'nudgebee' AND duration_ns > 5000 ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 85.56,
+            "answer_relevancy": 71.44
+        },
+        {
+            "query": "Get traces for 'ml-k8s-server' workload in 'nudgebee' namespace around 3 hours 25 minutes ago.",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE destination_workload_name ilike '%services-server%' AND trace_state ilike '%\"unable to execute query\"%' AND timestamp >= (NOW() - toIntervalHour(2)) ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%ml-k8s-server%' AND workload_namespace = 'nudgebee' AND timestamp BETWEEN (now() - interval 3 hour - interval 30 minute) AND (now() - interval 3 hour - interval 20 minute) ORDER BY timestamp DESC;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%ml-k8s-server%' AND workload_namespace = 'nudgebee' AND timestamp BETWEEN (now() - interval 3 hour - interval 30 minute) AND (now() - interval 3 hour - interval 20 minute) ORDER BY timestamp DESC;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%ml-k8s-server%' AND workload_namespace = 'nudgebee' AND timestamp BETWEEN (now() - interval 3 hour - interval 30 minute) AND (now() - interval 3 hour - interval 20 minute) ORDER BY timestamp DESC;",
+            "answer_similarity": 82.42,
+            "answer_relevancy": 76.46
+        },
+        {
+            "query": "What are the latest failures (status >= 400) for 'services-server' workload?",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE destination_workload_name ilike '%services-server%' AND http_status_code = 500 AND endpoint ilike '%query%' ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%services-server%' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 10;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%services-server%' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 10;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%services-server%' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 10;",
+            "answer_similarity": 93.93,
+            "answer_relevancy": 82.5
+        },
+                {
+            "query": "Get recent network traffic targeting 'relay-server' in 'nudgebee-test' namespace.",
+            "retrieved_contexts": [
+                " SELECT timestamp, workload_name, workload_namespace, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns, endpoint FROM traces_view WHERE destination_workload_name ilike 'relay-server%' AND destination_workload_namespace = 'nudgebee-test' ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE destination_workload_name LIKE '%relay-server%' AND destination_workload_namespace = 'nudgebee-test' ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE destination_workload_name LIKE '%relay-server%' AND destination_workload_namespace = 'nudgebee-test' ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE destination_workload_name LIKE '%relay-server%' AND destination_workload_namespace = 'nudgebee-test' ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 98.15,
+            "answer_relevancy": 84.01
+        },
+        {
+            "query": "Recent traces for 'auto-pilot' service taking more than 10 seconds.",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE destination_workload_name ilike 'auto-pilot%' AND duration_ns >= 10000000000 ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%auto-pilot%' AND duration_ns > 10000 ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%auto-pilot%' AND duration_ns > 10000 ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%auto-pilot%' AND duration_ns > 10000 ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 93.04,
+            "answer_relevancy": 80.01
+        },
+        {
+            "query": "Get the list of workloads with any non-200 HTTP status code recently.",
+            "retrieved_contexts": [
+                " SELECT timestamp, workload_name, http_status_code FROM traces_view ORDER BY timestamp DESC LIMIT 1 "
+            ],
+            "expected_contexts": [
+                "SELECT DISTINCT workload_name, workload_namespace, http_status_code FROM traces_view WHERE http_status_code != 200 AND timestamp >= now() - interval 1 hour ORDER BY workload_namespace, workload_name, http_status_code;"
+            ],
+            "ground_truth": "SELECT DISTINCT workload_name, workload_namespace, http_status_code FROM traces_view WHERE http_status_code != 200 AND timestamp >= now() - interval 1 hour ORDER BY workload_namespace, workload_name, http_status_code;",
+            "answer_similarity": 91.11,
+            "answer_relevancy": 79.75
+        },
+        {
+            "query": "Get the list of workloads with latency greater than 1 second in the last hour.",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE (destination_workload_name ILIKE 'services-server%' OR workload_name ILIKE 'services-server%') AND http_status_code IN (500, 503, 504) ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT DISTINCT workload_name, workload_namespace FROM traces_view WHERE duration_ns > 1000 AND timestamp >= now() - interval 1 hour ORDER BY workload_namespace, workload_name;"
+            ],
+            "ground_truth": "SELECT DISTINCT workload_name, workload_namespace FROM traces_view WHERE duration_ns > 1000 AND timestamp >= now() - interval 1 hour ORDER BY workload_namespace, workload_name;",
+            "answer_similarity": 84.68,
+            "answer_relevancy": 79.3
+        },
+        {
+            "query": "Recent API failures for 'services-server' in 'nudgebee' namespace.",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE destination_workload_name ilike 'services-server%' AND destination_workload_namespace = 'nudgebee' ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%services-server%' AND workload_namespace = 'nudgebee' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%services-server%' AND workload_namespace = 'nudgebee' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%services-server%' AND workload_namespace = 'nudgebee' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 93.98,
+            "answer_relevancy": 77.46
+        },
+        {
+            "query": "Recent traces for 'relay-server' workload in 'nudgebee-test' namespace.",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE destination_workload_namespace ilike 'services-server%' AND http_status_code >= 500 AND http_status_code <= 599 ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%relay-server%' AND workload_namespace = 'nudgebee-test' ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%relay-server%' AND workload_namespace = 'nudgebee-test' ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%relay-server%' AND workload_namespace = 'nudgebee-test' ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 86.4,
+            "answer_relevancy": 72.73
+        },
+        {
+            "query": "Recent traces of 'services-server' in 'nudgebee' namespace.",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE destination_workload_name ilike 'services-server%' AND destination_workload_namespace = 'nudgebee' AND http_status_code >= 500 AND http_status_code < 600 AND (endpoint ilike '%query%' OR endpoint ilike '%execute%') ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%services-server%' AND workload_namespace = 'nudgebee' ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%services-server%' AND workload_namespace = 'nudgebee' ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%services-server%' AND workload_namespace = 'nudgebee' ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 95.42,
+            "answer_relevancy": 82.26
+        },
+        {
+            "query": "Traces of 'payment-service' in 'us-west' namespace/region with duration > 100ms.",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE http_status_code IN (500, 502, 503, 504) AND ((workload_name ILIKE 'nudgebee%' OR destination_workload_name ILIKE 'nudgebee%') AND (workload_namespace ILIKE '%services-server%' OR destination_workload_namespace ILIKE '%services-server%')) ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%payment-service%' AND workload_namespace LIKE '%us-west%' AND duration_ns > 100 ORDER BY timestamp DESC;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%payment-service%' AND workload_namespace LIKE '%us-west%' AND duration_ns > 100 ORDER BY timestamp DESC;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%payment-service%' AND workload_namespace LIKE '%us-west%' AND duration_ns > 100 ORDER BY timestamp DESC;",
+            "answer_similarity": 85.85,
+            "answer_relevancy": 68.03
+        },
+        {
+            "query": "Recent traces across all services with API calls taking more than 10 seconds.",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE destination_workload_name ilike 'services-server%' AND http_status_code >= 400 AND (resource ilike '%query%' OR resource ilike '%execute%' OR endpoint ilike '%query%' OR endpoint ilike '%execute%') ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE duration_ns > 10000 ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE duration_ns > 10000 ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE duration_ns > 10000 ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 92.34,
+            "answer_relevancy": 74.93
+        },
+        {
+            "query": "Recent traces with high latency (> 1s) in 'nudgebee' namespace.",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE destination_workload_name ilike 'services-server%' AND http_status_code >= 500 AND http_status_code < 600 AND trace_state ilike '%unable to execute query%' ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_namespace = 'nudgebee' AND duration_ns > 1000 AND timestamp >= now() - interval 1 hour ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_namespace = 'nudgebee' AND duration_ns > 1000 AND timestamp >= now() - interval 1 hour ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_namespace = 'nudgebee' AND duration_ns > 1000 AND timestamp >= now() - interval 1 hour ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 86.83,
+            "answer_relevancy": 70.62
+        },
+        {
+            "query": "Recent traces with high latency (> 1s) for 'k8s-collector' workload in 'nudgebee' namespace.",
+            "retrieved_contexts": [
+                " SELECT timestamp, trace_id, span_id, parent_span_id, workload_name, workload_namespace, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns, resource, endpoint FROM traces_view WHERE destination_workload_name ilike 'services-server%' AND http_status_code IN (500, 502, 503, 504) ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND workload_namespace = 'nudgebee' AND duration_ns > 1000 AND timestamp >= now() - interval 1 hour ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND workload_namespace = 'nudgebee' AND duration_ns > 1000 AND timestamp >= now() - interval 1 hour ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND workload_namespace = 'nudgebee' AND duration_ns > 1000 AND timestamp >= now() - interval 1 hour ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 86.46,
+            "answer_relevancy": 71.73
+        },
+        {
+            "query": "Get API traces originating from 'nudgebee' namespace.",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE destination_workload_name ILIKE '%services-server%' AND http_status_code = 500 ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_namespace = 'nudgebee' ORDER BY timestamp DESC LIMIT 100;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_namespace = 'nudgebee' ORDER BY timestamp DESC LIMIT 100;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_namespace = 'nudgebee' ORDER BY timestamp DESC LIMIT 100;",
+            "answer_similarity": 86.6,
+            "answer_relevancy": 73.25
+        },
+        {
+            "query": "Get failed traces related to specific job workloads (e.g., 'popeye-job', 'helm-chart-upgrade') in 'default' namespace.",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE (destination_workload_name ILIKE '%services-server%' OR workload_name ILIKE '%services-server%') AND http_status_code >= 500 AND http_status_code < 600 AND (endpoint ILIKE '%query%' OR endpoint ILIKE '%execute%' OR resource ILIKE '%query%' OR resource ILIKE '%execute%') ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_namespace = 'default' AND (workload_name LIKE '%popeye-job%' OR workload_name LIKE '%helm-chart-upgrade%' OR workload_name LIKE '%nudgebee-image-scanner%' OR workload_name LIKE '%postgres-migration-job%') AND http_status_code >= 400 ORDER BY timestamp DESC;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_namespace = 'default' AND (workload_name LIKE '%popeye-job%' OR workload_name LIKE '%helm-chart-upgrade%' OR workload_name LIKE '%nudgebee-image-scanner%' OR workload_name LIKE '%postgres-migration-job%') AND http_status_code >= 400 ORDER BY timestamp DESC;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_namespace = 'default' AND (workload_name LIKE '%popeye-job%' OR workload_name LIKE '%helm-chart-upgrade%' OR workload_name LIKE '%nudgebee-image-scanner%' OR workload_name LIKE '%postgres-migration-job%') AND http_status_code >= 400 ORDER BY timestamp DESC;",
+            "answer_similarity": 84.75,
+            "answer_relevancy": 70.1
+        },
+        {
+            "query": "Analyze API failures for 'k8s-collector' in 'nudgebee' namespace (last day).",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE destination_workload_name ilike 'k8s-collector%' AND destination_workload_namespace = 'nudgebee' AND http_status_code >= 500 AND timestamp >= (NOW() - toIntervalDay(1)) ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT resource, http_status_code, count(*) as failure_count, avg(duration_ns) as avg_duration FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND workload_namespace = 'nudgebee' AND http_status_code >= 400 AND timestamp >= now() - interval 1 day GROUP BY resource, http_status_code ORDER BY failure_count DESC;"
+            ],
+            "ground_truth": "SELECT resource, http_status_code, count(*) as failure_count, avg(duration_ns) as avg_duration FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND workload_namespace = 'nudgebee' AND http_status_code >= 400 AND timestamp >= now() - interval 1 day GROUP BY resource, http_status_code ORDER BY failure_count DESC;",
+            "answer_similarity": 93.42,
+            "answer_relevancy": 84.33
+        },
+        {
+            "query": "Filter 'k8s-collector' traces in 'nudgebee' (last day) with status 500 OR latency > 2 seconds.",
+            "retrieved_contexts": [
+                " SELECT timestamp, trace_id, span_id, workload_name, workload_namespace, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns, endpoint FROM traces_view WHERE (destination_workload_name ILIKE 'services-server%' OR workload_name ILIKE 'services-server%') AND http_status_code = 500 AND timestamp >= (NOW() - toIntervalDay(1)) ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND workload_namespace = 'nudgebee' AND timestamp >= now() - interval 1 day AND (http_status_code = 500 OR duration_ns > 2000) ORDER BY timestamp DESC;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND workload_namespace = 'nudgebee' AND timestamp >= now() - interval 1 day AND (http_status_code = 500 OR duration_ns > 2000) ORDER BY timestamp DESC;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND workload_namespace = 'nudgebee' AND timestamp >= now() - interval 1 day AND (http_status_code = 500 OR duration_ns > 2000) ORDER BY timestamp DESC;",
+            "answer_similarity": 88.33,
+            "answer_relevancy": 79.53
+        },
+        {
+            "query": "Get recent traces for 'sonarqube' workload in 'sonarqube' namespace.",
+            "retrieved_contexts": [
+                "SELECT timestamp, trace_id, span_id, http_status_code, duration_ns, resource, endpoint, destination_workload_name, destination_workload_namespace FROM traces_view WHERE destination_workload_name ilike 'services-server%' AND http_status_code >= 500 ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%sonarqube%' AND workload_namespace = 'sonarqube' ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%sonarqube%' AND workload_namespace = 'sonarqube' ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%sonarqube%' AND workload_namespace = 'sonarqube' ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 88.64,
+            "answer_relevancy": 78.32
+        },
+        {
+            "query": "Get recent traces for 'arca-agent' workload in 'parca' namespace.",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE destination_workload_name ilike 'services-server%' AND span_kind = 'SERVER' ORDER BY duration_ns DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%arca-agent%' AND workload_namespace = 'parca' ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%arca-agent%' AND workload_namespace = 'parca' ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%arca-agent%' AND workload_namespace = 'parca' ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 84.15,
+            "answer_relevancy": 74.85
+        },
+        {
+            "query": "Get recent traces for 'rabbitmq' workload in 'rabbit-test' namespace.",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE http_status_code IN (500, 503, 504) AND destination_workload_name ILIKE 'nudgebee%' AND destination_workload_namespace ILIKE 'services-server%' ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%rabbitmq%' AND workload_namespace = 'rabbit-test' ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%rabbitmq%' AND workload_namespace = 'rabbit-test' ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%rabbitmq%' AND workload_namespace = 'rabbit-test' ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 86.34,
+            "answer_relevancy": 73.28
+        },
+        {
+            "query": "Recent traces with failures (status >= 400) across all services.",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE (workload_name ILIKE '%services-server%' OR destination_workload_name ILIKE '%services-server%') AND http_status_code = 500 AND (endpoint ILIKE '%query%' OR resource ILIKE '%query%') ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 94.08,
+            "answer_relevancy": 83.58
+        },
+        {
+            "query": "What is the latency distribution (percentiles) for the '/audit' API resource?",
+            "retrieved_contexts": [
+                " SELECT timestamp, trace_id, span_id, workload_name, workload_namespace, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns, endpoint, resource FROM traces_view WHERE workload_name ilike '%services-server%' AND (http_status_code >= 400 OR http_status_code = 0 OR duration_ns > 10000000000) ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT quantile(0.1)(duration_ns) as p10, quantile(0.5)(duration_ns) as p50, quantile(0.9)(duration_ns) as p90, avg(duration_ns) as avg_duration, count(*) as count FROM traces_view WHERE resource LIKE '%/audit%';"
+            ],
+            "ground_truth": "SELECT quantile(0.1)(duration_ns) as p10, quantile(0.5)(duration_ns) as p50, quantile(0.9)(duration_ns) as p90, avg(duration_ns) as avg_duration, count(*) as count FROM traces_view WHERE resource LIKE '%/audit%';",
+            "answer_similarity": 84.34,
+            "answer_relevancy": 75.52
+        },
+                {
+            "query": "Show details of recent failed traces (status >= 400).",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE destination_workload_name ilike 'services-server%' AND http_status_code >= 500 AND (endpoint ilike '%query%' OR endpoint ilike '%execute%') ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE http_status_code >= 400 ORDER BY timestamp DESC LIMIT 100;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE http_status_code >= 400 ORDER BY timestamp DESC LIMIT 100;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE http_status_code >= 400 ORDER BY timestamp DESC LIMIT 100;",
+            "answer_similarity": 92.65,
+            "answer_relevancy": 75.21
+        },
+        {
+            "query": "What are the recent traces for the 'app-dev' workload in the 'nudgebee' namespace?",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE http_status_code IN (500, 502, 503, 504) AND (destination_workload_name ILIKE '%nudgebee-on-prem-test%' OR destination_workload_name ILIKE '%nudgebee%') AND (destination_workload_namespace ILIKE 'services-server-%') ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%app-dev%' AND workload_namespace = 'nudgebee' ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%app-dev%' AND workload_namespace = 'nudgebee' ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%app-dev%' AND workload_namespace = 'nudgebee' ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 93.44,
+            "answer_relevancy": 80.33
+        },
+        {
+            "query": "Recent traces for 'analytics-exporter' workload in 'default' namespace.",
+            "retrieved_contexts": [
+                "SELECT timestamp, trace_id, span_id, workload_name, workload_namespace, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns, endpoint FROM traces_view WHERE http_status_code IN (500, 502, 503, 504) AND ((workload_name ILIKE '%nudgebee%' OR destination_workload_name ILIKE '%nudgebee%') AND (workload_namespace ILIKE '%services-server%' OR destination_workload_namespace ILIKE '%services-server%')) ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%analytics-exporter%' AND workload_namespace = 'default' ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%analytics-exporter%' AND workload_namespace = 'default' ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%analytics-exporter%' AND workload_namespace = 'default' ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 87.26,
+            "answer_relevancy": 77.0
+        },
+        {
+            "query": "What are the top 5 slowest URL paths (resources) in the last hour?",
+            "retrieved_contexts": [
+                "SELECT resource, duration_ns FROM traces_view LIMIT 1"
+            ],
+            "expected_contexts": [
+                "SELECT resource, avg(duration_ns) as avg_duration, count(*) as request_count FROM traces_view WHERE timestamp >= now() - interval 1 hour GROUP BY resource ORDER BY avg_duration DESC LIMIT 5;"
+            ],
+            "ground_truth": "SELECT resource, avg(duration_ns) as avg_duration, count(*) as request_count FROM traces_view WHERE timestamp >= now() - interval 1 hour GROUP BY resource ORDER BY avg_duration DESC LIMIT 5;",
+            "answer_similarity": 87.26,
+            "answer_relevancy": 66.27
+        },
+        {
+            "query": "What are the top 5 slowest applications (workloads) in the last hour?",
+            "retrieved_contexts": [
+                "SELECT workload_name, duration_ns FROM traces_view WHERE timestamp >= (NOW() - toIntervalHour(1)) ORDER BY duration_ns DESC LIMIT 5"
+            ],
+            "expected_contexts": [
+                "SELECT workload_name, workload_namespace, avg(duration_ns) as avg_duration, count(*) as request_count FROM traces_view WHERE timestamp >= now() - interval 1 hour GROUP BY workload_name, workload_namespace ORDER BY avg_duration DESC LIMIT 5;"
+            ],
+            "ground_truth": "SELECT workload_name, workload_namespace, avg(duration_ns) as avg_duration, count(*) as request_count FROM traces_view WHERE timestamp >= now() - interval 1 hour GROUP BY workload_name, workload_namespace ORDER BY avg_duration DESC LIMIT 5;",
+            "answer_similarity": 93.56,
+            "answer_relevancy": 83.41
+        },
+        {
+            "query": "Recent traces for 'app-dev' in 'nudgebee' with errors (status >= 400).",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE destination_workload_name ILIKE 'app-dev%' AND destination_workload_namespace = 'nudgebee' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%app-dev%' AND workload_namespace = 'nudgebee' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%app-dev%' AND workload_namespace = 'nudgebee' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%app-dev%' AND workload_namespace = 'nudgebee' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 96.15,
+            "answer_relevancy": 86.86
+        },
+        {
+            "query": "What are the errors or warnings (status >= 400) in the traces for 'k8s-collector'?",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE (workload_name ilike '%k8s-collector%' OR destination_workload_name ilike '%k8s-collector%') AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 96.05,
+            "answer_relevancy": 86.35
+        },
+        {
+            "query": "What are the traces for 'k8s-collector' workload?",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE http_status_code = 500 AND (workload_name ILIKE '%services-server%' OR destination_workload_name ILIKE '%services-server%') ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%k8s-collector%' ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%k8s-collector%' ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%k8s-collector%' ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 87.37,
+            "answer_relevancy": 76.13
+        },
+        {
+            "query": "What are the top 10 slowest APIs (resources) in the last hour?",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE http_status_code = 500 AND (workload_name ILIKE '%nudgebee%' OR destination_workload_name ILIKE '%nudgebee%') AND (endpoint ILIKE '%query%' OR resource ILIKE '%query%') ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT resource, avg(duration_ns) as avg_duration, count(*) as request_count FROM traces_view WHERE timestamp >= now() - interval 1 hour GROUP BY resource ORDER BY avg_duration DESC LIMIT 10;"
+            ],
+            "ground_truth": "SELECT resource, avg(duration_ns) as avg_duration, count(*) as request_count FROM traces_view WHERE timestamp >= now() - interval 1 hour GROUP BY resource ORDER BY avg_duration DESC LIMIT 10;",
+            "answer_similarity": 81.77,
+            "answer_relevancy": 71.03
+        },
+        {
+            "query": "What are the traces for 'services-server' with duration greater than 1000 seconds?",
+            "retrieved_contexts": [
+                " SELECT timestamp, trace_id, span_id, workload_name, destination_workload_name, endpoint, http_status_code, duration_ns FROM traces_view WHERE workload_name ILIKE '%services-server%' OR destination_workload_name ILIKE '%services-server%' ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%services-server%' AND duration_ns > 1000000 ORDER BY timestamp DESC;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%services-server%' AND duration_ns > 1000000 ORDER BY timestamp DESC;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%services-server%' AND duration_ns > 1000000 ORDER BY timestamp DESC;",
+            "answer_similarity": 96.57,
+            "answer_relevancy": 83.62
+        },
+        {
+            "query": "What are the traces for 'services-server' workload?",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE workload_name ilike 'services-server%' AND span_kind = 'CLIENT' AND http_status_code NOT BETWEEN 200 AND 299 AND (endpoint ilike '%query%' OR endpoint ilike '%execute%' OR resource ilike '%query%' OR resource ilike '%execute%') AND timestamp >= (NOW() - toIntervalHour(2)) ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%services-server%' ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%services-server%' ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%services-server%' ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 94.24,
+            "answer_relevancy": 81.97
+        },
+        {
+            "query": "What are the top 5 longest duration individual requests for 'services-server'?",
+            "retrieved_contexts": [
+                " SELECT http_status_code, count(*) AS count FROM traces_view WHERE destination_workload_name ilike 'services-server%' AND timestamp >= (NOW() - toIntervalHour(1)) GROUP BY http_status_code ORDER BY count DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%services-server%' ORDER BY duration_ns DESC LIMIT 5;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%services-server%' ORDER BY duration_ns DESC LIMIT 5;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%services-server%' ORDER BY duration_ns DESC LIMIT 5;",
+            "answer_similarity": 91.01,
+            "answer_relevancy": 79.83
+        },
+        {
+            "query": "What are the recent traces for 'hasura' workload in 'nudgebee' namespace?",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE destination_workload_name ilike 'hasura-bfd6b7d8d-jnx8s%' AND destination_workload_namespace = 'nudgebee' ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%hasura%' AND workload_namespace = 'nudgebee' ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%hasura%' AND workload_namespace = 'nudgebee' ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%hasura%' AND workload_namespace = 'nudgebee' ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 94.53,
+            "answer_relevancy": 89.59
+        },
+        {
+            "query": "What are the most recent traces for 'k8s-collector' with errors (status >= 400)?",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE destination_workload_name ilike 'services-server%' AND span_kind = 'SERVER' AND http_status_code = 500 ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 87.93,
+            "answer_relevancy": 77.67
+        },
+        {
+            "query": "What are the APIs taking more than 20 seconds in the 'nudgebee' namespace?",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE destination_workload_namespace = 'nudgebee' ORDER BY timestamp DESC LIMIT 10 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_namespace = 'nudgebee' AND duration_ns > 20000 ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_namespace = 'nudgebee' AND duration_ns > 20000 ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_namespace = 'nudgebee' AND duration_ns > 20000 ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 93.69,
+            "answer_relevancy": 77.53
+        },
+        {
+            "query": "What are the slow (> 1s) API calls for 'app-dev' in 'nudgebee' namespace?",
+            "retrieved_contexts": [
+                "SELECT DISTINCT destination_workload_name FROM traces_view WHERE destination_workload_namespace = 'nudgebee' ORDER BY destination_workload_name ASC LIMIT 100"
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%app-dev%' AND workload_namespace = 'nudgebee' AND duration_ns > 1000 ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%app-dev%' AND workload_namespace = 'nudgebee' AND duration_ns > 1000 ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%app-dev%' AND workload_namespace = 'nudgebee' AND duration_ns > 1000 ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 91.38,
+            "answer_relevancy": 73.06
+        },
+        {
+            "query": "Are there any recent API failures (status >= 400) or high latency (> 1s) issues for 'app-dev' in 'nudgebee' namespace?",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE destination_workload_name ilike 'app-dev%' AND destination_workload_namespace = 'nudgebee' AND (http_status_code >= 400 OR duration_ns > 1000000000) ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%app-dev%' AND workload_namespace = 'nudgebee' AND (http_status_code >= 400 OR duration_ns > 1000) ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%app-dev%' AND workload_namespace = 'nudgebee' AND (http_status_code >= 400 OR duration_ns > 1000) ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%app-dev%' AND workload_namespace = 'nudgebee' AND (http_status_code >= 400 OR duration_ns > 1000) ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 96.14,
+            "answer_relevancy": 82.3
+        },
+        {
+            "query": "Find traces from 'service-a' in 'prod' targeting 'service-b' in 'dev' namespace (cross-namespace).",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE destination_workload_name ilike 'services-server%' AND http_status_code NOT BETWEEN 200 AND 299 ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%service-a%' AND workload_namespace = 'prod' AND destination_workload_name LIKE '%service-b%' AND destination_workload_namespace = 'dev' ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%service-a%' AND workload_namespace = 'prod' AND destination_workload_name LIKE '%service-b%' AND destination_workload_namespace = 'dev' ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%service-a%' AND workload_namespace = 'prod' AND destination_workload_name LIKE '%service-b%' AND destination_workload_namespace = 'dev' ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 91.36,
+            "answer_relevancy": 78.01
+        },
+        {
+            "query": "Show traces with only client-side errors (4xx) for 'api-gateway' in the last 6 hours.",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view ORDER BY timestamp DESC LIMIT 10 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%api-gateway%' AND http_status_code >= 400 AND http_status_code < 500 AND timestamp >= now() - interval 6 hour ORDER BY timestamp DESC;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%api-gateway%' AND http_status_code >= 400 AND http_status_code < 500 AND timestamp >= now() - interval 6 hour ORDER BY timestamp DESC;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%api-gateway%' AND http_status_code >= 400 AND http_status_code < 500 AND timestamp >= now() - interval 6 hour ORDER BY timestamp DESC;",
+            "answer_similarity": 78.99,
+            "answer_relevancy": 69.91
+        },
+        {
+            "query": "Show traces with only server-side errors (5xx) for 'backend-processor' in the last day.",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE (workload_name ILIKE '%Services Server%' OR destination_workload_name ILIKE '%Services Server%') AND (endpoint ILIKE '%unable to execute query%' OR resource ILIKE '%unable to execute query%') AND http_status_code >= 500 AND http_status_code <= 599 ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%backend-processor%' AND http_status_code >= 500 AND timestamp >= now() - interval 1 day ORDER BY timestamp DESC;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%backend-processor%' AND http_status_code >= 500 AND timestamp >= now() - interval 1 day ORDER BY timestamp DESC;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%backend-processor%' AND http_status_code >= 500 AND timestamp >= now() - interval 1 day ORDER BY timestamp DESC;",
+            "answer_similarity": 91.46,
+            "answer_relevancy": 74.07
+        },
+        {
+            "query": "Find traces for 'user-service' that failed (status >= 400) AND took longer than 2 seconds.",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE destination_workload_name ilike 'user-service%' AND http_status_code >= 400 AND duration_ns > 2000000000 ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE workload_name LIKE '%user-service%' AND http_status_code >= 400 AND duration_ns > 2000 ORDER BY timestamp DESC LIMIT 50;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE workload_name LIKE '%user-service%' AND http_status_code >= 400 AND duration_ns > 2000 ORDER BY timestamp DESC LIMIT 50;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE workload_name LIKE '%user-service%' AND http_status_code >= 400 AND duration_ns > 2000 ORDER BY timestamp DESC LIMIT 50;",
+            "answer_similarity": 94.63,
+            "answer_relevancy": 88.14
+        },
+        {
+            "query": "Count requests per hour for the '/login' resource over the last 24 hours.",
+            "retrieved_contexts": [
+                " SELECT * FROM traces_view WHERE destination_workload_name ilike '%nudgebee%' AND destination_workload_namespace ilike 'services-server-%' AND http_status_code IN (500, 502, 503, 504) ORDER BY timestamp DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT toStartOfHour(timestamp) as hour_start, count(*) as request_count FROM traces_view WHERE resource = '/login' AND timestamp >= now() - interval 24 hour GROUP BY hour_start ORDER BY hour_start;"
+            ],
+            "ground_truth": "SELECT toStartOfHour(timestamp) as hour_start, count(*) as request_count FROM traces_view WHERE resource = '/login' AND timestamp >= now() - interval 24 hour GROUP BY hour_start ORDER BY hour_start;",
+            "answer_similarity": 76.39,
+            "answer_relevancy": 68.09
+        },
+        {
+            "query": "Find traces where the destination workload name is missing or empty.",
+            "retrieved_contexts": [
+                "SELECT * FROM traces_view WHERE empty(destination_workload_name) ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT * FROM traces_view WHERE destination_workload_name IS NULL OR destination_workload_name = '' ORDER BY timestamp DESC LIMIT 100;"
+            ],
+            "ground_truth": "SELECT * FROM traces_view WHERE destination_workload_name IS NULL OR destination_workload_name = '' ORDER BY timestamp DESC LIMIT 100;SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name, destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE destination_workload_name IS NULL OR destination_workload_name = '' ORDER BY timestamp DESC LIMIT 100;",
+            "answer_similarity": 92.13,
+            "answer_relevancy": 87.18
+        },
+        {
+            "query": "Show average latency per resource for requests originating from 'mobile-app' workload in 'production' namespace (last hour).",
+            "retrieved_contexts": [
+                " SELECT resource, avg(duration_ns) AS average_latency_ns FROM traces_view WHERE workload_name ilike 'mobile-app%' AND workload_namespace = 'production' AND timestamp >= (NOW() - toIntervalHour(1)) GROUP BY resource ORDER BY average_latency_ns DESC LIMIT 20 "
+            ],
+            "expected_contexts": [
+                "SELECT resource, avg(duration_ns) as avg_latency, count(*) as count FROM traces_view WHERE workload_name LIKE '%mobile-app%' AND workload_namespace = 'production' AND timestamp >= now() - interval 1 hour GROUP BY resource ORDER BY avg_latency DESC;"
+            ],
+            "ground_truth": "SELECT resource, avg(duration_ns) as avg_latency, count(*) as count FROM traces_view WHERE workload_name LIKE '%mobile-app%' AND workload_namespace = 'production' AND timestamp >= now() - interval 1 hour GROUP BY resource ORDER BY avg_latency DESC;",
+            "answer_similarity": 98.09,
+            "answer_relevancy": 89.28
+        },
+        {
+            "query": "List resources called by 'batch-job' in 'default' namespace that resulted in a 503 status code.",
+            "retrieved_contexts": [
+                "SELECT destination_name, destination_workload_name FROM traces_view WHERE workload_name ilike 'batch-job%' AND workload_namespace = 'default' AND http_status_code = 503 ORDER BY timestamp DESC LIMIT 20"
+            ],
+            "expected_contexts": [
+                "SELECT DISTINCT resource FROM traces_view WHERE workload_name LIKE '%batch-job%' AND workload_namespace = 'default' AND http_status_code = 503;"
+            ],
+            "ground_truth": "SELECT DISTINCT resource FROM traces_view WHERE workload_name LIKE '%batch-job%' AND workload_namespace = 'default' AND http_status_code = 503;",
+            "answer_similarity": 94.21,
+            "answer_relevancy": 87.5
+        }
+    ],
+    "summary": {
+        "total_queries": 62,
+        "answer_similarity": 89.28,
+        "answer_relevancy": 77.46,
+        "overall_accuracy": 83.37,
+        "failed_indices_after_retries": []
+    }
+}

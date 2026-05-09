@@ -1,0 +1,10 @@
+{
+  "logoUrl": "/branding/default/logo.svg",
+  "faviconUrl": "/favicon.ico",
+  "title": "Nudgebee",
+  "assistantName": "nubi",
+  "nubiIconUrl": "/branding/default/nubi-icon.svg",
+  "nubiIconLightUrl": "/branding/default/nubi-icon-light.svg",
+  "signinImageUrl": "",
+  "signinLeftImageUrl": ""
+}

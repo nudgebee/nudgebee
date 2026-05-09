@@ -1,0 +1,20 @@
+user_prompt: Our ECS Fargate task 'e17-report-generator' in cluster 'e17-reports-cluster'
+  fails to start with a ResourceInitializationError. The task definition mounts an EFS
+  volume but containers never reach RUNNING state. The EFS filesystem exists and the
+  mount targets are created. What's wrong?
+expected_output:
+- The root cause is that the EFS mount target security group has no inbound rule
+  allowing NFS traffic (TCP port 2049) from the ECS task's security group. When the
+  Fargate task starts, it tries to mount the EFS filesystem but the connection to
+  port 2049 is blocked by the empty security group ingress rules on the EFS mount
+  targets. This causes a ResourceInitializationError because the task cannot initialize
+  the EFS volume mount within the timeout period. The fix is to add an inbound rule
+  to the EFS security group allowing TCP port 2049 from the ECS task security group.
+tags:
+- rca
+- aws
+- efs
+- ecs
+- security-group
+type: rca
+agent: aws_debug

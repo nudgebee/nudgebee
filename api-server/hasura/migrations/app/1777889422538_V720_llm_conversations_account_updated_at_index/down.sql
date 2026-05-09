@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS public.idx_llm_conversations_account_updated_at;

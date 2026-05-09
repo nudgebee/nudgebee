@@ -1,0 +1,157 @@
+table:
+  name: messaging_platforms
+  schema: public
+insert_permissions:
+  - role: tenant_admin
+    permission:
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      columns:
+        - channels
+    comment: ""
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - app_id
+        - bot_id
+        - channels
+        - client_id
+        - created_at
+        - created_by
+        - id
+        - platform
+        - team_id
+        - team_name
+        - tenant_id
+        - updated_at
+        - updated_by
+        - username
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - app_id
+        - bot_id
+        - channels
+        - client_id
+        - created_at
+        - created_by
+        - id
+        - platform
+        - team_id
+        - team_name
+        - tenant_id
+        - updated_at
+        - updated_by
+        - username
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - app_id
+        - bot_id
+        - channels
+        - client_id
+        - created_at
+        - created_by
+        - id
+        - platform
+        - team_id
+        - team_name
+        - tenant_id
+        - updated_at
+        - updated_by
+        - username
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - app_id
+        - bot_id
+        - channels
+        - client_id
+        - created_at
+        - created_by
+        - id
+        - platform
+        - team_id
+        - team_name
+        - tenant_id
+        - updated_at
+        - updated_by
+        - username
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - app_id
+        - bot_id
+        - channels
+        - client_id
+        - created_at
+        - created_by
+        - id
+        - platform
+        - scopes
+        - team_id
+        - team_name
+        - tenant_id
+        - updated_at
+        - updated_by
+        - username
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - app_id
+        - bot_id
+        - channels
+        - client_id
+        - created_at
+        - created_by
+        - id
+        - platform
+        - team_id
+        - team_name
+        - tenant_id
+        - updated_at
+        - updated_by
+        - username
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""
+update_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - channels
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      check: null
+    comment: ""
+delete_permissions:
+  - role: tenant_admin
+    permission:
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""

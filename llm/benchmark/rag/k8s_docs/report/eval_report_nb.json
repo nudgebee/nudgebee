@@ -1,0 +1,530 @@
+{
+    "Total Queries": 30,
+    "Metrics": {
+        "context_recall": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "context_precision": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "faithfulness": [
+            1.0,
+            0.3333333333333333,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "answer_relevancy": [
+            0.8671285426994514,
+            0.8402985383600864,
+            0.8475207498004712,
+            0.7275276964798247,
+            0.8465703222286017,
+            0.755763488937273,
+            0.8079844278080227,
+            0.7737136653146761,
+            0.788031333837639,
+            0.8361606482893813,
+            0.7825243261248085,
+            0.7621814467074719,
+            0.8316409353434446,
+            0.8559489432711299,
+            0.7263349060164007,
+            0.7831329265319796,
+            0.7436652377773668,
+            0.7946425283070416,
+            0.773560247098018,
+            0.7698837000934485,
+            0.7236521457781747,
+            0.8547448665537422,
+            0.832364916840548,
+            0.7495550687646465,
+            0.7714857105963832,
+            0.831265874502675,
+            0.7537613728492758,
+            0.844737282114834,
+            0.7438364307653392,
+            0.7741791910591397
+        ]
+    },
+    "Evaluations": [
+        {
+            "query": "How do I check the logs of a pod in Kubernetes?",
+            "retrieved_contexts": [
+                "What's next\nAccessing the Kubernetes API from a Pod\n"
+            ],
+            "expected_contexts": [
+                "To view logs of a running pod, use the `kubectl logs` command. If the pod has multiple containers, specify the container using `-c` flag."
+            ],
+            "generated_answer": "What's next\nAccessing the Kubernetes API from a Pod\n",
+            "ground_truth": [
+                "Use `kubectl logs <pod-name>` to retrieve the logs of a pod. If the pod has multiple containers, specify the container name using `kubectl logs <pod-name> -c <container-name>`."
+            ]
+        },
+        {
+            "query": "What is a Kubernetes namespace used for?",
+            "retrieved_contexts": [
+                "What's next\nAccessing the Kubernetes API from a Pod\n"
+            ],
+            "expected_contexts": [
+                "Namespaces help organize Kubernetes resources and allow resource isolation by different teams or projects."
+            ],
+            "generated_answer": "What's next\nAccessing the Kubernetes API from a Pod\n",
+            "ground_truth": [
+                "A Kubernetes namespace is used to partition cluster resources between multiple users. It is useful in environments with many users across multiple teams or projects."
+            ]
+        },
+        {
+            "query": "How do I scale a deployment in Kubernetes?",
+            "retrieved_contexts": [
+                "What's next\nAccessing the Kubernetes API from a Pod\n"
+            ],
+            "expected_contexts": [
+                "You can scale deployments in Kubernetes using `kubectl scale` or updating the YAML configuration."
+            ],
+            "generated_answer": "What's next\nAccessing the Kubernetes API from a Pod\n",
+            "ground_truth": [
+                "Scale a deployment using `kubectl scale deployment <deployment-name> --replicas=<number>` or by modifying the `spec.replicas` field in the deployment YAML file."
+            ]
+        },
+        {
+            "query": "How do I delete a pod in Kubernetes?",
+            "retrieved_contexts": [
+                "Once you're ready, move on to Using A Service To Expose Your App.\n"
+            ],
+            "expected_contexts": [
+                "Pods can be deleted using the `kubectl delete` command."
+            ],
+            "generated_answer": "Once you're ready, move on to Using A Service To Expose Your App.\n",
+            "ground_truth": [
+                "Use `kubectl delete pod <pod-name>` to delete a pod. If you want to delete all pods in a namespace, use `kubectl delete pods --all`."
+            ]
+        },
+        {
+            "query": "What is a Kubernetes service?",
+            "retrieved_contexts": [
+                "What's next\nAccessing the Kubernetes API from a Pod\n"
+            ],
+            "expected_contexts": [
+                "A Service in Kubernetes allows access to a set of pods and enables load balancing across them."
+            ],
+            "generated_answer": "What's next\nAccessing the Kubernetes API from a Pod\n",
+            "ground_truth": [
+                "A Kubernetes Service is an abstraction that defines a logical set of pods and the policies for accessing them. It provides stable network connectivity."
+            ]
+        },
+        {
+            "query": "How do I expose a deployment externally?",
+            "retrieved_contexts": [
+                "Once you're ready, move on to Using A Service To Expose Your App.\n"
+            ],
+            "expected_contexts": [
+                "Services of type `LoadBalancer` or `Ingress` allow external access to Kubernetes workloads."
+            ],
+            "generated_answer": "Once you're ready, move on to Using A Service To Expose Your App.\n",
+            "ground_truth": [
+                "Expose a deployment externally using `kubectl expose deployment <deployment-name> --type=LoadBalancer --port=<port>`. Use `NodePort` or `Ingress` for different access strategies."
+            ]
+        },
+        {
+            "query": "What is a ConfigMap in Kubernetes?",
+            "retrieved_contexts": [
+                "What's next\nAccessing the Kubernetes API from a Pod\n"
+            ],
+            "expected_contexts": [
+                "ConfigMaps decouple configuration from application code and can be used for injecting environment variables."
+            ],
+            "generated_answer": "What's next\nAccessing the Kubernetes API from a Pod\n",
+            "ground_truth": [
+                "A ConfigMap is an API object used to store configuration data such as environment variables, command-line arguments, or configuration files."
+            ]
+        },
+        {
+            "query": "How do I restart a pod?",
+            "retrieved_contexts": [
+                "Once you're ready, move on to Using A Service To Expose Your App.\n"
+            ],
+            "expected_contexts": [
+                "Pods in Kubernetes restart when deleted or when their associated controllers recreate them."
+            ],
+            "generated_answer": "Once you're ready, move on to Using A Service To Expose Your App.\n",
+            "ground_truth": [
+                "Pods do not restart manually. Instead, delete the pod using `kubectl delete pod <pod-name>`, and the controller (Deployment, StatefulSet, etc.) will recreate it automatically."
+            ]
+        },
+        {
+            "query": "What is a StatefulSet?",
+            "retrieved_contexts": [
+                "What's next\nAccessing the Kubernetes API from a Pod\n"
+            ],
+            "expected_contexts": [
+                "StatefulSets are used for applications requiring persistent identity and storage."
+            ],
+            "generated_answer": "What's next\nAccessing the Kubernetes API from a Pod\n",
+            "ground_truth": [
+                "A StatefulSet manages the deployment and scaling of stateful applications, ensuring that each pod has a unique identity and stable storage."
+            ]
+        },
+        {
+            "query": "How do I check CPU and memory usage of a pod?",
+            "retrieved_contexts": [
+                "What's next\nAccessing the Kubernetes API from a Pod\n"
+            ],
+            "expected_contexts": [
+                "The `kubectl top pod` command provides real-time resource usage information."
+            ],
+            "generated_answer": "What's next\nAccessing the Kubernetes API from a Pod\n",
+            "ground_truth": [
+                "Use `kubectl top pod <pod-name>` to check CPU and memory usage. Ensure the Metrics Server is running in the cluster."
+            ]
+        },
+        {
+            "query": "What is the difference between a DaemonSet and a Deployment?",
+            "retrieved_contexts": [
+                "What's next\nAccessing the Kubernetes API from a Pod\n"
+            ],
+            "expected_contexts": [
+                "DaemonSets are useful for running node-wide services like logging or monitoring."
+            ],
+            "generated_answer": "What's next\nAccessing the Kubernetes API from a Pod\n",
+            "ground_truth": [
+                "A Deployment ensures a specified number of replicas are running, while a DaemonSet ensures that a copy of a pod runs on every node."
+            ]
+        },
+        {
+            "query": "How do I roll back a deployment?",
+            "retrieved_contexts": [
+                "Once you're ready, move on to Using A Service To Expose Your App.\n"
+            ],
+            "expected_contexts": [
+                "The `kubectl rollout undo` command enables rollback of a deployment."
+            ],
+            "generated_answer": "Once you're ready, move on to Using A Service To Expose Your App.\n",
+            "ground_truth": [
+                "Use `kubectl rollout undo deployment <deployment-name>` to revert to the previous stable version."
+            ]
+        },
+        {
+            "query": "What is an Ingress in Kubernetes?",
+            "retrieved_contexts": [
+                "What's next\nAccessing the Kubernetes API from a Pod\n"
+            ],
+            "expected_contexts": [
+                "Ingress resources define rules for external access to services."
+            ],
+            "generated_answer": "What's next\nAccessing the Kubernetes API from a Pod\n",
+            "ground_truth": [
+                "An Ingress is an API object that manages external access to services within a cluster, typically via HTTP/HTTPS routing."
+            ]
+        },
+        {
+            "query": "How do I check events in a Kubernetes cluster?",
+            "retrieved_contexts": [
+                "What's next\nAccessing the Kubernetes API from a Pod\n"
+            ],
+            "expected_contexts": [
+                "Events provide information about resource changes and errors."
+            ],
+            "generated_answer": "What's next\nAccessing the Kubernetes API from a Pod\n",
+            "ground_truth": [
+                "Use `kubectl get events --sort-by=.metadata.creationTimestamp` to see recent events in a cluster."
+            ]
+        },
+        {
+            "query": "How do I get the YAML of an existing resource?",
+            "retrieved_contexts": [
+                "Once you're ready, move on to Using A Service To Expose Your App.\n"
+            ],
+            "expected_contexts": [
+                "The `-o yaml` flag outputs resources in YAML format."
+            ],
+            "generated_answer": "Once you're ready, move on to Using A Service To Expose Your App.\n",
+            "ground_truth": [
+                "Use `kubectl get <resource-type> <resource-name> -o yaml` to retrieve the YAML definition of a resource."
+            ]
+        },
+        {
+            "query": "How do I restart a deployment?",
+            "retrieved_contexts": [
+                "Once you're ready, move on to Using A Service To Expose Your App.\n"
+            ],
+            "expected_contexts": [
+                "Rolling restarts are managed by the `kubectl rollout restart` command."
+            ],
+            "generated_answer": "Once you're ready, move on to Using A Service To Expose Your App.\n",
+            "ground_truth": [
+                "Restart a deployment by running `kubectl rollout restart deployment <deployment-name>`."
+            ]
+        },
+        {
+            "query": "How do I check logs of a failed pod?",
+            "retrieved_contexts": [
+                "The Deployment is once again using a stable version of the app (v2). The rollback was successful.\nRemember to clean up your local cluster\nkubectl delete deployments/kubernetes-bootcamp services/kubernetes-bootcamp\n"
+            ],
+            "expected_contexts": [
+                "The `--previous` flag allows viewing logs of a terminated container."
+            ],
+            "generated_answer": "The Deployment is once again using a stable version of the app (v2). The rollback was successful.\nRemember to clean up your local cluster\nkubectl delete deployments/kubernetes-bootcamp services/kubernetes-bootcamp\n",
+            "ground_truth": [
+                "Use `kubectl logs <pod-name> --previous` to check logs from a terminated container."
+            ]
+        },
+        {
+            "query": "What is a Horizontal Pod Autoscaler?",
+            "retrieved_contexts": [
+                "What's next\nAccessing the Kubernetes API from a Pod\n"
+            ],
+            "expected_contexts": [
+                "HPA scales workloads dynamically based on resource usage."
+            ],
+            "generated_answer": "What's next\nAccessing the Kubernetes API from a Pod\n",
+            "ground_truth": [
+                "HPA automatically scales the number of pods in a deployment based on CPU or memory usage using `kubectl autoscale deployment <deployment-name> --cpu-percent=<threshold> --min=<min-replicas> --max=<max-replicas>`."
+            ]
+        },
+        {
+            "query": "What is a Persistent Volume?",
+            "retrieved_contexts": [
+                "What's next\nAccessing the Kubernetes API from a Pod\n"
+            ],
+            "expected_contexts": [
+                "PVs abstract storage and allow data persistence across pod restarts."
+            ],
+            "generated_answer": "What's next\nAccessing the Kubernetes API from a Pod\n",
+            "ground_truth": [
+                "A Persistent Volume (PV) is a piece of storage provisioned by an administrator and managed by Kubernetes."
+            ]
+        },
+        {
+            "query": "How do I check the status of a node?",
+            "retrieved_contexts": [
+                "6. Update your app\n"
+            ],
+            "expected_contexts": [
+                "Nodes in Kubernetes can be checked using `kubectl get nodes`."
+            ],
+            "generated_answer": "6. Update your app\n",
+            "ground_truth": [
+                "Use `kubectl get nodes` to list nodes and `kubectl describe node <node-name>` for detailed information."
+            ]
+        },
+        {
+            "query": "How do I update an existing ConfigMap?",
+            "retrieved_contexts": [
+                "Once you're ready, move on to Using A Service To Expose Your App.\n"
+            ],
+            "expected_contexts": [
+                "ConfigMaps can be updated dynamically using `kubectl edit`."
+            ],
+            "generated_answer": "Once you're ready, move on to Using A Service To Expose Your App.\n",
+            "ground_truth": [
+                "Edit a ConfigMap using `kubectl edit configmap <configmap-name>` or replace it using `kubectl apply -f <configmap-file>`."
+            ]
+        },
+        {
+            "query": "How do I list all pods in a namespace?",
+            "retrieved_contexts": [
+                "What's next\nAccessing the Kubernetes API from a Pod\n"
+            ],
+            "expected_contexts": [
+                "The `-n` flag specifies the namespace in `kubectl get pods`."
+            ],
+            "generated_answer": "What's next\nAccessing the Kubernetes API from a Pod\n",
+            "ground_truth": [
+                "Use `kubectl get pods -n <namespace>` to list all pods in a specific namespace."
+            ]
+        },
+        {
+            "query": "What is a Kubernetes Job?",
+            "retrieved_contexts": [
+                "What's next\nAccessing the Kubernetes API from a Pod\n"
+            ],
+            "expected_contexts": [
+                "Jobs are used for batch processing tasks that must complete successfully."
+            ],
+            "generated_answer": "What's next\nAccessing the Kubernetes API from a Pod\n",
+            "ground_truth": [
+                "A Job in Kubernetes ensures that a specified number of pods run to completion successfully."
+            ]
+        },
+        {
+            "query": "How do I delete a namespace?",
+            "retrieved_contexts": [
+                "Once you're ready, move on to Using A Service To Expose Your App.\n"
+            ],
+            "expected_contexts": [
+                "Namespaces and their resources are deleted using `kubectl delete namespace`."
+            ],
+            "generated_answer": "Once you're ready, move on to Using A Service To Expose Your App.\n",
+            "ground_truth": [
+                "Use `kubectl delete namespace <namespace-name>` to delete a namespace and all associated resources."
+            ]
+        },
+        {
+            "query": "How do I check the status of a deployment?",
+            "retrieved_contexts": [
+                "Once you're ready, move on to Using A Service To Expose Your App.\n"
+            ],
+            "expected_contexts": [
+                "Deployment rollouts can be monitored using `kubectl rollout status`."
+            ],
+            "generated_answer": "Once you're ready, move on to Using A Service To Expose Your App.\n",
+            "ground_truth": [
+                "Use `kubectl rollout status deployment <deployment-name>` to check the status of a deployment rollout."
+            ]
+        },
+        {
+            "query": "What is a Kubernetes Secret?",
+            "retrieved_contexts": [
+                "What's next\nAccessing the Kubernetes API from a Pod\n"
+            ],
+            "expected_contexts": [
+                "Kubernetes Secrets allow secure storage of sensitive information."
+            ],
+            "generated_answer": "What's next\nAccessing the Kubernetes API from a Pod\n",
+            "ground_truth": [
+                "A Secret is an API object that stores sensitive data such as passwords, OAuth tokens, and SSH keys."
+            ]
+        },
+        {
+            "query": "How do I describe a pod?",
+            "retrieved_contexts": [
+                "Once you're ready, move on to Using A Service To Expose Your App.\n"
+            ],
+            "expected_contexts": [
+                "The `kubectl describe` command provides detailed resource information."
+            ],
+            "generated_answer": "Once you're ready, move on to Using A Service To Expose Your App.\n",
+            "ground_truth": [
+                "Use `kubectl describe pod <pod-name>` to get detailed information about a pod, including events and resource usage."
+            ]
+        },
+        {
+            "query": "How do I list all services in a Kubernetes cluster?",
+            "retrieved_contexts": [
+                "What's next\nAccessing the Kubernetes API from a Pod\n"
+            ],
+            "expected_contexts": [
+                "Services in Kubernetes can be listed using `kubectl get services`."
+            ],
+            "generated_answer": "What's next\nAccessing the Kubernetes API from a Pod\n",
+            "ground_truth": [
+                "Use `kubectl get services` to list all services in the default namespace. Add `-A` to list services across all namespaces."
+            ]
+        },
+        {
+            "query": "How do I delete a Persistent Volume Claim?",
+            "retrieved_contexts": [
+                "Once you're ready, move on to Using A Service To Expose Your App.\n"
+            ],
+            "expected_contexts": [
+                "PVCs can be removed using `kubectl delete pvc`."
+            ],
+            "generated_answer": "Once you're ready, move on to Using A Service To Expose Your App.\n",
+            "ground_truth": [
+                "Use `kubectl delete pvc <pvc-name>` to delete a Persistent Volume Claim (PVC)."
+            ]
+        },
+        {
+            "query": "How do I apply changes from a YAML file?",
+            "retrieved_contexts": [
+                "Once you're ready, move on to Using A Service To Expose Your App.\n"
+            ],
+            "expected_contexts": [
+                "Configuration changes can be applied using `kubectl apply -f`."
+            ],
+            "generated_answer": "Once you're ready, move on to Using A Service To Expose Your App.\n",
+            "ground_truth": [
+                "Use `kubectl apply -f <file-name>.yaml` to apply configuration changes from a YAML file."
+            ]
+        }
+    ],
+    "Context Recall": 3.3333333333333335,
+    "Context Precision": 0.0,
+    "Faithfulness": 97.77777777777777,
+    "Answer Relevancy": 79.31265823617099,
+    "Accuracy": 45.105942336820526
+}

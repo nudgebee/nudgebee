@@ -1,0 +1,176 @@
+table:
+  name: tenant_users
+  schema: public
+object_relationships:
+  - name: tenantByTenant
+    using:
+      foreign_key_constraint_on: tenant
+  - name: userByCreatedBy
+    using:
+      foreign_key_constraint_on: created_by
+  - name: userByUpdatedBy
+    using:
+      foreign_key_constraint_on: updated_by
+  - name: userByUser
+    using:
+      foreign_key_constraint_on: user
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - created_at
+        - created_by
+        - id
+        - is_default
+        - is_owner
+        - tenant
+        - updated_at
+        - updated_by
+        - user
+      filter:
+        _or:
+          - user:
+              _eq: X-Hasura-User-Id
+          - tenant:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - created_at
+        - created_by
+        - id
+        - is_default
+        - is_owner
+        - tenant
+        - updated_at
+        - updated_by
+        - user
+      filter:
+        _or:
+          - user:
+              _eq: X-Hasura-User-Id
+          - tenant:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - created_at
+        - created_by
+        - id
+        - is_default
+        - is_owner
+        - tenant
+        - updated_at
+        - updated_by
+        - user
+      filter:
+        _or:
+          - user:
+              _eq: X-Hasura-User-Id
+          - tenant:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - created_at
+        - created_by
+        - id
+        - is_default
+        - is_owner
+        - tenant
+        - updated_at
+        - updated_by
+        - user
+      filter:
+        _or:
+          - user:
+              _eq: X-Hasura-User-Id
+          - tenant:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+  - role: tenant_admin
+    permission:
+      columns:
+        - created_at
+        - created_by
+        - id
+        - is_default
+        - is_owner
+        - tenant
+        - updated_at
+        - updated_by
+        - user
+      filter:
+        _or:
+          - user:
+              _eq: X-Hasura-User-Id
+          - tenant:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - created_at
+        - created_by
+        - id
+        - is_default
+        - is_owner
+        - tenant
+        - updated_at
+        - updated_by
+        - user
+      filter:
+        _or:
+          - user:
+              _eq: X-Hasura-User-Id
+          - tenant:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+  - role: tenant_usage
+    permission:
+      columns:
+        - created_at
+        - created_by
+        - id
+        - is_default
+        - is_owner
+        - tenant
+        - updated_at
+        - updated_by
+        - user
+      filter:
+        _or:
+          - user:
+              _eq: X-Hasura-User-Id
+          - tenant:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+update_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - is_default
+        - tenant
+        - user
+      filter:
+        tenant:
+          _eq: X-Hasura-User-Id
+      check: null
+      set:
+        tenant: x-hasura-User-Tenant-Id
+delete_permissions:
+  - role: tenant_admin
+    permission:
+      filter:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id

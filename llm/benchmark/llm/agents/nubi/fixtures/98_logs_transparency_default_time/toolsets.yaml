@@ -1,0 +1,8 @@
+toolsets:
+  kubernetes/core:
+    enabled: true
+  grafana/loki:
+    enabled: true
+    config:
+      url: http://localhost:3198
+      api_key: ""

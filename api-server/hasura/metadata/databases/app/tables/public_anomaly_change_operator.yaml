@@ -1,0 +1,4 @@
+table:
+  name: anomaly_change_operator
+  schema: public
+is_enum: true

@@ -1,0 +1,8 @@
+user_prompt: What is LogQL query to show logs from pods not running on the primary
+  node (exclude node-1) in kubernetes-logs.
+expected_output:
+- '{job="kubernetes-logs", node!="node-1"}'
+- '{app="database"} | node != "db-master-1"'
+tags:
+- command
+- datadog

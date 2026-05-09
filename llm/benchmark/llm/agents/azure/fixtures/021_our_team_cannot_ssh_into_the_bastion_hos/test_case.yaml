@@ -1,0 +1,15 @@
+user_prompt: Our team cannot SSH into the bastion host 'e01-bastion-nsg' in resource
+  group 'azure-agent-test-E01'. Connections time out immediately. The VM is running
+  and reachable by ping. What is wrong?
+expected_output:
+- 'The NSG ''e01-bastion-nsg'' has no inbound security rules defined. Without an explicit
+  Allow rule for TCP port 22, all inbound SSH traffic is blocked by the default Deny-all
+  rule. Fix: Add an inbound rule allowing TCP port 22 from the required source IP
+  range.'
+agent: azure_debug
+scenario: E01
+type: rca
+tags:
+- rca
+- easy
+- azure

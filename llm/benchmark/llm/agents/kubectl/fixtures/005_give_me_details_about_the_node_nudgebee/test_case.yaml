@@ -1,0 +1,7 @@
+user_prompt: Give me details about the node nudgebee-worker-01.
+expected_output:
+- kubectl describe node <node-name>
+- kubectl describe no <node-name>
+tags:
+- command
+- kubernetes

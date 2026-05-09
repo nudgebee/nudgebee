@@ -1,0 +1,126 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "services-server.fullname" . }}
+  labels:
+    {{- include "services-server.labels" . | nindent 4 }}
+  annotations:
+  {{- with .Values.annotations }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}    
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "services-server.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        rollme: {{ randAlphaNum 5 | quote }}
+      {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "services-server.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with (( default .Values.global.imagePullSecrets .Values.imagePullSecrets )) }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "services-server.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.initCheckEnabled | default true }}
+      initContainers:
+        - name: db-check
+          image: registry.nudgebee.com/postgres:15.10
+          command: ['sh', '-c', 'until pg_isready -h $(echo "$HASURA_ACTIONS_DB_URL" | sed "s/.*@\(.*\):.*/\1/") -U $(echo "$HASURA_ACTIONS_DB_URL" | sed "s/.*:\/\/\([^:]*\):.*/\1/"); do echo "Waiting for PostgreSQL to be ready..."; sleep 2; done;']
+          envFrom:
+            - secretRef:
+                name: {{ include "nudgebee.secretName" . | quote }}
+      {{- end}}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "imageName" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          envFrom:
+            - secretRef:
+                name: {{ include "nudgebee.secretName" . | quote }}
+          env:
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}          
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      
+      {{- if .Values.allowSideCar }}  
+        - name: pprof-sidecar
+          image: {{ include "imageSidecarName" . }}
+          imagePullPolicy: {{ .Values.sidecar.image.pullPolicy }}
+          volumeMounts:
+            - name: ssh-key
+              mountPath: /root/.ssh
+              readOnly: true
+          env:
+            - name: MEMORY_LIMIT_IN_BYTES
+              valueFrom:
+                resourceFieldRef:
+                  containerName: {{ .Chart.Name }}
+                  resource: limits.memory
+                  divisor: 1
+            - name: VM_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.sidecar.sshSecretName | default "nb-dev-db-vm-ssh-key-secret" }}
+                  key: vm_host
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "100Mi"
+            limits:
+              cpu: "100m"
+              memory: "200Mi"
+      {{- end }}
+
+      {{- if .Values.allowSideCar }}
+      volumes:
+        - name: ssh-key
+          secret:
+            secretName: nb-dev-db-vm-ssh-key-secret
+            items:
+              - key: id_rsa
+                path: id_rsa
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

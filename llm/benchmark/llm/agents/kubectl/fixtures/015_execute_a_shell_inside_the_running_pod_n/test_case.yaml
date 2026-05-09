@@ -1,0 +1,7 @@
+user_prompt: Execute a shell inside the running pod nudgebee-debug-pod.
+expected_output:
+- kubectl exec -it <pod-name> -- /bin/sh
+- kubectl exec -it <pod-name> -- /bin/bash
+tags:
+- command
+- kubernetes

@@ -1,0 +1,7 @@
+user_prompt: Register a new ECS task definition.
+expected_output:
+- aws ecs register-task-definition --family <family-name> --container-definitions
+  <container-definitions>
+tags:
+- command
+- aws

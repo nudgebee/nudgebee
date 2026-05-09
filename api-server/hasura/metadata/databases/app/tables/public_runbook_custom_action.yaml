@@ -1,0 +1,64 @@
+table:
+  name: runbook_custom_action
+  schema: public
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - attributes
+        - base_action_configs
+        - configs
+        - custom_action_name
+        - status
+        - created_at
+        - updated_at
+        - created_by
+        - id
+        - library_id
+      filter: {}
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - attributes
+        - base_action_configs
+        - configs
+        - custom_action_name
+        - status
+        - created_at
+        - updated_at
+        - created_by
+        - id
+        - library_id
+      filter: {}
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - attributes
+        - base_action_configs
+        - configs
+        - custom_action_name
+        - status
+        - created_at
+        - updated_at
+        - created_by
+        - id
+        - library_id
+      filter: {}
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - attributes
+        - base_action_configs
+        - configs
+        - custom_action_name
+        - status
+        - created_at
+        - updated_at
+        - created_by
+        - id
+        - library_id
+      filter: {}
+    comment: ""

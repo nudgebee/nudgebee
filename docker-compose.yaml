@@ -1,0 +1,42 @@
+version: '3.6'
+networks:
+  nuchbee:
+services:
+  postgres:
+    image: docker.io/postgres:14
+    networks:
+    - nuchbee
+    restart: always
+    ports:
+    - "5432:5432"
+    volumes:
+    - ./pg_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: nuchbee
+  graphql-engine:
+    image: docker.io/hasura/graphql-engine:v2.36.3-ce
+    links:
+    - "postgres:postgres"
+    networks:
+    - nuchbee
+    ports:
+    - "8080:8080"
+    depends_on:
+    - "postgres"
+    restart: always
+    environment:
+      HASURA_GRAPHQL_METADATA_DATABASE_URL: postgres://postgres:postgrespassword@postgres:5432/nuchbee
+      APP_DATABASE_URL: postgres://postgres:postgrespassword@postgres:5432/nuchbee
+      HASURA_GRAPHQL_ENABLE_CONSOLE: "true" # set to "false" to disable console
+      HASURA_GRAPHQL_DEV_MODE: "true"
+      HASURA_GRAPHQL_ENABLED_LOG_TYPES: startup, http-log, webhook-log, websocket-log, query-log
+      HASURA_GRAPHQL_ENDPOINT: http://localhost:8080
+      HASURA_GRAPHQL_CORS_DOMAIN: "*"
+      HASURA_GRAPHQL_LOG_LEVEL: debug
+      HASURA_GRAPHQL_UNAUTHORIZED_ROLE: public
+      ACTION_API_SERVER_URL: http://actions:9999
+      HASURA_GRAPHQL_ADMIN_SECRET: myadminsecretkey
+volumes:
+  pg_data:  
+  actions:

@@ -1,0 +1,287 @@
+table:
+  name: event_rules
+  schema: public
+insert_permissions:
+  - role: account_admin
+    permission:
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        created_by: x-hasura-User-Id
+        tenant_id: x-hasura-User-Tenant-Id
+        updated_by: x-hasura-User-Id
+      columns:
+        - account_id
+        - alert
+        - alert_type
+        - annotations
+        - category
+        - created_at
+        - created_by
+        - duration
+        - enabled
+        - expr
+        - external_rule_id
+        - group
+        - id
+        - is_editable
+        - labels
+        - metric_provider
+        - metric_provider_source
+        - name
+        - namespace
+        - provider_config
+        - severity
+        - source
+        - tenant_id
+        - updated_at
+        - updated_by
+    comment: ""
+  - role: tenant_admin
+    permission:
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        created_by: x-hasura-User-Id
+        tenant_id: x-hasura-User-Tenant-Id
+        updated_by: x-hasura-User-Id
+      columns:
+        - account_id
+        - alert
+        - alert_type
+        - annotations
+        - category
+        - created_at
+        - created_by
+        - duration
+        - enabled
+        - expr
+        - external_rule_id
+        - group
+        - id
+        - is_editable
+        - labels
+        - metric_provider
+        - metric_provider_source
+        - name
+        - namespace
+        - provider_config
+        - severity
+        - source
+        - tenant_id
+        - updated_at
+        - updated_by
+    comment: ""
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - account_id
+        - alert
+        - alert_type
+        - annotations
+        - category
+        - created_at
+        - created_by
+        - duration
+        - enabled
+        - expr
+        - external_rule_id
+        - group
+        - id
+        - is_editable
+        - labels
+        - metric_provider
+        - metric_provider_source
+        - name
+        - namespace
+        - provider_config
+        - severity
+        - source
+        - tenant_id
+        - updated_at
+        - updated_by
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - account_id:
+              _in: X-Hasura-User-Account-Ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - account_id
+        - alert
+        - alert_type
+        - annotations
+        - category
+        - created_at
+        - created_by
+        - duration
+        - enabled
+        - expr
+        - external_rule_id
+        - group
+        - id
+        - is_editable
+        - labels
+        - metric_provider
+        - metric_provider_source
+        - name
+        - namespace
+        - provider_config
+        - severity
+        - source
+        - tenant_id
+        - updated_at
+        - updated_by
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - account_id:
+              _in: X-Hasura-User-Readonly-Account-Ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - account_id
+        - alert
+        - alert_type
+        - annotations
+        - category
+        - created_at
+        - created_by
+        - duration
+        - enabled
+        - expr
+        - external_rule_id
+        - group
+        - id
+        - is_editable
+        - labels
+        - metric_provider
+        - metric_provider_source
+        - name
+        - namespace
+        - provider_config
+        - severity
+        - source
+        - tenant_id
+        - updated_at
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - account_id
+        - alert
+        - alert_type
+        - annotations
+        - category
+        - created_at
+        - created_by
+        - duration
+        - enabled
+        - expr
+        - external_rule_id
+        - group
+        - id
+        - is_editable
+        - labels
+        - metric_provider
+        - metric_provider_source
+        - name
+        - namespace
+        - provider_config
+        - severity
+        - source
+        - tenant_id
+        - updated_at
+        - updated_by
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+    comment: ""
+update_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - account_id
+        - alert
+        - alert_type
+        - annotations
+        - category
+        - created_at
+        - created_by
+        - duration
+        - enabled
+        - expr
+        - external_rule_id
+        - group
+        - id
+        - is_editable
+        - labels
+        - metric_provider
+        - metric_provider_source
+        - name
+        - namespace
+        - provider_config
+        - severity
+        - source
+        - tenant_id
+        - updated_at
+        - updated_by
+      filter: {}
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        updated_by: x-hasura-User-Id
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - account_id
+        - alert
+        - alert_type
+        - annotations
+        - category
+        - created_at
+        - created_by
+        - duration
+        - enabled
+        - expr
+        - external_rule_id
+        - group
+        - id
+        - is_editable
+        - labels
+        - metric_provider
+        - metric_provider_source
+        - name
+        - namespace
+        - provider_config
+        - severity
+        - source
+        - tenant_id
+        - updated_at
+        - updated_by
+      filter: {}
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        updated_by: x-hasura-User-Id
+    comment: ""

@@ -1,0 +1,3 @@
+table:
+  name: llm_agents
+  schema: public

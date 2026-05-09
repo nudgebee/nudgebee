@@ -1,0 +1,16 @@
+Extract the source file path, file name, and line number for the root cause mentioned in the summary for the below given log data.
+Don't provide any code to fetch it; instead, provide only the response in the specified format.
+Don't fetch the data for all possible logs, only for the log mentioned in the summary and its dependent logs.
+The response list should be unique and not repeated. If possible, order them based on the root cause log.
+Do not include files in the standard library or packages.
+Strictly do not assume any file name if it is not explicitly present in the log data.
+There could be multiple files, so respond with all the files.
+If it is unable to detect any file details, return an empty array `[]`.
+Review all data from Log Data and prioritize files which have an extension of .go, .py, .yaml or similar.
+Response should be valid json with the format below.
+
+[{"file_path":<file_path>,"file_name":<file_name>,"line_number":<line_number>},{"file_path":<file_path>,"file_name":<file_name>,"line_number":<line_number>}]
+
+** Do not provide anything else other than the file details as mentioned above **
+
+Log data = %s

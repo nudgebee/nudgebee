@@ -1,0 +1,40 @@
+table:
+  name: dw_pipe_usage
+  schema: public
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - bytes_inserted
+        - cloud_account_id
+        - credit_used
+        - end_at
+        - files_inserted
+        - id
+        - pipe_id
+        - pipe_name
+        - start_at
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - bytes_inserted
+        - cloud_account_id
+        - credit_used
+        - end_at
+        - files_inserted
+        - id
+        - pipe_id
+        - pipe_name
+        - start_at
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+    comment: ""

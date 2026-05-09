@@ -1,0 +1,7 @@
+user_prompt: 'What is the LogQL query to get logs from a specific node (example: node-1)?'
+expected_output:
+- '{node="node-1"}'
+- '{job="kubernetes-logs", node="node-1"}'
+tags:
+- command
+- loki

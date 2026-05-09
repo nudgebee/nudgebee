@@ -1,0 +1,10 @@
+user_prompt: Which EC2 hosts have the highest CPU utilization?
+expected_output:
+  - "top(avg:aws.ec2.cpuutilization{*} by {host}, 10, 'mean', 'desc')"
+  - "avg:aws.ec2.cpuutilization{*} by {host}"
+  - "max:aws.ec2.cpuutilization{*} by {host}"
+tags:
+  - command
+  - aws
+  - ec2
+  - cpu

@@ -1,0 +1,9 @@
+user_prompt: How many healthy hosts are behind each ALB?
+expected_output:
+  - "avg:aws.applicationelb.healthy_host_count{*} by {loadbalancer}"
+  - "min:aws.applicationelb.healthy_host_count{*} by {loadbalancer}"
+  - "sum:aws.applicationelb.healthy_host_count{*} by {loadbalancer}"
+tags:
+  - command
+  - aws
+  - alb

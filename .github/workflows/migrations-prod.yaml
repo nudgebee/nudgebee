@@ -1,0 +1,18 @@
+name: Migrations-Prod CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ['prod']
+    paths:
+      - api-server/hasura/**
+      - .github/workflows/hasura-migrations-prod.yaml
+
+jobs:
+  actions-build:
+    runs-on: [self-hosted, X64]
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0

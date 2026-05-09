@@ -1,0 +1,6 @@
+user_prompt: List S3 buckets.
+expected_output:
+- aws s3 ls
+tags:
+- command
+- aws

@@ -1,0 +1,8 @@
+user_prompt: Get the list of workloads with any non-200 HTTP status code recently.
+expected_output:
+- SELECT DISTINCT workload_name, workload_namespace, http_status_code FROM traces_view
+  WHERE http_status_code != 200 AND timestamp >= now() - interval 1 hour ORDER BY
+  workload_namespace, workload_name, http_status_code;
+tags:
+- command
+- trace

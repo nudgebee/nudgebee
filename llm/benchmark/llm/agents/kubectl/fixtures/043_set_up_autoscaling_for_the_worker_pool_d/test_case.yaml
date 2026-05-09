@@ -1,0 +1,7 @@
+user_prompt: Set up autoscaling for the 'worker-pool' deployment to maintain between
+  2 and 10 pods, targeting 80% CPU usage.
+expected_output:
+- kubectl autoscale deployment worker-pool --min=2 --max=10 --cpu-percent=80
+tags:
+- command
+- kubernetes

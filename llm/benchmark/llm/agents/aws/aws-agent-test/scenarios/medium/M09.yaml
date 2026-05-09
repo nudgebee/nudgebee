@@ -1,0 +1,266 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M09: Lambda reads KMS-encrypted S3 objects but IAM role lacks kms:Decrypt permission.
+  User complaint: "Config loader Lambda fails with AccessDenied when reading config files.
+  The Lambda has s3:GetObject on the bucket. Other Lambdas with different roles read
+  the same bucket fine."
+  Root cause: S3 bucket uses KMS CMK for server-side encryption (SSE-KMS). Lambda role
+  has s3:GetObject but the KMS key policy does NOT grant kms:Decrypt to the Lambda role.
+  S3 calls KMS on behalf of the requester — KMS denies because Lambda role is not in key policy.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Lambda role missing kms:Decrypt in KMS key policy (S3 reads fail).
+      Fixed = Lambda role granted kms:Decrypt in KMS key policy.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  # KMS key used to encrypt S3 objects
+  ConfigBucketKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: KMS key for config bucket encryption
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          # Root account full access
+          - Sid: RootAccess
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          # S3 service can generate data keys (for SSE-KMS)
+          - Sid: S3ServiceAccess
+            Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+            Resource: '*'
+          # THE BUG: Lambda role only granted kms:Decrypt in Fixed mode
+          # In Broken mode, Lambda role is NOT in the key policy, so kms:Decrypt fails
+          - !If
+            - IsFixed
+            - Sid: LambdaDecryptAccess
+              Effect: Allow
+              Principal:
+                AWS: !GetAtt ConfigLoaderRole.Arn
+              Action:
+                - kms:Decrypt
+                - kms:GenerateDataKey
+              Resource: '*'
+            - !Ref AWS::NoValue
+
+  ConfigBucketKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/m09-config-bucket-key
+      TargetKeyId: !Ref ConfigBucketKey
+
+  ConfigBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'm09-app-configs-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              KMSMasterKeyID: !Ref ConfigBucketKey
+            BucketKeyEnabled: true
+      Tags:
+        - Key: Name
+          Value: m09-app-configs
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: platform
+
+  ConfigLoaderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m09-config-loader-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: s3-read-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::m09-app-configs-${AWS::AccountId}'
+                  - !Sub 'arn:aws:s3:::m09-app-configs-${AWS::AccountId}/*'
+                # NOTE: No kms:Decrypt here — must be in KMS key policy AND IAM policy
+
+  ConfigLoaderFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: ConfigLoaderRole
+    Properties:
+      FunctionName: m09-config-loader
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ConfigLoaderRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      Environment:
+        Variables:
+          CONFIG_BUCKET: !Sub 'm09-app-configs-${AWS::AccountId}'
+          CONFIG_KEY: app/production.json
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+
+          s3 = boto3.client('s3')
+          BUCKET = os.environ['CONFIG_BUCKET']
+          KEY = os.environ['CONFIG_KEY']
+
+          def handler(event, context):
+              try:
+                  # This will fail in Broken mode because KMS key policy
+                  # doesn't allow this Lambda role to kms:Decrypt
+                  response = s3.get_object(Bucket=BUCKET, Key=KEY)
+                  config = json.loads(response['Body'].read())
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({'config': config, 'loaded': True})
+                  }
+              except Exception as e:
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({
+                          'error': str(e),
+                          'bucket': BUCKET,
+                          'key': KEY
+                      })
+                  }
+      Tags:
+        - Key: Name
+          Value: m09-config-loader
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: config-management
+
+  # Upload a test config object to the bucket (encrypted with CMK)
+  ConfigUploaderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m09-config-uploader-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: s3-kms-write
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: !Sub 'arn:aws:s3:::m09-app-configs-${AWS::AccountId}/*'
+              - Effect: Allow
+                Action:
+                  - kms:GenerateDataKey
+                  - kms:Decrypt
+                Resource: !GetAtt ConfigBucketKey.Arn
+
+  ConfigSeederFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: m09-config-seeder
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ConfigUploaderRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          CONFIG_BUCKET: !Sub 'm09-app-configs-${AWS::AccountId}'
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          import cfnresponse
+
+          s3 = boto3.client('s3')
+          BUCKET = os.environ['CONFIG_BUCKET']
+
+          def handler(event, context):
+              if event['RequestType'] == 'Delete':
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  return
+              try:
+                  config = {
+                      'database': {'host': 'db.internal', 'port': 5432},
+                      'cache': {'ttl': 300},
+                      'feature_flags': {'dark_mode': True}
+                  }
+                  s3.put_object(
+                      Bucket=BUCKET,
+                      Key='app/production.json',
+                      Body=json.dumps(config),
+                      ContentType='application/json'
+                  )
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS,
+                                   {'Message': 'Config uploaded successfully'})
+              except Exception as e:
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  # Seed the config on stack creation
+  SeedConfig:
+    Type: AWS::CloudFormation::CustomResource
+    DependsOn:
+      - ConfigBucket
+      - ConfigSeederFunction
+    Properties:
+      ServiceToken: !GetAtt ConfigSeederFunction.Arn
+
+Outputs:
+  ConfigBucketName:
+    Description: S3 Config Bucket Name
+    Value: !Ref ConfigBucket
+  KmsKeyId:
+    Description: KMS Key ID used for bucket encryption
+    Value: !Ref ConfigBucketKey
+  KmsKeyAlias:
+    Description: KMS Key Alias
+    Value: !Ref ConfigBucketKeyAlias
+  FunctionName:
+    Description: Config Loader Lambda Function Name
+    Value: !Ref ConfigLoaderFunction
+  BugNote:
+    Description: The bug
+    Value: 'Lambda role m09-config-loader-role is not in KMS key policy — kms:Decrypt denied'
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

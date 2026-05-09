@@ -1,0 +1,38 @@
+table:
+  name: notification_user
+  schema: public
+object_relationships:
+  - name: notificationByNotification
+    using:
+      foreign_key_constraint_on: notification
+  - name: notification_user_status_type
+    using:
+      foreign_key_constraint_on: status
+  - name: user
+    using:
+      foreign_key_constraint_on: user_id
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - status
+        - id
+        - notification
+        - user_id
+      filter:
+        user_id:
+          _eq: X-Hasura-User-Id
+      limit: 100
+      allow_aggregations: true
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - status
+        - id
+        - notification
+        - user_id
+      filter:
+        user_id:
+          _eq: X-Hasura-User-Id
+      limit: 100
+      allow_aggregations: true

@@ -1,0 +1,76 @@
+table:
+  name: project_fundings
+  schema: public
+object_relationships:
+  - name: businessunitFundingByBusinessunitFunding
+    using:
+      foreign_key_constraint_on: businessunit_funding
+  - name: projectByProject
+    using:
+      foreign_key_constraint_on: project
+  - name: user
+    using:
+      foreign_key_constraint_on: created_by
+  - name: userByUpdatedBy
+    using:
+      foreign_key_constraint_on: updated_by
+insert_permissions:
+  - role: tenant_admin
+    permission:
+      check:
+        _and:
+          - businessunitFundingByBusinessunitFunding:
+              tenant:
+                _eq: X-Hasura-User-Tenant-Id
+          - projectByProject:
+              tenant:
+                _eq: X-Hasura-User-Tenant-Id
+      set:
+        created_by: x-hasura-User-Id
+        updated_by: x-hasura-User-Id
+      columns:
+        - amount
+        - businessunit_funding
+        - end_date
+        - planned_amount
+        - project
+        - start_date
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - amount
+        - planned_amount
+        - created_at
+        - end_date
+        - start_date
+        - updated_at
+        - businessunit_funding
+        - created_by
+        - id
+        - project
+        - updated_by
+      filter:
+        projectByProject:
+          tenant:
+            _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - amount
+        - planned_amount
+        - created_at
+        - end_date
+        - start_date
+        - updated_at
+        - businessunit_funding
+        - created_by
+        - id
+        - project
+        - updated_by
+      filter:
+        projectByProject:
+          tenant:
+            _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true

@@ -1,0 +1,9 @@
+user_prompt: what is the promql query for which pod is taking most memory in nudgebee-test
+  namespace
+expected_output:
+- sort_desc(sum by (pod) (container_memory_usage_bytes{namespace=~"(?i)nudgebee-test"})[10m])
+- topk(1, sum by (pod) (container_memory_usage_bytes{namespace=~"(?i)nudgebee-test"}))[10m]
+- sum(container_memory_working_set_bytes) by (pod)
+tags:
+- command
+- promql

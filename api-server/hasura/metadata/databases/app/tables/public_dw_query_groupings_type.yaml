@@ -1,0 +1,124 @@
+table:
+  name: dw_query_groupings_type
+  schema: public
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - database_name_list
+        - db_username_list
+        - query_remote_ip_list
+        - query_count
+        - sum_query_queue_duration_micro
+        - avg_bill
+        - avg_rpu
+        - max_bill
+        - max_rpu
+        - sum_bill
+        - sum_rpu
+        - max_query_queue_duration_micro
+        - avg_bytes_scanned
+        - avg_bytes_spilled_locally
+        - avg_bytes_spilled_remotely
+        - avg_partitions_scanned
+        - avg_query_exec_duration_micro
+        - avg_query_planning_duration_micro
+        - avg_query_queue_duration_micro
+        - avg_query_returned_bytes
+        - avg_query_returned_rows
+        - max_bytes_scanned
+        - max_bytes_spilled_locally
+        - max_bytes_spilled_remotely
+        - max_partitions_scanned
+        - max_query_exec_duration_micro
+        - max_query_planning_duration_micro
+        - max_query_returned_bytes
+        - max_query_returned_rows
+        - sum_bytes_scanned
+        - sum_bytes_spilled_locally
+        - sum_bytes_spilled_remotely
+        - sum_partitions_scanned
+        - sum_query_exec_duration_micro
+        - sum_query_planning_duration_micro
+        - sum_query_returned_bytes
+        - sum_query_returned_rows
+        - database_name
+        - db_username
+        - query_normalized
+        - query_normalized_md5
+        - query_remote_ip
+        - query_status
+        - query_text
+        - query_type
+        - warehouse_name
+        - max_query_started_at
+        - min_query_started_at
+        - query_started_at
+        - account_id
+        - resource_id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - database_name_list
+        - db_username_list
+        - query_remote_ip_list
+        - query_count
+        - sum_query_queue_duration_micro
+        - avg_bill
+        - avg_rpu
+        - max_bill
+        - max_rpu
+        - sum_bill
+        - sum_rpu
+        - max_query_queue_duration_micro
+        - avg_bytes_scanned
+        - avg_bytes_spilled_locally
+        - avg_bytes_spilled_remotely
+        - avg_partitions_scanned
+        - avg_query_exec_duration_micro
+        - avg_query_planning_duration_micro
+        - avg_query_queue_duration_micro
+        - avg_query_returned_bytes
+        - avg_query_returned_rows
+        - max_bytes_scanned
+        - max_bytes_spilled_locally
+        - max_bytes_spilled_remotely
+        - max_partitions_scanned
+        - max_query_exec_duration_micro
+        - max_query_planning_duration_micro
+        - max_query_returned_bytes
+        - max_query_returned_rows
+        - sum_bytes_scanned
+        - sum_bytes_spilled_locally
+        - sum_bytes_spilled_remotely
+        - sum_partitions_scanned
+        - sum_query_exec_duration_micro
+        - sum_query_planning_duration_micro
+        - sum_query_returned_bytes
+        - sum_query_returned_rows
+        - database_name
+        - db_username
+        - query_normalized
+        - query_normalized_md5
+        - query_remote_ip
+        - query_status
+        - query_text
+        - query_type
+        - warehouse_name
+        - max_query_started_at
+        - min_query_started_at
+        - query_started_at
+        - account_id
+        - resource_id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+    comment: ""

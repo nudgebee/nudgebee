@@ -1,0 +1,6 @@
+user_prompt: Delete a CloudFormation stack.
+expected_output:
+- aws cloudformation delete-stack --stack-name <stack-name>
+tags:
+- command
+- aws

@@ -1,0 +1,3 @@
+table:
+  name: businessunit_users
+  schema: public

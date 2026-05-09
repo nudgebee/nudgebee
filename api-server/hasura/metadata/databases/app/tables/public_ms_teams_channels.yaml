@@ -1,0 +1,87 @@
+table:
+  name: ms_teams_channels
+  schema: public
+insert_permissions:
+  - role: tenant_admin
+    permission:
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        created_by: x-hasura-user-id
+        tenant_id: x-hasura-User-Tenant-Id
+        updated_by: x-hasura-user-id
+      columns:
+        - channels
+        - team_id
+        - team_name
+        - created_at
+        - updated_at
+        - created_by
+        - id
+        - installation_id
+        - tenant_id
+        - updated_by
+    comment: ""
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - channels
+        - team_id
+        - team_name
+        - created_at
+        - updated_at
+        - created_by
+        - id
+        - installation_id
+        - tenant_id
+        - updated_by
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - channels
+        - created_at
+        - created_by
+        - id
+        - installation_id
+        - team_id
+        - team_name
+        - tenant_id
+        - updated_at
+        - updated_by
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""
+update_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - channels
+        - team_id
+        - team_name
+        - created_at
+        - updated_at
+        - created_by
+        - id
+        - installation_id
+        - tenant_id
+        - updated_by
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      check: null
+    comment: ""
+delete_permissions:
+  - role: tenant_admin
+    permission:
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""

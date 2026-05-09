@@ -1,0 +1,168 @@
+table:
+  name: feature_flag
+  schema: public
+object_relationships:
+  - name: tenant
+    using:
+      foreign_key_constraint_on: tenant_id
+array_relationships:
+  - name: cloud_account
+    using:
+      manual_configuration:
+        column_mapping:
+          account_id: id
+        insertion_order: null
+        remote_table:
+          name: cloud_accounts
+          schema: public
+insert_permissions:
+  - role: account_admin
+    permission:
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      columns:
+        - feature_id
+        - feature_module_id
+        - status
+        - created_at
+        - account_id
+        - id
+        - tenant_id
+    comment: ""
+  - role: tenant_admin
+    permission:
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        tenant_id: x-hasura-User-Tenant-Id
+      columns:
+        - feature_id
+        - feature_module_id
+        - status
+        - created_at
+        - account_id
+        - id
+        - tenant_id
+    comment: ""
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - account_id
+        - created_at
+        - feature_id
+        - feature_module_id
+        - status
+        - created_at
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - account_id
+        - created_at
+        - feature_id
+        - feature_module_id
+        - status
+        - created_at
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - feature_id
+        - feature_module_id
+        - status
+        - created_at
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - feature_id
+        - feature_module_id
+        - status
+        - created_at
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - account_id
+        - created_at
+        - feature_id
+        - feature_module_id
+        - status
+        - created_at
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - account_id
+        - created_at
+        - feature_id
+        - feature_module_id
+        - status
+        - created_at
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+update_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - feature_id
+        - feature_module_id
+        - status
+        - created_at
+        - account_id
+        - id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      check: null
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - feature_id
+        - feature_module_id
+        - status
+        - created_at
+        - account_id
+        - id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      check: null
+      set:
+        tenant_id: x-hasura-User-Tenant-Id
+    comment: ""

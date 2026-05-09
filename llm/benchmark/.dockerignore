@@ -1,0 +1,11 @@
+.venv
+.ml-env
+site-packages
+.mypy_cache
+.pytest_cache
+.benchmarks
+__pycache__
+*.pyc
+.git
+.DS_Store
+.env

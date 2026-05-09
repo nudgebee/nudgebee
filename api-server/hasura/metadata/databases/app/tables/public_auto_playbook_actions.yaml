@@ -1,0 +1,3 @@
+table:
+  name: auto_playbook_actions
+  schema: public

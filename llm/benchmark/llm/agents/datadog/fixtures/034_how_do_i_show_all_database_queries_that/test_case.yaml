@@ -1,0 +1,8 @@
+user_prompt: How do I show all database queries that took longer than 2 seconds for
+  the database app?
+expected_output:
+- '{app="database"} | logfmt | duration > 2s'
+- '{app="database"} | json | latency_ms > 2000'
+tags:
+- command
+- datadog

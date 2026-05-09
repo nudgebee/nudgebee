@@ -1,0 +1,20 @@
+{
+  "data": {
+    "traces_heatmap_v2": {
+      "rows": [
+        {
+          "resource_attributes": "{'service.name':'/k8s/nudgebee/k8s-collector','cloud.account.id':'740395098545','cloud.availability_zone':'us-east-1c','cloud.region':'us-east-1','container.id':'/k8s/nudgebee/k8s-collector-78d4997899-nn94q/k8s-collector','host.id':'ec2bd989332fc0c264ad030d3ba5ff99','host.name':'ip-172-31-84-65.ec2.internal'}",
+          "span_name": "POST",
+          "status_code": "STATUS_CODE_UNSET",
+          "timestamp": "2024-12-25 11:30:04.659047+00:00",
+          "duration_ns": 3613049,
+          "span_attributes": "{'http.status_code':'200','http.headers':'eyJBY2NlcHQtRW5jb2RpbmciOlsiaWRlbnRpdHkiXSwiQXV0aG9yaXphdGlvbiI6WyIqKioqKioqKioqKioqKioqKioqKioqKioqKioqKioiXSwiQ29udGVudC1FbmNvZGluZyI6WyJsejQiXSwiQ29udGVudC1UeXBlIjpbImFwcGxpY2F0aW9uL29jdGV0LXN0cmVhbSJdLCJIb3N0IjpbImNsaWNraG91c2UuY2xpY2tob3VzZS5zdmMuY2x1c3Rlci5sb2NhbDo4MTIzIl0sIlRyYW5zZmVyLUVuY29kaW5nIjpbImNodW5rZWQiXSwiVXNlci1BZ2VudCI6WyJjbGlja2hvdXNlLWNvbm5lY3QvMC42LjIzIChsdjpweS8zLjEyLjg7IG9zOmxpbnV4KSJdfQ==','destination.workload_name':'clickhouse','destination.workload_namespace':'clickhouse','destination.name':'clickhouse-shard0-0','destination.cloud.region':'us-east-1','otel.scope.name':'nudgebee-node-agent','http.method':'POST','otel.scope.version':'unknown','http.url':'http://clickhouse.clickhouse.svc.cluster.local:8123/','http.request_content_length':'391','http.path':'/','net.peer.name':'172.31.82.200','net.peer.port':'8123','destination.workload_kind':'Service','source.workload_name':'k8s-collector','source.workload_namespace':'nudgebee','source.workload_kind':'Deployment','destination.cloud.availablity_zone':'us-east-1c','destination.node':'ip-172-31-90-19.ec2.internal','http.request_payload':'','http.response':'SFRUUC8xLjEgMjAwIE9LDQpEYXRlOiBXZWQsIDI1IERlYyAyMDI0IDExOjMwOjA0IEdNVA0KQ29ubmVjdGlvbjogS2VlcC1BbGl2ZQ0KQ29udGVudC1UeXBlOiB0ZXh0L3BsYWluOyBjaGFyc2V0PVVURi04DQpYLUNsaWNrSG91c2UtU2VydmVyLURpc3BsYXktTmFtZTogY2xpY2tob3VzZS1zaGFyZDAtMC5jbGlja2hvdXNlLWhlYWRsZXNzLmNsaWNraG91c2Uuc3ZjLmNsdXN0ZXIubG9jYWwNClRyYW5zZmVyLUVuY29kaW5nOiBjaHVua2VkDQpYLUNsaWNrSG91c2UtUXVlcnktSWQ6IDRhODkyNjA0LTUxYjMtNDY1MC04NzUwLTBjMmY2NjU4Y2RlNA0KWC1DbGlja0hvdXNlLVRpbWV6b25lOiBFdGMvVVRDDQpLZWVwLUFsaXZlOiB0aW1lb3V0PTEwDQo=','destination.namespace':'clickhouse','destination.kind':'pod'}",
+          "account_id": "ff87fbfd-5729-4474-b9d6-96beb693e3fd",
+          "trace_id": "467683049063ea63d5d70e7759ca054e",
+          "span_id": "3852ef995211ce1c",
+          "service_name": "/k8s/nudgebee/k8s-collector"
+        }
+      ]
+    }
+  }
+}

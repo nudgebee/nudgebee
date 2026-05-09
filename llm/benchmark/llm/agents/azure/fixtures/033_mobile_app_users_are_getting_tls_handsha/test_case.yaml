@@ -1,0 +1,15 @@
+user_prompt: Mobile app users are getting TLS handshake errors when connecting to
+  the App Service 'm03apps33hfrvk' in resource group 'azure-agent-test-M03'. Desktop
+  browsers work fine. What is wrong?
+expected_output:
+- 'The App Service has minTlsVersion set to ''1.3''. Mobile clients and many partner
+  integrations only support TLS 1.2. By requiring TLS 1.3, the server rejects TLS
+  1.2 handshakes, causing connection failures on older clients. Fix: Change minTlsVersion
+  to ''1.2'' to accept both TLS 1.2 and TLS 1.3 connections.'
+agent: azure_debug
+scenario: M03
+type: rca
+tags:
+- rca
+- medium
+- azure

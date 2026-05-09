@@ -1,0 +1,84 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E09: CloudWatch Alarm Never Fires.
+  User complaint: "I set up a CPU alarm but it never triggers even when CPU is high."
+  Root cause: Alarm threshold set to 99% with 1-hour period - practically unreachable.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Alarm threshold 99%, period 3600s - never fires.
+      Fixed = Alarm threshold 80%, period 300s - fires appropriately.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ordering service
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      Tags:
+        - Key: Name
+          Value: e09-ordering-sg
+
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      SubnetId: !ImportValue aws-agent-test-private-subnet-a
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      Monitoring: true
+      Tags:
+        - Key: Name
+          Value: e09-ordering-api-01
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: ordering
+        - Key: Application
+          Value: ordering-service
+
+  # The alarm with unreachable threshold
+  CPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: e09-ordering-cpu-critical
+      AlarmDescription: CPU utilization alarm for ordering service
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref EC2Instance
+      Statistic: Average
+      # THE BUG: threshold too high, period too long
+      Threshold: !If [IsFixed, 80, 99]
+      Period: !If [IsFixed, 300, 3600]
+      EvaluationPeriods: !If [IsFixed, 2, 3]
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: missing
+
+Outputs:
+  InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref EC2Instance
+  AlarmName:
+    Description: CloudWatch Alarm Name
+    Value: !Ref CPUAlarm
+  AlarmThreshold:
+    Description: Alarm threshold
+    Value: !If [IsFixed, '80', '99']
+  AlarmPeriod:
+    Description: Alarm period in seconds
+    Value: !If [IsFixed, '300', '3600']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

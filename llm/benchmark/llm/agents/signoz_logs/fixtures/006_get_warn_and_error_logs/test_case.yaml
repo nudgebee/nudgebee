@@ -1,0 +1,6 @@
+user_prompt: Show me warning and error logs for order-service
+expected_output: '{"where": {"service.name": {"_ilike": "%order-service%"}, "severity_text": {"_in": ["WARN", "ERROR"]}}}'
+tags:
+  - command
+  - severity
+  - signoz

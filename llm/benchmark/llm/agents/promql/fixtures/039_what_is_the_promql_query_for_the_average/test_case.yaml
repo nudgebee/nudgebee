@@ -1,0 +1,7 @@
+user_prompt: what is the promql query for the average load (1-minute) on node-8?
+expected_output:
+- node_load1{instance="node-8"}
+- avg by (instance) (node_load1{instance="node-8"})
+tags:
+- command
+- promql

@@ -1,0 +1,95 @@
+table:
+  name: slack_channels
+  schema: public
+object_relationships:
+  - name: slack_installation
+    using:
+      foreign_key_constraint_on: installation_id
+  - name: tenant
+    using:
+      foreign_key_constraint_on: tenant_id
+  - name: user
+    using:
+      foreign_key_constraint_on: created_by
+insert_permissions:
+  - role: tenant_admin
+    permission:
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        created_by: x-hasura-user-id
+        tenant_id: x-hasura-User-Tenant-Id
+      columns:
+        - channels
+        - filters
+        - team_id
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - created_by
+        - id
+        - installation_id
+        - tenant_id
+    comment: ""
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - channels
+        - cloud_account_id
+        - created_at
+        - created_by
+        - filters
+        - id
+        - installation_id
+        - team_id
+        - tenant_id
+        - updated_at
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - channels
+        - filters
+        - team_id
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - created_by
+        - id
+        - installation_id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""
+update_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - channels
+        - filters
+        - team_id
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - created_by
+        - id
+        - installation_id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      check: null
+    comment: ""
+delete_permissions:
+  - role: tenant_admin
+    permission:
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""

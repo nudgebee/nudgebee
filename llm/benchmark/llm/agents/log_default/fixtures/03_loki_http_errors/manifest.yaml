@@ -1,0 +1,48 @@
+# checkout-api emits HTTP access logs to a shared log file; a Promtail sidecar
+# tails that file and ships to the in-namespace Loki service.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkout-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: checkout-api
+  template:
+    metadata:
+      labels:
+        app: checkout-api
+    spec:
+      containers:
+      - name: emitter
+        image: busybox:1.36
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            while true; do
+              echo "$(date -Iseconds) INFO  status=200 path=/cart user=alice" >> /var/log/app/app.log
+              echo "$(date -Iseconds) INFO  status=200 path=/checkout user=bob" >> /var/log/app/app.log
+              echo "$(date -Iseconds) ERROR status=500 path=/checkout user=carol msg=payment-gateway-timeout" >> /var/log/app/app.log
+              echo "$(date -Iseconds) ERROR status=500 path=/checkout user=dave  msg=payment-gateway-timeout" >> /var/log/app/app.log
+              echo "$(date -Iseconds) WARN  status=429 path=/cart user=eve" >> /var/log/app/app.log
+              sleep 2
+            done
+        volumeMounts:
+        - name: applogs
+          mountPath: /var/log/app
+      - name: promtail
+        image: grafana/promtail:2.9.0
+        args:
+          - -config.file=/etc/promtail/promtail-config.yaml
+        volumeMounts:
+        - name: promtail-config
+          mountPath: /etc/promtail
+        - name: applogs
+          mountPath: /var/log/app
+      volumes:
+      - name: applogs
+        emptyDir: {}
+      - name: promtail-config
+        configMap:
+          name: promtail-config

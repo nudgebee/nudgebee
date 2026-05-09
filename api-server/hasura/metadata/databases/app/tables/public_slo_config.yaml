@@ -1,0 +1,260 @@
+table:
+  name: slo_config
+  schema: public
+insert_permissions:
+  - role: account_admin
+    permission:
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        created_by: x-hasura-user-id
+        tenant_id: x-hasura-User-Tenant-Id
+        updated_by: x-hasura-user-id
+      columns:
+        - threshold
+        - created_by
+        - description
+        - filter_bad_query
+        - filter_good_query
+        - histogram_query
+        - method
+        - name
+        - schedule
+        - updated_by
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - id
+        - tenant_id
+    comment: ""
+  - role: tenant_admin
+    permission:
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        created_by: x-hasura-user-id
+        tenant_id: x-hasura-User-Tenant-Id
+        updated_by: x-hasura-user-id
+      columns:
+        - threshold
+        - created_by
+        - description
+        - filter_bad_query
+        - filter_good_query
+        - histogram_query
+        - method
+        - name
+        - schedule
+        - updated_by
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - id
+        - tenant_id
+    comment: ""
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - enabled
+        - goal
+        - threshold
+        - window
+        - created_by
+        - description
+        - filter_bad_query
+        - filter_good_query
+        - histogram_query
+        - method
+        - name
+        - schedule
+        - updated_by
+        - workload_name
+        - workload_namespace
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - enabled
+        - goal
+        - threshold
+        - window
+        - created_by
+        - description
+        - filter_bad_query
+        - filter_good_query
+        - histogram_query
+        - method
+        - name
+        - schedule
+        - updated_by
+        - workload_name
+        - workload_namespace
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - enabled
+        - goal
+        - threshold
+        - window
+        - created_by
+        - description
+        - filter_bad_query
+        - filter_good_query
+        - histogram_query
+        - method
+        - name
+        - schedule
+        - updated_by
+        - workload_name
+        - workload_namespace
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - enabled
+        - goal
+        - threshold
+        - window
+        - created_by
+        - description
+        - filter_bad_query
+        - filter_good_query
+        - histogram_query
+        - method
+        - name
+        - schedule
+        - updated_by
+        - workload_name
+        - workload_namespace
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - enabled
+        - goal
+        - threshold
+        - window
+        - created_by
+        - description
+        - filter_bad_query
+        - filter_good_query
+        - histogram_query
+        - method
+        - name
+        - schedule
+        - updated_by
+        - workload_name
+        - workload_namespace
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - enabled
+        - goal
+        - threshold
+        - window
+        - created_by
+        - description
+        - filter_bad_query
+        - filter_good_query
+        - histogram_query
+        - method
+        - name
+        - schedule
+        - updated_by
+        - workload_name
+        - workload_namespace
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: tenant_usage
+    permission:
+      columns:
+        - enabled
+        - goal
+        - threshold
+        - window
+        - created_by
+        - description
+        - filter_bad_query
+        - filter_good_query
+        - histogram_query
+        - method
+        - name
+        - schedule
+        - updated_by
+        - workload_name
+        - workload_namespace
+        - created_at
+        - updated_at
+        - cloud_account_id
+        - id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""

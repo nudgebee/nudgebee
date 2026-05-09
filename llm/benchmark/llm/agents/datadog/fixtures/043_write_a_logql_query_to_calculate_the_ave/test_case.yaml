@@ -1,0 +1,8 @@
+user_prompt: Write a LogQL query to calculate the average response time for requests
+  that were not cached for cdn over 10 minutes.
+expected_output:
+- avg_over_time({app="cdn"} | json | cached="false" | unwrap response_time [10m])
+- avg(sum_over_time({app="cdn"} | logfmt | cache_hit!=true | unwrap duration [5m]))
+tags:
+- command
+- datadog

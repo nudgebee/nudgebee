@@ -1,0 +1,35 @@
+table:
+  name: integrations_cloud_accounts
+  schema: public
+object_relationships:
+  - name: cloud_account
+    using:
+      foreign_key_constraint_on: cloud_account_id
+insert_permissions:
+  - role: tenant_admin
+    permission:
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      columns:
+        - cloud_account_id
+        - id
+        - integration_id
+        - tenant_id
+    comment: ""
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - cloud_account_id
+        - default_log_provider
+        - default_metrics_provider
+        - default_traces_provider
+        - id
+        - integration_id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""

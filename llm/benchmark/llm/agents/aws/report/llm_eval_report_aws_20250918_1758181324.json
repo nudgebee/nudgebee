@@ -1,0 +1,851 @@
+{
+    "details": [
+        {
+            "query": "Add a user to an IAM group.",
+            "retrieved_contexts": [
+                "\nTo add an IAM user to an IAM group, you need to specify both the `user-name` and the `group-name`. These details were not provided in your request.\n\nThe AWS CLI command to add a user to an IAM group is:\n\n```bash\naws iam add-user-to-group --user-name <YOUR_IAM_USER_NAME> --group-name <YOUR_IAM_GROUP_NAME>\n```\n\n**Example:**\n\nIf you wanted to add a user named `john.doe` to a group named `Developers`, the command would be:\n\n```bash\naws iam add-user-to-group --user-name john.doe --group-name Developers\n```\n\nPlease provide the specific IAM user name and IAM group name if you wish for this action to be performed.\n        "
+            ],
+            "expected_contexts": [
+                "aws iam add-user-to-group --group-name <group-name> --user-name <user-name>"
+            ],
+            "ground_truth": "aws iam add-user-to-group --group-name <group-name> --user-name <user-name>",
+            "answer_similarity": 91.68,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Add an inbound rule to a security group.",
+            "retrieved_contexts": [
+                "\n       <![CDATA[\nTo add an inbound rule to an AWS security group, you need to use the `aws ec2 authorize-security-group-ingress` command. This command requires specific parameters to define the rule.\n\nSince the necessary details (Security Group ID, protocol, port, and source) were not provided, I cannot execute a specific command. However, I can provide you with the structure of the command and explain the parameters you will need to specify.\n\n### AWS CLI Command Structure for Adding an Inbound Rule\n\nHere is the general structure of the command:\n\n```bash\naws ec2 authorize-security-group-ingress \\\n    --group-id <YOUR_SECURITY_GROUP_ID> \\\n    --protocol <PROTOCOL> \\\n    --port <PORT_OR_PORT_RANGE> \\\n    --cidr <SOURCE_CIDR_BLOCK> \\\n    --region <YOUR_AWS_REGION>\n```\n\nAlternatively, to allow traffic from another security group:\n\n```bash\naws ec2 authorize-security-group-ingress \\\n    --group-id <YOUR_SECURITY_GROUP_ID> \\\n    --protocol <PROTOCOL> \\\n    --port <PORT_OR_PORT_RANGE> \\\n    --source-group <SOURCE_SECURITY_GROUP_ID> \\\n    --region <YOUR_AWS_REGION>\n```\n\n### Explanation of Parameters:\n\n*   **`--group-id <YOUR_SECURITY_GROUP_ID>`**:\n    *   **Description**: The ID of the security group to which you want to add the inbound rule.\n    *   **Example**: `sg-0abcdef1234567890`\n\n*   **`--protocol <PROTOCOL>`**:\n    *   **Description**: The IP protocol for the rule.\n    *   **Possible Values**: `tcp`, `udp`, `icmp`, or `-1` (for all protocols).\n    *   **Example**: `tcp`\n\n*   **`--port <PORT_OR_PORT_RANGE>`**:\n    *   **Description**: The port or range of ports for the rule.\n    *   **For a single port**: Specify the same value for `--port`.\n    *   **For a range of ports**: Specify the start and end ports.\n    *   **Example (single port)**: `22` (for SSH)\n    *   **Example (port range)**: `80-8080`\n    *   **Note**: If `--protocol` is `icmp` or `-1`, this parameter might not be strictly necessary or might be interpreted differently. For `icmp`, you can specify `icmp-type` and `icmp-code` instead.\n\n*   **`--cidr <SOURCE_CIDR_BLOCK>`**:\n    *   **Description**: The IP address range in CIDR notation that is allowed to access the specified port(s).\n    *   **Example (allow from anywhere)**: `0.0.0.0/0`\n    *   **Example (allow from a specific IP)**: `203.0.113.10/32`\n    *   **Example (allow from a specific network)**: `192.168.1.0/24`\n\n*   **`--source-group <SOURCE_SECURITY_GROUP_ID>`**:\n    *   **Description**: Use this instead of `--cidr` if you want to allow traffic from another security group within the same VPC.\n    *   **Example**: `sg-0fedcba9876543210`\n\n*   **`--region <YOUR_AWS_REGION>`**:\n    *   **Description**: The AWS region where your security group is located.\n    *   **Example**: `us-east-1`\n\n### Example Scenarios:\n\n1.  **Allow SSH (port 22) from your current IP address (assuming it's `203.0.113.5/32`) to `sg-0abcdef1234567890` in `us-east-1`:**\n    ```bash\n    aws ec2 authorize-security-group-ingress \\\n        --group-id sg-0abcdef1234567890 \\\n        --protocol tcp \\\n        --port 22 \\\n        --cidr 203.0.113.5/32 \\\n        --region us-east-1\n    ```\n\n2.  **Allow HTTP (port 80) from anywhere (`0.0.0.0/0`)"
+            ],
+            "expected_contexts": [
+                "aws ec2 authorize-security-group-ingress"
+            ],
+            "ground_truth": "aws ec2 authorize-security-group-ingress",
+            "answer_similarity": 83.07,
+            "answer_relevancy": 91.01
+        },
+        {
+            "query": "Attach an IAM policy to a user.",
+            "retrieved_contexts": [
+                "\n         To attach an IAM policy to a user, I need the following specific information:\n\n         1.  **IAM User Name:** The exact name of the IAM user to whom the policy should be attached.\n         2.  **IAM Policy ARN:** The Amazon Resource Name (ARN) of the IAM policy you wish to attach.\n\n         Without these details, I cannot execute the `aws iam attach-user-policy` command. Please provide the user name and policy ARN so I can proceed with your request.\n       "
+            ],
+            "expected_contexts": [
+                "aws iam attach-user-policy --user-name <user-name> --policy-arn <policy-arn>"
+            ],
+            "ground_truth": "aws iam attach-user-policy --user-name <user-name> --policy-arn <policy-arn>",
+            "answer_similarity": 91.16,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Boost DynamoDB capacity.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws dynamodb update-table --table-name <table-name> --provisioned-throughput ..."
+            ],
+            "ground_truth": "aws dynamodb update-table --table-name <table-name> --provisioned-throughput ...",
+            "answer_similarity": 75.09,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Can you check ECR and how many repos dont have secret scanning enabled",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws ecr describe-repositories --output json | jq '.repositories | map(select(.imageScanningConfiguration.scanOnPush == true))'"
+            ],
+            "ground_truth": "aws ecr describe-repositories --output json | jq '.repositories | map(select(.imageScanningConfiguration.scanOnPush == true))'",
+            "answer_similarity": 66.71,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Change S3 object storage class.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand - \naws s3api copy-object \\\n    --bucket YOUR_BUCKET_NAME \\\n    --key YOUR_OBJECT_KEY \\\n    --copy-source YOUR_BUCKET_NAME/YOUR_OBJECT_KEY \\\n    --storage-class STANDARD_IA \\\n    --metadata-directive COPY \\\n    --acl bucket-owner-full-control\n        "
+            ],
+            "expected_contexts": [
+                "aws s3api copy-object --bucket <bucket-name> --copy-source <bucket-name>/<object-key> --key <object-key> --storage-class <storage-class>"
+            ],
+            "ground_truth": "aws s3api copy-object --bucket <bucket-name> --copy-source <bucket-name>/<object-key> --key <object-key> --storage-class <storage-class>",
+            "answer_similarity": 90.21,
+            "answer_relevancy": 82.4
+        },
+        {
+            "query": "Change the default AWS region.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to update cluster resources. Do you want to continue?\nCommand -  aws configure set region us-east-1 "
+            ],
+            "expected_contexts": [
+                "AWS_DEFAULT_REGION"
+            ],
+            "ground_truth": "AWS_DEFAULT_REGION--region",
+            "answer_similarity": 83.3,
+            "answer_relevancy": 92.08
+        },
+        {
+            "query": "Check for updates to the AWS CLI.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "pip list --outdated awscli"
+            ],
+            "ground_truth": "pip list --outdated awscli",
+            "answer_similarity": 80.53,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Configure AWS CLI credentials.",
+            "retrieved_contexts": [
+                "\n         ### Configuring AWS CLI Credentials\n\nTo configure your AWS CLI credentials, you have two primary methods:\n\n1.  **Using `aws configure` (Recommended for most users):**\n    This command interactively prompts you for your Access Key ID, Secret Access Key, default region name, and default output format. It then stores these credentials in a configuration file (typically `~/.aws/credentials` and `~/.aws/config`).\n\n    To use this method, open your terminal or command prompt and run:\n\n    ```bash\n    aws configure\n    ```\n\n    You will be prompted to enter the following information:\n    *   **AWS Access Key ID:** Your access key, e.g., `AKIAIOSFODNN7EXAMPLE`\n    *   **AWS Secret Access Key:** Your secret key, e.g., `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`\n    *   **Default region name:** The AWS region you want to use by default, e.g., `us-east-1`\n    *   **Default output format:** The format for command output, e.g., `json`, `text`, or `table`\n\n2.  **Using Environment Variables:**\n    You can set your credentials as environment variables. This method is often used for temporary access or in scripting environments.\n\n    *   **For Linux/macOS:**\n        ```bash\n        export AWS_ACCESS_KEY_ID=\"YOUR_ACCESS_KEY_ID\"\n        export AWS_SECRET_ACCESS_KEY=\"YOUR_SECRET_ACCESS_KEY\"\n        export AWS_DEFAULT_REGION=\"your-default-region\" # e.g., us-east-1\n        ```\n\n    *   **For Windows (Command Prompt):**\n        ```cmd\n        set AWS_ACCESS_KEY_ID=YOUR_ACCESS_KEY_ID\n        set AWS_SECRET_ACCESS_KEY=YOUR_SECRET_ACCESS_KEY\n        set AWS_DEFAULT_REGION=your-default-region\n        ```\n\n    *   **For Windows (PowerShell):**\n        ```powershell\n        $env:AWS_ACCESS_KEY_ID=\"YOUR_ACCESS_KEY_ID\"\n        $env:AWS_SECRET_ACCESS_KEY=\"YOUR_SECRET_ACCESS_KEY\"\n        $env:AWS_DEFAULT_REGION=\"your-default-region\"\n        ```\n\n    **Note:** Environment variables are session-specific. If you close your terminal, you'll need to set them again. For persistent configuration, `aws configure` is generally preferred.\n\n**Security Best Practices:**\n*   Always use IAM roles for applications running on EC2 instances, ECS tasks, Lambda functions, etc., instead of hardcoding credentials.\n*   For local development, use temporary credentials whenever possible, such as those obtained via `aws sts assume-role`.\n*   Never share your AWS Secret Access Key.\n*   Rotate your access keys regularly.\n       "
+            ],
+            "expected_contexts": [
+                "aws configure"
+            ],
+            "ground_truth": "aws configure",
+            "answer_similarity": 74.37,
+            "answer_relevancy": 97.66
+        },
+        {
+            "query": "Copy local file to S3.",
+            "retrieved_contexts": [
+                "\n         To copy a local file to an Amazon S3 bucket, you use the `aws s3 cp` command. This command is part of the AWS CLI and is designed for efficient file transfers between your local filesystem and S3, or between S3 buckets.\n\n### `aws s3 cp` Command Syntax\n\nThe basic syntax for copying a local file to S3 is:\n\n```bash\naws s3 cp <LOCAL_FILE_PATH> s3://<BUCKET_NAME>/<OPTIONAL_PREFIX>/<OBJECT_KEY>\n```\n\n**Explanation of Parameters:**\n\n*   **`<LOCAL_FILE_PATH>`**: This is the full path to the file on your local machine that you want to upload.\n    *   *Example:* `/home/user/documents/my_document.txt` or `C:\\Users\\User\\Documents\\my_document.txt`\n*   **`s3://<BUCKET_NAME>`**: This specifies the destination S3 bucket. You must replace `<BUCKET_NAME>` with the actual name of your S3 bucket.\n    *   *Example:* `s3://my-unique-bucket-name`\n*   **`<OPTIONAL_PREFIX>/<OBJECT_KEY>`**: This is the path within the S3 bucket where you want to store the file, including the desired name for the object in S3.\n    *   If you omit this, the file will be placed directly in the root of the bucket with its original filename.\n    *   `<OPTIONAL_PREFIX>` acts like a folder structure within the bucket.\n    *   `<OBJECT_KEY>` is the name the file will have in S3.\n    *   *Example:* `my-folder/my_document_in_s3.txt`\n\n### Example Command\n\nLet's say you want to copy a file named `report.pdf` located at `/Users/youruser/reports/` to an S3 bucket named `my-company-data` within a folder called `financial-docs`, and you want the object in S3 to also be named `report.pdf`.\n\nThe command would be:\n\n```bash\naws s3 cp /Users/youruser/reports/report.pdf s3://my-company-data/financial-docs/report.pdf\n```\n\n### Important Considerations:\n\n*   **AWS CLI Configuration:** Ensure your AWS CLI is configured with appropriate credentials and a default region that has permissions to write to the target S3 bucket.\n*   **Permissions:** The AWS credentials used must have `s3:PutObject` permissions for the target S3 bucket and prefix.\n*   **Large Files:** For very large files, `aws s3 cp` automatically handles multipart uploads, which improves efficiency and reliability.\n*   **Recursive Copy:** To copy an entire directory (and its contents) from your local machine to S3, you can use the `--recursive` flag:\n    ```bash\n    aws s3 cp /Users/youruser/data/ s3://my-company-data/backup/ --recursive\n    ```\n    This would copy all files and subdirectories from `/Users/youruser/data/` into the `backup/` prefix in the `my-company-data` bucket.\n       "
+            ],
+            "expected_contexts": [
+                "aws s3 cp localfile s3://bucket/remotefile"
+            ],
+            "ground_truth": "aws s3 cp localfile s3://bucket/remotefile",
+            "answer_similarity": 85.76,
+            "answer_relevancy": 88.43
+        },
+        {
+            "query": "Create a CloudFront distribution.",
+            "retrieved_contexts": [
+                "\n         To create a CloudFront distribution, I need more information about its configuration. Please provide the following details:\n\n*   **Origin:**\n    *   **S3 Bucket:** If using an S3 bucket as an origin, please provide the bucket name (e.g., `my-website-bucket.s3.amazonaws.com`).\n    *   **Custom Origin:** If using a custom origin (e.g., an EC2 instance, load balancer, or any HTTP server), please provide the origin domain name (e.g., `www.example.com`).\n    *   **Origin Path (Optional):** If your content is in a specific path within the origin (e.g., `/images`), please specify.\n*   **Default Cache Behavior:**\n    *   **Viewer Protocol Policy:** (e.g., `allow-all`, `redirect-to-https`, `https-only`)\n    *   **Allowed HTTP Methods:** (e.g., `GET,HEAD`, `GET,HEAD,OPTIONS`, `GET,HEAD,OPTIONS,PUT,PATCH,POST,DELETE`)\n    *   **Cached Methods:** (e.g., `GET,HEAD`)\n    *   **Forward Query Strings:** (e.g., `true` or `false`)\n    *   **Forward Cookies:** (e.g., `none`, `whitelist`, `all`)\n    *   **Minimum TTL (seconds):** (e.g., `0`)\n    *   **Default TTL (seconds):** (e.g., `86400`)\n    *   **Maximum TTL (seconds):** (e.g., `31536000`)\n*   **Viewer Certificate (SSL/TLS):**\n    *   **Certificate Source:** (e.g., `cloudfront`, `acm`)\n    *   **ACM Certificate ARN:** If using ACM, please provide the ARN of the certificate.\n    *   **Minimum Protocol Version:** (e.g., `TLSv1.2_2019`)\n*   **Price Class:** (e.g., `PriceClass_All`, `PriceClass_200`, `PriceClass_100`)\n*   **Enabled:** (e.g., `true` or `false`)\n*   **Comment (Optional):** A description for the distribution.\n\nOnce you provide these details, I can construct the appropriate AWS CLI command to create the CloudFront distribution.\n       "
+            ],
+            "expected_contexts": [
+                "aws cloudfront create-distribution --distribution-config <distribution-config>"
+            ],
+            "ground_truth": "aws cloudfront create-distribution --distribution-config <distribution-config>",
+            "answer_similarity": 83.98,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Create a CloudWatch Events rule.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws events put-rule --name <rule-name> --schedule-expression <schedule-expression> --event-pattern <event-pattern>"
+            ],
+            "ground_truth": "aws events put-rule --name <rule-name> --schedule-expression <schedule-expression> --event-pattern <event-pattern>",
+            "answer_similarity": 76.97,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Create a CodeBuild project.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand - aws codebuild create-project \\\n    --name my-example-codebuild-project \\\n    --description \"Example CodeBuild project created by the assistant.\" \\\n    --source type=CODECOMMIT,location=https://git-codecommit.us-east-1.amazonaws.com/v1/repos/my-example-repo \\\n    --artifacts type=NO_ARTIFACTS \\\n    --environment type=LINUX_CONTAINER,image=aws/codebuild/standard:5.0,compute-type=BUILD_GENERAL1_SMALL \\\n    --service-role arn:aws:iam::123456789012:role/CodeBuildServiceRole \\\n    --region us-east-1"
+            ],
+            "expected_contexts": [
+                "aws codebuild create-project --name <project-name> --source <source-config> --artifacts <artifacts-config> --environment <environment-config> --service-role <service-role-arn>"
+            ],
+            "ground_truth": "aws codebuild create-project --name <project-name> --source <source-config> --artifacts <artifacts-config> --environment <environment-config> --service-role <service-role-arn>",
+            "answer_similarity": 85.81,
+            "answer_relevancy": 88.48
+        },
+        {
+            "query": "Create a CodeCommit repository.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand -  aws codecommit create-repository --repository-name my-new-repository "
+            ],
+            "expected_contexts": [
+                "aws codecommit create-repository --repository-name <repository-name>"
+            ],
+            "ground_truth": "aws codecommit create-repository --repository-name <repository-name>",
+            "answer_similarity": 90.98,
+            "answer_relevancy": 90.45
+        },
+        {
+            "query": "Create a CodeDeploy application.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand - aws deploy create-application --application-name MyCodeDeployApplication --compute-platform Server"
+            ],
+            "expected_contexts": [
+                "aws codedeploy create-application --application-name <application-name>"
+            ],
+            "ground_truth": "aws codedeploy create-application --application-name <application-name>",
+            "answer_similarity": 84.68,
+            "answer_relevancy": 88.64
+        },
+        {
+            "query": "Create a CodeDeploy deployment group.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws codedeploy create-deployment-group --application-name <application-name> --deployment-group-name <deployment-group-name> --service-role-arn <service-role-arn>"
+            ],
+            "ground_truth": "aws codedeploy create-deployment-group --application-name <application-name> --deployment-group-name <deployment-group-name> --service-role-arn <service-role-arn>",
+            "answer_similarity": 73.3,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Create a CodeDeploy deployment.",
+            "retrieved_contexts": [
+                "\nTo create a CodeDeploy deployment using the AWS CLI, you need to provide several mandatory parameters. Since no specific details were provided in your request, I cannot execute a deployment directly.\n\nBelow is the general structure of the `aws deploy create-deployment` command, along with explanations for the required parameters:\n\n```bash\naws deploy create-deployment \\\n    --application-name <YourApplicationName> \\\n    --deployment-group-name <YourDeploymentGroupName> \\\n    --revision '{\"revisionType\":\"<S3|GitHub|AppSpecContent>\", \"<S3Location|GitHubLocation|AppSpecContent>\":{...}}' \\\n    [--deployment-config-name <YourDeploymentConfigName>] \\\n    [--description \"<YourDeploymentDescription>\"] \\\n    [--ignore-application-stop-failures | --no-ignore-application-stop-failures] \\\n    [--file-exists-behavior <DISALLOW|OVERWRITE|RETAIN>] \\\n    [--region <YourAWSRegion>]\n```\n\n**Mandatory Parameters:**\n\n*   `--application-name`: The name of the CodeDeploy application associated with the deployment.\n*   `--deployment-group-name`: The name of the deployment group to which the deployment will be made.\n*   `--revision`: This parameter specifies the location and type of the application revision to deploy. It's a JSON object with `revisionType` and a location specific to the type.\n\n    *   **For S3 revisions:**\n        ```json\n        '{\"revisionType\":\"S3\", \"s3Location\":{\"bucket\":\"<YourS3BucketName>\", \"key\":\"<YourS3ObjectKey>\", \"bundleType\":\"<zip|tar|tgz>\", \"eTag\":\"<OptionalETag>\", \"version\":\"<OptionalVersionId>\"}}'\n        ```\n        *   `bucket`: The name of the S3 bucket where the revision is stored.\n        *   `key`: The key (path) to the revision file in the S3 bucket.\n        *   `bundleType`: The type of the application revision file (e.g., `zip`, `tar`, `tgz`).\n\n    *   **For GitHub revisions:**\n        ```json\n        '{\"revisionType\":\"GitHub\", \"gitHubLocation\":{\"repository\":\"<YourGitHubAccount/YourRepoName>\", \"commitId\":\"<YourCommitId>\"}}'\n        ```\n        *   `repository`: The GitHub repository name (e.g., `my-github-account/my-repo`).\n        *   `commitId`: The commit ID of the revision in the GitHub repository.\n\n    *   **For AppSpecContent (inline AppSpec):**\n        ```json\n        '{\"revisionType\":\"AppSpecContent\", \"appSpecContent\":{\"content\":\"<Base64EncodedAppSpecContent>\", \"sha256\":\"<OptionalSHA256Hash>\"}}'\n        ```\n        *   `content`: The base64-encoded content of the AppSpec file.\n\n**Optional Parameters:**\n\n*   `--deployment-config-name`: The name of a deployment configuration (e.g., `CodeDeployDefault.OneAtATime`, `CodeDeployDefault.HalfAtATime`, `CodeDeployDefault.AllAtOnce`). If not specified, the deployment group's default configuration is used.\n*   `--description`: A description for the deployment.\n*   `--ignore-application-stop-failures | --no-ignore-application-stop-failures`: Specifies whether to continue a deployment even if the application stop lifecycle event fails.\n*   `--file-exists-behavior`: Specifies what to do when a file already exists in the deployment target location. Options are `DISALLOW`, `OVERWRITE`, or `RETAIN`.\n*   `--region`: The AWS region where the CodeDeploy application and deployment group exist.\n\n**Example (S3 Revision):**\n\n```bash\naws deploy create-deployment \\\n    --application-name MyWebApp \\\n    --deployment-group-name ProductionDeploymentGroup \\\n    --revision '{\"revisionType\":\"S3\", \"s3Location\":{\"bucket\":\"my-app-revisions\", \"key\":\"my-app-v1.0.zip\", \"bundleType\":\"zip\"}}' \\\n    --deployment-config-name CodeDeployDefault.OneAtATime \\\n    --description \"Deploying version 1.0 of MyWebApp\" \\\n    --region us-east-1\n```\n\nPlease replace the placeholder values (e.g., `<YourApplicationName>`, `<YourS3BucketName>`) with your actual CodeDeploy application, deployment group, and revision details to create a deployment.\n       "
+            ],
+            "expected_contexts": [
+                "aws codedeploy create-deployment --application-name <application-name> --deployment-group-name <deployment-group-name> --revision <revision-location>"
+            ],
+            "ground_truth": "aws codedeploy create-deployment --application-name <application-name> --deployment-group-name <deployment-group-name> --revision <revision-location>",
+            "answer_similarity": 89.1,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Create a Cognito identity pool.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand - aws cognito-identity create-identity-pool --identity-pool-name \"MyNewIdentityPool\" --allow-unauthenticated-identities true --region us-east-1"
+            ],
+            "expected_contexts": [
+                "aws cognito-identity create-identity-pool --identity-pool-name <identity-pool-name> --allow-unauthenticated-identities"
+            ],
+            "ground_truth": "aws cognito-identity create-identity-pool --identity-pool-name <identity-pool-name> --allow-unauthenticated-identities",
+            "answer_similarity": 89.8,
+            "answer_relevancy": 92.56
+        },
+        {
+            "query": "Create a Cognito user pool.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand - aws cognito-idp create-user-pool --pool-name MyNewUserPool --auto-verified-attributes email --region us-east-1"
+            ],
+            "expected_contexts": [
+                "aws cognito-idp create-user-pool --pool-name <pool-name>"
+            ],
+            "ground_truth": "aws cognito-idp create-user-pool --pool-name <pool-name>",
+            "answer_similarity": 88.77,
+            "answer_relevancy": 88.59
+        },
+        {
+            "query": "Create a Cognito user.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws cognito-idp admin-create-user --user-pool-id <user-pool-id> --username <username>"
+            ],
+            "ground_truth": "aws cognito-idp admin-create-user --user-pool-id <user-pool-id> --username <username>",
+            "answer_similarity": 69.84,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Create a DynamoDB table.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand -  aws dynamodb create-table --table-name MyTestTable --attribute-definitions AttributeName=id,AttributeType=S --key-schema AttributeName=id,KeyType=HASH --provisioned-throughput ReadCapacityUnits=5,WriteCapacityUnits=5 "
+            ],
+            "expected_contexts": [
+                "aws dynamodb create-table"
+            ],
+            "ground_truth": "aws dynamodb create-table",
+            "answer_similarity": 84.78,
+            "answer_relevancy": 90.83
+        },
+        {
+            "query": "Create a Glue crawler.",
+            "retrieved_contexts": [
+                "\n        <![CDATA[\nTo create an AWS Glue crawler, you need to specify several key parameters, including the crawler's name, the IAM role it will assume, the target data source (e.g., an S3 path), and the Glue database where the metadata will be stored.\n\nSince specific details like the crawler name, IAM role ARN, S3 path, and database name were not provided, I cannot execute the command directly. However, I can provide you with the AWS CLI command structure and explain the necessary parameters.\n\nHere is a template for creating a Glue crawler that targets an S3 path:\n\n```bash\naws glue create-crawler \\\n    --name \"YOUR_CRAWLER_NAME\" \\\n    --role \"arn:aws:iam::YOUR_ACCOUNT_ID:role/YOUR_GLUE_SERVICE_ROLE\" \\\n    --database-name \"YOUR_GLUE_DATABASE_NAME\" \\\n    --targets '{\"S3Targets\": [{\"Path\": \"s3://YOUR_BUCKET_NAME/YOUR_PREFIX/\"}]}' \\\n    --schedule \"cron(0 0 * * ? *)\" \\\n    --table-prefix \"your_prefix_\" \\\n    --schema-change-policy \"{\"UpdateBehavior\":\"UPDATE_IN_DATABASE\",\"DeleteBehavior\":\"LOG\"}\" \\\n    --configuration '{\"Version\":1.0,\"CrawlerOutput\":{\"Partitions\":{\"AddOrUpdateBehavior\":\"InheritFromTarget\"}},\"Grouping\":{\"TableGroupingPolicy\":\"CombineCompatibleSchemas\"}}'\n```\n\n**Explanation of Parameters:**\n\n*   `--name`: A unique name for your Glue crawler (e.g., `my-data-lake-crawler`).\n*   `--role`: The Amazon Resource Name (ARN) of an IAM role that Glue will assume. This role must have permissions to:\n    *   Read data from the specified S3 path (`s3:GetObject`, `s3:ListBucket`).\n    *   Write to the Glue Data Catalog (`glue:CreateTable`, `glue:UpdateTable`, `glue:DeleteTable`, `glue:GetTable`, `glue:BatchCreatePartition`, `glue:BatchUpdatePartition`, `glue:BatchDeletePartition`, `glue:GetPartition`, `glue:UpdatePartition`).\n    *   Optionally, write logs to CloudWatch Logs.\n    *   **Example Role Policy (Trust Policy):**\n        ```json\n        {\n          \"Version\": \"2012-10-17\",\n          \"Statement\": [\n            {\n              \"Effect\": \"Allow\",\n              \"Principal\": {\n                \"Service\": \"glue.amazonaws.com\"\n              },\n              \"Action\": \"sts:AssumeRole\"\n            }\n          ]\n        }\n        ```\n*   `--database-name`: The name of the Glue database where the crawler will store the metadata (table definitions). If the database does not exist, Glue will create it.\n*   `--targets`: A JSON string specifying the data sources for the crawler.\n    *   `S3Targets`: For S3 data sources.\n        *   `Path`: The S3 path to the data you want to crawl (e.g., `s3://my-raw-data-bucket/sales/`).\n*   `--schedule`: (Optional) A cron expression that specifies when the crawler should run. For example, `\"cron(0 0 * * ? *)\"` runs daily at midnight UTC. If omitted, the crawler will only run manually.\n*   `--table-prefix`: (Optional) A prefix that Glue adds to the names of tables it creates. This helps organize tables in your database.\n*   `--schema-change-policy`: (Optional) Defines how the crawler handles schema changes.\n    *   `UpdateBehavior`: How to handle changes to existing tables (e.g., `UPDATE_IN_DATABASE`).\n    *   `DeleteBehavior`: How to handle tables that no longer exist in the source (e.g., `LOG`, `DELETE_FROM_DATABASE`).\n*   `--configuration`: (Optional) A JSON string for advanced crawler configuration, such as how partitions are handled or how schemas are grouped.\n\n**Before running the command, ensure you replace the placeholder values (e.g., `YOUR_CRAWLER_NAME`, `YOUR_ACCOUNT_ID`, `YOUR_GLUE_SERVICE_ROLE`, `YOUR_GLUE_DATABASE_NAME`, `YOUR_BUCKET_NAME/YOUR_PREFIX/`) with your actual desired values.**"
+            ],
+            "expected_contexts": [
+                "aws glue create-crawler --name <crawler-name> --role <role-arn> --database-name <database-name> --targets <targets>"
+            ],
+            "ground_truth": "aws glue create-crawler --name <crawler-name> --role <role-arn> --database-name <database-name> --targets <targets>",
+            "answer_similarity": 86.93,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Create a Glue database.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand - aws glue create-database --database-input '{\"Name\": \"my-new-glue-database\"}' --region us-east-1"
+            ],
+            "expected_contexts": [
+                "aws glue create-database --database-input '{\\Name\\\": \\\"<database-name>\\\"}'"
+            ],
+            "ground_truth": "aws glue create-database --database-input '{\\Name\\\": \\\"<database-name>\\\"}'",
+            "answer_similarity": 89.32,
+            "answer_relevancy": 83.07
+        },
+        {
+            "query": "Create a Glue table.",
+            "retrieved_contexts": [
+                "\n         To create an AWS Glue table, several critical pieces of information are required, which were not provided in your request. As an expert AWS administrator, I need the following details to construct the `aws glue create-table` command:\n\n### Required Information for Glue Table Creation:\n\n1.  **Database Name:** The name of the AWS Glue database where the table will reside.\n2.  **Table Name:** The desired name for the new Glue table.\n3.  **Table Schema:** A list of column definitions, including:\n    *   `Name`: The name of each column.\n    *   `Type`: The data type of each column (e.g., `string`, `int`, `bigint`, `double`, `boolean`, `timestamp`).\n    *   `Comment` (optional): A description for the column.\n4.  **Data Location (S3 Path):** The Amazon S3 path where the data files for this table are stored (e.g., `s3://your-bucket/your-prefix/`).\n5.  **Input Format:** The format of the data files (e.g., `org.apache.hadoop.mapred.TextInputFormat` for CSV/TSV, `org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat` for Parquet).\n6.  **Output Format:** The output format (e.g., `org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat`).\n7.  **Serde Information:** Serialization/Deserialization library details:\n    *   `SerializationLibrary`: The SerDe library to use (e.g., `org.apache.hadoop.hive.serde2.OpenCSVSerde` for CSV, `org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe` for Parquet, `org.openx.data.jsonserde.JsonSerDe` for JSON).\n    *   `Parameters` (optional): SerDe properties (e.g., `'separatorChar'` for CSV, `'quoteChar'`, `'escapeChar'`).\n8.  **Table Type:** Typically `EXTERNAL_TABLE` for data stored in S3.\n9.  **Parameters** (optional): Additional table properties, such as `classification` (e.g., `csv`, `parquet`, `json`) or `compressionType`.\n\n**Example of a `create-table` command structure (for reference):**\n\n```bash\naws glue create-table \\\n    --database-name your-database-name \\\n    --table-input '{\n        \"Name\": \"your_table_name\",\n        \"Description\": \"Description of your table\",\n        \"Owner\": \"aws_user\",\n        \"LastAccessTime\": 1678886400,\n        \"LastAnalyzedTime\": 1678886400,\n        \"Retention\": 0,\n        \"StorageDescriptor\": {\n            \"Columns\": [\n                {\"Name\": \"column1\", \"Type\": \"string\"},\n                {\"Name\": \"column2\", \"Type\": \"int\"},\n                {\"Name\": \"column3\", \"Type\": \"timestamp\"}\n            ],\n            \"Location\": \"s3://your-bucket/your-prefix/\",\n            \"InputFormat\": \"org.apache.hadoop.mapred.TextInputFormat\",\n            \"OutputFormat\": \"org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat\",\n            \"Compressed\": false,\n            \"NumberOfBuckets\": -1,\n            \"SerdeInfo\": {\n                \"SerializationLibrary\": \"org.apache.hadoop.hive.serde2.OpenCSVSerde\",\n                \"Parameters\": {\n                    \"separatorChar\": \",\",\n                    \"quoteChar\": \"\\\"\",\n                    \"escapeChar\": \"\\\\\\\\\"\n                }\n            },\n            \"BucketColumns\": [],\n            \"SortColumns\": [],\n            \"Parameters\": {},\n            \"SkewedInfo\": {},\n            \"StoredAsSubDirectories\": false\n        },\n        \"PartitionKeys\": [],\n        \"TableType\": \"EXTERNAL_TABLE\",\n        \"Parameters\": {\n            \"classification\": \"csv\",\n            \"compressionType\": \"none\",\n            \"delimiter\": \",\",\n            \"skip.header.line.count\": \"1\"\n        }\n    }'\n```\n\nWithout these specific details, I am unable to create the Glue table. Please provide the necessary information for the table definition.\n       "
+            ],
+            "expected_contexts": [
+                "aws glue create-table --database-name <database-name> --table-input <table-input>"
+            ],
+            "ground_truth": "aws glue create-table --database-name <database-name> --table-input <table-input>",
+            "answer_similarity": 84.19,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Create a Kinesis data stream.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand - aws kinesis create-stream --stream-name my-data-stream --shard-count 1 && aws kinesis describe-stream --stream-name my-data-stream"
+            ],
+            "expected_contexts": [
+                "aws kinesis create-stream --stream-name <stream-name> --shard-count <shard-count>"
+            ],
+            "ground_truth": "aws kinesis create-stream --stream-name <stream-name> --shard-count <shard-count>",
+            "answer_similarity": 87.16,
+            "answer_relevancy": 91.99
+        },
+        {
+            "query": "Create a Lambda function.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws lambda create-function"
+            ],
+            "ground_truth": "aws lambda create-function",
+            "answer_similarity": 82.11,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Create a method for a resource in an API Gateway REST API.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws apigateway put-method --rest-api-id <api-id> --resource-id <resource-id> --http-method <http-method> --authorization-type <authorization-type>"
+            ],
+            "ground_truth": "aws apigateway put-method --rest-api-id <api-id> --resource-id <resource-id> --http-method <http-method> --authorization-type <authorization-type>",
+            "answer_similarity": 72.91,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Create a new IAM user.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand -  aws iam create-user --user-name new-iam-user "
+            ],
+            "expected_contexts": [
+                "aws iam create-user --user-name <user-name>"
+            ],
+            "ground_truth": "aws iam create-user --user-name <user-name>",
+            "answer_similarity": 90.07,
+            "answer_relevancy": 96.25
+        },
+        {
+            "query": "Create a new S3 bucket.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand - aws s3api create-bucket --bucket my-unique-new-s3-bucket-20250918 --region us-east-1"
+            ],
+            "expected_contexts": [
+                "aws s3 mb s3://bucket-name"
+            ],
+            "ground_truth": "aws s3 mb s3://bucket-name",
+            "answer_similarity": 76.53,
+            "answer_relevancy": 92.22
+        },
+        {
+            "query": "Create a new security group.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws ec2 create-security-group"
+            ],
+            "ground_truth": "aws ec2 create-security-group",
+            "answer_similarity": 78.15,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Create a resource in an API Gateway REST API.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws apigateway create-resource --rest-api-id <api-id> --parent-id <parent-id> --path-part <path-part>"
+            ],
+            "ground_truth": "aws apigateway create-resource --rest-api-id <api-id> --parent-id <parent-id> --path-part <path-part>",
+            "answer_similarity": 72.01,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Create a Route 53 hosted zone.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand -  aws route53 create-hosted-zone --name example.com --caller-reference $(date +%s) --query 'HostedZone.Id' --output text "
+            ],
+            "expected_contexts": [
+                "aws route53 create-hosted-zone --name <domain-name> --caller-reference <unique-id>"
+            ],
+            "ground_truth": "aws route53 create-hosted-zone --name <domain-name> --caller-reference <unique-id>",
+            "answer_similarity": 88.47,
+            "answer_relevancy": 94.36
+        },
+        {
+            "query": "Create a Route 53 record set.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand - \naws route53 change-resource-record-sets --hosted-zone-id YOUR_HOSTED_ZONE_ID --change-batch '{\n    \"Comment\": \"Creating a new A record\",\n    \"Changes\": [\n        {\n            \"Action\": \"CREATE\",\n            \"ResourceRecordSet\": {\n                \"Name\": \"YOUR_RECORD_NAME.YOUR_DOMAIN.COM\",\n                \"Type\": \"A\",\n                \"TTL\": 300,\n                \"ResourceRecords\": [\n                    {\n                        \"Value\": \"YOUR_IP_ADDRESS\"\n                    }\n                ]\n            }\n        }\n    ]\n}'\n        "
+            ],
+            "expected_contexts": [
+                "aws route53 change-resource-record-sets --hosted-zone-id <hosted-zone-id> --change-batch <change-batch-json>"
+            ],
+            "ground_truth": "aws route53 change-resource-record-sets --hosted-zone-id <hosted-zone-id> --change-batch <change-batch-json>",
+            "answer_similarity": 89.49,
+            "answer_relevancy": 83.81
+        },
+        {
+            "query": "Create a Secrets Manager secret.",
+            "retrieved_contexts": [
+                "\n         To create an AWS Secrets Manager secret, I need the following mandatory information:\n\n1.  **Secret Name:** A unique name for the secret.\n2.  **Secret Value:** The actual secret content (e.g., a password, API key, or JSON string).\n\nSince this information was not provided in your request and I am unable to ask for clarification, I cannot proceed with creating the secret.\n\nPlease provide the secret name and its value if you would like me to create it.\n       "
+            ],
+            "expected_contexts": [
+                "aws secretsmanager create-secret --name <secret-name> --secret-string <secret-value>"
+            ],
+            "ground_truth": "aws secretsmanager create-secret --name <secret-name> --secret-string <secret-value>",
+            "answer_similarity": 88.75,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Create a Step Functions state machine.",
+            "retrieved_contexts": [
+                "\nTo create a Step Functions state machine, you need two main components:\n1.  **A State Machine Definition:** This is written in Amazon States Language (ASL), a JSON-based structured language.\n2.  **An IAM Role:** This role grants Step Functions the necessary permissions to execute your state machine and interact with other AWS services (e.g., Lambda, SQS, DynamoDB) that your state machine might invoke.\n\nSince specific details for your state machine (definition, role ARN) were not provided, I will outline the general steps and provide an example for a simple \"Hello World\" state machine.\n\n### Step 1: Create an IAM Role for Step Functions\n\nFirst, you need an IAM role that Step Functions can assume. This role needs a trust policy that allows `states.amazonaws.com` to assume it, and an attached policy that grants permissions for the actions your state machine will perform.\n\n**1.1. Create a Trust Policy File (`trust_policy.json`):**\n\n```json\n{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Effect\": \"Allow\",\n      \"Principal\": {\n        \"Service\": \"states.amazonaws.com\"\n      },\n      \"Action\": \"sts:AssumeRole\"\n    }\n  ]\n}\n```\n\n**1.2. Create an IAM Role:**\n\n```bash\naws iam create-role \\\n    --role-name StepFunctionsExecutionRole \\\n    --assume-role-policy-document file://trust_policy.json\n```\n\n**1.3. Create an IAM Permissions Policy File (`permissions_policy.json`):**\n\nFor a basic \"Hello World\" state machine that just passes state, no specific service permissions are needed. However, if your state machine invokes Lambda functions, SQS, etc., you would add those permissions here. For example, to allow invoking any Lambda function:\n\n```json\n{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Effect\": \"Allow\",\n      \"Action\": [\n        \"lambda:InvokeFunction\"\n      ],\n      \"Resource\": \"*\"\n    }\n  ]\n}\n```\n**Note:** For production, it's best practice to restrict `Resource` to specific ARNs.\n\n**1.4. Attach the Permissions Policy to the Role:**\n\n```bash\naws iam put-role-policy \\\n    --role-name StepFunctionsExecutionRole \\\n    --policy-name StepFunctionsPermissions \\\n    --policy-document file://permissions_policy.json\n```\n\n**1.5. Get the ARN of the Created Role:**\n\nYou will need this ARN for creating the state machine.\n\n```bash\naws iam get-role --role-name StepFunctionsExecutionRole --query 'Role.Arn' --output text\n```\n*Wait a few seconds for the role to propagate before using its ARN.*\n\n### Step 2: Define Your State Machine (ASL)\n\nCreate a JSON file (e.g., `state_machine_definition.json`) with your Amazon States Language (ASL) definition.\n\n**Example: A simple \"Hello World\" state machine:**\n\n```json\n{\n  \"Comment\": \"A simple Hello World state machine\",\n  \"StartAt\": \"HelloWorld\",\n  \"States\": {\n    \"HelloWorld\": {\n      \"Type\": \"Pass\",\n      \"Result\": {\n        \"message\": \"Hello, World!\"\n      },\n      \"End\": true\n    }\n  }\n}\n```\n\n### Step 3: Create the Step Functions State Machine\n\nNow, use the `aws stepfunctions create-state-machine` command, providing the state machine name, the ASL definition file, and the ARN of the IAM role you created.\n\n```bash\naws stepfunctions create-state-machine \\\n    --name MyHelloWorldStateMachine \\\n    --definition file://state_machine_definition.json \\\n    --role-arn arn:aws:iam::123456789012:role/StepFunctionsExecutionRole \\\n    --output json\n```\n**Important:** Replace `arn:aws:iam::123456789012:role/StepFunctionsExecutionRole` with the actual ARN of the role you created in Step 1.5.\n\n### Example Output of `create-state-machine` (truncated):\n\n```json\n{\n    \"stateMachineArn\": \"arn:aws:states:us-east-1:123456789012:stateMachine:MyHelloWorldStateMachine\",\n    \"creationDate\": 1678886400.0\n}\n```\n\nThis process will create your Step Functions state machine. You can then start executions using `aws stepfunctions start-execution`.\n       "
+            ],
+            "expected_contexts": [
+                "aws stepfunctions create-state-machine --name <state-machine-name> --definition <state-machine-definition> --role-arn <role-arn>"
+            ],
+            "ground_truth": "aws stepfunctions create-state-machine --name <state-machine-name> --definition <state-machine-definition> --role-arn <role-arn>",
+            "answer_similarity": 88.22,
+            "answer_relevancy": 93.03
+        },
+        {
+            "query": "Create a subnet.",
+            "retrieved_contexts": [
+                "\n         I am unable to create a subnet without the necessary mandatory parameters. To successfully create a subnet, I require the following information:\n\n         *   **VPC ID**: The identifier of the Virtual Private Cloud (VPC) where the subnet will be created.\n         *   **CIDR Block**: The IPv4 CIDR block that will be assigned to the subnet (e.g., `10.0.1.0/24`).\n\n         Please provide these details to proceed with the subnet creation.\n       "
+            ],
+            "expected_contexts": [
+                "aws ec2 create-subnet"
+            ],
+            "ground_truth": "aws ec2 create-subnet",
+            "answer_similarity": 77.81,
+            "answer_relevancy": 95.91
+        },
+        {
+            "query": "Create a Systems Manager Parameter Store parameter.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to update cluster resources. Do you want to continue?\nCommand -  aws ssm put-parameter --name \"/my-application/config/database-url\" --value \"jdbc:postgresql://mydb.example.com:5432/prod\" --type \"String\" --description \"Database connection URL for my application\" --overwrite "
+            ],
+            "expected_contexts": [
+                "aws ssm put-parameter --name <parameter-name> --value <parameter-value> --type <parameter-type>"
+            ],
+            "ground_truth": "aws ssm put-parameter --name <parameter-name> --value <parameter-value> --type <parameter-type>",
+            "answer_similarity": 83.12,
+            "answer_relevancy": 69.55
+        },
+        {
+            "query": "Create a VPC.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand - aws ec2 create-vpc --cidr-block 10.0.0.0/16 --tag-specifications 'ResourceType=vpc,Tags=[{Key=Name,Value=MyNewVPC}]' --query 'Vpc.VpcId' --output text"
+            ],
+            "expected_contexts": [
+                "aws ec2 create-vpc"
+            ],
+            "ground_truth": "aws ec2 create-vpc",
+            "answer_similarity": 83.55,
+            "answer_relevancy": 87.45
+        },
+        {
+            "query": "Create an API Gateway REST API.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand - aws apigateway create-rest-api --name \"MyNewRestAPI\" --region us-east-1"
+            ],
+            "expected_contexts": [
+                "aws apigateway create-rest-api --name <api-name>"
+            ],
+            "ground_truth": "aws apigateway create-rest-api --name <api-name>",
+            "answer_similarity": 84.97,
+            "answer_relevancy": 88.78
+        },
+        {
+            "query": "Create an AppSync API.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand -  aws appsync create-graphql-api --name MyNewAppSyncAPI --authentication-type API_KEY --region us-east-1 "
+            ],
+            "expected_contexts": [
+                "aws appsync create-graphql-api --name <api-name> --authentication-type <authentication-type>"
+            ],
+            "ground_truth": "aws appsync create-graphql-api --name <api-name> --authentication-type <authentication-type>",
+            "answer_similarity": 86.45,
+            "answer_relevancy": 85.3
+        },
+        {
+            "query": "Create an AppSync data source.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws appsync create-data-source --api-id <api-id> --name <data-source-name> --type <data-source-type> --dynamodb-config <dynamodb-config>"
+            ],
+            "ground_truth": "aws appsync create-data-source --api-id <api-id> --name <data-source-name> --type <data-source-type> --dynamodb-config <dynamodb-config>",
+            "answer_similarity": 73.49,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Create an AppSync resolver.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws appsync create-resolver --api-id <api-id> --type-name <type-name> --field-name <field-name> --data-source-name <data-source-name>"
+            ],
+            "ground_truth": "aws appsync create-resolver --api-id <api-id> --type-name <type-name> --field-name <field-name> --data-source-name <data-source-name>",
+            "answer_similarity": 70.8,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Create an Athena workgroup.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand -  aws athena create-workgroup --name my-new-workgroup --configuration '{\"EnforceWorkGroupConfiguration\": true, \"PublishCloudWatchMetricsEnabled\": true}' --region us-east-1 "
+            ],
+            "expected_contexts": [
+                "aws athena create-work-group --name <workgroup-name> --configuration <configuration>"
+            ],
+            "ground_truth": "aws athena create-work-group --name <workgroup-name> --configuration <configuration>",
+            "answer_similarity": 89.4,
+            "answer_relevancy": 85.47
+        },
+        {
+            "query": "Create an EC2 key pair.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand - aws ec2 create-key-pair --key-name my-new-ec2-key-pair --key-type rsa --query 'KeyMaterial,KeyName' --output text"
+            ],
+            "expected_contexts": [
+                "aws ec2 create-key-pair --key-name <key-name>"
+            ],
+            "ground_truth": "aws ec2 create-key-pair --key-name <key-name>",
+            "answer_similarity": 87.66,
+            "answer_relevancy": 95.34
+        },
+        {
+            "query": "Create an ECR repository.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand -  aws ecr create-repository --repository-name my-application-repo --image-scanning-configuration imageScanningConfiguration={scanOnPush=true} --image-tag-mutability IMMUTABLE --region us-east-1 "
+            ],
+            "expected_contexts": [
+                "aws ecr create-repository --repository-name <repository-name>"
+            ],
+            "ground_truth": "aws ecr create-repository --repository-name <repository-name>",
+            "answer_similarity": 84.04,
+            "answer_relevancy": 82.39
+        },
+        {
+            "query": "Create an ECS cluster.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand - aws ecs create-cluster --cluster-name my-ecs-cluster"
+            ],
+            "expected_contexts": [
+                "aws ecs create-cluster --cluster-name <cluster-name>"
+            ],
+            "ground_truth": "aws ecs create-cluster --cluster-name <cluster-name>",
+            "answer_similarity": 89.73,
+            "answer_relevancy": 96.38
+        },
+        {
+            "query": "Create an ECS service.",
+            "retrieved_contexts": [
+                "\nTo create an Amazon ECS service, several critical parameters are required. Without these details, I cannot proceed with the creation of the service. Please provide the following information:\n\n*   **`--cluster`**: The name or ARN of the ECS cluster where the service will be created.\n*   **`--service-name`**: A unique name for your new ECS service.\n*   **`--task-definition`**: The family and revision (`family:revision`) or full ARN of the task definition to use for the service.\n*   **`--launch-type`**: The launch type to use for the service. This can be `FARGATE` or `EC2`.\n*   **`--desired-count`**: The number of instantiations of the task definition to place and keep running in your service.\n*   **`--network-configuration`** (Required for `FARGATE` launch type or `awsvpc` network mode):\n    *   **`awsvpcConfiguration`**:\n        *   **`subnets`**: A list of subnet IDs where the tasks will be launched.\n        *   **`securityGroups`**: A list of security group IDs to associate with the tasks.\n        *   **`assignPublicIp`**: Whether to assign a public IP address to the tasks (`ENABLED` or `DISABLED`).\n\n**Example `aws ecs create-service` command structure:**\n\n```bash\naws ecs create-service \\\n    --cluster <YOUR_ECS_CLUSTER_NAME> \\\n    --service-name <YOUR_SERVICE_NAME> \\\n    --task-definition <YOUR_TASK_DEFINITION_FAMILY_AND_REVISION> \\\n    --launch-type FARGATE \\\n    --desired-count 1 \\\n    --network-configuration \"awsvpcConfiguration={subnets=[<SUBNET_ID_1>,<SUBNET_ID_2>],securityGroups=[<SECURITY_GROUP_ID>],assignPublicIp=ENABLED}\" \\\n    --region <YOUR_AWS_REGION>\n```\n\nPlease replace the placeholder values (e.g., `<YOUR_ECS_CLUSTER_NAME>`) with your specific details. Once you provide this information, I can execute the command to create the ECS service.\n        "
+            ],
+            "expected_contexts": [
+                "aws ecs create-service --cluster <cluster-name> --service-name <service-name> --task-definition <task-definition-name>"
+            ],
+            "ground_truth": "aws ecs create-service --cluster <cluster-name> --service-name <service-name> --task-definition <task-definition-name>",
+            "answer_similarity": 86.61,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Create an EKS cluster.",
+            "retrieved_contexts": [
+                "\n         ### Cannot Create EKS Cluster - Missing Information\n\nTo create an Amazon EKS cluster, essential information is required that was not provided in your request. Without these details, I cannot proceed with creating the cluster.\n\nPlease provide the following mandatory information:\n\n1.  **Cluster Name:** A unique name for your EKS cluster.\n2.  **Kubernetes Version:** The desired Kubernetes version (e.g., `1.28`, `1.29`).\n3.  **IAM Role ARN:** The Amazon Resource Name (ARN) of an IAM role that Amazon EKS can assume to create AWS resources for the cluster. This role typically needs the `AmazonEKSClusterPolicy` and `AmazonEKSServicePolicy` attached.\n4.  **Subnet IDs:** A list of at least two subnet IDs in different Availability Zones where the EKS cluster's network interfaces will be created. These subnets should have sufficient IP addresses.\n\n**Example of required information:**\n\n*   **Cluster Name:** `my-production-eks-cluster`\n*   **Kubernetes Version:** `1.29`\n*   **IAM Role ARN:** `arn:aws:iam::123456789012:role/EKSClusterRole`\n*   **Subnet IDs:** `subnet-0abcdef1234567890`, `subnet-0fedcba9876543210`\n\nOnce this information is provided, I can construct and execute the appropriate `aws eks create-cluster` command.\n       "
+            ],
+            "expected_contexts": [
+                "aws eks create-cluster --name <cluster-name> --role-arn <role-arn> --resources-vpc-config subnetIds=<subnet-ids>,securityGroupIds=<security-group-ids>"
+            ],
+            "ground_truth": "aws eks create-cluster --name <cluster-name> --role-arn <role-arn> --resources-vpc-config subnetIds=<subnet-ids>,securityGroupIds=<security-group-ids>",
+            "answer_similarity": 85.24,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Create an EKS node group.",
+            "retrieved_contexts": [
+                "\n         ### Cannot Create EKS Node Group - Missing Information\n\nTo create an Amazon EKS node group, I require several essential parameters that were not provided in your request. Without this information, I cannot proceed with the creation of the node group.\n\n**Required Information:**\n\n*   **EKS Cluster Name:** The name of the existing EKS cluster to which the node group will be added.\n*   **Node Group Name:** A unique name for the new node group.\n*   **Instance Type:** The EC2 instance type for the nodes (e.g., `m5.large`, `t3.medium`).\n*   **AMI Type:** The AMI type for the nodes (e.g., `AL2_x86_64`, `AL2_x86_64_GPU`, `BOTTLEROCKET_ARM64`).\n*   **Subnet IDs:** A list of subnet IDs where the EC2 instances for the node group will be launched. These subnets should be associated with the VPC where your EKS cluster is running.\n*   **Node Role ARN:** The Amazon Resource Name (ARN) of an IAM role that provides permissions for the EKS node group to interact with AWS services.\n*   **Scaling Configuration:**\n    *   **Minimum Size:** The minimum number of nodes in the node group.\n    *   **Maximum Size:** The maximum number of nodes in the node group.\n    *   **Desired Size:** The desired number of nodes to start with.\n\n**Example `aws eks create-node-group` command structure (for reference):**\n\n```bash\naws eks create-node-group \\\n    --cluster-name <YOUR_EKS_CLUSTER_NAME> \\\n    --node-group-name <YOUR_NODE_GROUP_NAME> \\\n    --instance-types <INSTANCE_TYPE> \\\n    --ami-type <AMI_TYPE> \\\n    --subnets <SUBNET_ID_1> <SUBNET_ID_2> \\\n    --node-role <NODE_ROLE_ARN> \\\n    --scaling-config minSize=<MIN_SIZE>,maxSize=<MAX_SIZE>,desiredSize=<DESIRED_SIZE> \\\n    --region <AWS_REGION>\n```\n\nPlease provide the necessary details so I can proceed with creating the EKS node group.\n       "
+            ],
+            "expected_contexts": [
+                "aws eks create-nodegroup --cluster-name <cluster-name> --nodegroup-name <nodegroup-name> --node-role <node-role-arn> --subnets <subnet-ids>"
+            ],
+            "ground_truth": "aws eks create-nodegroup --cluster-name <cluster-name> --nodegroup-name <nodegroup-name> --node-role <node-role-arn> --subnets <subnet-ids>",
+            "answer_similarity": 86.37,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Create an IAM group.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand -  aws iam create-group --group-name MyNewIAMGroup "
+            ],
+            "expected_contexts": [
+                "aws iam create-group --group-name <group-name>"
+            ],
+            "ground_truth": "aws iam create-group --group-name <group-name>",
+            "answer_similarity": 88.37,
+            "answer_relevancy": 93.34
+        },
+        {
+            "query": "Create an IAM policy.",
+            "retrieved_contexts": [
+                "\nTo create an IAM policy, the following information is required:\n\n1.  **Policy Name:** A unique name for the IAM policy.\n2.  **Policy Document:** The policy's permissions in JSON format.\n\nWithout these details, I cannot proceed with creating the policy.\n\nOnce you have the policy name and the policy document, you can use the `aws iam create-policy` command. Below is an example of how to structure the command:\n\n```bash\naws iam create-policy \\\n    --policy-name YourPolicyName \\\n    --policy-document file://your-policy-document.json\n```\n\n**Example `your-policy-document.json`:**\n\n```json\n{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": [\n    {\n      \"Effect\": \"Allow\",\n      \"Action\": [\n        \"s3:GetObject\",\n        \"s3:ListBucket\"\n      ],\n      \"Resource\": [\n        \"arn:aws:s3:::your-bucket-name\",\n        \"arn:aws:s3:::your-bucket-name/*\"\n      ]\n    }\n  ]\n}\n```\n\nPlease provide the policy name and the policy document when you are ready to create the IAM policy.\n       "
+            ],
+            "expected_contexts": [
+                "aws iam create-policy --policy-name <policy-name> --policy-document <policy-document>"
+            ],
+            "ground_truth": "aws iam create-policy --policy-name <policy-name> --policy-document <policy-document>",
+            "answer_similarity": 90.44,
+            "answer_relevancy": 94.32
+        },
+        {
+            "query": "Create an RDS instance.",
+            "retrieved_contexts": [
+                "\nTo create an RDS instance using the AWS CLI, you need to specify several parameters. Below is a template command with placeholders for the essential details. You will need to replace the placeholder values with your desired configuration.\n\n```bash\naws rds create-db-instance \\\n    --db-instance-identifier <your-db-instance-name> \\\n    --db-instance-class <db-instance-class> \\\n    --engine <database-engine> \\\n    --master-username <your-master-username> \\\n    --master-user-password <your-master-password> \\\n    --allocated-storage <storage-in-gb> \\\n    --vpc-security-group-ids <sg-id-1> <sg-id-2> \\\n    --db-subnet-group-name <your-db-subnet-group> \\\n    --backup-retention-period <days> \\\n    --multi-az | --no-multi-az \\\n    --engine-version <engine-version> \\\n    --license-model <license-model> \\\n    --region <aws-region>\n```\n\n**Explanation of Parameters:**\n\n*   `--db-instance-identifier`: A unique name for your DB instance.\n*   `--db-instance-class`: The compute and memory capacity of the DB instance (e.g., `db.t3.micro`, `db.m5.large`).\n*   `--engine`: The database engine to use (e.g., `mysql`, `postgres`, `aurora-mysql`, `aurora-postgresql`, `sqlserver-ex`).\n*   `--master-username`: The master username for the DB instance.\n*   `--master-user-password`: The master password for the DB instance.\n*   `--allocated-storage`: The amount of storage (in GiB) to allocate for your DB instance.\n*   `--vpc-security-group-ids`: One or more VPC security group IDs to associate with the DB instance. These security groups control network access to your DB instance.\n*   `--db-subnet-group-name`: The name of the DB subnet group to use. This defines the subnets and VPC for your DB instance.\n*   `--backup-retention-period`: The number of days for which automated backups are retained.\n*   `--multi-az | --no-multi-az`: Specifies whether the DB instance is created as a Multi-AZ deployment for high availability.\n*   `--engine-version`: The version number of the database engine.\n*   `--license-model`: The license model for the DB instance (e.g., `license-included`, `bring-your-own-license`, `general-public-license`).\n*   `--region`: The AWS region where the RDS instance will be created (e.g., `us-east-1`).\n\n**Example (MySQL db.t3.micro in us-east-1):**\n\n```bash\naws rds create-db-instance \\\n    --db-instance-identifier my-mysql-instance \\\n    --db-instance-class db.t3.micro \\\n    --engine mysql \\\n    --master-username admin \\\n    --master-user-password MyStrongPassword123! \\\n    --allocated-storage 20 \\\n    --vpc-security-group-ids sg-0abcdef1234567890 \\\n    --db-subnet-group-name my-db-subnet-group \\\n    --backup-retention-period 7 \\\n    --no-multi-az \\\n    --engine-version 8.0.28 \\\n    --license-model general-public-license \\\n    --region us-east-1\n```\n\nBefore running this command, ensure you have:\n1.  An existing VPC and subnets.\n2.  A DB subnet group created within your VPC.\n3.  A security group configured to allow inbound traffic to your RDS instance on the appropriate port (e.g., 3306 for MySQL, 5432 for PostgreSQL).\n        "
+            ],
+            "expected_contexts": [
+                "aws rds create-db-instance"
+            ],
+            "ground_truth": "aws rds create-db-instance",
+            "answer_similarity": 83.49,
+            "answer_relevancy": 86.55
+        },
+        {
+            "query": "Create an SNS topic.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand -  aws sns create-topic --name my-new-sns-topic "
+            ],
+            "expected_contexts": [
+                "aws sns create-topic --name <topic-name>"
+            ],
+            "ground_truth": "aws sns create-topic --name <topic-name>",
+            "answer_similarity": 88.99,
+            "answer_relevancy": 86.01
+        },
+        {
+            "query": "Create an SQS queue.",
+            "retrieved_contexts": [
+                "Tool(aws_execute) is trying to create cluster resources. Do you want to continue?\nCommand -  aws sqs create-queue --queue-name my-new-sqs-queue "
+            ],
+            "expected_contexts": [
+                "aws sqs create-queue --queue-name <queue-name>"
+            ],
+            "ground_truth": "aws sqs create-queue --queue-name <queue-name>",
+            "answer_similarity": 88.02,
+            "answer_relevancy": 95.97
+        },
+        {
+            "query": "Create high-CPU alarm for EC2.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws cloudwatch put-metric-alarm"
+            ],
+            "ground_truth": "aws cloudwatch put-metric-alarm",
+            "answer_similarity": 76.25,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Debug RDS connection problems.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws rds describe-db-instances"
+            ],
+            "ground_truth": "aws rds describe-db-instancesaws rds describe-db-security-groups",
+            "answer_similarity": 74.24,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Delete a CloudFormation stack.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws cloudformation delete-stack --stack-name <stack-name>"
+            ],
+            "ground_truth": "aws cloudformation delete-stack --stack-name <stack-name>",
+            "answer_similarity": 73.76,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Delete a CloudWatch alarm.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws cloudwatch delete-alarms --alarm-names <alarm-name>"
+            ],
+            "ground_truth": "aws cloudwatch delete-alarms --alarm-names <alarm-name>",
+            "answer_similarity": 69.25,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Delete a CloudWatch Events rule.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws events delete-rule --name <rule-name>"
+            ],
+            "ground_truth": "aws events delete-rule --name <rule-name>",
+            "answer_similarity": 73.95,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Delete a CodeBuild project.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws codebuild delete-project --name <project-name>"
+            ],
+            "ground_truth": "aws codebuild delete-project --name <project-name>",
+            "answer_similarity": 69.66,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Delete a CodeCommit repository.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws codecommit delete-repository --repository-name <repository-name>"
+            ],
+            "ground_truth": "aws codecommit delete-repository --repository-name <repository-name>",
+            "answer_similarity": 69.98,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Delete a CodeDeploy application.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws codedeploy delete-application --application-name <application-name>"
+            ],
+            "ground_truth": "aws codedeploy delete-application --application-name <application-name>",
+            "answer_similarity": 70.17,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Delete a CodeDeploy deployment group.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws codedeploy delete-deployment-group --application-name <application-name> --deployment-group-name <deployment-group-name>"
+            ],
+            "ground_truth": "aws codedeploy delete-deployment-group --application-name <application-name> --deployment-group-name <deployment-group-name>",
+            "answer_similarity": 69.53,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Delete a Cognito identity pool.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws cognito-identity delete-identity-pool --identity-pool-id <identity-pool-id>"
+            ],
+            "ground_truth": "aws cognito-identity delete-identity-pool --identity-pool-id <identity-pool-id>",
+            "answer_similarity": 68.93,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Delete a Cognito user pool.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws cognito-idp delete-user-pool --user-pool-id <user-pool-id>"
+            ],
+            "ground_truth": "aws cognito-idp delete-user-pool --user-pool-id <user-pool-id>",
+            "answer_similarity": 66.6,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Delete a Cognito user.",
+            "retrieved_contexts": [
+                "\n        To delete a Cognito user, I need the following information:\n\n        1.  **User Pool ID:** The unique identifier for the Amazon Cognito user pool where the user resides.\n        2.  **Username:** The username of the user you wish to delete from the specified user pool.\n\n        Please provide these details so I can execute the `aws cognito-idp admin-delete-user` command.\n        "
+            ],
+            "expected_contexts": [
+                "aws cognito-idp admin-delete-user --user-pool-id <user-pool-id> --username <username>"
+            ],
+            "ground_truth": "aws cognito-idp admin-delete-user --user-pool-id <user-pool-id> --username <username>",
+            "answer_similarity": 92.98,
+            "answer_relevancy": 93.5
+        },
+        {
+            "query": "Delete a DynamoDB table.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws dynamodb delete-table --table-name <table-name>"
+            ],
+            "ground_truth": "aws dynamodb delete-table --table-name <table-name>",
+            "answer_similarity": 74.3,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Delete a Glue crawler.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws glue delete-crawler --name <crawler-name>"
+            ],
+            "ground_truth": "aws glue delete-crawler --name <crawler-name>",
+            "answer_similarity": 69.55,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Delete a Glue database.",
+            "retrieved_contexts": [
+                "I have found multiple configurations for the tool aws_execute, please select the one you are looking for:"
+            ],
+            "expected_contexts": [
+                "aws glue delete-database --name <database-name>"
+            ],
+            "ground_truth": "aws glue delete-database --name <database-name>",
+            "answer_similarity": 71.52,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Delete a Glue table.",
+            "retrieved_contexts": [
+                "\n         To delete a Glue table, the `database-name` and `table-name` are required. These parameters were not specified in your request.\n\nPlease provide the database name and the table name for the Glue table you wish to delete.\n\n**Example AWS CLI command structure:**\n```bash\naws glue delete-table --database-name <YOUR_DATABASE_NAME> --name <YOUR_TABLE_NAME>\n```\n       "
+            ],
+            "expected_contexts": [
+                "aws glue delete-table --database-name <database-name> --name <table-name>"
+            ],
+            "ground_truth": "aws glue delete-table --database-name <database-name> --name <table-name>",
+            "answer_similarity": 93.11,
+            "answer_relevancy": 92.08
+        }
+    ],
+    "summary": {
+        "total_queries": 70,
+        "answer_similarity": 81.52,
+        "answer_relevancy": 43.63,
+        "overall_accuracy": 62.58,
+        "failed_indices_after_retries": []
+    }
+}

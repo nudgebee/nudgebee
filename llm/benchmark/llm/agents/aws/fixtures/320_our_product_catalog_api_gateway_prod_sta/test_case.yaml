@@ -1,0 +1,16 @@
+user_prompt: 'Our product catalog API Gateway ''prod'' stage (API ID: 1gvmgot5u2)
+  in us-east-1 is returning 429 Too Many Requests on all endpoints even with just
+  a few requests per minute. The Lambda backend is healthy. Individual route throttle
+  limits look fine. What''s causing this?'
+expected_output:
+- 'The root cause is that the API Gateway ''prod'' stage has an extremely low stage-default
+  throttle set on all routes (''*/*''): throttlingRateLimit is 1 req/s and throttlingBurstLimit
+  is 1. This catch-all method setting overrides per-route settings and applies to
+  all requests hitting the stage. Any traffic beyond 1 request per second will immediately
+  receive 429 Too Many Requests. The Lambda backend is healthy and not being reached
+  for throttled requests - the throttling happens at the API Gateway layer. The fix
+  is to update the stage default throttle to appropriate values (e.g., 1000 req/s,
+  2000 burst).'
+tags:
+- command
+- aws

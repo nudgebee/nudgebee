@@ -1,0 +1,6 @@
+user_prompt: List only running pods.
+expected_output:
+- kubectl get pods --field-selector=status.phase=Running
+tags:
+- command
+- kubernetes

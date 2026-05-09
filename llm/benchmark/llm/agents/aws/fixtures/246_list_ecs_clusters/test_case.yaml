@@ -1,0 +1,6 @@
+user_prompt: List ECS clusters.
+expected_output:
+- aws ecs list-clusters
+tags:
+- command
+- aws

@@ -1,0 +1,14 @@
+user_prompt: "Show me cost breakdown by cloud account."
+expected_output:
+  - |
+    The agent should call spend_summary with group_by=cloud_account (the
+    default) and return a ranked table with one row per account showing
+    account name, current spend in dollars, previous period spend,
+    percentage change, and any associated estimated savings from open
+    recommendations. The headline should name the top spending account.
+    Cite [spend_summary].
+tags:
+  - spend
+  - account
+  - easy
+  - finops

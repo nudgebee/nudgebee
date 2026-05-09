@@ -1,0 +1,620 @@
+{
+    "Total Queries": 30,
+    "Metrics": {
+        "context_recall": [
+            0.3333333333333333,
+            0.3333333333333333,
+            1.0,
+            0.3333333333333333,
+            0.25,
+            0.3333333333333333,
+            1.0,
+            0.0,
+            1.0,
+            0.3333333333333333,
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            0.5,
+            0.5,
+            1.0,
+            0.5,
+            1.0,
+            0.5,
+            0.0,
+            0.5,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            0.3333333333333333,
+            1.0
+        ],
+        "context_precision": [
+            0.9999999999,
+            0.9999999999,
+            0.0,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.0,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.0,
+            0.9999999999,
+            0.9999999999,
+            0.0,
+            0.0,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999
+        ],
+        "faithfulness": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.7777777777777778,
+            1.0,
+            0.7777777777777778,
+            1.0,
+            1.0,
+            0.9090909090909091,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.8636363636363636,
+            0.8888888888888888
+        ],
+        "answer_relevancy": [
+            0.9168709575136932,
+            0.9391396536629789,
+            0.9885019950614877,
+            0.9134728406612251,
+            0.9457406801223915,
+            0.8535431434280486,
+            0.9100253007078322,
+            0.8954204726304581,
+            0.9597932842052207,
+            0.8350021546332682,
+            0.9141687554855569,
+            0.8970192852586084,
+            0.9644494639832333,
+            0.8826358769998683,
+            0.8860626387191193,
+            0.8385478502707594,
+            0.901228139478678,
+            0.9536371367154254,
+            0.9100159286597002,
+            0.860162836694024,
+            0.8816199874533585,
+            0.9278882551760205,
+            0.9148443108885823,
+            0.9052793305627352,
+            0.8173088585106859,
+            0.8719379741167564,
+            0.8582777341381588,
+            0.8695927638961072,
+            0.9469085451731994,
+            0.9151094479939678
+        ]
+    },
+    "Evaluations": [
+        {
+            "query": "How do I get the logs of a pod in Kubernetes?",
+            "retrieved_contexts": [
+                "Likewise, container\nengines are designed to support logging. The easiest and most adopted logging method for containerized applications is writing to\nstandard output and standard error streams. However, the native functionality provided by a container engine or runtime is usually not enough for a complete logging solution. For example, you may want to access your application's logs if a container crashes, a pod gets evicted, or a node dies. In a cluster, logs should have a separate storage and lifecycle independent of nodes, pods, or containers. This concept is called\ncluster-level logging. Cluster-level logging architectures require a separate backend to store, analyze, and query logs. Kubernetes does not provide a\nnative storage solution for log data. Instead, there are many logging solutions that integrate with Kubernetes. The following sections\ndescribe how to handle and store logs on nodes. Pod and container logs\nKubernetes captures logs from each container in a running Pod. This example uses a manifest for a Pod  with a container that writes text to the standard output stream, once per second. To run this pod, use the following command:\nThe output is:\nTo fetch the logs, use the kubectl logs  command, as follows:\nThe output is similar to:\ndebug/counter-pod.yaml\napiVersion: v1\nkind: Pod\nmetadata:\n  name: counter\nspec:\n  containers:\n  - name: count\n    image: busybox:1.28\n    args: [/bin/sh, -c,\n            'i=0; while true; do echo \"$i: $(date)\"; i=$((i+1)); sleep 1; done']\nkubectl apply -f https://k8s.io/examples/debug/counter-pod.yaml\npod/counter created\nkubectl logs counter\n"
+            ],
+            "expected_contexts": [
+                "To view logs of a running pod, use the `kubectl logs` command. If the pod has multiple containers, specify the container using `-c` flag."
+            ],
+            "generated_answer": "Likewise, container\nengines are designed to support logging. The easiest and most adopted logging method for containerized applications is writing to\nstandard output and standard error streams. However, the native functionality provided by a container engine or runtime is usually not enough for a complete logging solution. For example, you may want to access your application's logs if a container crashes, a pod gets evicted, or a node dies. In a cluster, logs should have a separate storage and lifecycle independent of nodes, pods, or containers. This concept is called\ncluster-level logging. Cluster-level logging architectures require a separate backend to store, analyze, and query logs. Kubernetes does not provide a\nnative storage solution for log data. Instead, there are many logging solutions that integrate with Kubernetes. The following sections\ndescribe how to handle and store logs on nodes. Pod and container logs\nKubernetes captures logs from each container in a running Pod. This example uses a manifest for a Pod  with a container that writes text to the standard output stream, once per second. To run this pod, use the following command:\nThe output is:\nTo fetch the logs, use the kubectl logs  command, as follows:\nThe output is similar to:\ndebug/counter-pod.yaml\napiVersion: v1\nkind: Pod\nmetadata:\n  name: counter\nspec:\n  containers:\n  - name: count\n    image: busybox:1.28\n    args: [/bin/sh, -c,\n            'i=0; while true; do echo \"$i: $(date)\"; i=$((i+1)); sleep 1; done']\nkubectl apply -f https://k8s.io/examples/debug/counter-pod.yaml\npod/counter created\nkubectl logs counter\n",
+            "ground_truth": [
+                [
+                    "Use `kubectl logs <pod-name>` to retrieve the logs of a pod. If the pod has multiple containers, specify the container name using `kubectl logs <pod-name> -c <container-name>`.",
+                    "Ensure that the pod name and container name are correctly specified to view the logs of the desired container."
+                ]
+            ]
+        },
+        {
+            "query": "What is a Kubernetes namespace used for?",
+            "retrieved_contexts": [
+                "3.1.1.4 - Namespaces\nIn Kubernetes, namespaces provides a mechanism for isolating groups of resources within a single cluster. Names of resources need\nto be unique within a namespace, but not across namespaces. Namespace-based scoping is applicable only for namespaced objects\n(e.g. Deployments, Services, etc) and not for cluster-wide objects (e.g."
+            ],
+            "expected_contexts": [
+                "Namespaces help organize Kubernetes resources and allow resource isolation by different teams or projects."
+            ],
+            "generated_answer": "3.1.1.4 - Namespaces\nIn Kubernetes, namespaces provides a mechanism for isolating groups of resources within a single cluster. Names of resources need\nto be unique within a namespace, but not across namespaces. Namespace-based scoping is applicable only for namespaced objects\n(e.g. Deployments, Services, etc) and not for cluster-wide objects (e.g.",
+            "ground_truth": [
+                [
+                    "A Kubernetes namespace is used to partition cluster resources between multiple users. It is useful in environments with many users across multiple teams or projects.",
+                    "Namespaces help organize Kubernetes resources, allowing for resource isolation between different teams or projects in a multi-tenant environment."
+                ]
+            ]
+        },
+        {
+            "query": "How do I scale a deployment in Kubernetes?",
+            "retrieved_contexts": [
+                "When traffic increases, we will need to scale the application to keep up with user demand. If you haven't worked through the earlier sections, start from Using minikube to create a cluster. Scaling is accomplished by changing the number of replicas in a Deployment. Summary:\nScaling a Deployment\nYou can create from the start a Deployment with multiple instances using the --replicas parameter for the kubectl create\ndeployment command\nNote:\nIf you are trying this after the previous section, you may have deleted the Service exposing the Deployment. In that case,\nplease expose the Deployment again using the following command:\nkubectl expose deployment/kubernetes-bootcamp --type=\"NodePort\" --port 8080\nScaling overview\n"
+            ],
+            "expected_contexts": [
+                "You can scale deployments in Kubernetes using `kubectl scale` or updating the YAML configuration."
+            ],
+            "generated_answer": "When traffic increases, we will need to scale the application to keep up with user demand. If you haven't worked through the earlier sections, start from Using minikube to create a cluster. Scaling is accomplished by changing the number of replicas in a Deployment. Summary:\nScaling a Deployment\nYou can create from the start a Deployment with multiple instances using the --replicas parameter for the kubectl create\ndeployment command\nNote:\nIf you are trying this after the previous section, you may have deleted the Service exposing the Deployment. In that case,\nplease expose the Deployment again using the following command:\nkubectl expose deployment/kubernetes-bootcamp --type=\"NodePort\" --port 8080\nScaling overview\n",
+            "ground_truth": [
+                [
+                    "Scale a deployment using `kubectl scale deployment <deployment-name> --replicas=<number>` or by modifying the `spec.replicas` field in the deployment YAML file.",
+                    "Scaling can also be achieved by editing the YAML configuration of the deployment to adjust the number of replicas."
+                ]
+            ]
+        },
+        {
+            "query": "How do I delete a pod in Kubernetes?",
+            "retrieved_contexts": [
+                "kubectl delete pod qos-demo --namespace=qos-example\n"
+            ],
+            "expected_contexts": [
+                "Pods can be deleted using the `kubectl delete` command."
+            ],
+            "generated_answer": "kubectl delete pod qos-demo --namespace=qos-example\n",
+            "ground_truth": [
+                [
+                    "Use `kubectl delete pod <pod-name>` to delete a pod. If you want to delete all pods in a namespace, use `kubectl delete pods --all`.",
+                    "Deleting a pod will cause its managing controller (such as a Deployment or StatefulSet) to automatically recreate it, unless the pod is part of a Job."
+                ]
+            ]
+        },
+        {
+            "query": "What is a Kubernetes service?",
+            "retrieved_contexts": [
+                "3.5.1 - Service\nExpose an application running in your cluster behind a single outward-facing endpoint, even when the\nworkload is split across multiple backends. In Kubernetes, a Service is a method for exposing a network application that is running as one or more Pods in your cluster. A key aim of Services in Kubernetes is that you don't need to modify your existing application to use an unfamiliar service discovery\nmechanism. You can run code in Pods, whether this is a code designed for a cloud-native world, or an older app you've\ncontainerized. You use a Service to make that set of Pods available on the network so that clients can interact with it. If you use a Deployment to run your app, that Deployment can create and destroy Pods dynamically. From one moment to the next,\nyou don't know how many of those Pods are working and healthy; you might not even know what those healthy Pods are named. Kubernetes Pods are created and destroyed to match the desired state of your cluster. Pods are ephemeral resources (you should\nnot expect that an individual Pod is reliable and durable). Each Pod gets its own IP address (Kubernetes expects network plugins to ensure this). For a given Deployment in your cluster, the\nset of Pods running in one moment in time could be different from the set of Pods running that application a moment later. This leads to a problem: if some set of Pods (call them \"backends\") provides functionality to other Pods (call them \"frontends\") inside\nyour cluster, how do the frontends find out and keep track of which IP address to connect to, so that the frontend can use the\nbackend part of the workload? Enter Services. Services in Kubernetes\nThe Service API, part of Kubernetes, is an abstraction to help you expose groups of Pods over a network. Each Service object defines\na logical set of endpoints (usually these endpoints are Pods) along with a policy about how to make those pods accessible."
+            ],
+            "expected_contexts": [
+                "A Service in Kubernetes allows access to a set of pods and enables load balancing across them."
+            ],
+            "generated_answer": "3.5.1 - Service\nExpose an application running in your cluster behind a single outward-facing endpoint, even when the\nworkload is split across multiple backends. In Kubernetes, a Service is a method for exposing a network application that is running as one or more Pods in your cluster. A key aim of Services in Kubernetes is that you don't need to modify your existing application to use an unfamiliar service discovery\nmechanism. You can run code in Pods, whether this is a code designed for a cloud-native world, or an older app you've\ncontainerized. You use a Service to make that set of Pods available on the network so that clients can interact with it. If you use a Deployment to run your app, that Deployment can create and destroy Pods dynamically. From one moment to the next,\nyou don't know how many of those Pods are working and healthy; you might not even know what those healthy Pods are named. Kubernetes Pods are created and destroyed to match the desired state of your cluster. Pods are ephemeral resources (you should\nnot expect that an individual Pod is reliable and durable). Each Pod gets its own IP address (Kubernetes expects network plugins to ensure this). For a given Deployment in your cluster, the\nset of Pods running in one moment in time could be different from the set of Pods running that application a moment later. This leads to a problem: if some set of Pods (call them \"backends\") provides functionality to other Pods (call them \"frontends\") inside\nyour cluster, how do the frontends find out and keep track of which IP address to connect to, so that the frontend can use the\nbackend part of the workload? Enter Services. Services in Kubernetes\nThe Service API, part of Kubernetes, is an abstraction to help you expose groups of Pods over a network. Each Service object defines\na logical set of endpoints (usually these endpoints are Pods) along with a policy about how to make those pods accessible.",
+            "ground_truth": [
+                [
+                    "A Kubernetes Service is an abstraction that defines a logical set of pods and the policies for accessing them. It provides stable network connectivity.",
+                    "Services enable load balancing and expose the pods to other services or external traffic. Different types of services, such as ClusterIP, NodePort, and LoadBalancer, offer various access methods."
+                ]
+            ]
+        },
+        {
+            "query": "How do I expose a deployment externally?",
+            "retrieved_contexts": [
+                "Create another Deployment using the following command:\nThe output should be:\ndeployment.apps/web2 created\n2. Expose the second Deployment:\nThe output should be:\nservice/web2 exposed\nEdit the existing Ingress\n1. Edit the existing example-ingress.yaml  manifest, and add the following lines at the end:\n2. Apply the changes:\nYou should see:\nminikube ip\nNote: Change the IP address to match the output from minikube ip. kubectl create deployment web2 --image=gcr.io/google-samples/hello-app:2.0\nkubectl expose deployment web2 --port=8080 --type=NodePort\n- path: /v2\n  pathType: Prefix\n  backend:\n    service:\n      name: web2\n      port:\n        number: 8080\nkubectl apply -f example-ingress.yaml\n"
+            ],
+            "expected_contexts": [
+                "Services of type `LoadBalancer` or `Ingress` allow external access to Kubernetes workloads."
+            ],
+            "generated_answer": "Create another Deployment using the following command:\nThe output should be:\ndeployment.apps/web2 created\n2. Expose the second Deployment:\nThe output should be:\nservice/web2 exposed\nEdit the existing Ingress\n1. Edit the existing example-ingress.yaml  manifest, and add the following lines at the end:\n2. Apply the changes:\nYou should see:\nminikube ip\nNote: Change the IP address to match the output from minikube ip. kubectl create deployment web2 --image=gcr.io/google-samples/hello-app:2.0\nkubectl expose deployment web2 --port=8080 --type=NodePort\n- path: /v2\n  pathType: Prefix\n  backend:\n    service:\n      name: web2\n      port:\n        number: 8080\nkubectl apply -f example-ingress.yaml\n",
+            "ground_truth": [
+                [
+                    "Expose a deployment externally using `kubectl expose deployment <deployment-name> --type=LoadBalancer --port=<port>`. Use `NodePort` or `Ingress` for different access strategies.",
+                    "The `LoadBalancer` service type will provision an external load balancer, while `NodePort` opens a port on each node in the cluster to allow external access."
+                ]
+            ]
+        },
+        {
+            "query": "What is a ConfigMap in Kubernetes?",
+            "retrieved_contexts": [
+                "4.3.20 - Configure a Pod to Use a ConfigMap\nMany applications rely on configuration which is used during either application initialization or runtime. Most times, there is a\nrequirement to adjust values assigned to configuration parameters. ConfigMaps are a Kubernetes mechanism that let you inject\nconfiguration data into application pods. The ConfigMap concept allow you to decouple configuration artifacts from image content to keep containerized applications\nportable. For example, you can download and run the same container image to spin up containers for the purposes of local\ndevelopment, system test, or running a live end-user workload. This page provides a series of usage examples demonstrating how to create ConfigMaps and configure Pods using data stored in\nConfigMaps. Before you begin\nYou need to have a Kubernetes cluster, and the kubectl command-line tool must be configured to communicate with your cluster. It\nis recommended to run this tutorial on a cluster with at least two nodes that are not acting as control plane hosts. If you do not\nalready have a cluster, you can create one by using minikube or you can use one of these Kubernetes playgrounds:\nKillercoda\nPlay with Kubernetes\nYou need to have the wget  tool installed. If you have a different tool such as curl , and you do not have wget , you will need to\nadapt the step that downloads example data. Create a ConfigMap\nYou can use either kubectl create configmap  or a ConfigMap generator in kustomization.yaml  to create a ConfigMap. Create a ConfigMap using kubectl create configmap\nUse the kubectl create configmap  command to create ConfigMaps from directories, files, or literal values:\nwhere <map-name> is the name you want to assign to the ConfigMap and <data-source> is the directory, file, or literal value to draw\nthe data from. The name of a ConfigMap object must be a valid DNS subdomain name. When you are creating a ConfigMap based on a file, the key in the <data-source> defaults to the basename of the file, and the value\ndefaults to the file content. You can use kubectl describe  or kubectl get  to retrieve information about a ConfigMap. Create a ConfigMap from a directory\nYou can use kubectl create configmap  to create a ConfigMap from multiple files in the same directory. When you are creating a\nConfigMap based on a directory, kubectl identifies files whose filename is a valid key in the directory and packages each of those\nfiles into the new ConfigMap. Any directory entries except regular files are ignored (for example: subdirectories, symlinks, devices,\npipes, and more). kubectl create configmap <map-name> <data-source>\nNote:\nEach filename being used for ConfigMap creation must consist of only acceptable characters, which are: letters ( A  to Z  and a\nto z ), digits ( 0  to 9 ), '-', '_', or '.'. If you use kubectl create configmap  with a directory where any of the file names contains\nan unacceptable character, the kubectl  command may fail. The kubectl  command does not print an error when it encounters an invalid filename."
+            ],
+            "expected_contexts": [
+                "ConfigMaps decouple configuration from application code and can be used for injecting environment variables."
+            ],
+            "generated_answer": "4.3.20 - Configure a Pod to Use a ConfigMap\nMany applications rely on configuration which is used during either application initialization or runtime. Most times, there is a\nrequirement to adjust values assigned to configuration parameters. ConfigMaps are a Kubernetes mechanism that let you inject\nconfiguration data into application pods. The ConfigMap concept allow you to decouple configuration artifacts from image content to keep containerized applications\nportable. For example, you can download and run the same container image to spin up containers for the purposes of local\ndevelopment, system test, or running a live end-user workload. This page provides a series of usage examples demonstrating how to create ConfigMaps and configure Pods using data stored in\nConfigMaps. Before you begin\nYou need to have a Kubernetes cluster, and the kubectl command-line tool must be configured to communicate with your cluster. It\nis recommended to run this tutorial on a cluster with at least two nodes that are not acting as control plane hosts. If you do not\nalready have a cluster, you can create one by using minikube or you can use one of these Kubernetes playgrounds:\nKillercoda\nPlay with Kubernetes\nYou need to have the wget  tool installed. If you have a different tool such as curl , and you do not have wget , you will need to\nadapt the step that downloads example data. Create a ConfigMap\nYou can use either kubectl create configmap  or a ConfigMap generator in kustomization.yaml  to create a ConfigMap. Create a ConfigMap using kubectl create configmap\nUse the kubectl create configmap  command to create ConfigMaps from directories, files, or literal values:\nwhere <map-name> is the name you want to assign to the ConfigMap and <data-source> is the directory, file, or literal value to draw\nthe data from. The name of a ConfigMap object must be a valid DNS subdomain name. When you are creating a ConfigMap based on a file, the key in the <data-source> defaults to the basename of the file, and the value\ndefaults to the file content. You can use kubectl describe  or kubectl get  to retrieve information about a ConfigMap. Create a ConfigMap from a directory\nYou can use kubectl create configmap  to create a ConfigMap from multiple files in the same directory. When you are creating a\nConfigMap based on a directory, kubectl identifies files whose filename is a valid key in the directory and packages each of those\nfiles into the new ConfigMap. Any directory entries except regular files are ignored (for example: subdirectories, symlinks, devices,\npipes, and more). kubectl create configmap <map-name> <data-source>\nNote:\nEach filename being used for ConfigMap creation must consist of only acceptable characters, which are: letters ( A  to Z  and a\nto z ), digits ( 0  to 9 ), '-', '_', or '.'. If you use kubectl create configmap  with a directory where any of the file names contains\nan unacceptable character, the kubectl  command may fail. The kubectl  command does not print an error when it encounters an invalid filename.",
+            "ground_truth": [
+                [
+                    "A ConfigMap is an API object used to store configuration data such as environment variables, command-line arguments, or configuration files.",
+                    "ConfigMaps provide a way to decouple configuration from application code and are often used to inject configuration into pods at runtime."
+                ]
+            ]
+        },
+        {
+            "query": "How do I restart a pod?",
+            "retrieved_contexts": [
+                "Pod level control groups (cgroups) are based on the effective Pod request and limit, the same as the scheduler. Pod restart reasons\nA Pod can restart, causing re-execution of init containers, for the following reasons:\nThe Pod infrastructure container is restarted. This is uncommon and would have to be done by someone with root access to\nnodes. All containers in a Pod are terminated while restartPolicy  is set to Always, forcing a restart, and the init container completion\nrecord has been lost due to garbage collection. The Pod will not be restarted when the init container image is changed, or the init container completion record has been lost due to\ngarbage collection. This applies for Kubernetes v1.20 and later."
+            ],
+            "expected_contexts": [
+                "Pods in Kubernetes restart when deleted or when their associated controllers recreate them."
+            ],
+            "generated_answer": "Pod level control groups (cgroups) are based on the effective Pod request and limit, the same as the scheduler. Pod restart reasons\nA Pod can restart, causing re-execution of init containers, for the following reasons:\nThe Pod infrastructure container is restarted. This is uncommon and would have to be done by someone with root access to\nnodes. All containers in a Pod are terminated while restartPolicy  is set to Always, forcing a restart, and the init container completion\nrecord has been lost due to garbage collection. The Pod will not be restarted when the init container image is changed, or the init container completion record has been lost due to\ngarbage collection. This applies for Kubernetes v1.20 and later.",
+            "ground_truth": [
+                [
+                    "Pods do not restart manually. Instead, delete the pod using `kubectl delete pod <pod-name>`, and the controller (Deployment, StatefulSet, etc.) will recreate it automatically.",
+                    "Alternatively, you can trigger a pod restart by performing a rolling update of the deployment it belongs to."
+                ]
+            ]
+        },
+        {
+            "query": "What is a StatefulSet?",
+            "retrieved_contexts": [
+                "3.4.2.3 - StatefulSets\nA StatefulSet runs a group of Pods, and maintains a sticky identity for each of those Pods. This is useful for\nmanaging applications that need persistent storage or a stable, unique network identity. StatefulSet is the workload API object used to manage stateful applications. Manages the deployment and scaling of a set of Pods, and provides guarantees about the ordering and uniqueness of these Pods. Like a Deployment, a StatefulSet manages Pods that are based on an identical container spec. Unlike a Deployment, a StatefulSet\nmaintains a sticky identity for each of its Pods. These pods are created from the same spec, but are not interchangeable: each has a\npersistent identifier that it maintains across any rescheduling. If you want to use storage volumes to provide persistence for your workload, you can use a StatefulSet as part of the solution. Although individual Pods in a StatefulSet are susceptible to failure, the persistent Pod identifiers make it easier to match existing\nvolumes to the new Pods that replace any that have failed. Using StatefulSets\nStatefulSets are valuable for applications that require one or more of the following. Stable, unique network identifiers."
+            ],
+            "expected_contexts": [
+                "StatefulSets are used for applications requiring persistent identity and storage."
+            ],
+            "generated_answer": "3.4.2.3 - StatefulSets\nA StatefulSet runs a group of Pods, and maintains a sticky identity for each of those Pods. This is useful for\nmanaging applications that need persistent storage or a stable, unique network identity. StatefulSet is the workload API object used to manage stateful applications. Manages the deployment and scaling of a set of Pods, and provides guarantees about the ordering and uniqueness of these Pods. Like a Deployment, a StatefulSet manages Pods that are based on an identical container spec. Unlike a Deployment, a StatefulSet\nmaintains a sticky identity for each of its Pods. These pods are created from the same spec, but are not interchangeable: each has a\npersistent identifier that it maintains across any rescheduling. If you want to use storage volumes to provide persistence for your workload, you can use a StatefulSet as part of the solution. Although individual Pods in a StatefulSet are susceptible to failure, the persistent Pod identifiers make it easier to match existing\nvolumes to the new Pods that replace any that have failed. Using StatefulSets\nStatefulSets are valuable for applications that require one or more of the following. Stable, unique network identifiers.",
+            "ground_truth": [
+                [
+                    "A StatefulSet manages the deployment and scaling of stateful applications, ensuring that each pod has a unique identity and stable storage.",
+                    "StatefulSets provide guarantees about the ordering and uniqueness of pod names, which is important for stateful applications that require stable network identities."
+                ]
+            ]
+        },
+        {
+            "query": "How do I check CPU and memory usage of a pod?",
+            "retrieved_contexts": [
+                "6.11.3.41.2 - kubectl top pod\nSynopsis\nDisplay resource (CPU/memory) usage of pods. The 'top pod' command allows you to see the resource consumption of pods. Due to the metrics pipeline delay, they may be unavailable for a few minutes since pod creation. kubectl top pod [NAME | -l label]\nExamples\n  # Show metrics for all pods in the default namespace\n  kubectl top pod\n  \n  # Show metrics for all pods in the given namespace\n  kubectl top pod --namespace=NAMESPACE\n  \n  # Show metrics for a given pod and its containers\n  kubectl top pod POD_NAME --containers\n  \n  # Show metrics for the pods defined by label name=myLabel\n  kubectl top pod -l name=myLabel\nOptions\n-A, --all-namespaces\nIf present, list the requested object(s) across all namespaces. Namespace in current context is ignored even if specified with --\nnamespace."
+            ],
+            "expected_contexts": [
+                "The `kubectl top pod` command provides real-time resource usage information."
+            ],
+            "generated_answer": "6.11.3.41.2 - kubectl top pod\nSynopsis\nDisplay resource (CPU/memory) usage of pods. The 'top pod' command allows you to see the resource consumption of pods. Due to the metrics pipeline delay, they may be unavailable for a few minutes since pod creation. kubectl top pod [NAME | -l label]\nExamples\n  # Show metrics for all pods in the default namespace\n  kubectl top pod\n  \n  # Show metrics for all pods in the given namespace\n  kubectl top pod --namespace=NAMESPACE\n  \n  # Show metrics for a given pod and its containers\n  kubectl top pod POD_NAME --containers\n  \n  # Show metrics for the pods defined by label name=myLabel\n  kubectl top pod -l name=myLabel\nOptions\n-A, --all-namespaces\nIf present, list the requested object(s) across all namespaces. Namespace in current context is ignored even if specified with --\nnamespace.",
+            "ground_truth": [
+                [
+                    "Use `kubectl top pod <pod-name>` to check CPU and memory usage. Ensure the Metrics Server is running in the cluster.",
+                    "You can also view resource usage through the Kubernetes Dashboard or by querying the resource metrics API."
+                ]
+            ]
+        },
+        {
+            "query": "What is the difference between a DaemonSet and a Deployment?",
+            "retrieved_contexts": [
+                "Pod templates, kubectl ) for daemons and applications. Running daemons in containers with resource limits increases isolation between daemons from app containers. However, this\ncan also be accomplished by running the daemons in a container but not in a Pod. Bare Pods\nIt is possible to create Pods directly which specify a particular node to run on. However, a DaemonSet replaces Pods that are deleted\nor terminated for any reason, such as in the case of node failure or disruptive node maintenance, such as a kernel upgrade. For this\nreason, you should use a DaemonSet rather than creating individual Pods. Static Pods\nIt is possible to create Pods by writing a file to a certain directory watched by Kubelet. These are called static pods. Unlike\nDaemonSet, static Pods cannot be managed with kubectl or other Kubernetes API clients. Static Pods do not depend on the\napiserver, making them useful in cluster bootstrapping cases. Also, static Pods may be deprecated in the future. Deployments\nDaemonSets are similar to Deployments in that they both create Pods, and those Pods have processes which are not expected to\nterminate (e.g. web servers, storage servers). Use a Deployment for stateless services, like frontends, where scaling up and down the number of replicas and rolling out updates\nare more important than controlling exactly which host the Pod runs on. Use a DaemonSet when it is important that a copy of a Pod\nalways run on all or certain hosts, if the DaemonSet provides node-level functionality that allows other Pods to run correctly on that\nparticular node. For example, network plugins often include a component that runs as a DaemonSet. The DaemonSet component makes sure that\nthe node where it's running has working cluster networking. What's next\nLearn about Pods. Learn about static Pods, which are useful for running Kubernetes control plane components. Find out how to use DaemonSets\nPerform a rolling update on a DaemonSet\nPerform a rollback on a DaemonSet (for example, if a roll out didn't work how you expected). Understand how Kubernetes assigns Pods to Nodes. Learn about device plugins and add ons, which often run as DaemonSets. DaemonSet  is a top-level resource in the Kubernetes REST API. Read the DaemonSet object definition to understand the API for\ndaemon sets. "
+            ],
+            "expected_contexts": [
+                "DaemonSets are useful for running node-wide services like logging or monitoring."
+            ],
+            "generated_answer": "Pod templates, kubectl ) for daemons and applications. Running daemons in containers with resource limits increases isolation between daemons from app containers. However, this\ncan also be accomplished by running the daemons in a container but not in a Pod. Bare Pods\nIt is possible to create Pods directly which specify a particular node to run on. However, a DaemonSet replaces Pods that are deleted\nor terminated for any reason, such as in the case of node failure or disruptive node maintenance, such as a kernel upgrade. For this\nreason, you should use a DaemonSet rather than creating individual Pods. Static Pods\nIt is possible to create Pods by writing a file to a certain directory watched by Kubelet. These are called static pods. Unlike\nDaemonSet, static Pods cannot be managed with kubectl or other Kubernetes API clients. Static Pods do not depend on the\napiserver, making them useful in cluster bootstrapping cases. Also, static Pods may be deprecated in the future. Deployments\nDaemonSets are similar to Deployments in that they both create Pods, and those Pods have processes which are not expected to\nterminate (e.g. web servers, storage servers). Use a Deployment for stateless services, like frontends, where scaling up and down the number of replicas and rolling out updates\nare more important than controlling exactly which host the Pod runs on. Use a DaemonSet when it is important that a copy of a Pod\nalways run on all or certain hosts, if the DaemonSet provides node-level functionality that allows other Pods to run correctly on that\nparticular node. For example, network plugins often include a component that runs as a DaemonSet. The DaemonSet component makes sure that\nthe node where it's running has working cluster networking. What's next\nLearn about Pods. Learn about static Pods, which are useful for running Kubernetes control plane components. Find out how to use DaemonSets\nPerform a rolling update on a DaemonSet\nPerform a rollback on a DaemonSet (for example, if a roll out didn't work how you expected). Understand how Kubernetes assigns Pods to Nodes. Learn about device plugins and add ons, which often run as DaemonSets. DaemonSet  is a top-level resource in the Kubernetes REST API. Read the DaemonSet object definition to understand the API for\ndaemon sets. ",
+            "ground_truth": [
+                [
+                    "A Deployment ensures a specified number of replicas are running, while a DaemonSet ensures that a copy of a pod runs on every node.",
+                    "DaemonSets are typically used for deploying system-level applications like monitoring agents or logging daemons."
+                ]
+            ]
+        },
+        {
+            "query": "How do I roll back a deployment?",
+            "retrieved_contexts": [
+                "1. Now you've decided to undo the current rollout and rollback to the previous revision:\nThe output is similar to this:\ndeployment.apps/nginx-deployment rolled back\nAlternatively, you can rollback to a specific revision by specifying it with --to-revision :\nThe output is similar to this:\ndeployment.apps/nginx-deployment rolled back\nFor more details about rollout related commands, read kubectl rollout . The Deployment is now rolled back to a previous stable revision. As you can see, a DeploymentRollback  event for rolling back\nto revision 2 is generated from Deployment controller. 2. Check if the rollback was successful and the Deployment is running as expected, run:\nThe output is similar to this:\nNAME               READY   UP-TO-DATE   AVAILABLE   AGE\nnginx-deployment   3/3     3            3           30m\n3. Get the description of the Deployment:\nkubectl rollout history deployment/nginx-deployment --revision=2\nkubectl rollout undo deployment/nginx-deployment\nkubectl rollout undo deployment/nginx-deployment --to-revision=2\nkubectl get deployment nginx-deployment\n"
+            ],
+            "expected_contexts": [
+                "The `kubectl rollout undo` command enables rollback of a deployment."
+            ],
+            "generated_answer": "1. Now you've decided to undo the current rollout and rollback to the previous revision:\nThe output is similar to this:\ndeployment.apps/nginx-deployment rolled back\nAlternatively, you can rollback to a specific revision by specifying it with --to-revision :\nThe output is similar to this:\ndeployment.apps/nginx-deployment rolled back\nFor more details about rollout related commands, read kubectl rollout . The Deployment is now rolled back to a previous stable revision. As you can see, a DeploymentRollback  event for rolling back\nto revision 2 is generated from Deployment controller. 2. Check if the rollback was successful and the Deployment is running as expected, run:\nThe output is similar to this:\nNAME               READY   UP-TO-DATE   AVAILABLE   AGE\nnginx-deployment   3/3     3            3           30m\n3. Get the description of the Deployment:\nkubectl rollout history deployment/nginx-deployment --revision=2\nkubectl rollout undo deployment/nginx-deployment\nkubectl rollout undo deployment/nginx-deployment --to-revision=2\nkubectl get deployment nginx-deployment\n",
+            "ground_truth": [
+                [
+                    "Use `kubectl rollout undo deployment <deployment-name>` to revert to the previous stable version.",
+                    "The rollback can be triggered based on the revision history, allowing you to easily revert to earlier versions."
+                ]
+            ]
+        },
+        {
+            "query": "What is an Ingress in Kubernetes?",
+            "retrieved_contexts": [
+                "3.5.2 - Ingress\nMake your HTTP (or HTTPS) network service available using a protocol-aware configuration mechanism, that\nunderstands web concepts like URIs, hostnames, paths, and more. The Ingress concept lets you map traffic to\ndifferent backends based on rules you define via the Kubernetes API. FEATURE STATE: Kubernetes v1.19 [stable]\nAn API object that manages external access to the services in a cluster, typically HTTP. Ingress may provide load balancing, SSL termination and name-based virtual hosting. Terminology\nFor clarity, this guide defines the following terms:\nNode: A worker machine in Kubernetes, part of a cluster. Cluster: A set of Nodes that run containerized applications managed by Kubernetes. For this example, and in most common\nKubernetes deployments, nodes in the cluster are not part of the public internet. Edge router: A router that enforces the firewall policy for your cluster. This could be a gateway managed by a cloud provider or\na physical piece of hardware. Cluster network: A set of links, logical or physical, that facilitate communication within a cluster according to the Kubernetes\nnetworking model. Service: A Kubernetes Service that identifies a set of Pods using label selectors."
+            ],
+            "expected_contexts": [
+                "Ingress resources define rules for external access to services."
+            ],
+            "generated_answer": "3.5.2 - Ingress\nMake your HTTP (or HTTPS) network service available using a protocol-aware configuration mechanism, that\nunderstands web concepts like URIs, hostnames, paths, and more. The Ingress concept lets you map traffic to\ndifferent backends based on rules you define via the Kubernetes API. FEATURE STATE: Kubernetes v1.19 [stable]\nAn API object that manages external access to the services in a cluster, typically HTTP. Ingress may provide load balancing, SSL termination and name-based virtual hosting. Terminology\nFor clarity, this guide defines the following terms:\nNode: A worker machine in Kubernetes, part of a cluster. Cluster: A set of Nodes that run containerized applications managed by Kubernetes. For this example, and in most common\nKubernetes deployments, nodes in the cluster are not part of the public internet. Edge router: A router that enforces the firewall policy for your cluster. This could be a gateway managed by a cloud provider or\na physical piece of hardware. Cluster network: A set of links, logical or physical, that facilitate communication within a cluster according to the Kubernetes\nnetworking model. Service: A Kubernetes Service that identifies a set of Pods using label selectors.",
+            "ground_truth": [
+                [
+                    "An Ingress is an API object that manages external access to services within a cluster, typically via HTTP/HTTPS routing.",
+                    "Ingress allows you to define rules for routing external HTTP(S) traffic to services in your cluster, enabling features like load balancing and SSL termination."
+                ]
+            ]
+        },
+        {
+            "query": "How do I check events in a Kubernetes cluster?",
+            "retrieved_contexts": [
+                "6.11.3.22 - kubectl events\nSynopsis\nDisplay events. Prints a table of the most important information about events. You can request events for a namespace, for all namespace, or\nfiltered to only those pertaining to a specified resource. kubectl events [(-o|--output=)json|yaml|name|go-template|go-template-file|template|templatefile|jsonpath|jsonpath-a\nExamples\n  # List recent events in the default namespace\n  kubectl events\n  \n  # List recent events in all namespaces\n  kubectl events --all-namespaces\n  \n  # List recent events for the specified pod, then wait for more events and list them as they arrive\n  kubectl events --for pod/web-pod-13je7 --watch\n  \n  # List recent events in YAML format\n  kubectl events -oyaml\n  \n  # List recent only events of type 'Warning' or 'Normal'\n  kubectl events --types=Warning,Normal\nOptions\n-A, --all-namespaces\nIf present, list the requested object(s) across all namespaces. Namespace in current context is ignored even if specified with --\nnamespace. --allow-missing-template-keys\u00a0\u00a0\u00a0\u00a0\u00a0Default: true\nIf true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath\noutput formats. --chunk-size int\u00a0\u00a0\u00a0\u00a0\u00a0Default: 500\nReturn large lists in chunks rather than all at once. Pass 0 to disable."
+            ],
+            "expected_contexts": [
+                "Events provide information about resource changes and errors."
+            ],
+            "generated_answer": "6.11.3.22 - kubectl events\nSynopsis\nDisplay events. Prints a table of the most important information about events. You can request events for a namespace, for all namespace, or\nfiltered to only those pertaining to a specified resource. kubectl events [(-o|--output=)json|yaml|name|go-template|go-template-file|template|templatefile|jsonpath|jsonpath-a\nExamples\n  # List recent events in the default namespace\n  kubectl events\n  \n  # List recent events in all namespaces\n  kubectl events --all-namespaces\n  \n  # List recent events for the specified pod, then wait for more events and list them as they arrive\n  kubectl events --for pod/web-pod-13je7 --watch\n  \n  # List recent events in YAML format\n  kubectl events -oyaml\n  \n  # List recent only events of type 'Warning' or 'Normal'\n  kubectl events --types=Warning,Normal\nOptions\n-A, --all-namespaces\nIf present, list the requested object(s) across all namespaces. Namespace in current context is ignored even if specified with --\nnamespace. --allow-missing-template-keys\u00a0\u00a0\u00a0\u00a0\u00a0Default: true\nIf true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath\noutput formats. --chunk-size int\u00a0\u00a0\u00a0\u00a0\u00a0Default: 500\nReturn large lists in chunks rather than all at once. Pass 0 to disable.",
+            "ground_truth": [
+                [
+                    "Use `kubectl get events --sort-by=.metadata.creationTimestamp` to see recent events in a cluster.",
+                    "Events in Kubernetes provide insights into resource changes, such as pod crashes, deployments, and other important status changes."
+                ]
+            ]
+        },
+        {
+            "query": "How do I get the YAML of an existing resource?",
+            "retrieved_contexts": [
+                "kubectl get <kind>/<name> -o yaml > <kind>_<name>.yaml\n"
+            ],
+            "expected_contexts": [
+                "The `-o yaml` flag outputs resources in YAML format."
+            ],
+            "generated_answer": "kubectl get <kind>/<name> -o yaml > <kind>_<name>.yaml\n",
+            "ground_truth": [
+                [
+                    "Use `kubectl get <resource-type> <resource-name> -o yaml` to retrieve the YAML definition of a resource.",
+                    "You can also use `kubectl get <resource-type> <resource-name> -o json` to get the resource definition in JSON format."
+                ]
+            ]
+        },
+        {
+            "query": "How do I restart a deployment?",
+            "retrieved_contexts": [
+                "6.11.3.36.3 - kubectl rollout restart\nSynopsis\nRestart a resource. Resource rollout will be restarted. kubectl rollout restart RESOURCE\nExamples\n  # Restart all deployments in test-namespace namespace\n  kubectl rollout restart deployment -n test-namespace\n  \n  # Restart a deployment\n  kubectl rollout restart deployment/nginx\n  \n  # Restart a daemon set\n  kubectl rollout restart daemonset/abc\n  \n  # Restart deployments with the app=nginx label\n  kubectl rollout restart deployment --selector=app=nginx\nOptions\n--allow-missing-template-keys\u00a0\u00a0\u00a0\u00a0\u00a0Default: true\nIf true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath\noutput formats. --field-manager string\u00a0\u00a0\u00a0\u00a0\u00a0Default: \"kubectl-rollout\"\nName of the manager used to track field ownership. -f, --filename strings\nFilename, directory, or URL to files identifying the resource to get from a server. -h, --help\nhelp for restart\n-k, --kustomize string\nProcess the kustomization directory. This flag can't be used together with -f or -R. -o, --output string\nOutput format. One of: (json, yaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json,\njsonpath-file)."
+            ],
+            "expected_contexts": [
+                "Rolling restarts are managed by the `kubectl rollout restart` command."
+            ],
+            "generated_answer": "6.11.3.36.3 - kubectl rollout restart\nSynopsis\nRestart a resource. Resource rollout will be restarted. kubectl rollout restart RESOURCE\nExamples\n  # Restart all deployments in test-namespace namespace\n  kubectl rollout restart deployment -n test-namespace\n  \n  # Restart a deployment\n  kubectl rollout restart deployment/nginx\n  \n  # Restart a daemon set\n  kubectl rollout restart daemonset/abc\n  \n  # Restart deployments with the app=nginx label\n  kubectl rollout restart deployment --selector=app=nginx\nOptions\n--allow-missing-template-keys\u00a0\u00a0\u00a0\u00a0\u00a0Default: true\nIf true, ignore any errors in templates when a field or map key is missing in the template. Only applies to golang and jsonpath\noutput formats. --field-manager string\u00a0\u00a0\u00a0\u00a0\u00a0Default: \"kubectl-rollout\"\nName of the manager used to track field ownership. -f, --filename strings\nFilename, directory, or URL to files identifying the resource to get from a server. -h, --help\nhelp for restart\n-k, --kustomize string\nProcess the kustomization directory. This flag can't be used together with -f or -R. -o, --output string\nOutput format. One of: (json, yaml, name, go-template, go-template-file, template, templatefile, jsonpath, jsonpath-as-json,\njsonpath-file).",
+            "ground_truth": [
+                [
+                    "Restart a deployment by running `kubectl rollout restart deployment <deployment-name>`.",
+                    "This will trigger a rolling restart of all pods associated with the deployment."
+                ]
+            ]
+        },
+        {
+            "query": "How do I check logs of a failed pod?",
+            "retrieved_contexts": [
+                "Examining pod logs\nFirst, look at the logs of the affected container:\nIf your container has previously crashed, you can access the previous container's crash log with:\n          expirationSeconds: 3607\n          path: token\n      - configMap:\n          items:\n          - key: ca.crt\n            path: ca.crt\n          name: kube-root-ca.crt\n      - downwardAPI:\n          items:\n          - fieldRef:\n              apiVersion: v1\n              fieldPath: metadata.namespace\n            path: namespace\nstatus:\n  conditions:\n  - lastProbeTime: null\n    lastTransitionTime: \"2022-02-17T21:51:01Z\"\n    status: \"True\"\n    type: Initialized\n  - lastProbeTime: null\n    lastTransitionTime: \"2022-02-17T21:51:06Z\"\n    status: \"True\"\n    type: Ready\n  - lastProbeTime: null\n    lastTransitionTime: \"2022-02-17T21:51:06Z\"\n    status: \"True\"\n    type: ContainersReady\n  - lastProbeTime: null\n    lastTransitionTime: \"2022-02-17T21:51:01Z\"\n    status: \"True\"\n    type: PodScheduled\n  containerStatuses:\n  - containerID: containerd://5403af59a2b46ee5a23fb0ae4b1e077f7ca5c5fb7af16e1ab21c00e0e616462a\n    image: docker.io/library/nginx:latest\n    imageID: docker.io/library/nginx@sha256:2834dc507516af02784808c5f48b7cbe38b8ed5d0f4837f16e78d00deb7e7767\n    lastState: {}\n    name: nginx\n    ready: true\n    restartCount: 0\n    started: true\n    state:\n      running:\n        startedAt: \"2022-02-17T21:51:05Z\"\n  hostIP: 192.168.0.113\n  phase: Running\n  podIP: 10.88.0.3\n  podIPs:\n  - ip: 10.88.0.3\n  - ip: 2001:db8::1\n  qosClass: Guaranteed\n  startTime: \"2022-02-17T21:51:01Z\"\nkubectl logs ${POD_NAME} ${CONTAINER_NAME}\n"
+            ],
+            "expected_contexts": [
+                "The `--previous` flag allows viewing logs of a terminated container."
+            ],
+            "generated_answer": "Examining pod logs\nFirst, look at the logs of the affected container:\nIf your container has previously crashed, you can access the previous container's crash log with:\n          expirationSeconds: 3607\n          path: token\n      - configMap:\n          items:\n          - key: ca.crt\n            path: ca.crt\n          name: kube-root-ca.crt\n      - downwardAPI:\n          items:\n          - fieldRef:\n              apiVersion: v1\n              fieldPath: metadata.namespace\n            path: namespace\nstatus:\n  conditions:\n  - lastProbeTime: null\n    lastTransitionTime: \"2022-02-17T21:51:01Z\"\n    status: \"True\"\n    type: Initialized\n  - lastProbeTime: null\n    lastTransitionTime: \"2022-02-17T21:51:06Z\"\n    status: \"True\"\n    type: Ready\n  - lastProbeTime: null\n    lastTransitionTime: \"2022-02-17T21:51:06Z\"\n    status: \"True\"\n    type: ContainersReady\n  - lastProbeTime: null\n    lastTransitionTime: \"2022-02-17T21:51:01Z\"\n    status: \"True\"\n    type: PodScheduled\n  containerStatuses:\n  - containerID: containerd://5403af59a2b46ee5a23fb0ae4b1e077f7ca5c5fb7af16e1ab21c00e0e616462a\n    image: docker.io/library/nginx:latest\n    imageID: docker.io/library/nginx@sha256:2834dc507516af02784808c5f48b7cbe38b8ed5d0f4837f16e78d00deb7e7767\n    lastState: {}\n    name: nginx\n    ready: true\n    restartCount: 0\n    started: true\n    state:\n      running:\n        startedAt: \"2022-02-17T21:51:05Z\"\n  hostIP: 192.168.0.113\n  phase: Running\n  podIP: 10.88.0.3\n  podIPs:\n  - ip: 10.88.0.3\n  - ip: 2001:db8::1\n  qosClass: Guaranteed\n  startTime: \"2022-02-17T21:51:01Z\"\nkubectl logs ${POD_NAME} ${CONTAINER_NAME}\n",
+            "ground_truth": [
+                [
+                    "Use `kubectl logs <pod-name> --previous` to check logs from a terminated container.",
+                    "This is useful for debugging pod failures as it allows access to the logs of previously terminated containers in the pod."
+                ]
+            ]
+        },
+        {
+            "query": "What is a Horizontal Pod Autoscaler?",
+            "retrieved_contexts": [
+                "API Object\nThe Horizontal Pod Autoscaler is an API resource in the Kubernetes autoscaling  API group. The current stable version can be found\nin the autoscaling/v2  API version which includes support for scaling on memory and custom metrics. The new fields introduced in\nautoscaling/v2  are preserved as annotations when working with autoscaling/v1 . When you create a HorizontalPodAutoscaler API object, make sure the name specified is a valid DNS subdomain name. More details\nabout the API object can be found at HorizontalPodAutoscaler Object. Stability of workload scale\nWhen managing the scale of a group of replicas using the HorizontalPodAutoscaler, it is possible that the number of replicas keeps\nfluctuating frequently due to the dynamic nature of the metrics evaluated. This is sometimes referred to as thrashing, or flapping. It's\nsimilar to the concept of hysteresis in cybernetics. Autoscaling during rolling update\nKubernetes lets you perform a rolling update on a Deployment. In that case, the Deployment manages the underlying ReplicaSets\nfor you."
+            ],
+            "expected_contexts": [
+                "HPA scales workloads dynamically based on resource usage."
+            ],
+            "generated_answer": "API Object\nThe Horizontal Pod Autoscaler is an API resource in the Kubernetes autoscaling  API group. The current stable version can be found\nin the autoscaling/v2  API version which includes support for scaling on memory and custom metrics. The new fields introduced in\nautoscaling/v2  are preserved as annotations when working with autoscaling/v1 . When you create a HorizontalPodAutoscaler API object, make sure the name specified is a valid DNS subdomain name. More details\nabout the API object can be found at HorizontalPodAutoscaler Object. Stability of workload scale\nWhen managing the scale of a group of replicas using the HorizontalPodAutoscaler, it is possible that the number of replicas keeps\nfluctuating frequently due to the dynamic nature of the metrics evaluated. This is sometimes referred to as thrashing, or flapping. It's\nsimilar to the concept of hysteresis in cybernetics. Autoscaling during rolling update\nKubernetes lets you perform a rolling update on a Deployment. In that case, the Deployment manages the underlying ReplicaSets\nfor you.",
+            "ground_truth": [
+                [
+                    "HPA automatically scales the number of pods in a deployment based on CPU or memory usage using `kubectl autoscale deployment <deployment-name> --cpu-percent=<threshold> --min=<min-replicas> --max=<max-replicas>`.",
+                    "The Horizontal Pod Autoscaler ensures that the right number of pods are running to meet demand without manual intervention."
+                ]
+            ]
+        },
+        {
+            "query": "What is a Persistent Volume?",
+            "retrieved_contexts": [
+                "Introduction\nManaging storage is a distinct problem from managing compute instances. The PersistentVolume subsystem provides an API for\nusers and administrators that abstracts details of how storage is provided from how it is consumed. To do this, we introduce two\nnew API resources: PersistentVolume and PersistentVolumeClaim. A PersistentVolume (PV) is a piece of storage in the cluster that has been provisioned by an administrator or dynamically provisioned\nusing Storage Classes. It is a resource in the cluster just like a node is a cluster resource. PVs are volume plugins like Volumes, but\nhave a lifecycle independent of any individual Pod that uses the PV. This API object captures the details of the implementation of the\nstorage, be that NFS, iSCSI, or a cloud-provider-specific storage system. A PersistentVolumeClaim (PVC) is a request for storage by a user. It is similar to a Pod. Pods consume node resources and PVCs\nconsume PV resources. Pods can request specific levels of resources (CPU and Memory). Claims can request specific size and access\nmodes (e.g., they can be mounted ReadWriteOnce, ReadOnlyMany, ReadWriteMany, or ReadWriteOncePod, see AccessModes). While PersistentVolumeClaims allow a user to consume abstract storage resources, it is common that users need PersistentVolumes\nwith varying properties, such as performance, for different problems. Cluster administrators need to be able to offer a variety of\nPersistentVolumes that differ in more ways than size and access modes, without exposing users to the details of how those volumes\nare implemented. For these needs, there is the StorageClass resource."
+            ],
+            "expected_contexts": [
+                "PVs abstract storage and allow data persistence across pod restarts."
+            ],
+            "generated_answer": "Introduction\nManaging storage is a distinct problem from managing compute instances. The PersistentVolume subsystem provides an API for\nusers and administrators that abstracts details of how storage is provided from how it is consumed. To do this, we introduce two\nnew API resources: PersistentVolume and PersistentVolumeClaim. A PersistentVolume (PV) is a piece of storage in the cluster that has been provisioned by an administrator or dynamically provisioned\nusing Storage Classes. It is a resource in the cluster just like a node is a cluster resource. PVs are volume plugins like Volumes, but\nhave a lifecycle independent of any individual Pod that uses the PV. This API object captures the details of the implementation of the\nstorage, be that NFS, iSCSI, or a cloud-provider-specific storage system. A PersistentVolumeClaim (PVC) is a request for storage by a user. It is similar to a Pod. Pods consume node resources and PVCs\nconsume PV resources. Pods can request specific levels of resources (CPU and Memory). Claims can request specific size and access\nmodes (e.g., they can be mounted ReadWriteOnce, ReadOnlyMany, ReadWriteMany, or ReadWriteOncePod, see AccessModes). While PersistentVolumeClaims allow a user to consume abstract storage resources, it is common that users need PersistentVolumes\nwith varying properties, such as performance, for different problems. Cluster administrators need to be able to offer a variety of\nPersistentVolumes that differ in more ways than size and access modes, without exposing users to the details of how those volumes\nare implemented. For these needs, there is the StorageClass resource.",
+            "ground_truth": [
+                [
+                    "A Persistent Volume (PV) is a piece of storage provisioned by an administrator and managed by Kubernetes.",
+                    "PVs allow data to persist beyond the lifecycle of individual pods, enabling stateful applications to store data reliably."
+                ]
+            ]
+        },
+        {
+            "query": "How do I check the status of a node?",
+            "retrieved_contexts": [
+                "6.8.5 - Node Status\nThe status of a node in Kubernetes is a critical aspect of managing a Kubernetes cluster. In this article, we'll cover the basics of\nmonitoring and maintaining node status to ensure a healthy and stable cluster. Node status fields\nA Node's status contains the following information:\nAddresses\nConditions\nCapacity and Allocatable\nInfo\nYou can use kubectl  to view a Node's status and other details:\nEach section of the output is described below. Addresses\nThe usage of these fields varies depending on your cloud provider or bare metal configuration. HostName: The hostname as reported by the node's kernel. Can be overridden via the kubelet --hostname-override\nparameter. ExternalIP: Typically the IP address of the node that is externally routable (available from outside the cluster). InternalIP: Typically the IP address of the node that is routable only within the cluster."
+            ],
+            "expected_contexts": [
+                "Nodes in Kubernetes can be checked using `kubectl get nodes`."
+            ],
+            "generated_answer": "6.8.5 - Node Status\nThe status of a node in Kubernetes is a critical aspect of managing a Kubernetes cluster. In this article, we'll cover the basics of\nmonitoring and maintaining node status to ensure a healthy and stable cluster. Node status fields\nA Node's status contains the following information:\nAddresses\nConditions\nCapacity and Allocatable\nInfo\nYou can use kubectl  to view a Node's status and other details:\nEach section of the output is described below. Addresses\nThe usage of these fields varies depending on your cloud provider or bare metal configuration. HostName: The hostname as reported by the node's kernel. Can be overridden via the kubelet --hostname-override\nparameter. ExternalIP: Typically the IP address of the node that is externally routable (available from outside the cluster). InternalIP: Typically the IP address of the node that is routable only within the cluster.",
+            "ground_truth": [
+                [
+                    "Use `kubectl get nodes` to list nodes and `kubectl describe node <node-name>` for detailed information.",
+                    "You can also use `kubectl get nodes -o wide` to get additional information about the nodes, such as their IP addresses and kernel version."
+                ]
+            ]
+        },
+        {
+            "query": "How do I update an existing ConfigMap?",
+            "retrieved_contexts": [
+                "fieldManager (in query): string\nfieldManager\nfieldValidation (in query): string\nfieldValidation\npretty (in query): string\npretty\nResponse\n200 (ConfigMap): OK\n201 (ConfigMap): Created\n401: Unauthorized\npatch partially update the specified ConfigMap\nHTTP Request\nPATCH /api/v1/namespaces/{namespace}/configmaps/{name}\nParameters\nname (in path): string, required\nname of the ConfigMap\nnamespace (in path): string, required\nnamespace\nbody: Patch, required\ndryRun (in query): string\ndryRun\nfieldManager (in query): string\nfieldManager\nfieldValidation (in query): string\nfieldValidation\nforce (in query): boolean\nforce\npretty (in query): string\npretty\nResponse\n200 (ConfigMap): OK\n201 (ConfigMap): Created\n401: Unauthorized\n"
+            ],
+            "expected_contexts": [
+                "ConfigMaps can be updated dynamically using `kubectl edit` or by reapplying the updated file."
+            ],
+            "generated_answer": "fieldManager (in query): string\nfieldManager\nfieldValidation (in query): string\nfieldValidation\npretty (in query): string\npretty\nResponse\n200 (ConfigMap): OK\n201 (ConfigMap): Created\n401: Unauthorized\npatch partially update the specified ConfigMap\nHTTP Request\nPATCH /api/v1/namespaces/{namespace}/configmaps/{name}\nParameters\nname (in path): string, required\nname of the ConfigMap\nnamespace (in path): string, required\nnamespace\nbody: Patch, required\ndryRun (in query): string\ndryRun\nfieldManager (in query): string\nfieldManager\nfieldValidation (in query): string\nfieldValidation\nforce (in query): boolean\nforce\npretty (in query): string\npretty\nResponse\n200 (ConfigMap): OK\n201 (ConfigMap): Created\n401: Unauthorized\n",
+            "ground_truth": [
+                [
+                    "Edit a ConfigMap using `kubectl edit configmap <configmap-name>` or replace it using `kubectl apply -f <configmap-file>`.",
+                    "Updating a ConfigMap allows you to change configuration data without restarting the application pods, as long as they are configured to watch for changes."
+                ]
+            ]
+        },
+        {
+            "query": "How do I add a new user to a Kubernetes cluster?",
+            "retrieved_contexts": [
+                "Export the issued certificate from the CertificateSigningRequest. Create Role and RoleBinding\nWith the certificate created it is time to define the Role and RoleBinding for this user to access Kubernetes cluster resources. This is a sample command to create a Role for this new user:\nThis is a sample command to create a RoleBinding for this new user:\nAdd to kubeconfig\nThe last step is to add this user into the kubeconfig file. First, you need to add new credentials:\nThen, you need to add the context:\nTo test it, change the context to myuser :\nWhat's next\nRead Manage TLS Certificates in a Cluster\nView the source code for the kube-controller-manager built in signer\nView the source code for the kube-controller-manager built in approver\nkubectl certificate approve myuser\nkubectl get csr/myuser -o yaml\nkubectl get csr myuser -o jsonpath='{.status.certificate}'| base64 -d > myuser.crt\nkubectl create role developer --verb=create --verb=get --verb=list --verb=update --verb=delete --resource=pods\nkubectl create rolebinding developer-binding-myuser --role=developer --user=myuser\nkubectl config set-credentials myuser --client-key=myuser.key --client-certificate=myuser.crt --embed-certs=true\nkubectl config set-context myuser --cluster=kubernetes --user=myuser\nkubectl config use-context myuser\n"
+            ],
+            "expected_contexts": [
+                "Kubernetes service accounts provide a way to manage access to the cluster for different users."
+            ],
+            "generated_answer": "Export the issued certificate from the CertificateSigningRequest. Create Role and RoleBinding\nWith the certificate created it is time to define the Role and RoleBinding for this user to access Kubernetes cluster resources. This is a sample command to create a Role for this new user:\nThis is a sample command to create a RoleBinding for this new user:\nAdd to kubeconfig\nThe last step is to add this user into the kubeconfig file. First, you need to add new credentials:\nThen, you need to add the context:\nTo test it, change the context to myuser :\nWhat's next\nRead Manage TLS Certificates in a Cluster\nView the source code for the kube-controller-manager built in signer\nView the source code for the kube-controller-manager built in approver\nkubectl certificate approve myuser\nkubectl get csr/myuser -o yaml\nkubectl get csr myuser -o jsonpath='{.status.certificate}'| base64 -d > myuser.crt\nkubectl create role developer --verb=create --verb=get --verb=list --verb=update --verb=delete --resource=pods\nkubectl create rolebinding developer-binding-myuser --role=developer --user=myuser\nkubectl config set-credentials myuser --client-key=myuser.key --client-certificate=myuser.crt --embed-certs=true\nkubectl config set-context myuser --cluster=kubernetes --user=myuser\nkubectl config use-context myuser\n",
+            "ground_truth": [
+                [
+                    "Add a new user by creating a Kubernetes service account with `kubectl create serviceaccount <user-name>`.",
+                    "To give the user specific roles, bind them to a role or role binding using `kubectl create rolebinding`."
+                ]
+            ]
+        },
+        {
+            "query": "What is a RoleBinding?",
+            "retrieved_contexts": [
+                "6.5.5.8 - RoleBinding\nRoleBinding references a role, but does not contain it. apiVersion: rbac.authorization.k8s.io/v1\nimport \"k8s.io/api/rbac/v1\"\nRoleBinding\nRoleBinding references a role, but does not contain it. It can reference a Role in the same namespace or a ClusterRole in the global\nnamespace. It adds who information via Subjects and namespace information by which namespace it exists in. RoleBindings in a\ngiven namespace only have effect in that namespace. apiVersion: rbac.authorization.k8s.io/v1\nkind: RoleBinding\nmetadata (ObjectMeta)\nStandard object's metadata. roleRef (RoleRef), required\nRoleRef can reference a Role in the current namespace or a ClusterRole in the global namespace. If the RoleRef cannot be\nresolved, the Authorizer must return an error. This field is immutable. RoleRef contains information that points to the role being used\nroleRef.apiGroup (string), required\nAPIGroup is the group for the resource being referenced\nroleRef.kind (string), required\nKind is the type of resource being referenced\nroleRef.name (string), required\nName is the name of resource being referenced\nsubjects ([]Subject)\nSubjects holds references to the objects the role applies to. Subject contains a reference to the object or user identities a role binding applies to. This can either hold a direct API object reference,\nor a value for non-objects such as user and group names. subjects.kind (string), required\nKind of object being referenced. Values defined by this API group are \"User\", \"Group\", and \"ServiceAccount\". If the\nAuthorizer does not recognized the kind value, the Authorizer should report an error. subjects.name (string), required\nName of the object being referenced. subjects.apiGroup (string)\nAPIGroup holds the API group of the referenced subject. Defaults to \"\" for ServiceAccount subjects. Defaults to\n\"rbac.authorization.k8s.io\" for User and Group subjects. subjects.namespace (string)\nNamespace of the referenced object. If the object kind is non-namespace, such as \"User\" or \"Group\", and this value is not\nempty the Authorizer should report an error."
+            ],
+            "expected_contexts": [
+                "RoleBindings are used to grant users or service accounts access to cluster resources."
+            ],
+            "generated_answer": "6.5.5.8 - RoleBinding\nRoleBinding references a role, but does not contain it. apiVersion: rbac.authorization.k8s.io/v1\nimport \"k8s.io/api/rbac/v1\"\nRoleBinding\nRoleBinding references a role, but does not contain it. It can reference a Role in the same namespace or a ClusterRole in the global\nnamespace. It adds who information via Subjects and namespace information by which namespace it exists in. RoleBindings in a\ngiven namespace only have effect in that namespace. apiVersion: rbac.authorization.k8s.io/v1\nkind: RoleBinding\nmetadata (ObjectMeta)\nStandard object's metadata. roleRef (RoleRef), required\nRoleRef can reference a Role in the current namespace or a ClusterRole in the global namespace. If the RoleRef cannot be\nresolved, the Authorizer must return an error. This field is immutable. RoleRef contains information that points to the role being used\nroleRef.apiGroup (string), required\nAPIGroup is the group for the resource being referenced\nroleRef.kind (string), required\nKind is the type of resource being referenced\nroleRef.name (string), required\nName is the name of resource being referenced\nsubjects ([]Subject)\nSubjects holds references to the objects the role applies to. Subject contains a reference to the object or user identities a role binding applies to. This can either hold a direct API object reference,\nor a value for non-objects such as user and group names. subjects.kind (string), required\nKind of object being referenced. Values defined by this API group are \"User\", \"Group\", and \"ServiceAccount\". If the\nAuthorizer does not recognized the kind value, the Authorizer should report an error. subjects.name (string), required\nName of the object being referenced. subjects.apiGroup (string)\nAPIGroup holds the API group of the referenced subject. Defaults to \"\" for ServiceAccount subjects. Defaults to\n\"rbac.authorization.k8s.io\" for User and Group subjects. subjects.namespace (string)\nNamespace of the referenced object. If the object kind is non-namespace, such as \"User\" or \"Group\", and this value is not\nempty the Authorizer should report an error.",
+            "ground_truth": [
+                [
+                    "A RoleBinding grants the permissions defined in a Role to a user or set of users in a namespace.",
+                    "It is used to assign roles to specific service accounts or users within the Kubernetes cluster."
+                ]
+            ]
+        },
+        {
+            "query": "What is a Secret in Kubernetes?",
+            "retrieved_contexts": [
+                "3.8.9 - Good practices for Kubernetes Secrets\nPrinciples and practices for good Secret management for cluster administrators and application developers. In Kubernetes, a Secret is an object that stores sensitive information, such as passwords, OAuth tokens, and SSH keys. Secrets give you more control over how sensitive information is used and reduces the risk of accidental exposure. Secret values are\nencoded as base64 strings and are stored unencrypted by default, but can be configured to be encrypted at rest. A Pod can reference the Secret in a variety of ways, such as in a volume mount or as an environment variable. Secrets are designed\nfor confidential data and ConfigMaps are designed for non-confidential data. The following good practices are intended for both cluster administrators and application developers."
+            ],
+            "expected_contexts": [
+                "Secrets are used to store sensitive data securely in Kubernetes."
+            ],
+            "generated_answer": "3.8.9 - Good practices for Kubernetes Secrets\nPrinciples and practices for good Secret management for cluster administrators and application developers. In Kubernetes, a Secret is an object that stores sensitive information, such as passwords, OAuth tokens, and SSH keys. Secrets give you more control over how sensitive information is used and reduces the risk of accidental exposure. Secret values are\nencoded as base64 strings and are stored unencrypted by default, but can be configured to be encrypted at rest. A Pod can reference the Secret in a variety of ways, such as in a volume mount or as an environment variable. Secrets are designed\nfor confidential data and ConfigMaps are designed for non-confidential data. The following good practices are intended for both cluster administrators and application developers.",
+            "ground_truth": [
+                [
+                    "A Secret in Kubernetes stores sensitive data such as passwords, OAuth tokens, or SSH keys.",
+                    "Secrets are stored in base64 encoding and can be used in Pods to provide environment variables or mounted as volumes."
+                ]
+            ]
+        },
+        {
+            "query": "How do I configure a pod to run with elevated privileges?",
+            "retrieved_contexts": [
+                "Limit ranges restrict the maximum or minimum size of some of the resources above, to prevent users from requesting unreasonably\nhigh or low values for commonly reserved resources like memory, or to provide default limits when none are specified. Controlling what privileges containers run with\nA pod definition contains a security context that allows it to request access to run as a specific Linux user on a node (like root),\naccess to run privileged or access the host network, and other controls that would otherwise allow it to run unfettered on a hosting\nnode. You can configure Pod security admission to enforce use of a particular Pod Security Standard in a namespace, or to detect\nbreaches. Generally, most application workloads need limited access to host resources so they can successfully run as a root process (uid 0)\nwithout access to host information. However, considering the privileges associated with the root user, you should write application\ncontainers to run as a non-root user. Similarly, administrators who wish to prevent client applications from escaping their containers\nshould apply the Baseline or Restricted Pod Security Standard. Preventing containers from loading unwanted kernel modules\nThe Linux kernel automatically loads kernel modules from disk if needed in certain circumstances, such as when a piece of hardware\nis attached or a filesystem is mounted. Of particular relevance to Kubernetes, even unprivileged processes can cause certain\nnetwork-protocol-related kernel modules to be loaded, just by creating a socket of the appropriate type. This may allow an attacker\nto exploit a security hole in a kernel module that the administrator assumed was not in use. To prevent specific modules from being automatically loaded, you can uninstall them from the node, or add rules to block them. On\nmost Linux distributions, you can do that by creating a file such as /etc/modprobe.d/kubernetes-blacklist.conf  with contents like:\n# DCCP is unlikely to be needed, has had multiple serious\n# vulnerabilities, and is not well-maintained. blacklist dccp\n# SCTP is not used in most Kubernetes clusters, and has also had\n# vulnerabilities in the past. blacklist sctp\nTo block module loading more generically, you can use a Linux Security Module (such as SELinux) to completely deny the\nmodule_request  permission to containers, preventing the kernel from loading modules for containers under any circumstances. (Pods would still be able to use modules that had been loaded manually, or modules that were loaded by the kernel on behalf of\nsome more-privileged process.)\n"
+            ],
+            "expected_contexts": [
+                "Running a pod with elevated privileges may be necessary for specific tasks but increases security risks."
+            ],
+            "generated_answer": "Limit ranges restrict the maximum or minimum size of some of the resources above, to prevent users from requesting unreasonably\nhigh or low values for commonly reserved resources like memory, or to provide default limits when none are specified. Controlling what privileges containers run with\nA pod definition contains a security context that allows it to request access to run as a specific Linux user on a node (like root),\naccess to run privileged or access the host network, and other controls that would otherwise allow it to run unfettered on a hosting\nnode. You can configure Pod security admission to enforce use of a particular Pod Security Standard in a namespace, or to detect\nbreaches. Generally, most application workloads need limited access to host resources so they can successfully run as a root process (uid 0)\nwithout access to host information. However, considering the privileges associated with the root user, you should write application\ncontainers to run as a non-root user. Similarly, administrators who wish to prevent client applications from escaping their containers\nshould apply the Baseline or Restricted Pod Security Standard. Preventing containers from loading unwanted kernel modules\nThe Linux kernel automatically loads kernel modules from disk if needed in certain circumstances, such as when a piece of hardware\nis attached or a filesystem is mounted. Of particular relevance to Kubernetes, even unprivileged processes can cause certain\nnetwork-protocol-related kernel modules to be loaded, just by creating a socket of the appropriate type. This may allow an attacker\nto exploit a security hole in a kernel module that the administrator assumed was not in use. To prevent specific modules from being automatically loaded, you can uninstall them from the node, or add rules to block them. On\nmost Linux distributions, you can do that by creating a file such as /etc/modprobe.d/kubernetes-blacklist.conf  with contents like:\n# DCCP is unlikely to be needed, has had multiple serious\n# vulnerabilities, and is not well-maintained. blacklist dccp\n# SCTP is not used in most Kubernetes clusters, and has also had\n# vulnerabilities in the past. blacklist sctp\nTo block module loading more generically, you can use a Linux Security Module (such as SELinux) to completely deny the\nmodule_request  permission to containers, preventing the kernel from loading modules for containers under any circumstances. (Pods would still be able to use modules that had been loaded manually, or modules that were loaded by the kernel on behalf of\nsome more-privileged process.)\n",
+            "ground_truth": [
+                [
+                    "Use the `securityContext` field in the pod spec to define user and group IDs, or enable `privileged: true` to allow the pod to run with elevated privileges.",
+                    "Use caution with `privileged` containers, as they give full access to the host system."
+                ]
+            ]
+        },
+        {
+            "query": "How do I check the status of a deployment?",
+            "retrieved_contexts": [
+                "or\ndeployment \"nginx-deployment\" successfully rolled out\nGet more details on your updated Deployment:\nAfter the rollout succeeds, you can view the Deployment by running kubectl get deployments . The output is similar to this:\nRun kubectl get rs  to see that the Deployment updated the Pods by creating a new ReplicaSet and scaling it up to 3 replicas,\nas well as scaling down the old ReplicaSet to 0 replicas. The output is similar to this:\nNAME                          DESIRED   CURRENT   READY   AGE\nnginx-deployment-1564180365   3         3         3       6s\nnginx-deployment-2035384211   0         0         0       36s\nRunning get pods  should now show only the new Pods:\nkubectl set image deployment/nginx-deployment nginx=nginx:1.16.1\nkubectl edit deployment/nginx-deployment\nkubectl rollout status deployment/nginx-deployment\nNAME               READY   UP-TO-DATE   AVAILABLE   AGE\nnginx-deployment   3/3     3            3           36s\nkubectl get rs\n"
+            ],
+            "expected_contexts": [
+                "The `kubectl rollout status` command provides information about the deployment's progress."
+            ],
+            "generated_answer": "or\ndeployment \"nginx-deployment\" successfully rolled out\nGet more details on your updated Deployment:\nAfter the rollout succeeds, you can view the Deployment by running kubectl get deployments . The output is similar to this:\nRun kubectl get rs  to see that the Deployment updated the Pods by creating a new ReplicaSet and scaling it up to 3 replicas,\nas well as scaling down the old ReplicaSet to 0 replicas. The output is similar to this:\nNAME                          DESIRED   CURRENT   READY   AGE\nnginx-deployment-1564180365   3         3         3       6s\nnginx-deployment-2035384211   0         0         0       36s\nRunning get pods  should now show only the new Pods:\nkubectl set image deployment/nginx-deployment nginx=nginx:1.16.1\nkubectl edit deployment/nginx-deployment\nkubectl rollout status deployment/nginx-deployment\nNAME               READY   UP-TO-DATE   AVAILABLE   AGE\nnginx-deployment   3/3     3            3           36s\nkubectl get rs\n",
+            "ground_truth": [
+                [
+                    "Use `kubectl rollout status deployment <deployment-name>` to check the status of a deployment.",
+                    "You can also use `kubectl get deployments` to see the current state and number of replicas."
+                ]
+            ]
+        },
+        {
+            "query": "How do I create a new namespace?",
+            "retrieved_contexts": [
+                "Note that these details show both resource quota (if present) as well as resource limit ranges. Resource quota tracks aggregate usage of resources in the Namespace and allows cluster operators to define Hard resource usage\nlimits that a Namespace may consume. A limit range defines min/max constraints on the amount of resources a single entity can consume in a Namespace. See Admission control: Limit Range\nA namespace can be in one of two phases:\nActive  the namespace is in use\nTerminating  the namespace is being deleted, and can not be used for new objects\nFor more details, see Namespace in the API reference. Creating a new namespace\nCreate a new YAML file called my-namespace.yaml  with the contents:\nThen run:\nAlternatively, you can create namespace using below command:\nThe name of your namespace must be a valid DNS label. There's an optional field finalizers , which allows observables to purge resources whenever the namespace is deleted."
+            ],
+            "expected_contexts": [
+                "Namespaces can be created to manage resources in a Kubernetes cluster."
+            ],
+            "generated_answer": "Note that these details show both resource quota (if present) as well as resource limit ranges. Resource quota tracks aggregate usage of resources in the Namespace and allows cluster operators to define Hard resource usage\nlimits that a Namespace may consume. A limit range defines min/max constraints on the amount of resources a single entity can consume in a Namespace. See Admission control: Limit Range\nA namespace can be in one of two phases:\nActive  the namespace is in use\nTerminating  the namespace is being deleted, and can not be used for new objects\nFor more details, see Namespace in the API reference. Creating a new namespace\nCreate a new YAML file called my-namespace.yaml  with the contents:\nThen run:\nAlternatively, you can create namespace using below command:\nThe name of your namespace must be a valid DNS label. There's an optional field finalizers , which allows observables to purge resources whenever the namespace is deleted.",
+            "ground_truth": [
+                [
+                    "Create a new namespace using `kubectl create namespace <namespace-name>`.",
+                    "Namespaces help organize resources and provide isolation between different environments or teams."
+                ]
+            ]
+        },
+        {
+            "query": "What is a NodePort service?",
+            "retrieved_contexts": [
+                "Here is an example manifest for a Service of type: NodePort  that specifies a NodePort value (30007, in this example):\nReserve Nodeport ranges to avoid collisions\nFEATURE STATE: Kubernetes v1.29 [stable]\nThe policy for assigning ports to NodePort services applies to both the auto-assignment and the manual assignment scenarios. When a user wants to create a NodePort service that uses a specific port, the target port may conflict with another port that has\nalready been assigned. To avoid this problem, the port range for NodePort services is divided into two bands. Dynamic port assignment uses the upper\nband by default, and it may use the lower band once the upper band has been exhausted. Users can then allocate from the lower\nband with a lower risk of port collision. Custom IP address configuration for type: NodePort Services\nYou can set up nodes in your cluster to use a particular IP address for serving node port services. You might want to do this if each\nnode is connected to multiple networks (for example: one network for application traffic, and another network for traffic between\nnodes and the control plane). If you want to specify particular IP address(es) to proxy the port, you can set the --nodeport-addresses  flag for kube-proxy or the\nequivalent nodePortAddresses  field of the kube-proxy configuration file to particular IP block(s). This flag takes a comma-delimited list of IP blocks (e.g. 10.0.0.0/8 , 192.0.2.0/25 ) to specify IP address ranges that kube-proxy\nshould consider as local to this node. For example, if you start kube-proxy with the --nodeport-addresses=127.0.0.0/8  flag, kube-proxy only selects the loopback\ninterface for NodePort Services. The default for --nodeport-addresses  is an empty list. This means that kube-proxy should consider\nall available network interfaces for NodePort. (That's also compatible with earlier Kubernetes releases.)\ntype: LoadBalancer\nOn cloud providers which support external load balancers, setting the type  field to LoadBalancer  provisions a load balancer for\nyour Service. The actual creation of the load balancer happens asynchronously, and information about the provisioned balancer is\npublished in the Service's .status.loadBalancer  field. For example:\napiVersion: v1\nkind: Service\nmetadata:\n  name: my-service\nspec:\n  type: NodePort\n  selector:\n    app.kubernetes.io/name: MyApp\n  ports:\n    - port: 80\n      # By default and for convenience, the `targetPort` is set to\n      # the same value as the `port` field. targetPort: 80\n      # Optional field\n      # By default and for convenience, the Kubernetes control plane\n      # will allocate a port from a range (default: 30000-32767)\n      nodePort: 30007\nNote: This Service is visible as <NodeIP>:spec.ports[*].nodePort and .spec.clusterIP:spec.ports[*].port. If the --nodeport-\naddresses flag for kube-proxy or the equivalent field in the kube-proxy configuration file is set, <NodeIP> would be a filtered\nnode IP address (or possibly IP addresses)."
+            ],
+            "expected_contexts": [
+                "NodePort services allow external access to applications running in Kubernetes."
+            ],
+            "generated_answer": "Here is an example manifest for a Service of type: NodePort  that specifies a NodePort value (30007, in this example):\nReserve Nodeport ranges to avoid collisions\nFEATURE STATE: Kubernetes v1.29 [stable]\nThe policy for assigning ports to NodePort services applies to both the auto-assignment and the manual assignment scenarios. When a user wants to create a NodePort service that uses a specific port, the target port may conflict with another port that has\nalready been assigned. To avoid this problem, the port range for NodePort services is divided into two bands. Dynamic port assignment uses the upper\nband by default, and it may use the lower band once the upper band has been exhausted. Users can then allocate from the lower\nband with a lower risk of port collision. Custom IP address configuration for type: NodePort Services\nYou can set up nodes in your cluster to use a particular IP address for serving node port services. You might want to do this if each\nnode is connected to multiple networks (for example: one network for application traffic, and another network for traffic between\nnodes and the control plane). If you want to specify particular IP address(es) to proxy the port, you can set the --nodeport-addresses  flag for kube-proxy or the\nequivalent nodePortAddresses  field of the kube-proxy configuration file to particular IP block(s). This flag takes a comma-delimited list of IP blocks (e.g. 10.0.0.0/8 , 192.0.2.0/25 ) to specify IP address ranges that kube-proxy\nshould consider as local to this node. For example, if you start kube-proxy with the --nodeport-addresses=127.0.0.0/8  flag, kube-proxy only selects the loopback\ninterface for NodePort Services. The default for --nodeport-addresses  is an empty list. This means that kube-proxy should consider\nall available network interfaces for NodePort. (That's also compatible with earlier Kubernetes releases.)\ntype: LoadBalancer\nOn cloud providers which support external load balancers, setting the type  field to LoadBalancer  provisions a load balancer for\nyour Service. The actual creation of the load balancer happens asynchronously, and information about the provisioned balancer is\npublished in the Service's .status.loadBalancer  field. For example:\napiVersion: v1\nkind: Service\nmetadata:\n  name: my-service\nspec:\n  type: NodePort\n  selector:\n    app.kubernetes.io/name: MyApp\n  ports:\n    - port: 80\n      # By default and for convenience, the `targetPort` is set to\n      # the same value as the `port` field. targetPort: 80\n      # Optional field\n      # By default and for convenience, the Kubernetes control plane\n      # will allocate a port from a range (default: 30000-32767)\n      nodePort: 30007\nNote: This Service is visible as <NodeIP>:spec.ports[*].nodePort and .spec.clusterIP:spec.ports[*].port. If the --nodeport-\naddresses flag for kube-proxy or the equivalent field in the kube-proxy configuration file is set, <NodeIP> would be a filtered\nnode IP address (or possibly IP addresses).",
+            "ground_truth": [
+                [
+                    "A NodePort service exposes a service on each node's IP at a static port, allowing external traffic to access the service.",
+                    "NodePort services are useful for exposing applications running in a Kubernetes cluster to the outside world."
+                ]
+            ]
+        },
+        {
+            "query": "How do I check the status of a pod?",
+            "retrieved_contexts": [
+                "You can start this Pod by running:\nThe output is similar to this:\npod/myapp-pod created\nAnd check on its status with:\nThe output is similar to this:\nNAME        READY     STATUS     RESTARTS   AGE\nmyapp-pod   0/1       Init:0/2   0          6m\nor for more details:\nThe output is similar to this:\nName:          myapp-pod\nNamespace:     default\n[...]\nLabels:        app.kubernetes.io/name=MyApp\nStatus:        Pending\n[...]\nInit Containers:\n  init-myservice:\n[...]\n    State:         Running\n[...]\n  init-mydb:\n[...]\n    State:         Waiting\n      Reason:      PodInitializing\n    Ready:         False\n[...]\nContainers:\n  myapp-container:\n[...]\n    State:         Waiting\n      Reason:      PodInitializing\n    Ready:         False\n[...]\nEvents:\n  FirstSeen    LastSeen    Count    From                      SubObjectPath                           Type          \n  ---------    --------    -----    ----                      -------------                           --------      \n  16s          16s         1        {default-scheduler }                                              Normal        \n  16s          16s         1        {kubelet 172.17.4.201}    spec.initContainers{init-myservice}     Normal        \n  13s          13s         1        {kubelet 172.17.4.201}    spec.initContainers{init-myservice}     Normal        \n  13s          13s         1        {kubelet 172.17.4.201}    spec.initContainers{init-myservice}     Normal        \n  13s          13s         1        {kubelet 172.17.4.201}    spec.initContainers{init-myservice}     Normal        \nTo see logs for the init containers in this Pod, run:\nkubectl apply -f myapp.yaml\nkubectl get -f myapp.yaml\nkubectl describe -f myapp.yaml\n"
+            ],
+            "expected_contexts": [
+                "Pod statuses can be checked using `kubectl get pods`."
+            ],
+            "generated_answer": "You can start this Pod by running:\nThe output is similar to this:\npod/myapp-pod created\nAnd check on its status with:\nThe output is similar to this:\nNAME        READY     STATUS     RESTARTS   AGE\nmyapp-pod   0/1       Init:0/2   0          6m\nor for more details:\nThe output is similar to this:\nName:          myapp-pod\nNamespace:     default\n[...]\nLabels:        app.kubernetes.io/name=MyApp\nStatus:        Pending\n[...]\nInit Containers:\n  init-myservice:\n[...]\n    State:         Running\n[...]\n  init-mydb:\n[...]\n    State:         Waiting\n      Reason:      PodInitializing\n    Ready:         False\n[...]\nContainers:\n  myapp-container:\n[...]\n    State:         Waiting\n      Reason:      PodInitializing\n    Ready:         False\n[...]\nEvents:\n  FirstSeen    LastSeen    Count    From                      SubObjectPath                           Type          \n  ---------    --------    -----    ----                      -------------                           --------      \n  16s          16s         1        {default-scheduler }                                              Normal        \n  16s          16s         1        {kubelet 172.17.4.201}    spec.initContainers{init-myservice}     Normal        \n  13s          13s         1        {kubelet 172.17.4.201}    spec.initContainers{init-myservice}     Normal        \n  13s          13s         1        {kubelet 172.17.4.201}    spec.initContainers{init-myservice}     Normal        \n  13s          13s         1        {kubelet 172.17.4.201}    spec.initContainers{init-myservice}     Normal        \nTo see logs for the init containers in this Pod, run:\nkubectl apply -f myapp.yaml\nkubectl get -f myapp.yaml\nkubectl describe -f myapp.yaml\n",
+            "ground_truth": [
+                [
+                    "Use `kubectl get pods` to check the status of all pods in a namespace. For detailed information, use `kubectl describe pod <pod-name>`.",
+                    "The status field indicates whether the pod is running, pending, succeeded, or failed."
+                ]
+            ]
+        },
+        {
+            "query": "How do I delete a namespace?",
+            "retrieved_contexts": [
+                "Keep in\nmind that if you specify a nonexistent finalizer, the namespace will be created but will get stuck in the Terminating  state if the user\ntries to delete it. More information on finalizers  can be found in the namespace design doc. Deleting a namespace\nDelete a namespace with\nThis delete is asynchronous, so for a time you will see the namespace in the Terminating  state. Note: Avoid creating namespace with prefix kube-, since it is reserved for Kubernetes system namespaces. apiVersion: v1\nkind: Namespace\nmetadata:\n  name: <insert-namespace-name-here>\nkubectl create -f ./my-namespace.yaml\nkubectl create namespace <insert-namespace-name-here>\nkubectl delete namespaces <insert-some-namespace-name>\nWarning: This deletes everything under the namespace! "
+            ],
+            "expected_contexts": [
+                "Namespaces can be deleted to clean up resources in a Kubernetes cluster."
+            ],
+            "generated_answer": "Keep in\nmind that if you specify a nonexistent finalizer, the namespace will be created but will get stuck in the Terminating  state if the user\ntries to delete it. More information on finalizers  can be found in the namespace design doc. Deleting a namespace\nDelete a namespace with\nThis delete is asynchronous, so for a time you will see the namespace in the Terminating  state. Note: Avoid creating namespace with prefix kube-, since it is reserved for Kubernetes system namespaces. apiVersion: v1\nkind: Namespace\nmetadata:\n  name: <insert-namespace-name-here>\nkubectl create -f ./my-namespace.yaml\nkubectl create namespace <insert-namespace-name-here>\nkubectl delete namespaces <insert-some-namespace-name>\nWarning: This deletes everything under the namespace! ",
+            "ground_truth": [
+                [
+                    "Delete a namespace using `kubectl delete namespace <namespace-name>`. This will remove all resources within that namespace.",
+                    "Be cautious when deleting namespaces, as it will permanently remove all resources associated with it."
+                ]
+            ]
+        }
+    ],
+    "Context Recall": 62.499999999999986,
+    "Context Precision": 83.33333332499997,
+    "Faithfulness": 97.39057239057239,
+    "Answer Relevancy": 90.24735200933716,
+    "Accuracy": 83.36781443122739
+}

@@ -1,0 +1,7 @@
+user_prompt: List all trace export sinks configured in the 'nudgebee-dev' project.
+expected_output:
+  - gcloud alpha trace sinks list --project=nudgebee-dev
+tags:
+  - command
+  - trace
+  - gcp

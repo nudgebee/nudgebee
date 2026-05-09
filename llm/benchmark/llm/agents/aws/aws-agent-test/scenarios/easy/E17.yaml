@@ -1,0 +1,178 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E17: EFS mount fails for ECS Fargate task.
+  User complaint: "Our ECS Fargate task 'e17-report-generator' in cluster 'e17-reports-cluster'
+  fails to start. The task definition mounts an EFS volume but containers never reach
+  RUNNING state. Error shows 'ResourceInitializationError'."
+  Root cause: EFS mount target security group has no inbound rule for NFS port 2049
+  from the task's security group. EFS mount hangs until timeout.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = EFS SG has no inbound NFS (2049) rule from task SG.
+      Fixed = EFS SG allows NFS from task SG.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ECS tasks
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      Tags:
+        - Key: Name
+          Value: e17-task-sg
+        - Key: Environment
+          Value: production
+
+  EfsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EFS mount targets
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      # THE BUG: No NFS port 2049 ingress from task SG in Broken mode
+      SecurityGroupIngress: !If
+        - IsFixed
+        - - IpProtocol: tcp
+            FromPort: 2049
+            ToPort: 2049
+            SourceSecurityGroupId: !Ref TaskSecurityGroup
+        - []
+      Tags:
+        - Key: Name
+          Value: e17-efs-sg
+        - Key: Environment
+          Value: production
+
+  ReportsFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+      Encrypted: true
+      FileSystemTags:
+        - Key: Name
+          Value: e17-reports-efs
+        - Key: Environment
+          Value: production
+
+  MountTargetA:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref ReportsFileSystem
+      SubnetId: !ImportValue aws-agent-test-private-subnet-a
+      SecurityGroups:
+        - !Ref EfsSecurityGroup
+
+  MountTargetB:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref ReportsFileSystem
+      SubnetId: !ImportValue aws-agent-test-private-subnet-b
+      SecurityGroups:
+        - !Ref EfsSecurityGroup
+
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: e17-reports-cluster
+      Tags:
+        - Key: Name
+          Value: e17-reports-cluster
+        - Key: Environment
+          Value: production
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: e17-task-execution-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: e17-task-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: e17-report-generator
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      Volumes:
+        - Name: reports-volume
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref ReportsFileSystem
+            TransitEncryption: ENABLED
+      ContainerDefinitions:
+        - Name: report-generator
+          Image: public.ecr.aws/amazonlinux/amazonlinux:2023
+          Essential: true
+          MountPoints:
+            - SourceVolume: reports-volume
+              ContainerPath: /mnt/reports
+              ReadOnly: false
+          Command:
+            - /bin/sh
+            - -c
+            - 'echo "Generating report" > /mnt/reports/output.txt && sleep 60'
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: ecs
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/e17-report-generator
+      RetentionInDays: 7
+
+Outputs:
+  ClusterName:
+    Description: ECS Cluster Name
+    Value: !Ref EcsCluster
+  TaskDefinitionArn:
+    Description: Task Definition ARN
+    Value: !Ref TaskDefinition
+  FileSystemId:
+    Description: EFS File System ID
+    Value: !Ref ReportsFileSystem
+  TaskSecurityGroup:
+    Description: Task Security Group ID
+    Value: !Ref TaskSecurityGroup
+  EfsSecurityGroup:
+    Description: EFS Security Group ID
+    Value: !Ref EfsSecurityGroup
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

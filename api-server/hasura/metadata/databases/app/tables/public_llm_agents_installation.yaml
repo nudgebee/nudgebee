@@ -1,0 +1,60 @@
+table:
+  name: llm_agents_installation
+  schema: public
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - config
+        - tools
+        - additional_instructions
+        - agent_id
+        - created_at
+        - account_id
+        - created_by
+        - id
+      filter: {}
+      allow_aggregations: true
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - config
+        - tools
+        - additional_instructions
+        - agent_id
+        - created_at
+        - account_id
+        - created_by
+        - id
+      filter: {}
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - config
+        - tools
+        - additional_instructions
+        - agent_id
+        - created_at
+        - account_id
+        - created_by
+        - id
+      filter: {}
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - config
+        - tools
+        - additional_instructions
+        - agent_id
+        - created_at
+        - account_id
+        - created_by
+        - id
+      filter: {}
+      allow_aggregations: true
+    comment: ""

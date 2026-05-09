@@ -1,0 +1,495 @@
+{
+    "Total Queries": 25,
+    "Metrics": {
+        "context_recall": [
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "context_precision": [
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.0,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999
+        ],
+        "faithfulness": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "answer_relevancy": [
+            0,
+            0.9219588324271428,
+            0,
+            0.9109794247177415,
+            0.8720766075841481,
+            0.9004975368151836,
+            0.8489990863250028,
+            0.8794068591275316,
+            0.8298873470944915,
+            0.9018829102980709,
+            0.8802720761373791,
+            0.8245652353493013,
+            0.8891167402420498,
+            0.9224623357515019,
+            0.8614036954482603,
+            0.898429376129255,
+            0.8841441804881273,
+            0.8702535330021685,
+            0.8695230370029328,
+            0.910726807221471,
+            0.8850479987276625,
+            0.9208996410788449,
+            0.8652747407841176,
+            0.87748835511998,
+            0.8421804954070894
+        ]
+    },
+    "Evaluations": [
+        {
+            "query": "Find all recommendations with 'Critical' severity.",
+            "retrieved_contexts": [
+                "SELECT * FROM recommendation_view WHERE severity = 'Critical' ORDER BY created_at DESC LIMIT 10"
+            ],
+            "expected_contexts": [
+                "SELECT namespace, name, recommendation, created_at from recommendation_view WHERE severity = 'Critical';"
+            ],
+            "generated_answer": "SELECT * FROM recommendation_view WHERE severity = 'Critical' ORDER BY created_at DESC LIMIT 10",
+            "ground_truth": [
+                [
+                    "SELECT namespace, name, recommendation, created_at from recommendation_view WHERE severity = 'Critical';"
+                ]
+            ]
+        },
+        {
+            "query": "Count the number of 'Open' recommendations for each category.",
+            "retrieved_contexts": [
+                "SELECT category, COUNT(*) AS count FROM recommendation_view WHERE status = 'Open' GROUP BY category ORDER BY count DESC"
+            ],
+            "expected_contexts": [
+                "SELECT category, COUNT(*) AS open_recommendation_count from recommendation_view WHERE status = 'Open' GROUP BY category ORDER BY open_recommendation_count DESC;"
+            ],
+            "generated_answer": "SELECT category, COUNT(*) AS count FROM recommendation_view WHERE status = 'Open' GROUP BY category ORDER BY count DESC",
+            "ground_truth": [
+                [
+                    "SELECT category, COUNT(*) AS open_recommendation_count from recommendation_view WHERE status = 'Open' GROUP BY category ORDER BY open_recommendation_count DESC;"
+                ]
+            ]
+        },
+        {
+            "query": "List the names and namespaces of workloads with 'RightSizing' recommendations updated in the last 30 days.",
+            "retrieved_contexts": [
+                "SELECT name, namespace FROM recommendation_view WHERE category = 'RightSizing' AND updated_at >= '2025-03-08' ORDER BY updated_at DESC"
+            ],
+            "expected_contexts": [
+                "SELECT name, namespace, updated_at from recommendation_view WHERE category = 'RightSizing' AND updated_at >= NOW() - INTERVAL '30 days';"
+            ],
+            "generated_answer": "SELECT name, namespace FROM recommendation_view WHERE category = 'RightSizing' AND updated_at >= '2025-03-08' ORDER BY updated_at DESC",
+            "ground_truth": [
+                [
+                    "SELECT name, namespace, updated_at from recommendation_view WHERE category = 'RightSizing' AND updated_at >= NOW() - INTERVAL '30 days';"
+                ]
+            ]
+        },
+        {
+            "query": "What is the total estimated saving for all 'Open' recommendations in the 'K8sSpotRecommendation' category?",
+            "retrieved_contexts": [
+                "SELECT SUM(estimated_saving) AS total_saving FROM recommendation_view WHERE category = 'K8sSpotRecommendation' AND status = 'Open'"
+            ],
+            "expected_contexts": [
+                "SELECT SUM(estimated_saving) AS total_estimated_saving from recommendation_view WHERE category = 'K8sSpotRecommendation' AND status = 'Open';"
+            ],
+            "generated_answer": "SELECT SUM(estimated_saving) AS total_saving FROM recommendation_view WHERE category = 'K8sSpotRecommendation' AND status = 'Open'",
+            "ground_truth": [
+                [
+                    "SELECT SUM(estimated_saving) AS total_estimated_saving from recommendation_view WHERE category = 'K8sSpotRecommendation' AND status = 'Open';"
+                ]
+            ]
+        },
+        {
+            "query": "Find all recommendations related to 'misconfigurations' (based on rule_name) that are currently 'Open' or 'InProgress'.",
+            "retrieved_contexts": [
+                "```sql\nSELECT * \nFROM recommendation_view \nWHERE rule_name LIKE '%misconfigurations%' \nAND status IN ('Open', 'InProgress') \nORDER BY created_at DESC \nLIMIT 10;\n```"
+            ],
+            "expected_contexts": [
+                "SELECT namespace, name, rule_name, status, severity from recommendation_view WHERE rule_name LIKE '%misconfigurations%' AND status IN ('Open', 'InProgress');"
+            ],
+            "generated_answer": "```sql\nSELECT * \nFROM recommendation_view \nWHERE rule_name LIKE '%misconfigurations%' \nAND status IN ('Open', 'InProgress') \nORDER BY created_at DESC \nLIMIT 10;\n```",
+            "ground_truth": [
+                [
+                    "SELECT namespace, name, rule_name, status, severity from recommendation_view WHERE rule_name LIKE '%misconfigurations%' AND status IN ('Open', 'InProgress');"
+                ]
+            ]
+        },
+        {
+            "query": "Which security recommendations (category 'Security') are currently open and have high or critical severity?",
+            "retrieved_contexts": [
+                "SELECT * FROM recommendation_view WHERE category = 'Security' AND severity IN ('High', 'Critical') AND status = 'Open' ORDER BY created_at DESC LIMIT 10"
+            ],
+            "expected_contexts": [
+                "SELECT rule_name, namespace, name, severity from recommendation_view WHERE category = 'Security' AND status = 'Open' AND severity IN ('High', 'Critical');"
+            ],
+            "generated_answer": "SELECT * FROM recommendation_view WHERE category = 'Security' AND severity IN ('High', 'Critical') AND status = 'Open' ORDER BY created_at DESC LIMIT 10",
+            "ground_truth": [
+                [
+                    "SELECT rule_name, namespace, name, severity from recommendation_view WHERE category = 'Security' AND status = 'Open' AND severity IN ('High', 'Critical');"
+                ]
+            ]
+        },
+        {
+            "query": "Find all recommendations for the Kubernetes controller named 'deployment-xyz'.",
+            "retrieved_contexts": [
+                "SELECT * FROM recommendation_view WHERE controller_name = 'deployment-xyz' ORDER BY created_at DESC LIMIT 10"
+            ],
+            "expected_contexts": [
+                "SELECT namespace, name, recommendation, category, severity from recommendation_view WHERE controller_name = 'deployment-xyz';"
+            ],
+            "generated_answer": "SELECT * FROM recommendation_view WHERE controller_name = 'deployment-xyz' ORDER BY created_at DESC LIMIT 10",
+            "ground_truth": [
+                [
+                    "SELECT namespace, name, recommendation, category, severity from recommendation_view WHERE controller_name = 'deployment-xyz';"
+                ]
+            ]
+        },
+        {
+            "query": "List recommendations with estimated savings greater than $100, ordered by saving amount (highest first).",
+            "retrieved_contexts": [
+                "SELECT * FROM recommendation_view WHERE estimated_saving > 100 ORDER BY estimated_saving DESC LIMIT 10"
+            ],
+            "expected_contexts": [
+                "SELECT namespace, name, category, estimated_saving from recommendation_view WHERE estimated_saving > 100 ORDER BY estimated_saving DESC;"
+            ],
+            "generated_answer": "SELECT * FROM recommendation_view WHERE estimated_saving > 100 ORDER BY estimated_saving DESC LIMIT 10",
+            "ground_truth": [
+                [
+                    "SELECT namespace, name, category, estimated_saving from recommendation_view WHERE estimated_saving > 100 ORDER BY estimated_saving DESC;"
+                ]
+            ]
+        },
+        {
+            "query": "What is the oldest 'Open' recommendation based on its creation date?",
+            "retrieved_contexts": [
+                "SELECT * FROM recommendation_view WHERE status = 'Open' ORDER BY created_at ASC LIMIT 1"
+            ],
+            "expected_contexts": [
+                "SELECT namespace, name, recommendation, created_at from recommendation_view WHERE status = 'Open' ORDER BY created_at ASC LIMIT 1;"
+            ],
+            "generated_answer": "SELECT * FROM recommendation_view WHERE status = 'Open' ORDER BY created_at ASC LIMIT 1",
+            "ground_truth": [
+                [
+                    "SELECT namespace, name, recommendation, created_at from recommendation_view WHERE status = 'Open' ORDER BY created_at ASC LIMIT 1;"
+                ]
+            ]
+        },
+        {
+            "query": "Find all 'Open' recommendations related to Kubernetes Persistent Volumes.",
+            "retrieved_contexts": [
+                "SELECT * FROM recommendation_view WHERE category = 'K8sPersistentVolumeRecommendation' AND status = 'Open' ORDER BY created_at DESC LIMIT 10"
+            ],
+            "expected_contexts": [
+                "SELECT namespace, name, recommendation, severity from recommendation_view WHERE category = 'K8sPersistentVolumeRecommendation' AND status = 'Open';"
+            ],
+            "generated_answer": "SELECT * FROM recommendation_view WHERE category = 'K8sPersistentVolumeRecommendation' AND status = 'Open' ORDER BY created_at DESC LIMIT 10",
+            "ground_truth": [
+                [
+                    "SELECT namespace, name, recommendation, severity from recommendation_view WHERE category = 'K8sPersistentVolumeRecommendation' AND status = 'Open';"
+                ]
+            ]
+        },
+        {
+            "query": "List all SSL Check recommendations, regardless of status, ordered by severity.",
+            "retrieved_contexts": [
+                "SELECT * FROM recommendation_view WHERE category = 'SSLCheck' ORDER BY severity DESC, created_at DESC"
+            ],
+            "expected_contexts": [
+                "SELECT namespace, name, recommendation, severity, status from recommendation_view WHERE category = 'SSLCheck' ORDER BY CASE severity WHEN 'Critical' THEN 1 WHEN 'High' THEN 2 WHEN 'Medium' THEN 3 WHEN 'Low' THEN 4 WHEN 'Info' THEN 5 ELSE 6 END;"
+            ],
+            "generated_answer": "SELECT * FROM recommendation_view WHERE category = 'SSLCheck' ORDER BY severity DESC, created_at DESC",
+            "ground_truth": [
+                [
+                    "SELECT namespace, name, recommendation, severity, status from recommendation_view WHERE category = 'SSLCheck' ORDER BY CASE severity WHEN 'Critical' THEN 1 WHEN 'High' THEN 2 WHEN 'Medium' THEN 3 WHEN 'Low' THEN 4 WHEN 'Info' THEN 5 ELSE 6 END;"
+                ]
+            ]
+        },
+        {
+            "query": "Show all 'Configuration' recommendations created since the beginning of the year.",
+            "retrieved_contexts": [
+                "SELECT * FROM recommendation_view WHERE category = 'Configuration' AND created_at >= '2025-01-01' ORDER BY created_at DESC LIMIT 10"
+            ],
+            "expected_contexts": [
+                "SELECT namespace, name, recommendation, created_at from recommendation_view WHERE category = 'Configuration' AND created_at >= date_trunc('year', NOW());"
+            ],
+            "generated_answer": "SELECT * FROM recommendation_view WHERE category = 'Configuration' AND created_at >= '2025-01-01' ORDER BY created_at DESC LIMIT 10",
+            "ground_truth": [
+                [
+                    "SELECT namespace, name, recommendation, created_at from recommendation_view WHERE category = 'Configuration' AND created_at >= date_trunc('year', NOW());"
+                ]
+            ]
+        },
+        {
+            "query": "Find any 'K8sVersionUpgrade' recommendations that are currently 'InProgress'.",
+            "retrieved_contexts": [
+                "SELECT * FROM recommendation_view WHERE category = 'K8sVersionUpgrade' AND status = 'InProgress' ORDER BY created_at DESC LIMIT 10"
+            ],
+            "expected_contexts": [
+                "SELECT namespace, name, recommendation, updated_at from recommendation_view WHERE category = 'K8sVersionUpgrade' AND status = 'InProgress';"
+            ],
+            "generated_answer": "SELECT * FROM recommendation_view WHERE category = 'K8sVersionUpgrade' AND status = 'InProgress' ORDER BY created_at DESC LIMIT 10",
+            "ground_truth": [
+                [
+                    "SELECT namespace, name, recommendation, updated_at from recommendation_view WHERE category = 'K8sVersionUpgrade' AND status = 'InProgress';"
+                ]
+            ]
+        },
+        {
+            "query": "Count the total number of recommendations per namespace.",
+            "retrieved_contexts": [
+                "SELECT namespace, COUNT(*) AS total_recommendations FROM recommendation_view GROUP BY namespace ORDER BY total_recommendations DESC"
+            ],
+            "expected_contexts": [
+                "SELECT namespace, COUNT(*) AS total_recommendations from recommendation_view GROUP BY namespace ORDER BY total_recommendations DESC;"
+            ],
+            "generated_answer": "SELECT namespace, COUNT(*) AS total_recommendations FROM recommendation_view GROUP BY namespace ORDER BY total_recommendations DESC",
+            "ground_truth": [
+                [
+                    "SELECT namespace, COUNT(*) AS total_recommendations from recommendation_view GROUP BY namespace ORDER BY total_recommendations DESC;"
+                ]
+            ]
+        },
+        {
+            "query": "List recommendations that were closed within the last month.",
+            "retrieved_contexts": [
+                "SELECT * FROM recommendation_view WHERE status = 'Closed' AND updated_at >= '2025-03-07' AND updated_at <= '2025-04-07' ORDER BY updated_at DESC LIMIT 10"
+            ],
+            "expected_contexts": [
+                "SELECT namespace, name, category, updated_at from recommendation_view WHERE status = 'Closed' AND updated_at >= NOW() - INTERVAL '1 month';"
+            ],
+            "generated_answer": "SELECT * FROM recommendation_view WHERE status = 'Closed' AND updated_at >= '2025-03-07' AND updated_at <= '2025-04-07' ORDER BY updated_at DESC LIMIT 10",
+            "ground_truth": [
+                [
+                    "SELECT namespace, name, category, updated_at from recommendation_view WHERE status = 'Closed' AND updated_at >= NOW() - INTERVAL '1 month';"
+                ]
+            ]
+        },
+        {
+            "query": "Show distinct rule names associated with 'Low' severity recommendations.",
+            "retrieved_contexts": [
+                "SELECT DISTINCT rule_name FROM recommendation_view WHERE severity = 'Low'"
+            ],
+            "expected_contexts": [
+                "SELECT DISTINCT rule_name from recommendation_view WHERE severity = 'Low';"
+            ],
+            "generated_answer": "SELECT DISTINCT rule_name FROM recommendation_view WHERE severity = 'Low'",
+            "ground_truth": [
+                [
+                    "SELECT DISTINCT rule_name from recommendation_view WHERE severity = 'Low';"
+                ]
+            ]
+        },
+        {
+            "query": "Calculate the average estimated saving for 'Open' recommendations within each category.",
+            "retrieved_contexts": [
+                "```sql\nSELECT category, AVG(estimated_saving) AS average_saving\nFROM recommendation_view\nWHERE status = 'Open'\nGROUP BY category\nORDER BY average_saving DESC;\n```"
+            ],
+            "expected_contexts": [
+                "SELECT category, AVG(estimated_saving) AS average_saving from recommendation_view WHERE status = 'Open' AND estimated_saving IS NOT NULL GROUP BY category;"
+            ],
+            "generated_answer": "```sql\nSELECT category, AVG(estimated_saving) AS average_saving\nFROM recommendation_view\nWHERE status = 'Open'\nGROUP BY category\nORDER BY average_saving DESC;\n```",
+            "ground_truth": [
+                [
+                    "SELECT category, AVG(estimated_saving) AS average_saving from recommendation_view WHERE status = 'Open' AND estimated_saving IS NOT NULL GROUP BY category;"
+                ]
+            ]
+        },
+        {
+            "query": "Find recommendations where the estimated saving amount is not provided.",
+            "retrieved_contexts": [
+                "SELECT * FROM recommendation_view WHERE estimated_saving IS NULL ORDER BY created_at DESC LIMIT 10"
+            ],
+            "expected_contexts": [
+                "SELECT namespace, name, category, rule_name from recommendation_view WHERE estimated_saving IS NULL;"
+            ],
+            "generated_answer": "SELECT * FROM recommendation_view WHERE estimated_saving IS NULL ORDER BY created_at DESC LIMIT 10",
+            "ground_truth": [
+                [
+                    "SELECT namespace, name, category, rule_name from recommendation_view WHERE estimated_saving IS NULL;"
+                ]
+            ]
+        },
+        {
+            "query": "List all 'Security' category recommendations that are NOT related to the 'CIS' rule.",
+            "retrieved_contexts": [
+                "SELECT * FROM recommendation_view WHERE category = 'Security' AND rule_name != 'CIS' ORDER BY created_at DESC LIMIT 10"
+            ],
+            "expected_contexts": [
+                "SELECT namespace, name, rule_name, severity from recommendation_view WHERE category = 'Security' AND rule_name != 'CIS';"
+            ],
+            "generated_answer": "SELECT * FROM recommendation_view WHERE category = 'Security' AND rule_name != 'CIS' ORDER BY created_at DESC LIMIT 10",
+            "ground_truth": [
+                [
+                    "SELECT namespace, name, rule_name, severity from recommendation_view WHERE category = 'Security' AND rule_name != 'CIS';"
+                ]
+            ]
+        },
+        {
+            "query": "Show the top 5 recommendations with the highest estimated savings.",
+            "retrieved_contexts": [
+                "SELECT * FROM recommendation_view ORDER BY estimated_saving DESC LIMIT 5"
+            ],
+            "expected_contexts": [
+                "SELECT namespace, name, category, estimated_saving from recommendation_view WHERE estimated_saving IS NOT NULL ORDER BY estimated_saving DESC LIMIT 5;"
+            ],
+            "generated_answer": "SELECT * FROM recommendation_view ORDER BY estimated_saving DESC LIMIT 5",
+            "ground_truth": [
+                [
+                    "SELECT namespace, name, category, estimated_saving from recommendation_view WHERE estimated_saving IS NOT NULL ORDER BY estimated_saving DESC LIMIT 5;"
+                ]
+            ]
+        },
+        {
+            "query": "Find recommendations created exactly on '2024-10-15'.",
+            "retrieved_contexts": [
+                "SELECT * FROM recommendation_view WHERE DATE(created_at) = '2024-10-15' ORDER BY created_at DESC LIMIT 10"
+            ],
+            "expected_contexts": [
+                "SELECT namespace, name, category, rule_name from recommendation_view WHERE DATE(created_at) = '2024-10-15';"
+            ],
+            "generated_answer": "SELECT * FROM recommendation_view WHERE DATE(created_at) = '2024-10-15' ORDER BY created_at DESC LIMIT 10",
+            "ground_truth": [
+                [
+                    "SELECT namespace, name, category, rule_name from recommendation_view WHERE DATE(created_at) = '2024-10-15';"
+                ]
+            ]
+        },
+        {
+            "query": "Count recommendations by status for the 'production' namespace.",
+            "retrieved_contexts": [
+                "SELECT status, COUNT(*) AS count FROM recommendation_view WHERE namespace = 'production' GROUP BY status ORDER BY count DESC"
+            ],
+            "expected_contexts": [
+                "SELECT status, COUNT(*) AS count from recommendation_view WHERE namespace = 'production' GROUP BY status;"
+            ],
+            "generated_answer": "SELECT status, COUNT(*) AS count FROM recommendation_view WHERE namespace = 'production' GROUP BY status ORDER BY count DESC",
+            "ground_truth": [
+                [
+                    "SELECT status, COUNT(*) AS count from recommendation_view WHERE namespace = 'production' GROUP BY status;"
+                ]
+            ]
+        },
+        {
+            "query": "Find recommendations specifically for the 'pod_right_sizing' rule.",
+            "retrieved_contexts": [
+                "SELECT * FROM recommendation_view WHERE rule_name = 'pod_right_sizing' ORDER BY created_at DESC LIMIT 10"
+            ],
+            "expected_contexts": [
+                "SELECT namespace, name, severity, status, recommendation from recommendation_view WHERE rule_name = 'pod_right_sizing';"
+            ],
+            "generated_answer": "SELECT * FROM recommendation_view WHERE rule_name = 'pod_right_sizing' ORDER BY created_at DESC LIMIT 10",
+            "ground_truth": [
+                [
+                    "SELECT namespace, name, severity, status, recommendation from recommendation_view WHERE rule_name = 'pod_right_sizing';"
+                ]
+            ]
+        },
+        {
+            "query": "List recommendations updated before '2024-01-01'.",
+            "retrieved_contexts": [
+                "SELECT * FROM recommendation_view WHERE updated_at < '2024-01-01' ORDER BY updated_at DESC LIMIT 10"
+            ],
+            "expected_contexts": [
+                "SELECT namespace, name, category, updated_at from recommendation_view WHERE updated_at < '2024-01-01';"
+            ],
+            "generated_answer": "SELECT * FROM recommendation_view WHERE updated_at < '2024-01-01' ORDER BY updated_at DESC LIMIT 10",
+            "ground_truth": [
+                [
+                    "SELECT namespace, name, category, updated_at from recommendation_view WHERE updated_at < '2024-01-01';"
+                ]
+            ]
+        },
+        {
+            "query": "Show all recommendations currently in the 'Archive' status.",
+            "retrieved_contexts": [
+                "SELECT * FROM recommendation_view WHERE status = 'Archive' ORDER BY created_at DESC LIMIT 10"
+            ],
+            "expected_contexts": [
+                "SELECT namespace, name, category, rule_name, updated_at from recommendation_view WHERE status = 'Archive';"
+            ],
+            "generated_answer": "SELECT * FROM recommendation_view WHERE status = 'Archive' ORDER BY created_at DESC LIMIT 10",
+            "ground_truth": [
+                [
+                    "SELECT namespace, name, category, rule_name, updated_at from recommendation_view WHERE status = 'Archive';"
+                ]
+            ]
+        }
+    ],
+    "Context Recall": 80.0,
+    "Context Precision": 95.9999999904,
+    "Faithfulness": 100.0,
+    "Answer Relevancy": 88.11946457512806,
+    "Accuracy": 91.02986614138202
+}

@@ -1,0 +1,8 @@
+user_prompt: Show all Azure Key Vaults and list secrets that are expiring in the next
+  30 days.
+expected_output:
+- az keyvault list --output table
+type: command
+tags:
+- command
+- azure

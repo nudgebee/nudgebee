@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to find events with priority MEDIUM or HIGH?
+expected_output:
+- SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE
+  priority IN ('MEDIUM', 'HIGH');
+- SELECT * FROM events   WHERE priority IN ('MEDIUM', 'HIGH');
+tags:
+- command
+- events

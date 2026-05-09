@@ -1,0 +1,27 @@
+table:
+  name: recommendation_status_type
+  schema: public
+is_enum: true
+array_relationships:
+  - name: recommendations
+    using:
+      foreign_key_constraint_on:
+        column: status
+        table:
+          name: recommendation
+          schema: public
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - value
+        - description
+      filter: {}
+      allow_aggregations: true
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - value
+        - description
+      filter: {}
+      allow_aggregations: true

@@ -1,0 +1,3 @@
+table:
+  name: compliance_check_findings_count_aggregate
+  schema: public

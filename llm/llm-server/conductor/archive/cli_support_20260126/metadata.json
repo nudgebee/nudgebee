@@ -1,0 +1,8 @@
+{
+  "track_id": "cli_support_20260126",
+  "type": "feature",
+  "status": "new",
+  "created_at": "2026-01-26T13:45:00Z",
+  "updated_at": "2026-01-26T13:45:00Z",
+  "description": "Implement Client-Augmented Tool Support: Allow nbctl to register local tools and execute them on behalf of the server's agents."
+}

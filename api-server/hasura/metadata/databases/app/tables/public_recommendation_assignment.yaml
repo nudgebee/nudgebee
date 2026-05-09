@@ -1,0 +1,89 @@
+table:
+  name: recommendation_assignment
+  schema: public
+object_relationships:
+  - name: recommendation
+    using:
+      foreign_key_constraint_on: recommendation_id
+  - name: user
+    using:
+      foreign_key_constraint_on: created_by
+  - name: userByUpdatedBy
+    using:
+      foreign_key_constraint_on: updated_by
+  - name: userByUserId
+    using:
+      foreign_key_constraint_on: user_id
+insert_permissions:
+  - role: tenant_admin
+    permission:
+      check:
+        recommendation:
+          tenant_id:
+            _eq: X-Hasura-User-Tenant-Id
+      set:
+        created_by: x-hasura-User-Id
+        updated_by: x-hasura-User-Id
+      columns:
+        - additionl_input_config
+        - enable_slack
+        - enable_ticket
+        - recommendation_id
+        - status
+        - user_id
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - enable_slack
+        - enable_ticket
+        - additionl_input_config
+        - status
+        - created_at
+        - updated_at
+        - created_by
+        - id
+        - recommendation_id
+        - updated_by
+        - user_id
+      filter:
+        recommendation:
+          tenant_id:
+            _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - enable_slack
+        - enable_ticket
+        - additionl_input_config
+        - status
+        - created_at
+        - updated_at
+        - created_by
+        - id
+        - recommendation_id
+        - updated_by
+        - user_id
+      filter:
+        recommendation:
+          tenant_id:
+            _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+update_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - additionl_input_config
+        - enable_slack
+        - enable_ticket
+        - status
+        - user_id
+      filter:
+        recommendation:
+          tenant_id:
+            _eq: X-Hasura-User-Tenant-Id
+      check:
+        recommendation:
+          tenant_id:
+            _eq: X-Hasura-User-Tenant-Id

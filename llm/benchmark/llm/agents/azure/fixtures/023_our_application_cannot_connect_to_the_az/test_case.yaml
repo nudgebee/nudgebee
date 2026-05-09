@@ -1,0 +1,15 @@
+user_prompt: Our application cannot connect to the Azure SQL database 'e03-app-database'.
+  The app keeps getting connection timeout errors. The SQL Server exists and the database
+  is online. What is wrong?
+expected_output:
+- 'The SQL Server ''e03sql6xz4cc5w'' has no firewall rules configured. Azure SQL Server
+  blocks all inbound connections by default unless an explicit firewall rule allows
+  the source IP. Fix: Add a firewall rule allowing the application''s IP range (or
+  0.0.0.0-255.255.255.255 for Azure services).'
+agent: azure_debug
+scenario: E03
+type: rca
+tags:
+- rca
+- easy
+- azure

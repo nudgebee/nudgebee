@@ -1,0 +1,67 @@
+table:
+  name: roles
+  schema: public
+array_relationships:
+  - name: group_roles
+    using:
+      foreign_key_constraint_on:
+        column: role
+        table:
+          name: group_roles
+          schema: public
+  - name: user_roles
+    using:
+      foreign_key_constraint_on:
+        column: role
+        table:
+          name: user_roles
+          schema: public
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - display_name
+        - value
+      filter: {}
+      allow_aggregations: true
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - display_name
+        - value
+      filter: {}
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - display_name
+        - value
+      filter: {}
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - display_name
+        - value
+      filter: {}
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - display_name
+        - value
+      filter: {}
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - display_name
+        - value
+      filter: {}
+      allow_aggregations: true
+    comment: ""

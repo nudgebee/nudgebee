@@ -1,0 +1,99 @@
+table:
+  name: cloud_resource_attributes
+  schema: public
+object_relationships:
+- name: cloud_resourse
+  using:
+    foreign_key_constraint_on: resource_id
+insert_permissions:
+- role: account_admin
+  permission:
+    check:
+      _and:
+      - tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      - account_id:
+          _in: X-Hasura-User-Account-Ids
+    set:
+      tenant_id: X-Hasura-User-Tenant-Id
+    columns:
+    - tenant_id
+    - account_id
+    - resource_id
+    - name
+    - value
+    - labels
+  comment: ''
+- role: k8s_namespace_admin
+  permission:
+    check:
+      _and:
+      - tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      - account_id:
+          _in: x-hasura-user-namespaced-account-ids
+    set:
+      tenant_id: X-Hasura-User-Tenant-Id
+    columns:
+    - tenant_id
+    - account_id
+    - resource_id
+    - name
+    - value
+    - labels
+  comment: ''
+- role: tenant_admin
+  permission:
+    check:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+    set:
+      tenant_id: X-Hasura-User-Tenant-Id
+    columns:
+    - tenant_id
+    - account_id
+    - resource_id
+    - name
+    - value
+    - labels
+  comment: ''
+update_permissions:
+- role: account_admin
+  permission:
+    columns:
+    - value
+    - labels
+    - last_seen_at
+    filter:
+      _and:
+      - tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      - account_id:
+          _in: X-Hasura-User-Account-Ids
+    check: {}
+  comment: ''
+- role: k8s_namespace_admin
+  permission:
+    columns:
+    - value
+    - labels
+    - last_seen_at
+    filter:
+      _and:
+      - tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      - account_id:
+          _in: x-hasura-user-namespaced-account-ids
+    check: {}
+  comment: ''
+- role: tenant_admin
+  permission:
+    columns:
+    - value
+    - labels
+    - last_seen_at
+    filter:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+    check: {}
+  comment: ''

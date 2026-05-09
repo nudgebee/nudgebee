@@ -1,0 +1,122 @@
+table:
+  name: integration_config_values
+  schema: public
+object_relationships:
+  - name: integration
+    using:
+      foreign_key_constraint_on: integration_id
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - is_encrypted
+        - type
+        - value
+        - created_at
+        - updated_at
+        - name
+        - created_by
+        - id
+        - integration_id
+        - updated_by
+      filter:
+        integration:
+          tenant_id:
+            _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - is_encrypted
+        - type
+        - value
+        - created_at
+        - updated_at
+        - name
+        - created_by
+        - id
+        - integration_id
+        - updated_by
+      filter:
+        integration:
+          tenant_id:
+            _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - is_encrypted
+        - type
+        - value
+        - created_at
+        - updated_at
+        - name
+        - created_by
+        - id
+        - integration_id
+        - updated_by
+      filter:
+        integration:
+          tenant_id:
+            _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - is_encrypted
+        - type
+        - value
+        - created_at
+        - updated_at
+        - name
+        - created_by
+        - id
+        - integration_id
+        - updated_by
+      filter:
+        integration:
+          tenant_id:
+            _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - is_encrypted
+        - type
+        - value
+        - created_at
+        - updated_at
+        - name
+        - created_by
+        - id
+        - integration_id
+        - updated_by
+      filter:
+        integration:
+          tenant_id:
+            _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - is_encrypted
+        - type
+        - value
+        - created_at
+        - updated_at
+        - name
+        - created_by
+        - id
+        - integration_id
+        - updated_by
+      filter:
+        integration:
+          tenant_id:
+            _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""

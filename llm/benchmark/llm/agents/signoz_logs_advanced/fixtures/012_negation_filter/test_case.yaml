@@ -1,0 +1,6 @@
+user_prompt: Show me all non-error logs for auth-service
+expected_output: '{"where": {"service.name": {"_ilike": "%auth-service%"}, "severity_text": {"_neq": "ERROR"}}}'
+tags:
+  - complex
+  - negation
+  - signoz

@@ -1,0 +1,143 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H12: ECS deployment stuck — new task health check wrong, circuit breaker disabled.
+  User complaint: "ECS service 'h12-checkout-svc' deployment has been in progress
+  for 30+ minutes. New tasks keep starting and stopping. Old version still serves
+  traffic. The new image is correct and works locally."
+  Root cause: New task definition has HEALTHCHECK CMD checking port 8080 but the
+  container listens on port 80. Tasks start but fail health check, get killed by
+  ECS. Deployment circuit breaker is disabled, so ECS never rolls back — it keeps
+  trying indefinitely.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Container healthcheck on wrong port + circuit breaker disabled.
+      Fixed = Correct healthcheck + circuit breaker enabled.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: h12-checkout-cluster
+      Tags:
+        - Key: Name
+          Value: h12-checkout-cluster
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h12-checkout-task-exec-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/h12-checkout-api
+      RetentionInDays: 7
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: h12-checkout-api
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: checkout
+          Image: nginx:1.25
+          Essential: true
+          PortMappings:
+            - ContainerPort: 80
+              Protocol: tcp
+          # THE BUG: Health check on wrong port (8080) — nginx listens on 80
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - !If
+                - IsFixed
+                - 'curl -f http://localhost:80/ || exit 1'
+                - 'curl -f http://localhost:8080/ || exit 1'
+            Interval: 10
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 10
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: /ecs/h12-checkout-api
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: checkout
+
+  ServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for checkout service
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: h12-checkout-sg
+
+  ECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: h12-checkout-svc
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      # THE BUG (part 2): Circuit breaker disabled — deployment never auto-rolls back
+      DeploymentConfiguration:
+        DeploymentCircuitBreaker:
+          Enable: !If [IsFixed, true, false]
+          Rollback: !If [IsFixed, true, false]
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !ImportValue aws-agent-test-public-subnet-a
+          SecurityGroups:
+            - !Ref ServiceSecurityGroup
+
+Outputs:
+  ClusterName:
+    Description: ECS Cluster
+    Value: !Ref ECSCluster
+  ServiceName:
+    Description: ECS Service
+    Value: !GetAtt ECSService.Name
+  HealthCheckPort:
+    Description: Container health check port
+    Value: !If [IsFixed, '80 (correct)', '8080 (wrong — container listens on 80)']
+  CircuitBreaker:
+    Description: Deployment circuit breaker
+    Value: !If [IsFixed, 'Enabled', 'Disabled (deployment never rolls back)']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

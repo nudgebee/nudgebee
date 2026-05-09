@@ -1,0 +1,40 @@
+table:
+  name: metrics_summary
+  schema: public
+object_relationships:
+  - name: metrics_summary_tenant
+    using:
+      foreign_key_constraint_on: tenant_id
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - tenant_id
+        - entity_type
+        - entity_id
+        - entity_name
+        - value
+        - value_unit
+        - name
+        - description
+        - id
+        - updated_at
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - tenant_id
+        - entity_type
+        - entity_id
+        - entity_name
+        - value
+        - value_unit
+        - name
+        - description
+        - id
+        - updated_at
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id

@@ -1,0 +1,14 @@
+agent: aws_debug
+expected_output:
+- The root cause is that the EBS data volume 'e08-etl-data-volume' is not attached to the EC2 instance 'e08-etl-worker-01'.
+  The volume exists in the same availability zone and is in 'available' state (not attached to any instance). The instance
+  only has its root volume. Without the data volume attached and mounted at /data, the application cannot find its data directory
+  and crashes. The fix is to attach the EBS volume to the instance and mount it at /data.
+scenario: E08
+tags:
+- command
+- aws
+- easy
+type: rca
+user_prompt: Our ETL worker instance 'e08-etl-worker-01' in us-east-1 is running but the application keeps crashing saying
+  it can't find the /data directory. The instance is supposed to have a data volume for storing ETL outputs. Can you investigate?

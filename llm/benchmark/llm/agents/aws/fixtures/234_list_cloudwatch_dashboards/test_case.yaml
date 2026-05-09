@@ -1,0 +1,6 @@
+user_prompt: List CloudWatch dashboards.
+expected_output:
+- aws cloudwatch list-dashboards
+tags:
+- command
+- aws

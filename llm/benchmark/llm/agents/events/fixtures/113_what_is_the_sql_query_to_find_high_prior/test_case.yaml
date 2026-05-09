@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to find HIGH priority events that started on a
+  weekend?
+expected_output:
+- SELECT id, title, starts_at, priority FROM events WHERE priority = 'HIGH' AND EXTRACT(ISODOW
+  FROM starts_at) IN (6, 7);
+tags:
+- command
+- events

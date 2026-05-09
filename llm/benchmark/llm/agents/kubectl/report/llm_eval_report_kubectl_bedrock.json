@@ -1,0 +1,525 @@
+{
+    "Total Queries": 26,
+    "Metrics": {
+        "context_recall": [
+            0.0,
+            0.5,
+            1.0,
+            0.5,
+            0.5,
+            0.5,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.5,
+            1.0,
+            0.5,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            0.0
+        ],
+        "context_precision": [
+            0.0,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.0,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.0,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.0,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999
+        ],
+        "faithfulness": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "answer_relevancy": [
+            0.7832723162734204,
+            0.7846619880667879,
+            0,
+            0.9572565982107536,
+            0.9687868307233364,
+            0.9109214478260452,
+            0.9201810387105409,
+            0.9654689723311599,
+            0.8700138907736389,
+            0.8400704478424115,
+            0.8245270890989819,
+            0.9237168097202533,
+            0.9578065504533408,
+            0.9554675068196139,
+            0.9877348321478495,
+            0.9632938732844772,
+            0.9875903219988033,
+            0.0,
+            0.8915722289255102,
+            0.8331151098465771,
+            0.7656921315635156,
+            0.9151468119846718,
+            0.8771338585757525,
+            0.971968996660714,
+            0.0,
+            0.7899567229150036
+        ]
+    },
+    "Evaluations": [
+        {
+            "query": "What command shows cluster information?",
+            "retrieved_contexts": [
+                ": The URL of the Kubernetes control plane is https://10.43.0.1:443"
+            ],
+            "expected_contexts": [
+                "kubectl cluster-info"
+            ],
+            "generated_answer": ": The URL of the Kubernetes control plane is https://10.43.0.1:443",
+            "ground_truth": [
+                [
+                    "kubectl cluster-info"
+                ]
+            ]
+        },
+        {
+            "query": "How do I list all nodes in the cluster?",
+            "retrieved_contexts": [
+                ": \n| NAME | STATUS | ROLES | AGE | VERSION |\n| --- | --- | --- | --- | --- |\n| k3s-nudgebee-dev-e606-2246bc-node-pool-4196-532gd | Ready | <none> | 10d | v1.30.5+k3s1 |\n| k3s-nudgebee-dev-e606-2246bc-node-pool-4196-6w59o | Ready | <none> | 15d | v1.30.5+k3s1 |\n| k3s-nudgebee-dev-e606-2246bc-node-pool-4196-dr4oz | Ready | <none> | 12d | v1.30.5+k3s1 |\n| k3s-nudgebee-dev-e606-2246bc-node-pool-4196-e2avu | Ready | <none> | 46h | v1.30.5+k3s1 |\n| k3s-nudgebee-dev-e606-2246bc-node-pool-4196-i4ynf | Ready | <none> | 14d | v1.30.5+k3s1 |\n| k3s-nudgebee-dev-e606-2246bc-node-pool-4196-r6gel | Ready | <none> | 9d | v1.30.5+k3s1 |"
+            ],
+            "expected_contexts": [
+                "kubectl get nodes"
+            ],
+            "generated_answer": ": \n| NAME | STATUS | ROLES | AGE | VERSION |\n| --- | --- | --- | --- | --- |\n| k3s-nudgebee-dev-e606-2246bc-node-pool-4196-532gd | Ready | <none> | 10d | v1.30.5+k3s1 |\n| k3s-nudgebee-dev-e606-2246bc-node-pool-4196-6w59o | Ready | <none> | 15d | v1.30.5+k3s1 |\n| k3s-nudgebee-dev-e606-2246bc-node-pool-4196-dr4oz | Ready | <none> | 12d | v1.30.5+k3s1 |\n| k3s-nudgebee-dev-e606-2246bc-node-pool-4196-e2avu | Ready | <none> | 46h | v1.30.5+k3s1 |\n| k3s-nudgebee-dev-e606-2246bc-node-pool-4196-i4ynf | Ready | <none> | 14d | v1.30.5+k3s1 |\n| k3s-nudgebee-dev-e606-2246bc-node-pool-4196-r6gel | Ready | <none> | 9d | v1.30.5+k3s1 |",
+            "ground_truth": [
+                [
+                    "kubectl get nodes",
+                    "kubectl get no"
+                ]
+            ]
+        },
+        {
+            "query": "Which command lists all namespaces?",
+            "retrieved_contexts": [
+                ": The command `kubectl get namespaces` lists all namespaces. Here is the list of namespaces:\n\n* actions-runner-system-1\n* auto-pilot-testing\n* cert-manager\n* clickhouse\n* coroot-multi-svc-app\n* default\n* ingress-nginx\n* iteration-prod-102\n* iteration-prod-106\n* iteration-test-106\n* kube-node-lease\n* kube-public\n* kube-system\n* kubernetes-dashboard\n* loki\n* nudgebee\n* nudgebee-agent\n* nudgebee-agent-prod\n* nudgebee-on-prem-test\n* nudgebee-test\n* opentelemetry-demo\n* otel\n* otel-demo\n* rabbit\n* rabbit-test\n* redis\n* redis-test\n* sonarqube\n* teleport\n* testing-pvc-2\n* testing-pvc-3\n* victoria"
+            ],
+            "expected_contexts": [
+                "kubectl get namespaces"
+            ],
+            "generated_answer": ": The command `kubectl get namespaces` lists all namespaces. Here is the list of namespaces:\n\n* actions-runner-system-1\n* auto-pilot-testing\n* cert-manager\n* clickhouse\n* coroot-multi-svc-app\n* default\n* ingress-nginx\n* iteration-prod-102\n* iteration-prod-106\n* iteration-test-106\n* kube-node-lease\n* kube-public\n* kube-system\n* kubernetes-dashboard\n* loki\n* nudgebee\n* nudgebee-agent\n* nudgebee-agent-prod\n* nudgebee-on-prem-test\n* nudgebee-test\n* opentelemetry-demo\n* otel\n* otel-demo\n* rabbit\n* rabbit-test\n* redis\n* redis-test\n* sonarqube\n* teleport\n* testing-pvc-2\n* testing-pvc-3\n* victoria",
+            "ground_truth": [
+                [
+                    "kubectl get namespaces",
+                    "kubectl get ns"
+                ]
+            ]
+        },
+        {
+            "query": "How can I see all running pods in the default namespace?",
+            "retrieved_contexts": [
+                "{\"command\":\"kubectl get pods --field-selector=status.phase=Running -n default\",\"stderr\":\"\",\"stdout\":\"NAME             READY   STATUS    RESTARTS   AGE\\nodb-postgres-0   1/1     Running   0          9d\\n\"}"
+            ],
+            "expected_contexts": [
+                "kubectl get pods"
+            ],
+            "generated_answer": "{\"command\":\"kubectl get pods --field-selector=status.phase=Running -n default\",\"stderr\":\"\",\"stdout\":\"NAME             READY   STATUS    RESTARTS   AGE\\nodb-postgres-0   1/1     Running   0          9d\\n\"}",
+            "ground_truth": [
+                [
+                    "kubectl get pods",
+                    "kubectl get po"
+                ]
+            ]
+        },
+        {
+            "query": "What command lists pods in a specific namespace?",
+            "retrieved_contexts": [
+                "**\n===============\n\nThe command to list pods in a specific namespace is:\n\n`kubectl get pods -n <namespace>`\n\nReplace `<namespace>` with the actual namespace name, for example:\n\n`kubectl get pods -n my-namespace`"
+            ],
+            "expected_contexts": [
+                "kubectl get pods -n <namespace>"
+            ],
+            "generated_answer": "**\n===============\n\nThe command to list pods in a specific namespace is:\n\n`kubectl get pods -n <namespace>`\n\nReplace `<namespace>` with the actual namespace name, for example:\n\n`kubectl get pods -n my-namespace`",
+            "ground_truth": [
+                [
+                    "kubectl get pods -n <namespace>",
+                    "kubectl get po -n <namespace>"
+                ]
+            ]
+        },
+        {
+            "query": "How do I describe a specific pod?",
+            "retrieved_contexts": [
+                "{\"command\":\"kubectl describe pod \\u003cpod_name\\u003e -n \\u003cnamespace\\u003e\",\"stderr\":\"/bin/sh: syntax error: unexpected end of file\\n\",\"stdout\":\"\"}"
+            ],
+            "expected_contexts": [
+                "kubectl describe pod <pod-name>"
+            ],
+            "generated_answer": "{\"command\":\"kubectl describe pod \\u003cpod_name\\u003e -n \\u003cnamespace\\u003e\",\"stderr\":\"/bin/sh: syntax error: unexpected end of file\\n\",\"stdout\":\"\"}",
+            "ground_truth": [
+                [
+                    "kubectl describe pod <pod-name>",
+                    "kubectl describe po <pod-name>"
+                ]
+            ]
+        },
+        {
+            "query": "Which command gives details about a specific node?",
+            "retrieved_contexts": [
+                ": The command `kubectl describe nodes <node_name>` is used to get detailed information about a specific node in the cluster."
+            ],
+            "expected_contexts": [
+                "kubectl describe node <node-name>"
+            ],
+            "generated_answer": ": The command `kubectl describe nodes <node_name>` is used to get detailed information about a specific node in the cluster.",
+            "ground_truth": [
+                [
+                    "kubectl describe node <node-name>",
+                    "kubectl describe no <node-name>"
+                ]
+            ]
+        },
+        {
+            "query": "How do I create a new deployment?",
+            "retrieved_contexts": [
+                ": The final answer to the user's question \"How do I create a new deployment?\" is to use the `kubectl create deployment` command with the required options, as shown in the example above."
+            ],
+            "expected_contexts": [
+                "kubectl create deployment <deployment-name> --image=<image-name>"
+            ],
+            "generated_answer": ": The final answer to the user's question \"How do I create a new deployment?\" is to use the `kubectl create deployment` command with the required options, as shown in the example above.",
+            "ground_truth": [
+                [
+                    "kubectl create deployment <deployment-name> --image=<image-name>"
+                ]
+            ]
+        },
+        {
+            "query": "Which command scales a deployment to 3 replicas?",
+            "retrieved_contexts": [
+                "Tool(kubectl_execute) is trying to update cluster resources. Do you want to continue?\nCommand - kubectl scale deployment <deployment_name> --replicas=3 -n <namespace>"
+            ],
+            "expected_contexts": [
+                "kubectl scale deployment <deployment-name> --replicas=3"
+            ],
+            "generated_answer": "Tool(kubectl_execute) is trying to update cluster resources. Do you want to continue?\nCommand - kubectl scale deployment <deployment_name> --replicas=3 -n <namespace>",
+            "ground_truth": [
+                [
+                    "kubectl scale deployment <deployment-name> --replicas=3"
+                ]
+            ]
+        },
+        {
+            "query": "How can I delete a deployment?",
+            "retrieved_contexts": [
+                "Tool(kubectl_execute) is trying to delete cluster resources. Do you want to continue?\nCommand - kubectl delete deployment <deployment_name> -n <namespace>"
+            ],
+            "expected_contexts": [
+                "kubectl delete deployment <deployment-name>"
+            ],
+            "generated_answer": "Tool(kubectl_execute) is trying to delete cluster resources. Do you want to continue?\nCommand - kubectl delete deployment <deployment_name> -n <namespace>",
+            "ground_truth": [
+                [
+                    "kubectl delete deployment <deployment-name>",
+                    "kubectl delete deploy <deployment-name>"
+                ]
+            ]
+        },
+        {
+            "query": "How do I update the image of a deployment?",
+            "retrieved_contexts": [
+                ": The purpose of the `kubectl set image` command is to update existing container image(s) of resources."
+            ],
+            "expected_contexts": [
+                "kubectl set image deployment/<deployment-name> <container-name>=<new-image>"
+            ],
+            "generated_answer": ": The purpose of the `kubectl set image` command is to update existing container image(s) of resources.",
+            "ground_truth": [
+                [
+                    "kubectl set image deployment/<deployment-name> <container-name>=<new-image>"
+                ]
+            ]
+        },
+        {
+            "query": "Which command lists all services?",
+            "retrieved_contexts": [
+                ": The command to list all services is `kubectl get services --all-namespaces`."
+            ],
+            "expected_contexts": [
+                "kubectl get services"
+            ],
+            "generated_answer": ": The command to list all services is `kubectl get services --all-namespaces`.",
+            "ground_truth": [
+                [
+                    "kubectl get services",
+                    "kubectl get svc"
+                ]
+            ]
+        },
+        {
+            "query": "How do I expose a deployment as a service?",
+            "retrieved_contexts": [
+                ": To expose a deployment as a service, you can use the `kubectl expose` command with the following syntax: `kubectl expose deployment <deployment_name> --port=<port> --target-port=<target_port>`. This will create a new service that exposes the deployment on the specified port and target port. You can also use the `--selector` option to specify a label selector to use for the service, allowing you to select a subset of pods or other resources to expose as a service, based on their labels."
+            ],
+            "expected_contexts": [
+                "kubectl expose deployment <deployment-name> --type=NodePort --port=80"
+            ],
+            "generated_answer": ": To expose a deployment as a service, you can use the `kubectl expose` command with the following syntax: `kubectl expose deployment <deployment_name> --port=<port> --target-port=<target_port>`. This will create a new service that exposes the deployment on the specified port and target port. You can also use the `--selector` option to specify a label selector to use for the service, allowing you to select a subset of pods or other resources to expose as a service, based on their labels.",
+            "ground_truth": [
+                [
+                    "kubectl expose deployment <deployment-name> --type=NodePort --port=80"
+                ]
+            ]
+        },
+        {
+            "query": "How do I port forward a pod to my local machine?",
+            "retrieved_contexts": [
+                ": To port forward a pod to your local machine, you can use the following command:\n\n`kubectl port-forward pod/<pod_name> <local_port> <pod_port>`\n\nFor example:\n\n`kubectl port-forward pod/example-pod 9090 8080`\n\nThis will forward traffic from port 9090 on your local machine to port 8080 in the 'example-pod' pod."
+            ],
+            "expected_contexts": [
+                "kubectl port-forward pod/<pod-name> 8080:80"
+            ],
+            "generated_answer": ": To port forward a pod to your local machine, you can use the following command:\n\n`kubectl port-forward pod/<pod_name> <local_port> <pod_port>`\n\nFor example:\n\n`kubectl port-forward pod/example-pod 9090 8080`\n\nThis will forward traffic from port 9090 on your local machine to port 8080 in the 'example-pod' pod.",
+            "ground_truth": [
+                [
+                    "kubectl port-forward pod/<pod-name> 8080:80"
+                ]
+            ]
+        },
+        {
+            "query": "What is the command to get logs from a specific pod?",
+            "retrieved_contexts": [
+                ":\n\nThe command to get logs from a specific pod is:\n```\nkubectl logs <pod_name> -n <namespace>\n```\nThis command uses the `kubectl logs` command to retrieve the logs from the specified pod, and the `-n` flag to specify the namespace where the pod is located. You would replace `<pod_name>` and `<namespace>` with the actual name of the pod and namespace you want to retrieve logs from."
+            ],
+            "expected_contexts": [
+                "kubectl logs <pod-name>"
+            ],
+            "generated_answer": ":\n\nThe command to get logs from a specific pod is:\n```\nkubectl logs <pod_name> -n <namespace>\n```\nThis command uses the `kubectl logs` command to retrieve the logs from the specified pod, and the `-n` flag to specify the namespace where the pod is located. You would replace `<pod_name>` and `<namespace>` with the actual name of the pod and namespace you want to retrieve logs from.",
+            "ground_truth": [
+                [
+                    "kubectl logs <pod-name>"
+                ]
+            ]
+        },
+        {
+            "query": "How can I stream logs from a pod?",
+            "retrieved_contexts": [
+                ": The command to stream logs from a pod is `kubectl logs -f <pod_name> -n <namespace>`."
+            ],
+            "expected_contexts": [
+                "kubectl logs -f <pod-name>"
+            ],
+            "generated_answer": ": The command to stream logs from a pod is `kubectl logs -f <pod_name> -n <namespace>`.",
+            "ground_truth": [
+                [
+                    "kubectl logs -f <pod-name>"
+                ]
+            ]
+        },
+        {
+            "query": "Which command executes a shell inside a running pod?",
+            "retrieved_contexts": [
+                ": \n\n# Command to Execute a Shell Inside a Running Pod\n\nThe command to execute a shell inside a running pod is `kubectl exec -it <pod_name> -- /bin/bash`, where `<pod_name>` is the name of the pod.\n\n## Example Usage\n\nReplace `<pod_name>` with the actual name of the pod you want to access. For example, if your pod is named \"my-pod\", the correct command would be:\n\n```bash\nkubectl exec -it my-pod -- /bin/bash\n```\n\nThis command allows you to execute a shell inside the running pod."
+            ],
+            "expected_contexts": [
+                "kubectl exec -it <pod-name> -- /bin/sh"
+            ],
+            "generated_answer": ": \n\n# Command to Execute a Shell Inside a Running Pod\n\nThe command to execute a shell inside a running pod is `kubectl exec -it <pod_name> -- /bin/bash`, where `<pod_name>` is the name of the pod.\n\n## Example Usage\n\nReplace `<pod_name>` with the actual name of the pod you want to access. For example, if your pod is named \"my-pod\", the correct command would be:\n\n```bash\nkubectl exec -it my-pod -- /bin/bash\n```\n\nThis command allows you to execute a shell inside the running pod.",
+            "ground_truth": [
+                [
+                    "kubectl exec -it <pod-name> -- /bin/sh",
+                    "kubectl exec -it <pod-name> -- /bin/bash"
+                ]
+            ]
+        },
+        {
+            "query": "How do I get events in a specific namespace?",
+            "retrieved_contexts": [
+                "{\"command\":\"kubectl get events -n \\u003cnamespace\\u003e\",\"stderr\":\"/bin/sh: syntax error: unexpected end of file\\n\",\"stdout\":\"\"}"
+            ],
+            "expected_contexts": [
+                "kubectl get events -n <namespace>"
+            ],
+            "generated_answer": "{\"command\":\"kubectl get events -n \\u003cnamespace\\u003e\",\"stderr\":\"/bin/sh: syntax error: unexpected end of file\\n\",\"stdout\":\"\"}",
+            "ground_truth": [
+                [
+                    "kubectl get events -n <namespace>"
+                ]
+            ]
+        },
+        {
+            "query": "What is the command to list all ConfigMaps?",
+            "retrieved_contexts": [
+                ": The purpose of the command `kubectl get configmaps --all-namespaces` is to retrieve a list of all ConfigMaps in all namespaces within a Kubernetes cluster."
+            ],
+            "expected_contexts": [
+                "kubectl get configmaps"
+            ],
+            "generated_answer": ": The purpose of the command `kubectl get configmaps --all-namespaces` is to retrieve a list of all ConfigMaps in all namespaces within a Kubernetes cluster.",
+            "ground_truth": [
+                [
+                    "kubectl get configmaps",
+                    "kubectl get cm"
+                ]
+            ]
+        },
+        {
+            "query": "How can I list all secrets?",
+            "retrieved_contexts": [
+                ":\n\n# List of Secrets Across All Namespaces\n\nThe following is a list of secrets in all namespaces in the Kubernetes cluster:\n\n* Namespace: actions-runner-system-1\n\t+ Name: actions-runner-controller-serving-cert\n\t+ Type: kubernetes.io/tls\n\t+ Age: 118d\n* Namespace: cert-manager\n\t+ Name: ca-key-pair\n\t+ Type: kubernetes.io/tls\n\t+ Age: 112d\n* ...\n* Namespace: victoria\n\t+ Name: tls-assets-vmagent-victoria-victoria-metrics-k8s-stack\n\t+ Type: Opaque\n\t+ Age: 124d\n\nPlease note that the above list is truncated for brevity. The actual list contains many more secrets across various namespaces.\n\nI hope this provides a clear answer in the expected format."
+            ],
+            "expected_contexts": [
+                "kubectl get secrets"
+            ],
+            "generated_answer": ":\n\n# List of Secrets Across All Namespaces\n\nThe following is a list of secrets in all namespaces in the Kubernetes cluster:\n\n* Namespace: actions-runner-system-1\n\t+ Name: actions-runner-controller-serving-cert\n\t+ Type: kubernetes.io/tls\n\t+ Age: 118d\n* Namespace: cert-manager\n\t+ Name: ca-key-pair\n\t+ Type: kubernetes.io/tls\n\t+ Age: 112d\n* ...\n* Namespace: victoria\n\t+ Name: tls-assets-vmagent-victoria-victoria-metrics-k8s-stack\n\t+ Type: Opaque\n\t+ Age: 124d\n\nPlease note that the above list is truncated for brevity. The actual list contains many more secrets across various namespaces.\n\nI hope this provides a clear answer in the expected format.",
+            "ground_truth": [
+                [
+                    "kubectl get secrets"
+                ]
+            ]
+        },
+        {
+            "query": "Which command creates a secret from literal values?",
+            "retrieved_contexts": [
+                "Tool(kubectl_execute) is trying to create cluster resources. Do you want to continue?\nCommand - kubectl create secret generic monitoring-credentials-secret --from-literal=key1=supersecret --from-literal=key2=topsecret"
+            ],
+            "expected_contexts": [
+                "kubectl create secret generic my-secret --from-literal=username=admin --from-literal=password=secret"
+            ],
+            "generated_answer": "Tool(kubectl_execute) is trying to create cluster resources. Do you want to continue?\nCommand - kubectl create secret generic monitoring-credentials-secret --from-literal=key1=supersecret --from-literal=key2=topsecret",
+            "ground_truth": [
+                [
+                    "kubectl create secret generic my-secret --from-literal=username=admin --from-literal=password=secret"
+                ]
+            ]
+        },
+        {
+            "query": "How do I apply a YAML configuration file?",
+            "retrieved_contexts": [
+                ": The correct command to apply a YAML configuration file if the file is named \"deployment.yaml\" and is located in the current directory is `kubectl apply -f ./deployment.yaml`."
+            ],
+            "expected_contexts": [
+                "kubectl apply -f <file-name>.yaml"
+            ],
+            "generated_answer": ": The correct command to apply a YAML configuration file if the file is named \"deployment.yaml\" and is located in the current directory is `kubectl apply -f ./deployment.yaml`.",
+            "ground_truth": [
+                [
+                    "kubectl apply -f <file-name>.yaml"
+                ]
+            ]
+        },
+        {
+            "query": "How do I check the cluster health?",
+            "retrieved_contexts": [
+                ":\n\n# Cluster Health Summary\n\nThe cluster appears to be in a healthy state, with the majority of pods running successfully. However, there are a few pods with ImagePullBackOff status, which may indicate issues with image pulls or network connectivity.\n\n## Total Pods\n\n* Total Pods: 246\n* Running Pods: 236 (95.5%)\n* Completed Pods: 6 (2.4%)\n* Failed Pods: 0 (0%)\n* ImagePullBackOff Pods: 2 (0.8%)\n* Other Statuses: 2 (0.8%) (includes pods with statuses like \"Pending\", \"Unknown\", etc.)\n\n## Namespace-wise Breakdown\n\n* **actions-runner-system-1: 2 pods, all running\n* auto-pilot-testing: 8 pods, all running\n* cert-manager: 3 pods, all running\n* clickhouse: 2 pods, all running\n* default: 3 pods, 2 completed, 1 running\n* ingress-nginx: 2 pods, all running\n* iteration-prod-106: 3 pods, all running\n* iteration-test-106: 3 pods, all running\n* kube-system: 17 pods, all running\n* loki: 7 pods, all running\n* nudgebee-agent-prod: 2 pods, all running\n* nudgebee-agent: 13 pods, 11 running, 2 imagepullbackoff\n* nudgebee-on-prem-test: 14 pods, all running\n* nudgebee-test: 15 pods, all running\n* nudgebee: 17 pods, 15 running, 2 completed\n* opentelemetry-demo: 4 pods, all running\n* otel: 6 pods, all running\n* rabbit-test: 1 pod, running\n* rabbit: 1 pod, running\n* redis-test: 1 pod, running\n* redis: 1 pod, running\n* sonarqube: 2 pods, all running\n* teleport: 1 pod, running\n* testing-pvc-2: 1 pod, running\n* testing-pvc-3: 1 pod, running\n* victoria: 14 pods, all running"
+            ],
+            "expected_contexts": [
+                "kubectl get componentstatuses"
+            ],
+            "generated_answer": ":\n\n# Cluster Health Summary\n\nThe cluster appears to be in a healthy state, with the majority of pods running successfully. However, there are a few pods with ImagePullBackOff status, which may indicate issues with image pulls or network connectivity.\n\n## Total Pods\n\n* Total Pods: 246\n* Running Pods: 236 (95.5%)\n* Completed Pods: 6 (2.4%)\n* Failed Pods: 0 (0%)\n* ImagePullBackOff Pods: 2 (0.8%)\n* Other Statuses: 2 (0.8%) (includes pods with statuses like \"Pending\", \"Unknown\", etc.)\n\n## Namespace-wise Breakdown\n\n* **actions-runner-system-1: 2 pods, all running\n* auto-pilot-testing: 8 pods, all running\n* cert-manager: 3 pods, all running\n* clickhouse: 2 pods, all running\n* default: 3 pods, 2 completed, 1 running\n* ingress-nginx: 2 pods, all running\n* iteration-prod-106: 3 pods, all running\n* iteration-test-106: 3 pods, all running\n* kube-system: 17 pods, all running\n* loki: 7 pods, all running\n* nudgebee-agent-prod: 2 pods, all running\n* nudgebee-agent: 13 pods, 11 running, 2 imagepullbackoff\n* nudgebee-on-prem-test: 14 pods, all running\n* nudgebee-test: 15 pods, all running\n* nudgebee: 17 pods, 15 running, 2 completed\n* opentelemetry-demo: 4 pods, all running\n* otel: 6 pods, all running\n* rabbit-test: 1 pod, running\n* rabbit: 1 pod, running\n* redis-test: 1 pod, running\n* redis: 1 pod, running\n* sonarqube: 2 pods, all running\n* teleport: 1 pod, running\n* testing-pvc-2: 1 pod, running\n* testing-pvc-3: 1 pod, running\n* victoria: 14 pods, all running",
+            "ground_truth": [
+                [
+                    "kubectl get componentstatuses",
+                    "kubectl get cs"
+                ]
+            ]
+        },
+        {
+            "query": "Which command lists only running pods?",
+            "retrieved_contexts": [
+                ": The command to list only running pods is `kubectl get pods --field-selector=status.phase=Running -n <namespace>`."
+            ],
+            "expected_contexts": [
+                "kubectl get pods --field-selector=status.phase=Running"
+            ],
+            "generated_answer": ": The command to list only running pods is `kubectl get pods --field-selector=status.phase=Running -n <namespace>`.",
+            "ground_truth": [
+                [
+                    "kubectl get pods --field-selector=status.phase=Running"
+                ]
+            ]
+        },
+        {
+            "query": "How can I check the status of a deployment rollout?",
+            "retrieved_contexts": [
+                "{\"command\":\"kubectl rollout status deployment/ -n \\u003cnamespace\\u003e (I'll assume a namespace is required, but I don't have one specified)\",\"stderr\":\"/bin/sh: syntax error: unexpected \\\"(\\\"\\n\",\"stdout\":\"\"}"
+            ],
+            "expected_contexts": [
+                "kubectl rollout status deployment/<deployment-name>"
+            ],
+            "generated_answer": "{\"command\":\"kubectl rollout status deployment/ -n \\u003cnamespace\\u003e (I'll assume a namespace is required, but I don't have one specified)\",\"stderr\":\"/bin/sh: syntax error: unexpected \\\"(\\\"\\n\",\"stdout\":\"\"}",
+            "ground_truth": [
+                [
+                    "kubectl rollout status deployment/<deployment-name>"
+                ]
+            ]
+        },
+        {
+            "query": "What is the command to rollback a deployment to the previous revision?",
+            "retrieved_contexts": [
+                "Tool(kubectl_execute) is trying to update cluster resources. Do you want to continue?\nCommand - kubectl rollout undo deployment"
+            ],
+            "expected_contexts": [
+                "kubectl rollout undo deployment/<deployment-name>"
+            ],
+            "generated_answer": "Tool(kubectl_execute) is trying to update cluster resources. Do you want to continue?\nCommand - kubectl rollout undo deployment",
+            "ground_truth": [
+                [
+                    "kubectl rollout undo deployment/<deployment-name>"
+                ]
+            ]
+        }
+    ],
+    "Context Recall": 46.15384615384615,
+    "Context Precision": 84.61538460692306,
+    "Faithfulness": 100.0,
+    "Answer Relevancy": 82.58142549901264,
+    "Accuracy": 78.33766406494547
+}

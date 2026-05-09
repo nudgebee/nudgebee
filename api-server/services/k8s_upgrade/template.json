@@ -1,0 +1,333 @@
+{
+  "current_version": null,
+  "target_version": null,
+  "provider": null,
+  "steps": [
+    {
+      "sequence": 1,
+      "title": "Upgrade Details and Release Notes",
+      "description": "Review the Kubernetes release notes for the target version and prepare documentation.",
+      "status": "Pending",
+      "tasks": [
+        {
+          "id": "",
+          "sequence": 1,
+          "title": "Review Provider release notes",
+          "description": "Verify any cloud provider or distribution-specific notes.",
+          "status": "Pending",
+          "is_required": true
+        },
+        {
+          "id": "",
+          "sequence": 2,
+          "title": "Review Kubernetes release notes",
+          "description": "Read official Kubernetes release notes for breaking changes.",
+          "status": "Pending",
+          "is_required": true
+        }
+      ]
+    },
+    {
+      "sequence": 2,
+      "title": "Upgrade prerequisites",
+      "description": "Verify compatibility of add-ons, CNI plugins, and storage drivers.",
+      "status": "Pending",
+      "tasks": [
+        {
+          "id": "",
+          "sequence": 1,
+          "title": "Cluster Owner/Manger Approval",
+          "description": "Obtain approval from engineering managers or cluster owners before proceeding with staging and production upgrades.",
+          "status": "Pending",
+          "is_required": false
+        },
+        {
+          "id": "",
+          "sequence": 2,
+          "title": "Check Tools Readiness for Upgrade",
+          "description": "Ensuring your CLI tools are compatible with the target Kubernetes version is crucial because version mismatches can cause authentication failures, API compatibility issues, or incomplete cluster operations. Think of this as making sure your toolkit matches the complexity of the job ahead.\n\nCore tools to verify and upgrade:\n\n**kubectl (Essential)**: The primary interface to your cluster. Version skew policies allow kubectl to be ±1 minor version from your cluster, but staying current ensures access to latest features and bug fixes.\n- Check version: `kubectl version --client --output=yaml`\n- Install/upgrade via package manager: `sudo apt update && sudo apt install -y kubectl` (Ubuntu/Debian) or `brew install kubectl` (macOS)\n- Direct download (Linux): `curl -LO \"https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl\" && sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl`\n- Direct download (macOS): `curl -LO \"https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/darwin/amd64/kubectl\" && chmod +x kubectl && sudo mv kubectl /usr/local/bin/`\n\n**Helm (Package Management)**: Manages application deployments through charts. Incompatible versions can break chart installations or upgrades.\n- Check version: `helm version`\n- Install/upgrade: `brew install helm` (macOS) or `curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash` (Linux)\n- Package manager: `sudo apt install helm` (Ubuntu) or `choco install kubernetes-helm` (Windows)\n\n**Cloud Provider CLI Tools** (if applicable to your environment):\n- **AWS EKS**: eksctl - `brew install weaveworks/tap/eksctl` or `curl --silent --location \"https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz\" | tar xz -C /tmp && sudo mv /tmp/eksctl /usr/local/bin`\n- **Azure AKS**: az cli - `brew install azure-cli` or `curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash`\n- **Google GKE**: gcloud - `brew install --cask google-cloud-sdk` or download from Google Cloud SDK page\n- **Self-managed clusters**: Tools like kops, kubeadm, or Rancher CLI depending on your deployment method\n\n**Validation steps after upgrade:**\n1. Verify kubectl can connect: `kubectl cluster-info`\n2. Test basic operations: `kubectl get nodes` and `kubectl get pods --all-namespaces`\n3. Check Helm functionality: `helm list --all-namespaces`\n4. Verify cloud provider CLI (if used): Test cluster listing commands like `eksctl get cluster`, `az aks list`, or `gcloud container clusters list`\n5. Cross-reference tool versions with official compatibility matrices in the Kubernetes release notes\n\n**Remember that using outdated tools during upgrades can lead to subtle compatibility issues that manifest as hard-to-debug problems later, so investing time in this step prevents frustrating troubleshooting sessions during critical upgrade operations.**",
+          "status": "Pending",
+          "is_required": true
+        },
+        {
+          "id": "",
+          "sequence": 3,
+          "title": "Check Kubernetes Version of Lower Environments",
+          "action": "upgrade_execute_command",
+          "description": "Verifying the Kubernetes versions across your lower environments (dev, staging, test) is critical for understanding your upgrade path and identifying potential compatibility gaps. This step helps you avoid the classic \"it worked in dev but failed in production\" scenario by ensuring your upgrade strategy accounts for version drift across environments.\n\n**Why this matters:**\n- **Version drift detection**: Lower environments often get upgraded first or more frequently, creating version mismatches that can hide compatibility issues\n- **Application compatibility validation**: Your applications may behave differently across Kubernetes versions due to API changes, feature gates, or deprecated functionality\n- **Upgrade path planning**: Understanding the version spread helps determine if you need incremental upgrades or can skip versions\n- **Risk assessment**: Larger version gaps indicate higher upgrade complexity and potential breaking changes\n\n**Information to collect for each environment:**\n\n**Cluster Version Information:**\n\n##### Basic cluster version\n```bash\nkubectl version --short\n```\n\n##### Detailed version info including build metadata\n```bash\nkubectl version --output=yaml\n```\n\n##### Server version only (useful for scripting)\n```bash\nkubectl version --output=json | jq -r '.serverVersion.gitVersion'\n```\n\n##### Node versions (may differ from control plane)\n```bash\nkubectl get nodes -o wide\n```\n\n##### Component versions and health\n```bash\nkubectl get componentstatuses\n```\n\n**API Version Support:**\n\n##### List all available API versions\n```bash\nkubectl api-versions | sort\n```\n\n##### Check specific API group versions\n```bash\nkubectl api-resources --api-group=apps -o wide\n```\n\n##### Identify deprecated APIs in use\n```bash\nkubectl get --raw /metrics | grep apiserver_requested_deprecated_apis\n```\n\n**Feature Gate Status** (for clusters you manage):\n\n##### Check enabled feature gates\n```bash\nkubectl get configmap kubeadm-config -n kube-system -o yaml\n```\n\n##### Check feature gates via API server flags\n```bash\nkubectl get pod -n kube-system -l component=kube-apiserver -o yaml | grep feature-gates\n```\n\n**Cloud Provider Specific Commands:**\n\n**AWS EKS:**\n\n##### List all EKS clusters with versions\n```bash\neksctl get cluster -o yaml\n```\n\n##### Detailed EKS cluster info including addon versions\n```bash\naws eks describe-cluster --name <cluster-name> --query 'cluster.{Version:version,Platform:platformVersion,Addons:addons}'\n```\n\n##### Check EKS node group versions\n```bash\naws eks describe-nodegroup --cluster-name <cluster-name> --nodegroup-name <nodegroup-name>\n```\n\n**Azure AKS:**\n\n##### List AKS clusters with versions\n```bash\naz aks list --query '[].{Name:name,Version:kubernetesVersion,ResourceGroup:resourceGroup}' -o table\n```\n\n##### Get available upgrade versions for AKS\n```bash\naz aks get-upgrades --resource-group <rg-name> --name <cluster-name>\n```\n\n##### Check AKS node pool versions\n```bash\naz aks nodepool list --cluster-name <cluster-name> --resource-group <rg-name>\n```\n\n**Google GKE:**\n\n##### List GKE clusters with versions\n```bash\ngcloud container clusters list --format='table(name,currentMasterVersion,currentNodeVersion,location)'\n```\n\n##### Get available upgrades for GKE\n```bash\ngcloud container get-server-config --zone=<zone>\n```\n\n##### Detailed GKE cluster info\n```bash\ngcloud container clusters describe <cluster-name> --zone=<zone>\n```\n\n**Self-Managed Clusters:**\n\n##### Check kubeadm version\n```bash\nkubeadm version\n```\n\n##### View kubeadm config\n```bash\nsudo kubeadm config view\n```\n\n##### Verify etcd version\n```bash\nkubectl get pods -n kube-system -l component=etcd -o yaml | grep image:\n```\n\n##### Check CNI plugin versions\n```bash\nkubectl get pods -n kube-system -l k8s-app=<cni-name> -o yaml | grep image:\n```\n\n**Document and analyze the findings:**\n\n1. **Create a version inventory table:**\n```\n| Environment | Control Plane | Node Version | CNI | CSI Drivers | Key Addons |\n|-------------|---------------|--------------|-----|-------------|-------------|\n| dev         | 1.30.2        | 1.30.1       | Calico 3.25 | EBS 1.19.0 | ALB 2.5.1 |\n| staging     | 1.29.8        | 1.29.6       | Calico 3.24 | EBS 1.18.0 | ALB 2.4.2 |\n| prod        | 1.29.4        | 1.29.4       | Calico 3.24 | EBS 1.17.0 | ALB 2.4.1 |\n```\n\n2. **Identify version gaps and risks:**\n- Note any environments more than 2 minor versions apart\n- Check for deprecated API usage in higher-version environments\n- Document custom resources or operators that might be version-sensitive\n- Identify environments where node versions lag behind control plane significantly\n\n3. **Application testing validation:**\n- Verify your applications run correctly across all environment versions\n- Test helm charts and operators across different Kubernetes versions\n- Validate custom controllers work with different API server versions\n\n4. **Plan your upgrade sequence:**\n- Consider whether to level-set all environments before production upgrade\n- Identify if any environments need intermediate version upgrades\n- Plan for testing application deployments across version boundaries\n\n**Red flags to watch for:**\n- Environments running Kubernetes versions with known security vulnerabilities\n- Applications using deprecated APIs that will be removed in target version\n- Custom operators or controllers that haven't been tested with newer Kubernetes versions\n- Significant addon version differences that could affect application behavior\n- Node groups running versions incompatible with your target control plane version\n\n**Next steps based on findings:**\n- If major version gaps exist, plan incremental upgrades for lower environments first\n- Schedule application compatibility testing if you find API version discrepancies\n- Update any tooling or automation that assumes specific Kubernetes API versions\n- Consider running parallel environments for testing if version gaps are significant\n\nThis analysis forms the foundation for your upgrade risk assessment and helps ensure that lessons learned from lower environment upgrades translate effectively to production.",
+          "status": "Pending",
+          "is_required": false
+        }
+      ]
+    },
+    {
+      "sequence": 3,
+      "title": "Deprecations and Compatibility Check",
+      "description": "Upgrading a Kubernetes cluster is not just about moving to a newer version; it is essential to ensure the upgrade will not break existing applications, tools, or workflows.",
+      "status": "Pending",
+      "tasks": [
+        {
+          "id": "",
+          "sequence": 1,
+          "title": "Run API deprecation checks",
+          "action": "deprecated_api_check",
+          "description": "- Kubernetes regularly **deprecates APIs, flags, and features** as it evolves. Deprecated APIs might be removed in future releases, causing workloads or controllers that rely on them to fail after an upgrade.\n- Identifying deprecated APIs or features **before upgrading** helps avoid downtime and application failures, as manifests and operators can be updated in advance.\n- For example, older versions of Ingress resources or some networking APIs often get deprecated; workloads using these would break if not addressed.",
+          "status": "Pending",
+          "is_required": true
+        },
+        {
+          "id": "",
+          "sequence": 2,
+          "title": "PDB Check",
+          "action": "pdb_check",
+          "description": "PodDisruptionBudgets (PDBs) are Kubernetes resources that help maintain application availability during voluntary disruptions, such as node drains, upgrades, or maintenance. PDBs define rules for how many pods of a deployment, statefulset, or replica set can be unavailable at any given time.\n\nA PDB specifies either:\n\n- **`minAvailable`** – the minimum number of pods that **must remain running** during a disruption.\n- **`maxUnavailable`** – the maximum number of pods that can be **unavailable at a time**.\n\n> Example: If a deployment has 5 pods and `minAvailable: 4`, Kubernetes will allow only 1 pod to be disrupted at a time. Conversely, `maxUnavailable: 1` means at most 1 pod can be unavailable simultaneously.\n\n**Upgrade Considerations:**\n- Ensure that all PDBs use the stable API version: `policy/v1`.\n  Older versions like `policy/v1beta1` are deprecated and may be removed in future Kubernetes releases.\n- Verify that the `minAvailable` and `maxUnavailable` values are valid for your workloads, especially before upgrading nodes or cluster versions.\n**Tip:** Always test PDB changes in a staging environment before applying to production to ensure no service downtime occurs.",
+          "status": "Pending",
+          "is_required": true
+        },
+        {
+          "id": "",
+          "sequence": 3,
+          "title": "Helm Compatibility Check",
+          "action": "helm_compatibility_check",
+          "description": "- Helm charts package Kubernetes manifests and configuration for deploying apps and cluster services.  \n- Each Helm chart version targets a range of supported Kubernetes versions and may depend on specific API versions or features.  \n- Upgrading a Helm chart may also upgrade the underlying application version, which could have its own compatibility requirements.  \n- It’s important to:  \n  - Check the current Helm chart version and its supported Kubernetes versions.  \n  - Review target Helm chart release notes for any breaking changes or new requirements.  \n  - Understand if the target application version supports zero-downtime upgrades or requires downtime \n- Failure to verify compatibility can result in failed releases, resource misconfigurations, or downtime during upgrades.",
+          "status": "Pending",
+          "is_required": true
+        },
+        {
+          "id": "",
+          "sequence": 4,
+          "title": "Add Ons Check",
+          "action": "add_on_check",
+          "description": "- Add-ons include essential cluster components such as CNI plugins (Calico, Cilium), network policies, ingress controllers, monitoring agents (Prometheus), logging components, and storage drivers.  \n- These components must be compatible with both the current and target Kubernetes versions because:  \n  - They rely on Kubernetes APIs that can be deprecated or changed.  \n  - They affect core networking, security, and observability functionalities.  \n- It is essential to:  \n  - Confirm the add-on’s supported Kubernetes versions from vendor documentation.  \n  - Check for updates or patches designed to support the target Kubernetes version.  \n  - Perform upgrade procedures recommended by the add-on maintainers (e.g., Helm upgrades, pod restarts, CRD migrations).  \n  - Validate the add-on’s functionality post-upgrade to avoid outages or degraded service.  \n\n- Ignoring add-on compatibility can cause severe cluster issues like network failures, broken ingress routes, or loss of monitoring data.\n",
+          "status": "Pending",
+          "is_required": true
+        },
+        {
+          "id": "",
+          "sequence": 5,
+          "title": "Kube Proxy Check",
+          "action": "kube_proxy_check",
+          "description": "Before upgrading a Kubernetes cluster, validating the status and compatibility of `kube-proxy` is critical. `kube-proxy` manages network rules for pod communication and cluster services, so any issues here can disrupt cluster networking.",
+          "status": "Pending",
+          "is_required": true
+        }
+      ]
+    },
+    {
+      "sequence": 4,
+      "title": "Run Pre-Upgrade Checks",
+      "description": "Comprehensive validation of cluster health before initiating the upgrade process.",
+      "status": "Pending",
+      "tasks": [
+        {
+          "id": "",
+          "sequence": 1,
+          "title": "Check Node Health",
+          "action": "check_cluster_health",
+          "resource_type": "nodes",
+          "description": "Before performing a Kubernetes cluster upgrade, verifying the health and readiness of all nodes is essential. Healthy nodes ensure a smooth upgrade with minimal disruption to workloads.",
+          "status": "Pending",
+          "is_required": true
+        },
+        {
+          "id": "",
+          "sequence": 2,
+          "title": "Check Workload Health",
+          "action": "check_cluster_health",
+          "resource_type": "workloads",
+          "description": "Ensuring the health of workloads deployed on a Kubernetes cluster is a vital step before performing an upgrade. Healthy workloads minimize disruption and help maintain service availability during the upgrade process.",
+          "status": "Pending",
+          "is_required": true
+        },
+        {
+          "id": "",
+          "sequence": 3,
+          "title": "Check PVs Status",
+          "action": "check_cluster_health",
+          "resource_type": "persistentvolumes",
+          "description": "Verify that all persistent volumes and storage systems are healthy and accessible. Storage issues during upgrade can lead to data loss or application failures, making this one of the most critical pre-upgrade checks.",
+          "status": "Pending",
+          "is_required": true
+        },
+        {
+          "id": "",
+          "sequence": 4,
+          "title": "Cluster Health Snapshot",
+          "action": "upgrade_pre_flight_check",
+          "description": "Captures Nodes, Workloads, Services, and PVCs health to compare post upgrade for insights",
+          "status": "Pending",
+          "is_required": false
+        }
+      ]
+    },
+    {
+      "sequence": 5,
+      "title": "Upgrade Preparation",
+      "description": "Prepare your cluster for upgrade by securing data, optimizing capacity, and reducing upgrade risks through strategic scaling and configuration adjustments. This phase ensures you have safety nets in place and sufficient resources to handle the upgrade process smoothly.",
+      "status": "Pending",
+      "tasks": [
+        {
+          "id": "",
+          "sequence": 1,
+          "title": "Create Critical Data Backups",
+          "description": "Safeguard your cluster's critical data before starting the upgrade process. This is your insurance policy against data loss during the upgrade.\n\n**Database Backups:**\n\n##### Backup PostgreSQL database\n```bash\npg_dump -h <host> -U <user> -d <database> > backup-$(date +%Y%m%d).sql\n```\n\n##### Backup MySQL database\n```bash\nmysqldump -h <host> -u <user> -p <database> > backup-$(date +%Y%m%d).sql\n```\n\n##### Backup MongoDB database\n```bash\nmongodump --host <host> --out /backup/mongodb-$(date +%Y%m%d)\n```\n\n**Kubernetes Resource Backups:**\n\n##### Backup all cluster resources\n```bash\nkubectl get all --all-namespaces -o yaml > cluster-backup-$(date +%Y%m%d).yaml\n```\n\n##### Backup specific critical resources\n```bash\nkubectl get configmaps,secrets,pv,pvc --all-namespaces -o yaml > resources-backup-$(date +%Y%m%d).yaml\n```\n\n##### Backup RBAC configurations\n```bash\nkubectl get roles,rolebindings,clusterroles,clusterrolebindings -o yaml > rbac-backup-$(date +%Y%m%d).yaml\n```\n\n**Storage Snapshots (Cloud Provider):**\n- AWS EBS: Use EBS snapshots or AWS Backup\n- Azure: Create managed disk snapshots\n- GCP: Create persistent disk snapshots\n\n**Verify backups are accessible and valid before proceeding.**",
+          "status": "Pending",
+          "is_required": false
+        },
+        {
+          "id": "",
+          "sequence": 2,
+          "title": "Increase Critical Service Replicas",
+          "action": "upgrade_execute_command",
+          "description": "Scale up critical applications to ensure high availability during the upgrade process. This provides redundancy in case some pods become temporarily unavailable during node upgrades.\n\n**Identify critical services:**\n\n##### List deployments with current replica counts\n```bash\nkubectl get deployments --all-namespaces -o wide\n```\n\n##### Check current resource usage\n```bash\nkubectl top pods --all-namespaces --sort-by=memory\n```\n\n**Scale up critical deployments:**\n\n##### Scale specific deployments\n```bash\nkubectl scale deployment <deployment-name> --replicas=<new-count> -n <namespace>\n```\n\n##### Example: Scale up API gateway from 3 to 5 replicas\n```bash\nkubectl scale deployment api-gateway --replicas=5 -n production\n```\n\n##### Scale up database connections pool\n```bash\nkubectl scale deployment db-proxy --replicas=4 -n production\n\n```\n\n**Use HPA temporary overrides if applicable:**\n\n##### Temporarily increase HPA max replicas\n```bash\nkubectl patch hpa <hpa-name> -n <namespace> --patch '{\"spec\":{\"maxReplicas\":<new-max>}}'\n```\n\n**Verify pod distribution across nodes:**\n\n##### Check pod distribution to ensure no single points of failure\n```bash\nkubectl get pods -o wide --all-namespaces | grep <critical-service>\n```\n\n##### Verify anti-affinity rules are working\n```bash\nkubectl describe deployment <deployment-name> -n <namespace>\n```\n\n**Services to prioritize:**\n- API gateways and load balancers\n- Authentication/authorization services\n- Core business logic applications\n- Monitoring and logging components\n- Service mesh control planes (Istio, Linkerd)\n\n**Note:** Plan to scale back down after upgrade completion to optimize resource usage.\n",
+          "status": "Pending",
+          "is_required": false
+        },
+        {
+          "id": "",
+          "sequence": 3,
+          "title": "Review Node Pool Settings",
+          "action": "check_cluster_health",
+          "resource_type": "node_groups",
+          "description": "Ensure node pool settings are tuned for stability, performance, and efficient upgrades across environments. The key parameter to review is **max-surge**, which controls how many extra nodes can be created during rolling upgrades.\n\n**Why it matters:**\n- Higher max-surge values speed up upgrades but temporarily increase resource usage.\n- Lower values slow upgrades but reduce the risk of resource contention.\n\n**Recommended max-surge values:**\n- **Production/Critical pools**: 1–2 nodes (prioritize stability)\n- **Staging pools**: 2–4 nodes (balance speed and safety)\n- **Development pools**: 4–6 nodes (optimize for faster iteration)\n\n**Platform-specific configuration:**\n- **AWS EKS**: Use `aws eks update-nodegroup-config` to adjust `maxSurge`.\n- **Azure AKS**: Use `az aks nodepool update` with the `--max-surge` flag.\n- **Google GKE**: Use `gcloud container node-pools update` with `--max-surge-upgrade`.\n- **Self-managed clusters (kubeadm)**: Tune drain and eviction settings in upgrade automation scripts.\n\n**By node pool type:**\n- **System/Control plane nodes**: Conservative (max-surge: 1)\n- **Application nodes**: Moderate (2–3)\n- **Batch/Worker nodes**: Aggressive (4–6)\n\nRegularly reviewing these settings helps balance upgrade speed with cluster reliability and resource availability.",
+          "status": "Pending",
+          "is_required": false
+        },
+        {
+          "id": "",
+          "sequence": 4,
+          "title": "Check Load Balancer and Target Instances",
+          "action": "check_cluster_health",
+          "resource_type": "load_balancer",
+          "description": "Verify that load balancers are correctly configured and all target instances are healthy to ensure reliable traffic distribution and service availability.\n\n**Why it matters:**\n- Misconfigured load balancers can cause downtime or uneven traffic routing.\n- Unhealthy or missing target instances reduce capacity and impact application performance.\n\n**Checks to perform:**\n- Confirm load balancer is active and properly associated with the cluster.\n- Verify all expected target instances are registered and in a healthy state.\n- Ensure health check probes are correctly configured (path, port, interval, timeout).\n- Validate SSL/TLS certificates for HTTPS endpoints if applicable.\n\n**Platform-specific commands:**\n- **AWS ELB/ALB/NLB**: Use `aws elbv2 describe-target-health` to check instance health.\n- **Azure Load Balancer**: Use `az network lb show` and `az network lb probe show` to verify settings.\n- **Google Cloud Load Balancer**: Use `gcloud compute backend-services get-health` to check backend instance health.\n\n**Best practices:**\n- Regularly monitor load balancer metrics (latency, 5xx errors, unhealthy hosts).\n- Keep health checks conservative to avoid false positives but responsive enough to detect real failures.\n- Ensure scaling policies align with load balancer capacity.\n\nRegular health checks on load balancers and target instances help maintain cluster reliability and prevent service disruptions.",
+          "status": "Pending",
+          "is_required": false
+        },
+        {
+          "id": "",
+          "sequence": 5,
+          "title": "Disable Cluster Autoscaler and Add Buffer Nodes",
+          "action": "upgrade_execute_command",
+          "description": "Temporarily disable cluster autoscaling and provision additional buffer nodes to ensure sufficient capacity during the upgrade process. This prevents the autoscaler from interfering with upgrade operations and provides resource headroom.\n\n**Why disable autoscaling during upgrades:**\n- Prevents conflicts between autoscaler decisions and upgrade operations\n- Avoids nodes being scaled down while upgrade is in progress\n- Ensures predictable cluster capacity throughout upgrade process\n- Prevents resource contention during critical upgrade phases\n\n**Disable Cluster Autoscaler:**\n\n**AWS EKS with Cluster Autoscaler:**\n\n##### Scale down cluster autoscaler deployment\n```bash\nkubectl scale deployment cluster-autoscaler --replicas=0 -n kube-system\n```\n\n##### Or pause the autoscaler\n```bash\nkubectl annotate deployment cluster-autoscaler cluster-autoscaler.kubernetes.io/safe-to-evict=\"false\" -n kube-system\n```\n\n**Azure AKS:**\n\n##### Disable autoscaler on AKS node pool\n```bash\naz aks nodepool update --resource-group <rg-name> --cluster-name <cluster-name> --name <nodepool-name> --disable-cluster-autoscaler\n```\n\n**Google GKE:**\n\n##### Disable autoscaling on GKE node pool\n```bash\ngcloud container clusters update <cluster-name> --zone=<zone> --no-enable-autoscaling --node-pool=<nodepool-name>\n```\n\n**Add Buffer Nodes:**\n\n**Calculate required buffer capacity:**\n\n##### Check current resource utilization\n```bash\nkubectl top nodes\n```\n\n##### Check allocated resources\n```bash\nkubectl describe nodes | grep -A 3 \"Allocated resources\"\n```\n\n##### Calculate current pod density\n```bash\nkubectl get pods --all-namespaces --field-selector=status.phase=Running | wc -l\n```\n\n**Provision additional nodes:**\n\n**AWS EKS:**\n\n##### Increase desired capacity temporarily\n```bash\naws eks update-nodegroup-config --cluster-name <cluster-name> --nodegroup-name <nodegroup-name> --scaling-config '{\"desiredSize\":<current-size+buffer>}'\n```\n\n**Azure AKS:**\n\n##### Scale AKS node pool manually\n```bash\naz aks nodepool scale --resource-group <rg-name> --cluster-name <cluster-name> --name <nodepool-name> --node-count <new-count>\n```\n\n**Google GKE:**\n\n##### Resize GKE node pool\n```bash\ngcloud container clusters resize <cluster-name> --zone=<zone> --node-pool=<nodepool-name> --num-nodes=<new-size>\n```\n\n**Recommended buffer sizing:**\n- **Small clusters (< 10 nodes)**: Add 1-2 buffer nodes\n- **Medium clusters (10-50 nodes)**: Add 2-4 buffer nodes  \n- **Large clusters (> 50 nodes)**: Add 4-8 buffer nodes or 10-15% of current capacity\n\n**Verify buffer nodes are ready:**\n\n##### Confirm new nodes are in Ready state\n```bash\nkubectl get nodes -o wide\n```\n\n##### Check available resources\n```bash\nkubectl describe nodes | grep -A 5 \"Allocatable\"\n```\n\n##### Verify pods can be scheduled on new nodes\n```bash\nkubectl get pods -o wide --all-namespaces | grep <new-node-names>\n```\n\n**Document current settings for post-upgrade restoration:**\n- Original autoscaler min/max/desired counts\n- Previous surge settings\n- Node pool configurations\n- Resource quotas and limits\n\n**Remember to re-enable autoscaling and remove buffer nodes after successful upgrade completion.**",
+          "status": "Pending",
+          "is_required": false
+        }
+      ]
+    },
+    {
+      "sequence": 6,
+      "title": "Upgrade Kubernetes",
+      "description": "Perform the actual upgrade of control plane and nodes.",
+      "status": "Pending",
+      "tasks": [
+        {
+          "id": "",
+          "sequence": 1,
+          "title": "Upgrade control plane",
+          "description": "Upgrade master nodes sequentially.",
+          "status": "Pending",
+          "is_required": true
+        },
+        {
+          "id": "",
+          "sequence": 2,
+          "title": "Upgrade node pool",
+          "description": "Upgrade node pools and restart workloads.",
+          "status": "Pending",
+          "is_required": true
+        }
+      ]
+    },
+    {
+      "sequence": 7,
+      "title": "Run Post-Upgrade Checks",
+      "description": "Validate cluster health after upgrade.",
+      "status": "Pending",
+      "tasks": [
+        {
+          "id": "",
+          "sequence": 1,
+          "title": "Check Node Health",
+          "action": "check_cluster_health",
+          "resource_type": "nodes",
+          "description": "After the Kubernetes cluster upgrade, confirm that all nodes are healthy and in a ready state. Verifying node stability ensures workloads can run reliably on the upgraded infrastructure.",
+          "status": "Pending",
+          "is_required": true
+        },
+        {
+          "id": "",
+          "sequence": 2,
+          "title": "Check Workload Health",
+          "action": "check_cluster_health",
+          "resource_type": "workloads",
+          "description": "Validate that workloads are running as expected after the upgrade. Ensuring deployments and pods are healthy helps confirm that applications continue to function without disruption.",
+          "status": "Pending",
+          "is_required": true
+        },
+        {
+          "id": "",
+          "sequence": 3,
+          "title": "Check Services Health",
+          "action": "check_cluster_health",
+          "resource_type": "services",
+          "description": "Confirm that all Kubernetes Services are operational after the upgrade. Healthy services guarantee reliable networking and uninterrupted access to applications.",
+          "status": "Pending",
+          "is_required": true
+        },
+        {
+          "id": "",
+          "sequence": 4,
+          "title": "Check PVs Status",
+          "action": "check_cluster_health",
+          "resource_type": "persistentvolumes",
+          "description": "Verify that persistent volumes remain healthy and accessible after the upgrade. Confirming storage integrity is critical to prevent data loss and maintain application stability.",
+          "status": "Pending",
+          "is_required": true
+        },
+        {
+          "id": "",
+          "sequence": 5,
+          "title": "Revert Critical Service Replicas",
+          "action": "upgrade_execute_command",
+          "description": "Scale down critical application replicas if they were increased during upgrade preparation.  \nBefore scaling down, ensure the new replicas are already running on upgraded nodes and are in a healthy state.  \n\n**Example commands to downscale:**  \n\n##### Check current replicas of a deployment\n```bash\nkubectl get deployment <deployment-name> -n <namespace>\n```\n\n##### Scale down a deployment to desired replica count\n```bash\nkubectl scale deployment <deployment-name> --replicas=2 -n <namespace>\n```\n\n##### Verify pods are running on updated nodes and healthy\n```bash\nkubectl get pods -n <namespace> -o wide\n```",
+          "status": "Pending",
+          "is_required": false
+        },
+        {
+          "id": "",
+          "sequence": 6,
+          "title": "Enable Cluster Autoscaler",
+          "description": "Re-enable the cluster autoscaler to allow the cluster to automatically scale nodes based on workload demands. This restores the cluster's ability to manage capacity dynamically.",
+          "status": "Pending",
+          "is_required": false
+        },
+        {
+          "id": "",
+          "sequence": 7,
+          "title": "Cluster Health Snapshot",
+          "action": "upgrade_post_flight_check",
+          "description": "Captures Nodes, Workloads, Services, and PVCs health. If you have captured pre-upgrade snapshot, then shows any possible degradation or changes in health.",
+          "status": "Pending",
+          "is_required": false
+        }
+      ]
+    },
+    {
+      "sequence": 8,
+      "title": "Rollback Plan",
+      "description": "If the upgrade fails or causes critical issues, follow these rollback procedures to restore the cluster to its previous state.",
+      "status": "Pending",
+      "tasks": [
+        {
+          "id": "",
+          "sequence": 1,
+          "title": "Rollback Procedure",
+          "action": "upgrade_execute_command",
+          "description": "Follow the provider-specific rollback steps below if the upgrade causes critical issues.\n\n**Important:** Kubernetes control plane downgrades are generally not supported. The primary rollback strategy involves:\n1. **Restoring from backups** (etcd snapshots, resource backups)\n2. **Rolling back node groups** to the previous version\n3. **Reverting application changes** that were made for the new version\n\n**When to trigger rollback:**\n- Critical workloads are down and cannot be recovered\n- API server is unresponsive after upgrade\n- Node upgrades are stuck or failing repeatedly\n- Data corruption is detected\n\n**Rollback steps will be customized for your cloud provider during plan creation.**",
+          "status": "Pending",
+          "is_required": false
+        }
+      ]
+    }
+  ]
+}

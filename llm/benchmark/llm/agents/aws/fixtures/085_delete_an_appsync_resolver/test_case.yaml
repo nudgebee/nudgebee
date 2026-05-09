@@ -1,0 +1,7 @@
+user_prompt: Delete an AppSync resolver.
+expected_output:
+- aws appsync delete-resolver --api-id <api-id> --type-name <type-name> --field-name
+  <field-name>
+tags:
+- command
+- aws

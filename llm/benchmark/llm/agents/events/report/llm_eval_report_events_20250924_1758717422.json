@@ -1,0 +1,611 @@
+{
+    "details": [
+        {
+            "query": "What is the SQL query to show all events that started in the last hour?",
+            "retrieved_contexts": [
+                " SELECT * FROM events WHERE starts_at >= NOW() - INTERVAL '1 hour' ORDER BY starts_at DESC LIMIT 3 "
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE starts_at >= NOW() - INTERVAL '1 hour';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE starts_at >= NOW() - INTERVAL '1 hour';SELECT * FROM events   WHERE starts_at >= NOW() - INTERVAL '1 hour';",
+            "answer_similarity": 91.11,
+            "answer_relevancy": 93.41
+        },
+        {
+            "query": "What is the SQL query for the details of event ID 'evt-a1b2c3d4'?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE id = 'evt-a1b2c3d4'"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, description, starts_at, updated_at, ends_at, status, priority, source, aggregation_key, finding_type, subject_type, subject_name, subject_namespace, subject_node, fingerprint, evidences, cloud_account_id   FROM events   WHERE id = 'evt-a1b2c3d4';"
+            ],
+            "ground_truth": "SELECT id, title, description, starts_at, updated_at, ends_at, status, priority, source, aggregation_key, finding_type, subject_type, subject_name, subject_namespace, subject_node, fingerprint, evidences, cloud_account_id   FROM events   WHERE id = 'evt-a1b2c3d4';SELECT * FROM events   WHERE id = 'evt-a1b2c3d4';",
+            "answer_similarity": 87.11,
+            "answer_relevancy": 93.45
+        },
+        {
+            "query": "What is the SQL query to list all HIGH priority issues currently firing?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE priority = 'HIGH' AND finding_type = 'issue' AND status = 'FIRING' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, subject_name, subject_namespace   FROM events   WHERE priority = 'HIGH'     AND finding_type = 'issue'     AND status = 'FIRING';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, subject_name, subject_namespace   FROM events   WHERE priority = 'HIGH'     AND finding_type = 'issue'     AND status = 'FIRING';SELECT * FROM events   WHERE priority = 'HIGH'     AND finding_type = 'issue'     AND status = 'FIRING';",
+            "answer_similarity": 92.15,
+            "answer_relevancy": 87.91
+        },
+        {
+            "query": "What is the SQL query to find any 'KubePodCrashLooping' events in the 'production' namespace?",
+            "retrieved_contexts": [
+                " SELECT COUNT(*) FROM events WHERE aggregation_key = 'KubePodCrashLooping' AND subject_namespace = 'production' "
+            ],
+            "expected_contexts": [
+                "SELECT COUNT(*)   FROM events   WHERE aggregation_key = 'KubePodCrashLooping'     AND subject_namespace = 'production';"
+            ],
+            "ground_truth": "SELECT COUNT(*)   FROM events   WHERE aggregation_key = 'KubePodCrashLooping'     AND subject_namespace = 'production';SELECT * FROM events   WHERE aggregation_key = 'KubePodCrashLooping'     AND subject_namespace = 'production';",
+            "answer_similarity": 98.79,
+            "answer_relevancy": 95.69
+        },
+        {
+            "query": "What is the SQL query to show configuration changes related to 'deployments'?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE finding_type = 'configuration_change' AND subject_type = 'deployment' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, subject_name, subject_namespace   FROM events   WHERE finding_type = 'configuration_change'     AND subject_type = 'deployment';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, subject_name, subject_namespace   FROM events   WHERE finding_type = 'configuration_change'     AND subject_type = 'deployment';SELECT * FROM events   WHERE finding_type = 'configuration_change'     AND subject_type = 'deployment';",
+            "answer_similarity": 93.86,
+            "answer_relevancy": 92.75
+        },
+        {
+            "query": "What is the SQL query to list all events that occurred on node 'worker-node-5' yesterday?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE subject_node = 'worker-node-5' AND starts_at >= CURRENT_DATE - INTERVAL '1 day' AND starts_at < CURRENT_DATE"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, priority, status   FROM events   WHERE subject_node = 'worker-node-5'     AND starts_at >= CURRENT_DATE - INTERVAL '1 day'     AND starts_at < CURRENT_DATE;"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, priority, status   FROM events   WHERE subject_node = 'worker-node-5'     AND starts_at >= CURRENT_DATE - INTERVAL '1 day'     AND starts_at < CURRENT_DATE;SELECT * FROM events   WHERE subject_node = 'worker-node-5'     AND starts_at >= CURRENT_DATE - INTERVAL '1 day'     AND starts_at < CURRENT_DATE;",
+            "answer_similarity": 96.83,
+            "answer_relevancy": 94.72
+        },
+        {
+            "query": "What is the SQL query to list all 'ServiceDown' events?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE aggregation_key = 'ServiceDown';"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE aggregation_key = 'ServiceDown';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE aggregation_key = 'ServiceDown';SELECT * FROM events   WHERE aggregation_key = 'ServiceDown';",
+            "answer_similarity": 95.78,
+            "answer_relevancy": 91.79
+        },
+        {
+            "query": "What is the SQL query to show me any 'Service Unavailable' incidents?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE aggregation_key = 'ServiceDown' AND finding_type = 'issue' AND priority = 'HIGH' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE aggregation_key = 'ServiceDown';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE aggregation_key = 'ServiceDown';SELECT * FROM events   WHERE aggregation_key = 'ServiceDown';",
+            "answer_similarity": 92.62,
+            "answer_relevancy": 85.38
+        },
+        {
+            "query": "What is the SQL query to find events with priority MEDIUM or HIGH?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE priority IN ('MEDIUM', 'HIGH') ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE priority IN ('MEDIUM', 'HIGH');"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE priority IN ('MEDIUM', 'HIGH');SELECT * FROM events   WHERE priority IN ('MEDIUM', 'HIGH');",
+            "answer_similarity": 92.77,
+            "answer_relevancy": 94.55
+        },
+        {
+            "query": "What is the SQL query to find the duration of the event with fingerprint 'fp-x7y8z9'?",
+            "retrieved_contexts": [
+                "SELECT id, starts_at, ends_at, status, (ends_at - starts_at) AS duration FROM events WHERE fingerprint = 'fp-x7y8z9'"
+            ],
+            "expected_contexts": [
+                "SELECT id, starts_at, ends_at, status, (ends_at - starts_at) AS duration FROM events   WHERE fingerprint = 'fp-x7y8z9';"
+            ],
+            "ground_truth": "SELECT id, starts_at, ends_at, status, (ends_at - starts_at) AS duration FROM events   WHERE fingerprint = 'fp-x7y8z9';",
+            "answer_similarity": 99.94,
+            "answer_relevancy": 93.42
+        },
+        {
+            "query": "What is the SQL query to show me the description and evidence for the latest 'pod_oom_killer_enricher' event?",
+            "retrieved_contexts": [
+                "SELECT description, evidences FROM events WHERE aggregation_key = 'pod_oom_killer_enricher' ORDER BY starts_at DESC LIMIT 1;"
+            ],
+            "expected_contexts": [
+                "SELECT description, evidences   FROM events   WHERE aggregation_key = 'pod_oom_killer_enricher'   ORDER BY starts_at DESC   LIMIT 1;"
+            ],
+            "ground_truth": "SELECT description, evidences   FROM events   WHERE aggregation_key = 'pod_oom_killer_enricher'   ORDER BY starts_at DESC   LIMIT 1;SELECT * FROM events   WHERE aggregation_key = 'pod_oom_killer_enricher'   ORDER BY starts_at DESC   LIMIT 1;",
+            "answer_similarity": 98.76,
+            "answer_relevancy": 96.97
+        },
+        {
+            "query": "What is the SQL query to list all events that are currently closed?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE status = 'CLOSED' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, ends_at, priority, subject_name   FROM events   WHERE status = 'CLOSED';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, ends_at, priority, subject_name   FROM events   WHERE status = 'CLOSED';SELECT * FROM events   WHERE status = 'CLOSED';",
+            "answer_similarity": 91.03,
+            "answer_relevancy": 90.87
+        },
+        {
+            "query": "What is the SQL query to find any 'out of memory' events related to the 'data-processor' job?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE aggregation_key = 'pod_oom_killer_enricher' AND subject_type = 'job' AND subject_name = 'data-processor' AND finding_type = 'issue' AND priority = 'HIGH' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority   FROM events   WHERE aggregation_key = 'pod_oom_killer_enricher' AND subject_type = 'job'     AND subject_name = 'data-processor';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority   FROM events   WHERE aggregation_key = 'pod_oom_killer_enricher' AND subject_type = 'job'     AND subject_name = 'data-processor';SELECT * FROM events   WHERE aggregation_key = 'pod_oom_killer_enricher' AND subject_type = 'job'     AND subject_name = 'data-processor';",
+            "answer_similarity": 94.34,
+            "answer_relevancy": 78.38
+        },
+        {
+            "query": "What is the SQL query to show all Kubernetes Warning Events?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE aggregation_key IN ('KubernetesWarningEvent', 'Kubernetes Warning Event')"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, description, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE aggregation_key IN ('KubernetesWarningEvent', 'Kubernetes Warning Event');"
+            ],
+            "ground_truth": "SELECT id, title, description, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE aggregation_key IN ('KubernetesWarningEvent', 'Kubernetes Warning Event');SELECT * FROM events   WHERE aggregation_key IN ('KubernetesWarningEvent', 'Kubernetes Warning Event');",
+            "answer_similarity": 96.04,
+            "answer_relevancy": 93.09
+        },
+        {
+            "query": "What is the SQL query to find any 'Target Unreachable' alerts?",
+            "retrieved_contexts": [
+                " SELECT * FROM events WHERE aggregation_key = 'TargetDown' ORDER BY starts_at DESC LIMIT 3 "
+            ],
+            "expected_contexts": [
+                "SELECT id, title, description, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE aggregation_key = 'TargetDown';"
+            ],
+            "ground_truth": "SELECT id, title, description, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE aggregation_key = 'TargetDown';SELECT * FROM events   WHERE aggregation_key = 'TargetDown';",
+            "answer_similarity": 91.31,
+            "answer_relevancy": 74.28
+        },
+        {
+            "query": "What is the SQL query to list events triggered by 'Prometheus' source?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE source LIKE '%Prometheus%' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, aggregation_key   FROM events   WHERE source LIKE '%Prometheus%';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority, aggregation_key   FROM events   WHERE source LIKE '%Prometheus%';SELECT * FROM events   WHERE source LIKE '%Prometheus%';",
+            "answer_similarity": 91.67,
+            "answer_relevancy": 90.04
+        },
+        {
+            "query": "What is the SQL query to find the distinct subject types present in the events?",
+            "retrieved_contexts": [
+                "SELECT DISTINCT subject_type FROM events"
+            ],
+            "expected_contexts": [
+                "SELECT DISTINCT subject_type   FROM events;"
+            ],
+            "ground_truth": "SELECT DISTINCT subject_type   FROM events;",
+            "answer_similarity": 99.73,
+            "answer_relevancy": 90.05
+        },
+        {
+            "query": "What is the SQL query to show events updated in the last 24 hours?",
+            "retrieved_contexts": [
+                " SELECT * FROM events WHERE updated_at >= NOW() - INTERVAL '24 hours' ORDER BY starts_at DESC LIMIT 3 "
+            ],
+            "expected_contexts": [
+                "SELECT id, title, updated_at, status, priority   FROM events   WHERE updated_at >= NOW() - INTERVAL '24 hours';"
+            ],
+            "ground_truth": "SELECT id, title, updated_at, status, priority   FROM events   WHERE updated_at >= NOW() - INTERVAL '24 hours';SELECT * FROM events   WHERE updated_at >= NOW() - INTERVAL '24 hours';",
+            "answer_similarity": 92.86,
+            "answer_relevancy": 93.42
+        },
+        {
+            "query": "What is the SQL query to list all firing events that haven't ended yet?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE status = 'FIRING' AND ends_at IS NULL ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, priority, subject_name   FROM events   WHERE status = 'FIRING' AND ends_at IS NULL;"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, priority, subject_name   FROM events   WHERE status = 'FIRING' AND ends_at IS NULL;SELECT * FROM events   WHERE status = 'FIRING' AND ends_at IS NULL;",
+            "answer_similarity": 90.93,
+            "answer_relevancy": 90.57
+        },
+        {
+            "query": "What is the SQL query to find issues with 'database' in the title?",
+            "retrieved_contexts": [
+                "\n         SELECT * FROM events WHERE finding_type = 'issue' AND title LIKE '%database%';\n       "
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority   FROM events   WHERE finding_type = 'issue' AND title LIKE '%database%';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority   FROM events   WHERE finding_type = 'issue' AND title LIKE '%database%';SELECT * FROM events   WHERE finding_type = 'issue' AND title LIKE '%database%';",
+            "answer_similarity": 97.3,
+            "answer_relevancy": 89.62
+        },
+        {
+            "query": "What is the SQL query to count the number of events for each priority level?",
+            "retrieved_contexts": [
+                "SELECT priority, COUNT(*) AS event_count FROM events GROUP BY priority ORDER BY event_count DESC;"
+            ],
+            "expected_contexts": [
+                "SELECT priority, COUNT(*) AS event_count   FROM events   GROUP BY priority   ORDER BY event_count DESC;"
+            ],
+            "ground_truth": "SELECT priority, COUNT(*) AS event_count   FROM events   GROUP BY priority   ORDER BY event_count DESC;",
+            "answer_similarity": 100.0,
+            "answer_relevancy": 94.55
+        },
+        {
+            "query": "What is the SQL query to show the top 5 most frequent aggregation keys for firing events?",
+            "retrieved_contexts": [
+                "SELECT aggregation_key, COUNT(*) AS frequency FROM events WHERE status = 'FIRING' GROUP BY aggregation_key ORDER BY frequency DESC LIMIT 5"
+            ],
+            "expected_contexts": [
+                "SELECT aggregation_key, COUNT(*) AS frequency   FROM events   WHERE status = 'FIRING'   GROUP BY aggregation_key   ORDER BY frequency DESC   LIMIT 5;"
+            ],
+            "ground_truth": "SELECT aggregation_key, COUNT(*) AS frequency   FROM events   WHERE status = 'FIRING'   GROUP BY aggregation_key   ORDER BY frequency DESC   LIMIT 5;",
+            "answer_similarity": 99.94,
+            "answer_relevancy": 94.54
+        },
+        {
+            "query": "What is the SQL query to list all 'crash loop' events?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE aggregation_key = 'report_crash_loop'"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE aggregation_key = 'report_crash_loop';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE aggregation_key = 'report_crash_loop';SELECT * FROM events   WHERE aggregation_key = 'report_crash_loop';",
+            "answer_similarity": 96.83,
+            "answer_relevancy": 89.11
+        },
+        {
+            "query": "What is the SQL query to find HIGH priority 'KubeNodeNotReady' events?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE priority = 'HIGH' AND aggregation_key = 'KubeNodeNotReady' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, subject_node   FROM events   WHERE priority = 'HIGH' AND aggregation_key = 'KubeNodeNotReady';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, subject_node   FROM events   WHERE priority = 'HIGH' AND aggregation_key = 'KubeNodeNotReady';SELECT * FROM events   WHERE priority = 'HIGH' AND aggregation_key = 'KubeNodeNotReady';",
+            "answer_similarity": 95.11,
+            "answer_relevancy": 94.68
+        },
+        {
+            "query": "What is the SQL query to show events related to 'statefulset' subjects?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE subject_type = 'statefulset' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE subject_type = 'statefulset';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE subject_type = 'statefulset';SELECT * FROM events   WHERE subject_type = 'statefulset';",
+            "answer_similarity": 92.63,
+            "answer_relevancy": 92.89
+        },
+        {
+            "query": "What is the SQL query to list events in 'kube-system' namespace excluding 'KubePodNotReady'?",
+            "retrieved_contexts": [
+                "\n```sql\nSELECT id, title, starts_at, status, priority, aggregation_key, subject_name FROM events WHERE subject_namespace = 'kube-system' AND aggregation_key != 'KubePodNotReady';\n```\n        "
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, aggregation_key, subject_name   FROM events   WHERE subject_namespace = 'kube-system' AND aggregation_key != 'KubePodNotReady';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority, aggregation_key, subject_name   FROM events   WHERE subject_namespace = 'kube-system' AND aggregation_key != 'KubePodNotReady';SELECT * FROM events   WHERE subject_namespace = 'kube-system' AND aggregation_key != 'KubePodNotReady';",
+            "answer_similarity": 98.47,
+            "answer_relevancy": 95.89
+        },
+        {
+            "query": "What is the SQL query to find events associated with cloud account 'acc-xyz'?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE cloud_account_id = 'acc-xyz' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE cloud_account_id = 'acc-xyz';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE cloud_account_id = 'acc-xyz';SELECT * FROM events   WHERE cloud_account_id = 'acc-xyz';",
+            "answer_similarity": 90.7,
+            "answer_relevancy": 93.44
+        },
+        {
+            "query": "What is the SQL query to show the oldest 5 firing events?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE status = 'FIRING' ORDER BY starts_at ASC LIMIT 5"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, priority, subject_name   FROM events   WHERE status = 'FIRING'   ORDER BY starts_at ASC   LIMIT 5;"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, priority, subject_name   FROM events   WHERE status = 'FIRING'   ORDER BY starts_at ASC   LIMIT 5;SELECT * FROM events   WHERE status = 'FIRING'   ORDER BY starts_at ASC   LIMIT 5;",
+            "answer_similarity": 95.02,
+            "answer_relevancy": 93.86
+        },
+        {
+            "query": "What is the SQL query to list events with INFO or DEBUG priority?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE priority IN ('INFO', 'DEBUG') ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE priority IN ('INFO', 'DEBUG');"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE priority IN ('INFO', 'DEBUG');SELECT * FROM events   WHERE priority IN ('INFO', 'DEBUG');",
+            "answer_similarity": 93.11,
+            "answer_relevancy": 93.33
+        },
+        {
+            "query": "What is the SQL query to find events whose description contains 'timeout'?",
+            "retrieved_contexts": [
+                "\n         I cannot provide an SQL query to find events whose description contains 'timeout' because the instructions explicitly state that the `description` column cannot be used in the WHERE clause for filtering.\n       "
+            ],
+            "expected_contexts": [
+                "SELECT id, title, description, starts_at, status, priority   FROM events   WHERE description LIKE '%timeout%';"
+            ],
+            "ground_truth": "SELECT id, title, description, starts_at, status, priority   FROM events   WHERE description LIKE '%timeout%';SELECT * FROM events   WHERE description LIKE '%timeout%';",
+            "answer_similarity": 89.03,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "What is the SQL query to show configuration changes that occurred last week?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE finding_type = 'configuration_change' AND starts_at >= date_trunc('week', CURRENT_DATE) - INTERVAL '1 week' AND starts_at < date_trunc('week', CURRENT_DATE) ORDER BY starts_at DESC LIMIT 3;"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, subject_name   FROM events   WHERE finding_type = 'configuration_change'     AND starts_at >= date_trunc('week', CURRENT_DATE) - INTERVAL '1 week'     AND starts_at < date_trunc('week', CURRENT_DATE);"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, subject_name   FROM events   WHERE finding_type = 'configuration_change'     AND starts_at >= date_trunc('week', CURRENT_DATE) - INTERVAL '1 week'     AND starts_at < date_trunc('week', CURRENT_DATE);SELECT * FROM events   WHERE finding_type = 'configuration_change'     AND starts_at >= date_trunc('week', CURRENT_DATE) - INTERVAL '1 week'     AND starts_at < date_trunc('week', CURRENT_DATE);",
+            "answer_similarity": 94.61,
+            "answer_relevancy": 93.36
+        },
+        {
+            "query": "What is the SQL query to list events with no associated node (subject_node is NULL)?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE subject_node IS NULL ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE subject_node IS NULL;"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE subject_node IS NULL;SELECT * FROM events   WHERE subject_node IS NULL;",
+            "answer_similarity": 90.08,
+            "answer_relevancy": 91.83
+        },
+        {
+            "query": "What is the SQL query to count closed issues per aggregation key?",
+            "retrieved_contexts": [
+                "SELECT aggregation_key, COUNT(*) AS closed_issue_count FROM events WHERE status = 'CLOSED' AND finding_type = 'issue' GROUP BY aggregation_key ORDER BY closed_issue_count DESC;"
+            ],
+            "expected_contexts": [
+                "SELECT aggregation_key, COUNT(*) AS closed_issue_count   FROM events   WHERE status = 'CLOSED' AND finding_type = 'issue'   GROUP BY aggregation_key   ORDER BY closed_issue_count DESC;"
+            ],
+            "ground_truth": "SELECT aggregation_key, COUNT(*) AS closed_issue_count   FROM events   WHERE status = 'CLOSED' AND finding_type = 'issue'   GROUP BY aggregation_key   ORDER BY closed_issue_count DESC;",
+            "answer_similarity": 100.0,
+            "answer_relevancy": 93.55
+        },
+        {
+            "query": "What is the SQL query to find events related to HorizontalPodAutoscalers (HPA)?",
+            "retrieved_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace FROM events WHERE subject_type = 'horizontalpodautoscaler';"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE subject_type = 'horizontalpodautoscaler';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE subject_type = 'horizontalpodautoscaler';",
+            "answer_similarity": 100.0,
+            "answer_relevancy": 90.12
+        },
+        {
+            "query": "What is the SQL query to list all 'KubeJobFailed' events?",
+            "retrieved_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace FROM events WHERE aggregation_key = 'KubeJobFailed';"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE aggregation_key = 'KubeJobFailed';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE aggregation_key = 'KubeJobFailed';",
+            "answer_similarity": 100.0,
+            "answer_relevancy": 94.95
+        },
+        {
+            "query": "What is the SQL query to show events that started between two specific timestamps?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE starts_at BETWEEN '2025-04-01T00:00:00Z' AND '2025-04-01T12:00:00Z' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority   FROM events   WHERE starts_at BETWEEN '2025-04-01T00:00:00Z' AND '2025-04-01T12:00:00Z';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority   FROM events   WHERE starts_at BETWEEN '2025-04-01T00:00:00Z' AND '2025-04-01T12:00:00Z';",
+            "answer_similarity": 94.5,
+            "answer_relevancy": 84.94
+        },
+        {
+            "query": "What is the SQL query to find events where subject name starts with 'api-'?",
+            "retrieved_contexts": [
+                "\n         SELECT * FROM events WHERE subject_name LIKE 'api-%'\n       "
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE subject_name LIKE 'api-%';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE subject_name LIKE 'api-%';",
+            "answer_similarity": 95.91,
+            "answer_relevancy": 97.48
+        },
+        {
+            "query": "What is the SQL query to list events not updated in the last 7 days?",
+            "retrieved_contexts": [
+                " SELECT * FROM events WHERE updated_at < NOW() - INTERVAL '7 days' ORDER BY starts_at DESC LIMIT 3 "
+            ],
+            "expected_contexts": [
+                "SELECT id, title, updated_at, status, priority   FROM events   WHERE updated_at < NOW() - INTERVAL '7 days';"
+            ],
+            "ground_truth": "SELECT id, title, updated_at, status, priority   FROM events   WHERE updated_at < NOW() - INTERVAL '7 days';",
+            "answer_similarity": 94.06,
+            "answer_relevancy": 92.42
+        },
+        {
+            "query": "What is the SQL query to show the count of firing vs closed events?",
+            "retrieved_contexts": [
+                "SELECT status, COUNT(*) AS event_count FROM events GROUP BY status;"
+            ],
+            "expected_contexts": [
+                "SELECT status, COUNT(*) AS event_count   FROM events   GROUP BY status;"
+            ],
+            "ground_truth": "SELECT status, COUNT(*) AS event_count   FROM events   GROUP BY status;",
+            "answer_similarity": 100.0,
+            "answer_relevancy": 85.22
+        },
+        {
+            "query": "What is the SQL query to find events with the exact title 'Node Not Ready'?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE title = 'Node Not Ready' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, starts_at, status, priority, subject_node   FROM events   WHERE title = 'Node Not Ready';"
+            ],
+            "ground_truth": "SELECT id, starts_at, status, priority, subject_node   FROM events   WHERE title = 'Node Not Ready';",
+            "answer_similarity": 92.47,
+            "answer_relevancy": 93.35
+        },
+        {
+            "query": "What is the SQL query to list all distinct sources of events?",
+            "retrieved_contexts": [
+                "SELECT DISTINCT source FROM events"
+            ],
+            "expected_contexts": [
+                "SELECT DISTINCT source   FROM events;"
+            ],
+            "ground_truth": "SELECT DISTINCT source   FROM events;",
+            "answer_similarity": 99.66,
+            "answer_relevancy": 94.49
+        },
+        {
+            "query": "What is the SQL query to show events related to 'daemonset' subjects in the 'monitoring' namespace?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE subject_type = 'daemonset' AND subject_namespace = 'monitoring' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE subject_type = 'daemonset' AND subject_namespace = 'monitoring';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE subject_type = 'daemonset' AND subject_namespace = 'monitoring';",
+            "answer_similarity": 94.41,
+            "answer_relevancy": 90.75
+        },
+        {
+            "query": "What is the SQL query to find events whose fingerprint appears more than once (duplicates based on fingerprint)?",
+            "retrieved_contexts": [
+                "SELECT fingerprint, COUNT(*) AS occurrences FROM events GROUP BY fingerprint HAVING COUNT(*) > 1"
+            ],
+            "expected_contexts": [
+                "SELECT fingerprint, COUNT(*) AS occurrences   FROM events   GROUP BY fingerprint   HAVING COUNT(*) > 1;"
+            ],
+            "ground_truth": "SELECT fingerprint, COUNT(*) AS occurrences   FROM events   GROUP BY fingerprint   HAVING COUNT(*) > 1;",
+            "answer_similarity": 99.93,
+            "answer_relevancy": 94.57
+        },
+        {
+            "query": "What is the SQL query to list LOW priority configuration changes?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE priority = 'LOW' AND finding_type = 'configuration_change' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, subject_type, subject_name   FROM events   WHERE priority = 'LOW' AND finding_type = 'configuration_change';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, subject_type, subject_name   FROM events   WHERE priority = 'LOW' AND finding_type = 'configuration_change';SELECT * FROM events   WHERE priority = 'LOW' AND finding_type = 'configuration_change';",
+            "answer_similarity": 93.04,
+            "answer_relevancy": 89.1
+        },
+        {
+            "query": "What is the SQL query to show events that ended in the last hour?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE ends_at >= NOW() - INTERVAL '1 hour' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, ends_at, status, priority   FROM events   WHERE ends_at >= NOW() - INTERVAL '1 hour';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, ends_at, status, priority   FROM events   WHERE ends_at >= NOW() - INTERVAL '1 hour';SELECT * FROM events   WHERE ends_at >= NOW() - INTERVAL '1 hour';",
+            "answer_similarity": 92.57,
+            "answer_relevancy": 92.74
+        },
+        {
+            "query": "What is the SQL query to find events with aggregation key 'KubeCPUOvercommit' OR 'KubeMemoryOvercommit'?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE aggregation_key IN ('KubeCPUOvercommit', 'KubeMemoryOvercommit')"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, aggregation_key, subject_node   FROM events   WHERE aggregation_key IN ('KubeCPUOvercommit', 'KubeMemoryOvercommit');"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority, aggregation_key, subject_node   FROM events   WHERE aggregation_key IN ('KubeCPUOvercommit', 'KubeMemoryOvercommit');SELECT * FROM events   WHERE aggregation_key IN ('KubeCPUOvercommit', 'KubeMemoryOvercommit');",
+            "answer_similarity": 97.19,
+            "answer_relevancy": 96.8
+        },
+        {
+            "query": "What is the SQL query to list events where the subject is a 'pod' and the node is 'control-plane-1'?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE subject_type = 'pod' AND subject_node = 'control-plane-1' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE subject_type = 'pod' AND subject_node = 'control-plane-1';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE subject_type = 'pod' AND subject_node = 'control-plane-1';SELECT * FROM events   WHERE subject_type = 'pod' AND subject_node = 'control-plane-1';",
+            "answer_similarity": 93.56,
+            "answer_relevancy": 91.25
+        },
+        {
+            "query": "What is the SQL query to show the latest event overall based on start time?",
+            "retrieved_contexts": [
+                "SELECT * FROM events ORDER BY starts_at DESC LIMIT 1"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, aggregation_key   FROM events   ORDER BY starts_at DESC   LIMIT 1;"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority, aggregation_key   FROM events   ORDER BY starts_at DESC   LIMIT 1;SELECT * FROM events   ORDER BY starts_at DESC   LIMIT 1;",
+            "answer_similarity": 95.14,
+            "answer_relevancy": 90.6
+        },
+        {
+            "query": "What is the SQL query to count events per finding type (issue vs configuration_change)?",
+            "retrieved_contexts": [
+                "SELECT finding_type, COUNT(*) AS event_count FROM events GROUP BY finding_type;"
+            ],
+            "expected_contexts": [
+                "SELECT finding_type, COUNT(*) AS event_count   FROM events   GROUP BY finding_type;"
+            ],
+            "ground_truth": "SELECT finding_type, COUNT(*) AS event_count   FROM events   GROUP BY finding_type;",
+            "answer_similarity": 100.0,
+            "answer_relevancy": 85.25
+        },
+        {
+            "query": "What is the SQL query to list all user creation events?",
+            "retrieved_contexts": [
+                "SELECT * FROM events WHERE aggregation_key = 'CreateUser' ORDER BY starts_at DESC LIMIT 3"
+            ],
+            "expected_contexts": [
+                "SELECT id, title, starts_at, status, priority, subject_name, source   FROM events   WHERE aggregation_key = 'CreateUser';"
+            ],
+            "ground_truth": "SELECT id, title, starts_at, status, priority, subject_name, source   FROM events   WHERE aggregation_key = 'CreateUser';SELECT * FROM events   WHERE aggregation_key = 'CreateUser';",
+            "answer_similarity": 91.53,
+            "answer_relevancy": 88.69
+        }
+    ],
+    "summary": {
+        "total_queries": 50,
+        "answer_similarity": 95.09,
+        "answer_relevancy": 89.68,
+        "overall_accuracy": 92.39,
+        "failed_indices_after_retries": []
+    }
+}

@@ -1,0 +1,95 @@
+table:
+  name: funding_sources
+  schema: public
+object_relationships:
+  - name: tenantByTenant
+    using:
+      foreign_key_constraint_on: tenant
+  - name: user
+    using:
+      foreign_key_constraint_on: created_by
+  - name: userByUpdatedBy
+    using:
+      foreign_key_constraint_on: updated_by
+  - name: user_group
+    using:
+      foreign_key_constraint_on: user_groups
+array_relationships:
+  - name: businessunit_funding_sources
+    using:
+      foreign_key_constraint_on:
+        column: funding_source
+        table:
+          name: businessunit_funding
+          schema: public
+  - name: ownersById
+    using:
+      manual_configuration:
+        column_mapping:
+          owners: id
+        insertion_order: null
+        remote_table:
+          name: users
+          schema: public
+insert_permissions:
+  - role: tenant_admin
+    permission:
+      check:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        created_by: x-hasura-User-Id
+        tenant: x-hasura-User-Tenant-Id
+        updated_by: x-hasura-User-Id
+      columns:
+        - amount
+        - description
+        - end_date
+        - name
+        - owners
+        - planned_amount
+        - start_date
+        - user_groups
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - amount
+        - created_at
+        - created_by
+        - description
+        - end_date
+        - id
+        - name
+        - owners
+        - planned_amount
+        - start_date
+        - tenant
+        - updated_at
+        - updated_by
+        - user_groups
+      filter:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - amount
+        - created_at
+        - created_by
+        - description
+        - end_date
+        - id
+        - name
+        - owners
+        - planned_amount
+        - start_date
+        - tenant
+        - updated_at
+        - updated_by
+        - user_groups
+      filter:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true

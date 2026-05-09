@@ -1,0 +1,7 @@
+user_prompt: Find any 'K8sVersionUpgrade' recommendations that are currently 'InProgress'.
+expected_output:
+- SELECT namespace, name, recommendation, updated_at from recommendation_view WHERE
+  category = 'K8sVersionUpgrade' AND status = 'InProgress';
+tags:
+- command
+- recommendations

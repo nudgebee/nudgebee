@@ -1,0 +1,143 @@
+{
+    "details": [
+        {
+            "query": "Give me command Add a user to an IAM group.",
+            "retrieved_contexts": [
+                "As an SRE/DevOps expert, I can provide the AWS CLI command structure for adding an IAM user to an IAM group.\n\nThe required AWS CLI command uses the `aws iam add-user-to-group` action.\n\nHere is the command structure, clearly indicating the required parameters:\n\n```bash\naws iam add-user-to-group \\\n    --group-name <GroupName> \\\n    --user-name <UserName> \\\n    [--cli-input-json file://input.json] \\\n    [--generate-cli-skeleton <value>]\n```\n\n### Required Parameters:\n\n1.  **`--group-name`**: Specifies the name of the IAM group to which you want to add the user.\n2.  **`--user-name`**: Specifies the name of the IAM user you want to add to the group.\n\n### Optional Parameters (Included for completeness):\n\n*   `--cli-input-json`: Allows passing parameters as a JSON file instead of command-line arguments.\n*   `--generate-cli-skeleton`: Used to generate a skeleton JSON input file for use with `--cli-input-json`.\n\n### Example Usage:\n\nIf you wanted to add the user named `developer-alice` to the group named `SRE-Team`, the command would look like this:\n\n```bash\naws iam add-user-to-group --group-name SRE-Team --user-name developer-alice\n```"
+            ],
+            "expected_contexts": [
+                "aws iam add-user-to-group --group-name <group-name> --user-name <user-name>"
+            ],
+            "ground_truth": "aws iam add-user-to-group --group-name <group-name> --user-name <user-name>",
+            "answer_similarity": 84.71,
+            "answer_relevancy": 78.36
+        },
+        {
+            "query": "Show me the command Add an inbound rule to a security group.",
+            "retrieved_contexts": [
+                "As an SRE/DevOps expert, I can provide the standard AWS CLI command to add an inbound rule to an existing security group.\n\nThe command uses `aws ec2 authorize-security-group-ingress`. You will need to substitute the placeholders with your actual values.\n\nHere is the standard command structure:\n\n```bash\naws ec2 authorize-security-group-ingress \\\n    --group-id <SecurityGroupId> \\\n    --protocol <IpProtocol> \\\n    --port <FromPort>-<ToPort> \\\n    --cidr <CidrIp>\n```\n\n### Explanation of Placeholders:\n\n| Placeholder | Description | Example Value |\n| :--- | :--- | :--- |\n| `<SecurityGroupId>` | The ID of the security group to modify (e.g., `sg-0123456789abcdef0`). | |\n| `<IpProtocol>` | The protocol for the rule. Common values include `tcp`, `udp`, `icmp`, or `-1` for all protocols. | `tcp` |\n| `<FromPort>` | The start port for the rule (or the specific port if `FromPort` equals `ToPort`). | `80` |\n| `<ToPort>` | The end port for the rule. If only one port is needed, set this equal to `FromPort`. | `80` |\n| `<CidrIp>` | The source IP address range in CIDR notation (e.g., `0.0.0.0/0` for all IPs, or a specific range like `192.168.1.0/24`). | `0.0.0.0/0` |\n\n### Example Usage (Allowing HTTP traffic from anywhere):\n\nIf you wanted to allow inbound TCP traffic on port 80 from any IP address to the security group `sg-0123456789abcdef0`, the command would look like this:\n\n```bash\naws ec2 authorize-security-group-ingress \\\n    --group-id sg-0123456789abcdef0 \\\n    --protocol tcp \\\n    --port 80-80 \\\n    --cidr 0.0.0.0/0\n```"
+            ],
+            "expected_contexts": [
+                "aws ec2 authorize-security-group-ingress"
+            ],
+            "ground_truth": "aws ec2 authorize-security-group-ingress",
+            "answer_similarity": 83.78,
+            "answer_relevancy": 80.08
+        },
+        {
+            "query": "Show me the command to Attach an IAM policy to a user.",
+            "retrieved_contexts": [
+                "aws iam attach-user-policy help"
+            ],
+            "expected_contexts": [
+                "aws iam attach-user-policy --user-name <user-name> --policy-arn <policy-arn>"
+            ],
+            "ground_truth": "aws iam attach-user-policy --user-name <user-name> --policy-arn <policy-arn>",
+            "answer_similarity": 96.43,
+            "answer_relevancy": 79.81
+        },
+        {
+            "query": "Show me the command to Boost DynamoDB capacity.",
+            "retrieved_contexts": [
+                "aws dynamodb update-table help"
+            ],
+            "expected_contexts": [
+                "aws dynamodb update-table --table-name <table-name> --provisioned-throughput ..."
+            ],
+            "ground_truth": "aws dynamodb update-table --table-name <table-name> --provisioned-throughput ...",
+            "answer_similarity": 90.47,
+            "answer_relevancy": 66.38
+        },
+        {
+            "query": "Show me the command to check ECR and how many repos dont have secret scanning enabled",
+            "retrieved_contexts": [
+                "aws ecr describe-repositories --output json"
+            ],
+            "expected_contexts": [
+                "aws ecr describe-repositories --output json | jq '.repositories | map(select(.imageScanningConfiguration.scanOnPush == true))'"
+            ],
+            "ground_truth": "aws ecr describe-repositories --output json | jq '.repositories | map(select(.imageScanningConfiguration.scanOnPush == true))'",
+            "answer_similarity": 84.98,
+            "answer_relevancy": 63.23
+        },
+        {
+            "query": "Change S3 object storage class.",
+            "retrieved_contexts": [
+                "As an SRE/DevOps expert, I can certainly provide you with the AWS CLI command structure to change an existing S3 object's storage class using the `copy-object` operation. This operation is necessary because S3 does not allow in-place modification of the storage class; instead, you copy the object onto itself with the new metadata/storage class specified.\n\nHere is the general structure for the `aws s3api copy-object` command, incorporating the required parameters:\n\n```bash\naws s3api copy-object \\\n    --bucket <DestinationBucketName> \\\n    --key <ObjectKey> \\\n    --copy-source <SourceBucketName>/<ObjectKey> \\\n    --storage-class <NewStorageClass> \\\n    --metadata-directive REPLACE\n```\n\n### Explanation of Required Parameters:\n\n1.  **`--bucket <DestinationBucketName>`**: This specifies the destination bucket where the object will be copied *to*. If you are changing the storage class of an existing object in place, this will be the same as the source bucket name.\n2.  **`--key <ObjectKey>`**: This specifies the key (path/filename) of the object in the destination bucket. If performing an in-place update, this must match the source object's key.\n3.  **`--copy-source <SourceBucketName>/<ObjectKey>`**: This is crucial for the copy operation. It defines the source object using the format `bucket-name/key-name`.\n4.  **`--storage-class <NewStorageClass>`**: This parameter specifies the desired new storage class for the copied object. Examples of valid values include:\n    *   `STANDARD`\n    *   `INTELLIGENT_TIERING`\n    *   `STANDARD_IA` (Standard-Infrequent Access)\n    *   `ONEZONE_IA`\n    *   `GLACIER`\n    *   `DEEP_ARCHIVE`\n    *   `OUTPOSTS`\n5.  **`--metadata-directive REPLACE`**: This is essential when changing the storage class. It tells S3 to use the metadata provided in the copy operation (including the new `--storage-class`) and replace the existing object metadata. If this is omitted or set to `COPY`, the storage class change will not take effect.\n\n### Example Command Structure (Changing to GLACIER):\n\nIf you wanted to change an object named `my-data.csv` in the bucket `my-source-bucket` to `GLACIER` storage class, the command would look like this:\n\n```bash\naws s3api copy-object \\\n    --bucket my-source-bucket \\\n    --key my-data.csv \\\n    --copy-source my-source-bucket/my-data.csv \\\n    --storage-class GLACIER \\\n    --metadata-directive REPLACE\n```"
+            ],
+            "expected_contexts": [
+                "aws s3api copy-object --bucket <bucket-name> --copy-source <bucket-name>/<object-key> --key <object-key> --storage-class <storage-class>"
+            ],
+            "ground_truth": "aws s3api copy-object --bucket <bucket-name> --copy-source <bucket-name>/<object-key> --key <object-key> --storage-class <storage-class>",
+            "answer_similarity": 84.3,
+            "answer_relevancy": 76.36
+        },
+        {
+            "query": "Change the default AWS region.",
+            "retrieved_contexts": [
+                "As an SRE/DevOps expert, here are the clear, step-by-step instructions for an AWS administrator to change the default AWS region for the AWS Command Line Interface (CLI), covering both environment variables and the configuration file (`~/.aws/config`).\n\n### 1. Changing the Default Region via the AWS CLI Configuration File (`~/.aws/config`)\n\nThe primary and persistent way to set the default region is by modifying the AWS configuration file, typically located at `~/.aws/config` on Linux/macOS or `%USERPROFILE%\\.aws\\config` on Windows.\n\n**Step 1: Locate or Create the Configuration File**\n\nNavigate to the `.aws` directory in your home folder. If the `config` file does not exist, create it.\n\n**Step 2: Edit the Configuration File**\n\nOpen the `~/.aws/config` file using a text editor (like `nano`, `vim`, or Notepad).\n\n**Step 3: Define or Update the Default Profile**\n\nThe default region is set under the `[default]` profile section. If you are using named profiles, you would update the specific profile section (e.g., `[profile my-dev-profile]`).\n\nTo set the default region to a new region (e.g., `eu-central-1`), ensure the file contains the following structure:\n\n```ini\n[default]\nregion = eu-central-1\noutput = json\n```\n\n*   **`region = eu-central-1`**: Replace `eu-central-1` with your desired default AWS region (e.g., `us-east-1`, `ap-southeast-2`).\n*   **`output = json`**: This line is optional but commonly set; it defines the default output format for CLI commands.\n\n**Step 4: Save and Verify**\n\nSave the file. You can verify the change by running a command that relies on the default region:\n\n```bash\naws configure list\n```\n\nThe output should reflect the updated region under the `default` profile.\n\n### 2. Changing the Default Region via Environment Variables\n\nEnvironment variables provide a temporary override for the default configuration settings. This is useful for scripting, CI/CD pipelines, or temporary session overrides, as they take precedence over settings in `~/.aws/config` and `~/.aws/credentials`.\n\n**Step 1: Identify the Environment Variable**\n\nThe environment variable used to set the default region is `AWS_DEFAULT_REGION`.\n\n**Step 2: Set the Environment Variable (Temporary Override)**\n\nUse the appropriate command for your shell to set this variable for the current terminal session.\n\n**For Linux/macOS (Bash/Zsh):**\n\nTo set the region to `us-west-2`:\n\n```bash\nexport AWS_DEFAULT_REGION=us-west-2\n```\n\n**For Windows (Command Prompt):**\n\n```bash\nset AWS_DEFAULT_REGION=us-west-2\n```\n\n**For Windows (PowerShell):**\n\n```powershell\n$env:AWS_DEFAULT_REGION=\"us-west-2\"\n```\n\n**Step 3: Verify the Environment Variable Setting**\n\nYou can check if the environment variable is set correctly:\n\n**For Linux/macOS:**\n\n```bash\necho $AWS_DEFAULT_REGION\n```\n\n**For Windows (Command Prompt):**\n\n```bash\necho %AWS_DEFAULT_REGION%\n```\n\nAny subsequent AWS CLI command executed in that shell session will use `us-west-2`, regardless of what is set in `~/.aws/config`, until the session is closed or the variable is explicitly unset.\n\n### Precedence Summary\n\nIt is important to understand the order of precedence for AWS CLI configuration:\n\n1.  **Command Line Options:** Parameters specified directly on the command line (e.g., `aws s3 ls --region ap-northeast-1`). (Highest Precedence)\n2.  **Environment Variables:** `AWS_DEFAULT_REGION` or `AWS_REGION`.\n3.  **AWS Configuration File:** The `region` setting in `~/.aws/config` under the active profile.\n4.  **AWS Credentials File:** The `region` setting in `~/.aws/credentials` (less common for region setting, usually for access keys). (Lowest Precedence)"
+            ],
+            "expected_contexts": [
+                "AWS_DEFAULT_REGION"
+            ],
+            "ground_truth": "AWS_DEFAULT_REGION--region",
+            "answer_similarity": 79.21,
+            "answer_relevancy": 75.38
+        },
+        {
+            "query": "Check for updates to the AWS CLI.",
+            "retrieved_contexts": [
+                "aws --version"
+            ],
+            "expected_contexts": [
+                "pip list --outdated awscli"
+            ],
+            "ground_truth": "pip list --outdated awscli",
+            "answer_similarity": 88.69,
+            "answer_relevancy": 72.92
+        },
+        {
+            "query": "Configure AWS CLI credentials.",
+            "retrieved_contexts": [
+                "As an SRE/DevOps expert, the standard, best-practice method for configuring AWS CLI credentials on a local machine involves using the `aws configure` command. This command interactively prompts for the necessary credentials and configuration settings, which are then stored in the standard AWS configuration files (`~/.aws/credentials` and `~/.aws/config`).\n\nHere are the standard, best-practice instructions:\n\n### 1. Prerequisites\n\nEnsure you have the AWS Command Line Interface (CLI) installed. If you are using AWS CLI v2, the command is typically `aws`. If you are using AWS CLI v1, it might be `aws` as well, depending on the installation method.\n\n### 2. Configuration Command\n\nUse the following command in your terminal:\n\n```bash\naws configure\n```\n\n### 3. Required Inputs and Prompts\n\nThe `aws configure` command will prompt you sequentially for the following four pieces of information. You must provide valid credentials associated with an IAM user or role that has the necessary permissions for the operations you intend to perform.\n\n| Prompt | Required Input | Description |\n| :--- | :--- | :--- |\n| `AWS Access Key ID [`**`None`**`]:` | Your IAM User's Access Key ID (e.g., `AKIAIOSFODNN7EXAMPLE`) | This is the public identifier for your credentials. |\n| `AWS Secret Access Key [`**`None`**`]:` | Your IAM User's Secret Access Key (e.g., `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`) | This is the secret key associated with the Access Key ID. **Handle this securely.** |\n| `Default region name [`**`None`**`]:` | The AWS region you want to use by default (e.g., `us-east-1`, `eu-west-2`) | This setting determines which region the CLI targets for API calls unless explicitly overridden. |\n| `Default output format [`**`None`**`]:` | The desired output format for command results (e.g., `json`, `text`, `table`) | `json` is generally preferred for scripting/automation, while `table` is good for human readability. |\n\n### 4. Resulting Configuration Files\n\nUpon successful completion, the AWS CLI stores these values in two files located in the `~/.aws/` directory in your home folder:\n\n**A. Credentials File (`~/.aws/credentials`)**\n\nThis file stores the sensitive access keys.\n\n```ini\n[default]\naws_access_key_id = YOUR_ACCESS_KEY_ID\naws_secret_access_key = YOUR_SECRET_ACCESS_KEY\n```\n\n**B. Configuration File (`~/.aws/config`)**\n\nThis file stores the non-sensitive configuration settings, such as the default region and output format.\n\n```ini\n[default]\nregion = YOUR_DEFAULT_REGION\noutput = YOUR_DEFAULT_OUTPUT_FORMAT\n```\n\n### Best Practice Note on Security\n\nFor production or shared environments, it is highly recommended to use **IAM Roles** via mechanisms like **EC2 Instance Profiles** or **AWS STS AssumeRole** workflows, or utilize **AWS SSO (Single Sign-On)**, rather than storing static long-term credentials directly on a local machine using `aws configure`. If static keys must be used, ensure they belong to an IAM user with the principle of least privilege applied."
+            ],
+            "expected_contexts": [
+                "aws configure"
+            ],
+            "ground_truth": "aws configure",
+            "answer_similarity": 72.5,
+            "answer_relevancy": 75.67
+        },
+        {
+            "query": "Copy local file to S3.",
+            "retrieved_contexts": [
+                "As an SRE/DevOps expert, I can explain the required parameters for the `aws s3 cp` command used to copy a local file to an Amazon S3 bucket and provide a template command.\n\nThe `aws s3 cp` command is part of the AWS Command Line Interface (CLI) and is used to recursively copy files or directories between a local file system and S3, or between S3 locations.\n\n### Required Parameters for `aws s3 cp` (Local File to S3)\n\nTo copy a local file to an S3 bucket, the command fundamentally requires two main arguments:\n\n1.  **Source:** The path to the local file you want to upload.\n2.  **Destination:** The S3 URI (`s3://bucket-name/key-name`) where the file should be placed.\n\nWhile these two are the core positional arguments, successful execution often depends on configuration (like authentication/region) and optionally using flags for specific behavior.\n\n### Template Command\n\nThe general template for copying a local file to S3 is:\n\n```bash\naws s3 cp <LOCAL_FILE_PATH> s3://<BUCKET_NAME>/<OPTIONAL_S3_KEY_OR_PREFIX>\n```\n\n### Example Usage and Key Considerations\n\nHere is a concrete example based on the template:\n\nSuppose you want to copy a file named `config.yaml` located in your current directory to an S3 bucket named `my-application-configs` and save it as `prod/app_settings.yaml` within that bucket.\n\n**Template Command Example:**\n\n```bash\naws s3 cp ./config.yaml s3://my-application-configs/prod/app_settings.yaml\n```\n\n**Important Notes for Execution:**\n\n*   **Authentication:** The AWS CLI must be configured with valid credentials (via `aws configure` or environment variables) that have the necessary `s3:PutObject` permissions for the target bucket.\n*   **Region:** The region is usually inferred from your AWS CLI configuration, but you can explicitly set it using the `--region` flag if necessary (e.g., `--region us-east-1`).\n*   **Key Naming:** If you omit the final file name in the destination URI, S3 will use the local file's name as the object key. For example, `aws s3 cp ./config.yaml s3://my-application-configs/prod/` would result in the object being named `prod/config.yaml`.\n*   **Recursive Copy:** If you were copying a directory, you would need to add the `--recursive` flag. Since this request is for a single file, it is omitted here."
+            ],
+            "expected_contexts": [
+                "aws s3 cp localfile s3://bucket/remotefile"
+            ],
+            "ground_truth": "aws s3 cp localfile s3://bucket/remotefile",
+            "answer_similarity": 82.69,
+            "answer_relevancy": 73.04
+        },
+        {
+            "query": "Create a CloudFront distribution.",
+            "retrieved_contexts": [
+                "As an SRE/DevOps expert, I will construct the complete `aws cloudfront create-distribution` command using the minimal configuration structure derived from the context, incorporating the requested placeholders and execution details.\n\nThe context provided the following essential information regarding the command and the required JSON structure:\n\n*   **Tool/Command:** `aws cloudfront create-distribution`\n*   **Mandatory Parameter:** `--distribution-config`\n*   **Minimal `DistributionConfig` Structure Requirements:** Must include `CallerReference`, `Origins` (with at least one item defining `Id`, `DomainName`, and `S3OriginConfig`), `DefaultCacheBehavior` (linking to the origin ID), `Comment`, `Enabled: true`, and `PriceClass`.\n\nI will use the minimal structure provided in the context, replacing the generic placeholders with specific values requested for the final command generation:\n\n*   `CallerReference`: `CLI-CREATE-20260119-135142`\n*   `DomainName` in `Origins`: `YOUR_ORIGIN_DOMAIN_NAME` (as requested)\n*   `Comment`: `Minimal distribution configuration via CLI script` (updated slightly for clarity)\n\n### Minimal AWS CLI Command\n\nThe following command uses the `--distribution-config` flag with an inline JSON structure. **The user MUST replace `YOUR_ORIGIN_DOMAIN_NAME` with the actual domain name of their origin (e.g., an S3 bucket endpoint) before execution.**\n\n```bash\naws cloudfront create-distribution \\\n    --distribution-config '{\n        \"CallerReference\": \"CLI-CREATE-20260119-135142\",\n        \"Aliases\": {\n            \"Quantity\": 0,\n            \"Items\": []\n        },\n        \"DefaultRootObject\": \"index.html\",\n        \"Origins\": {\n            \"Quantity\": 1,\n            \"Items\": [\n                {\n                    \"Id\": \"S3-Origin-1\",\n                    \"DomainName\": \"YOUR_ORIGIN_DOMAIN_NAME\",\n                    \"OriginPath\": \"\",\n                    \"CustomHeaders\": {\n                        \"Quantity\": 0,\n                        \"Items\": []\n                    },\n                    \"S3OriginConfig\": {\n                        \"OriginAccessIdentity\": \"\"\n                    }\n                }\n            ]\n        },\n        \"DefaultCacheBehavior\": {\n            \"TargetOriginId\": \"S3-Origin-1\",\n            \"ViewerProtocolPolicy\": \"allow-all\",\n            \"TrustedSigners\": {\n                \"Enabled\": false,\n                \"Quantity\": 0,\n                \"Items\": []\n            },\n            \"ForwardedValues\": {\n                \"QueryString\": false,\n                \"Cookies\": {\n                    \"Forward\": \"none\"\n                },\n                \"Headers\": {\n                    \"Quantity\": 0,\n                    \"Items\": []\n                }\n            },\n            \"MinTTL\": 0,\n            \"AllowedMethods\": {\n                \"Quantity\": 2,\n                \"Items\": [\n                    \"GET\",\n                    \"HEAD\"\n                ],\n                \"CachedMethods\": {\n                    \"Quantity\": 2,\n                    \"Items\": [\n                        \"GET\",\n                        \"HEAD\"\n                    ]\n                }\n            },\n            \"SmoothStreaming\": false,\n            \"DefaultTTL\": 86400,\n            \"MaxTTL\": 31536000,\n            \"Compress\": false,\n            \"LambdaFunctionAssociations\": {\n                \"Quantity\": 0,\n                \"Items\": []\n            }\n        },\n        \"Comment\": \"Minimal distribution configuration via CLI script\",\n        \"Enabled\": true,\n        \"PriceClass\": \"PriceClass_100\"\n    }'\n```\n\n**CRITICAL NOTE:** The user **MUST** replace the placeholder value `\"YOUR_ORIGIN_DOMAIN_NAME\"` within the `DomainName` field of the `Origins` section before executing this command. The `CallerReference` is set to `CLI-CREATE-20260119-135142` as requested."
+            ],
+            "expected_contexts": [
+                "aws cloudfront create-distribution --distribution-config <distribution-config>"
+            ],
+            "ground_truth": "aws cloudfront create-distribution --distribution-config <distribution-config>",
+            "answer_similarity": 81.95,
+            "answer_relevancy": 70.33
+        }
+    ],
+    "summary": {
+        "total_queries": 11,
+        "answer_similarity": 84.52,
+        "answer_relevancy": 73.78,
+        "overall_accuracy": 79.15,
+        "failed_indices_after_retries": []
+    }
+}

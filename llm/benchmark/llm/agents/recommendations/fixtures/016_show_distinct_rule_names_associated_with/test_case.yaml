@@ -1,0 +1,6 @@
+user_prompt: Show distinct rule names associated with 'Low' severity recommendations.
+expected_output:
+- SELECT DISTINCT rule_name from recommendation_view WHERE severity = 'Low';
+tags:
+- command
+- recommendations

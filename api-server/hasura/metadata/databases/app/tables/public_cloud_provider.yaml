@@ -1,0 +1,33 @@
+table:
+  name: cloud_provider
+  schema: public
+is_enum: true
+array_relationships:
+  - name: cloud_accounts
+    using:
+      foreign_key_constraint_on:
+        column: cloud_provider
+        table:
+          name: cloud_accounts
+          schema: public
+  - name: cloud_resourses
+    using:
+      foreign_key_constraint_on:
+        column: cloud_provider
+        table:
+          name: cloud_resourses
+          schema: public
+  - name: compliance_checks
+    using:
+      foreign_key_constraint_on:
+        column: cloud_provider
+        table:
+          name: compliance_check
+          schema: public
+  - name: spends_resource_group_types
+    using:
+      foreign_key_constraint_on:
+        column: cloud_provider
+        table:
+          name: spends_resource_group_type
+          schema: public

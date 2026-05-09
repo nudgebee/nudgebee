@@ -1,0 +1,7 @@
+user_prompt: what is the promql query for the total number of Kubernetes services?
+expected_output:
+- count(kube_service_info)
+- sum(kube_service_info)
+tags:
+- command
+- promql

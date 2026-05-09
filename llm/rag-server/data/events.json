@@ -1,0 +1,373 @@
+[
+    {
+      "question": "Show me all events that started in the last hour.",
+      "explanation": "To find events started in the last hour, you would query for records where the 'starts_at' timestamp is within the last 60 minutes from the current time. PostgreSQL uses NOW() or CURRENT_TIMESTAMP for the current timestamp with time zone.",
+      "answer": "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE starts_at >= NOW() - INTERVAL '1 hour';"
+    },
+    {
+      "question": "What are the details for event ID 'evt-a1b2c3d4'?",
+      "explanation": "For event ID 'evt-a1b2c3d4', you can retrieve all its details by selecting all columns (*) or specific columns for the row where the 'id' matches the given value.",
+      "answer": "SELECT id, title, description, starts_at, updated_at, ends_at, status, priority, source, aggregation_key, finding_type, subject_type, subject_name, subject_namespace, subject_node, fingerprint, evidences, cloud_account_id   FROM events   WHERE id = 'evt-a1b2c3d4';"
+    },
+    {
+      "question": "List all HIGH priority issues currently firing.",
+      "explanation": "Filter the events table for rows where the 'priority' column is 'HIGH', the 'finding_type' column is 'issue', and the 'status' column is 'FIRING'.",
+      "answer": "SELECT id, title, starts_at, subject_name, subject_namespace   FROM events   WHERE priority = 'HIGH'     AND finding_type = 'issue'     AND status = 'FIRING';"
+    },
+    {
+      "question": "Are there any 'KubePodCrashLooping' events in the 'production' namespace?",
+      "explanation": "Check for the existence of events by filtering for 'aggregation_key' equal to 'KubePodCrashLooping' and 'subject_namespace' equal to 'production'. Using COUNT(*) > 0 or checking if the query returns any rows answers the question.",
+      "answer": "SELECT COUNT(*)   FROM events   WHERE aggregation_key = 'KubePodCrashLooping'     AND subject_namespace = 'production';"
+    },
+    {
+      "question": "Show me configuration changes related to 'deployments'.",
+      "explanation": "Find these events by filtering the table where 'finding_type' is 'configuration_change' and 'subject_type' is 'deployment'.",
+      "answer": "SELECT id, title, starts_at, subject_name, subject_namespace   FROM events   WHERE finding_type = 'configuration_change'     AND subject_type = 'deployment';"
+    },
+    {
+      "question": "What events occurred on node 'worker-node-5' yesterday?",
+      "explanation": "Search for events where 'subject_node' is 'worker-node-5' and the 'starts_at' timestamp falls within the date range for yesterday. In PostgreSQL, CURRENT_DATE gives today's date.",
+      "answer": "SELECT id, title, starts_at, priority, status   FROM events   WHERE subject_node = 'worker-node-5'     AND starts_at >= CURRENT_DATE - INTERVAL '1 day'     AND starts_at < CURRENT_DATE;"
+    },
+    {
+      "question": "List all 'ServiceDown' events.",
+      "explanation": "Retrieve all events where the 'aggregation_key' column specifically matches 'ServiceDown'.",
+      "answer": "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE aggregation_key = 'ServiceDown';"
+    },
+     {
+      "question": "Show me any 'Service Unavailable' incidents.",
+      "explanation": "Search for events where the 'aggregation_key' is 'ServiceDown', as 'Service Unavailable' is documented as a synonym for this key.",
+      "answer": "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE aggregation_key = 'ServiceDown';"
+    },
+    {
+      "question": "Find events with priority MEDIUM or HIGH.",
+      "explanation": "Filter the events where the 'priority' column is either 'MEDIUM' or 'HIGH'. Using the IN operator is efficient for this.",
+      "answer": "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE priority IN ('MEDIUM', 'HIGH');"
+    },
+    {
+      "question": "What was the duration of the event with fingerprint 'fp-x7y8z9'?",
+      "explanation": "Calculate the duration by finding the difference between the 'ends_at' and 'starts_at' timestamps for the event matching the fingerprint 'fp-x7y8z9'. If 'ends_at' is NULL, the event might still be 'FIRING'. Subtracting timestamps in PostgreSQL returns an 'interval' data type.",
+      "answer": "SELECT id, starts_at, ends_at, status,          (ends_at - starts_at) AS duration FROM events   WHERE fingerprint = 'fp-x7y8z9';"
+    },
+    {
+      "question": "Show me the description and evidence for the latest 'pod_oom_killer_enricher' event.",
+      "explanation": "Find the most recent event (latest 'starts_at' time) where 'aggregation_key' is 'pod_oom_killer_enricher'. Order the results by 'starts_at' descending and limit to the first row, then select the 'description' and 'evidences' fields.",
+      "answer": "SELECT description, evidences   FROM events   WHERE aggregation_key = 'pod_oom_killer_enricher'   ORDER BY starts_at DESC   LIMIT 1;"
+    },
+    {
+      "question": "List all events that are currently closed.",
+      "explanation": "Provide a list of events by filtering the table for records where the 'status' column is exactly 'CLOSED'.",
+      "answer": "SELECT id, title, starts_at, ends_at, priority, subject_name   FROM events   WHERE status = 'CLOSED';"
+    },
+    {
+      "question": "Are there any 'out of memory' events related to the 'data-processor' job?",
+      "explanation": "Check for events where 'aggregation_key' is 'pod_oom_killer_enricher' (which maps to the synonym 'out of memory'), 'subject_type' is 'job', and 'subject_name' is 'data-processor'.",
+      "answer": "SELECT id, title, starts_at, status, priority   FROM events   WHERE aggregation_key = 'pod_oom_killer_enricher' AND subject_type = 'job'     AND subject_name = 'data-processor';"
+    },
+    {
+      "question": "Show me all Kubernetes Warning Events.",
+      "explanation": "Filter the table for events where the 'aggregation_key' column matches 'KubernetesWarningEvent' or 'Kubernetes Warning Event'. Use IN for flexibility.",
+      "answer": "SELECT id, title, description, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE aggregation_key IN ('KubernetesWarningEvent', 'Kubernetes Warning Event');"
+     },
+     {
+      "question": "Find any 'Target Unreachable' alerts.",
+      "explanation": "Search for events where the 'aggregation_key' is 'TargetDown', since 'Target Unreachable' is listed as a synonym for it.",
+      "answer": "SELECT id, title, description, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE aggregation_key = 'TargetDown';"
+     },
+     {
+      "question": "List events triggered by 'Prometheus' source.",
+      "explanation": "Find events where the 'source' field contains 'Prometheus'. Using the LIKE operator with wildcards (%) allows matching even if 'Prometheus' is part of a larger source string.",
+      "answer": "SELECT id, title, starts_at, status, priority, aggregation_key   FROM events   WHERE source LIKE '%Prometheus%';"
+     },
+      {
+      "question": "What are the distinct subject types present in the events?",
+      "explanation": "Retrieve a unique list of all values present in the 'subject_type' column by using the DISTINCT keyword in the SELECT statement.",
+      "answer": "SELECT DISTINCT subject_type   FROM events;"
+      },
+    {
+      "question": "Show events updated in the last 24 hours.",
+      "explanation": "Filter events based on the 'updated_at' timestamp being within the last 24 hours from the current time. PostgreSQL uses NOW() or CURRENT_TIMESTAMP.",
+      "answer": "SELECT id, title, updated_at, status, priority   FROM events   WHERE updated_at >= NOW() - INTERVAL '24 hours';"
+    },
+    {
+      "question": "List all firing events that haven't ended yet.",
+      "explanation": "Find events that are currently active ('FIRING' status) and do not have an end timestamp ('ends_at' is NULL).",
+      "answer": "SELECT id, title, starts_at, priority, subject_name   FROM events   WHERE status = 'FIRING' AND ends_at IS NULL;"
+    },
+    {
+      "question": "Find issues with 'database' in the title.",
+      "explanation": "Search for events classified as 'issue' where the 'title' column contains the word 'database'. The LIKE operator with '%' wildcards performs a substring search.",
+      "answer": "SELECT id, title, starts_at, status, priority   FROM events   WHERE finding_type = 'issue' AND title LIKE '%database%';"
+    },
+    {
+      "question": "Count the number of events for each priority level.",
+      "explanation": "Group the events by the 'priority' column and use the COUNT(*) aggregate function to get the number of events in each group.",
+      "answer": "SELECT priority, COUNT(*) AS event_count   FROM events   GROUP BY priority   ORDER BY event_count DESC;"
+    },
+    {
+      "question": "Show the top 5 most frequent aggregation keys for firing events.",
+      "explanation": "Filter for firing events, group them by 'aggregation_key', count the occurrences in each group, order by the count in descending order, and take the top 5 results.",
+      "answer": "SELECT aggregation_key, COUNT(*) AS frequency   FROM events   WHERE status = 'FIRING'   GROUP BY aggregation_key   ORDER BY frequency DESC   LIMIT 5;"
+    },
+    {
+      "question": "List all 'crash loop' events.",
+      "explanation": "Search for events where the 'aggregation_key' is 'report_crash_loop', which corresponds to the 'crash loop' synonym.",
+      "answer": "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE aggregation_key = 'report_crash_loop';"
+    },
+    {
+      "question": "Find HIGH priority 'KubeNodeNotReady' events.",
+      "explanation": "Filter events where both the 'priority' is 'HIGH' and the 'aggregation_key' is 'KubeNodeNotReady'.",
+      "answer": "SELECT id, title, starts_at, status, subject_node   FROM events   WHERE priority = 'HIGH' AND aggregation_key = 'KubeNodeNotReady';"
+    },
+    {
+      "question": "Show events related to 'statefulset' subjects.",
+      "explanation": "Filter the events table for records where the 'subject_type' column is 'statefulset'.",
+      "answer": "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE subject_type = 'statefulset';"
+    },
+    {
+      "question": "List events in 'kube-system' namespace excluding 'KubePodNotReady'.",
+      "explanation": "Filter for events in the 'kube-system' namespace but exclude those with the 'aggregation_key' of 'KubePodNotReady' using the '!=' (not equal) operator.",
+      "answer": "SELECT id, title, starts_at, status, priority, aggregation_key, subject_name   FROM events   WHERE subject_namespace = 'kube-system' AND aggregation_key != 'KubePodNotReady';"
+    },
+    {
+      "question": "Find events associated with cloud account 'acc-xyz'.",
+      "explanation": "Filter the events based on the 'cloud_account_id' column matching the specified account ID.",
+      "answer": "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE cloud_account_id = 'acc-xyz';"
+    },
+    {
+      "question": "Show the oldest 5 firing events.",
+      "explanation": "Filter for events with 'FIRING' status, order them by their 'starts_at' timestamp in ascending order (oldest first), and limit the result to 5.",
+      "answer": "SELECT id, title, starts_at, priority, subject_name   FROM events   WHERE status = 'FIRING'   ORDER BY starts_at ASC   LIMIT 5;"
+    },
+    {
+      "question": "List events with INFO or DEBUG priority.",
+      "explanation": "Filter events where the 'priority' column is either 'INFO' or 'DEBUG' using the IN operator.",
+      "answer": "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE priority IN ('INFO', 'DEBUG');"
+    },
+    {
+      "question": "Find events whose description contains 'timeout'.",
+      "explanation": "Search within the 'description' column for the occurrence of the word 'timeout' using the LIKE operator.",
+      "answer": "SELECT id, title, description, starts_at, status, priority   FROM events   WHERE description LIKE '%timeout%';"
+    },
+    {
+      "question": "Show configuration changes that occurred last week.",
+      "explanation": "Filter for events where 'finding_type' is 'configuration_change' and the 'starts_at' timestamp falls within the date range of the previous calendar week. In PostgreSQL, date_trunc('week', ...) can be used to find the start of the current week.",
+      "answer": "SELECT id, title, starts_at, subject_name   FROM events   WHERE finding_type = 'configuration_change'     AND starts_at >= date_trunc('week', CURRENT_DATE) - INTERVAL '1 week'     AND starts_at < date_trunc('week', CURRENT_DATE);"
+    },
+    {
+      "question": "List events with no associated node (subject_node is NULL).",
+      "explanation": "Find events where the 'subject_node' column does not contain a value (is NULL).",
+      "answer": "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE subject_node IS NULL;"
+    },
+    {
+      "question": "Count closed issues per aggregation key.",
+      "explanation": "Filter for events that are 'CLOSED' and are 'issue' type, then group by 'aggregation_key' and count the number of events in each group.",
+      "answer": "SELECT aggregation_key, COUNT(*) AS closed_issue_count   FROM events   WHERE status = 'CLOSED' AND finding_type = 'issue'   GROUP BY aggregation_key   ORDER BY closed_issue_count DESC;"
+    },
+    {
+      "question": "Find events related to HorizontalPodAutoscalers (HPA).",
+      "explanation": "Filter events where the 'subject_type' is 'horizontalpodautoscaler'.",
+      "answer": "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE subject_type = 'horizontalpodautoscaler';"
+    },
+    {
+      "question": "List all 'KubeJobFailed' events.",
+      "explanation": "Retrieve events specifically identified by the 'aggregation_key' 'KubeJobFailed'.",
+      "answer": "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE aggregation_key = 'KubeJobFailed';"
+    },
+    {
+      "question": "Show events that started between two specific timestamps.",
+      "explanation": "Filter events where the 'starts_at' timestamp falls within a specified start and end timestamp range using the BETWEEN operator or >= and < operators. Ensure timestamps are in a format PostgreSQL understands (like ISO 8601).",
+      "answer": "SELECT id, title, starts_at, status, priority   FROM events   WHERE starts_at BETWEEN '2025-04-01T00:00:00Z' AND '2025-04-01T12:00:00Z';"
+    },
+    {
+      "question": "Find events where subject name starts with 'api-'.",
+      "explanation": "Use the LIKE operator with a wildcard '%' to find events where the 'subject_name' begins with the prefix 'api-'.",
+      "answer": "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE subject_name LIKE 'api-%';"
+    },
+    {
+      "question": "List events not updated in the last 7 days.",
+      "explanation": "Find events where the 'updated_at' timestamp is older than 7 days from the current time using NOW() and INTERVAL.",
+      "answer": "SELECT id, title, updated_at, status, priority   FROM events   WHERE updated_at < NOW() - INTERVAL '7 days';"
+    },
+    {
+      "question": "Show the count of firing vs closed events.",
+      "explanation": "Group events by their 'status' ('FIRING' or 'CLOSED') and count the number of events in each status group.",
+      "answer": "SELECT status, COUNT(*) AS event_count   FROM events   GROUP BY status;"
+    },
+    {
+      "question": "Find events with the exact title 'Node Not Ready'.",
+      "explanation": "Filter events where the 'title' column exactly matches the string 'Node Not Ready'.",
+      "answer": "SELECT id, starts_at, status, priority, subject_node   FROM events   WHERE title = 'Node Not Ready';"
+    },
+    {
+      "question": "List all distinct sources of events.",
+      "explanation": "Retrieve a unique list of all values present in the 'source' column using the DISTINCT keyword.",
+      "answer": "SELECT DISTINCT source   FROM events;"
+    },
+    {
+      "question": "Show events related to 'daemonset' subjects in the 'monitoring' namespace.",
+      "explanation": "Filter events where 'subject_type' is 'daemonset' and 'subject_namespace' is 'monitoring'.",
+      "answer": "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE subject_type = 'daemonset' AND subject_namespace = 'monitoring';"
+    },
+    {
+      "question": "Find events whose fingerprint appears more than once (duplicates based on fingerprint).",
+      "explanation": "Group events by 'fingerprint', count the occurrences, and filter for groups where the count is greater than 1 using the HAVING clause.",
+      "answer": "SELECT fingerprint, COUNT(*) AS occurrences   FROM events   GROUP BY fingerprint   HAVING COUNT(*) > 1;"
+    },
+    {
+      "question": "List LOW priority configuration changes.",
+      "explanation": "Filter events where 'priority' is 'LOW' and 'finding_type' is 'configuration_change'.",
+      "answer": "SELECT id, title, starts_at, subject_type, subject_name   FROM events   WHERE priority = 'LOW' AND finding_type = 'configuration_change';"
+    },
+    {
+      "question": "Show events that ended in the last hour.",
+      "explanation": "Filter events based on the 'ends_at' timestamp being within the last 60 minutes from the current time using NOW() and INTERVAL.",
+      "answer": "SELECT id, title, starts_at, ends_at, status, priority   FROM events   WHERE ends_at >= NOW() - INTERVAL '1 hour';"
+    },
+    {
+      "question": "Find events with aggregation key 'KubeCPUOvercommit' OR 'KubeMemoryOvercommit'.",
+      "explanation": "Filter events where the 'aggregation_key' is one of the specified values, using the IN operator.",
+      "answer": "SELECT id, title, starts_at, status, priority, aggregation_key, subject_node   FROM events   WHERE aggregation_key IN ('KubeCPUOvercommit', 'KubeMemoryOvercommit');"
+    },
+    {
+      "question": "List events where the subject is a 'pod' and the node is 'control-plane-1'.",
+      "explanation": "Filter events where 'subject_type' is 'pod' and 'subject_node' is 'control-plane-1'.",
+      "answer": "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM events   WHERE subject_type = 'pod' AND subject_node = 'control-plane-1';"
+    },
+    {
+      "question": "Show the latest event overall based on start time.",
+      "explanation": "Find the single most recent event by ordering all events by 'starts_at' timestamp in descending order and taking the first result using LIMIT 1.",
+      "answer": "SELECT id, title, starts_at, status, priority, aggregation_key   FROM events   ORDER BY starts_at DESC   LIMIT 1;"
+    },
+    {
+      "question": "Count events per finding type (issue vs configuration_change).",
+      "explanation": "Group events by the 'finding_type' column and count the number of events in each category.",
+      "answer": "SELECT finding_type, COUNT(*) AS event_count   FROM events   GROUP BY finding_type;"
+    },
+    {
+        "question": "List all user creation events.",
+        "explanation": "Filter events where the aggregation_key indicates a user was created.",
+        "answer": "SELECT id, title, starts_at, status, priority, subject_name, source   FROM events   WHERE aggregation_key = 'CreateUser';"
+    },
+    {
+        "question": "Show me when security group ingress rules were authorized.",
+        "explanation": "Filter for events where the aggregation_key matches 'AuthorizeSecurityGroupIngress'.",
+        "answer": "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace, source   FROM events   WHERE aggregation_key = 'AuthorizeSecurityGroupIngress';"
+    },
+    {
+        "question": "Find all RDS high CPU utilization alerts for the 'main' instance.",
+        "explanation": "Filter for the specific RDS high CPU alert key. You might need to adjust the query if the instance name ('main') is stored in subject_name or description.",
+        "answer": "SELECT id, title, starts_at, status, priority, subject_name, description   FROM events   WHERE aggregation_key = 'awsrds-main-High-CPUUtilization';"
+    },
+    {
+        "question": "List events where volumes were deleted.",
+        "explanation": "Filter events based on the 'DeleteVolume' aggregation_key.",
+        "answer": "SELECT id, title, starts_at, status, priority, subject_name, source   FROM events   WHERE aggregation_key = 'DeleteVolume';"
+    },
+    {
+        "question": "Show all Kubernetes controller manager down alerts.",
+        "explanation": "Filter events where the aggregation_key is 'KubeControllerManagerDown'.",
+        "answer": "SELECT id, title, starts_at, status, priority, subject_node   FROM events   WHERE aggregation_key = 'KubeControllerManagerDown';"
+    },
+    {
+        "question": "Find NGINX configuration failures.",
+        "explanation": "Filter for events indicating an NGINX configuration failure using the 'NGINXConfigFailed' aggregation_key.",
+        "answer": "SELECT id, title, starts_at, status, priority, subject_name, subject_namespace, subject_node   FROM events   WHERE aggregation_key = 'NGINXConfigFailed';"
+    },
+    {
+        "question": "List all events indicating disk space exhaustion.",
+        "explanation": "Filter events using the 'DiskRunsOutOfSpace' aggregation_key.",
+        "answer": "SELECT id, title, starts_at, status, priority, subject_name, subject_node   FROM events   WHERE aggregation_key = 'DiskRunsOutOfSpace';"
+    },
+    {
+        "question": "Show all SLO Violation alerts.",
+        "explanation": "Filter events where the aggregation_key indicates an SLO violation. Use IN to catch variations like 'SLOViloation'.",
+        "answer": "SELECT id, title, starts_at, status, priority, description   FROM events   WHERE aggregation_key IN ('SLOViolation', 'SLOViloation');"
+    },
+    {
+        "question": "Find events where access keys were created.",
+        "explanation": "Filter for security events where an AWS access key was created using the 'CreateAccessKey' aggregation_key.",
+        "answer": "SELECT id, title, starts_at, priority, subject_name, source   FROM events   WHERE aggregation_key = 'CreateAccessKey';"
+    },
+    {
+        "question": "List events where user policies were attached.",
+        "explanation": "Filter for security events where a policy was attached to a user using the 'AttachUserPolicy' aggregation_key.",
+        "answer": "SELECT id, title, starts_at, priority, subject_name, description, source   FROM events   WHERE aggregation_key = 'AttachUserPolicy';"
+    },
+    {
+        "question": "Show high memory utilization alerts.",
+        "explanation": "Filter events based on the 'HighMemoryUtilization' aggregation_key.",
+        "answer": "SELECT id, title, starts_at, status, priority, subject_name, subject_node   FROM events   WHERE aggregation_key = 'HighMemoryUtilization';"
+    },
+    {
+        "question": "Find events related to backup job completions.",
+        "explanation": "Filter events indicating a backup job has completed successfully using the 'BackupJobCompleted' aggregation_key.",
+        "answer": "SELECT id, title, starts_at, status, priority, subject_name, description   FROM events   WHERE aggregation_key = 'BackupJobCompleted';"
+    },
+    {
+        "question": "Show events where EC2 instances were launched.",
+        "explanation": "Filter for events triggered by the 'RunInstances' API call.",
+        "answer": "SELECT id, title, starts_at, status, priority, description, source   FROM events   WHERE aggregation_key = 'RunInstances';"
+    },
+    {
+        "question": "Find alerts for PostgreSQL being down.",
+        "explanation": "Filter events using the 'PostgreSQLDown' aggregation_key.",
+        "answer": "SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE aggregation_key = 'PostgreSQLDown';"
+    },
+    {
+        "question": "List events related to cluster version updates.",
+        "explanation": "Filter for events related to updating a cluster version, likely using the 'UpdateClusterVersion' aggregation_key.",
+        "answer": "SELECT id, title, starts_at, status, priority, subject_name, description, source   FROM events   WHERE aggregation_key = 'UpdateClusterVersion';"
+    },
+    {
+        "question": "Show all anomaly detection events.",
+        "explanation": "Filter events marked with the 'Anomaly' aggregation_key.",
+        "answer": "SELECT id, title, starts_at, status, priority, description, source   FROM events   WHERE aggregation_key = 'Anomaly';"
+    },
+    {
+        "question": "Find events where MFA devices were enabled.",
+        "explanation": "Filter for security events where an MFA device was enabled for a user using 'EnableMFADevice'.",
+        "answer": "SELECT id, title, starts_at, priority, subject_name, source   FROM events   WHERE aggregation_key = 'EnableMFADevice';"
+    },
+    {
+        "question": "List alerts for Kubelet being down.",
+        "explanation": "Filter for Kubernetes events where the aggregation_key is 'KubeletDown'.",
+        "answer": "SELECT id, title, starts_at, status, priority, subject_node   FROM events   WHERE aggregation_key = 'KubeletDown';"
+    },
+    {
+        "question": "Show events where S3 bucket policies were modified.",
+        "explanation": "Filter for events related to updating S3 bucket policies using 'PutBucketPolicy'.",
+        "answer": "SELECT id, title, starts_at, priority, subject_name, description, source   FROM events   WHERE aggregation_key = 'PutBucketPolicy';"
+    },
+    {
+        "question": "Find high database connection alerts for RDS 'main'.",
+        "explanation": "Filter for the specific RDS high connections alert key. Adjust if instance name 'main' is in subject_name.",
+        "answer": "SELECT id, title, starts_at, status, priority, subject_name, description   FROM events   WHERE aggregation_key = 'awsrds-main-High-DatabaseConnections';"
+    },
+    {
+        "question": "List events where roles were attached to policies.",
+        "explanation": "Filter for security events where a policy was attached to a role using 'AttachRolePolicy'.",
+        "answer": "SELECT id, title, starts_at, priority, subject_name, description, source   FROM events   WHERE aggregation_key = 'AttachRolePolicy';"
+    },
+    {
+        "question": "Show alerts for high filesystem utilization.",
+        "explanation": "Filter events using the 'HighFilesystemUtilization' aggregation_key.",
+        "answer": "SELECT id, title, starts_at, status, priority, subject_name, subject_node   FROM events   WHERE aggregation_key = 'HighFilesystemUtilization';"
+    },
+    {
+        "question": "Find events related to Kubernetes normal events.",
+        "explanation": "Filter for events classified as 'Kubernetes Normal Event'.",
+        "answer": "SELECT id, title, description, starts_at, priority, subject_name, subject_namespace, subject_node   FROM events   WHERE aggregation_key = 'Kubernetes Normal Event';"
+    },
+    {
+        "question": "List events where EC2 instances were terminated.",
+        "explanation": "Filter for events indicating EC2 instance termination using 'TerminateInstances' or 'TerminateInstanceInAutoScalingGroup'.",
+        "answer": "SELECT id, title, starts_at, priority, description, source   FROM events   WHERE aggregation_key IN ('TerminateInstances', 'TerminateInstanceInAutoScalingGroup');"
+    },
+    {
+        "question": "Show HIGH priority Alertmanager alert sending failures.",
+        "explanation": "Filter for HIGH priority events where Alertmanager failed to send alerts.",
+        "answer": "SELECT id, title, starts_at, status, description   FROM events   WHERE priority = 'HIGH' AND aggregation_key IN ('AlertmanagerClusterFailedToSendAlerts', 'AlertmanagerFailedToSendAlerts');"
+    }
+  ]
+  

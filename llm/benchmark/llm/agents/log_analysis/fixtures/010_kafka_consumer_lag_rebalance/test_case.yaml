@@ -1,0 +1,18 @@
+user_prompt: |
+  2026-04-05T16:30:00.123Z INFO  [fraud-detection] Consumer group 'fraud-detection-group' joined with member-id fraud-detection-659dc8f4df-lzb9r
+  2026-04-05T16:30:01.456Z WARN  [fraud-detection] Consumer lag detected on partition orders-0: offset=458920, committed=312450, lag=146470
+  2026-04-05T16:30:01.457Z WARN  [fraud-detection] Consumer lag detected on partition orders-1: offset=459001, committed=315678, lag=143323
+  2026-04-05T16:30:02.890Z ERROR [fraud-detection] kafka.coordinator.group: Member fraud-detection-659dc8f4df-lzb9r sending LeaveGroup request due to consumer poll timeout
+  2026-04-05T16:30:02.891Z WARN  [fraud-detection] max.poll.interval.ms=300000 exceeded. Processing batch of 500 records took 312456ms
+  2026-04-05T16:30:03.123Z INFO  [fraud-detection] Revoking previously assigned partitions [orders-0, orders-1]
+  2026-04-05T16:30:03.456Z INFO  [fraud-detection] Consumer group rebalance triggered
+  2026-04-05T16:30:05.789Z ERROR [fraud-detection] Processing record failed: java.util.concurrent.TimeoutException: ML model inference timeout after 30s for transaction txn-88a3f2
+  namespace: demo, pod: fraud-detection-659dc8f4df-lzb9r, container: fraud-detection
+expected_output:
+  - The fraud-detection service in the demo namespace has a Kafka consumer lag problem and is triggering repeated consumer group rebalances. The consumer on partitions orders-0 and orders-1 has accumulated over 146K messages of lag. Processing a batch of 500 records took 312 seconds, exceeding the max.poll.interval.ms of 300 seconds, causing the consumer to leave the group and triggering rebalances. The root cause is that the ML model inference used for fraud detection is timing out (30s per transaction), making batch processing too slow. Suggested actions include optimizing the ML model inference latency, reducing the max.poll.records to a smaller batch size, increasing max.poll.interval.ms, or scaling the fraud-detection service horizontally to distribute the load.
+tags:
+  - kafka
+  - consumer-lag
+  - rebalance
+  - demo
+type: log_analysis

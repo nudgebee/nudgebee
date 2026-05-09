@@ -1,0 +1,840 @@
+{
+    "details": [
+        {
+            "query": "What command shows cluster information?",
+            "retrieved_contexts": [
+                "kubectl cluster-info"
+            ],
+            "expected_contexts": [
+                "kubectl cluster-info"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl cluster-info"
+                ]
+            ],
+            "answer_similarity": 100.0,
+            "answer_relevancy": 74.53
+        },
+        {
+            "query": "Which is the command to list all nodes in the cluster?",
+            "retrieved_contexts": [
+                "The command to list all nodes in the cluster is:\n\n        ```bash\n        kubectl get nodes\n        ```"
+            ],
+            "expected_contexts": [
+                "kubectl get nodes"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl get nodes",
+                    "kubectl get no"
+                ]
+            ],
+            "answer_similarity": 94.08,
+            "answer_relevancy": 84.48
+        },
+        {
+            "query": "Which command lists all namespaces?",
+            "retrieved_contexts": [
+                "kubectl get namespaces --no-headers"
+            ],
+            "expected_contexts": [
+                "kubectl get namespaces"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl get namespaces",
+                    "kubectl get ns"
+                ]
+            ],
+            "answer_similarity": 96.4,
+            "answer_relevancy": 67.76
+        },
+        {
+            "query": "Show me the command to see all running pods in the default namespace?",
+            "retrieved_contexts": [
+                "kubectl get pods -n default --field-selector=status.phase=Running --no-headers"
+            ],
+            "expected_contexts": [
+                "kubectl get pods"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl get pods",
+                    "kubectl get po"
+                ]
+            ],
+            "answer_similarity": 90.74,
+            "answer_relevancy": 77.74
+        },
+        {
+            "query": "What command lists pods in a specific namespace?",
+            "retrieved_contexts": [
+                "To list pods in a specific namespace, you would use the following `kubectl` command:\n\n        ```bash\n        kubectl get pods -n <namespace_name>\n        ```\n\n        **Explanation:**\n        *   `kubectl get pods`: This part of the command retrieves information about pods.\n        *   `-n <namespace_name>`: This flag specifies the namespace you want to query. You need to replace `<namespace_name>` with the actual name of the namespace (e.g., `default`, `kube-system`, `my-app-namespace`)."
+            ],
+            "expected_contexts": [
+                "kubectl get pods -n <namespace>"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl get pods -n <namespace>",
+                    "kubectl get po -n <namespace>"
+                ]
+            ],
+            "answer_similarity": 88.89,
+            "answer_relevancy": 78.17
+        },
+        {
+            "query": "What is the command to describe a specific pod?",
+            "retrieved_contexts": [
+                "The command to describe a specific pod is:\n        \n        `kubectl describe pod <pod_name> -n <namespace>`\n        \n        Replace `<pod_name>` with the actual name of the pod and `<namespace>` with the namespace where the pod is running."
+            ],
+            "expected_contexts": [
+                "kubectl describe pod <pod-name>"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl describe pod <pod-name>",
+                    "kubectl describe po <pod-name>"
+                ]
+            ],
+            "answer_similarity": 93.72,
+            "answer_relevancy": 82.49
+        },
+        {
+            "query": "Which command gives details about a specific node?",
+            "retrieved_contexts": [
+                "### Command to get details about a specific node:\n\n        To get details about a specific node, you can use the `kubectl describe node` command followed by the node's name.\n\n        ```bash\n        kubectl describe node <node-name>\n        ```\n\n        **Explanation:**\n        This command provides a comprehensive overview of a Kubernetes node, including its status, capacity, allocated resources, events, and more. You need to replace `<node-name>` with the actual name of the node you want to inspect."
+            ],
+            "expected_contexts": [
+                "kubectl describe node <node-name>"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl describe node <node-name>",
+                    "kubectl describe no <node-name>"
+                ]
+            ],
+            "answer_similarity": 90.96,
+            "answer_relevancy": 77.04
+        },
+        {
+            "query": "How do I create a new deployment?",
+            "retrieved_contexts": [
+                "### How to Create a New Kubernetes Deployment\n\nTo create a new Kubernetes Deployment, you typically define a YAML manifest file that describes the desired state of your application. Here's a step-by-step guide:\n\n#### 1. Define Your Deployment YAML File\n\nCreate a file (e.g., `my-deployment.yaml`) with the following structure:\n\n```yaml\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: my-nginx-deployment\n  labels:\n    app: nginx\nspec:\n  replicas: 3 # Number of desired replicas\n  selector:\n    matchLabels:\n      app: nginx\n  template:\n    metadata:\n      labels:\n        app: nginx\n    spec:\n      containers:\n      - name: nginx\n        image: nginx:latest # The container image to use\n        ports:\n        - containerPort: 80\n```\n\n**Explanation of the fields:**\n\n*   **`apiVersion: apps/v1`**: Specifies the API version for the Deployment resource.\n*   **`kind: Deployment`**: Indicates that this is a Deployment object.\n*   **`metadata`**: Contains metadata about the Deployment.\n    *   **`name`**: A unique name for your Deployment.\n    *   **`labels`**: Key-value pairs used to organize and select resources.\n*   **`spec`**: Defines the desired state of the Deployment.\n    *   **`replicas`**: The number of identical Pods you want to run.\n    *   **`selector`**: Defines how the Deployment finds which Pods to manage. It must match the labels defined in the Pod template.\n    *   **`template`**: This is the Pod template, which describes the Pods that the Deployment will create.\n        *   **`metadata.labels`**: Labels for the Pods created by this Deployment. These must match the `spec.selector.matchLabels`.\n        *   **`spec.containers`**: A list of containers that will run inside the Pod.\n            *   **`name`**: The name of the container.\n            *   **`image`**: The Docker image to use for the container (e.g., `nginx:latest`).\n            *   **`ports`**: A list of ports that the container exposes.\n\n#### 2. Apply the Deployment\n\nOnce you have created your YAML file, use the `kubectl apply` command to create the Deployment in your Kubernetes cluster:\n\n```bash\nkubectl apply -f my-deployment.yaml -n <your-namespace>\n```\n\nReplace `<your-namespace>` with the actual namespace where you want to deploy your application. If you don't specify a namespace, it will be deployed in the `default` namespace.\n\n#### 3. Verify the Deployment\n\nYou can check the status of your Deployment and the Pods it created using the following commands:\n\n*   **Check Deployment status:**\n    ```bash\n    kubectl get deployments -n <your-namespace>\n    ```\n*   **Check Pod status:**\n    ```bash\n    kubectl get pods -l app=nginx -n <your-namespace>\n    ```\n    (Using `-l app=nginx` to filter by the label defined in your Deployment)\n\n*   **Get detailed information about the Deployment:**\n    ```bash\n    kubectl describe deployment my-nginx-deployment -n <your-namespace>\n    ```\n\nThis process will create a Deployment that ensures the specified number of Pod replicas are running and manages their lifecycle, including rolling updates and rollbacks."
+            ],
+            "expected_contexts": [
+                "kubectl create deployment <deployment-name> --image=<image-name>"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl create deployment <deployment-name> --image=<image-name>"
+                ]
+            ],
+            "answer_similarity": 83.42,
+            "answer_relevancy": 72.97
+        },
+        {
+            "query": "Which command scales a deployment to 3 replicas?",
+            "retrieved_contexts": [
+                "### Scale Deployment Command\n        \n        To scale a deployment to 3 replicas, you would use the following `kubectl` command:\n        \n        ```bash\n        kubectl scale deployment <deployment-name> --replicas=3 -n <namespace>\n        ```\n        \n        **Explanation:**\n        \n        *   `kubectl scale`: This command is used to change the number of running instances of a resource.\n        *   `deployment <deployment-name>`: Specifies that you are targeting a deployment resource and provides its name.\n        *   `--replicas=3`: Sets the desired number of replicas for the deployment to 3.\n        *   `-n <namespace>`: Specifies the namespace where the deployment is located. **Remember to replace `<deployment-name>` and `<namespace>` with the actual name of your deployment and its namespace.**"
+            ],
+            "expected_contexts": [
+                "kubectl scale deployment <deployment-name> --replicas=3"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl scale deployment <deployment-name> --replicas=3"
+                ]
+            ],
+            "answer_similarity": 94.68,
+            "answer_relevancy": 78.07
+        },
+        {
+            "query": "What is command to delete a deployment?",
+            "retrieved_contexts": [
+                "To delete a deployment in Kubernetes, you use the `kubectl delete deployment` command. You need to specify the name of the deployment and its namespace.\n\n        ### Command to Delete a Deployment\n\n        ```bash\n        kubectl delete deployment <deployment-name> -n <namespace>\n        ```\n\n        **Explanation:**\n        *   `kubectl delete`: This is the base command for deleting resources.\n        *   `deployment`: This specifies the type of resource you want to delete.\n        *   `<deployment-name>`: Replace this with the actual name of the deployment you wish to delete.\n        *   `-n <namespace>`: Replace `<namespace>` with the namespace where the deployment is located. It is crucial to always specify the namespace."
+            ],
+            "expected_contexts": [
+                "kubectl delete deployment <deployment-name>"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl delete deployment <deployment-name>",
+                    "kubectl delete deploy <deployment-name>"
+                ]
+            ],
+            "answer_similarity": 91.5,
+            "answer_relevancy": 74.94
+        },
+        {
+            "query": "What is command to update the image of a deployment?",
+            "retrieved_contexts": [
+                "### Command to Update Deployment Image\n\n        To update the image of a deployment, you can use the `kubectl set image` command.\n\n        ```bash\n        kubectl set image deployment/<deployment-name> <container-name>=<new-image> -n <namespace>\n        ```\n\n        **Explanation:**\n\n        *   `deployment/<deployment-name>`: Specifies the deployment resource and its name.\n        *   `<container-name>`: The name of the container within the deployment whose image you want to update.\n        *   `<new-image>`: The new image name and tag (e.g., `nginx:1.23`).\n        *   `-n <namespace>`: Specifies the namespace where the deployment is located. **Remember to always specify the namespace.**\n\n        **Example:**\n\n        To update the `nginx` container in the `my-nginx-deployment` deployment in the `default` namespace to use the `nginx:1.23` image:\n\n        ```bash\n        kubectl set image deployment/my-nginx-deployment nginx=nginx:1.23 -n default\n        ```"
+            ],
+            "expected_contexts": [
+                "kubectl set image deployment/<deployment-name> <container-name>=<new-image>"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl set image deployment/<deployment-name> <container-name>=<new-image>"
+                ]
+            ],
+            "answer_similarity": 91.44,
+            "answer_relevancy": 79.47
+        },
+        {
+            "query": "Which command lists all services?",
+            "retrieved_contexts": [
+                "kubectl get services --all-namespaces"
+            ],
+            "expected_contexts": [
+                "kubectl get services"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl get services",
+                    "kubectl get svc"
+                ]
+            ],
+            "answer_similarity": 96.67,
+            "answer_relevancy": 67.05
+        },
+        {
+            "query": "What is command to expose a deployment as a service?",
+            "retrieved_contexts": [
+                "### Command to Expose a Deployment as a Service\n        \n        To expose a deployment as a service, you can use the `kubectl expose` command.\n        \n        **Command:**\n        ```bash\n        kubectl expose deployment <deployment-name> --port=<service-port> --target-port=<deployment-port> --name=<service-name> -n <namespace> --type=<ServiceType>\n        ```\n        \n        **Explanation:**\n        *   `<deployment-name>`: Replace with the actual name of your deployment.\n        *   `--port=<service-port>`: The port on which the service will be exposed.\n        *   `--target-port=<deployment-port>`: The port that your deployment's pods are listening on.\n        *   `--name=<service-name>`: The desired name for the new service.\n        *   `-n <namespace>`: The namespace where your deployment and service reside.\n        *   `--type=<ServiceType>`: The type of service you want to create. Common types include:\n            *   `ClusterIP` (default): Exposes the service on an internal IP in the cluster. Only reachable from within the cluster.\n            *   `NodePort`: Exposes the service on each Node's IP at a static port (the NodePort). Makes the service accessible from outside the cluster using `<NodeIP>:<NodePort>`.\n            *   `LoadBalancer`: Exposes the service externally using a cloud provider's load balancer. Only works with cloud providers that support load balancers.\n            *   `ExternalName`: Maps the service to the contents of the `externalName` field (e.g., `foo.example.com`), by returning a `CNAME` record with its value.\n        \n        **Example:**\n        To expose a deployment named `my-app-deployment` in the `default` namespace, listening on port `80`, as a `NodePort` service named `my-app-service` on port `8080`:\n        \n        ```bash\n        kubectl expose deployment my-app-deployment --port=8080 --target-port=80 --name=my-app-service -n default --type=NodePort\n        ```"
+            ],
+            "expected_contexts": [
+                "kubectl expose deployment <deployment-name> --type=NodePort --port=80"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl expose deployment <deployment-name> --type=NodePort --port=80"
+                ]
+            ],
+            "answer_similarity": 89.32,
+            "answer_relevancy": 74.15
+        },
+        {
+            "query": "What is command to port forward a pod to my local machine?",
+            "retrieved_contexts": [
+                "To port forward a pod to your local machine, you can use the following `kubectl` command:\n\n        ```bash\n        kubectl port-forward <pod-name> -n <namespace> <local-port>:<pod-port>\n        ```\n\n        **Explanation:**\n\n        *   `<pod-name>`: Replace this with the actual name of the pod you want to forward.\n        *   `-n <namespace>`: Replace `<namespace>` with the namespace where the pod is running.\n        *   `<local-port>`: This is the port on your local machine that you want to use to access the pod.\n        *   `<pod-port>`: This is the port that the application inside the pod is listening on.\n\n        **Example:**\n\n        If you want to forward port 8080 of a pod named `my-app-pod` in the `default` namespace to port 9000 on your local machine, the command would be:\n\n        ```bash\n        kubectl port-forward my-app-pod -n default 9000:8080\n        ```"
+            ],
+            "expected_contexts": [
+                "kubectl port-forward pod/<pod-name> 8080:80"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl port-forward pod/<pod-name> 8080:80"
+                ]
+            ],
+            "answer_similarity": 86.71,
+            "answer_relevancy": 77.38
+        },
+        {
+            "query": "What is the command to get logs from a specific pod?",
+            "retrieved_contexts": [
+                "### Command to get logs from a specific pod\n\n        To get logs from a specific pod, you use the `kubectl logs` command. You need to specify the pod's name and its namespace.\n\n        ```bash\n        kubectl logs <pod_name> -n <namespace>\n        ```\n\n        **Explanation:**\n        *   `kubectl logs`: This is the base command for retrieving logs.\n        *   `<pod_name>`: Replace this with the actual name of the pod you want to get logs from.\n        *   `-n <namespace>`: This flag specifies the namespace where the pod is running. Replace `<namespace>` with the correct namespace.\n\n        **Example:**\n        If you want to get logs from a pod named `my-app-pod-12345` in the `default` namespace, the command would be:\n        ```bash\n        kubectl logs my-app-pod-12345 -n default\n        ```\n\n        **Additional useful flags:**\n        *   `-f` or `--follow`: Follows the log output in real-time (like `tail -f`).\n        *   `--tail=<number>`: Shows only the last `number` lines of the logs.\n        *   `--since=<duration>`: Shows logs newer than a specified duration (e.g., `1h` for 1 hour, `5m` for 5 minutes).\n        *   `-c <container_name>`: If a pod has multiple containers, use this flag to specify which container's logs you want to retrieve."
+            ],
+            "expected_contexts": [
+                "kubectl logs <pod-name>"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl logs <pod-name>"
+                ]
+            ],
+            "answer_similarity": 88.2,
+            "answer_relevancy": 76.31
+        },
+        {
+            "query": "What is command to stream logs from a pod?",
+            "retrieved_contexts": [
+                "### Command to Stream Logs from a Pod\n        \n        To stream logs from a specific pod, you can use the `kubectl logs` command with the `-f` (follow) flag.\n        \n        ```bash\n        kubectl logs -f <pod_name> -n <namespace>\n        ```\n        \n        **Explanation:**\n        \n        *   `kubectl logs`: This is the base command for retrieving logs from a pod.\n        *   `-f` or `--follow`: This flag tells `kubectl` to continuously stream new logs as they are generated, similar to `tail -f`.\n        *   `<pod_name>`: Replace this with the actual name of the pod you want to stream logs from.\n        *   `-n <namespace>`: Replace `<namespace>` with the namespace where the pod is running. Always specify the namespace.\n        \n        **Example:**\n        \n        If you want to stream logs from a pod named `my-app-pod-abcde` in the `default` namespace, the command would be:\n        \n        ```bash\n        kubectl logs -f my-app-pod-abcde -n default\n        ```"
+            ],
+            "expected_contexts": [
+                "kubectl logs -f <pod-name>"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl logs -f <pod-name>"
+                ]
+            ],
+            "answer_similarity": 85.75,
+            "answer_relevancy": 75.09
+        },
+        {
+            "query": "Which command executes a shell inside a running pod?",
+            "retrieved_contexts": [
+                "### Command to Execute a Shell Inside a Running Pod\n        \n        The command to execute a shell inside a running pod is `kubectl exec`.\n        \n        **Syntax:**\n        ```bash\n        kubectl exec -it <pod-name> -n <namespace> -- <shell-command>\n        ```\n        \n        **Explanation:**\n        *   `kubectl exec`: This is the primary command for executing commands in a container.\n        *   `-it`: This flag combines `-i` (interactive) and `-t` (TTY allocation), which are necessary for an interactive shell session.\n        *   `<pod-name>`: Replace this with the actual name of the pod you want to connect to.\n        *   `-n <namespace>`: Replace `<namespace>` with the namespace where the pod is running. This is crucial for specifying the correct pod.\n        *   `--`: This is a separator that tells `kubectl` that all subsequent arguments are commands to be executed inside the container.\n        *   `<shell-command>`: This is the shell you want to run inside the container, typically `bash` or `sh`.\n        \n        **Example:**\n        To open a bash shell in a pod named `my-app-pod-12345` in the `default` namespace:\n        ```bash\n        kubectl exec -it my-app-pod-12345 -n default -- bash\n        ```"
+            ],
+            "expected_contexts": [
+                "kubectl exec -it <pod-name> -- /bin/sh"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl exec -it <pod-name> -- /bin/sh",
+                    "kubectl exec -it <pod-name> -- /bin/bash"
+                ]
+            ],
+            "answer_similarity": 88.02,
+            "answer_relevancy": 78.34
+        },
+        {
+            "query": "Which is command to get events in a specific namespace?",
+            "retrieved_contexts": [
+                "The command to get events in a specific namespace is:\n\n        ```bash\n        kubectl get events -n <namespace>\n        ```\n\n        Replace `<namespace>` with the actual name of the namespace you want to query."
+            ],
+            "expected_contexts": [
+                "kubectl get events -n <namespace>"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl get events -n <namespace>"
+                ]
+            ],
+            "answer_similarity": 95.77,
+            "answer_relevancy": 78.68
+        },
+        {
+            "query": "What is the command to list all ConfigMaps?",
+            "retrieved_contexts": [
+                "kubectl get configmaps --all-namespaces --no-headers"
+            ],
+            "expected_contexts": [
+                "kubectl get configmaps"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl get configmaps",
+                    "kubectl get cm"
+                ]
+            ],
+            "answer_similarity": 96.01,
+            "answer_relevancy": 71.82
+        },
+        {
+            "query": "what is command to list all secrets?",
+            "retrieved_contexts": [
+                "kubectl get secrets --all-namespaces --no-headers"
+            ],
+            "expected_contexts": [
+                "kubectl get secrets"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl get secrets"
+                ]
+            ],
+            "answer_similarity": 96.49,
+            "answer_relevancy": 71.97
+        },
+        {
+            "query": "Which command creates a secret from literal values?",
+            "retrieved_contexts": [
+                "### Command to Create a Secret from Literal Values\n\nTo create a Kubernetes Secret from literal values, you can use the `kubectl create secret generic` command with the `--from-literal` flag.\n\n**Command:**\n\n```bash\nkubectl create secret generic <secret-name> --from-literal=<key1>=<value1> --from-literal=<key2>=<value2> -n <namespace>\n```\n\n**Explanation:**\n\n*   `kubectl create secret generic`: This is the base command for creating a generic secret.\n*   `<secret-name>`: Replace this with the desired name for your secret (e.g., `my-app-secret`).\n*   `--from-literal=<key1>=<value1>`: This flag allows you to specify a key-value pair directly. You can include multiple `--from-literal` flags for additional key-value pairs.\n    *   `<key1>`: The key that will be stored in the secret (e.g., `username`).\n    *   `<value1>`: The corresponding value for the key (e.g., `admin`).\n*   `-n <namespace>`: **Always specify the namespace** where you want to create the secret (e.g., `default`, `my-app-namespace`).\n\n**Example:**\n\nTo create a secret named `my-db-credentials` in the `default` namespace with a `username` and `password`:\n\n```bash\nkubectl create secret generic my-db-credentials --from-literal=username=dbuser --from-literal=password=dbpass123 -n default\n```"
+            ],
+            "expected_contexts": [
+                "kubectl create secret generic my-secret --from-literal=username=admin --from-literal=password=secret"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl create secret generic my-secret --from-literal=username=admin --from-literal=password=secret"
+                ]
+            ],
+            "answer_similarity": 92.1,
+            "answer_relevancy": 72.21
+        },
+        {
+            "query": "what is command to apply a YAML configuration file?",
+            "retrieved_contexts": [
+                "### Command to Apply a YAML Configuration File\n        \n        To apply a YAML configuration file to your Kubernetes cluster, you use the `kubectl apply` command with the `-f` flag, followed by the filename.\n        \n        ```bash\n        kubectl apply -f <filename.yaml>\n        ```\n        \n        **Explanation:**\n        *   `kubectl apply`: This command applies a configuration to a resource by filename or stdin.\n        *   `-f <filename.yaml>`: This flag specifies the path to the YAML configuration file you want to apply.\n        \n        **Example:**\n        If you have a file named `my-deployment.yaml`, the command would be:\n        \n        ```bash\n        kubectl apply -f my-deployment.yaml\n        ```"
+            ],
+            "expected_contexts": [
+                "kubectl apply -f <file-name>.yaml"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl apply -f <file-name>.yaml"
+                ]
+            ],
+            "answer_similarity": 88.91,
+            "answer_relevancy": 77.96
+        },
+        {
+            "query": "what is command to check the cluster health?",
+            "retrieved_contexts": [
+                "kubectl get nodes"
+            ],
+            "expected_contexts": [
+                "kubectl get componentstatuses"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl get componentstatuses",
+                    "kubectl get cs"
+                ]
+            ],
+            "answer_similarity": 90.61,
+            "answer_relevancy": 60.66
+        },
+        {
+            "query": "Which command lists only running pods?",
+            "retrieved_contexts": [
+                "kubectl get pods --field-selector=status.phase=Running --all-namespaces --no-headers"
+            ],
+            "expected_contexts": [
+                "kubectl get pods --field-selector=status.phase=Running"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl get pods --field-selector=status.phase=Running"
+                ]
+            ],
+            "answer_similarity": 98.37,
+            "answer_relevancy": 74.72
+        },
+        {
+            "query": "Which is command to check the status of a deployment rollout?",
+            "retrieved_contexts": [
+                "The command to check the status of a deployment rollout is:\n\n        ```bash\n        kubectl rollout status deployment/<deployment-name> -n <namespace>\n        ```\n\n        **Explanation:**\n        This command provides real-time updates on the progress of a deployment rollout, indicating whether it's successfully progressing, has completed, or is encountering issues. You need to replace `<deployment-name>` with the actual name of your deployment and `<namespace>` with the namespace where the deployment resides."
+            ],
+            "expected_contexts": [
+                "kubectl rollout status deployment/<deployment-name>"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl rollout status deployment/<deployment-name>"
+                ]
+            ],
+            "answer_similarity": 91.13,
+            "answer_relevancy": 81.93
+        },
+        {
+            "query": "What is the command to rollback a deployment to the previous revision?",
+            "retrieved_contexts": [
+                "To rollback a deployment to its previous revision, you can use the `kubectl rollout undo` command.\n\n        ```bash\n        kubectl rollout undo deployment/<deployment-name> -n <namespace>\n        ```\n\n        **Explanation:**\n        *   `kubectl rollout undo`: This command is used to revert a deployment to a previous state.\n        *   `deployment/<deployment-name>`: Specifies the type of resource (deployment) and the name of the deployment you want to rollback.\n        *   `-n <namespace>`: Specifies the namespace where the deployment is located. Remember to replace `<deployment-name>` and `<namespace>` with your actual deployment name and namespace."
+            ],
+            "expected_contexts": [
+                "kubectl rollout undo deployment/<deployment-name>"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl rollout undo deployment/<deployment-name>"
+                ]
+            ],
+            "answer_similarity": 93.28,
+            "answer_relevancy": 76.04
+        },
+        {
+            "query": "How I see the CPU and memory usage for all my nodes.",
+            "retrieved_contexts": [
+                "kubectl top nodes"
+            ],
+            "expected_contexts": [
+                "kubectl top node"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl top node"
+                ]
+            ],
+            "answer_similarity": 97.86,
+            "answer_relevancy": 63.64
+        },
+        {
+            "query": "Show me how much CPU and memory each of my running pods is consuming.",
+            "retrieved_contexts": [
+                "kubectl top pods --all-namespaces"
+            ],
+            "expected_contexts": [
+                "kubectl top pod"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl top pod"
+                ]
+            ],
+            "answer_similarity": 94.85,
+            "answer_relevancy": 69.26
+        },
+        {
+            "query": "How do I prevent any new pods from being scheduled on 'node-01' for maintenance?",
+            "retrieved_contexts": [
+                "Tool(kubectl_execute) is trying to update cluster resources. Do you want to continue?\nCommand - kubectl cordon node-01"
+            ],
+            "expected_contexts": [
+                "kubectl cordon node-01"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl cordon node-01"
+                ]
+            ],
+            "answer_similarity": 91.31,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "Show me way to safely remove all pods from 'node-02' before shutting it down.",
+            "retrieved_contexts": [
+                "To safely remove all pods from 'node-02' before shutting it down, you should follow these steps:\n\n        1.  **Cordon the node:** This marks the node as unschedulable, preventing new pods from being scheduled on it.\n            ```bash\n            kubectl cordon node-02\n            ```\n\n        2.  **Drain the node:** This evicts all existing pods from the node gracefully. The `--ignore-daemonsets` flag is often used to prevent `drain` from failing on DaemonSet pods, as they will be recreated on other nodes anyway. The `--delete-emptydir-data` flag is necessary if there are pods using `emptyDir` volumes, as draining them would otherwise fail.\n            ```bash\n            kubectl drain node-02 --ignore-daemonsets --delete-emptydir-data\n            ```\n\n        After these commands are successfully executed, 'node-02' will have no user-managed pods running on it and can be safely shut down."
+            ],
+            "expected_contexts": [
+                "kubectl drain node-02 --ignore-daemonsets"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl drain node-02 --ignore-daemonsets"
+                ]
+            ],
+            "answer_similarity": 85.69,
+            "answer_relevancy": 81.92
+        },
+        {
+            "query": "how do I allow pods to be scheduled on it again?, If I'm done with maintenance on 'node-01'",
+            "retrieved_contexts": [
+                "Tool(kubectl_execute) is trying to update cluster resources. Do you want to continue?\nCommand - kubectl uncordon node-01"
+            ],
+            "expected_contexts": [
+                "kubectl uncordon node-01"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl uncordon node-01"
+                ]
+            ],
+            "answer_similarity": 94.3,
+            "answer_relevancy": 48.47
+        },
+        {
+            "query": "How can I look up the documentation for a specific field in a Pod's YAML, like 'spec.containers'?",
+            "retrieved_contexts": [
+                "kubectl explain pod.spec.containers"
+            ],
+            "expected_contexts": [
+                "kubectl explain pod.spec.containers"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl explain pod.spec.containers"
+                ]
+            ],
+            "answer_similarity": 100.0,
+            "answer_relevancy": 77.9
+        },
+        {
+            "query": "How to tag the pod 'my-app-pod' with the label 'env=production'.",
+            "retrieved_contexts": [
+                "To tag the pod 'my-app-pod' with the label 'env=production', you need to specify the namespace where the pod is located.\n\nPlease provide the namespace, and then you can use the following command:\n\n```bash\nkubectl label pod my-app-pod -n <namespace> env=production\n```\n\n**Example:** If the pod is in the `default` namespace:\n\n```bash\nkubectl label pod my-app-pod -n default env=production\n```"
+            ],
+            "expected_contexts": [
+                "kubectl label pod my-app-pod env=production"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl label pod my-app-pod env=production"
+                ]
+            ],
+            "answer_similarity": 92.66,
+            "answer_relevancy": 85.46
+        },
+        {
+            "query": "How can I add a note or description to the 'my-app-deployment'?",
+            "retrieved_contexts": [
+                "To add a note or description to the `my-app-deployment` in Kubernetes, you can use `kubectl annotate`. Annotations are key-value pairs that can store arbitrary non-identifying metadata.\n\nHere's how you can do it:\n\n1.  **Using `kubectl annotate`:**\n    This is the most direct way to add or update annotations. You need to specify the resource type (`deployment`), the resource name (`my-app-deployment`), the namespace, and the key-value pair for your note.\n\n    ```bash\n    kubectl annotate deployment my-app-deployment -n <your-namespace> my-note=\"This is a description for my application.\"\n    ```\n\n    *   Replace `<your-namespace>` with the actual namespace where your deployment resides (e.g., `default`, `production`, `dev`).\n    *   `my-note` is the key for your annotation. You can choose any descriptive key.\n    *   `\"This is a description for my application.\"` is the value of your annotation, which will be your note or description.\n\n    If you want to add multiple notes, you can add more key-value pairs:\n\n    ```bash\n    kubectl annotate deployment my-app-deployment -n <your-namespace> my-note=\"This is a description for my application.\" another-note=\"This deployment handles user authentication.\"\n    ```\n\n2.  **Using `kubectl edit` (for more extensive changes):**\n    If you prefer to open an editor and manually add or modify annotations, you can use `kubectl edit`:\n\n    ```bash\n    kubectl edit deployment my-app-deployment -n <your-namespace>\n    ```\n\n    This will open the deployment's YAML in your default editor. You can then navigate to the `metadata` section and add or modify the `annotations` field:\n\n    ```yaml\n    apiVersion: apps/v1\n    kind: Deployment\n    metadata:\n      annotations:\n        my-note: \"This is a description for my application.\"\n        # You can add more annotations here\n      name: my-app-deployment\n      namespace: <your-namespace>\n      # ... other metadata ...\n    spec:\n      # ... spec details ...\n    ```\n\n    Save and close the editor, and Kubernetes will apply the changes.\n\n**Important:** Always specify the correct namespace (`-n <your-namespace>`) when interacting with Kubernetes resources."
+            ],
+            "expected_contexts": [
+                "kubectl annotate deployment my-app-deployment description='This is the main web server'"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl annotate deployment my-app-deployment description='This is the main web server'"
+                ]
+            ],
+            "answer_similarity": 86.77,
+            "answer_relevancy": 78.41
+        },
+        {
+            "query": "Show me the revision history for my 'api-gateway' deployment.",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "kubectl rollout history deployment/api-gateway"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl rollout history deployment/api-gateway"
+                ]
+            ],
+            "answer_similarity": 61.41,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "How do I go back to the previous version?, When something went wrong with my last deployment.",
+            "retrieved_contexts": [
+                "### How to Revert a Kubernetes Deployment\n\nTo revert a Kubernetes deployment to a previous version, you can use the `kubectl rollout undo` command. This command allows you to roll back to the immediately preceding revision or to a specific revision.\n\n**1. Rollback to the Previous Revision:**\n\nIf you want to revert to the version that was active before your last deployment, use the following command:\n\n```bash\nkubectl rollout undo deployment/<deployment-name> -n <namespace>\n```\n\n**Example:**\nIf your deployment is named `my-app-deployment` in the `default` namespace, the command would be:\n```bash\nkubectl rollout undo deployment/my-app-deployment -n default\n```\n\n**2. Rollback to a Specific Revision:**\n\nFirst, you might want to check the history of your deployments to identify the revision you want to revert to:\n\n```bash\nkubectl rollout history deployment/<deployment-name> -n <namespace>\n```\n\nThis will show you a list of revisions. Once you identify the desired revision number (e.g., `revision=2`), you can roll back to it using:\n\n```bash\nkubectl rollout undo deployment/<deployment-name> -n <namespace> --to-revision=<revision-number>\n```\n\n**Example:**\nTo roll back `my-app-deployment` in the `default` namespace to revision `2`:\n```bash\nkubectl rollout undo deployment/my-app-deployment -n default --to-revision=2\n```\n\n**Important:**\n*   Replace `<deployment-name>` with the actual name of your deployment.\n*   Replace `<namespace>` with the namespace where your deployment is located. If you are unsure of the namespace, please provide the application name, and I can help you find it."
+            ],
+            "expected_contexts": [
+                "kubectl rollout undo deployment/api-gateway"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl rollout undo deployment/api-gateway"
+                ]
+            ],
+            "answer_similarity": 84.37,
+            "answer_relevancy": 67.13
+        },
+        {
+            "query": "How I check on the progress of my latest app update.",
+            "retrieved_contexts": [
+                "kubectl get deployments --all-namespaces --no-headers"
+            ],
+            "expected_contexts": [
+                "kubectl rollout status deployment/my-app"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl rollout status deployment/my-app"
+                ]
+            ],
+            "answer_similarity": 88.54,
+            "answer_relevancy": 31.2
+        },
+        {
+            "query": "How to open the configuration for 'my-service' in my default editor to make a live change.",
+            "retrieved_contexts": [
+                "Please specify the namespace for 'my-service' so I can provide the correct `kubectl edit` command."
+            ],
+            "expected_contexts": [
+                "kubectl edit service my-service"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl edit service my-service",
+                    "kubectl edit svc my-service"
+                ]
+            ],
+            "answer_similarity": 92.92,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "What is command to List all the different kinds of resources I can create in my cluster, along with their short names.",
+            "retrieved_contexts": [
+                "kubectl api-resources"
+            ],
+            "expected_contexts": [
+                "kubectl api-resources"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl api-resources"
+                ]
+            ],
+            "answer_similarity": 100.0,
+            "answer_relevancy": 67.21
+        },
+        {
+            "query": "How can I find all pods that have the label 'app=backend'?",
+            "retrieved_contexts": [
+                "kubectl get pods -l app=backend --all-namespaces --no-headers"
+            ],
+            "expected_contexts": [
+                "kubectl get pods -l app=backend"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl get pods --selector=app=backend",
+                    "kubectl get pods -l app=backend"
+                ]
+            ],
+            "answer_similarity": 96.76,
+            "answer_relevancy": 75.14
+        },
+        {
+            "query": "How to generate the YAML for an nginx deployment without actually creating it.",
+            "retrieved_contexts": [
+                "Tool(kubectl_execute) is trying to create cluster resources. Do you want to continue?\nCommand - kubectl create deployment nginx-deployment --image=nginx --dry-run=client -o yaml"
+            ],
+            "expected_contexts": [
+                "kubectl create deployment nginx --image=nginx --dry-run=client -o yaml"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl create deployment nginx --image=nginx --dry-run=client -o yaml"
+                ]
+            ],
+            "answer_similarity": 93.31,
+            "answer_relevancy": 64.29
+        },
+        {
+            "query": "How copy a file from my local machine to a pod.",
+            "retrieved_contexts": [
+                "### How to Copy a File from Your Local Machine to a Pod\n\nTo copy a file from your local machine to a pod, you can use the `kubectl cp` command.\n\n**Command:**\n```bash\nkubectl cp <local_file_path> <namespace>/<pod_name>:<pod_file_path>\n```\n\n**Explanation:**\n\n*   `<local_file_path>`: The path to the file on your local machine that you want to copy.\n*   `<namespace>`: The namespace where the target pod is running.\n*   `<pod_name>`: The name of the target pod.\n*   `<pod_file_path>`: The destination path inside the pod where you want to copy the file.\n\n**Example:**\n\nIf you want to copy a file named `my-config.txt` from your current directory to the `/app/config/` directory inside a pod named `my-app-pod` in the `default` namespace, the command would be:\n\n```bash\nkubectl cp my-config.txt default/my-app-pod:/app/config/my-config.txt\n```"
+            ],
+            "expected_contexts": [
+                "kubectl cp /path/to/local/file <pod-name>:/path/in/pod"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl cp /path/to/local/file <pod-name>:/path/in/pod"
+                ]
+            ],
+            "answer_similarity": 91.73,
+            "answer_relevancy": 78.71
+        },
+        {
+            "query": "How can I get a file from a running container back to my computer?",
+            "retrieved_contexts": [
+                "### Copying Files from a Running Container\n\nTo copy a file from a running container back to your local computer, you can use the `kubectl cp` command. This command allows you to copy files and directories between a pod and your local filesystem.\n\n**Command Syntax:**\n\n```bash\nkubectl cp <pod-name>:<remote-file-path> <local-file-path> -n <namespace>\n```\n\n**Explanation of Parameters:**\n\n*   `<pod-name>`: The name of the pod from which you want to copy the file.\n*   `<remote-file-path>`: The absolute path to the file or directory inside the container that you want to copy.\n*   `<local-file-path>`: The path on your local machine where you want to save the copied file or directory.\n*   `-n <namespace>`: The namespace where the pod is running. This is a mandatory parameter.\n\n**Example:**\n\nTo copy a file named `app.log` from a pod named `my-app-pod` in the `default` namespace to your current directory on your local machine:\n\n```bash\nkubectl cp my-app-pod:/var/log/app.log ./app.log -n default\n```\n\nIf the pod has multiple containers and you need to specify which container to copy from, you can use the `-c` flag:\n\n```bash\nkubectl cp my-app-pod:/var/log/app.log ./app.log -n default -c my-container-name\n```"
+            ],
+            "expected_contexts": [
+                "kubectl cp <pod-name>:/path/in/pod /path/to/local/file"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl cp <pod-name>:/path/in/pod /path/to/local/file"
+                ]
+            ],
+            "answer_similarity": 88.86,
+            "answer_relevancy": 72.25
+        },
+        {
+            "query": "Which context am I currently using?",
+            "retrieved_contexts": [
+                "kubectl config current-context"
+            ],
+            "expected_contexts": [
+                "kubectl config current-context"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl config current-context"
+                ]
+            ],
+            "answer_similarity": 100.0,
+            "answer_relevancy": 62.54
+        },
+        {
+            "query": "How to switch my kubectl to interact with the 'staging-cluster'.",
+            "retrieved_contexts": [
+                "To switch your `kubectl` to interact with the 'staging-cluster', you should use the following command:\n\n        ```bash\n        kubectl config use-context staging-cluster\n        ```\n\n        This command changes your current `kubectl` context to 'staging-cluster', meaning all subsequent `kubectl` commands will target that cluster."
+            ],
+            "expected_contexts": [
+                "kubectl config use-context staging-cluster"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl config use-context staging-cluster"
+                ]
+            ],
+            "answer_similarity": 90.96,
+            "answer_relevancy": 82.56
+        },
+        {
+            "query": "Show me a list of all persistent volume claims in the 'storage' namespace.",
+            "retrieved_contexts": [
+                "kubectl get pvc -n storage --no-headers"
+            ],
+            "expected_contexts": [
+                "kubectl get persistentvolumeclaims -n storage"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl get persistentvolumeclaims -n storage",
+                    "kubectl get pvc -n storage"
+                ]
+            ],
+            "answer_similarity": 91.89,
+            "answer_relevancy": 77.04
+        },
+        {
+            "query": "How do I get logs from a specific one called 'sidecar'?, if my pod has multiple containers.",
+            "retrieved_contexts": [
+                "To get logs from a specific container named 'sidecar' within a pod that has multiple containers, you need to specify the pod name, the namespace, and the container name using the `-c` flag.\n\nThe command structure is as follows:\n\n```bash\nkubectl logs <pod-name> -n <namespace> -c sidecar\n```\n\n**Explanation:**\n\n*   `kubectl logs`: This is the base command to retrieve logs from a pod.\n*   `<pod-name>`: Replace this with the actual name of your pod.\n*   `-n <namespace>`: Replace `<namespace>` with the namespace where your pod is running. It's crucial to always specify the namespace.\n*   `-c sidecar`: This flag specifies that you want to retrieve logs specifically from the container named 'sidecar' within the specified pod.\n\n**Example:**\n\nIf your pod is named `my-app-pod-12345` and it's in the `default` namespace, the command would be:\n\n```bash\nkubectl logs my-app-pod-12345 -n default -c sidecar\n```"
+            ],
+            "expected_contexts": [
+                "kubectl logs <pod-name> -c sidecar"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl logs <pod-name> -c sidecar",
+                    "kubectl logs <pod-name> --container sidecar"
+                ]
+            ],
+            "answer_similarity": 89.88,
+            "answer_relevancy": 81.38
+        },
+        {
+            "query": "How to see all resources of any type that have the label 'owner=team-alpha'.",
+            "retrieved_contexts": [
+                "kubectl get all --all-namespaces -l owner=team-alpha --no-headers"
+            ],
+            "expected_contexts": [
+                "kubectl get all -l owner=team-alpha"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl get all -l owner=team-alpha"
+                ]
+            ],
+            "answer_similarity": 96.8,
+            "answer_relevancy": 75.69
+        },
+        {
+            "query": "How do I force delete a pod that is stuck in the 'Terminating' state?",
+            "retrieved_contexts": [
+                "To force delete a pod that is stuck in the 'Terminating' state, you can use the following `kubectl` command:\n\n        ```bash\n        kubectl delete pod <pod_name> --grace-period=0 --force -n <namespace>\n        ```\n\n        **Explanation:**\n\n        *   `kubectl delete pod <pod_name>`: This is the standard command to delete a pod, where `<pod_name>` should be replaced with the actual name of the pod you want to delete.\n        *   `--grace-period=0`: This flag sets the grace period to 0 seconds, meaning Kubernetes will not wait for the pod to gracefully terminate.\n        *   `--force`: This flag forces the deletion of the pod immediately, bypassing the normal termination process.\n        *   `-n <namespace>`: This specifies the namespace where the pod resides. Replace `<namespace>` with the actual namespace of the pod.\n\n        **Example:**\n\n        If you have a pod named `my-app-pod-abcde` in the `default` namespace, the command would be:\n\n        ```bash\n        kubectl delete pod my-app-pod-abcde --grace-period=0 --force -n default\n        ```\n\n        **Important Considerations:**\n\n        *   **Use with Caution:** Force deleting a pod can lead to data loss or inconsistencies if the application running in the pod was performing critical operations that were not completed. Only use this command when a pod is truly stuck and other methods (like scaling down the deployment) have failed.\n        *   **Identify Pod and Namespace:** Before running this command, ensure you have the correct pod name and its namespace. You can find this information using `kubectl get pods -A` or `kubectl get pods -n <your_namespace>`."
+            ],
+            "expected_contexts": [
+                "kubectl delete pod <pod-name> --grace-period=0 --force"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl delete pod <pod-name> --grace-period=0 --force"
+                ]
+            ],
+            "answer_similarity": 90.1,
+            "answer_relevancy": 83.46
+        },
+        {
+            "query": "How to set up automatic scaling for my deployment 'worker-pool' to have between 2 and 10 pods, targeting 80% CPU usage.",
+            "retrieved_contexts": [
+                "### Setting up Automatic Scaling for 'worker-pool' Deployment\n\nTo set up automatic scaling for your deployment named `worker-pool` with a minimum of 2 pods, a maximum of 10 pods, and targeting 80% CPU usage, you can use the following `kubectl` command:\n\n```bash\nkubectl autoscale deployment worker-pool --min=2 --max=10 --cpu-percent=80\n```\n\n**Explanation:**\n\n*   `kubectl autoscale deployment worker-pool`: This command initiates the creation of a Horizontal Pod Autoscaler (HPA) for the `worker-pool` deployment.\n*   `--min=2`: Sets the minimum number of replicas for the deployment to 2.\n*   `--max=10`: Sets the maximum number of replicas for the deployment to 10.\n*   `--cpu-percent=80`: Configures the HPA to scale the deployment based on the average CPU utilization across all pods, aiming to keep it at 80%."
+            ],
+            "expected_contexts": [
+                "kubectl autoscale deployment worker-pool --min=2 --max=10 --cpu-percent=80"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl autoscale deployment worker-pool --min=2 --max=10 --cpu-percent=80"
+                ]
+            ],
+            "answer_similarity": 90.86,
+            "answer_relevancy": 82.35
+        },
+        {
+            "query": "What is command show me all the ingresses in my cluster.",
+            "retrieved_contexts": [
+                "kubectl get ingresses --all-namespaces --no-headers"
+            ],
+            "expected_contexts": [
+                "kubectl get ingress"
+            ],
+            "ground_truth": [
+                [
+                    "kubectl get ingress",
+                    "kubectl get ing"
+                ]
+            ],
+            "answer_similarity": 95.48,
+            "answer_relevancy": 70.96
+        }
+    ],
+    "summary": {
+        "total_queries": 51,
+        "answer_similarity": 91.77,
+        "answer_relevancy": 69.39,
+        "overall_accuracy": 80.58
+    }
+}

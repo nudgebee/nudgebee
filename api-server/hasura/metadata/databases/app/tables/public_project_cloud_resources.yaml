@@ -1,0 +1,10 @@
+table:
+  name: project_cloud_resources
+  schema: public
+object_relationships:
+  - name: cloud_resourse
+    using:
+      foreign_key_constraint_on: cloud_resource_id
+  - name: project_account
+    using:
+      foreign_key_constraint_on: project_account_id

@@ -1,0 +1,22 @@
+name: test-parent-workflow
+definition:
+  triggers:
+    - type: manual
+  inputs:
+    - id: greeting
+      type: string
+  tasks:
+    - id: call_child
+      type: core.call-workflow
+      params:
+        workflow_name: test-child-workflow
+        inputs:
+          message: "{{ Inputs.greeting }} World!"
+    - id: final_echo
+      type: core.print
+      depends_on:
+        - call_child
+      params:
+        message: "{{ Tasks.call_child.output.result }}"
+  output:
+    final_output: "{{ Tasks.final_echo.output.data }}"

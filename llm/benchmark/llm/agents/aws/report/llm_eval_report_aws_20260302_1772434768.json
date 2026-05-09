@@ -1,0 +1,43 @@
+{
+    "details": [
+        {
+            "query": "Add a user to an IAM group.",
+            "query_type": "command",
+            "retrieved_contexts": [
+                "I have retrieved the list of IAM users and groups to proceed with your request. However, the specific user and target group were not specified, so the addition has not been completed yet.\n\n**Summary of actions:**\n1.  **List IAM Users and Groups:** I successfully retrieved the available users and groups in the account.\n2.  **Add User to Group:** This action was **NOT completed** because the specific user and group names were not provided.\n\n**Available Users:**\n*   abhay.pandey@nudgebee.com\n*   bedrock_access\n*   gautam.bhagat@nudgebee.com\n*   github.actions\n*   hemasundar.nallapaneni@nudgebee.com\n*   kankshit.majhodkar@nudgebee.com\n*   mangglesh.dagar@nudgebee.com\n*   mayank.pande@nudgebee.com\n*   nudgebee_dev_civo\n*   piyush.bhavsar@nudgebee.com\n*   raman.kharche@nudgebee.com\n*   rohitutekar412@gmail.com\n*   saiprasad.potdar@nudgebee.com\n*   ses-smtp-user.nudgebee-dev-qa\n*   shivpratap.singh@nudgebee.com\n*   utsav.lanjewar@nudgebee.com\n*   vanshika.khokle@nudgebee.com\n\n**Available Groups:**\n*   Admin\n*   AWSSESSendingGroupDoNotRename\n\nPlease let me know which user you would like to add to which group."
+            ],
+            "expected_contexts": [
+                "aws iam add-user-to-group --group-name <group-name> --user-name <user-name>"
+            ],
+            "ground_truth": "aws iam add-user-to-group --group-name <group-name> --user-name <user-name>",
+            "answer_similarity": 82.95,
+            "answer_relevancy": 82.64,
+            "rca_quality_score": null,
+            "rca_quality_normalized": null
+        },
+        {
+            "query": "Add an inbound rule to a security group.",
+            "query_type": "command",
+            "retrieved_contexts": [
+                "auth: tool not found - shell_execute, agent - aws"
+            ],
+            "expected_contexts": [
+                "aws ec2 authorize-security-group-ingress"
+            ],
+            "ground_truth": "aws ec2 authorize-security-group-ingress",
+            "answer_similarity": 73.6,
+            "answer_relevancy": 58.34,
+            "rca_quality_score": null,
+            "rca_quality_normalized": null
+        }
+    ],
+    "summary": {
+        "total_queries": 2,
+        "answer_similarity": 78.27,
+        "answer_relevancy": 70.49,
+        "overall_accuracy": 74.38,
+        "rca_scenarios_count": 0,
+        "avg_rca_quality_score": null,
+        "failed_indices_after_retries": []
+    }
+}

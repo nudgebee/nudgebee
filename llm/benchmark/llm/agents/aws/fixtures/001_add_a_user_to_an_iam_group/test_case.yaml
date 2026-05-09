@@ -1,0 +1,6 @@
+user_prompt: Add a user to an IAM group.
+expected_output:
+- aws iam add-user-to-group --group-name <group-name> --user-name <user-name>
+tags:
+- command
+- aws

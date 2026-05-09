@@ -1,0 +1,13 @@
+table:
+  name: auto_pilot_reviewers
+  schema: public
+object_relationships:
+- name: auto_pilot_approval_policy
+  using:
+    foreign_key_constraint_on: policy_id
+- name: reviwer_user
+  using:
+    foreign_key_constraint_on: user_id
+- name: tenant
+  using:
+    foreign_key_constraint_on: tenant_id

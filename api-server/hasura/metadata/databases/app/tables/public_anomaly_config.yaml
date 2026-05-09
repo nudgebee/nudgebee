@@ -1,0 +1,103 @@
+table:
+  name: anomaly_config
+  schema: public
+insert_permissions:
+- role: account_admin
+  permission:
+    check:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+    set:
+      created_by: x-hasura-user-id
+      tenant_id: x-hasura-User-Tenant-Id
+      updated_by: x-hasura-user-id
+    columns:
+    - anomaly_type
+    - buffer_percentage
+    - change_operator
+    - cloud_account_id
+    - created_at
+    - created_by
+    - id
+    - reference_period
+    - reference_unit
+    - tenant_id
+    - type
+    - updated_at
+    - updated_by
+  comment: ''
+- role: tenant_admin
+  permission:
+    check:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+    set:
+      created_by: x-hasura-user-id
+      tenant_id: x-hasura-User-Tenant-Id
+      updated_by: x-hasura-user-id
+    columns:
+    - anomaly_type
+    - buffer_percentage
+    - change_operator
+    - cloud_account_id
+    - created_at
+    - created_by
+    - id
+    - reference_period
+    - reference_unit
+    - tenant_id
+    - type
+    - updated_at
+    - updated_by
+  comment: ''
+update_permissions:
+- role: account_admin
+  permission:
+    columns:
+    - anomaly_type
+    - buffer_percentage
+    - change_operator
+    - cloud_account_id
+    - created_at
+    - created_by
+    - id
+    - reference_period
+    - reference_unit
+    - tenant_id
+    - type
+    - updated_at
+    - updated_by
+    filter:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+    check: {}
+    set:
+      created_by: x-hasura-user-id
+      tenant_id: x-hasura-User-Tenant-Id
+      updated_by: x-hasura-user-id
+  comment: ''
+- role: tenant_admin
+  permission:
+    columns:
+    - anomaly_type
+    - buffer_percentage
+    - change_operator
+    - cloud_account_id
+    - created_at
+    - created_by
+    - id
+    - reference_period
+    - reference_unit
+    - tenant_id
+    - type
+    - updated_at
+    - updated_by
+    filter:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+    check: {}
+    set:
+      created_by: x-hasura-user-id
+      tenant_id: x-hasura-User-Tenant-Id
+      updated_by: x-hasura-user-id
+  comment: ''

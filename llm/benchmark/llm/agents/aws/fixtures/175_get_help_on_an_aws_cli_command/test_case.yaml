@@ -1,0 +1,6 @@
+user_prompt: Get help on an AWS CLI command.
+expected_output:
+- aws <command> help
+tags:
+- command
+- aws

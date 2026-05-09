@@ -1,0 +1,70 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E01: EC2 SSH Timeout - Security group has no inbound rule for port 22.
+  User complaint: "I launched an instance but can't SSH into it, connection times out."
+  Root cause: The security group has no ingress rules at all.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = SG has NO inbound rules (SSH times out).
+      Fixed = SG allows SSH on port 22.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for checkout service bastion host
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress: !If
+        - IsFixed
+        - - IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            CidrIp: 0.0.0.0/0
+        - []
+      Tags:
+        - Key: Name
+          Value: e01-bastion-sg
+        - Key: Environment
+          Value: staging
+
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      SubnetId: !ImportValue aws-agent-test-public-subnet-a
+      SecurityGroupIds:
+        - !Ref InstanceSecurityGroup
+      Tags:
+        - Key: Name
+          Value: e01-bastion-01
+        - Key: Environment
+          Value: staging
+        - Key: Team
+          Value: platform
+        - Key: Application
+          Value: checkout-service
+
+Outputs:
+  InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref EC2Instance
+  InstancePublicIp:
+    Description: Public IP of the instance
+    Value: !GetAtt EC2Instance.PublicIp
+  SecurityGroupId:
+    Description: Security Group ID
+    Value: !Ref InstanceSecurityGroup
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

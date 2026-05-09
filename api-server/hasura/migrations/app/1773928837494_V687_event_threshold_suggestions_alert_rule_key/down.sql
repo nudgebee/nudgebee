@@ -1,0 +1,4 @@
+DROP INDEX IF EXISTS idx_event_threshold_suggestions_alert_rule_key;
+ALTER TABLE event_threshold_suggestions DROP CONSTRAINT IF EXISTS event_threshold_suggestions_alert_rule_key_cloud_account_id_key;
+ALTER TABLE event_threshold_suggestions ADD CONSTRAINT event_threshold_suggestions_fingerprint_cloud_account_id_key UNIQUE(fingerprint, cloud_account_id);
+ALTER TABLE event_threshold_suggestions DROP COLUMN IF EXISTS alert_rule_key;

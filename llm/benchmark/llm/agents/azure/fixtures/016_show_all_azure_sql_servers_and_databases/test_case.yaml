@@ -1,0 +1,7 @@
+user_prompt: Show all Azure SQL servers and databases including their service tiers.
+expected_output:
+- az sql server list --output table
+type: command
+tags:
+- command
+- azure

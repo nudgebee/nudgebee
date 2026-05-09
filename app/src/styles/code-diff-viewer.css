@@ -1,0 +1,276 @@
+/* Code Diff Viewer Styles - Inspired by vibe-kanban */
+
+/*
+ * Hide table headers - they show "line number" and "line content" text
+ *
+ * Note: !important is used here because the @git-diff-view/react library
+ * uses inline styles and high-specificity selectors that cannot be overridden
+ * with normal CSS selectors. The library does not provide a prop to control
+ * header visibility, so this is the most reliable approach to hide them.
+ *
+ * This is only applied to CodeDiffViewer (not currently used). SimpleDiffViewer
+ * does not have this issue as it renders headers itself.
+ */
+.hide-diff-headers thead,
+.hide-diff-headers table thead,
+.hide-diff-headers .diff-tailwindcss-wrapper thead,
+.hide-diff-headers .diff-view-wrapper thead,
+.diff-tailwindcss-wrapper thead,
+.diff-tailwindcss-wrapper table > thead,
+.diff-tailwindcss-wrapper .table > thead,
+.diff-view-wrapper thead,
+.diff-view-wrapper table > thead {
+  display: none !important;
+  visibility: hidden !important;
+  position: absolute !important;
+  width: 0 !important;
+  height: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: none !important;
+}
+
+.hide-diff-headers thead *,
+.hide-diff-headers table thead *,
+.hide-diff-headers .diff-tailwindcss-wrapper thead *,
+.hide-diff-headers .diff-view-wrapper thead * {
+  display: none !important;
+  visibility: hidden !important;
+}
+
+/* Color variables for light theme */
+:root {
+  --diff-line-added: hsl(160, 77%, 88%);
+  --diff-line-removed: hsl(10, 100%, 90%);
+  --diff-line-unchanged: hsl(0, 0%, 98%);
+  --diff-line-number-color: hsl(0, 0%, 45%);
+  --diff-gutter-bg: hsl(0, 0%, 96%);
+  --diff-border-color: hsl(0, 0%, 88%);
+  --diff-highlight-added: hsl(160, 100%, 42%);
+  --diff-highlight-removed: hsl(10, 100%, 50%);
+}
+
+/* Dark theme overrides */
+.dark {
+  --diff-line-added: hsl(130, 30%, 20%);
+  --diff-line-removed: hsl(12, 30%, 18%);
+  --diff-line-unchanged: hsl(0, 0%, 12%);
+  --diff-line-number-color: hsl(0, 0%, 60%);
+  --diff-gutter-bg: hsl(0, 0%, 8%);
+  --diff-border-color: hsl(0, 0%, 20%);
+  --diff-highlight-added: hsl(160, 60%, 45%);
+  --diff-highlight-removed: hsl(10, 60%, 50%);
+}
+
+/* Diff view wrapper */
+.diff-view-wrapper {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px solid var(--diff-border-color);
+}
+
+/* Line styling */
+.diff-line-add {
+  background-color: var(--diff-line-added) !important;
+}
+
+.diff-line-delete {
+  background-color: var(--diff-line-removed) !important;
+}
+
+.diff-line-normal {
+  background-color: var(--diff-line-unchanged) !important;
+}
+
+/* Line number gutter */
+.diff-line-num {
+  color: var(--diff-line-number-color);
+  background-color: var(--diff-gutter-bg);
+  padding: 0 8px;
+  text-align: right;
+  user-select: none;
+  border-right: 1px solid var(--diff-border-color);
+  min-width: 40px;
+}
+
+/* Highlight specific changed text within lines */
+.diff-line-add .diff-code-highlight {
+  background-color: var(--diff-highlight-added);
+  opacity: 0.3;
+}
+
+.diff-line-delete .diff-code-highlight {
+  background-color: var(--diff-highlight-removed);
+  opacity: 0.3;
+}
+
+/* Split view specific styles */
+.diff-view-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.diff-view-split .diff-side-old {
+  border-right: 1px solid var(--diff-border-color);
+}
+
+/* Unified view specific styles */
+.diff-view-unified {
+  width: 100%;
+}
+
+/* Code content area */
+.diff-code-content {
+  padding: 0 8px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* Diff operators (+, -, space) */
+.diff-line-operator {
+  padding: 0 4px;
+  user-select: none;
+  font-weight: bold;
+}
+
+.diff-line-add .diff-line-operator {
+  color: var(--diff-highlight-added);
+}
+
+.diff-line-delete .diff-line-operator {
+  color: var(--diff-highlight-removed);
+}
+
+/* Hunk headers (@@...@@) */
+.diff-hunk-header {
+  background-color: hsl(210, 15%, 92%);
+  color: hsl(210, 15%, 35%);
+  padding: 4px 8px;
+  font-weight: 500;
+  border-top: 1px solid var(--diff-border-color);
+  border-bottom: 1px solid var(--diff-border-color);
+}
+
+.dark .diff-hunk-header {
+  background-color: hsl(210, 15%, 18%);
+  color: hsl(210, 15%, 70%);
+}
+
+/* Scrollbar styling */
+.diff-view-wrapper::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.diff-view-wrapper::-webkit-scrollbar-track {
+  background: var(--diff-gutter-bg);
+}
+
+.diff-view-wrapper::-webkit-scrollbar-thumb {
+  background: var(--diff-border-color);
+  border-radius: 4px;
+}
+
+.diff-view-wrapper::-webkit-scrollbar-thumb:hover {
+  background: hsl(0, 0%, 60%);
+}
+
+/* Syntax highlighting overrides */
+.diff-view-wrapper .token.comment {
+  color: hsl(120, 20%, 50%);
+  font-style: italic;
+}
+
+.diff-view-wrapper .token.string {
+  color: hsl(30, 100%, 40%);
+}
+
+.diff-view-wrapper .token.keyword {
+  color: hsl(270, 60%, 50%);
+  font-weight: 600;
+}
+
+.diff-view-wrapper .token.function {
+  color: hsl(210, 80%, 50%);
+}
+
+.diff-view-wrapper .token.number {
+  color: hsl(180, 50%, 40%);
+}
+
+.diff-view-wrapper .token.operator {
+  color: hsl(0, 0%, 30%);
+}
+
+.diff-view-wrapper .token.punctuation {
+  color: hsl(0, 0%, 40%);
+}
+
+/* Dark theme syntax highlighting */
+.dark .diff-view-wrapper .token.comment {
+  color: hsl(120, 20%, 60%);
+}
+
+.dark .diff-view-wrapper .token.string {
+  color: hsl(30, 80%, 60%);
+}
+
+.dark .diff-view-wrapper .token.keyword {
+  color: hsl(270, 60%, 70%);
+}
+
+.dark .diff-view-wrapper .token.function {
+  color: hsl(210, 80%, 65%);
+}
+
+.dark .diff-view-wrapper .token.number {
+  color: hsl(180, 50%, 60%);
+}
+
+.dark .diff-view-wrapper .token.operator {
+  color: hsl(0, 0%, 70%);
+}
+
+.dark .diff-view-wrapper .token.punctuation {
+  color: hsl(0, 0%, 65%);
+}
+
+/* Empty state */
+.diff-empty-state {
+  padding: 24px;
+  text-align: center;
+  color: var(--diff-line-number-color);
+  font-style: italic;
+}
+
+/* Loading state */
+.diff-loading {
+  padding: 24px;
+  text-align: center;
+  color: var(--diff-line-number-color);
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .diff-view-split {
+    grid-template-columns: 1fr;
+  }
+
+  .diff-view-split .diff-side-old {
+    border-right: none;
+    border-bottom: 1px solid var(--diff-border-color);
+  }
+
+  .diff-line-num {
+    min-width: 30px;
+    padding: 0 4px;
+  }
+
+  .diff-code-content {
+    padding: 0 4px;
+  }
+}

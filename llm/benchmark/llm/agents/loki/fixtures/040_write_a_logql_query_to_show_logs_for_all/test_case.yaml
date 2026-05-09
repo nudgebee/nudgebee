@@ -1,0 +1,8 @@
+user_prompt: Write a LogQL query to show logs for all pods that are part of a canary
+  release (example pattern).
+expected_output:
+- '{pod=~"my-app-canary-.+"}'
+- '{namespace="production", pod=~"checkout-v2-.+"}'
+tags:
+- command
+- loki

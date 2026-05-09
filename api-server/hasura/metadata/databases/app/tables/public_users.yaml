@@ -1,0 +1,291 @@
+table:
+  name: users
+  schema: public
+object_relationships:
+- name: llm_conversation_saved
+  using:
+    foreign_key_constraint_on:
+      column: user_id
+      table:
+        name: llm_conversation_saved
+        schema: public
+- name: user
+  using:
+    foreign_key_constraint_on: created_by
+- name: userByUpdatedBy
+  using:
+    foreign_key_constraint_on: updated_by
+- name: user_status_type
+  using:
+    foreign_key_constraint_on: status
+array_relationships:
+- name: businessUnitsByUpdatedBy
+  using:
+    foreign_key_constraint_on:
+      column: updated_by
+      table:
+        name: business_unit
+        schema: public
+- name: business_units
+  using:
+    foreign_key_constraint_on:
+      column: created_by
+      table:
+        name: business_unit
+        schema: public
+- name: businessunitFundingSourcesByUpdatedBy
+  using:
+    foreign_key_constraint_on:
+      column: updated_by
+      table:
+        name: businessunit_funding
+        schema: public
+- name: businessunit_funding_sources
+  using:
+    foreign_key_constraint_on:
+      column: created_by
+      table:
+        name: businessunit_funding
+        schema: public
+- name: cloudAccountsByUpdatedBy
+  using:
+    foreign_key_constraint_on:
+      column: updated_by
+      table:
+        name: cloud_accounts
+        schema: public
+- name: cloudResoursesByUpdatedBy
+  using:
+    foreign_key_constraint_on:
+      column: updated_by
+      table:
+        name: cloud_resourses
+        schema: public
+- name: cloud_accounts
+  using:
+    foreign_key_constraint_on:
+      column: created_by
+      table:
+        name: cloud_accounts
+        schema: public
+- name: cloud_resourses
+  using:
+    foreign_key_constraint_on:
+      column: created_by
+      table:
+        name: cloud_resourses
+        schema: public
+- name: fundingSourcesByUpdatedBy
+  using:
+    foreign_key_constraint_on:
+      column: updated_by
+      table:
+        name: funding_sources
+        schema: public
+- name: funding_sources
+  using:
+    foreign_key_constraint_on:
+      column: created_by
+      table:
+        name: funding_sources
+        schema: public
+- name: group_roles
+  using:
+    foreign_key_constraint_on:
+      column: created_by
+      table:
+        name: group_roles
+        schema: public
+- name: jiraConfigurationsByUpdatedBy
+  using:
+    foreign_key_constraint_on:
+      column: updated_by
+      table:
+        name: jira_configurations
+        schema: public
+- name: jira_configurations
+  using:
+    foreign_key_constraint_on:
+      column: created_by
+      table:
+        name: jira_configurations
+        schema: public
+- name: llm_conversations
+  using:
+    foreign_key_constraint_on:
+      column: user_id
+      table:
+        name: llm_conversations
+        schema: public
+- name: notification_users
+  using:
+    foreign_key_constraint_on:
+      column: user_id
+      table:
+        name: notification_user
+        schema: public
+- name: projectFundingsByUpdatedBy
+  using:
+    foreign_key_constraint_on:
+      column: updated_by
+      table:
+        name: project_fundings
+        schema: public
+- name: project_fundings
+  using:
+    foreign_key_constraint_on:
+      column: created_by
+      table:
+        name: project_fundings
+        schema: public
+- name: projects
+  using:
+    foreign_key_constraint_on:
+      column: approved_by
+      table:
+        name: projects
+        schema: public
+- name: projectsByCreatedBy
+  using:
+    foreign_key_constraint_on:
+      column: created_by
+      table:
+        name: projects
+        schema: public
+- name: projectsByItManager
+  using:
+    foreign_key_constraint_on:
+      column: it_manager
+      table:
+        name: projects
+        schema: public
+- name: projectsByProjectManager
+  using:
+    foreign_key_constraint_on:
+      column: project_manager
+      table:
+        name: projects
+        schema: public
+- name: projectsByUpdatedBy
+  using:
+    foreign_key_constraint_on:
+      column: updated_by
+      table:
+        name: projects
+        schema: public
+- name: tenantUsersByUpdatedBy
+  using:
+    foreign_key_constraint_on:
+      column: updated_by
+      table:
+        name: tenant_users
+        schema: public
+- name: tenantUsersByUser
+  using:
+    foreign_key_constraint_on:
+      column: user
+      table:
+        name: tenant_users
+        schema: public
+- name: tenant_users
+  using:
+    foreign_key_constraint_on:
+      column: created_by
+      table:
+        name: tenant_users
+        schema: public
+- name: tenants
+  using:
+    foreign_key_constraint_on:
+      column: created_by
+      table:
+        name: tenant
+        schema: public
+- name: tenantsByUpdatedBy
+  using:
+    foreign_key_constraint_on:
+      column: updated_by
+      table:
+        name: tenant
+        schema: public
+- name: user_attrs
+  using:
+    foreign_key_constraint_on:
+      column: user
+      table:
+        name: user_attrs
+        schema: public
+- name: user_auths
+  using:
+    foreign_key_constraint_on:
+      column: user
+      table:
+        name: user_auths
+        schema: public
+- name: user_groups_owner
+  using:
+    foreign_key_constraint_on:
+      column: owner
+      table:
+        name: user_groups
+        schema: public
+- name: user_roles
+  using:
+    foreign_key_constraint_on:
+      column: user_id
+      table:
+        name: user_roles
+        schema: public
+- name: usergroupUsersByUpdatedBy
+  using:
+    foreign_key_constraint_on:
+      column: updated_by
+      table:
+        name: usergroup_users
+        schema: public
+- name: usergroupUsersByUser
+  using:
+    foreign_key_constraint_on:
+      column: user
+      table:
+        name: usergroup_users
+        schema: public
+- name: usergroup_users
+  using:
+    foreign_key_constraint_on:
+      column: created_by
+      table:
+        name: usergroup_users
+        schema: public
+- name: users
+  using:
+    foreign_key_constraint_on:
+      column: created_by
+      table:
+        name: users
+        schema: public
+- name: usersByUpdatedBy
+  using:
+    foreign_key_constraint_on:
+      column: updated_by
+      table:
+        name: users
+        schema: public
+update_permissions:
+- role: tenant_admin
+  permission:
+    columns:
+    - display_name
+    - status
+    filter:
+      tenantUsersByUser:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id
+    check: null
+delete_permissions:
+- role: tenant_admin
+  permission:
+    filter:
+      tenantUsersByUser:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id

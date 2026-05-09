@@ -1,0 +1,19 @@
+table:
+  name: llm_conversation_history
+  schema: public
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - chain_name
+        - message
+        - request_type
+        - role
+        - session_id
+        - recorded_at
+        - account_id
+        - id
+        - user_id
+      filter: {}
+      limit: 100
+    comment: ""

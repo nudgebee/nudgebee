@@ -1,0 +1,6 @@
+user_prompt: List RDS instances.
+expected_output:
+- aws rds describe-db-instances
+tags:
+- command
+- aws

@@ -1,0 +1,60 @@
+{
+    "created_at": "2024-03-03T10:18:03.485031",
+    "delivery_info": {
+        "current_retry": 0,
+        "max_retries": 0
+    },
+    "event": {
+        "data": {
+            "new": {
+                "aggregation_key": "ConfigurationChange/KubernetesResource/Change",
+                "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+                "cloud_resource_id": "0f4b8cd3-a52a-5cca-afc5-2a47041d4325",
+                "tenant": "890cad87-c452-4aa7-b84a-742cee0454a1",
+                "evidences": [
+                    {
+                        "data": {
+                            "new": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  annotations: \n    deployment.kubernetes.io/revision: '57'\n    meta.helm.sh/release-name: app-dev\n    meta.helm.sh/release-namespace: nudgebee\n    workloads.nudgebee.com/app.cpu_request: '0.1'\n    workloads.nudgebee.com/app.memory_limit: 362Mi\n    workloads.nudgebee.com/app.memory_request: 362Mi\n    workloads.nudgebee.com/app.prev_cpu_request: '0.1'\n    workloads.nudgebee.com/app.prev_memory_limit: '524288000.0'\n    workloads.nudgebee.com/app.prev_memory_request: '262144000.0'\n    workloads.nudgebee.com/autopilot.id: 427aff9c-0266-4002-bb04-319106391f68\n    workloads.nudgebee.com/autopilot.service: AutoOptimise\n    workloads.nudgebee.com/autopilot.autoOptimize.category: vertical_rightsize\n    workloads.nudgebee.com/autopilot.autoOptimize.dryRun: 'false'\n    workloads.nudgebee.com/autopilot.autoOptimize.schedule.frequency: '0 * * * *'\n    workloads.nudgebee.com/autopilot.autoOptimize.autopilot_config.vertical_rightsize.cpu.algo: max\n    workloads.nudgebee.com/autopilot.autoOptimize.autopilot_config.vertical_rightsize.memory.algo: max\n  creationTimestamp: '2024-02-17T17:07:17Z'\n  labels: \n    app.kubernetes.io/instance: app-dev\n    app.kubernetes.io/managed-by: Helm\n    app.kubernetes.io/name: app\n    app.kubernetes.io/version: V0.1\n    helm.sh/chart: app-0.1\n  name: app-dev\n  namespace: nudgebee\n  uid: 8eef06fc-dc0e-42d8-89c9-abe7bada64e3\nspec:\n  progressDeadlineSeconds: 600\n  revisionHistoryLimit: 10\n  selector:\n    matchLabels: {app.kubernetes.io/instance: app-dev, app.kubernetes.io/name: app}\n  strategy:\n    rollingUpdate: {maxSurge: 25%, maxUnavailable: 25%}\n    type: RollingUpdate\n  template:\n    metadata:\n      labels: {app.kubernetes.io/instance: app-dev, app.kubernetes.io/name: app}\n    spec:\n      affinity:\n        nodeAffinity:\n          requiredDuringSchedulingIgnoredDuringExecution:\n            nodeSelectorTerms:\n            - matchExpressions:\n              - key: node\n                operator: In\n                values: [app, db]\n        podAntiAffinity:\n          requiredDuringSchedulingIgnoredDuringExecution:\n          - labelSelector:\n              matchExpressions:\n              - key: app.kubernetes.io/instance\n                operator: In\n                values: [app-dev]\n            topologyKey: kubernetes.io/hostname\n      containers:\n      - envFrom:\n        - secretRef: {name: nudgebee}\n        image: 280501305789.dkr.ecr.us-east-1.amazonaws.com/nudgebee-app:2024-02-24T07-24-07_df4bb35538c1c950dec01f9bcd6cb2e9502d7eb5\n        imagePullPolicy: IfNotPresent\n        name: app\n        ports:\n        - {containerPort: 3000, name: http, protocol: TCP}\n        resources:\n          limits: {memory: 500Mi}\n          requests: {cpu: 100m, memory: 250Mi}\n        securityContext: {}\n        terminationMessagePath: /dev/termination-log\n        terminationMessagePolicy: File\n      dnsPolicy: ClusterFirst\n      restartPolicy: Always\n      schedulerName: default-scheduler\n      securityContext: {}\n      serviceAccount: default\n      serviceAccountName: default\n      terminationGracePeriodSeconds: 30\n      tolerations:\n      - {effect: NoSchedule, key: node, operator: Equal, value: db}",
+                            "old": "",
+                            "num_additions": 4,
+                            "num_deletions": 0,
+                            "resource_name": "deployment/nudgebee/app-dev",
+                            "updated_paths": [
+                                "StatefulSet.spec.template.spec.containers[1].image",
+                                "StatefulSet.spec.template.spec.containers[1].resources.requests['cpu']",
+                                "StatefulSet.spec.template.spec.containers[1].resources.requests['memory']",
+                                "StatefulSet.spec.template.spec.containers[1].args",
+                                "StatefulSet.spec.template.spec.containers[1].volumeMounts",
+                                "StatefulSet.spec.template.spec.initContainers[0].image",
+                                "StatefulSet.spec.template.spec.initContainers[0].resources.requests['cpu']",
+                                "StatefulSet.spec.template.spec.initContainers[0].resources.requests['memory']",
+                                "StatefulSet.spec.template.spec.initContainers[0].volumeMounts"
+                            ],
+                            "num_modifications": 5
+                        },
+                        "type": "diff",
+                        "insight": []
+                    }
+                ]
+            },
+            "old": null
+        },
+        "op": "INSERT",
+        "session_variables": {
+            "x-hasura-role": "admin"
+        },
+        "trace_context": {
+            "sampling_state": "1",
+            "span_id": "2dc019db29f64836",
+            "trace_id": "62fcb783ef7145b146f54296c084a787"
+        }
+    },
+    "id": "defaf676-6576-4978-b476-3c33c7da2dfc",
+    "table": {
+        "name": "users",
+        "schema": "public"
+    },
+    "trigger": {
+        "name": "new_event_notification"
+    }
+}

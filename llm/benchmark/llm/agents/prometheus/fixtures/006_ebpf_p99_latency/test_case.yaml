@@ -1,0 +1,16 @@
+user_prompt: Show P99 response time for api-server in namespace default
+expected_output:
+  - histogram_quantile(0.99, sum(rate(container_http_requests_duration_seconds_total_bucket{destination_workload_name="api-server", destination_workload_namespace="default"}[5m])) by (le))
+expected_metrics:
+  - container_http_requests_duration_seconds_total_bucket
+expected_tools:
+  - prometheus_execute
+forbidden_tools:
+  - shell_execute
+  - search_metrics
+expected_max_tool_calls: 4
+tags:
+  - fast_path
+  - ebpf
+  - latency
+  - histogram

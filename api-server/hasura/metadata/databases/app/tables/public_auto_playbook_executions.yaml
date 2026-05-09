@@ -1,0 +1,33 @@
+table:
+  name: auto_playbook_executions
+  schema: public
+object_relationships:
+- name: auto_playbook
+  using:
+    foreign_key_constraint_on: auto_playbook_id
+- name: auto_playbook_execution_status_fkey
+  using:
+    manual_configuration:
+      column_mapping:
+        status: value
+      insertion_order: null
+      remote_table:
+        name: auto_pilot_execution_status
+        schema: public
+- name: cloud_account
+  using:
+    foreign_key_constraint_on: account_id
+- name: skipeed_by_user
+  using:
+    foreign_key_constraint_on: skipped_by
+- name: tenant
+  using:
+    foreign_key_constraint_on: tenant_id
+array_relationships:
+- name: auto_playbook_tasks
+  using:
+    foreign_key_constraint_on:
+      column: execution_id
+      table:
+        name: auto_playbook_task
+        schema: public

@@ -1,0 +1,49 @@
+table:
+  name: tenant_type
+  schema: public
+is_enum: true
+array_relationships:
+  - name: tenants
+    using:
+      foreign_key_constraint_on:
+        column: type
+        table:
+          name: tenant
+          schema: public
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - value
+      filter: {}
+      allow_aggregations: true
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - value
+      filter: {}
+      allow_aggregations: true
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - value
+      filter: {}
+      allow_aggregations: true
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - value
+      filter: {}
+      allow_aggregations: true
+  - role: tenant_admin
+    permission:
+      columns:
+        - value
+      filter: {}
+      allow_aggregations: true
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - value
+      filter: {}
+      allow_aggregations: true

@@ -1,0 +1,1051 @@
+{
+	"info": {
+		"_postman_id": "8c65275d-9f50-4932-9984-34395df66f77",
+		"name": "Knowledgebase & Global Context APIs",
+		"description": "Complete CRUD operations for Knowledgebase (KB) and Global Context (GC).\n\n## Response Fields\n\nAll KB, GC, and mapping responses include audit trail fields:\n- `created_by`: User ID (UUID)\n- `created_by_username`: Username for display\n- `updated_by`: User ID (UUID)\n- `updated_by_username`: Username for display\n- `created_at`: Timestamp\n- `updated_at`: Timestamp\n\n## Sections\n\n1. **Knowledgebase (KB)**: Account-scoped semantic search (max 10MB, many-to-many agent mappings)\n2. **KB-Agent Mappings**: Map/unmap KBs to agents, list agent KBs\n3. **Global Context (GC)**: Tenant-scoped behavioral rules (max 5MB, whole-file retrieval)\n4. **RAG Migration**: Rename agent_* collections to kb_* using Qdrant aliases (zero downtime)\n5. **RAG Server Direct**: Low-level vector DB operations (testing/debugging)",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "1799783"
+	},
+	"item": [
+		{
+			"name": "Knowledgebase (KB) - Account-Scoped",
+			"item": [
+				{
+					"name": "Create KB",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    const response = pm.response.json();",
+									"    if (response.data && response.data.id) {",
+									"        pm.collectionVariables.set('kb_id', response.data.id);",
+									"        console.log('KB ID saved: ' + response.data.id);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-hasura-user-id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "x-hasura-user-tenant-id",
+								"value": "{{tenant_id}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": {\n        \"name\": \"ai_create_kb\"\n    },\n    \"input\": {\n        \"request\": {\n            \"account_id\": \"{{account_id}}\",\n            \"knowledgebase\": {\n                \"name\": \"Product_Documentation\",\n                \"description\": \"Complete product documentation for semantic search\",\n                \"data\": \"Product Name: NudgebeeAI\\nDescription: AI-powered cloud optimization platform\\nFeatures: Cost optimization, Performance monitoring, Security compliance\\nBenefits: Reduce cloud costs by 40%, Improve performance, Automated remediation\",\n                \"format\": \"text\",\n                \"file_name\": \"product_docs.txt\"\n            }\n        }\n    },\n    \"session_variables\": {\n        \"x-hasura-user-id\": \"{{user_id}}\",\n        \"x-hasura-user-tenant-id\": \"{{tenant_id}}\",\n        \"x-hasura-role\": \"user\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{llm_server_url}}/v1/knowledgebases",
+							"host": [
+								"{{llm_server_url}}"
+							],
+							"path": [
+								"v1",
+								"knowledgebases"
+							]
+						},
+						"description": "Create a new knowledge base with semantic search enabled"
+					},
+					"response": []
+				},
+				{
+					"name": "Create KB - JSON Format",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-hasura-user-id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "x-hasura-user-tenant-id",
+								"value": "{{tenant_id}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": {\n        \"name\": \"ai_create_kb\"\n    },\n    \"input\": {\n        \"request\": {\n            \"account_id\": \"{{account_id}}\",\n            \"knowledgebase\": {\n                \"name\": \"API Endpoints\",\n                \"description\": \"REST API endpoint documentation\",\n                \"data\": \"[{\\\"endpoint\\\":\\\"/api/users\\\",\\\"method\\\":\\\"GET\\\",\\\"description\\\":\\\"Retrieve all users\\\"},{\\\"endpoint\\\":\\\"/api/users/:id\\\",\\\"method\\\":\\\"GET\\\",\\\"description\\\":\\\"Get user by ID\\\"},{\\\"endpoint\\\":\\\"/api/users\\\",\\\"method\\\":\\\"POST\\\",\\\"description\\\":\\\"Create new user\\\"}]\",\n                \"format\": \"json\",\n                \"file_name\": \"api_endpoints.json\"\n            }\n        }\n    },\n    \"session_variables\": {\n        \"x-hasura-user-id\": \"{{user_id}}\",\n        \"x-hasura-user-tenant-id\": \"{{tenant_id}}\",\n        \"x-hasura-role\": \"user\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{llm_server_url}}/v1/knowledgebases",
+							"host": [
+								"{{llm_server_url}}"
+							],
+							"path": [
+								"v1",
+								"knowledgebases"
+							]
+						},
+						"description": "Create KB with JSON format data"
+					},
+					"response": []
+				},
+				{
+					"name": "Get KB",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-hasura-user-id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "x-hasura-user-tenant-id",
+								"value": "{{tenant_id}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": {\n        \"name\": \"ai_get_kb\"\n    },\n    \"input\": {\n        \"request\": {\n            \"account_id\": \"{{account_id}}\",\n            \"id\": \"{{kb_id}}\"\n        }\n    },\n    \"session_variables\": {\n        \"x-hasura-user-id\": \"{{user_id}}\",\n        \"x-hasura-user-tenant-id\": \"{{tenant_id}}\",\n        \"x-hasura-role\": \"user\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{llm_server_url}}/v1/knowledgebases",
+							"host": [
+								"{{llm_server_url}}"
+							],
+							"path": [
+								"v1",
+								"knowledgebases"
+							]
+						},
+						"description": "Retrieve a specific knowledge base by ID (includes full data)"
+					},
+					"response": []
+				},
+				{
+					"name": "List KBs",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-hasura-user-id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "x-hasura-user-tenant-id",
+								"value": "{{tenant_id}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": {\n        \"name\": \"ai_list_kb\"\n    },\n    \"input\": {\n        \"request\": {\n            \"account_id\": \"{{account_id}}\"\n        }\n    },\n    \"session_variables\": {\n        \"x-hasura-user-id\": \"{{user_id}}\",\n        \"x-hasura-user-tenant-id\": \"{{tenant_id}}\",\n        \"x-hasura-role\": \"user\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{llm_server_url}}/v1/knowledgebases",
+							"host": [
+								"{{llm_server_url}}"
+							],
+							"path": [
+								"v1",
+								"knowledgebases"
+							]
+						},
+						"description": "List all knowledge bases for an account (without data field for performance)"
+					},
+					"response": []
+				},
+				{
+					"name": "Update KB - Metadata Only",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-hasura-user-id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "x-hasura-user-tenant-id",
+								"value": "{{tenant_id}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": {\n        \"name\": \"ai_update_kb\"\n    },\n    \"input\": {\n        \"request\": {\n            \"account_id\": \"{{account_id}}\",\n            \"knowledgebase\": {\n                \"id\": \"{{kb_id}}\",\n                \"name\": \"Product Documentation - Updated\",\n                \"description\": \"Updated product documentation with new features\"\n            }\n        }\n    },\n    \"session_variables\": {\n        \"x-hasura-user-id\": \"{{user_id}}\",\n        \"x-hasura-user-tenant-id\": \"{{tenant_id}}\",\n        \"x-hasura-role\": \"user\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{llm_server_url}}/v1/knowledgebases",
+							"host": [
+								"{{llm_server_url}}"
+							],
+							"path": [
+								"v1",
+								"knowledgebases"
+							]
+						},
+						"description": "Update KB name/description only (no vector DB changes)"
+					},
+					"response": []
+				},
+				{
+					"name": "Update KB - With Data (Re-embed)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-hasura-user-id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "x-hasura-user-tenant-id",
+								"value": "{{tenant_id}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": {\n        \"name\": \"ai_update_kb\"\n    },\n    \"input\": {\n        \"request\": {\n            \"account_id\": \"{{account_id}}\",\n            \"knowledgebase\": {\n                \"id\": \"{{kb_id}}\",\n                \"name\": \"Product Documentation V2\",\n                \"description\": \"Updated product documentation\",\n                \"data\": \"Product Name: NudgebeeAI v2.0\\nDescription: AI-powered cloud optimization platform\\nFeatures: Cost optimization, Performance monitoring, Security compliance, Automated scaling\\nBenefits: Reduce cloud costs by 50%, Improve performance by 30%, Automated remediation with AI\",\n                \"format\": \"text\",\n                \"file_name\": \"product_docs_v2.txt\"\n            }\n        }\n    },\n    \"session_variables\": {\n        \"x-hasura-user-id\": \"{{user_id}}\",\n        \"x-hasura-user-tenant-id\": \"{{tenant_id}}\",\n        \"x-hasura-role\": \"user\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{llm_server_url}}/v1/knowledgebases",
+							"host": [
+								"{{llm_server_url}}"
+							],
+							"path": [
+								"v1",
+								"knowledgebases"
+							]
+						},
+						"description": "Update KB with new data (triggers vector DB re-embedding)"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete KB",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-hasura-user-id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "x-hasura-user-tenant-id",
+								"value": "{{tenant_id}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": {\n        \"name\": \"ai_delete_kb\"\n    },\n    \"input\": {\n        \"request\": {\n            \"account_id\": \"{{account_id}}\",\n            \"id\": \"{{kb_id}}\"\n        }\n    },\n    \"session_variables\": {\n        \"x-hasura-user-id\": \"{{user_id}}\",\n        \"x-hasura-user-tenant-id\": \"{{tenant_id}}\",\n        \"x-hasura-role\": \"user\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{llm_server_url}}/v1/knowledgebases",
+							"host": [
+								"{{llm_server_url}}"
+							],
+							"path": [
+								"v1",
+								"knowledgebases"
+							]
+						},
+						"description": "Delete knowledge base (removes from PostgreSQL and Qdrant)"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "KB-Agent Mappings - Many-to-Many",
+			"item": [
+				{
+					"name": "Map KB to Agent",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-hasura-user-id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "x-hasura-user-tenant-id",
+								"value": "{{tenant_id}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": {\n        \"name\": \"ai_map_kb_to_agent\"\n    },\n    \"input\": {\n        \"request\": {\n            \"account_id\": \"{{account_id}}\",\n            \"kb_id\": \"{{kb_id}}\",\n            \"agent_id\": \"k8s_debug\"\n        }\n    },\n    \"session_variables\": {\n        \"x-hasura-user-id\": \"{{user_id}}\",\n        \"x-hasura-user-tenant-id\": \"{{tenant_id}}\",\n        \"x-hasura-role\": \"user\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{llm_server_url}}/v1/knowledgebases",
+							"host": [
+								"{{llm_server_url}}"
+							],
+							"path": [
+								"v1",
+								"knowledgebases"
+							]
+						},
+						"description": "Map a knowledge base to an agent (many-to-many relationship). Returns mapping with created_by_username and updated_by_username."
+					},
+					"response": []
+				},
+				{
+					"name": "Unmap KB from Agent",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-hasura-user-id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "x-hasura-user-tenant-id",
+								"value": "{{tenant_id}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": {\n        \"name\": \"ai_unmap_kb_from_agent\"\n    },\n    \"input\": {\n        \"request\": {\n            \"account_id\": \"{{account_id}}\",\n            \"kb_id\": \"{{kb_id}}\",\n            \"agent_id\": \"k8s_debug\"\n        }\n    },\n    \"session_variables\": {\n        \"x-hasura-user-id\": \"{{user_id}}\",\n        \"x-hasura-user-tenant-id\": \"{{tenant_id}}\",\n        \"x-hasura-role\": \"user\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{llm_server_url}}/v1/knowledgebases",
+							"host": [
+								"{{llm_server_url}}"
+							],
+							"path": [
+								"v1",
+								"knowledgebases"
+							]
+						},
+						"description": "Remove mapping between KB and agent"
+					},
+					"response": []
+				},
+				{
+					"name": "List Agent KBs",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-hasura-user-id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "x-hasura-user-tenant-id",
+								"value": "{{tenant_id}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": {\n        \"name\": \"ai_list_agent_kbs\"\n    },\n    \"input\": {\n        \"request\": {\n            \"account_id\": \"{{account_id}}\",\n            \"agent_id\": \"k8s_debug\"\n        }\n    },\n    \"session_variables\": {\n        \"x-hasura-user-id\": \"{{user_id}}\",\n        \"x-hasura-user-tenant-id\": \"{{tenant_id}}\",\n        \"x-hasura-role\": \"user\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{llm_server_url}}/v1/knowledgebases",
+							"host": [
+								"{{llm_server_url}}"
+							],
+							"path": [
+								"v1",
+								"knowledgebases"
+							]
+						},
+						"description": "List all knowledge bases mapped to a specific agent. Returns KBs with created_by_username and updated_by_username fields."
+					},
+					"response": []
+				},
+				{
+					"name": "List Agents with KB Counts",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-hasura-user-id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "x-hasura-user-tenant-id",
+								"value": "{{tenant_id}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": {\n        \"name\": \"ai_list_agents_with_kb_counts\"\n    },\n    \"input\": {\n        \"request\": {\n            \"account_id\": \"{{account_id}}\"\n        }\n    },\n    \"session_variables\": {\n        \"x-hasura-user-id\": \"{{user_id}}\",\n        \"x-hasura-user-tenant-id\": \"{{tenant_id}}\",\n        \"x-hasura-role\": \"user\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{llm_server_url}}/v1/knowledgebases",
+							"host": [
+								"{{llm_server_url}}"
+							],
+							"path": [
+								"v1",
+								"knowledgebases"
+							]
+						},
+						"description": "Get all agents and their KB mapping counts. Returns [{agent_id, kb_count}]."
+					},
+					"response": []
+				},
+				{
+					"name": "List All KB-Agent Mappings",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-hasura-user-id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "x-hasura-user-tenant-id",
+								"value": "{{tenant_id}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": {\n        \"name\": \"ai_list_kb_agent_mappings\"\n    },\n    \"input\": {\n        \"request\": {\n            \"account_id\": \"{{account_id}}\"\n        }\n    },\n    \"session_variables\": {\n        \"x-hasura-user-id\": \"{{user_id}}\",\n        \"x-hasura-user-tenant-id\": \"{{tenant_id}}\",\n        \"x-hasura-role\": \"user\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{llm_server_url}}/v1/knowledgebases",
+							"host": [
+								"{{llm_server_url}}"
+							],
+							"path": [
+								"v1",
+								"knowledgebases"
+							]
+						},
+						"description": "Get all KB-agent mappings for the account with full details including KB name, usernames, and timestamps."
+					},
+					"response": []
+				},
+				{
+					"name": "List KB Agents",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-hasura-user-id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "x-hasura-user-tenant-id",
+								"value": "{{tenant_id}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": {\n        \"name\": \"ai_list_kb_agents\"\n    },\n    \"input\": {\n        \"request\": {\n            \"account_id\": \"{{account_id}}\",\n            \"kb_id\": \"{{kb_id}}\"\n        }\n    },\n    \"session_variables\": {\n        \"x-hasura-user-id\": \"{{user_id}}\",\n        \"x-hasura-user-tenant-id\": \"{{tenant_id}}\",\n        \"x-hasura-role\": \"user\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{llm_server_url}}/v1/knowledgebases",
+							"host": [
+								"{{llm_server_url}}"
+							],
+							"path": [
+								"v1",
+								"knowledgebases"
+							]
+						},
+						"description": "Get all agents that a specific KB is mapped to. Returns array of agent IDs."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Global Context (GC) - Tenant-Scoped",
+			"item": [
+				{
+					"name": "Create GC",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    const response = pm.response.json();",
+									"    if (response.data && response.data.id) {",
+									"        pm.collectionVariables.set('gc_id', response.data.id);",
+									"        console.log('GC ID saved: ' + response.data.id);",
+									"    }",
+									"}"
+								],
+								"type": "text/javascript",
+								"packages": {},
+								"requests": {}
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-hasura-user-id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "x-hasura-user-tenant-id",
+								"value": "{{tenant_id}}"
+							},
+							{
+								"key": "x-hasura-role",
+								"value": "tenant_admin"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": {\n        \"name\": \"ai_create_gc\"\n    },\n    \"input\": {\n        \"request\": {\n            \"global_context\": {\n                \"name\": \"Company_Guidelines\",\n                \"description\": \"Company-wide policies and guidelines\",\n                \"data\": \"Working Hours: 9 AM - 6 PM\\nRemote Work Policy: Hybrid (3 days office, 2 days remote)\\nPTO Policy: 20 days per year\\nCode of Conduct: Professional behavior required\\nSecurity: All devices must have encryption enabled\",\n                \"format\": \"text\",\n                \"file_name\": \"company_guidelines.txt\"\n            }\n        }\n    },\n    \"session_variables\": {\n        \"x-hasura-user-id\": \"{{user_id}}\",\n        \"x-hasura-user-tenant-id\": \"{{tenant_id}}\",\n        \"x-hasura-role\": \"tenant_admin\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{llm_server_url}}/v1/global_contexts",
+							"host": [
+								"{{llm_server_url}}"
+							],
+							"path": [
+								"v1",
+								"global_contexts"
+							]
+						},
+						"description": "Create a new global context (tenant admin only, whole-file retrieval)"
+					},
+					"response": []
+				},
+				{
+					"name": "Create GC - JSON Config",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-hasura-user-id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "x-hasura-user-tenant-id",
+								"value": "{{tenant_id}}"
+							},
+							{
+								"key": "x-hasura-role",
+								"value": "tenant_admin"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": {\n        \"name\": \"ai_create_gc\"\n    },\n    \"input\": {\n        \"request\": {\n            \"global_context\": {\n                \"name\": \"System Configuration\",\n                \"description\": \"System-wide configuration settings\",\n                \"data\": \"{\\\"database\\\":{\\\"host\\\":\\\"localhost\\\",\\\"port\\\":5432},\\\"cache\\\":{\\\"enabled\\\":true,\\\"ttl\\\":3600},\\\"logging\\\":{\\\"level\\\":\\\"info\\\",\\\"format\\\":\\\"json\\\"}}\",\n                \"format\": \"json\",\n                \"file_name\": \"system_config.json\"\n            }\n        }\n    },\n    \"session_variables\": {\n        \"x-hasura-user-id\": \"{{user_id}}\",\n        \"x-hasura-user-tenant-id\": \"{{tenant_id}}\",\n        \"x-hasura-role\": \"tenant_admin\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{llm_server_url}}/v1/global_contexts",
+							"host": [
+								"{{llm_server_url}}"
+							],
+							"path": [
+								"v1",
+								"global_contexts"
+							]
+						},
+						"description": "Create GC with JSON configuration data"
+					},
+					"response": []
+				},
+				{
+					"name": "Get GC",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-hasura-user-id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "x-hasura-user-tenant-id",
+								"value": "{{tenant_id}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": {\n        \"name\": \"ai_get_gc\"\n    },\n    \"input\": {\n        \"request\": {\n            \"id\": \"{{gc_id}}\"\n        }\n    },\n    \"session_variables\": {\n        \"x-hasura-user-id\": \"{{user_id}}\",\n        \"x-hasura-user-tenant-id\": \"{{tenant_id}}\",\n        \"x-hasura-role\": \"user\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{llm_server_url}}/v1/global_contexts",
+							"host": [
+								"{{llm_server_url}}"
+							],
+							"path": [
+								"v1",
+								"global_contexts"
+							]
+						},
+						"description": "Retrieve a specific global context by ID (includes full data)"
+					},
+					"response": []
+				},
+				{
+					"name": "List GCs",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-hasura-user-id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "x-hasura-user-tenant-id",
+								"value": "{{tenant_id}}"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": {\n        \"name\": \"ai_list_gc\"\n    },\n    \"input\": {\n        \"request\": {}\n    },\n    \"session_variables\": {\n        \"x-hasura-user-id\": \"{{user_id}}\",\n        \"x-hasura-user-tenant-id\": \"{{tenant_id}}\",\n        \"x-hasura-role\": \"user\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{llm_server_url}}/v1/global_contexts",
+							"host": [
+								"{{llm_server_url}}"
+							],
+							"path": [
+								"v1",
+								"global_contexts"
+							]
+						},
+						"description": "List all global contexts for the tenant (includes data field)"
+					},
+					"response": []
+				},
+				{
+					"name": "Update GC",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-hasura-user-id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "x-hasura-user-tenant-id",
+								"value": "{{tenant_id}}"
+							},
+							{
+								"key": "x-hasura-role",
+								"value": "tenant_admin"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": {\n        \"name\": \"ai_update_gc\"\n    },\n    \"input\": {\n        \"request\": {\n            \"global_context\": {\n                \"id\": \"{{gc_id}}\",\n                \"name\": \"Company_Guidelines_Updated\",\n                \"description\": \"Updated_company policies\",\n                \"data\": \"Working Hours: 9 AM - 6 PM\\nRemote Work Policy: Fully Remote\\nPTO Policy: 25 days per year\\nCode of Conduct: Professional behavior required\\nSecurity: All devices must have encryption enabled\\nNew Policy: Annual training required\",\n                \"format\": \"text\",\n                \"file_name\": \"company_guidelines_v2.txt\"\n            }\n        }\n    },\n    \"session_variables\": {\n        \"x-hasura-user-id\": \"{{user_id}}\",\n        \"x-hasura-user-tenant-id\": \"{{tenant_id}}\",\n        \"x-hasura-role\": \"tenant_admin\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{llm_server_url}}/v1/global_contexts",
+							"host": [
+								"{{llm_server_url}}"
+							],
+							"path": [
+								"v1",
+								"global_contexts"
+							]
+						},
+						"description": "Update global context (tenant admin only, PostgreSQL only - no vector DB)"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete GC",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "x-hasura-user-id",
+								"value": "{{user_id}}"
+							},
+							{
+								"key": "x-hasura-user-tenant-id",
+								"value": "{{tenant_id}}"
+							},
+							{
+								"key": "x-hasura-role",
+								"value": "tenant_admin"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"action\": {\n        \"name\": \"ai_delete_gc\"\n    },\n    \"input\": {\n        \"request\": {\n            \"id\": \"{{gc_id}}\"\n        }\n    },\n    \"session_variables\": {\n        \"x-hasura-user-id\": \"{{user_id}}\",\n        \"x-hasura-user-tenant-id\": \"{{tenant_id}}\",\n        \"x-hasura-role\": \"tenant_admin\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{llm_server_url}}/v1/global_contexts",
+							"host": [
+								"{{llm_server_url}}"
+							],
+							"path": [
+								"v1",
+								"global_contexts"
+							]
+						},
+						"description": "Delete global context (tenant admin only, PostgreSQL only)"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "RAG Migration - agent_* to kb_*",
+			"item": [
+				{
+					"name": "Get Collection Mappings",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{rag_server_url}}/api/migrate/rag-collections/get-mappings",
+							"host": [
+								"{{rag_server_url}}"
+							],
+							"path": [
+								"api",
+								"migrate",
+								"rag-collections",
+								"get-mappings"
+							]
+						},
+						"description": "Query database to get agent_id \u2192 kb_id mappings for migrated RAGs. Shows which agent_ collections need to be renamed to kb_."
+					},
+					"response": []
+				},
+				{
+					"name": "Rename Collections (Dry Run)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"dry_run\": true,\n    \"keep_old_collections\": true\n}"
+						},
+						"url": {
+							"raw": "{{rag_server_url}}/api/migrate/rag-collections/rename",
+							"host": [
+								"{{rag_server_url}}"
+							],
+							"path": [
+								"api",
+								"migrate",
+								"rag-collections",
+								"rename"
+							]
+						},
+						"description": "Preview the migration without making changes. Shows what collections would be renamed using Qdrant aliases."
+					},
+					"response": []
+				},
+				{
+					"name": "Rename Collections (Execute)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"dry_run\": false,\n    \"keep_old_collections\": true\n}"
+						},
+						"url": {
+							"raw": "{{rag_server_url}}/api/migrate/rag-collections/rename",
+							"host": [
+								"{{rag_server_url}}"
+							],
+							"path": [
+								"api",
+								"migrate",
+								"rag-collections",
+								"rename"
+							]
+						},
+						"description": "Execute migration by creating Qdrant aliases: kb_{kb_id} \u2192 agent_{agent_id}. Both names will work simultaneously (zero downtime). Old collections kept by default for safety."
+					},
+					"response": []
+				},
+				{
+					"name": "Verify Migration",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{rag_server_url}}/api/migrate/rag-collections/verify",
+							"host": [
+								"{{rag_server_url}}"
+							],
+							"path": [
+								"api",
+								"migrate",
+								"rag-collections",
+								"verify"
+							]
+						},
+						"description": "Verify that all required KB collections exist and are accessible. Checks both old agent_ collections and new kb_ collections/aliases."
+					},
+					"response": []
+				},
+				{
+					"name": "Cleanup Old Collections",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{rag_server_url}}/api/migrate/rag-collections/cleanup?confirm=true",
+							"host": [
+								"{{rag_server_url}}"
+							],
+							"path": [
+								"api",
+								"migrate",
+								"rag-collections",
+								"cleanup"
+							],
+							"query": [
+								{
+									"key": "confirm",
+									"value": "true"
+								}
+							]
+						},
+						"description": "DESTRUCTIVE: Delete old agent_ collections after verifying new kb_ collections work. Only run after thorough testing. Requires confirm=true."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "RAG Server - Direct KB Operations",
+			"item": [
+				{
+					"name": "Search KB (Direct)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"account_id\": \"{{account_id}}\",\n    \"kb_id\": \"{{kb_id}}\",\n    \"query\": \"What are the benefits of NudgebeeAI?\",\n    \"k\": 3,\n    \"track_token_usage\": true\n}"
+						},
+						"url": {
+							"raw": "{{rag_server_url}}/api/v1/kb/search",
+							"host": [
+								"{{rag_server_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"kb",
+								"search"
+							]
+						},
+						"description": "Directly search KB via RAG server (semantic search with top-k results)"
+					},
+					"response": []
+				},
+				{
+					"name": "Create KB Collection (Direct)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"account_id\": \"{{account_id}}\",\n    \"kb_id\": \"test-kb-123\",\n    \"data\": \"Test document line 1\\nTest document line 2\\nTest document line 3\",\n    \"format\": \"text\"\n}"
+						},
+						"url": {
+							"raw": "{{rag_server_url}}/api/v1/kb/create",
+							"host": [
+								"{{rag_server_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"kb",
+								"create"
+							]
+						},
+						"description": "Directly create KB vector collection (for testing)"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete KB Collection (Direct)",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{rag_server_url}}/api/v1/kb/{{account_id}}/{{kb_id}}",
+							"host": [
+								"{{rag_server_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"kb",
+								"{{account_id}}",
+								"{{kb_id}}"
+							]
+						},
+						"description": "Directly delete KB vector collection from Qdrant"
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"packages": {},
+				"requests": {},
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"packages": {},
+				"requests": {},
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "llm_server_url",
+			"value": "http://localhost:9999",
+			"type": "string"
+		},
+		{
+			"key": "rag_server_url",
+			"value": "http://localhost:9988",
+			"type": "string"
+		},
+		{
+			"key": "tenant_id",
+			"value": "890cad87-c452-4aa7-b84a-742cee0454a1",
+			"type": "string"
+		},
+		{
+			"key": "user_id",
+			"value": "8257d220-0610-4839-83c8-586b31e7c2d6",
+			"type": "string"
+		},
+		{
+			"key": "account_id",
+			"value": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
+			"type": "string"
+		},
+		{
+			"key": "kb_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "gc_id",
+			"value": "",
+			"type": "string"
+		}
+	]
+}

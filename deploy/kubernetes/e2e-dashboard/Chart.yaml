@@ -1,0 +1,6 @@
+apiVersion: v2
+name: e2e-dashboard
+description: E2E Test Results Dashboard
+type: application
+version: "0.1.0"
+appVersion: "1.0.0"

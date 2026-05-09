@@ -1,0 +1,42 @@
+table:
+  name: spends_resource_group_type
+  schema: public
+object_relationships:
+  - name: cloudProviderByCloudProvider
+    using:
+      foreign_key_constraint_on: cloud_provider
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - cloud_provider
+        - description
+        - value
+      filter: {}
+      limit: 100
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - cloud_provider
+        - description
+        - value
+      filter: {}
+      limit: 100
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - value
+        - description
+        - cloud_provider
+      filter: {}
+      allow_aggregations: true
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - value
+        - description
+        - cloud_provider
+      filter: {}
+      allow_aggregations: true

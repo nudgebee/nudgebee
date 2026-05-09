@@ -1,0 +1,14 @@
+user_prompt: The product API app in resource group 'azure-agent-test-E04' cannot connect
+  to its PostgreSQL database. Logs show 'Connection refused' on the configured port.
+  The database server is healthy. What is the misconfiguration?
+expected_output:
+- 'The App Service has DB_PORT=3306 (MySQL default port) but the backend is PostgreSQL
+  which listens on port 5432. Fix: Change the DB_PORT app setting from ''3306'' to
+  ''5432''.'
+agent: azure_debug
+scenario: E04
+type: rca
+tags:
+- rca
+- easy
+- azure

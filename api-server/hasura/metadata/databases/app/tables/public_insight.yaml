@@ -1,0 +1,149 @@
+table:
+  name: insight
+  schema: public
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - applications
+        - rule
+        - severity
+        - source
+        - status
+        - title
+        - type
+        - unique_id
+        - created_at
+        - updated_at
+        - account_id
+        - id
+        - resource_id
+        - tenant
+      filter:
+        _and:
+          - tenant:
+              _eq: X-Hasura-User-Tenant-Id
+          - account_id:
+              _in: x-hasura-user-account-ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - applications
+        - rule
+        - severity
+        - source
+        - status
+        - title
+        - type
+        - unique_id
+        - created_at
+        - updated_at
+        - account_id
+        - id
+        - resource_id
+        - tenant
+      filter:
+        _and:
+          - tenant:
+              _eq: X-Hasura-User-Tenant-Id
+          - account_id:
+              _in: x-hasura-user-readonly-account-ids
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - account_id
+        - applications
+        - created_at
+        - id
+        - resource_id
+        - rule
+        - severity
+        - source
+        - status
+        - tenant
+        - title
+        - type
+        - unique_id
+        - updated_at
+      filter:
+        _and:
+          - tenant:
+              _eq: X-Hasura-User-Tenant-Id
+          - account_id:
+              _in: x-hasura-user-namespaced-account-ids
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - applications
+        - rule
+        - severity
+        - source
+        - status
+        - title
+        - type
+        - unique_id
+        - created_at
+        - updated_at
+        - account_id
+        - id
+        - resource_id
+        - tenant
+      filter:
+        _and:
+          - tenant:
+              _eq: X-Hasura-User-Tenant-Id
+          - account_id:
+              _in: x-hasura-user-namespaced-readonly-account-ids
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - account_id
+        - applications
+        - created_at
+        - id
+        - resource_id
+        - rule
+        - severity
+        - source
+        - status
+        - tenant
+        - title
+        - type
+        - unique_id
+        - updated_at
+      filter:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - account_id
+        - applications
+        - created_at
+        - id
+        - resource_id
+        - rule
+        - severity
+        - source
+        - status
+        - tenant
+        - title
+        - type
+        - unique_id
+        - updated_at
+      filter:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""

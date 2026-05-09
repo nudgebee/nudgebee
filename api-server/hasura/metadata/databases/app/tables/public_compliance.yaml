@@ -1,0 +1,3 @@
+table:
+  name: compliance
+  schema: public

@@ -1,0 +1,13 @@
+table:
+  name: auto_optimize_resource_map
+  schema: public
+object_relationships:
+- name: auto_pilot
+  using:
+    foreign_key_constraint_on: auto_optimize_id
+- name: cloud_account
+  using:
+    foreign_key_constraint_on: account_id
+- name: tenant
+  using:
+    foreign_key_constraint_on: tenant_id

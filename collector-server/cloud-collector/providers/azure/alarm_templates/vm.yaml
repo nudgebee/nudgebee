@@ -1,0 +1,100 @@
+# Azure VM Metric Alert Recommendations
+# Based on Azure best practices for Virtual Machine monitoring
+service_name: "vm"
+
+templates:
+  - name: "azure_vm_cpu_utilization_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "High CPU utilization can indicate resource constraints or inefficient application code. Sustained high CPU on Azure VMs may also exhaust burstable credits on B-series instances."
+    configuration:
+      namespace: "Microsoft.Compute/virtualMachines"
+      metric_name: "Percentage CPU"
+      statistic: "Average"
+      period: 300
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 80.0
+      by_instance_family:
+        # Burstable instances - alert earlier (CPU credits can be exhausted)
+        B: 70.0
+        # Compute-optimized - can handle higher CPU
+        F: 85.0
+        Fs: 85.0
+        FX: 85.0
+        # General purpose
+        D: 80.0
+        Ds: 80.0
+        Da: 80.0
+        # Memory optimized - can run higher CPU
+        E: 85.0
+        Es: 85.0
+        Ea: 85.0
+        M: 85.0
+        # Storage optimized
+        L: 80.0
+        Ls: 80.0
+
+  - name: "azure_vm_available_memory_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Low available memory can cause swapping, severe performance degradation, and application crashes. Azure VMs do not auto-scale memory."
+    configuration:
+      namespace: "Microsoft.Compute/virtualMachines"
+      metric_name: "Available Memory Bytes"
+      statistic: "Average"
+      period: 300
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "LessThanThreshold"
+      treat_missing_data: "breaching"
+    threshold_rules:
+      default_percentage: 0.15
+      minimum_bytes: 536870912
+
+  - name: "azure_vm_os_disk_iops_consumed_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "High OS disk IOPS consumption indicates the VM is approaching disk throughput limits, which can cause I/O throttling and degraded performance."
+    configuration:
+      namespace: "Microsoft.Compute/virtualMachines"
+      metric_name: "OS Disk IOPS Consumed Percentage"
+      statistic: "Average"
+      period: 300
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 90.0
+
+  - name: "azure_vm_data_disk_iops_consumed_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "CONDITIONAL"
+    category: "Configuration"
+    severity: "Medium"
+    description: "High data disk IOPS consumption indicates the VM is approaching data disk throughput limits, risking I/O throttling for application workloads."
+    configuration:
+      namespace: "Microsoft.Compute/virtualMachines"
+      metric_name: "Data Disk IOPS Consumed Percentage"
+      statistic: "Average"
+      period: 300
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 90.0
+    conditions:
+      - field: "Meta.properties.storageProfile.dataDisks"
+        operator: "exists"
+        logic: "AND"

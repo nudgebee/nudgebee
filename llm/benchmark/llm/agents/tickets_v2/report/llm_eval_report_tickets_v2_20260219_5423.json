@@ -1,0 +1,59 @@
+{
+    "details": [
+        {
+            "query": "Fetch ticket details for IN-20",
+            "retrieved_contexts": [
+                "{\"operation_type\": \"get_ticket\", \"reference_id\": \"IN-20\"}"
+            ],
+            "expected_contexts": [
+                "{\"operation_type\": \"get_ticket\", \"ticket_id\": \"IN-20\"}"
+            ],
+            "ground_truth": "{\"operation_type\": \"get_ticket\", \"ticket_id\": \"IN-20\", \"source\": \"jira\"}{\"operation_type\": \"get_ticket\", \"ticket_id\": \"IN-20\", \"source\": \"jira\"}{\"operation_type\": \"get_ticket\", \"ticket_id\": \"IN-20\"}",
+            "answer_similarity": 87.85,
+            "answer_relevancy": 79.48
+        },
+        {
+            "query": "add comment for ticket IN-20 - \"looks good\" and  then list all comments",
+            "retrieved_contexts": [
+                "{\"operation_type\": \"add_comment\", \"ticket_id\": \"IN-20\", \"comment_text\": \"looks good\"}"
+            ],
+            "expected_contexts": [
+                "{\"operation_type\": \"add_comment\", \"ticket_id\": \"IN-20\", \"comment\": \"looks good\"}"
+            ],
+            "ground_truth": "{\"operation_type\": \"add_comment\", \"ticket_id\": \"IN-20\", \"comment\": \"looks good\", \"source\": \"jira\"}{\"operation_type\": \"add_comment\", \"ticket_id\": \"IN-20\", \"comment\": \"looks good\", \"source\": \"jira\"}{\"operation_type\": \"add_comment\", \"ticket_id\": \"IN-20\", \"comment\": \"looks good\"}",
+            "answer_similarity": 92.74,
+            "answer_relevancy": 83.4
+        },
+        {
+            "query": "Fetch ticket details for GitHub issue #24306 in nudgebee/nudgebee",
+            "retrieved_contexts": [
+                "{\"operation_type\": \"get_ticket\", \"reference_id\": \"24306\", \"source\": \"github\"}"
+            ],
+            "expected_contexts": [
+                "{\"operation_type\": \"get_ticket\", \"ticket_id\": \"24306\"}"
+            ],
+            "ground_truth": "{\"operation_type\": \"get_ticket\", \"ticket_id\": \"24306\", \"source\": \"github\"}{\"operation_type\": \"get_ticket\", \"ticket_id\": \"#24306\", \"source\": \"github\"}{\"operation_type\": \"get_ticket\", \"ticket_id\": \"24306\"}",
+            "answer_similarity": 95.19,
+            "answer_relevancy": 80.32
+        },
+        {
+            "query": "add comment for GitHub issue #24306 - looks good in nudgebee/nudgebee  and  then list all comments",
+            "retrieved_contexts": [
+                "{\"operation_type\": \"add_comment\", \"ticket_id\": \"nudgebee/nudgebee #24306\", \"comment_text\": \"looks good in nudgebee/nudgebee\"}"
+            ],
+            "expected_contexts": [
+                "{\"operation_type\": \"add_comment\", \"ticket_id\": \"24306\", \"comment\": \"looks good\"}"
+            ],
+            "ground_truth": "{\"operation_type\": \"add_comment\", \"ticket_id\": \"24306\", \"comment\": \"looks good\", \"source\": \"github\"}{\"operation_type\": \"add_comment\", \"ticket_id\": \"#24306\", \"comment\": \"looks good\", \"source\": \"github\"}{\"operation_type\": \"add_comment\", \"ticket_id\": \"24306\", \"comment\": \"looks good\"}",
+            "answer_similarity": 93.25,
+            "answer_relevancy": 82.26
+        }
+    ],
+    "summary": {
+        "total_queries": 4,
+        "answer_similarity": 92.26,
+        "answer_relevancy": 81.36,
+        "overall_accuracy": 86.81,
+        "failed_indices_after_retries": []
+    }
+}

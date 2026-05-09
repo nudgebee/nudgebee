@@ -1,0 +1,6 @@
+user_prompt: Create an Athena workgroup.
+expected_output:
+- aws athena create-work-group --name <workgroup-name> --configuration <configuration>
+tags:
+- command
+- aws

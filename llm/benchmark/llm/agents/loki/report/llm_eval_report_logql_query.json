@@ -1,0 +1,468 @@
+{
+    "Total Queries": 25,
+    "Metrics": {
+        "context_recall": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "context_precision": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "faithfulness": [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+        ],
+        "answer_relevancy": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+        ]
+    },
+    "Evaluations": [
+        {
+            "query": "How do I get all logs for nginx pod?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "{pod=\"nginx\"}"
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "{pod=\"nginx\"}",
+                    "{namespace=\"default\"} |= \"nginx\""
+                ]
+            ]
+        },
+        {
+            "query": "How can I fetch logs for production namespace?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "{namespace=\"production\"}"
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "{namespace=\"production\"}",
+                    "{job=\"kubernetes-logs\", namespace=\"production\"}"
+                ]
+            ]
+        },
+        {
+            "query": "What is the query to filter logs by a label frontend?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "{app=\"frontend\"}"
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "{app=\"frontend\"}",
+                    "{job=\"kubernetes-logs\"} |= \"frontend\""
+                ]
+            ]
+        },
+        {
+            "query": "How do I search logs containing a keyword 'error' for default namespace?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} |= \"error\""
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} |= \"error\"",
+                    "{namespace=\"default\"} |= \"error\""
+                ]
+            ]
+        },
+        {
+            "query": "How can I filter logs containing both 'error' and 'failed'?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} |= \"error\" |= \"failed\""
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} |= \"error\" |= \"failed\"",
+                    "{namespace=\"production\"} |= \"error\" |= \"failed\""
+                ]
+            ]
+        },
+        {
+            "query": "What query fetches logs that contain 'critical' but not 'debug'?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} |= \"critical\" != \"debug\""
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} |= \"critical\" != \"debug\""
+                ]
+            ]
+        },
+        {
+            "query": "How do I retrieve logs within the last 5 minutes?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} | timestamp >= now() - 5m"
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} | timestamp >= now() - 5m"
+                ]
+            ]
+        },
+        {
+            "query": "How do I count log occurrences containing 'timeout'?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "count_over_time({job=\"kubernetes-logs\"} |= \"timeout\" [10m])"
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "count_over_time({job=\"kubernetes-logs\"} |= \"timeout\" [10m])",
+                    "sum(count_over_time({namespace=\"staging\"} |= \"timeout\" [10m]))"
+                ]
+            ]
+        },
+        {
+            "query": "How can I check if a service is logging in the last hour?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "count_over_time({service=\"payments\"}[1h]) > 0"
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "count_over_time({service=\"payments\"}[1h]) > 0",
+                    "sum(count_over_time({job=\"kubernetes-logs\", service=\"payments\"}[1h])) > 0"
+                ]
+            ]
+        },
+        {
+            "query": "What is the average log volume per second for a pod?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "rate(count_over_time({pod=\"nginx\"}[5m]))"
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "rate(count_over_time({pod=\"nginx\"}[5m]))",
+                    "avg(rate(count_over_time({namespace=\"default\", pod=\"nginx\"}[5m])))"
+                ]
+            ]
+        },
+        {
+            "query": "How do I find logs where a JSON field equals 'error'?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} | json | level=\"error\""
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} | json | level=\"error\"",
+                    "{namespace=\"production\"} | json | level=\"error\""
+                ]
+            ]
+        },
+        {
+            "query": "What query filters logs where a JSON field is greater than 500?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} | json | response_time > 500"
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} | json | response_time > 500",
+                    "{namespace=\"production\"} | json | response_time > 500"
+                ]
+            ]
+        },
+        {
+            "query": "How do I get the top 10 services with the most logs?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "topk(10, count_over_time({job=\"kubernetes-logs\"}[5m]))"
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "topk(10, count_over_time({job=\"kubernetes-logs\"}[5m]))",
+                    "topk(10, count_over_time({namespace=\"default\"}[5m]))"
+                ]
+            ]
+        },
+        {
+            "query": "Which query finds logs with HTTP 500 errors?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} |= \"500\""
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} |= \"500\"",
+                    "{namespace=\"default\"} |= \"500\""
+                ]
+            ]
+        },
+        {
+            "query": "What is the query to find logs where a container restart happened?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} |= \"container restarted\""
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} |= \"container restarted\"",
+                    "{namespace=\"staging\"} |= \"container restarted\""
+                ]
+            ]
+        },
+        {
+            "query": "How can I find logs that match a regex pattern for errors?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} |~ \"(?i)error|fail\""
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} |~ \"(?i)error|fail\"",
+                    "{namespace=\"default\"} |~ \"(?i)error|fail\""
+                ]
+            ]
+        },
+        {
+            "query": "How do I count occurrences of the word 'timeout' over time?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "count_over_time({job=\"kubernetes-logs\"} |= \"timeout\" [1h])"
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "count_over_time({job=\"kubernetes-logs\"} |= \"timeout\" [1h])",
+                    "sum(count_over_time({namespace=\"default\"} |= \"timeout\" [1h]))"
+                ]
+            ]
+        },
+        {
+            "query": "How do I get the rate of logs per minute for a service?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "rate({job=\"kubernetes-logs\", service=\"auth\"}[1m])"
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "rate({job=\"kubernetes-logs\", service=\"auth\"}[1m])",
+                    "sum(rate({namespace=\"production\", service=\"auth\"}[1m]))"
+                ]
+            ]
+        },
+        {
+            "query": "Which query finds the slowest response times in logs?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} | json | sort_desc(response_time)"
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} | json | sort_desc(response_time)",
+                    "{namespace=\"production\"} | json | sort_desc(response_time)"
+                ]
+            ]
+        },
+        {
+            "query": "How do I find logs that contain 'OOMKilled'?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} |= \"OOMKilled\""
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} |= \"OOMKilled\"",
+                    "{namespace=\"staging\"} |= \"OOMKilled\""
+                ]
+            ]
+        },
+        {
+            "query": "What is the query to get logs from a specific node?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "{node=\"node-1\"}"
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "{node=\"node-1\"}",
+                    "{job=\"kubernetes-logs\", node=\"node-1\"}"
+                ]
+            ]
+        },
+        {
+            "query": "How can I filter logs where the log level is 'warning'?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} | json | level=\"warning\""
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} | json | level=\"warning\"",
+                    "{namespace=\"default\"} | json | level=\"warning\""
+                ]
+            ]
+        },
+        {
+            "query": "Which query finds logs where HTTP status code is greater than 499?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} | json | status_code > 499"
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} | json | status_code > 499",
+                    "{namespace=\"production\"} | json | status_code > 499"
+                ]
+            ]
+        },
+        {
+            "query": "How do I get logs that contain either 'panic' or 'fatal'?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} |= \"panic\" |= \"fatal\""
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} |= \"panic\" |= \"fatal\"",
+                    "{namespace=\"default\"} |= \"panic\" |= \"fatal\""
+                ]
+            ]
+        },
+        {
+            "query": "What is the query to check log volume for a specific container?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "count_over_time({container=\"nginx\"}[10m])"
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "count_over_time({container=\"nginx\"}[10m])",
+                    "sum(count_over_time({namespace=\"staging\", container=\"nginx\"}[10m]))"
+                ]
+            ]
+        }
+    ],
+    "Context Recall": 0.0,
+    "Context Precision": 0.0,
+    "Faithfulness": 0,
+    "Answer Relevancy": 0.0,
+    "Accuracy": 0.0
+}

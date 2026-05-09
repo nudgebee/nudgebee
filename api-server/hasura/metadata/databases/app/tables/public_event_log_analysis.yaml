@@ -1,0 +1,130 @@
+table:
+  name: event_log_analysis
+  schema: public
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - analysis_type
+        - analysis
+        - event_aggregation_key
+        - event_fingerprint
+        - status
+        - status_reason
+        - summary
+        - recorded_at
+        - updated_at
+        - cloud_account_id
+        - event_id
+        - id
+      filter:
+        cloud_account_id:
+          _in: X-Hasura-User-Account-Ids
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - analysis_type
+        - analysis
+        - event_aggregation_key
+        - event_fingerprint
+        - status
+        - status_reason
+        - summary
+        - recorded_at
+        - updated_at
+        - cloud_account_id
+        - event_id
+        - id
+      filter:
+        cloud_account_id:
+          _in: X-Hasura-User-Account-Ids
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - analysis_type
+        - analysis
+        - event_aggregation_key
+        - event_fingerprint
+        - status
+        - status_reason
+        - summary
+        - recorded_at
+        - updated_at
+        - cloud_account_id
+        - event_id
+        - id
+      filter:
+        cloud_account_id:
+          _in: x-hasura-user-namespaced-account-ids
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - analysis_type
+        - analysis
+        - event_aggregation_key
+        - event_fingerprint
+        - status
+        - status_reason
+        - summary
+        - recorded_at
+        - updated_at
+        - cloud_account_id
+        - event_id
+        - id
+      filter:
+        cloud_account_id:
+          _in: x-hasura-user-namespaced-account-ids
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - analysis
+        - analysis_type
+        - cloud_account_id
+        - event_aggregation_key
+        - event_fingerprint
+        - event_id
+        - recorded_at
+        - status
+        - status_reason
+        - summary
+        - updated_at
+      filter: {}
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - analysis_type
+        - analysis
+        - event_aggregation_key
+        - event_fingerprint
+        - status
+        - status_reason
+        - summary
+        - recorded_at
+        - updated_at
+        - cloud_account_id
+        - event_id
+        - id
+      filter: {}
+    comment: ""
+  - role: tenant_usage
+    permission:
+      columns:
+        - analysis_type
+        - analysis
+        - event_aggregation_key
+        - event_fingerprint
+        - status
+        - status_reason
+        - summary
+        - recorded_at
+        - updated_at
+        - cloud_account_id
+        - event_id
+        - id
+      filter: {}
+    comment: ""

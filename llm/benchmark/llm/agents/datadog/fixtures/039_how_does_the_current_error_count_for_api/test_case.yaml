@@ -1,0 +1,10 @@
+user_prompt: How does the current error count for api compare to the same time last
+  week?
+expected_output:
+- sum(rate({app="api"} |= "error"[5m])) / sum(rate({app="api"} |= "error"[5m] offset
+  1w))
+- count_over_time({job="worker"} |= "failed" [1h]) > count_over_time({job="worker"}
+  |= "failed" [1h] offset 7d)
+tags:
+- command
+- datadog

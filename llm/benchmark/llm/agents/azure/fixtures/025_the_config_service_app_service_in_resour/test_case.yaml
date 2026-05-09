@@ -1,0 +1,15 @@
+user_prompt: The config service App Service in resource group 'azure-agent-test-E05'
+  is getting 403 Forbidden when trying to fetch secrets from Key Vault. The app has
+  a managed identity enabled. What is missing?
+expected_output:
+- 'The App Service managed identity has no role assignment on Key Vault ''e05kv4iwx4yni''.
+  The Key Vault uses RBAC authorization, so the identity needs the ''Key Vault Secrets
+  User'' role (ID: 4633458b-17de-408a-b874-0445c86b69e0). Fix: Assign the Key Vault
+  Secrets User role to the App Service''s managed identity on the Key Vault.'
+agent: azure_debug
+scenario: E05
+type: rca
+tags:
+- rca
+- easy
+- azure

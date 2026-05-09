@@ -1,0 +1,131 @@
+table:
+  name: cloud_accounts
+  schema: public
+object_relationships:
+- name: cloudProviderByCloudProvider
+  using:
+    foreign_key_constraint_on: cloud_provider
+- name: cloud_account_status_type
+  using:
+    foreign_key_constraint_on: status
+- name: cloud_account_sync_status_type
+  using:
+    foreign_key_constraint_on: sync_status
+- name: tenantByTenant
+  using:
+    foreign_key_constraint_on: tenant
+- name: user
+  using:
+    foreign_key_constraint_on: created_by
+- name: userByUpdatedBy
+  using:
+    foreign_key_constraint_on: updated_by
+array_relationships:
+- name: agent_tasks
+  using:
+    foreign_key_constraint_on:
+      column: cloud_account_id
+      table:
+        name: agent_task
+        schema: public
+- name: agents
+  using:
+    foreign_key_constraint_on:
+      column: cloud_account_id
+      table:
+        name: agent
+        schema: public
+- name: cloud_account_attrs
+  using:
+    foreign_key_constraint_on:
+      column: cloud_account_id
+      table:
+        name: cloud_account_attrs
+        schema: public
+- name: cloud_resource_query_perves
+  using:
+    foreign_key_constraint_on:
+      column: account_id
+      table:
+        name: dw_queries
+        schema: public
+- name: cloud_resourses
+  using:
+    foreign_key_constraint_on:
+      column: account
+      table:
+        name: cloud_resourses
+        schema: public
+- name: events
+  using:
+    foreign_key_constraint_on:
+      column: cloud_account_id
+      table:
+        name: events
+        schema: public
+- name: k8s_nodes
+  using:
+    foreign_key_constraint_on:
+      column: cloud_account_id
+      table:
+        name: k8s_nodes
+        schema: public
+- name: k8s_pods
+  using:
+    foreign_key_constraint_on:
+      column: cloud_account_id
+      table:
+        name: k8s_pods
+        schema: public
+- name: project_accounts
+  using:
+    foreign_key_constraint_on:
+      column: account_id
+      table:
+        name: project_accounts
+        schema: public
+- name: recommendations
+  using:
+    foreign_key_constraint_on:
+      column: cloud_account_id
+      table:
+        name: recommendation
+        schema: public
+- name: spends
+  using:
+    foreign_key_constraint_on:
+      column: cloud_account
+      table:
+        name: spends
+        schema: public
+update_permissions:
+- role: tenant_admin
+  permission:
+    columns:
+    - access_key
+    - access_secret
+    - account_access
+    - account_name
+    - account_purpose
+    - account_type
+    - account_url
+    - assume_role
+    - billing_source
+    - budget
+    - cloud_provider
+    - data
+    - region
+    - start_date
+    - status
+    filter:
+      tenant:
+        _eq: X-Hasura-User-Tenant-Id
+    check: null
+    set:
+      updated_by: x-hasura-User-Id
+delete_permissions:
+- role: tenant_admin
+  permission:
+    filter:
+      tenant:
+        _eq: X-Hasura-User-Tenant-Id

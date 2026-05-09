@@ -1,0 +1,9 @@
+user_prompt: Count the number of requests per HTTP status code for the 'auth-service'
+  in the 'security' namespace over the last day.
+expected_output:
+- SELECT http_status_code, count(*) as count FROM traces_view WHERE workload_name
+  LIKE '%auth-service%' AND workload_namespace = 'security' AND timestamp >= now()
+  - interval 1 day GROUP BY http_status_code ORDER BY http_status_code;
+tags:
+- command
+- trace

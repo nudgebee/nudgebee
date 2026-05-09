@@ -1,0 +1,43 @@
+# Nudgebee GCP Deployment Manager Template
+# This template sets up Cloud Monitoring alert notifications via Pub/Sub
+# for real-time event streaming to Nudgebee cloud-collector service
+
+imports:
+  - path: nudgebee-gcp-deployment-manager.py
+
+resources:
+  # Pub/Sub Topic for Cloud Monitoring alerts
+  - name: nudgebee-monitoring-alerts-topic
+    type: nudgebee-gcp-deployment-manager.py
+    properties:
+      # Customer's unique Nudgebee account token (passed as deployment property)
+      nudgebeeAccountToken: $(ref.nudgebee-account-token.token)
+
+      # Nudgebee's GCP project where events are aggregated
+      nudgebeeProjectId: "nudgebee-prod"
+
+      # Nudgebee's Pub/Sub subscription (cross-project)
+      nudgebeeSubscriptionName: "nudgebee-customer-alerts"
+
+      # Topic name in customer's project
+      topicName: "nudgebee-cloud-monitoring-alerts"
+
+      # Filter for specific resource types (optional)
+      resourceTypes:
+        - "gce_instance"           # Compute Engine VMs
+        - "cloudsql_database"      # Cloud SQL instances
+        - "gcs_bucket"             # Cloud Storage buckets
+        - "gke_cluster"            # GKE clusters
+        - "cloud_run_revision"     # Cloud Run services
+        - "cloud_function"         # Cloud Functions
+        - "loadbalancer"           # Load Balancers
+        - "pubsub_topic"           # Pub/Sub topics
+        - "pubsub_subscription"    # Pub/Sub subscriptions
+
+outputs:
+  - name: topicName
+    value: $(ref.nudgebee-monitoring-alerts-topic.topicName)
+  - name: notificationChannelId
+    value: $(ref.nudgebee-monitoring-alerts-topic.notificationChannelId)
+  - name: subscriptionName
+    value: $(ref.nudgebee-monitoring-alerts-topic.subscriptionName)

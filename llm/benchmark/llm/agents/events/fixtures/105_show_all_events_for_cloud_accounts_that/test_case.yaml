@@ -1,0 +1,8 @@
+user_prompt: Show all events for cloud accounts that are marked as 'production' in
+  the 'accounts' table.
+expected_output:
+- SELECT e.* FROM events e JOIN accounts a ON e.cloud_account_id = a.id WHERE a.environment
+  = 'production';
+tags:
+- command
+- events

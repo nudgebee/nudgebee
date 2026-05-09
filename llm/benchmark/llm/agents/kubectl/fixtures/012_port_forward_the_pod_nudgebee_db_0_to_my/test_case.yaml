@@ -1,0 +1,6 @@
+user_prompt: Port forward the pod nudgebee-db-0 to my local machine.
+expected_output:
+- kubectl port-forward pod/<pod-name> 8080:80
+tags:
+- command
+- kubernetes

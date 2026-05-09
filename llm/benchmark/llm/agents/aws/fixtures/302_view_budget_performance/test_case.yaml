@@ -1,0 +1,6 @@
+user_prompt: View budget performance.
+expected_output:
+- aws budgets describe-budget-performance-history
+tags:
+- command
+- aws

@@ -1,0 +1,27 @@
+user_prompt: GuardDuty detects threats and we see findings in the console, but our
+  automated remediation Lambda 'h18-remediation' never fires. The EventBridge rule
+  'h18-threat-response' shows zero invocations even though GuardDuty is generating
+  EC2-related findings. We tested by generating a test finding and nothing happened.
+  The Lambda has proper permissions. Why isn't EventBridge triggering the Lambda?
+expected_output:
+- "The root cause is that the EventBridge rule 'h18-threat-response' has an incorrect\
+  \ event pattern that doesn't match GuardDuty finding events. The rule's event pattern\
+  \ filters on 'detail.findingType' but GuardDuty events use 'detail.type' for the\
+  \ finding type field. Additionally, the rule uses exact string matching for specific\
+  \ finding types like 'Recon:EC2/PortProbeUnprotectedPort', but GuardDuty finding\
+  \ types should be matched using prefix patterns since finding types can have version\
+  \ suffixes. The correct event pattern should filter on 'detail.type' (not\
+  \ 'detail.findingType') and use prefix matching like 'prefix: Recon:EC2' to catch\
+  \ all variants of EC2 reconnaissance findings. Because the field name is wrong, the\
+  \ event pattern never matches any GuardDuty events, so the rule never triggers the\
+  \ Lambda function."
+tags:
+- rca
+- aws
+- guardduty
+- eventbridge
+- security
+- event-pattern
+- hard
+type: rca
+agent: aws_debug

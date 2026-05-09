@@ -1,0 +1,170 @@
+table:
+  name: recommendation_resolution
+  schema: public
+object_relationships:
+  - name: recommendation
+    using:
+      foreign_key_constraint_on: recommendation_id
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - data
+        - resolver_id
+        - resolver_type
+        - status
+        - status_message
+        - type
+        - type_reference_id
+        - created_at
+        - updated_at
+        - id
+        - recommendation_id
+        - pr_iteration_count
+        - pr_lifecycle_state
+        - last_pr_check_at
+      filter:
+        _and:
+          - recommendation:
+              tenant_id:
+                _eq: X-Hasura-User-Tenant-Id
+          - recommendation:
+              cloud_account_id:
+                _in: X-Hasura-User-Account-Ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - data
+        - resolver_id
+        - resolver_type
+        - status
+        - status_message
+        - type
+        - type_reference_id
+        - created_at
+        - updated_at
+        - id
+        - recommendation_id
+        - pr_iteration_count
+        - pr_lifecycle_state
+        - last_pr_check_at
+      filter:
+        _and:
+          - recommendation:
+              tenant_id:
+                _eq: X-Hasura-User-Tenant-Id
+          - recommendation:
+              cloud_account_id:
+                _in: X-Hasura-User-Readonly-Account-Ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - data
+        - resolver_id
+        - resolver_type
+        - status
+        - status_message
+        - type
+        - type_reference_id
+        - created_at
+        - updated_at
+        - id
+        - recommendation_id
+        - pr_iteration_count
+        - pr_lifecycle_state
+        - last_pr_check_at
+      filter:
+        _and:
+          - recommendation:
+              tenant_id:
+                _eq: X-Hasura-User-Tenant-Id
+          - recommendation:
+              cloud_account_id:
+                _in: x-hasura-user-namespaced-account-ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - data
+        - resolver_id
+        - resolver_type
+        - status
+        - status_message
+        - type
+        - type_reference_id
+        - created_at
+        - updated_at
+        - id
+        - recommendation_id
+        - pr_iteration_count
+        - pr_lifecycle_state
+        - last_pr_check_at
+      filter:
+        _and:
+          - recommendation:
+              tenant_id:
+                _eq: X-Hasura-User-Tenant-Id
+          - recommendation:
+              cloud_account_id:
+                _in: x-hasura-user-namespaced-readonly-account-ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - data
+        - resolver_id
+        - resolver_type
+        - status
+        - status_message
+        - type
+        - type_reference_id
+        - created_at
+        - updated_at
+        - id
+        - recommendation_id
+        - pr_iteration_count
+        - pr_lifecycle_state
+        - last_pr_check_at
+      filter:
+        _and:
+          - recommendation:
+              tenant_id:
+                _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - data
+        - resolver_id
+        - resolver_type
+        - status
+        - status_message
+        - type
+        - type_reference_id
+        - created_at
+        - updated_at
+        - id
+        - recommendation_id
+        - pr_iteration_count
+        - pr_lifecycle_state
+        - last_pr_check_at
+      filter:
+        _and:
+          - recommendation:
+              tenant_id:
+                _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+    comment: ""

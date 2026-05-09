@@ -1,0 +1,16 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is that the Lambda function ''e12-order-processor'' has its API_ENDPOINT environment variable set to ''http://localhost:8080/api/orders''.
+  In AWS Lambda, localhost refers to the Lambda execution environment container itself — there is no service listening on
+  port 8080 inside the container. This is a leftover from local development configuration. The fix is to update the API_ENDPOINT
+  environment variable to the actual ALB endpoint or internal service URL: aws lambda update-function-configuration --function-name
+  e12-order-processor --environment Variables={API_ENDPOINT=https://actual-alb-endpoint.com/api/orders}.'
+scenario: E12
+tags:
+- command
+- aws
+- easy
+type: rca
+user_prompt: Our Lambda function 'e12-order-processor' in us-east-1 gets connection refused errors when calling our internal
+  API. The API is running fine on our ALB and responds to requests from other services. Can you investigate why this Lambda
+  can't connect?

@@ -1,0 +1,4 @@
+table:
+  name: ticket_source_table
+  schema: public
+is_enum: true

@@ -1,0 +1,110 @@
+table:
+  name: group_roles
+  schema: public
+object_relationships:
+  - name: user_group
+    using:
+      foreign_key_constraint_on: group_id
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - created_at
+        - created_by
+        - entity_id
+        - entity_type
+        - group_id
+        - id
+        - role
+        - updated_at
+      filter:
+        user_group:
+          tenant:
+            _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - created_at
+        - created_by
+        - entity_id
+        - entity_type
+        - group_id
+        - id
+        - role
+        - updated_at
+      filter:
+        user_group:
+          tenant:
+            _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - created_at
+        - created_by
+        - entity_id
+        - entity_type
+        - group_id
+        - id
+        - role
+        - updated_at
+      filter:
+        user_group:
+          tenant:
+            _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - created_at
+        - created_by
+        - entity_id
+        - entity_type
+        - group_id
+        - id
+        - role
+        - updated_at
+      filter:
+        user_group:
+          tenant:
+            _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - created_at
+        - created_by
+        - entity_id
+        - entity_type
+        - group_id
+        - id
+        - role
+        - updated_at
+      filter:
+        user_group:
+          tenant:
+            _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - created_at
+        - created_by
+        - entity_id
+        - entity_type
+        - group_id
+        - id
+        - role
+        - updated_at
+      filter:
+        user_group:
+          tenant:
+            _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""

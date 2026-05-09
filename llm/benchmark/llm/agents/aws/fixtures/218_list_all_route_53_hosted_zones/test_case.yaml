@@ -1,0 +1,6 @@
+user_prompt: List all Route 53 hosted zones.
+expected_output:
+- aws route53 list-hosted-zones
+tags:
+- command
+- aws

@@ -1,0 +1,12 @@
+global:
+  image: {}
+  imagePullSecrets: []
+
+image:
+  repository: registry.dev.nudgebee.pollux.in/app-e2e-tests
+  pullPolicy: IfNotPresent
+  tag: 'latest'
+imagePullSecrets:
+  - name: nudgebee-registry-secret
+
+secretName: nudgebee

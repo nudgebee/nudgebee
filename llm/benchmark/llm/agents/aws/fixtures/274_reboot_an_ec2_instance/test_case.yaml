@@ -1,0 +1,6 @@
+user_prompt: Reboot an EC2 instance.
+expected_output:
+- aws ec2 reboot-instances --instance-ids <instance-id>
+tags:
+- command
+- aws

@@ -1,0 +1,82 @@
+table:
+  name: notification_rule_mappings
+  schema: public
+insert_permissions:
+  - role: tenant_admin
+    permission:
+      check:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      set:
+        created_by: x-hasura-user-id
+        tenant_id: x-hasura-User-Tenant-Id
+        updated_by: x-hasura-user-id
+      columns:
+        - channels
+        - platform
+        - created_at
+        - updated_at
+        - created_by
+        - id
+        - rule_id
+        - tenant_id
+        - updated_by
+    comment: ""
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - channels
+        - platform
+        - created_at
+        - updated_at
+        - created_by
+        - id
+        - rule_id
+        - tenant_id
+        - updated_by
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - channels
+        - platform
+        - created_at
+        - updated_at
+        - created_by
+        - id
+        - rule_id
+        - tenant_id
+        - updated_by
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""
+update_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - channels
+        - platform
+        - rule_id
+        - updated_at
+        - updated_by
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      check: null
+      set:
+        created_by: x-hasura-user-id
+        tenant_id: x-hasura-User-Tenant-Id
+        updated_by: x-hasura-user-id
+    comment: ""
+delete_permissions:
+  - role: tenant_admin
+    permission:
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""

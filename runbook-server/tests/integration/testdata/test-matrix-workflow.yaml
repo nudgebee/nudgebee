@@ -1,0 +1,11 @@
+name: test-matrix-workflow
+definition:
+  triggers:
+    - type: manual
+  tasks:
+    - id: matrix-task
+      type: core.print
+      matrix:
+        fruit: [ "apple", "banana", "cherry" ]
+      params:
+        message: "{{ Matrix.fruit }}"

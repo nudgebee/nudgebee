@@ -1,0 +1,17 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is that the S3 bucket ''m09-app-configs-864186153326'' encrypts objects with a customer-managed KMS key
+  (alias/m09-config-bucket-key). When Lambda ''m09-config-loader'' calls s3:GetObject, S3 internally calls kms:Decrypt on
+  behalf of the Lambda role. The KMS key policy does not grant kms:Decrypt to the Lambda execution role ''m09-config-loader-role'',
+  so KMS denies the request with AccessDenied. The Lambda has correct s3:GetObject IAM permissions but lacks KMS key policy
+  authorization. The fix requires two changes: (1) add kms:Decrypt to the Lambda role''s IAM policy, and (2) add the Lambda
+  role to the KMS key policy with kms:Decrypt permission.'
+scenario: M09
+tags:
+- command
+- aws
+- medium
+type: rca
+user_prompt: Our config loader Lambda 'm09-config-loader' in us-east-1 fails with AccessDenied when reading configuration
+  files from S3 bucket 'm09-app-configs-864186153326'. The Lambda role 'm09-config-loader-role' has s3:GetObject on the bucket.
+  Other Lambdas reading the same bucket with different roles work fine. Why is this Lambda failing?

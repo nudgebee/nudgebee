@@ -1,0 +1,172 @@
+table:
+  name: llm_conversation_messages
+  schema: public
+object_relationships:
+  - name: llm_conversation
+    using:
+      foreign_key_constraint_on: conversation_id
+  - name: user
+    using:
+      foreign_key_constraint_on: user_id
+array_relationships:
+  - name: llm_conversation_agents
+    using:
+      foreign_key_constraint_on:
+        column: message_id
+        table:
+          name: llm_conversation_agent
+          schema: public
+  - name: llm_conversation_tool_calls
+    using:
+      foreign_key_constraint_on:
+        column: message_id
+        table:
+          name: llm_conversation_tool_calls
+          schema: public
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - account_id
+        - ack_message
+        - agent_name
+        - conversation_id
+        - created_at
+        - id
+        - message
+        - message_config
+        - message_context
+        - message_type
+        - parent_agent_id
+        - response
+        - role
+        - status
+        - updated_at
+        - user_id
+      filter:
+        account_id:
+          _in: X-Hasura-User-Account-Ids
+      limit: 100
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - account_id
+        - ack_message
+        - agent_name
+        - conversation_id
+        - created_at
+        - id
+        - message
+        - message_config
+        - message_context
+        - message_type
+        - parent_agent_id
+        - response
+        - role
+        - status
+        - updated_at
+        - user_id
+      filter:
+        account_id:
+          _in: X-Hasura-User-Readonly-Account-Ids
+      limit: 100
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - account_id
+        - ack_message
+        - agent_name
+        - conversation_id
+        - created_at
+        - id
+        - message
+        - message_config
+        - message_context
+        - message_type
+        - parent_agent_id
+        - response
+        - role
+        - status
+        - updated_at
+        - user_id
+      filter:
+        account_id:
+          _in: x-hasura-user-namespaced-account-ids
+      limit: 100
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - account_id
+        - ack_message
+        - agent_name
+        - conversation_id
+        - created_at
+        - id
+        - message
+        - message_config
+        - message_context
+        - message_type
+        - parent_agent_id
+        - response
+        - role
+        - status
+        - updated_at
+        - user_id
+      filter:
+        account_id:
+          _in: x-hasura-user-namespaced-readonly-account-ids
+      limit: 100
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - account_id
+        - ack_message
+        - agent_name
+        - conversation_id
+        - created_at
+        - id
+        - message
+        - message_config
+        - message_context
+        - message_type
+        - parent_agent_id
+        - response
+        - role
+        - status
+        - updated_at
+        - user_id
+      filter:
+        llm_conversation:
+          tenant_id:
+            _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - account_id
+        - ack_message
+        - agent_name
+        - conversation_id
+        - created_at
+        - id
+        - message
+        - message_config
+        - message_context
+        - message_type
+        - parent_agent_id
+        - response
+        - role
+        - status
+        - updated_at
+        - user_id
+      filter:
+        llm_conversation:
+          tenant_id:
+            _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+    comment: ""

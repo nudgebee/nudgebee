@@ -1,0 +1,7 @@
+user_prompt: List pods in the nudgebee namespace.
+expected_output:
+- kubectl get pods -n <namespace>
+- kubectl get po -n <namespace>
+tags:
+- command
+- kubernetes

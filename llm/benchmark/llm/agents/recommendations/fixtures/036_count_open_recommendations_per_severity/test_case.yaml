@@ -1,0 +1,7 @@
+user_prompt: Count 'Open' recommendations per severity level.
+expected_output:
+- SELECT severity, COUNT(*) AS open_count from recommendation_view WHERE status =
+  'Open' GROUP BY severity ORDER BY open_count DESC;
+tags:
+- command
+- recommendations

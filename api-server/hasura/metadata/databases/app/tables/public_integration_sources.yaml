@@ -1,0 +1,46 @@
+table:
+  name: integration_sources
+  schema: public
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - description
+        - value
+      filter: {}
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - description
+        - value
+      filter: {}
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - description
+        - value
+      filter: {}
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - description
+        - value
+      filter: {}
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - description
+        - value
+      filter: {}
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - description
+        - value
+      filter: {}
+    comment: ""

@@ -1,0 +1,26 @@
+# Nudgebee GCP Cloud Monitoring Integration
+# Deploys Pub/Sub topic and notification channel for real-time alert monitoring
+#
+# Deploy via:
+# gcloud deployment-manager deployments create nudgebee-monitoring \
+#   --config nudgebee-gcp-monitoring-setup.yaml \
+#   --project YOUR_PROJECT_ID
+
+imports:
+  - path: nudgebee-gcp-template.jinja
+
+resources:
+  - name: nudgebee-monitoring-integration
+    type: nudgebee-gcp-template.jinja
+    properties:
+      # REPLACE THIS with your Nudgebee Account Token (from Nudgebee dashboard)
+      nudgebeeAccountToken: PASTE_YOUR_TOKEN_HERE
+
+      # Nudgebee's GCP project (DO NOT CHANGE)
+      nudgebeeProjectId: nudgebee-prod
+
+      # Topic name in your project (can customize if needed)
+      topicName: nudgebee-cloud-monitoring-alerts
+
+      # Subscription name in Nudgebee's project (DO NOT CHANGE)
+      nudgebeeSubscriptionName: nudgebee-customer-alerts

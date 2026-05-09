@@ -1,0 +1,214 @@
+table:
+  name: k8s_nodes
+  schema: public
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - cloud_account_id
+        - cloud_resource_id
+        - conditions
+        - cost
+        - cpu_allocatable
+        - cpu_capacity
+        - cpu_limits
+        - external_ip
+        - internal_ip
+        - is_active
+        - labels
+        - memory_allocatable
+        - memory_capacity
+        - memory_limits
+        - meta
+        - name
+        - node_creation_time
+        - node_flavor
+        - node_region
+        - node_type
+        - node_zone
+        - taints
+        - tenant_id
+        - updated_at
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: X-Hasura-User-Account-Ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - cloud_account_id
+        - cloud_resource_id
+        - conditions
+        - cost
+        - cpu_allocatable
+        - cpu_capacity
+        - cpu_limits
+        - external_ip
+        - internal_ip
+        - is_active
+        - labels
+        - memory_allocatable
+        - memory_capacity
+        - memory_limits
+        - meta
+        - name
+        - node_creation_time
+        - node_flavor
+        - node_region
+        - node_type
+        - node_zone
+        - taints
+        - tenant_id
+        - updated_at
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: X-Hasura-User-Readonly-Account-Ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - is_active
+        - cost
+        - cpu_allocatable
+        - cpu_capacity
+        - cpu_limits
+        - memory_allocatable
+        - memory_capacity
+        - memory_limits
+        - labels
+        - meta
+        - conditions
+        - external_ip
+        - internal_ip
+        - name
+        - node_flavor
+        - node_region
+        - node_type
+        - node_zone
+        - taints
+        - node_creation_time
+        - updated_at
+        - cloud_account_id
+        - cloud_resource_id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: x-hasura-user-namespaced-account-ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - is_active
+        - cost
+        - cpu_allocatable
+        - cpu_capacity
+        - cpu_limits
+        - memory_allocatable
+        - memory_capacity
+        - memory_limits
+        - labels
+        - meta
+        - conditions
+        - external_ip
+        - internal_ip
+        - name
+        - node_flavor
+        - node_region
+        - node_type
+        - node_zone
+        - taints
+        - node_creation_time
+        - updated_at
+        - cloud_account_id
+        - cloud_resource_id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - cloud_account_id:
+              _in: x-hasura-user-namespaced-readonly-account-ids
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - is_active
+        - cost
+        - cpu_allocatable
+        - cpu_capacity
+        - cpu_limits
+        - memory_allocatable
+        - memory_capacity
+        - memory_limits
+        - labels
+        - meta
+        - conditions
+        - external_ip
+        - internal_ip
+        - name
+        - node_flavor
+        - node_region
+        - node_type
+        - node_zone
+        - taints
+        - node_creation_time
+        - updated_at
+        - cloud_account_id
+        - cloud_resource_id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - is_active
+        - cost
+        - cpu_allocatable
+        - cpu_capacity
+        - cpu_limits
+        - memory_allocatable
+        - memory_capacity
+        - memory_limits
+        - labels
+        - meta
+        - conditions
+        - external_ip
+        - internal_ip
+        - name
+        - node_flavor
+        - node_region
+        - node_type
+        - node_zone
+        - taints
+        - node_creation_time
+        - updated_at
+        - cloud_account_id
+        - cloud_resource_id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+    comment: ""

@@ -1,0 +1,60 @@
+{
+    "details": [
+        {
+            "query": "The config service App Service in resource group 'azure-agent-test-E05' is getting 403 Forbidden when trying to fetch secrets from Key Vault. The app has a managed identity enabled. What is missing?",
+            "query_type": "rca",
+            "retrieved_command": "\nPlease execute the following commands using the `azure` tool to bypass the previous tool crashes:\n\n1. `az account show --query id --output tsv`\n   (To retrieve the current Subscription ID).\n\n2. `az resource show --resource-group azure-agent-test-E05 --name e05kv4iwx4yni --resource-type Microsoft.KeyVault/vaults`\n   (To inspect the Key Vault configuration, specifically `properties.enableRbacAuthorization` and `properties.accessPolicies`).\n\n3. `az rest --method get --uri /subscriptions/{subscriptionId}/resourceGroups/azure-agent-test-E05/providers/Microsoft.KeyVault/vaults/e05kv4iwx4yni/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01`\n   (Replace `{subscriptionId}` with the ID retrieved in step 1. This will list role assignments to check if the App Service identity has access).\n",
+            "retrieved_response": "\nPlease execute the following commands using the `azure` tool to bypass the previous tool crashes:\n\n1. `az account show --query id --output tsv`\n   (To retrieve the current Subscription ID).\n\n2. `az resource show --resource-group azure-agent-test-E05 --name e05kv4iwx4yni --resource-type Microsoft.KeyVault/vaults`\n   (To inspect the Key Vault configuration, specifically `properties.enableRbacAuthorization` and `properties.accessPolicies`).\n\n3. `az rest --method get --uri /subscriptions/{subscriptionId}/resourceGroups/azure-agent-test-E05/providers/Microsoft.KeyVault/vaults/e05kv4iwx4yni/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01`\n   (Replace `{subscriptionId}` with the ID retrieved in step 1. This will list role assignments to check if the App Service identity has access).\n",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-E05. App Service 'e05app4iwx4yni' has a system-assigned managed identity. Key Vault 'e05kv4iwx4yni' exists with RBAC authorization enabled. App setting KEY_VAULT_URI is correctly set. Secret reads return 403.",
+                "az webapp identity show --name e05app4iwx4yni --resource-group azure-agent-test-E05",
+                "az role assignment list --scope /subscriptions/19e207a9-769d-4afd-b261-10bbed2d43e8/resourceGroups/azure-agent-test-E05/providers/Microsoft.KeyVault/vaults/e05kv4iwx4yni"
+            ],
+            "ground_truth": "The App Service managed identity has no role assignment on Key Vault 'e05kv4iwx4yni'. The Key Vault uses RBAC authorization, so the identity needs the 'Key Vault Secrets User' role (ID: 4633458b-17de-408a-b874-0445c86b69e0). Fix: Assign the Key Vault Secrets User role to the App Service's managed identity on the Key Vault.",
+            "answer_similarity": 86.81,
+            "answer_relevancy": 67.97,
+            "rca_quality_score": 2.0,
+            "rca_quality_normalized": 40.0
+        },
+        {
+            "query": "Our media application in resource group 'azure-agent-test-E06' is getting 403 AuthorizationFailure errors when trying to read blobs from storage. The storage account exists and the container has public blob access. What is blocking access?",
+            "query_type": "rca",
+            "retrieved_command": "\n### Root Cause Analysis\nThe 403 AuthorizationFailure is caused by the **Storage Account Network Firewall** configuration.\n\nAlthough `AllowBlobPublicAccess` is set to `True`, the **Default Network Action** is set to **`Deny`**. In Azure Storage, network firewall rules take precedence over public access settings. Because the default action is \"Deny\", all traffic is blocked at the network layer before the public access setting is evaluated, unless the source IP or Virtual Network is explicitly whitelisted.\n\n### Findings & Evidence\n- **Storage Account:** `e06sap3wibvoy`\n- **Public Access Setting:** `True` (Confirmed in [Azure Tool - E1](#task-E1))\n- **Firewall Configuration:** `DefaultNetworkAction: Deny` (Found in [Azure Tool - E1](#task-E1))\n\n### Recommendations\nTo resolve this, you must modify the network settings of the storage account `e06sap3wibvoy`. Choose one of the following based on your security requirements:\n\n1.  **Allow Access from Specific Networks (Secure):** Keep the default action as `Deny` and add the specific IP addresses or Virtual Network subnets of your media application to the whitelist.\n2.  **Allow All Networks (Public):** Change the `DefaultNetworkAction` to `Allow` if the intention is to make the data truly public to the entire internet.\n    ```bash\n    az storage account update --name e06sap3wibvoy --resource-group azure-agent-test-E06 --default-action Allow\n    ```\n    ",
+            "retrieved_response": "\n### Root Cause Analysis\nThe 403 AuthorizationFailure is caused by the **Storage Account Network Firewall** configuration.\n\nAlthough `AllowBlobPublicAccess` is set to `True`, the **Default Network Action** is set to **`Deny`**. In Azure Storage, network firewall rules take precedence over public access settings. Because the default action is \"Deny\", all traffic is blocked at the network layer before the public access setting is evaluated, unless the source IP or Virtual Network is explicitly whitelisted.\n\n### Findings & Evidence\n- **Storage Account:** `e06sap3wibvoy`\n- **Public Access Setting:** `True` (Confirmed in [Azure Tool - E1](#task-E1))\n- **Firewall Configuration:** `DefaultNetworkAction: Deny` (Found in [Azure Tool - E1](#task-E1))\n\n### Recommendations\nTo resolve this, you must modify the network settings of the storage account `e06sap3wibvoy`. Choose one of the following based on your security requirements:\n\n1.  **Allow Access from Specific Networks (Secure):** Keep the default action as `Deny` and add the specific IP addresses or Virtual Network subnets of your media application to the whitelist.\n2.  **Allow All Networks (Public):** Change the `DefaultNetworkAction` to `Allow` if the intention is to make the data truly public to the entire internet.\n    ```bash\n    az storage account update --name e06sap3wibvoy --resource-group azure-agent-test-E06 --default-action Allow\n    ```\n    ",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-E06. Storage account exists with a public 'assets' container. Blob reads return 403 AuthorizationFailure. The storage account name starts with 'e06sa'.",
+                "az storage account show --resource-group azure-agent-test-E06 --query networkRuleSet",
+                "az storage account list --resource-group azure-agent-test-E06"
+            ],
+            "ground_truth": "The storage account has networkAcls.defaultAction=Deny with no IP rules or VNet rules configured. This blocks all public network access regardless of container-level public access settings. Fix: Change networkAcls.defaultAction to 'Allow', or add specific IP/VNet rules to permit legitimate access.",
+            "answer_similarity": 89.38,
+            "answer_relevancy": 82.07,
+            "rca_quality_score": 5.0,
+            "rca_quality_normalized": 100.0
+        },
+        {
+            "query": "ETL functions in the Function App in resource group 'azure-agent-test-E07' are being killed mid-execution after exactly 1 minute, even though they need up to 5 minutes to process large datasets. What configuration is causing this?",
+            "query_type": "rca",
+            "retrieved_command": "\nThe issue is caused by an explicit **`functionTimeout`** configuration setting that is overriding the default behavior of your hosting plan.\n\n### Root Cause Analysis\nBased on the infrastructure analysis, your Function App `e07funcke2jgrrx` is running on the **Y1 (Consumption)** App Service Plan `e07-etl-plan` [App Service Plan List - E11](#task-E11).\n\n*   **Standard Behavior:** On a Consumption plan, the default timeout is **5 minutes**, and the maximum allowable is **10 minutes**.\n*   **Observed Issue:** Since your functions are terminating at exactly 1 minute, the `functionTimeout` parameter has been manually set to `00:01:00`.\n\n### Resolution\nYou need to locate and update the timeout configuration. It is likely defined in one of two places:\n\n1.  **host.json** (Project root):\n    Look for the `functionTimeout` property.\n    ```json\n    {\n        \"functionTimeout\": \"00:05:00\"\n    }\n    ```\n    *Change `\"00:01:00\"` to `\"00:05:00\"` (or up to `\"00:10:00\"`).*\n\n2.  **Application Settings** (Azure Portal / Configuration):\n    Look for an environment variable named:\n    *   `AzureFunctionsJobHost__functionTimeout`\n    \n    *If this exists with a value of `00:01:00`, update it to `00:05:00`.*\n\n**Note:** On the Consumption plan, you cannot exceed `00:10:00`. If your ETL jobs require more than 10 minutes, you must upgrade to a Premium or Dedicated App Service Plan.\n",
+            "retrieved_response": "\nThe issue is caused by an explicit **`functionTimeout`** configuration setting that is overriding the default behavior of your hosting plan.\n\n### Root Cause Analysis\nBased on the infrastructure analysis, your Function App `e07funcke2jgrrx` is running on the **Y1 (Consumption)** App Service Plan `e07-etl-plan` [App Service Plan List - E11](#task-E11).\n\n*   **Standard Behavior:** On a Consumption plan, the default timeout is **5 minutes**, and the maximum allowable is **10 minutes**.\n*   **Observed Issue:** Since your functions are terminating at exactly 1 minute, the `functionTimeout` parameter has been manually set to `00:01:00`.\n\n### Resolution\nYou need to locate and update the timeout configuration. It is likely defined in one of two places:\n\n1.  **host.json** (Project root):\n    Look for the `functionTimeout` property.\n    ```json\n    {\n        \"functionTimeout\": \"00:05:00\"\n    }\n    ```\n    *Change `\"00:01:00\"` to `\"00:05:00\"` (or up to `\"00:10:00\"`).*\n\n2.  **Application Settings** (Azure Portal / Configuration):\n    Look for an environment variable named:\n    *   `AzureFunctionsJobHost__functionTimeout`\n    \n    *If this exists with a value of `00:01:00`, update it to `00:05:00`.*\n\n**Note:** On the Consumption plan, you cannot exceed `00:10:00`. If your ETL jobs require more than 10 minutes, you must upgrade to a Premium or Dedicated App Service Plan.\n",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-E07. Function App is on a Consumption (Y1) plan. Functions are processing batches of 1000 records. They are consistently killed after 60 seconds with a timeout exception. Default Consumption plan timeout is 5 minutes.",
+                "az functionapp config appsettings list --resource-group azure-agent-test-E07"
+            ],
+            "ground_truth": "The Function App has the app setting AzureFunctionsJobHost__functionTimeout=00:01:00 which overrides the default timeout and kills functions after 1 minute. Fix: Change AzureFunctionsJobHost__functionTimeout to '00:10:00' (or remove it to use the default 5-minute Consumption plan timeout).",
+            "answer_similarity": 91.33,
+            "answer_relevancy": 77.71,
+            "rca_quality_score": 4.0,
+            "rca_quality_normalized": 80.0
+        }
+    ],
+    "summary": {
+        "total_queries": 3,
+        "answer_similarity": 89.17,
+        "answer_relevancy": 75.92,
+        "overall_accuracy": 82.54,
+        "rca_scenarios_count": 3,
+        "avg_rca_quality_score": 73.33,
+        "failed_indices_after_retries": []
+    }
+}

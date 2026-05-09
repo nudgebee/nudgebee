@@ -1,0 +1,28 @@
+table:
+  name: spends_project_aggregate
+  schema: public
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - sum
+        - project_name
+        - cloud_account
+        - project_id
+        - tenant
+      filter:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - sum
+        - project_name
+        - cloud_account
+        - project_id
+        - tenant
+      filter:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true

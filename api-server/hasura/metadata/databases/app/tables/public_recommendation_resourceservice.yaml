@@ -1,0 +1,34 @@
+table:
+  name: recommendation_resourceservice
+  schema: public
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - total_resources
+        - estimated_savings
+        - account_name
+        - category
+        - rule_name
+        - service_name
+        - account_id
+        - tenant
+      filter:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - total_resources
+        - estimated_savings
+        - account_name
+        - category
+        - rule_name
+        - service_name
+        - account_id
+        - tenant
+      filter:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true

@@ -1,0 +1,6 @@
+user_prompt: Tag an EC2 instance.
+expected_output:
+- aws ec2 create-tags --resources <instance-id> --tags Key=Name,Value=<tag-value>
+tags:
+- command
+- aws

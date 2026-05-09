@@ -1,0 +1,58 @@
+# ElastiCache CloudWatch Alarm Recommendations
+# Based on AWS best practices for ElastiCache monitoring
+service_name: "elasticache"
+
+templates:
+  - name: "aws_elasticache_memory_usage_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "High memory usage in Redis/Memcached can cause evictions and performance issues"
+    configuration:
+      namespace: "AWS/ElastiCache"
+      metric_name: "DatabaseMemoryUsagePercentage"
+      statistic: "Average"
+      period: 300
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 90.0
+
+  - name: "aws_elasticache_freeable_memory_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Low freeable memory can indicate spike in connections or high memory pressure"
+    configuration:
+      namespace: "AWS/ElastiCache"
+      metric_name: "FreeableMemory"
+      statistic: "Average"
+      period: 300
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "LessThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 100000000  # 100 MB
+
+  - name: "aws_elasticache_connections_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "High connection count may indicate connection pool issues or connection leaks"
+    configuration:
+      namespace: "AWS/ElastiCache"
+      metric_name: "CurrConnections"
+      statistic: "Maximum"
+      period: 300
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 1000

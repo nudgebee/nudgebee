@@ -1,0 +1,10 @@
+table:
+  name: compliance_standard_check
+  schema: public
+object_relationships:
+  - name: compliance_check
+    using:
+      foreign_key_constraint_on: check_id
+  - name: compliance_standard
+    using:
+      foreign_key_constraint_on: standard_id

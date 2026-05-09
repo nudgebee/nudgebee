@@ -1,0 +1,30 @@
+table:
+  name: spends_amount_sum_daily_aggregate
+  schema: public
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - account_id
+        - amount
+        - business_unit
+        - created_at_date
+        - project_id
+        - tenant
+      filter:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - account_id
+        - amount
+        - business_unit
+        - created_at_date
+        - project_id
+        - tenant
+      filter:
+        tenant:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true

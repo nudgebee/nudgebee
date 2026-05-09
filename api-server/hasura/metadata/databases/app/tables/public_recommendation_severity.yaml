@@ -1,0 +1,11 @@
+table:
+  name: recommendation_severity
+  schema: public
+array_relationships:
+  - name: recommendations
+    using:
+      foreign_key_constraint_on:
+        column: severity
+        table:
+          name: recommendation
+          schema: public

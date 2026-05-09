@@ -1,0 +1,22 @@
+table:
+  name: upgrade_plan_steps
+  schema: public
+update_permissions:
+- role: account_admin
+  permission:
+    columns:
+    - status
+    filter:
+      account_id:
+        _in: X-Hasura-User-Account-Ids
+    check: null
+  comment: ''
+- role: tenant_admin
+  permission:
+    columns:
+    - status
+    filter:
+      tenant_id:
+        _eq: X-Hasura-User-Tenant-Id
+    check: null
+  comment: ''

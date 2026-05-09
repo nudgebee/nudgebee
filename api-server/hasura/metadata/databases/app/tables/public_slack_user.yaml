@@ -1,0 +1,3 @@
+table:
+  name: slack_user
+  schema: public

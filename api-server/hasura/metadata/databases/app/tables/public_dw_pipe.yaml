@@ -1,0 +1,42 @@
+table:
+  name: dw_pipe
+  schema: public
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - pipe_id
+        - database_name
+        - owner
+        - pipe_name
+        - schema_name
+        - table_name
+        - created_at
+        - deleted_at
+        - cloud_account_id
+        - id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - pipe_id
+        - database_name
+        - owner
+        - pipe_name
+        - schema_name
+        - table_name
+        - created_at
+        - deleted_at
+        - cloud_account_id
+        - id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+    comment: ""

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "E06: Storage Account networkAcls defaultAction=Deny with no allowed IPs or VNet rules. User complaint: Application gets 403 AuthorizationFailure when reading from storage. No shared plan needed."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "storageAccountName": "[concat('e06sa', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "networkDefaultAction": "[if(equals(parameters('scenarioMode'), 'Fixed'), 'Allow', 'Deny')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('storageAccountName')]",
+      "location": "[resourceGroup().location]",
+      "sku": { "name": "Standard_LRS" },
+      "kind": "StorageV2",
+      "tags": {
+        "Environment": "production",
+        "Team": "media",
+        "Purpose": "static-assets",
+        "Scenario": "E06",
+        "ScenarioMode": "[parameters('scenarioMode')]"
+      },
+      "properties": {
+        "allowBlobPublicAccess": true,
+        "minimumTlsVersion": "TLS1_2",
+        "supportsHttpsTrafficOnly": true,
+        "networkAcls": {
+          "defaultAction": "[variables('networkDefaultAction')]",
+          "bypass": "AzureServices",
+          "ipRules": [],
+          "virtualNetworkRules": []
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-01-01",
+      "name": "[concat(variables('storageAccountName'), '/default/assets')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+      ],
+      "properties": { "publicAccess": "Blob" }
+    }
+  ],
+  "outputs": {
+    "StorageAccountName": { "type": "string", "value": "[variables('storageAccountName')]" },
+    "NetworkDefaultAction": { "type": "string", "value": "[variables('networkDefaultAction')]" },
+    "BugNote": { "type": "string", "value": "Storage Account networkAcls.defaultAction=Deny with no IP/VNet allowlist - all public access blocked" },
+    "ScenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

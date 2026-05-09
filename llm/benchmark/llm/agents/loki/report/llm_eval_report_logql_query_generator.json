@@ -1,0 +1,1016 @@
+{
+    "Total Queries": 50,
+    "Metrics": {
+        "context_recall": [
+            0.0,
+            0.5,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.5,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.3333333333333333,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+        ],
+        "context_precision": [
+            0.0,
+            0.9999999999,
+            0.0,
+            0.0,
+            0.9999999999,
+            0.9999999999,
+            0.0,
+            0.9999999999,
+            0.0,
+            0.0,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.0,
+            0.9999999999,
+            0.9999999999,
+            0.9999999999,
+            0.0,
+            0.9999999999,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.9999999999,
+            0.0,
+            0.9999999999,
+            0.0,
+            0.9999999999,
+            0.0,
+            0.9999999999,
+            0.0,
+            0.0,
+            0.0,
+            0.9999999999,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.9999999999,
+            0.0,
+            0.0,
+            0.9999999999,
+            0.0,
+            0.0,
+            0.0,
+            0.9999999999,
+            0.9999999999
+        ],
+        "faithfulness": [
+            0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.3333333333333333,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+        ],
+        "answer_relevancy": [
+            0.0,
+            0.6381185370607104,
+            0.4469014299835549,
+            0.7564044666625721,
+            0.785189357395948,
+            0.7710323489567447,
+            0.5824962873495515,
+            0.7903281680504647,
+            0.0,
+            0.6623977447954054,
+            0.6583575505948224,
+            0.8247711596632582,
+            0.0,
+            0.813358321129552,
+            0.7802642753281588,
+            0.6960895249348359,
+            0.7278173974547949,
+            0.6502425763841793,
+            0.0,
+            0.8267301075317031,
+            0.6006599133331028,
+            0.6813324732128262,
+            0.5543979176818332,
+            0.758003152611593,
+            0.4315878963033393,
+            0.0,
+            0.5565921555075919,
+            0.40859317050012317,
+            0.0,
+            0.7528156460974945,
+            0.6588263031493833,
+            0.6987321248394859,
+            0.51691563536412,
+            0.4259960812819494,
+            0.0,
+            0.5906175381898338,
+            0.0,
+            0.6898889484847386,
+            0.5619751783356314,
+            0.5848335549410271,
+            0.42173746427919173,
+            0.6614355003659012,
+            0.0,
+            0.0,
+            0.0,
+            0.6308929762719074,
+            0.0,
+            0.7012973744053802,
+            0.6251167690478595,
+            0.7469042622221815
+        ]
+    },
+    "Evaluations": [
+        {
+            "query": "How do I get all logs for nginx pod?",
+            "retrieved_contexts": [],
+            "expected_contexts": [
+                "{pod=\"nginx\"}"
+            ],
+            "generated_answer": "",
+            "ground_truth": [
+                [
+                    "{pod=\"nginx\"}",
+                    "{namespace=\"default\"} |= \"nginx\""
+                ]
+            ]
+        },
+        {
+            "query": "How can I fetch logs for production namespace?",
+            "retrieved_contexts": [
+                "{namespace=\"production\"}"
+            ],
+            "expected_contexts": [
+                "{namespace=\"production\"}"
+            ],
+            "generated_answer": "{namespace=\"production\"}",
+            "ground_truth": [
+                [
+                    "{namespace=\"production\"}",
+                    "{job=\"kubernetes-logs\", namespace=\"production\"}"
+                ]
+            ]
+        },
+        {
+            "query": "What is the query to filter logs by a label frontend?",
+            "retrieved_contexts": [
+                "agent execution recovered: runtime error: invalid memory address or nil pointer dereference"
+            ],
+            "expected_contexts": [
+                "{app=\"frontend\"}"
+            ],
+            "generated_answer": "agent execution recovered: runtime error: invalid memory address or nil pointer dereference",
+            "ground_truth": [
+                [
+                    "{app=\"frontend\"}",
+                    "{job=\"kubernetes-logs\"} |= \"frontend\""
+                ]
+            ]
+        },
+        {
+            "query": "How do I search logs containing a keyword 'error' for default namespace?",
+            "retrieved_contexts": [
+                "{namespace=\"default\"} |~ \"(?i)error\""
+            ],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} |= \"error\""
+            ],
+            "generated_answer": "{namespace=\"default\"} |~ \"(?i)error\"",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} |= \"error\"",
+                    "{namespace=\"default\"} |= \"error\""
+                ]
+            ]
+        },
+        {
+            "query": "How can I filter logs containing both 'error' and 'failed'?",
+            "retrieved_contexts": [
+                "{} |= \"error\" |= \"failed\""
+            ],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} |= \"error\" |= \"failed\""
+            ],
+            "generated_answer": "{} |= \"error\" |= \"failed\"",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} |= \"error\" |= \"failed\"",
+                    "{namespace=\"production\"} |= \"error\" |= \"failed\""
+                ]
+            ]
+        },
+        {
+            "query": "What query fetches logs that contain 'critical' but not 'debug'?",
+            "retrieved_contexts": [
+                "{} |= \"critical\" != \"debug\""
+            ],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} |= \"critical\" != \"debug\""
+            ],
+            "generated_answer": "{} |= \"critical\" != \"debug\"",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} |= \"critical\" != \"debug\""
+                ]
+            ]
+        },
+        {
+            "query": "How do I retrieve logs within the last 5 minutes?",
+            "retrieved_contexts": [
+                "{\"error\":\"LogQL queries do not specify time ranges directly within the query string. Time ranges are typically set via API parameters or UI controls (e.g., 'last 5 minutes' in Grafana).\"}"
+            ],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} | timestamp >= now() - 5m"
+            ],
+            "generated_answer": "{\"error\":\"LogQL queries do not specify time ranges directly within the query string. Time ranges are typically set via API parameters or UI controls (e.g., 'last 5 minutes' in Grafana).\"}",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} | timestamp >= now() - 5m"
+                ]
+            ]
+        },
+        {
+            "query": "How do I count log occurrences containing 'timeout'?",
+            "retrieved_contexts": [
+                "count_over_time({} |= \"timeout\" [5m])"
+            ],
+            "expected_contexts": [
+                "count_over_time({job=\"kubernetes-logs\"} |= \"timeout\" [10m])"
+            ],
+            "generated_answer": "count_over_time({} |= \"timeout\" [5m])",
+            "ground_truth": [
+                [
+                    "count_over_time({job=\"kubernetes-logs\"} |= \"timeout\" [10m])",
+                    "sum(count_over_time({namespace=\"staging\"} |= \"timeout\" [10m]))"
+                ]
+            ]
+        },
+        {
+            "query": "How can I check if a service is logging in the last hour?",
+            "retrieved_contexts": [
+                "{\"error\":\"Please specify the service (e.g., app label) you want to check logs for.\"}"
+            ],
+            "expected_contexts": [
+                "count_over_time({service=\"payments\"}[1h]) > 0"
+            ],
+            "generated_answer": "{\"error\":\"Please specify the service (e.g., app label) you want to check logs for.\"}",
+            "ground_truth": [
+                [
+                    "count_over_time({service=\"payments\"}[1h]) > 0",
+                    "sum(count_over_time({job=\"kubernetes-logs\", service=\"payments\"}[1h])) > 0"
+                ]
+            ]
+        },
+        {
+            "query": "What is the average log volume per second for a pod?",
+            "retrieved_contexts": [
+                "{\"error\":\"Cannot generate a LogQL query for calculating average log volume per second. LogQL is for querying logs, not for metrics.\"}"
+            ],
+            "expected_contexts": [
+                "rate(count_over_time({pod=\"nginx\"}[5m]))"
+            ],
+            "generated_answer": "{\"error\":\"Cannot generate a LogQL query for calculating average log volume per second. LogQL is for querying logs, not for metrics.\"}",
+            "ground_truth": [
+                [
+                    "rate(count_over_time({pod=\"nginx\"}[5m]))",
+                    "avg(rate(count_over_time({namespace=\"default\", pod=\"nginx\"}[5m])))"
+                ]
+            ]
+        },
+        {
+            "query": "How do I find logs where a JSON field equals 'error'?",
+            "retrieved_contexts": [
+                "{} | json | level = \"error\""
+            ],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} | json | level=\"error\""
+            ],
+            "generated_answer": "{} | json | level = \"error\"",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} | json | level=\"error\"",
+                    "{namespace=\"production\"} | json | level=\"error\""
+                ]
+            ]
+        },
+        {
+            "query": "What query filters logs where a JSON field is greater than 500?",
+            "retrieved_contexts": [
+                "{} | json | value_field > 500"
+            ],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} | json | response_time > 500"
+            ],
+            "generated_answer": "{} | json | value_field > 500",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} | json | response_time > 500",
+                    "{namespace=\"production\"} | json | response_time > 500"
+                ]
+            ]
+        },
+        {
+            "query": "How do I get the top 10 services with the most logs?",
+            "retrieved_contexts": [
+                "{\"error\":\"This type of query requires advanced LogQL aggregation functions (e.g., topk, count_over_time) which are not supported by this tool's current capabilities for generating simple stream selectors.\"}"
+            ],
+            "expected_contexts": [
+                "topk(10, count_over_time({job=\"kubernetes-logs\"}[5m]))"
+            ],
+            "generated_answer": "{\"error\":\"This type of query requires advanced LogQL aggregation functions (e.g., topk, count_over_time) which are not supported by this tool's current capabilities for generating simple stream selectors.\"}",
+            "ground_truth": [
+                [
+                    "topk(10, count_over_time({job=\"kubernetes-logs\"}[5m]))",
+                    "topk(10, count_over_time({namespace=\"default\"}[5m]))"
+                ]
+            ]
+        },
+        {
+            "query": "Which query finds logs with HTTP 500 errors?",
+            "retrieved_contexts": [
+                "{} |= \"HTTP 500\""
+            ],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} |= \"500\""
+            ],
+            "generated_answer": "{} |= \"HTTP 500\"",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} |= \"500\"",
+                    "{namespace=\"default\"} |= \"500\""
+                ]
+            ]
+        },
+        {
+            "query": "What is the query to find logs where a container restart happened?",
+            "retrieved_contexts": [
+                "{} |~ \"(?i)restart|starting container|started container\""
+            ],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} |= \"container restarted\""
+            ],
+            "generated_answer": "{} |~ \"(?i)restart|starting container|started container\"",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} |= \"container restarted\"",
+                    "{namespace=\"staging\"} |= \"container restarted\""
+                ]
+            ]
+        },
+        {
+            "query": "How can I find logs that match a regex pattern for errors?",
+            "retrieved_contexts": [
+                "{} |~ \"(?i)error\""
+            ],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} |~ \"(?i)error|fail\""
+            ],
+            "generated_answer": "{} |~ \"(?i)error\"",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} |~ \"(?i)error|fail\"",
+                    "{namespace=\"default\"} |~ \"(?i)error|fail\""
+                ]
+            ]
+        },
+        {
+            "query": "How do I count occurrences of the word 'timeout' over time?",
+            "retrieved_contexts": [
+                "count_over_time({} |= \"timeout\" [5m])"
+            ],
+            "expected_contexts": [
+                "count_over_time({job=\"kubernetes-logs\"} |= \"timeout\" [1h])"
+            ],
+            "generated_answer": "count_over_time({} |= \"timeout\" [5m])",
+            "ground_truth": [
+                [
+                    "count_over_time({job=\"kubernetes-logs\"} |= \"timeout\" [1h])",
+                    "sum(count_over_time({namespace=\"default\"} |= \"timeout\" [1h]))"
+                ]
+            ]
+        },
+        {
+            "query": "How do I get the rate of logs per minute for a service?",
+            "retrieved_contexts": [
+                "rate({app=\"my-service\"}[1m])"
+            ],
+            "expected_contexts": [
+                "rate({job=\"kubernetes-logs\", service=\"auth\"}[1m])"
+            ],
+            "generated_answer": "rate({app=\"my-service\"}[1m])",
+            "ground_truth": [
+                [
+                    "rate({job=\"kubernetes-logs\", service=\"auth\"}[1m])",
+                    "sum(rate({namespace=\"production\", service=\"auth\"}[1m]))"
+                ]
+            ]
+        },
+        {
+            "query": "Which query finds the slowest response times in logs?",
+            "retrieved_contexts": [
+                "{\"error\":\"Finding the slowest response times requires parsing specific log fields and using aggregation functions, which is beyond the scope of basic LogQL filtering.\"}"
+            ],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} | json | sort_desc(response_time)"
+            ],
+            "generated_answer": "{\"error\":\"Finding the slowest response times requires parsing specific log fields and using aggregation functions, which is beyond the scope of basic LogQL filtering.\"}",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} | json | sort_desc(response_time)",
+                    "{namespace=\"production\"} | json | sort_desc(response_time)"
+                ]
+            ]
+        },
+        {
+            "query": "How do I find logs that contain 'OOMKilled'?",
+            "retrieved_contexts": [
+                "{} |= \"OOMKilled\""
+            ],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} |= \"OOMKilled\""
+            ],
+            "generated_answer": "{} |= \"OOMKilled\"",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} |= \"OOMKilled\"",
+                    "{namespace=\"staging\"} |= \"OOMKilled\""
+                ]
+            ]
+        },
+        {
+            "query": "What is the query to get logs from a specific node?",
+            "retrieved_contexts": [
+                "{\"error\":\"Node name not provided. Please specify a node name.\"}"
+            ],
+            "expected_contexts": [
+                "{node=\"node-1\"}"
+            ],
+            "generated_answer": "{\"error\":\"Node name not provided. Please specify a node name.\"}",
+            "ground_truth": [
+                [
+                    "{node=\"node-1\"}",
+                    "{job=\"kubernetes-logs\", node=\"node-1\"}"
+                ]
+            ]
+        },
+        {
+            "query": "How can I filter logs where the log level is 'warning'?",
+            "retrieved_contexts": [
+                "{} |~ \"(?i)warning\""
+            ],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} | json | level=\"warning\""
+            ],
+            "generated_answer": "{} |~ \"(?i)warning\"",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} | json | level=\"warning\"",
+                    "{namespace=\"default\"} | json | level=\"warning\""
+                ]
+            ]
+        },
+        {
+            "query": "Which query finds logs where HTTP status code is greater than 499?",
+            "retrieved_contexts": [
+                "{\"error\":\"Advanced parsing and numerical comparisons on log line content are not supported by the demonstrated query types.\"}"
+            ],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} | json | status_code > 499"
+            ],
+            "generated_answer": "{\"error\":\"Advanced parsing and numerical comparisons on log line content are not supported by the demonstrated query types.\"}",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} | json | status_code > 499",
+                    "{namespace=\"production\"} | json | status_code > 499"
+                ]
+            ]
+        },
+        {
+            "query": "How do I get logs that contain either 'panic' or 'fatal'?",
+            "retrieved_contexts": [
+                "{} |~ \"(?i)panic|fatal\""
+            ],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\"} |= \"panic\" |= \"fatal\""
+            ],
+            "generated_answer": "{} |~ \"(?i)panic|fatal\"",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\"} |= \"panic\" |= \"fatal\"",
+                    "{namespace=\"default\"} |= \"panic\" |= \"fatal\""
+                ]
+            ]
+        },
+        {
+            "query": "What is the query to check log volume for a specific container?",
+            "retrieved_contexts": [
+                "agent execution recovered: runtime error: invalid memory address or nil pointer dereference"
+            ],
+            "expected_contexts": [
+                "count_over_time({container=\"nginx\"}[10m])"
+            ],
+            "generated_answer": "agent execution recovered: runtime error: invalid memory address or nil pointer dereference",
+            "ground_truth": [
+                [
+                    "count_over_time({container=\"nginx\"}[10m])",
+                    "sum(count_over_time({namespace=\"staging\", container=\"nginx\"}[10m]))"
+                ]
+            ]
+        },
+        {
+            "query": "How can I calculate the 99th percentile of request latency for my API?",
+            "retrieved_contexts": [
+                "{\"error\":\"This question is about calculating a metric (99th percentile) which typically requires advanced LogQL aggregation functions or a metrics system like Prometheus. The current tool is designed for generating LogQL queries to filter and retrieve log lines, not for complex metric calculations.\"}"
+            ],
+            "expected_contexts": [
+                "quantile_over_time(0.99, {service=\"api\"} | json | unwrap latency_ms [5m])"
+            ],
+            "generated_answer": "{\"error\":\"This question is about calculating a metric (99th percentile) which typically requires advanced LogQL aggregation functions or a metrics system like Prometheus. The current tool is designed for generating LogQL queries to filter and retrieve log lines, not for complex metric calculations.\"}",
+            "ground_truth": [
+                [
+                    "quantile_over_time(0.99, {service=\"api\"} | json | unwrap latency_ms [5m])",
+                    "quantile_over_time(0.99, {job=\"api-service\"} | logfmt | unwrap duration [10m])"
+                ]
+            ]
+        },
+        {
+            "query": "What is the error rate percentage for the checkout service?",
+            "retrieved_contexts": [
+                "{\"error\":\"LogQL cannot directly calculate error rate percentages. It is designed for querying and filtering log lines. Calculating a percentage requires metric aggregation and arithmetic operations, typically done with PromQL or Loki's metric queries (e.g., using `rate(count_over_time(...))`.\"}"
+            ],
+            "expected_contexts": [
+                "sum(rate({service=\"checkout\"} |= \"error\"[5m])) / sum(rate({service=\"checkout\"}[5m])) * 100"
+            ],
+            "generated_answer": "{\"error\":\"LogQL cannot directly calculate error rate percentages. It is designed for querying and filtering log lines. Calculating a percentage requires metric aggregation and arithmetic operations, typically done with PromQL or Loki's metric queries (e.g., using `rate(count_over_time(...))`.\"}",
+            "ground_truth": [
+                [
+                    "sum(rate({service=\"checkout\"} |= \"error\"[5m])) / sum(rate({service=\"checkout\"}[5m])) * 100",
+                    "(sum(count_over_time({app=\"checkout\",level=\"error\"}[10m])) / sum(count_over_time({app=\"checkout\"}[10m]))) * 100"
+                ]
+            ]
+        },
+        {
+            "query": "How do I see all Nginx logs originating from a private IP range?",
+            "retrieved_contexts": [
+                "agent execution recovered: runtime error: invalid memory address or nil pointer dereference"
+            ],
+            "expected_contexts": [
+                "{job=\"nginx\"} |~ \"10\\.0\\.\\d{1,3}\\.\\d{1,3}\""
+            ],
+            "generated_answer": "agent execution recovered: runtime error: invalid memory address or nil pointer dereference",
+            "ground_truth": [
+                [
+                    "{job=\"nginx\"} |~ \"10\\.0\\.\\d{1,3}\\.\\d{1,3}\"",
+                    "{app=\"nginx\"} |~ \"ip=10\\.0\\.[0-9]+\\.[0-9]+\""
+                ]
+            ]
+        },
+        {
+            "query": "How can I view application logs while excluding health check probes?",
+            "retrieved_contexts": [
+                "{\"error\":\"Please specify the application name (e.g., 'my-app') and a pattern to identify health check probes (e.g., 'health', 'probe', 'liveness', or a specific log level) to construct a query.\"}"
+            ],
+            "expected_contexts": [
+                "{app=\"my-app\"} !~ \"/health|/ready\""
+            ],
+            "generated_answer": "{\"error\":\"Please specify the application name (e.g., 'my-app') and a pattern to identify health check probes (e.g., 'health', 'probe', 'liveness', or a specific log level) to construct a query.\"}",
+            "ground_truth": [
+                [
+                    "{app=\"my-app\"} !~ \"/health|/ready\"",
+                    "{container=\"my-app\"} != \"GET /healthz\""
+                ]
+            ]
+        },
+        {
+            "query": "Can I get a count of web server logs grouped by HTTP status code?",
+            "retrieved_contexts": [
+                "{\"error\":\"Cannot group by HTTP status code without knowing how to parse the log lines to extract the status code.\"}"
+            ],
+            "expected_contexts": [
+                "sum by (status_code) (count_over_time({app=\"webserver\"} | json | unwrap status_code [10m]))"
+            ],
+            "generated_answer": "{\"error\":\"Cannot group by HTTP status code without knowing how to parse the log lines to extract the status code.\"}",
+            "ground_truth": [
+                [
+                    "sum by (status_code) (count_over_time({app=\"webserver\"} | json | unwrap status_code [10m]))",
+                    "sum by (status) (rate({job=\"nginx\"} | logfmt [5m]))"
+                ]
+            ]
+        },
+        {
+            "query": "Show logs from the default namespace but not from the 'test' deployment.",
+            "retrieved_contexts": [
+                "{namespace=\"default\", deployment!=\"test\"}"
+            ],
+            "expected_contexts": [
+                "{namespace=\"default\", deployment!=\"test\"}"
+            ],
+            "generated_answer": "{namespace=\"default\", deployment!=\"test\"}",
+            "ground_truth": [
+                [
+                    "{namespace=\"default\", deployment!=\"test\"}",
+                    "{namespace=\"default\"} |= \"info\" | deployment != \"test-runner\""
+                ]
+            ]
+        },
+        {
+            "query": "How can I reformat my logs to show only the timestamp and the message?",
+            "retrieved_contexts": [
+                "{\"error\":\"This question is about reformatting log output, which cannot be achieved with a LogQL query. LogQL is used for filtering and aggregating logs, not for controlling their display format.\"}"
+            ],
+            "expected_contexts": [
+                "{app=\"parser\"} | json | line_format \"{{.ts}} - {{.message}}\""
+            ],
+            "generated_answer": "{\"error\":\"This question is about reformatting log output, which cannot be achieved with a LogQL query. LogQL is used for filtering and aggregating logs, not for controlling their display format.\"}",
+            "ground_truth": [
+                [
+                    "{app=\"parser\"} | json | line_format \"{{.ts}} - {{.message}}\"",
+                    "{job=\"fluentd\"} | logfmt | line_format \"time={{.time}} level={{.level}} msg={{.msg}}\""
+                ]
+            ]
+        },
+        {
+            "query": "What are the 5 least frequent error messages in my application?",
+            "retrieved_contexts": [
+                "{\"error\":\"This query type requires aggregation and sorting capabilities not directly supported by simple LogQL queries. Please specify labels and/or keywords for filtering.\"}"
+            ],
+            "expected_contexts": [
+                "bottomk(5, sum by (msg) (count_over_time({app=\"backend\", level=\"error\"} | json [1h])))"
+            ],
+            "generated_answer": "{\"error\":\"This query type requires aggregation and sorting capabilities not directly supported by simple LogQL queries. Please specify labels and/or keywords for filtering.\"}",
+            "ground_truth": [
+                [
+                    "bottomk(5, sum by (msg) (count_over_time({app=\"backend\", level=\"error\"} | json [1h])))",
+                    "bottomk(5, count_over_time({job=\"api\"} |= \"error\" | regexp `msg=\"(?P<msg>.*)\"` [30m])) by (msg)"
+                ]
+            ]
+        },
+        {
+            "query": "Show me all database queries that took longer than 2 seconds.",
+            "retrieved_contexts": [
+                "agent execution recovered: runtime error: invalid memory address or nil pointer dereference"
+            ],
+            "expected_contexts": [
+                "{app=\"database\"} | logfmt | duration > 2s"
+            ],
+            "generated_answer": "agent execution recovered: runtime error: invalid memory address or nil pointer dereference",
+            "ground_truth": [
+                [
+                    "{app=\"database\"} | logfmt | duration > 2s",
+                    "{app=\"database\"} | json | latency_ms > 2000"
+                ]
+            ]
+        },
+        {
+            "query": "What is the total amount of data transferred by nginx in the last hour?",
+            "retrieved_contexts": [
+                "{\"error\":\"Calculating the total amount of data transferred requires parsing specific byte size fields from log lines and summing them, which is an advanced LogQL feature not covered by the provided examples or typical log filtering queries.\"}"
+            ],
+            "expected_contexts": [
+                "sum(sum_over_time({job=\"nginx\"} | logfmt | unwrap bytes_sent [1h]))"
+            ],
+            "generated_answer": "{\"error\":\"Calculating the total amount of data transferred requires parsing specific byte size fields from log lines and summing them, which is an advanced LogQL feature not covered by the provided examples or typical log filtering queries.\"}",
+            "ground_truth": [
+                [
+                    "sum(sum_over_time({job=\"nginx\"} | logfmt | unwrap bytes_sent [1h]))",
+                    "sum(bytes_over_time({job=\"nginx\"} | json | unwrap bytes_transferred [1h]))"
+                ]
+            ]
+        },
+        {
+            "query": "Find user login failures from Firefox browsers, excluding internal IPs.",
+            "retrieved_contexts": [
+                "{\"error\":\"Filtering by browser type and excluding specific IP ranges requires advanced log parsing and conditional logic not directly supported by basic LogQL line filtering.\"}"
+            ],
+            "expected_contexts": [
+                "{app=\"auth-service\"} |= \"login failed\" |~ \"Firefox/\\d+\" !~ \"10\\.0\\.\\d+\\.\\d+\""
+            ],
+            "generated_answer": "{\"error\":\"Filtering by browser type and excluding specific IP ranges requires advanced log parsing and conditional logic not directly supported by basic LogQL line filtering.\"}",
+            "ground_truth": [
+                [
+                    "{app=\"auth-service\"} |= \"login failed\" |~ \"Firefox/\\d+\" !~ \"10\\.0\\.\\d+\\.\\d+\"",
+                    "{job=\"auth\"} |= \"failure\" |= \"login\" |~ \"User-Agent\\s?=\\s?\\\".*Firefox.*\\\"\" !~ \"ip=10.0.\""
+                ]
+            ]
+        },
+        {
+            "query": "How can I count requests by HTTP method like GET or POST?",
+            "retrieved_contexts": [
+                "{\"error\":\"The request requires advanced LogQL features like parsing and aggregation (e.g., `sum by (method)`) which are not supported by the current query generation capabilities.\"}"
+            ],
+            "expected_contexts": [
+                "sum by (method) (count_over_time({job=\"ingress\"} | regexp `method=\"(?P<method>[A-Z]+)\"` [5m]))"
+            ],
+            "generated_answer": "{\"error\":\"The request requires advanced LogQL features like parsing and aggregation (e.g., `sum by (method)`) which are not supported by the current query generation capabilities.\"}",
+            "ground_truth": [
+                [
+                    "sum by (method) (count_over_time({job=\"ingress\"} | regexp `method=\"(?P<method>[A-Z]+)\"` [5m]))",
+                    "sum by (method) (rate({app=\"nginx\"} | regexp `method=(?P<method>\\w+)` [10m]))"
+                ]
+            ]
+        },
+        {
+            "query": "How do I find logs that are unusually long, over 1000 characters?",
+            "retrieved_contexts": [
+                "{\"error\":\"LogQL does not directly support filtering by log line length in a simple query. This typically requires advanced parsing and aggregation.\"}"
+            ],
+            "expected_contexts": [
+                "{app=\"importer\"} |~ \".{1000,}\""
+            ],
+            "generated_answer": "{\"error\":\"LogQL does not directly support filtering by log line length in a simple query. This typically requires advanced parsing and aggregation.\"}",
+            "ground_truth": [
+                [
+                    "{app=\"importer\"} |~ \".{1000,}\"",
+                    "{job=\"kubernetes-logs\"} |= \"import\" |~ \".{1000,}\""
+                ]
+            ]
+        },
+        {
+            "query": "How does the current error count compare to the same time last week?",
+            "retrieved_contexts": [
+                "{\"error\":\"This type of comparison query (current vs. last week) cannot be expressed as a single LogQL query. It typically requires two separate queries and external processing.\"}"
+            ],
+            "expected_contexts": [
+                "sum(rate({app=\"api\"} |= \"error\"[5m])) / sum(rate({app=\"api\"} |= \"error\"[5m] offset 1w))"
+            ],
+            "generated_answer": "{\"error\":\"This type of comparison query (current vs. last week) cannot be expressed as a single LogQL query. It typically requires two separate queries and external processing.\"}",
+            "ground_truth": [
+                [
+                    "sum(rate({app=\"api\"} |= \"error\"[5m])) / sum(rate({app=\"api\"} |= \"error\"[5m] offset 1w))",
+                    "count_over_time({job=\"worker\"} |= \"failed\" [1h]) > count_over_time({job=\"worker\"} |= \"failed\" [1h] offset 7d)"
+                ]
+            ]
+        },
+        {
+            "query": "Show me logs for all pods that are part of a canary release.",
+            "retrieved_contexts": [
+                "{release=\"canary\"}"
+            ],
+            "expected_contexts": [
+                "{pod=~\"my-app-canary-.+\"}"
+            ],
+            "generated_answer": "{release=\"canary\"}",
+            "ground_truth": [
+                [
+                    "{pod=~\"my-app-canary-.+\"}",
+                    "{namespace=\"production\", pod=~\"checkout-v2-.+\"}"
+                ]
+            ]
+        },
+        {
+            "query": "Extract the user ID from JSON logs and count events per user.",
+            "retrieved_contexts": [
+                "agent execution recovered: runtime error: invalid memory address or nil pointer dereference"
+            ],
+            "expected_contexts": [
+                "sum by (user_id) (count_over_time({app=\"frontend\"} | json [5m]))"
+            ],
+            "generated_answer": "agent execution recovered: runtime error: invalid memory address or nil pointer dereference",
+            "ground_truth": [
+                [
+                    "sum by (user_id) (count_over_time({app=\"frontend\"} | json [5m]))",
+                    "topk(10, sum by (user) (rate({job=\"api\"} | logfmt [10m])))"
+                ]
+            ]
+        },
+        {
+            "query": "Find logs that do not contain a UUID.",
+            "retrieved_contexts": [
+                "{} !~ \"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\""
+            ],
+            "expected_contexts": [
+                "{app=\"processor\"} !~ \"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\""
+            ],
+            "generated_answer": "{} !~ \"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\"",
+            "ground_truth": [
+                [
+                    "{app=\"processor\"} !~ \"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\"",
+                    "{job=\"worker\"} | json | correlation_id == \"\""
+                ]
+            ]
+        },
+        {
+            "query": "Calculate the average response time for requests that were not cached.",
+            "retrieved_contexts": [
+                "{\"error\":\"Insufficient information to build a LogQL query. Please provide application name, labels, and details on how 'response time' and 'cached' status are represented in the logs.\"}"
+            ],
+            "expected_contexts": [
+                "avg_over_time({app=\"cdn\"} | json | cached=\"false\" | unwrap response_time [10m])"
+            ],
+            "generated_answer": "{\"error\":\"Insufficient information to build a LogQL query. Please provide application name, labels, and details on how 'response time' and 'cached' status are represented in the logs.\"}",
+            "ground_truth": [
+                [
+                    "avg_over_time({app=\"cdn\"} | json | cached=\"false\" | unwrap response_time [10m])",
+                    "avg(sum_over_time({app=\"cdn\"} | logfmt | cache_hit!=true | unwrap duration [5m]))"
+                ]
+            ]
+        },
+        {
+            "query": "How many distinct IP addresses have accessed the login endpoint?",
+            "retrieved_contexts": [
+                "{\"error\":\"Cannot construct a LogQL query to count distinct IP addresses with the available tools/instructions, as it requires log parsing and distinct aggregation functions not covered.\"}"
+            ],
+            "expected_contexts": [
+                "count(count by (ip) (count_over_time({app=\"auth\"} | logfmt | path=\"/login\" [1h])))"
+            ],
+            "generated_answer": "{\"error\":\"Cannot construct a LogQL query to count distinct IP addresses with the available tools/instructions, as it requires log parsing and distinct aggregation functions not covered.\"}",
+            "ground_truth": [
+                [
+                    "count(count by (ip) (count_over_time({app=\"auth\"} | logfmt | path=\"/login\" [1h])))",
+                    "count(sum by(ip) (rate({job=\"nginx\"} |~\"POST /login\" [1h])))"
+                ]
+            ]
+        },
+        {
+            "query": "Show logs from pods not running on the primary node.",
+            "retrieved_contexts": [
+                "{\"error\":\"Cannot identify the 'primary node' without a specific node name or label value to exclude.\"}"
+            ],
+            "expected_contexts": [
+                "{job=\"kubernetes-logs\", node!=\"node-1\"}"
+            ],
+            "generated_answer": "{\"error\":\"Cannot identify the 'primary node' without a specific node name or label value to exclude.\"}",
+            "ground_truth": [
+                [
+                    "{job=\"kubernetes-logs\", node!=\"node-1\"}",
+                    "{app=\"database\"} | node != \"db-master-1\""
+                ]
+            ]
+        },
+        {
+            "query": "Format log lines to only show the error message and the pod it came from.",
+            "retrieved_contexts": [
+                "{\"error\":\"LogQL is for querying and filtering logs, not for formatting or projecting specific fields from log lines in the output. This functionality is typically handled by the client or visualization tool.\"}"
+            ],
+            "expected_contexts": [
+                "{level=\"error\"} | json | line_format \"Pod: {{.kubernetes.pod_name}} | Message: {{.message}}\""
+            ],
+            "generated_answer": "{\"error\":\"LogQL is for querying and filtering logs, not for formatting or projecting specific fields from log lines in the output. This functionality is typically handled by the client or visualization tool.\"}",
+            "ground_truth": [
+                [
+                    "{level=\"error\"} | json | line_format \"Pod: {{.kubernetes.pod_name}} | Message: {{.message}}\"",
+                    "{namespace=\"production\"} |= \"error\" | logfmt | line_format \"{{.pod}}: {{.msg}}\""
+                ]
+            ]
+        },
+        {
+            "query": "What is the maximum memory usage reported in application logs?",
+            "retrieved_contexts": [
+                "{\"error\":\"Cannot determine maximum memory usage without specific log format details (e.g., how memory usage is reported in log lines) and application context.\"}"
+            ],
+            "expected_contexts": [
+                "max_over_time({app=\"worker\"} | json | unwrap memory_usage_mb [1h])"
+            ],
+            "generated_answer": "{\"error\":\"Cannot determine maximum memory usage without specific log format details (e.g., how memory usage is reported in log lines) and application context.\"}",
+            "ground_truth": [
+                [
+                    "max_over_time({app=\"worker\"} | json | unwrap memory_usage_mb [1h])",
+                    "max(rate({job=\"java-app\"} | logfmt | unwrap heap_size [5m]))"
+                ]
+            ]
+        },
+        {
+            "query": "Find logs where the 'trace_id' label exists.",
+            "retrieved_contexts": [
+                "{trace_id=~\".*\"}"
+            ],
+            "expected_contexts": [
+                "{app=\"api\"} | json | trace_id != \"\""
+            ],
+            "generated_answer": "{trace_id=~\".*\"}",
+            "ground_truth": [
+                [
+                    "{app=\"api\"} | json | trace_id != \"\"",
+                    "{job=\"gateway\"} | logfmt | traceID != \"\""
+                ]
+            ]
+        },
+        {
+            "query": "Aggregate log counts by both namespace and application.",
+            "retrieved_contexts": [
+                "count_over_time({} [5m]) by (namespace, app)"
+            ],
+            "expected_contexts": [
+                "sum by (namespace, app) (rate({job=\"kubernetes-logs\"}[5m]))"
+            ],
+            "generated_answer": "count_over_time({} [5m]) by (namespace, app)",
+            "ground_truth": [
+                [
+                    "sum by (namespace, app) (rate({job=\"kubernetes-logs\"}[5m]))",
+                    "count_over_time({job!=\"\"}[10m]) by (namespace, app)"
+                ]
+            ]
+        },
+        {
+            "query": "Show logs containing HTTP status codes 401 or 403.",
+            "retrieved_contexts": [
+                "{} |~ \"401|403\""
+            ],
+            "expected_contexts": [
+                "{app=\"ingress\"} |~ \"(401|403)\""
+            ],
+            "generated_answer": "{} |~ \"401|403\"",
+            "ground_truth": [
+                [
+                    "{app=\"ingress\"} |~ \"(401|403)\"",
+                    "{job=\"nginx\"} | json | status_code > 400 and status_code < 404"
+                ]
+            ]
+        }
+    ],
+    "Context Recall": 6.666666666666667,
+    "Context Precision": 41.999999995799996,
+    "Faithfulness": 94.55782312925169,
+    "Answer Relevancy": 49.339302579405505,
+    "Accuracy": 48.14094809278097
+}

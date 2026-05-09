@@ -1,0 +1,3 @@
+table:
+  name: compliance_rule_executions
+  schema: public

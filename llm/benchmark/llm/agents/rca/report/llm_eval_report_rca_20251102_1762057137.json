@@ -1,0 +1,47 @@
+{
+    "details": [
+        {
+            "scenario_id": "product_catalog_failure",
+            "query": "Users are reporting they cannot browse products on the website. Investigate issues with the product-catalog deployment in nudgebee-demo namespace.",
+            "rca_response": "Hey there! \ud83d\udc4b Let's dive into why users can't browse products on the website. It looks like the `product-catalog` deployment in the `nudgebee-demo` namespace is having some trouble.\n\nHere's the breakdown:\n\n### The Big Picture \ud83e\uddd0\n\nUsers are experiencing issues browsing products because the `product-catalog` deployment isn't running any pods. We can see this because the deployment is reporting **0 desired, 0 available, and 0 total replicas**. Essentially, nothing is up and running for the product catalog service.\n\n### What's Going On? \ud83e\udd14\n\nThe main problem is that the `product-catalog` deployment just isn't creating any pods. Here's what points to that:\n\n*   **No Replicas Running:** As mentioned, the deployment consistently shows zero for desired, available, and total replicas.\n*   **ReplicaSet is Empty:** The associated ReplicaSet (`product-catalog-6c977d6465`) shows 0 out of 0 pods created. This means Kubernetes isn't successfully launching any pods based on the deployment's configuration.\n*   **Recent Change:** There was a `configuration_change` event recorded for this deployment right before the issue started. This suggests a recent update to its settings might be the culprit.\n*   **Can't Find Pods:** When we tried to look for pods using the expected label (`opentelemetry.io/name=product-catalog`), we couldn't find any. This confirms that no pods are currently active for this service.\n\n### Potential Reasons Why Pods Aren't Starting \u26a0\ufe0f\n\nThere are a few common reasons why a deployment might fail to create pods:\n\n*   **Deployment Configuration Errors:** There might be mistakes in the `product-catalog` deployment's YAML file. This could be issues with the container image name, how volumes are mounted, or incorrect resource limits.\n*   **Problematic ConfigMap:** The `product-catalog-products` ConfigMap, which the deployment needs to use, might be missing, malformed, or inaccessible. This could prevent the application inside the pod from starting.\n*   **Container Image Issues:** The container image specified (`ghcr.io/open-telemetry/demo:2.1.3-product-catalog`) could be invalid, unavailable, or corrupted.\n*   **Resource Limits:** The `nudgebee-demo` namespace might have resource quotas or limits that are preventing new pods from being scheduled.\n\nTo get this fixed, the next step would be to carefully check the `product-catalog` deployment's YAML and the `product-catalog-products` ConfigMap for any recent errors or changes. It would also be helpful to look for more specific pod creation events in Kubernetes.",
+            "ground_truth": "The productcatalogservice is failing when querying specific products, returning 500 errors due to the productCatalogFailure feature flag being enabled. This causes the frontend to display errors when users try to browse the product catalog.",
+            "expected_service": "productcatalogservice",
+            "signals_used": {
+                "logs": true,
+                "metrics": true,
+                "traces": false
+            },
+            "signal_coverage": 66.67,
+            "diagnosis_time_seconds": 118.84,
+            "answer_similarity": 73.33,
+            "answer_relevancy": 67.58
+        },
+        {
+            "scenario_id": "cart_service_failure",
+            "query": "Customers cannot add items to their shopping cart. Investigate the cart deployment in nudgebee-demo namespace.",
+            "rca_response": "Hey there! \ud83d\udc4b Let's dive into why customers might be having trouble adding items to their shopping cart. It looks like we need to investigate the 'cart' deployment in the `nudgebee-demo` namespace.\n\nHere's what the investigation turned up:\n\n### Summary of Findings \ud83d\udd0d\n\nIt seems like customers can't add items to their cart because the **'cart' service isn't available**. This is happening for a couple of key reasons:\n\n1.  **Kubernetes API Server Issues:** The biggest hurdle is that we can't even connect to the Kubernetes API server. When we tried to get details about the 'cart' deployment, we got an `i/o timeout` error. This is a pretty serious sign that there might be a problem with the core Kubernetes infrastructure, which means we can't manage or even check on our deployments. \ud83d\uded1\n2.  **'cart' Deployment and Pods Missing:** On top of the connectivity problem, it looks like the 'cart' deployment itself isn't running or isn't set up correctly. We couldn't find any pods with the label `app=cart`, and a tool that maps service dependencies didn't show the 'cart' deployment at all \u2013 it only showed information for `ingress-nginx`.\n\n### The Main Reason Why \ud83c\udfaf\n\nThe **Kubernetes API server being unavailable** is the root cause here. Because we can't reach it, we can't manage, scale, or even confirm if the 'cart' deployment is supposed to be running. This directly leads to the 'cart' service not functioning, and that's why customers can't add items. The fact that we're not finding 'cart' pods or deployment info are just symptoms of this bigger connectivity and potential configuration problem.\n\n### What We Should Do Next \u2705\n\nHere are the steps to get this sorted:\n\n1.  **Check the Kubernetes API Server:** First things first, we need to figure out why we can't connect to the Kubernetes API server in the `nudgebee-demo` namespace and get that fixed. \ud83d\udee0\ufe0f\n2.  **Verify the 'cart' Deployment:** Once the API server is back online and accessible, we should double-check the status of the 'cart' deployment. If it wasn't deployed or failed, we'll need to look into its configuration and logs for any errors. Make sure it has the correct `app=cart` label.\n3.  **Look at Network Rules:** It's also a good idea to check if any network policies or firewalls are preventing communication with the Kubernetes API server.",
+            "ground_truth": "The cartservice is experiencing failures due to the cartFailure feature flag being enabled. This prevents users from adding items to their cart and proceeding with checkout.",
+            "expected_service": "cartservice",
+            "signals_used": {
+                "logs": true,
+                "metrics": false,
+                "traces": false
+            },
+            "signal_coverage": 33.33,
+            "diagnosis_time_seconds": 123.4,
+            "answer_similarity": 75.3,
+            "answer_relevancy": 85.07
+        }
+    ],
+    "summary": {
+        "total_scenarios": 2,
+        "successful_scenarios": 2,
+        "failed_scenarios": 0,
+        "answer_similarity": 74.31,
+        "answer_relevancy": 76.32,
+        "overall_accuracy": 75.32,
+        "avg_signal_coverage": 50.0,
+        "avg_diagnosis_time_seconds": 121.12,
+        "failed_scenario_ids": []
+    }
+}

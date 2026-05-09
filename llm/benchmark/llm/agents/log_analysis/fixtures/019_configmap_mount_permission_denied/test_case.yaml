@@ -1,0 +1,16 @@
+user_prompt: |
+  2026-04-05T23:00:01.234Z INFO  [k8s-collector] Starting k8s-collector with config /etc/collector/config.yaml
+  2026-04-05T23:00:01.567Z ERROR [k8s-collector] Failed to read configuration file: open /etc/collector/config.yaml: permission denied
+  2026-04-05T23:00:01.568Z ERROR [k8s-collector] os.Open error: stat /etc/collector/config.yaml: permission denied (uid=1000, gid=1000, file_mode=0600, file_owner=0:0)
+  2026-04-05T23:00:01.569Z ERROR [k8s-collector] The config file exists but is owned by root (uid=0) and the container runs as non-root user (uid=1000)
+  2026-04-05T23:00:01.570Z INFO  [k8s-collector] Mount source: ConfigMap/k8s-collector-config, volume: config-volume
+  2026-04-05T23:00:01.571Z FATAL [k8s-collector] Cannot start collector without valid configuration. Exiting.
+  namespace: nudgebee, pod: k8s-collector-76bcfc4dfd-d9vpp, container: k8s-collector
+expected_output:
+  - The k8s-collector pod in the nudgebee namespace fails to start because it cannot read the configuration file at /etc/collector/config.yaml due to a permission denied error. The file is mounted from ConfigMap/k8s-collector-config and is owned by root (uid=0) with mode 0600, but the container runs as non-root user uid=1000. The root cause is a mismatch between the ConfigMap volume mount permissions and the container's security context. Suggested actions include setting defaultMode on the ConfigMap volume mount to 0644 in the deployment manifest, or adding an fsGroup in the pod's securityContext to allow the non-root user to read the mounted files.
+tags:
+  - configmap
+  - permissions
+  - security-context
+  - nudgebee
+type: log_analysis

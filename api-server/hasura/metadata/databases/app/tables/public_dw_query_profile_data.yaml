@@ -1,0 +1,32 @@
+table:
+  name: dw_query_profile_data
+  schema: public
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - cloud_account_id
+        - db_type
+        - id
+        - profile_data
+        - query_group_md5
+        - query_id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - cloud_account_id
+        - db_type
+        - id
+        - profile_data
+        - query_group_md5
+        - query_id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""

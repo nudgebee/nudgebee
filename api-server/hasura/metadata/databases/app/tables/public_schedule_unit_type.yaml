@@ -1,0 +1,17 @@
+table:
+  name: schedule_unit_type
+  schema: public
+is_enum: true
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - value
+      filter: {}
+      allow_aggregations: true
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - value
+      filter: {}
+      allow_aggregations: true

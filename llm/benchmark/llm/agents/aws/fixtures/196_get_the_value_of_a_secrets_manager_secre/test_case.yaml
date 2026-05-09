@@ -1,0 +1,6 @@
+user_prompt: Get the value of a Secrets Manager secret.
+expected_output:
+- aws secretsmanager get-secret-value --secret-id <secret-id>
+tags:
+- command
+- aws

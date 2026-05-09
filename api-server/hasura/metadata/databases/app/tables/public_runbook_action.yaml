@@ -1,0 +1,197 @@
+table:
+  name: runbook_action
+  schema: public
+object_relationships:
+  - name: runbook_action_library
+    using:
+      foreign_key_constraint_on: library_id
+  - name: runbook_action_status
+    using:
+      foreign_key_constraint_on: status
+  - name: user
+    using:
+      foreign_key_constraint_on: created_by
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - account_type
+        - action_name
+        - attributes
+        - base_action_configs
+        - configs
+        - created_at
+        - created_by
+        - description
+        - id
+        - internal_identifier
+        - is_system_action
+        - library_id
+        - status
+        - tenant_id
+        - updated_at
+      filter:
+        _or:
+          - tenant_id:
+              _eq: null
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - account_type
+        - action_name
+        - attributes
+        - base_action_configs
+        - configs
+        - created_at
+        - created_by
+        - description
+        - id
+        - internal_identifier
+        - is_system_action
+        - library_id
+        - status
+        - tenant_id
+        - updated_at
+      filter:
+        _or:
+          - tenant_id:
+              _eq: null
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - account_type
+        - action_name
+        - attributes
+        - base_action_configs
+        - configs
+        - created_at
+        - created_by
+        - description
+        - id
+        - internal_identifier
+        - is_system_action
+        - library_id
+        - status
+        - tenant_id
+        - updated_at
+      filter:
+        _or:
+          - tenant_id:
+              _eq: null
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - attributes
+        - base_action_configs
+        - configs
+        - account_type
+        - action_name
+        - description
+        - internal_identifier
+        - status
+        - created_at
+        - updated_at
+        - created_by
+        - id
+        - library_id
+        - tenant_id
+      filter:
+        _or:
+          - tenant_id:
+              _eq: null
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - account_type
+        - action_name
+        - attributes
+        - base_action_configs
+        - configs
+        - created_at
+        - created_by
+        - description
+        - id
+        - internal_identifier
+        - is_system_action
+        - library_id
+        - status
+        - tenant_id
+        - updated_at
+      filter:
+        _or:
+          - tenant_id:
+              _eq: null
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - account_type
+        - action_name
+        - attributes
+        - base_action_configs
+        - configs
+        - created_at
+        - created_by
+        - description
+        - id
+        - internal_identifier
+        - is_system_action
+        - library_id
+        - status
+        - tenant_id
+        - updated_at
+      filter:
+        _or:
+          - tenant_id:
+              _eq: null
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+      limit: 100
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_usage
+    permission:
+      columns:
+        - account_type
+        - action_name
+        - attributes
+        - base_action_configs
+        - configs
+        - created_at
+        - created_by
+        - description
+        - id
+        - internal_identifier
+        - is_system_action
+        - library_id
+        - status
+        - tenant_id
+        - updated_at
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""

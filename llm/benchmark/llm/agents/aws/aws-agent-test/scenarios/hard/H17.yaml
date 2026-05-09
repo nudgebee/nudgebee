@@ -1,0 +1,248 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H17: Three Lambdas sharing one IAM role — permission update breaks other functions.
+  User complaint: "Two of our three Lambda functions — 'h17-user-service' and
+  'h17-notification-service' — stopped working with AccessDenied after we updated
+  permissions for 'h17-analytics-service'. The analytics function works fine now
+  but the other two broke. They were all working before the change."
+  Root cause: All three Lambdas share IAM role 'h17-shared-lambda-role'. When the
+  role policy was updated for analytics (replaced s3:GetObject with
+  dynamodb:PutItem), the user and notification services lost their required
+  s3:GetObject permission. Shared IAM role is an anti-pattern.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Shared role with analytics-only permissions (missing s3:GetObject).
+      Fixed = Each Lambda has its own role with correct permissions.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'h17-app-data-${AWS::AccountId}'
+      Tags:
+        - Key: Name
+          Value: h17-app-data
+
+  AnalyticsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: h17-analytics
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: eventId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: eventId
+          KeyType: HASH
+
+  # THE BUG: Single shared role with only analytics permissions
+  SharedLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h17-shared-lambda-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: app-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # After "update for analytics", S3 read was replaced with DynamoDB write
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                Resource: !GetAtt AnalyticsTable.Arn
+              # s3:GetObject is MISSING — was removed during analytics update
+
+  # Fixed mode: separate roles for each function
+  UserServiceRole:
+    Type: AWS::IAM::Role
+    Condition: IsFixed
+    Properties:
+      RoleName: h17-user-service-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: s3-read
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub '${DataBucket.Arn}/*'
+
+  NotificationServiceRole:
+    Type: AWS::IAM::Role
+    Condition: IsFixed
+    Properties:
+      RoleName: h17-notification-service-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: s3-read
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub '${DataBucket.Arn}/*'
+
+  AnalyticsServiceRole:
+    Type: AWS::IAM::Role
+    Condition: IsFixed
+    Properties:
+      RoleName: h17-analytics-service-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: dynamodb-write
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                Resource: !GetAtt AnalyticsTable.Arn
+
+  UserServiceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h17-user-service
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !If
+        - IsFixed
+        - !GetAtt UserServiceRole.Arn
+        - !GetAtt SharedLambdaRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref DataBucket
+      Code:
+        ZipFile: |
+          import json, boto3, os
+          s3 = boto3.client('s3')
+          def handler(event, context):
+              try:
+                  resp = s3.get_object(Bucket=os.environ['BUCKET_NAME'], Key='users/config.json')
+                  return {'statusCode': 200, 'body': resp['Body'].read().decode()}
+              except Exception as e:
+                  return {'statusCode': 403, 'body': json.dumps({'error': str(e)})}
+      Tags:
+        - Key: Name
+          Value: h17-user-service
+
+  NotificationServiceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h17-notification-service
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !If
+        - IsFixed
+        - !GetAtt NotificationServiceRole.Arn
+        - !GetAtt SharedLambdaRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref DataBucket
+      Code:
+        ZipFile: |
+          import json, boto3, os
+          s3 = boto3.client('s3')
+          def handler(event, context):
+              try:
+                  resp = s3.get_object(Bucket=os.environ['BUCKET_NAME'], Key='templates/email.html')
+                  return {'statusCode': 200, 'body': resp['Body'].read().decode()}
+              except Exception as e:
+                  return {'statusCode': 403, 'body': json.dumps({'error': str(e)})}
+      Tags:
+        - Key: Name
+          Value: h17-notification-service
+
+  AnalyticsServiceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h17-analytics-service
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !If
+        - IsFixed
+        - !GetAtt AnalyticsServiceRole.Arn
+        - !GetAtt SharedLambdaRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      Environment:
+        Variables:
+          TABLE_NAME: h17-analytics
+      Code:
+        ZipFile: |
+          import json, boto3, os
+          from datetime import datetime
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table(os.environ['TABLE_NAME'])
+          def handler(event, context):
+              table.put_item(Item={'eventId': 'evt-1', 'timestamp': datetime.utcnow().isoformat()})
+              return {'statusCode': 200, 'body': json.dumps({'tracked': True})}
+      Tags:
+        - Key: Name
+          Value: h17-analytics-service
+
+Outputs:
+  UserServiceFunction:
+    Description: User Service Lambda (needs s3:GetObject)
+    Value: !Ref UserServiceFunction
+  NotificationServiceFunction:
+    Description: Notification Service Lambda (needs s3:GetObject)
+    Value: !Ref NotificationServiceFunction
+  AnalyticsServiceFunction:
+    Description: Analytics Service Lambda (needs dynamodb:PutItem)
+    Value: !Ref AnalyticsServiceFunction
+  SharedRoleName:
+    Description: Shared IAM role (anti-pattern)
+    Value: !If [IsFixed, 'N/A — each Lambda has its own role', 'h17-shared-lambda-role']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

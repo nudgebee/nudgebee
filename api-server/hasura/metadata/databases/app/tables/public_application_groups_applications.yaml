@@ -1,0 +1,82 @@
+table:
+  name: application_groups_applications
+  schema: public
+insert_permissions:
+- role: account_admin
+  permission:
+    check:
+      _or:
+      - tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      - tenant_id:
+          _eq: null
+    columns:
+    - account_id
+    - group_id
+    - namespace_name
+    - tenant_id
+    - workload_name
+  comment: ''
+- role: tenant_admin
+  permission:
+    check:
+      _or:
+      - tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      - tenant_id:
+          _eq: null
+    columns:
+    - namespace_name
+    - workload_name
+    - account_id
+    - group_id
+    - id
+    - tenant_id
+  comment: ''
+update_permissions:
+- role: account_admin
+  permission:
+    columns:
+    - account_id
+    - group_id
+    - namespace_name
+    - tenant_id
+    - workload_name
+    filter:
+      _or:
+      - tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      - tenant_id:
+          _eq: null
+    check: null
+  comment: ''
+- role: tenant_admin
+  permission:
+    columns:
+    - account_id
+    - group_id
+    - namespace_name
+    - tenant_id
+    - workload_name
+    filter: {}
+    check: null
+  comment: ''
+delete_permissions:
+- role: account_admin
+  permission:
+    filter:
+      _or:
+      - tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      - tenant_id:
+          _eq: null
+  comment: ''
+- role: tenant_admin
+  permission:
+    filter:
+      _or:
+      - tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      - tenant_id:
+          _eq: null
+  comment: ''

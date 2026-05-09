@@ -1,0 +1,19 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is an asymmetric NAT routing configuration. The Lambda ''h02-checkout-service'' runs across two private
+  subnets in different AZs. The route table for subnet ''h02-checkout-private-1a'' has a NAT Gateway route (0.0.0.0/0 → NAT
+  GW). The route table for subnet ''h02-checkout-private-1b'' is MISSING the NAT Gateway route — only has the local VPC route.
+  Lambda distributes ENIs across all configured subnets. When the Lambda runs in AZ-a, external API calls succeed. When it
+  runs in AZ-b, the request cannot reach the internet and times out. Check both private route tables: aws ec2 describe-route-tables
+  and look for the missing 0.0.0.0/0 route in the h02-checkout-private-rt-1b route table. The fix is to add a NAT Gateway
+  route to the private-1b route table.'
+scenario: H02
+tags:
+- command
+- aws
+- hard
+type: rca
+user_prompt: Our checkout Lambda 'h02-checkout-service' in us-east-1 returns 502 errors on approximately 50% of requests.
+  The other 50% succeed perfectly. The errors are random with no pattern around time of day or load. Direct testing of the
+  Lambda works sometimes and fails other times. The Lambda calls an external payment API. What's causing the intermittent
+  failures?

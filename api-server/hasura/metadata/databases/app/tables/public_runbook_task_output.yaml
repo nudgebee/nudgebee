@@ -1,0 +1,111 @@
+table:
+  name: runbook_task_output
+  schema: public
+object_relationships:
+  - name: auto_playbook_task
+    using:
+      foreign_key_constraint_on: task_id
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - output
+        - account_id
+        - id
+        - runbook_id
+        - task_id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - account_id:
+              _in: X-Hasura-User-Account-Ids
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - output
+        - account_id
+        - id
+        - runbook_id
+        - task_id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - account_id:
+              _in: X-Hasura-User-Readonly-Account-Ids
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - output
+        - account_id
+        - id
+        - runbook_id
+        - task_id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - account_id:
+              _in: x-hasura-user-namespaced-account-ids
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - output
+        - account_id
+        - id
+        - runbook_id
+        - task_id
+        - tenant_id
+      filter:
+        _and:
+          - tenant_id:
+              _eq: X-Hasura-User-Tenant-Id
+          - account_id:
+              _in: x-hasura-user-namespaced-readonly-account-ids
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - output
+        - account_id
+        - id
+        - runbook_id
+        - task_id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - output
+        - account_id
+        - id
+        - runbook_id
+        - task_id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""
+  - role: tenant_usage
+    permission:
+      columns:
+        - output
+        - account_id
+        - id
+        - runbook_id
+        - task_id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+    comment: ""

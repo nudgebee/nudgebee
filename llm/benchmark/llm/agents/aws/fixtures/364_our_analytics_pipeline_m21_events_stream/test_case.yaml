@@ -1,0 +1,28 @@
+user_prompt: Our analytics pipeline from Kinesis 'm21-events-stream' through Lambda
+  'm21-event-processor' to DynamoDB 'm21-events-table' is losing about 10-15% of
+  records. Some events that we confirmed were put into Kinesis never appear in
+  DynamoDB. Lambda shows low error rates. The DLQ 'm21-events-failures-dlq' has
+  some messages. What's causing the data loss?
+expected_output:
+- The root cause is a combination of issues with the Lambda event source mapping
+  configuration that causes data loss on partial batch failures. The event source
+  mapping has BatchSize=100 and BisectBatchOnFunctionError=false. When a single
+  record in a batch of 100 causes a processing error, the entire batch fails and is
+  retried. Without bisect-on-error, the same failing record keeps causing the whole
+  batch to fail. After MaximumRetryAttempts=1, the entire batch (including records
+  that were never successfully processed) is sent to the failure destination or
+  dropped. Additionally, the Lambda timeout (30s) may be too short for processing
+  100 records, causing timeout failures that also trigger full-batch retries. The
+  fix is to enable BisectBatchOnFunctionError=true so that failing batches are split
+  in half to isolate the problematic record, reduce the batch size (e.g., to 25),
+  increase MaximumRetryAttempts, and increase the Lambda timeout to accommodate
+  the batch size.
+tags:
+- rca
+- aws
+- kinesis
+- lambda
+- dynamodb
+- batch-processing
+type: rca
+agent: aws_debug

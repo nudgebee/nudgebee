@@ -1,0 +1,20 @@
+user_prompt: |
+  2026-04-05T18:45:12.334Z INFO  [rag-server] Starting RAG server on port 8700...
+  2026-04-05T18:45:12.890Z ERROR [rag-server] Traceback (most recent call last):
+    File "/app/server/main.py", line 8, in <module>
+      from langchain_community.vectorstores import Qdrant
+    File "/opt/conda/lib/python3.11/site-packages/langchain_community/vectorstores/__init__.py", line 45, in <module>
+      from langchain_community.vectorstores.qdrant import Qdrant
+    File "/opt/conda/lib/python3.11/site-packages/langchain_community/vectorstores/qdrant.py", line 12, in <module>
+      from qdrant_client import QdrantClient
+  ModuleNotFoundError: No module named 'qdrant_client'
+  2026-04-05T18:45:12.891Z FATAL [rag-server] Failed to start: missing dependency 'qdrant-client'
+  namespace: nudgebee, pod: rag-server-0, container: rag-server
+expected_output:
+  - The rag-server in the nudgebee namespace failed to start due to a missing Python dependency. The ModuleNotFoundError for 'qdrant_client' occurred when main.py at line 8 tried to import Qdrant from langchain_community.vectorstores. The root cause is that the 'qdrant-client' Python package is not installed in the container image. This could be caused by a missing dependency in pyproject.toml, a failed poetry install during the Docker build, or an incompatible version constraint. Suggested actions include verifying that qdrant-client is listed in pyproject.toml, rebuilding the Docker image with the correct dependencies, and checking the build logs for any pip/poetry install failures.
+tags:
+  - python
+  - import-error
+  - dependency
+  - nudgebee
+type: log_analysis

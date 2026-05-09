@@ -1,0 +1,49 @@
+table:
+  name: notifications
+  schema: public
+object_relationships:
+  - name: notification_severity_type
+    using:
+      foreign_key_constraint_on: severity
+  - name: tenantByTenant
+    using:
+      foreign_key_constraint_on: tenant
+array_relationships:
+  - name: notification_users
+    using:
+      foreign_key_constraint_on:
+        column: notification
+        table:
+          name: notification_user
+          schema: public
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - description
+        - severity
+        - created_at
+        - updated_at
+        - title
+        - id
+        - tenant
+      filter:
+        notification_users:
+          user_id:
+            _eq: X-Hasura-User-Id
+      allow_aggregations: true
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - description
+        - severity
+        - created_at
+        - updated_at
+        - title
+        - id
+        - tenant
+      filter:
+        notification_users:
+          user_id:
+            _eq: X-Hasura-User-Id
+      allow_aggregations: true

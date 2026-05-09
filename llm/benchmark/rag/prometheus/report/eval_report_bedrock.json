@@ -1,0 +1,590 @@
+{
+  "Total Queries": 30,
+  "Metrics": {
+    "context_recall": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.6666666666666666,
+      0.25,
+      0.6666666666666666,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.6666666666666666,
+      0.5,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.6666666666666666,
+      0.0,
+      0.6666666666666666,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "context_precision": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.9999999999,
+      0.0,
+      0.9999999999,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.9999999999,
+      0.9999999999,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.9999999999,
+      0.0,
+      0.0,
+      0.0,
+      0.9999999999,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "faithfulness": [
+      0.42857142857142855,
+      1.0,
+      1.0,
+      0.2727272727272727,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0,
+      1.0
+    ],
+    "answer_relevancy": [
+      0.7968248281690761,
+      0.74366645021952,
+      0.75990310749081,
+      0.7489894942109875,
+      0.8182335246906414,
+      0.8297883332204443,
+      0.8290115831639294,
+      0.8325361968122517,
+      0.8172866231954288,
+      0.7490953252541415,
+      0.7649674416069097,
+      0.7579563564195705,
+      0.8286677890369477,
+      0.8189468474092082,
+      0.8054160671495286,
+      0.7444145809152442,
+      0.7975633071741889,
+      0.7675672296863922,
+      0.7517439223270509,
+      0.7883264945080445,
+      0.7875308577172078,
+      0.8017793605726632,
+      0.8096550722934607,
+      0.8197561551446441,
+      0.7332403107688492,
+      0.8022890366010667,
+      0.7391524404721327,
+      0.7655990769592766,
+      0.7437429850899443,
+      0.7856198112320484
+    ]
+  },
+  "Evaluations": [
+    {
+      "query": "What's the CPU usage rate of 'myapp' excluding idle time, averaged over the last 15 minutes?",
+      "retrieved_contexts": [
+        "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"go_cpu_classes_user_cpu_seconds_total\", \"type\": \"counter\", \"help\": \"Estimated total CPU time spent running user Go code. This may also include some small amount of time spent in the Go runtime. This metric is an overestimate, and not directly comparable to system CPU time measurements. Compare only with other /cpu/classes metrics.\", \"unit\": \"\", \"labels\": [\"__name__\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"pod\", \"service\"]}"
+      ],
+      "": [
+        "Excluding idle time provides a more accurate view of application CPU usage. `avg_over_time` smooths out spikes."
+      ],
+      "generated_answer": "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"go_cpu_classes_user_cpu_seconds_total\", \"type\": \"counter\", \"help\": \"Estimated total CPU time spent running user Go code. This may also include some small amount of time spent in the Go runtime. This metric is an overestimate, and not directly comparable to system CPU time measurements. Compare only with other /cpu/classes metrics.\", \"unit\": \"\", \"labels\": [\"__name__\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"pod\", \"service\"]}",
+      "ground_truth": [
+        [
+          "metrics: process_cpu_seconds_total, metadata: process_cpu_seconds_total - Cumulative CPU time consumed by the process in seconds., explanation: Calculates the average rate of CPU usage for 'myapp' excluding idle time over the last 15 minutes."
+        ]
+      ]
+    },
+    {
+      "query": "Find the lowest memory used by 'myapp' in the last 2 hours.",
+      "retrieved_contexts": [
+        "{\"target\": {\"container\": \"node-exporter\", \"endpoint\": \"http-metrics\", \"job\": \"node-exporter\", \"namespace\": \"prometheus\", \"pod\": \"prometheus-prometheus-node-exporter-6g8cz\", \"service\": \"prometheus-prometheus-node-exporter\"}, \"metric\": \"node_memory_MemFree_bytes\", \"type\": \"gauge\", \"help\": \"Memory information field MemFree_bytes.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"namespace\", \"pod\", \"service\"]}"
+      ],
+      "expected_contexts": [
+        "Useful for understanding baseline memory usage and spotting potential memory leaks."
+      ],
+      "generated_answer": "{\"target\": {\"container\": \"node-exporter\", \"endpoint\": \"http-metrics\", \"job\": \"node-exporter\", \"namespace\": \"prometheus\", \"pod\": \"prometheus-prometheus-node-exporter-6g8cz\", \"service\": \"prometheus-prometheus-node-exporter\"}, \"metric\": \"node_memory_MemFree_bytes\", \"type\": \"gauge\", \"help\": \"Memory information field MemFree_bytes.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"namespace\", \"pod\", \"service\"]}",
+      "ground_truth": [
+        [
+          "metrics: process_resident_memory_bytes, metadata: process_resident_memory_bytes - Resident memory size in bytes., explanation: Returns the minimum memory usage of 'myapp' over the last 2 hours."
+        ]
+      ]
+    },
+    {
+      "query": "How many 404 errors did 'myapp' receive in the last hour, grouped by endpoint?",
+      "retrieved_contexts": [
+        "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"kubelet_topology_manager_admission_errors_total\", \"type\": \"counter\", \"help\": \"[ALPHA] The number of admission request failures where resources could not be aligned.\", \"unit\": \"\", \"labels\": [\"__name__\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"service\"]}"
+      ],
+      "expected_contexts": [
+        "Helps identify broken links or missing resources. Grouping by endpoint pinpoints specific problem areas."
+      ],
+      "generated_answer": "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"kubelet_topology_manager_admission_errors_total\", \"type\": \"counter\", \"help\": \"[ALPHA] The number of admission request failures where resources could not be aligned.\", \"unit\": \"\", \"labels\": [\"__name__\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"service\"]}",
+      "ground_truth": [
+        [
+          "metrics: http_requests_total, metadata: http_requests_total - Total number of HTTP requests., explanation: Calculates the rate of 404 errors for 'myapp', grouped by endpoint, over the last hour."
+        ]
+      ]
+    },
+    {
+      "query": "What's the 50th percentile latency of 'myapp' requests in the last 30 minutes?",
+      "retrieved_contexts": [
+        "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"rest_client_request_duration_seconds\", \"type\": \"histogram\", \"help\": \"[ALPHA] Request latency in seconds. Broken down by verb, and host.\", \"unit\": \"\", \"labels\": []}"
+      ],
+      "expected_contexts": [
+        "Median latency gives a good indication of typical response times, less affected by outliers than average."
+      ],
+      "generated_answer": "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"rest_client_request_duration_seconds\", \"type\": \"histogram\", \"help\": \"[ALPHA] Request latency in seconds. Broken down by verb, and host.\", \"unit\": \"\", \"labels\": []}",
+      "ground_truth": [
+        [
+          "metrics: http_request_duration_seconds, metadata: http_request_duration_seconds - HTTP request latencies in seconds., explanation: Calculates the median (50th percentile) latency for 'myapp' requests over the last 30 minutes."
+        ]
+      ]
+    },
+    {
+      "query": "What's the average disk utilization on 'sda' in the last 20 minutes?",
+      "retrieved_contexts": [
+        "{\"target\": {\"job\": \"nudgebee-node-agent\"}, \"metric\": \"node_resources_disk_io_time_seconds_total\", \"type\": \"counter\", \"help\": \"The total number of seconds the disk spent doing I/O\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"device\", \"endpoint\", \"instance\", \"job\", \"machine_id\", \"namespace\", \"pod\", \"system_uuid\"]}"
+      ],
+      "expected_contexts": [
+        "Disk utilization indicates how busy the disk is. High utilization can lead to performance issues."
+      ],
+      "generated_answer": "{\"target\": {\"job\": \"nudgebee-node-agent\"}, \"metric\": \"node_resources_disk_io_time_seconds_total\", \"type\": \"counter\", \"help\": \"The total number of seconds the disk spent doing I/O\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"device\", \"endpoint\", \"instance\", \"job\", \"machine_id\", \"namespace\", \"pod\", \"system_uuid\"]}",
+      "ground_truth": [
+        [
+          "metrics: node_disk_io_time_weighted_seconds_total, metadata: node_disk_io_time_weighted_seconds_total - Total time spent doing I/Os weighted by their duration., explanation: Calculates the average disk utilization on 'sda' over the last 20 minutes."
+        ]
+      ]
+    },
+    {
+      "query": "How many network transmit errors occurred on 'eth0' in the last 10 minutes?",
+      "retrieved_contexts": [
+        "{\"target\": {\"container\": \"node-exporter\", \"endpoint\": \"http-metrics\", \"job\": \"node-exporter\", \"namespace\": \"prometheus\", \"pod\": \"prometheus-prometheus-node-exporter-6g8cz\", \"service\": \"prometheus-prometheus-node-exporter\"}, \"metric\": \"node_network_transmit_errs_total\", \"type\": \"counter\", \"help\": \"Network device statistic transmit_errs.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"device\", \"endpoint\", \"instance\", \"job\", \"namespace\", \"pod\", \"service\"]}"
+      ],
+      "expected_contexts": [
+        "Network errors indicate potential hardware or configuration problems."
+      ],
+      "generated_answer": "{\"target\": {\"container\": \"node-exporter\", \"endpoint\": \"http-metrics\", \"job\": \"node-exporter\", \"namespace\": \"prometheus\", \"pod\": \"prometheus-prometheus-node-exporter-6g8cz\", \"service\": \"prometheus-prometheus-node-exporter\"}, \"metric\": \"node_network_transmit_errs_total\", \"type\": \"counter\", \"help\": \"Network device statistic transmit_errs.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"device\", \"endpoint\", \"instance\", \"job\", \"namespace\", \"pod\", \"service\"]}",
+      "ground_truth": [
+        [
+          "metrics: node_network_transmit_errs_total, metadata: node_network_transmit_errs_total - Total number of transmit errors., explanation: Calculates the rate of network transmit errors on 'eth0' over the last 10 minutes."
+        ]
+      ]
+    },
+    {
+      "query": "What percentage of its CPU limit is 'mycontainer' using in 'mynamespace'?",
+      "retrieved_contexts": [
+        "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics/cadvisor\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"container_cpu_usage_seconds_total\", \"type\": \"counter\", \"help\": \"Cumulative cpu time consumed in seconds.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"cpu\", \"endpoint\", \"id\", \"image\", \"instance\", \"job\", \"metrics_path\", \"name\", \"namespace\", \"node\", \"pod\", \"service\"]}"
+      ],
+      "expected_contexts": [
+        "Helps prevent CPU throttling and ensures containers have adequate resources."
+      ],
+      "generated_answer": "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics/cadvisor\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"container_cpu_usage_seconds_total\", \"type\": \"counter\", \"help\": \"Cumulative cpu time consumed in seconds.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"cpu\", \"endpoint\", \"id\", \"image\", \"instance\", \"job\", \"metrics_path\", \"name\", \"namespace\", \"node\", \"pod\", \"service\"]}",
+      "ground_truth": [
+        [
+          "metrics: container_cpu_usage_seconds_total, container_spec_cpu_quota, metadata: container_cpu_usage_seconds_total - Total CPU time consumed by the container in seconds., container_spec_cpu_quota - CPU quota of the container in milliseconds., explanation: Shows the CPU usage of 'mycontainer' as a percentage of its CPU limit."
+        ]
+      ]
+    },
+    {
+      "query": "What's the total CPU usage of all pods in 'mynamespace' in the last hour?",
+      "retrieved_contexts": [
+        "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics/cadvisor\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"container_cpu_usage_seconds_total\", \"type\": \"counter\", \"help\": \"Cumulative cpu time consumed in seconds.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"cpu\", \"endpoint\", \"id\", \"image\", \"instance\", \"job\", \"metrics_path\", \"name\", \"namespace\", \"node\", \"pod\", \"service\"]}"
+      ],
+      "expected_contexts": [
+        "Gives a high-level view of CPU usage across a namespace."
+      ],
+      "generated_answer": "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics/cadvisor\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"container_cpu_usage_seconds_total\", \"type\": \"counter\", \"help\": \"Cumulative cpu time consumed in seconds.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"cpu\", \"endpoint\", \"id\", \"image\", \"instance\", \"job\", \"metrics_path\", \"name\", \"namespace\", \"node\", \"pod\", \"service\"]}",
+      "ground_truth": [
+        [
+          "metrics: container_cpu_usage_seconds_total, metadata: container_cpu_usage_seconds_total - Total CPU time consumed by the container in seconds., explanation: Calculates the total CPU usage of all pods in 'mynamespace' over the last hour."
+        ]
+      ]
+    },
+    {
+      "query": "How many pods are in the 'failed' state in 'mynamespace'?",
+      "retrieved_contexts": [
+        "{\"target\": {\"container\": \"kube-state-metrics\", \"endpoint\": \"http\", \"job\": \"kube-state-metrics\", \"namespace\": \"prometheus\", \"pod\": \"prometheus-kube-state-metrics-8665c5b9f9-szr9j\", \"service\": \"prometheus-kube-state-metrics\"}, \"metric\": \"kube_poddisruptionbudget_status_expected_pods\", \"type\": \"gauge\", \"help\": \"[STABLE] Total number of pods counted by this disruption budget\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"namespace\", \"pod\", \"poddisruptionbudget\", \"service\"]}"
+      ],
+      "expected_contexts": [
+        "Indicates issues with pod startup or runtime."
+      ],
+      "generated_answer": "{\"target\": {\"container\": \"kube-state-metrics\", \"endpoint\": \"http\", \"job\": \"kube-state-metrics\", \"namespace\": \"prometheus\", \"pod\": \"prometheus-kube-state-metrics-8665c5b9f9-szr9j\", \"service\": \"prometheus-kube-state-metrics\"}, \"metric\": \"kube_poddisruptionbudget_status_expected_pods\", \"type\": \"gauge\", \"help\": \"[STABLE] Total number of pods counted by this disruption budget\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"namespace\", \"pod\", \"poddisruptionbudget\", \"service\"]}",
+      "ground_truth": [
+        [
+          "metrics: kube_pod_status_phase, metadata: kube_pod_status_phase - The phase the pod is currently in., explanation: Returns the number of pods in the 'failed' state in 'mynamespace'."
+        ]
+      ]
+    },
+    {
+      "query": "What's the rate of successful database transactions in the last 5 minutes?",
+      "retrieved_contexts": [
+        "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"kubelet_evented_pleg_connection_success_count\", \"type\": \"counter\", \"help\": \"[ALPHA] The number of times a streaming client was obtained to receive CRI Events.\", \"unit\": \"\", \"labels\": [\"__name__\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"service\"]}"
+      ],
+      "expected_contexts": [
+        "Tracks the health and throughput of database operations."
+      ],
+      "generated_answer": "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"kubelet_evented_pleg_connection_success_count\", \"type\": \"counter\", \"help\": \"[ALPHA] The number of times a streaming client was obtained to receive CRI Events.\", \"unit\": \"\", \"labels\": [\"__name__\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"service\"]}",
+      "ground_truth": [
+        [
+          "metrics: db_transactions_total{result=\"success\"}, metadata: db_transactions_total - Total number of database transactions., explanation: Calculates the rate of successful database transactions in the last 5 minutes."
+        ]
+      ]
+    },
+    {
+      "query": "What is the number of active users for the application over the last hour?",
+      "retrieved_contexts": [
+        "{\"target\": {\"container\": \"kube-state-metrics\", \"endpoint\": \"http\", \"job\": \"kube-state-metrics\", \"namespace\": \"prometheus\", \"pod\": \"prometheus-kube-state-metrics-8665c5b9f9-szr9j\", \"service\": \"prometheus-kube-state-metrics\"}, \"metric\": \"kube_job_status_active\", \"type\": \"gauge\", \"help\": \"[STABLE] The number of actively running pods.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"job_name\", \"namespace\", \"pod\", \"service\"]}"
+      ],
+      "expected_contexts": [
+        "Tracks user engagement and load on the application."
+      ],
+      "generated_answer": "{\"target\": {\"container\": \"kube-state-metrics\", \"endpoint\": \"http\", \"job\": \"kube-state-metrics\", \"namespace\": \"prometheus\", \"pod\": \"prometheus-kube-state-metrics-8665c5b9f9-szr9j\", \"service\": \"prometheus-kube-state-metrics\"}, \"metric\": \"kube_job_status_active\", \"type\": \"gauge\", \"help\": \"[STABLE] The number of actively running pods.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"job_name\", \"namespace\", \"pod\", \"service\"]}",
+      "ground_truth": [
+        [
+          "metrics: active_users, metadata: active_users - Number of concurrently active users., explanation: Finds the number of active users over the last hour."
+        ]
+      ]
+    },
+    {
+      "query": "How many requests are pending in my application?",
+      "retrieved_contexts": [
+        "{\"target\": {\"container\": \"kube-state-metrics\", \"endpoint\": \"http\", \"job\": \"kube-state-metrics\", \"namespace\": \"prometheus\", \"pod\": \"prometheus-kube-state-metrics-8665c5b9f9-szr9j\", \"service\": \"prometheus-kube-state-metrics\"}, \"metric\": \"kube_pod_container_resource_requests\", \"type\": \"gauge\", \"help\": \"The number of requested request resource by a container. It is recommended to use the kube_pod_resource_requests metric exposed by kube-scheduler instead, as it is more precise.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"namespace\", \"node\", \"pod\", \"resource\", \"service\", \"uid\", \"unit\"]}"
+      ],
+      "expected_contexts": [
+        "Indicates potential bottlenecks or performance issues."
+      ],
+      "generated_answer": "{\"target\": {\"container\": \"kube-state-metrics\", \"endpoint\": \"http\", \"job\": \"kube-state-metrics\", \"namespace\": \"prometheus\", \"pod\": \"prometheus-kube-state-metrics-8665c5b9f9-szr9j\", \"service\": \"prometheus-kube-state-metrics\"}, \"metric\": \"kube_pod_container_resource_requests\", \"type\": \"gauge\", \"help\": \"The number of requested request resource by a container. It is recommended to use the kube_pod_resource_requests metric exposed by kube-scheduler instead, as it is more precise.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"namespace\", \"node\", \"pod\", \"resource\", \"service\", \"uid\", \"unit\"]}",
+      "ground_truth": [
+        [
+          "metrics: http_requests_pending, metadata: http_requests_pending - Number of pending HTTP requests., explanation: Returns the number of pending HTTP requests."
+        ]
+      ]
+    },
+    {
+      "query": "What is the average number of threads used by my application over the last 1 hour?",
+      "retrieved_contexts": [
+        "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics/cadvisor\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"container_threads_max\", \"type\": \"gauge\", \"help\": \"Maximum number of threads allowed inside the container, infinity if value is zero\", \"unit\": \"\", \"labels\": []}"
+      ],
+      "expected_contexts": [
+        "Helps in understanding the thread utilization and debugging thread related performance issues."
+      ],
+      "generated_answer": "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics/cadvisor\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"container_threads_max\", \"type\": \"gauge\", \"help\": \"Maximum number of threads allowed inside the container, infinity if value is zero\", \"unit\": \"\", \"labels\": []}",
+      "ground_truth": [
+        [
+          "metrics: process_threads, metadata: process_threads - Number of threads currently used by a process., explanation: Returns the average number of threads used by the application over the last hour."
+        ]
+      ]
+    },
+    {
+      "query": "What is the rate of goroutines in my application over the last 5 minutes?",
+      "retrieved_contexts": [
+        "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"go_goroutines\", \"type\": \"gauge\", \"help\": \"Number of goroutines that currently exist.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"pod\", \"service\"]}"
+      ],
+      "expected_contexts": [
+        "Useful for Go applications to monitor concurrency and potential leaks."
+      ],
+      "generated_answer": "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"go_goroutines\", \"type\": \"gauge\", \"help\": \"Number of goroutines that currently exist.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"pod\", \"service\"]}",
+      "ground_truth": [
+        [
+          "metrics: go_goroutines, metadata: go_goroutines - Number of goroutines that currently exist., explanation: Returns the rate of goroutines in the application over the last 5 minutes."
+        ]
+      ]
+    },
+    {
+      "query": "What is the number of TCP connections in TIME_WAIT state?",
+      "retrieved_contexts": [
+        "{\"target\": {\"container\": \"node-exporter\", \"endpoint\": \"http-metrics\", \"job\": \"node-exporter\", \"namespace\": \"prometheus\", \"pod\": \"prometheus-prometheus-node-exporter-6g8cz\", \"service\": \"prometheus-prometheus-node-exporter\"}, \"metric\": \"node_sockstat_TCP_tw\", \"type\": \"gauge\", \"help\": \"Number of TCP sockets in state tw.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"namespace\", \"pod\", \"service\"]}"
+      ],
+      "expected_contexts": [
+        "Excessive TIME_WAIT connections can indicate network issues."
+      ],
+      "generated_answer": "{\"target\": {\"container\": \"node-exporter\", \"endpoint\": \"http-metrics\", \"job\": \"node-exporter\", \"namespace\": \"prometheus\", \"pod\": \"prometheus-prometheus-node-exporter-6g8cz\", \"service\": \"prometheus-prometheus-node-exporter\"}, \"metric\": \"node_sockstat_TCP_tw\", \"type\": \"gauge\", \"help\": \"Number of TCP sockets in state tw.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"namespace\", \"pod\", \"service\"]}",
+      "ground_truth": [
+        [
+          "metrics: node_netstat_Tcp_TcpTimeWait, metadata: node_netstat_Tcp_TcpTimeWait - Number of TCP connections in TIME_WAIT state., explanation: Returns the number of TCP connections in TIME_WAIT state."
+        ]
+      ]
+    },
+    {
+      "query": "What is the average number of database sessions in the last 30 minutes?",
+      "retrieved_contexts": [
+        "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"kubelet_topology_manager_admission_duration_ms\", \"type\": \"histogram\", \"help\": \"[ALPHA] Duration in milliseconds to serve a pod admission request.\", \"unit\": \"\", \"labels\": []}"
+      ],
+      "expected_contexts": [
+        "Tracks database load and connection management."
+      ],
+      "generated_answer": "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"kubelet_topology_manager_admission_duration_ms\", \"type\": \"histogram\", \"help\": \"[ALPHA] Duration in milliseconds to serve a pod admission request.\", \"unit\": \"\", \"labels\": []}",
+      "ground_truth": [
+        [
+          "metrics: db_sessions_active, metadata: db_sessions_active - Number of currently active database sessions., explanation: Returns the average number of database sessions in the last 30 minutes."
+        ]
+      ]
+    },
+    {
+      "query": "What is the rate of failed login attempts in the last 10 minutes?",
+      "retrieved_contexts": [
+        "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"get_token_fail_count\", \"type\": \"counter\", \"help\": \"[ALPHA] Counter of failed Token() requests to the alternate token source\", \"unit\": \"\", \"labels\": [\"__name__\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"service\"]}"
+      ],
+      "expected_contexts": [
+        "Helps detect security threats or login issues."
+      ],
+      "generated_answer": "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"get_token_fail_count\", \"type\": \"counter\", \"help\": \"[ALPHA] Counter of failed Token() requests to the alternate token source\", \"unit\": \"\", \"labels\": [\"__name__\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"service\"]}",
+      "ground_truth": [
+        [
+          "metrics: failed_login_attempts, metadata: failed_login_attempts - Total number of failed login attempts., explanation: Returns the rate of failed login attempts in the last 10 minutes."
+        ]
+      ]
+    },
+    {
+      "query": "What is the average number of active subscriptions in the last hour?",
+      "retrieved_contexts": [
+        "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"kubelet_active_pods\", \"type\": \"gauge\", \"help\": \"[ALPHA] The number of pods the kubelet considers active and which are being considered when admitting new pods. static is true if the pod is not from the apiserver.\", \"unit\": \"\", \"labels\": [\"__name__\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"service\", \"static\"]}"
+      ],
+      "expected_contexts": [
+        "Tracks user engagement and subscription health."
+      ],
+      "generated_answer": "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"kubelet_active_pods\", \"type\": \"gauge\", \"help\": \"[ALPHA] The number of pods the kubelet considers active and which are being considered when admitting new pods. static is true if the pod is not from the apiserver.\", \"unit\": \"\", \"labels\": [\"__name__\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"service\", \"static\"]}",
+      "ground_truth": [
+        [
+          "metrics: active_subscriptions, metadata: active_subscriptions - Number of active subscriptions., explanation: Returns the average number of active subscriptions in the last hour."
+        ]
+      ]
+    },
+    {
+      "query": "What is the average number of web application sessions in the last 45 minutes?",
+      "retrieved_contexts": [
+        "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"apiserver_delegated_authn_request_duration_seconds\", \"type\": \"histogram\", \"help\": \"[ALPHA] Request latency in seconds. Broken down by status code.\", \"unit\": \"\", \"labels\": []}"
+      ],
+      "expected_contexts": [
+        "Tracks web application load and session management."
+      ],
+      "generated_answer": "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"apiserver_delegated_authn_request_duration_seconds\", \"type\": \"histogram\", \"help\": \"[ALPHA] Request latency in seconds. Broken down by status code.\", \"unit\": \"\", \"labels\": []}",
+      "ground_truth": [
+        [
+          "metrics: webapp_active_sessions, metadata: webapp_active_sessions - Number of active web application sessions., explanation: Returns the average number of web application sessions in the last 45 minutes."
+        ]
+      ]
+    },
+    {
+      "query": "What is the rate of active web application connections in the last 10 minutes?",
+      "retrieved_contexts": [
+        "{\"target\": {\"job\": \"nudgebee-node-agent\"}, \"metric\": \"container_net_tcp_successful_connects_total\", \"type\": \"counter\", \"help\": \"Total number of successful TCP connects\", \"unit\": \"\", \"labels\": [\"__name__\", \"actual_destination\", \"actual_destination_workload_kind\", \"actual_destination_workload_name\", \"actual_destination_workload_namespace\", \"container\", \"container_id\", \"destination\", \"destination_workload_kind\", \"destination_workload_name\", \"destination_workload_namespace\", \"endpoint\", \"instance\", \"job\", \"machine_id\", \"namespace\", \"pod\", \"src_workload_kind\", \"src_workload_name\", \"src_workload_namespace\", \"system_uuid\"]}"
+      ],
+      "expected_contexts": [
+        "Helps detect connection spikes or drops."
+      ],
+      "generated_answer": "{\"target\": {\"job\": \"nudgebee-node-agent\"}, \"metric\": \"container_net_tcp_successful_connects_total\", \"type\": \"counter\", \"help\": \"Total number of successful TCP connects\", \"unit\": \"\", \"labels\": [\"__name__\", \"actual_destination\", \"actual_destination_workload_kind\", \"actual_destination_workload_name\", \"actual_destination_workload_namespace\", \"container\", \"container_id\", \"destination\", \"destination_workload_kind\", \"destination_workload_name\", \"destination_workload_namespace\", \"endpoint\", \"instance\", \"job\", \"machine_id\", \"namespace\", \"pod\", \"src_workload_kind\", \"src_workload_name\", \"src_workload_namespace\", \"system_uuid\"]}",
+      "ground_truth": [
+        [
+          "metrics: webapp_active_connections, metadata: webapp_active_connections - Number of active web application connections., explanation: Returns the rate of active web application connections in the last 10 minutes."
+        ]
+      ]
+    },
+    {
+      "query": "What is the average number of active threads in the last 1 hour?",
+      "retrieved_contexts": [
+        "{\"target\": {\"container\": \"node-exporter\", \"endpoint\": \"http-metrics\", \"job\": \"node-exporter\", \"namespace\": \"prometheus\", \"pod\": \"prometheus-prometheus-node-exporter-6g8cz\", \"service\": \"prometheus-prometheus-node-exporter\"}, \"metric\": \"go_threads\", \"type\": \"gauge\", \"help\": \"Number of OS threads created.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"pod\", \"service\"]}"
+      ],
+      "expected_contexts": [
+        "Tracks thread usage and potential bottlenecks."
+      ],
+      "generated_answer": "{\"target\": {\"container\": \"node-exporter\", \"endpoint\": \"http-metrics\", \"job\": \"node-exporter\", \"namespace\": \"prometheus\", \"pod\": \"prometheus-prometheus-node-exporter-6g8cz\", \"service\": \"prometheus-prometheus-node-exporter\"}, \"metric\": \"go_threads\", \"type\": \"gauge\", \"help\": \"Number of OS threads created.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"pod\", \"service\"]}",
+      "ground_truth": [
+        [
+          "metrics: active_threads, metadata: active_threads - Number of active threads., explanation: Returns the average number of active threads in the last 1 hour."
+        ]
+      ]
+    },
+    {
+      "query": "What is the rate of open file descriptors in the last 5 minutes?",
+      "retrieved_contexts": [
+        "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"process_open_fds\", \"type\": \"gauge\", \"help\": \"Number of open file descriptors.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"pod\", \"service\"]}"
+      ],
+      "expected_contexts": [
+        "Helps detect file descriptor leaks."
+      ],
+      "generated_answer": "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"process_open_fds\", \"type\": \"gauge\", \"help\": \"Number of open file descriptors.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"pod\", \"service\"]}",
+      "ground_truth": [
+        [
+          "metrics: process_open_fds, metadata: process_open_fds - Number of open file descriptors., explanation: Returns the rate of open file descriptors in the last 5 minutes."
+        ]
+      ]
+    },
+    {
+      "query": "What is the average number of threads in the last 30 minutes?",
+      "retrieved_contexts": [
+        "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics/cadvisor\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"container_threads_max\", \"type\": \"gauge\", \"help\": \"Maximum number of threads allowed inside the container, infinity if value is zero\", \"unit\": \"\", \"labels\": []}"
+      ],
+      "expected_contexts": [
+        "Tracks thread usage and potential bottlenecks."
+      ],
+      "generated_answer": "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics/cadvisor\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"container_threads_max\", \"type\": \"gauge\", \"help\": \"Maximum number of threads allowed inside the container, infinity if value is zero\", \"unit\": \"\", \"labels\": []}",
+      "ground_truth": [
+        [
+          "metrics: process_threads, metadata: process_threads - Number of threads currently used by a process., explanation: Returns the average number of threads in the last 30 minutes."
+        ]
+      ]
+    },
+    {
+      "query": "What is the rate of goroutines in the last 10 minutes?",
+      "retrieved_contexts": [
+        "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"go_goroutines\", \"type\": \"gauge\", \"help\": \"Number of goroutines that currently exist.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"pod\", \"service\"]}"
+      ],
+      "expected_contexts": [
+        "Tracks goroutine usage and potential leaks for Go applications."
+      ],
+      "generated_answer": "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"go_goroutines\", \"type\": \"gauge\", \"help\": \"Number of goroutines that currently exist.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"pod\", \"service\"]}",
+      "ground_truth": [
+        [
+          "metrics: go_goroutines, metadata: go_goroutines - Number of goroutines that currently exist., explanation: Returns the rate of goroutines in the last 10 minutes."
+        ]
+      ]
+    },
+    {
+      "query": "What is the average number of TCP TIME_WAIT connections in the last 1 hour?",
+      "retrieved_contexts": [
+        "{\"target\": {\"container\": \"node-exporter\", \"endpoint\": \"http-metrics\", \"job\": \"node-exporter\", \"namespace\": \"prometheus\", \"pod\": \"prometheus-prometheus-node-exporter-6g8cz\", \"service\": \"prometheus-prometheus-node-exporter\"}, \"metric\": \"node_sockstat_TCP_tw\", \"type\": \"gauge\", \"help\": \"Number of TCP sockets in state tw.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"namespace\", \"pod\", \"service\"]}"
+      ],
+      "expected_contexts": [
+        "Tracks network connection management."
+      ],
+      "generated_answer": "{\"target\": {\"container\": \"node-exporter\", \"endpoint\": \"http-metrics\", \"job\": \"node-exporter\", \"namespace\": \"prometheus\", \"pod\": \"prometheus-prometheus-node-exporter-6g8cz\", \"service\": \"prometheus-prometheus-node-exporter\"}, \"metric\": \"node_sockstat_TCP_tw\", \"type\": \"gauge\", \"help\": \"Number of TCP sockets in state tw.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"namespace\", \"pod\", \"service\"]}",
+      "ground_truth": [
+        [
+          "metrics: node_netstat_Tcp_TcpTimeWait, metadata: node_netstat_Tcp_TcpTimeWait - Number of TCP connections in TIME_WAIT state., explanation: Returns the average number of TCP TIME_WAIT connections in the last 1 hour."
+        ]
+      ]
+    },
+    {
+      "query": "What is the rate of TCP ESTABLISHED connections in the last 5 minutes?",
+      "retrieved_contexts": [
+        "{\"target\": {\"container\": \"node-exporter\", \"endpoint\": \"http-metrics\", \"job\": \"node-exporter\", \"namespace\": \"prometheus\", \"pod\": \"prometheus-prometheus-node-exporter-6g8cz\", \"service\": \"prometheus-prometheus-node-exporter\"}, \"metric\": \"node_netstat_Tcp_CurrEstab\", \"type\": \"unknown\", \"help\": \"Statistic TcpCurrEstab.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"namespace\", \"pod\", \"service\"]}"
+      ],
+      "expected_contexts": [
+        "Tracks active network connections."
+      ],
+      "generated_answer": "{\"target\": {\"container\": \"node-exporter\", \"endpoint\": \"http-metrics\", \"job\": \"node-exporter\", \"namespace\": \"prometheus\", \"pod\": \"prometheus-prometheus-node-exporter-6g8cz\", \"service\": \"prometheus-prometheus-node-exporter\"}, \"metric\": \"node_netstat_Tcp_CurrEstab\", \"type\": \"unknown\", \"help\": \"Statistic TcpCurrEstab.\", \"unit\": \"\", \"labels\": [\"__name__\", \"container\", \"endpoint\", \"instance\", \"job\", \"namespace\", \"pod\", \"service\"]}",
+      "ground_truth": [
+        [
+          "metrics: node_netstat_Tcp_TcpEstablished, metadata: node_netstat_Tcp_TcpEstablished - Number of TCP connections in ESTABLISHED state., explanation: Returns the rate of TCP ESTABLISHED connections in the last 5 minutes."
+        ]
+      ]
+    },
+    {
+      "query": "What is the average number of database sessions in the last 2 hours?",
+      "retrieved_contexts": [
+        "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"kubelet_topology_manager_admission_duration_ms\", \"type\": \"histogram\", \"help\": \"[ALPHA] Duration in milliseconds to serve a pod admission request.\", \"unit\": \"\", \"labels\": []}"
+      ],
+      "expected_contexts": [
+        "Tracks long term database load."
+      ],
+      "generated_answer": "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"kubelet_topology_manager_admission_duration_ms\", \"type\": \"histogram\", \"help\": \"[ALPHA] Duration in milliseconds to serve a pod admission request.\", \"unit\": \"\", \"labels\": []}",
+      "ground_truth": [
+        [
+          "metrics: db_sessions_active, metadata: db_sessions_active - Number of currently active database sessions., explanation: Returns the average number of database sessions in the last 2 hours."
+        ]
+      ]
+    },
+    {
+      "query": "What is the rate of pending requests in the last 10 minutes?",
+      "retrieved_contexts": [
+        "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"apiserver_delegated_authn_request_duration_seconds\", \"type\": \"histogram\", \"help\": \"[ALPHA] Request latency in seconds. Broken down by status code.\", \"unit\": \"\", \"labels\": []}"
+      ],
+      "expected_contexts": [
+        "Tracks request backlog and potential bottlenecks."
+      ],
+      "generated_answer": "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"apiserver_delegated_authn_request_duration_seconds\", \"type\": \"histogram\", \"help\": \"[ALPHA] Request latency in seconds. Broken down by status code.\", \"unit\": \"\", \"labels\": []}",
+      "ground_truth": [
+        [
+          "metrics: http_requests_pending, metadata: http_requests_pending - Number of pending HTTP requests., explanation: Returns the rate of pending requests in the last 10 minutes."
+        ]
+      ]
+    },
+    {
+      "query": "What is the average number of active users in the last 3 hours?",
+      "retrieved_contexts": [
+        "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"kubelet_active_pods\", \"type\": \"gauge\", \"help\": \"[ALPHA] The number of pods the kubelet considers active and which are being considered when admitting new pods. static is true if the pod is not from the apiserver.\", \"unit\": \"\", \"labels\": [\"__name__\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"service\", \"static\"]}"
+      ],
+      "expected_contexts": [
+        "Tracks long term user engagement."
+      ],
+      "generated_answer": "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"kubelet_active_pods\", \"type\": \"gauge\", \"help\": \"[ALPHA] The number of pods the kubelet considers active and which are being considered when admitting new pods. static is true if the pod is not from the apiserver.\", \"unit\": \"\", \"labels\": [\"__name__\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"service\", \"static\"]}",
+      "ground_truth": [
+        [
+          "metrics: active_users, metadata: active_users - Number of concurrently active users., explanation: Returns the average number of active users in the last 3 hours."
+        ]
+      ]
+    },
+    {
+      "query": "What is the rate of successful login attempts in the last 15 minutes?",
+      "retrieved_contexts": [
+        "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"get_token_fail_count\", \"type\": \"counter\", \"help\": \"[ALPHA] Counter of failed Token() requests to the alternate token source\", \"unit\": \"\", \"labels\": [\"__name__\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"service\"]}"
+      ],
+      "expected_contexts": [
+        "Tracks login success rate."
+      ],
+      "generated_answer": "{\"target\": {\"endpoint\": \"https-metrics\", \"job\": \"kubelet\", \"metrics_path\": \"/metrics\", \"namespace\": \"kube-system\", \"node\": \"ip-172-31-34-3.ec2.internal\", \"service\": \"prometheus-kube-prometheus-kubelet\"}, \"metric\": \"get_token_fail_count\", \"type\": \"counter\", \"help\": \"[ALPHA] Counter of failed Token() requests to the alternate token source\", \"unit\": \"\", \"labels\": [\"__name__\", \"endpoint\", \"instance\", \"job\", \"metrics_path\", \"namespace\", \"node\", \"service\"]}",
+      "ground_truth": [
+        [
+          "metrics: successful_login_attempts, metadata: successful_login_attempts - Total number of successful login attempts., explanation: Returns the rate of successful login attempts in the last 15 minutes."
+        ]
+      ]
+    }
+  ],
+  "Context Recall": 13.61111111111111,
+  "Context Precision": 19.999999998,
+  "Faithfulness": 95.67099567099568,
+  "Answer Relevancy": 78.46423536503869,
+  "Accuracy": 51.93658553628637
+}

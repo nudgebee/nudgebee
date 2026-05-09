@@ -1,0 +1,48 @@
+
+CREATE OR REPLACE VIEW "public"."k8s_account_resource_usage" AS 
+ SELECT n.tenant_id,
+    n.cloud_account_id,
+    sum(
+        CASE
+            WHEN (n.metric = 'cpuCoreRequestAverage'::text) THEN n.value
+            ELSE NULL::double precision
+        END) AS avg_cpu_request,
+    sum(
+        CASE
+            WHEN (n.metric = 'cpuCoreUsageAverage'::text) THEN n.value
+            ELSE NULL::double precision
+        END) AS avg_cpu_usage,
+    sum(
+        CASE
+            WHEN (n.metric = 'ramByteRequestAverage'::text) THEN (n.value / ((1024 * 1024))::double precision)
+            ELSE NULL::double precision
+        END) AS avg_mem_request,
+    sum(
+        CASE
+            WHEN (n.metric = 'ramByteUsageAverage'::text) THEN (n.value / ((1024 * 1024))::double precision)
+            ELSE NULL::double precision
+        END) AS avg_mem_usage,
+    sum(
+        CASE
+            WHEN (n.metric = 'networkReceiveBytes'::text) THEN (n.value / ((1024 * 1024))::double precision)
+            ELSE NULL::double precision
+        END) AS avg_ingress,
+    sum(
+        CASE
+            WHEN (n.metric = 'networkTransferBytes'::text) THEN (n.value / ((1024 * 1024))::double precision)
+            ELSE NULL::double precision
+        END) AS avg_egress
+   FROM ( SELECT cloud_resource_metrics.tenant_id,
+            cloud_resource_metrics.cloud_account_id,
+            cloud_resource_metrics.cloud_resource_id,
+            cloud_resource_metrics."timestamp",
+            cloud_resource_metrics.metric,
+            cloud_resource_metrics.value,
+            row_number() OVER (PARTITION BY cloud_resource_metrics.cloud_account_id, cloud_resource_metrics.cloud_resource_id, cloud_resource_metrics.metric ORDER BY cloud_resource_metrics."timestamp" DESC NULLS LAST) AS rank
+           FROM cloud_resource_metrics
+          WHERE (cloud_resource_metrics.cloud_resource_id IN ( SELECT k8s_nodes.cloud_resource_id
+                   FROM k8s_nodes
+                  WHERE (k8s_nodes.is_active = true))) AND metric in ('cpuCoreUsageAverage', 'cpuCoreRequestAverage', 'ramByteUsageAverage', 'ramByteRequestAverage',  'networkTransferBytes', 'networkReceiveBytes')
+        ) n
+  WHERE (n.rank = 1)
+  GROUP BY n.tenant_id, n.cloud_account_id;

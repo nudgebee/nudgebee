@@ -1,0 +1,60 @@
+table:
+  name: llm_conversation_saved
+  schema: public
+object_relationships:
+  - name: llm_conversation
+    using:
+      foreign_key_constraint_on: conversation_id
+  - name: user
+    using:
+      foreign_key_constraint_on: user_id
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - conversation_id
+      filter: {}
+      limit: 100
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - conversation_id
+      filter: {}
+      limit: 100
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - conversation_id
+      filter: {}
+      limit: 100
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - conversation_id
+      filter: {}
+      limit: 100
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - conversation_id
+      filter: {}
+      limit: 100
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - conversation_id
+      filter: {}
+      limit: 100
+    comment: ""
+  - role: tenant_usage
+    permission:
+      columns:
+        - conversation_id
+      filter: {}
+      limit: 100
+    comment: ""

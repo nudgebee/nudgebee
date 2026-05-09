@@ -1,0 +1,36 @@
+table:
+  name: dw_databases
+  schema: public
+select_permissions:
+  - role: tenant_admin
+    permission:
+      columns:
+        - table_count
+        - fail_safe_size
+        - row_count
+        - size
+        - time_travel_size
+        - database_name
+        - cloud_account_id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - table_count
+        - fail_safe_size
+        - row_count
+        - size
+        - time_travel_size
+        - database_name
+        - cloud_account_id
+        - tenant_id
+      filter:
+        tenant_id:
+          _eq: X-Hasura-User-Tenant-Id
+      allow_aggregations: true
+    comment: ""

@@ -1,0 +1,3 @@
+table:
+  name: cloud_account_onboarding_errors
+  schema: public

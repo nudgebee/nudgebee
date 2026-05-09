@@ -1,0 +1,6 @@
+user_prompt: Check what's failing in production
+expected_output: '{"where": {"service.namespace": {"_ilike": "%production%"}, "severity_text": {"_eq": "ERROR"}}}'
+tags:
+  - complex
+  - ambiguous
+  - signoz

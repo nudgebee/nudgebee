@@ -1,0 +1,8 @@
+user_prompt: what is the promql query for how many HTTP 200 responses occurred for
+  the nginx pod?
+expected_output:
+- increase(container_http_requests_total{pod="nginx", status="200"}[5m])
+- rest_client_requests_total{pod=~".*nginx.*", code="200"}
+tags:
+- command
+- promql

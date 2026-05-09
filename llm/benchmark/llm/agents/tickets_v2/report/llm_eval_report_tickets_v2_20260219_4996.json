@@ -1,0 +1,23 @@
+{
+    "details": [
+        {
+            "query": "Fetch ticket details for IN-20",
+            "retrieved_contexts": [
+                "{\"operation_type\": \"get_ticket\", \"reference_id\": \"IN-20\"}"
+            ],
+            "expected_contexts": [
+                "{\"operation_type\": \"get_ticket\", \"ticket_id\": \"IN-20\"}"
+            ],
+            "ground_truth": "{\"operation_type\": \"get_ticket\", \"ticket_id\": \"IN-20\", \"source\": \"jira\"}{\"operation_type\": \"get_ticket\", \"ticket_id\": \"IN-20\", \"source\": \"jira\"}{\"operation_type\": \"get_ticket\", \"ticket_id\": \"IN-20\"}",
+            "answer_similarity": 87.85,
+            "answer_relevancy": 82.75
+        }
+    ],
+    "summary": {
+        "total_queries": 1,
+        "answer_similarity": 87.85,
+        "answer_relevancy": 82.75,
+        "overall_accuracy": 85.3,
+        "failed_indices_after_retries": []
+    }
+}

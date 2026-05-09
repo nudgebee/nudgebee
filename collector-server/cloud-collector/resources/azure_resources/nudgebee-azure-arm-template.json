@@ -1,0 +1,275 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Nudgebee Azure Event Grid integration template. Deploys a System Topic (or reuses an existing one) and Event Subscription to stream real-time resource state changes to Nudgebee via webhook.",
+    "_generator": {
+      "name": "nudgebee",
+      "version": "1.1.0"
+    }
+  },
+  "parameters": {
+    "NudgebeeExternalId": {
+      "type": "secureString",
+      "minLength": 10,
+      "metadata": {
+        "description": "Your unique Nudgebee account token for secure event routing. Do not change or share this value."
+      }
+    },
+    "NudgebeeWebhookUrl": {
+      "type": "string",
+      "metadata": {
+        "description": "Nudgebee webhook endpoint URL for receiving Event Grid events. This value is pre-filled when deployed via the Nudgebee dashboard."
+      }
+    },
+    "systemTopicName": {
+      "type": "string",
+      "defaultValue": "nudgebee-resource-events",
+      "metadata": {
+        "description": "Name for the Event Grid System Topic resource (used only when creating a new topic)."
+      }
+    },
+    "eventSubscriptionName": {
+      "type": "string",
+      "defaultValue": "nudgebee-resource-sync",
+      "metadata": {
+        "description": "Name for the Event Grid Event Subscription. Leave as default — a unique suffix is appended automatically from the account token."
+      }
+    },
+    "existingSystemTopicName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "If your subscription already has an Event Grid System Topic for subscription-level events, provide its name here. Leave empty to auto-detect or create a new one."
+      }
+    },
+    "existingSystemTopicResourceGroup": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Resource group of the existing system topic. Only required if existingSystemTopicName is provided and the topic is in a different resource group than this deployment."
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Location for deployment script resources."
+      }
+    },
+    "utcValue": {
+      "type": "string",
+      "defaultValue": "[utcNow()]",
+      "metadata": {
+        "description": "Timestamp to force redeployment of deployment script."
+      }
+    }
+  },
+  "variables": {
+    "uniqueSubscriptionName": "[concat(parameters('eventSubscriptionName'), '-', take(parameters('NudgebeeExternalId'), 8))]",
+    "deploymentScriptName": "detect-existing-system-topic",
+    "identityName": "nudgebee-deployment-script-identity",
+    "eventGridContributorRoleId": "1e241071-0855-49ea-94dc-649edcd759de",
+    "roleAssignmentName": "[guid(resourceGroup().id, resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')), variables('eventGridContributorRoleId'))]",
+    "targetResourceGroup": "[if(and(not(empty(parameters('existingSystemTopicName'))), not(empty(parameters('existingSystemTopicResourceGroup')))), parameters('existingSystemTopicResourceGroup'), resourceGroup().name)]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[variables('identityName')]",
+      "location": "[parameters('location')]"
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "condition": "[empty(parameters('existingSystemTopicName'))]",
+      "name": "[variables('roleAssignmentName')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('eventGridContributorRoleId'))]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName')), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal"
+      }
+    },
+    {
+      "type": "Microsoft.Resources/deploymentScripts",
+      "apiVersion": "2020-10-01",
+      "name": "[variables('deploymentScriptName')]",
+      "location": "[parameters('location')]",
+      "kind": "AzureCLI",
+      "dependsOn": [
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]",
+        "[resourceId('Microsoft.Authorization/roleAssignments', variables('roleAssignmentName'))]"
+      ],
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', variables('identityName'))]": {}
+        }
+      },
+      "properties": {
+        "azCliVersion": "2.52.0",
+        "timeout": "PT10M",
+        "retentionInterval": "PT1H",
+        "environmentVariables": [
+          {
+            "name": "SUBSCRIPTION_ID",
+            "value": "[subscription().subscriptionId]"
+          },
+          {
+            "name": "RESOURCE_GROUP",
+            "value": "[resourceGroup().name]"
+          },
+          {
+            "name": "DESIRED_TOPIC_NAME",
+            "value": "[parameters('systemTopicName')]"
+          },
+          {
+            "name": "EXISTING_TOPIC_NAME",
+            "value": "[parameters('existingSystemTopicName')]"
+          },
+          {
+            "name": "EXISTING_TOPIC_RG",
+            "value": "[variables('targetResourceGroup')]"
+          }
+        ],
+        "scriptContent": "#!/bin/bash\nset -e\n\n# === Path 1: Customer provided existing topic name ===\nif [ -n \"$EXISTING_TOPIC_NAME\" ]; then\n  echo \"Using provided existing system topic: $EXISTING_TOPIC_NAME (RG: $EXISTING_TOPIC_RG)\"\n  jq -n --arg tn \"$EXISTING_TOPIC_NAME\" --argjson tc false \\\n    '{topicName: $tn, topicCreated: $tc}' > $AZ_SCRIPTS_OUTPUT_PATH\n  exit 0\nfi\n\n# === Path 2: Auto-detect and/or create ===\necho 'Detecting existing Event Grid System Topic...'\n\n# Wait for EventGrid Contributor role to propagate (assigned via ARM resource)\necho 'Waiting for role assignment to propagate...'\nROLE_READY=false\nfor i in $(seq 1 18); do\n  if az eventgrid system-topic list --resource-group \"$RESOURCE_GROUP\" -o none 2>/dev/null; then\n    ROLE_READY=true\n    echo 'Role propagated successfully.'\n    break\n  fi\n  echo \"  Waiting... ($i/18)\"\n  sleep 10\ndone\n\nif [ \"$ROLE_READY\" != \"true\" ]; then\n  echo ''\n  echo '========================================='\n  echo 'ROLE ASSIGNMENT DID NOT PROPAGATE IN TIME'\n  echo '========================================='\n  echo 'The deploying user may not have permission to assign roles (Owner or User Access Administrator required).'\n  echo ''\n  echo 'Workaround: If your subscription already has an Event Grid System Topic, redeploy with:'\n  echo '  existingSystemTopicName: <your-topic-name>'\n  echo '  existingSystemTopicResourceGroup: <resource-group-of-topic> (if in a different RG)'\n  echo ''\n  echo 'Find your existing topic:'\n  echo \"  az eventgrid system-topic list --subscription $SUBSCRIPTION_ID --query \\\"[?properties.source=='/subscriptions/$SUBSCRIPTION_ID'].{name:name, resourceGroup:resourceGroup}\\\" -o table\"\n  echo '========================================='\n  exit 1\nfi\n\n# Step 1: Check current resource group for existing system topic\nif [ \"$ROLE_READY\" = \"true\" ]; then\n  echo \"Checking resource group '$RESOURCE_GROUP' for existing subscription-level system topic...\"\n  RG_TOPIC=$(az eventgrid system-topic list \\\n    --resource-group \"$RESOURCE_GROUP\" \\\n    --query \"[?properties.source=='/subscriptions/$SUBSCRIPTION_ID'].name | [0]\" \\\n    -o tsv 2>/dev/null) || true\n\n  if [ -n \"$RG_TOPIC\" ] && [ \"$RG_TOPIC\" != \"None\" ] && [ \"$RG_TOPIC\" != \"null\" ]; then\n    echo \"Found existing system topic in current RG: $RG_TOPIC\"\n    jq -n --arg tn \"$RG_TOPIC\" --argjson tc false \\\n      '{topicName: $tn, topicCreated: $tc}' > $AZ_SCRIPTS_OUTPUT_PATH\n    exit 0\n  fi\nfi\n\n# Step 2: Try subscription-level search (requires subscription-level read; may fail)\necho 'No topic in current RG. Trying subscription-level search...'\nSUB_RESULT=$(az eventgrid system-topic list \\\n  --subscription \"$SUBSCRIPTION_ID\" \\\n  --query \"[?properties.source=='/subscriptions/$SUBSCRIPTION_ID'].{name:name, rg:resourceGroup} | [0]\" \\\n  -o json 2>/dev/null) || true\n\nif [ -n \"$SUB_RESULT\" ] && [ \"$SUB_RESULT\" != \"null\" ]; then\n  FOUND_NAME=$(echo \"$SUB_RESULT\" | jq -r '.name // empty')\n  FOUND_RG=$(echo \"$SUB_RESULT\" | jq -r '.rg // empty')\n\n  if [ -n \"$FOUND_NAME\" ]; then\n    if [ \"$FOUND_RG\" = \"$RESOURCE_GROUP\" ]; then\n      echo \"Found existing system topic in current RG: $FOUND_NAME\"\n      jq -n --arg tn \"$FOUND_NAME\" --argjson tc false \\\n        '{topicName: $tn, topicCreated: $tc}' > $AZ_SCRIPTS_OUTPUT_PATH\n      exit 0\n    else\n      echo ''\n      echo '========================================='\n      echo 'EXISTING SYSTEM TOPIC IN ANOTHER RESOURCE GROUP'\n      echo '========================================='\n      echo \"Topic name: $FOUND_NAME\"\n      echo \"Resource group: $FOUND_RG\"\n      echo ''\n      echo 'Please redeploy with these parameters:'\n      echo \"  existingSystemTopicName: $FOUND_NAME\"\n      echo \"  existingSystemTopicResourceGroup: $FOUND_RG\"\n      echo '========================================='\n      exit 1\n    fi\n  fi\nfi\n\n# Step 3: No existing topic found. Attempt to create one.\necho \"No existing system topic found. Creating: $DESIRED_TOPIC_NAME\"\nif az eventgrid system-topic create \\\n  --name \"$DESIRED_TOPIC_NAME\" \\\n  --resource-group \"$RESOURCE_GROUP\" \\\n  --topic-type \"Microsoft.Resources.Subscriptions\" \\\n  --source \"/subscriptions/$SUBSCRIPTION_ID\" \\\n  --location global 2>/tmp/create_error.txt; then\n  echo \"Successfully created system topic: $DESIRED_TOPIC_NAME\"\n  jq -n --arg tn \"$DESIRED_TOPIC_NAME\" --argjson tc true \\\n    '{topicName: $tn, topicCreated: $tc}' > $AZ_SCRIPTS_OUTPUT_PATH\n  exit 0\nfi\n\nCREATE_ERROR=$(cat /tmp/create_error.txt 2>/dev/null || echo 'Unknown error')\necho \"Failed to create system topic: $CREATE_ERROR\"\n\n# Re-check current RG: a parallel deployment may have created the topic\nRG_TOPIC=$(az eventgrid system-topic list \\\n  --resource-group \"$RESOURCE_GROUP\" \\\n  --query \"[?properties.source=='/subscriptions/$SUBSCRIPTION_ID'].name | [0]\" \\\n  -o tsv 2>/dev/null) || true\n\nif [ -n \"$RG_TOPIC\" ] && [ \"$RG_TOPIC\" != \"None\" ] && [ \"$RG_TOPIC\" != \"null\" ]; then\n  echo \"Found system topic after create conflict: $RG_TOPIC\"\n  jq -n --arg tn \"$RG_TOPIC\" --argjson tc false \\\n    '{topicName: $tn, topicCreated: $tc}' > $AZ_SCRIPTS_OUTPUT_PATH\n  exit 0\nfi\n\n# Check for name collision: desired name exists but with different source\nCURRENT_NAME_SOURCE=$(az eventgrid system-topic show \\\n  --name \"$DESIRED_TOPIC_NAME\" \\\n  --resource-group \"$RESOURCE_GROUP\" \\\n  --query \"properties.source\" \\\n  -o tsv 2>/dev/null) || true\n\nif [ -n \"$CURRENT_NAME_SOURCE\" ] && [ \"$CURRENT_NAME_SOURCE\" != \"/subscriptions/$SUBSCRIPTION_ID\" ]; then\n  echo \"A system topic named $DESIRED_TOPIC_NAME already exists in $RESOURCE_GROUP with a different source ($CURRENT_NAME_SOURCE). Choose a unique systemTopicName.\"\n  exit 1\nfi\n\nif echo \"$CREATE_ERROR\" | grep -qi 'existing tracked system topic\\|Conflict\\|already exists'; then\n  echo ''\n  echo '========================================='\n  echo 'EXISTING SYSTEM TOPIC IN ANOTHER RESOURCE GROUP'\n  echo '========================================='\n  echo 'A system topic already exists for this subscription in another resource group.'\n  echo ''\n  echo 'To resolve:'\n  echo '  1. Find the existing topic:'\n  echo \"     az eventgrid system-topic list --subscription $SUBSCRIPTION_ID --query \\\"[?properties.source=='/subscriptions/$SUBSCRIPTION_ID']\\\" -o table\"\n  echo '  2. Redeploy with these parameters:'\n  echo '     existingSystemTopicName: <name-from-step-1>'\n  echo '     existingSystemTopicResourceGroup: <resource-group-from-step-1>'\n  echo '========================================='\nfi\nexit 1\n",
+        "forceUpdateTag": "[parameters('utcValue')]"
+      }
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2021-04-01",
+      "name": "eventGridDeployment",
+      "resourceGroup": "[variables('targetResourceGroup')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deploymentScripts', variables('deploymentScriptName'))]"
+      ],
+      "properties": {
+        "mode": "Incremental",
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "parameters": {
+          "topicName": {
+            "value": "[reference(variables('deploymentScriptName')).outputs.topicName]"
+          },
+          "eventSubscriptionName": {
+            "value": "[variables('uniqueSubscriptionName')]"
+          },
+          "webhookUrl": {
+            "value": "[parameters('NudgebeeWebhookUrl')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "topicName": {
+              "type": "string"
+            },
+            "eventSubscriptionName": {
+              "type": "string"
+            },
+            "webhookUrl": {
+              "type": "string"
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.EventGrid/systemTopics/eventSubscriptions",
+              "apiVersion": "2025-02-15",
+              "name": "[concat(parameters('topicName'), '/', parameters('eventSubscriptionName'))]",
+              "properties": {
+                "destination": {
+                  "endpointType": "WebHook",
+                  "properties": {
+                    "endpointUrl": "[parameters('webhookUrl')]",
+                    "maxEventsPerBatch": 1,
+                    "preferredBatchSizeInKilobytes": 64
+                  }
+                },
+                "filter": {
+                  "includedEventTypes": [
+                    "Microsoft.Resources.ResourceWriteSuccess",
+                    "Microsoft.Resources.ResourceDeleteSuccess",
+                    "Microsoft.Resources.ResourceActionSuccess"
+                  ],
+                  "advancedFilters": [
+                    {
+                      "operatorType": "StringIn",
+                      "key": "data.resourceProvider",
+                      "values": [
+                        "Microsoft.Compute",
+                        "Microsoft.Sql",
+                        "Microsoft.Storage",
+                        "Microsoft.Web",
+                        "Microsoft.ContainerService",
+                        "Microsoft.DBforMySQL",
+                        "Microsoft.DBforPostgreSQL",
+                        "Microsoft.KeyVault",
+                        "Microsoft.Network"
+                      ]
+                    }
+                  ]
+                },
+                "eventDeliverySchema": "EventGridSchema",
+                "retryPolicy": {
+                  "maxDeliveryAttempts": 30,
+                  "eventTimeToLiveInMinutes": 1440
+                }
+              }
+            }
+          ],
+          "outputs": {
+            "topicName": {
+              "type": "string",
+              "value": "[parameters('topicName')]"
+            },
+            "topicId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.EventGrid/systemTopics', parameters('topicName'))]"
+            },
+            "subscriptionId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.EventGrid/systemTopics/eventSubscriptions', parameters('topicName'), parameters('eventSubscriptionName'))]"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "systemTopicName": {
+      "type": "string",
+      "value": "[reference('eventGridDeployment').outputs.topicName.value]",
+      "metadata": {
+        "description": "Name of the Event Grid System Topic (created or existing)"
+      }
+    },
+    "systemTopicId": {
+      "type": "string",
+      "value": "[reference('eventGridDeployment').outputs.topicId.value]",
+      "metadata": {
+        "description": "Resource ID of the Event Grid System Topic (created or existing)"
+      }
+    },
+    "eventSubscriptionId": {
+      "type": "string",
+      "value": "[reference('eventGridDeployment').outputs.subscriptionId.value]",
+      "metadata": {
+        "description": "Resource ID of the Event Subscription"
+      }
+    },
+    "systemTopicCreated": {
+      "type": "bool",
+      "value": "[reference(variables('deploymentScriptName')).outputs.topicCreated]",
+      "metadata": {
+        "description": "Whether a new system topic was created (true) or existing was reused (false)"
+      }
+    }
+  }
+}

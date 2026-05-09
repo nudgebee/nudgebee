@@ -1,0 +1,553 @@
+{
+    "details": [
+        {
+            "query": "what is the promql query for my cluster memory usage",
+            "retrieved_contexts": [
+                "sum(node_memory_MemTotal_bytes) - sum(node_memory_MemAvailable_bytes)"
+            ],
+            "expected_contexts": [
+                "sum(container_memory_usage_bytes)"
+            ],
+            "ground_truth": [
+                [
+                    "sum(container_memory_usage_bytes)",
+                    "sum(container_memory_max_usage_bytes)",
+                    "sum(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / sum(node_memory_MemTotal_bytes) * 100"
+                ]
+            ],
+            "answer_similarity": 92.93,
+            "answer_relevancy": 81.06
+        },
+        {
+            "query": "what is the promql query for memory usage by app-dev in nudgebee namespace",
+            "retrieved_contexts": [
+                "container_memory_usage_bytes{namespace=\"nudgebee\", pod=~\"app-dev.*\"}"
+            ],
+            "expected_contexts": [
+                "container_resources_memory_rss_bytes{namespace=~\"(?i)nudgebee\",pod=~\"(?i)app-dev.*\"}",
+                "container_memory_usage_bytes{namespace=~\"(?i)nudgebee\",pod=~\"(?i)app-dev.*\"}",
+                "sum by (pod) (container_memory_working_set_bytes{namespace=\"nudgebee\", pod=~\"app-dev.*\", container!=\"\"})"
+            ],
+            "ground_truth": [
+                [
+                    "container_resources_memory_rss_bytes{namespace=~\"(?i)nudgebee\",pod=~\"(?i)app-dev.*\"}",
+                    "container_memory_usage_bytes{namespace=~\"(?i)nudgebee\",pod=~\"(?i)app-dev.*\"}",
+                    "sum by (pod) (container_memory_working_set_bytes{namespace=\"nudgebee\", pod=~\"app-dev.*\", container!=\"\"})"
+                ]
+            ],
+            "answer_similarity": 95.07,
+            "answer_relevancy": 82.05
+        },
+        {
+            "query": "what is the promql query for max memory usage by app-dev in nudgebee namespace",
+            "retrieved_contexts": [
+                "max_over_time(container_memory_usage_bytes{namespace=\"nudgebee\", pod=~\"app-dev.*\"}[60m])"
+            ],
+            "expected_contexts": [
+                "max by (pod) (container_memory_usage_bytes{namespace=~\"(?i)nudgebee\", pod=~\"(?i)app-dev.*\"})"
+            ],
+            "ground_truth": [
+                [
+                    "max by (pod) (container_memory_usage_bytes{namespace=~\"(?i)nudgebee\", pod=~\"(?i)app-dev.*\"})",
+                    "max by (pod) (container_memory_working_set_bytes{namespace=~\"(?i)nudgebee\", pod=~\"(?i)app-dev.*\"})",
+                    "max(container_resources_memory_rss_bytes{namespace=\"nudgebee\", pod=~\".*app.dev.*\"})"
+                ]
+            ],
+            "answer_similarity": 92.98,
+            "answer_relevancy": 84.53
+        },
+        {
+            "query": "what is the promql query for memory usage by namespace",
+            "retrieved_contexts": [
+                "sum(container_memory_usage_bytes) by (namespace)"
+            ],
+            "expected_contexts": [
+                "sum by (namespace) (container_memory_usage_bytes)"
+            ],
+            "ground_truth": [
+                [
+                    "sum by (namespace) (container_memory_usage_bytes)",
+                    "sum by (namespace) (container_memory_working_set_bytes)",
+                    "sum by (namespace) (container_memory_max_usage_bytes)"
+                ]
+            ],
+            "answer_similarity": 95.72,
+            "answer_relevancy": 79.12
+        },
+        {
+            "query": "what is the promql query for memory usage of apps in nudgebee-test namespace",
+            "retrieved_contexts": [
+                "container_memory_usage_bytes{namespace=\"nudgebee-test\"}"
+            ],
+            "expected_contexts": [
+                "container_memory_usage_bytes{namespace=~\"nudgebee-test\"}"
+            ],
+            "ground_truth": [
+                [
+                    "container_memory_usage_bytes{namespace=~\"nudgebee-test\"}",
+                    "sum by (pod) (container_memory_usage_bytes{namespace=~\"nudgebee-test\"})",
+                    "sum by (pod) (container_resources_memory_rss_bytes{namespace=\"nudgebee-test\"})"
+                ]
+            ],
+            "answer_similarity": 91.85,
+            "answer_relevancy": 82.2
+        },
+        {
+            "query": "what is the promql query for which pod is taking most memory in nudgebee-test namespace",
+            "retrieved_contexts": [
+                "topk(1, sum(container_memory_usage_bytes{namespace=\"nudgebee-test\"}) by (pod))"
+            ],
+            "expected_contexts": [
+                "sort_desc(sum by (pod) (container_memory_usage_bytes{namespace=~\"(?i)nudgebee-test\"})[10m])"
+            ],
+            "ground_truth": [
+                [
+                    "sort_desc(sum by (pod) (container_memory_usage_bytes{namespace=~\"(?i)nudgebee-test\"})[10m])",
+                    "topk(1, sum by (pod) (container_memory_usage_bytes{namespace=~\"(?i)nudgebee-test\"}))[10m]",
+                    "sum(container_memory_working_set_bytes) by (pod)"
+                ]
+            ],
+            "answer_similarity": 95.18,
+            "answer_relevancy": 87.14
+        },
+        {
+            "query": "what is the promql query for which pod is taking most of the memory in my cluster?",
+            "retrieved_contexts": [
+                "topk(1, sum(container_memory_usage_bytes) by (pod))"
+            ],
+            "expected_contexts": [
+                "sort_desc(max(container_memory_usage_bytes) by (pod))"
+            ],
+            "ground_truth": [
+                [
+                    "sort_desc(max(container_memory_usage_bytes) by (pod))",
+                    "topk(1, max by (pod) (container_memory_usage_bytes))",
+                    "sum(container_memory_working_set_bytes) by (pod)"
+                ]
+            ],
+            "answer_similarity": 94.72,
+            "answer_relevancy": 83.6
+        },
+        {
+            "query": "what is the promql query for which deployment is using highest cpu?",
+            "retrieved_contexts": [
+                "topk(1, sum(rate(container_cpu_usage_seconds_total[5m])) by (pod, namespace))"
+            ],
+            "expected_contexts": [
+                "topk(1, sum by (pod) (rate(container_cpu_usage_seconds_total{container!~\"POD|\"}[1m])) * on (pod, namespace) group_left(node) kube_pod_info{type=\"Deployment\"})"
+            ],
+            "ground_truth": [
+                [
+                    "topk(1, sum by (pod) (rate(container_cpu_usage_seconds_total{container!~\"POD|\"}[1m])) * on (pod, namespace) group_left(node) kube_pod_info{type=\"Deployment\"})",
+                    "sort_desc(sum by (deployment) (rate(container_cpu_usage_seconds_total{container!~\"POD|\"}[1m])))"
+                ]
+            ],
+            "answer_similarity": 94.11,
+            "answer_relevancy": 79.29
+        },
+        {
+            "query": "what is the promql query for which deployment is using highest memory?",
+            "retrieved_contexts": [
+                ""
+            ],
+            "expected_contexts": [
+                "sum(container_memory_usage_bytes{container!=\"POD\"} by (namespace, pod)) by (sum)"
+            ],
+            "ground_truth": [
+                [
+                    "sum(container_memory_usage_bytes{container!=\"POD\"} by (namespace, pod)) by (sum)",
+                    "topk(1, sum by (deployment) (container_memory_usage_bytes{container!=\"POD\"}))",
+                    "topk(1, sum by (namespace, pod) (container_memory_max_usage_bytes))"
+                ]
+            ],
+            "answer_similarity": 54.81,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "what is the promql query for how many HTTP requests per second is services-server in nudgebee namespace is receiving?",
+            "retrieved_contexts": [
+                "rate(container_http_requests_total{namespace=\"nudgebee\", destination_workload_name=\"services-server\"}[5m])"
+            ],
+            "expected_contexts": [
+                "rate(container_http_requests_duration_seconds_total_bucket{destination_workload_name=\"services-server\"}[1m])"
+            ],
+            "ground_truth": [
+                [
+                    "rate(container_http_requests_duration_seconds_total_bucket{destination_workload_name=\"services-server\"}[1m])",
+                    "sum(rate(http_requests_total{job=\"services-server\"}[1m]))"
+                ]
+            ],
+            "answer_similarity": 91.5,
+            "answer_relevancy": 84.14
+        },
+        {
+            "query": "what is the promql query for my cluster memory usage for each node?",
+            "retrieved_contexts": [
+                "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes"
+            ],
+            "expected_contexts": [
+                "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100"
+            ],
+            "ground_truth": [
+                [
+                    "(node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100",
+                    "sum by (instance) ((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes * 100)",
+                    "node_resources_memory_total_bytes"
+                ]
+            ],
+            "answer_similarity": 94.19,
+            "answer_relevancy": 74.63
+        },
+        {
+            "query": "what is the promql query for resources experiencing resource constraints or bottlenecks based on the current CPU usage?",
+            "retrieved_contexts": [
+                "sum(rate(container_cpu_usage_seconds_total[5m])) by (pod, namespace, container)"
+            ],
+            "expected_contexts": [
+                "(rate(container_cpu_cfs_throttled_periods_total{job=\"kubelet\", container!=\"POD\"}[5m]) / rate(container_cpu_cfs_periods_total{job=\"kubelet\", container!=\"POD\"}[5m])) * 100"
+            ],
+            "ground_truth": [
+                [
+                    "(rate(container_cpu_cfs_throttled_periods_total{job=\"kubelet\", container!=\"POD\"}[5m]) / rate(container_cpu_cfs_periods_total{job=\"kubelet\", container!=\"POD\"}[5m])) * 100",
+                    "topk(5, (rate(container_cpu_cfs_throttled_periods_total{job=\"kubelet\", container!=\"POD\"}[5m]) / rate(container_cpu_cfs_periods_total{job=\"kubelet\", container!=\"POD\"}[5m])) * 100)",
+                    "rate(container_resources_cpu_usage_seconds_total{namespace=~\"(.*)\", pod=~\"(.*)\"}[60m]) > 0.8"
+                ]
+            ],
+            "answer_similarity": 87.74,
+            "answer_relevancy": 73.24
+        },
+        {
+            "query": "what is the promql query for total CPU usage across all machines in the last 15 minutes?",
+            "retrieved_contexts": [
+                "sum(rate(node_cpu_seconds_total{mode!=\"idle\", mode!=\"iowait\"}[15m]))"
+            ],
+            "expected_contexts": [
+                "sum(rate(node_cpu_seconds_total[15m]))"
+            ],
+            "ground_truth": [
+                [
+                    "sum(rate(node_cpu_seconds_total[15m]))",
+                    "sum by (instance) (rate(node_cpu_seconds_total[15m]))",
+                    "sum(rate(node_resources_cpu_usage_seconds_total[15m]))"
+                ]
+            ],
+            "answer_similarity": 91.83,
+            "answer_relevancy": 77.27
+        },
+        {
+            "query": "what is the promql query for average response time for API endpoint /generate in the last hour?",
+            "retrieved_contexts": [
+                "sum(rate(container_http_requests_duration_seconds_total_sum{path=\"/generate\"}[1h])) / sum(rate(container_http_requests_total{path=\"/generate\"}[1h]))"
+            ],
+            "expected_contexts": [
+                "avg(rate(container_http_requests_duration_seconds_total_sum{path=\"/generate\"}[1h])) / avg(rate(container_http_requests_duration_seconds_total_count{path=\"/generate\"}[1h]))"
+            ],
+            "ground_truth": [
+                [
+                    "avg(rate(container_http_requests_duration_seconds_total_sum{path=\"/generate\"}[1h])) / avg(rate(container_http_requests_duration_seconds_total_count{path=\"/generate\"}[1h]))",
+                    "histogram_quantile(0.5, rate(container_http_requests_duration_seconds_bucket{path=\"/generate\"}[1h]))",
+                    "kubelet_http_requests_duration_seconds_sum{request=\"/generate\", verb=\"GET\",  le=\"+Inf\"} / kubelet_http_requests_duration_seconds_count{request=\"/generate\", verb=\"GET\"}"
+                ]
+            ],
+            "answer_similarity": 91.84,
+            "answer_relevancy": 83.0
+        },
+        {
+            "query": "what is the promql query for CPU usage rate on node-1?",
+            "retrieved_contexts": [
+                "sum(rate(node_cpu_seconds_total{instance=\"node-1\", mode!=\"idle\"}[5m]))"
+            ],
+            "expected_contexts": [
+                "rate(node_cpu_seconds_total{instance=\"node-1\", mode=\"user\"}[5m])"
+            ],
+            "ground_truth": [
+                [
+                    "rate(node_cpu_seconds_total{instance=\"node-1\", mode=\"user\"}[5m])",
+                    "sum(rate(node_cpu_seconds_total{instance=\"node-1\"}[5m]))"
+                ]
+            ],
+            "answer_similarity": 97.34,
+            "answer_relevancy": 80.15
+        },
+        {
+            "query": "what is the promql query for total memory available on node-2?",
+            "retrieved_contexts": [
+                "node_memory_MemTotal_bytes{instance=\"node-2\"}"
+            ],
+            "expected_contexts": [
+                "node_memory_MemTotal_bytes{instance=\"node-2\"}"
+            ],
+            "ground_truth": [
+                [
+                    "node_memory_MemTotal_bytes{instance=\"node-2\"}",
+                    "sum by (instance) (node_memory_MemTotal_bytes{instance=\"node-2\"})"
+                ]
+            ],
+            "answer_similarity": 95.21,
+            "answer_relevancy": 74.18
+        },
+        {
+            "query": "what is the promql query for how much memory is free on node-1?",
+            "retrieved_contexts": [
+                "node_memory_MemAvailable_bytes{instance=\"node-1\"}"
+            ],
+            "expected_contexts": [
+                "node_memory_MemAvailable_bytes{instance=\"node-1\"}"
+            ],
+            "ground_truth": [
+                [
+                    "node_memory_MemAvailable_bytes{instance=\"node-1\"}",
+                    "sum by (instance) (node_memory_MemAvailable_bytes{instance=\"node-1\"})",
+                    "node_memory_MemFree_bytes{instance=~\".*node.1.*\"}"
+                ]
+            ],
+            "answer_similarity": 94.77,
+            "answer_relevancy": 75.73
+        },
+        {
+            "query": "what is the promql query for disk usage on the root filesystem of node-3?",
+            "retrieved_contexts": [
+                "node_filesystem_avail_bytes{instance=\"node-3\", mountpoint=\"/\"}"
+            ],
+            "expected_contexts": [
+                "node_filesystem_size_bytes{mountpoint=\"/\", instance=\"node-3\"} - node_filesystem_free_bytes{mountpoint=\"/\", instance=\"node-3\"}"
+            ],
+            "ground_truth": [
+                [
+                    "node_filesystem_size_bytes{mountpoint=\"/\", instance=\"node-3\"} - node_filesystem_free_bytes{mountpoint=\"/\", instance=\"node-3\"}",
+                    "sum by (instance) (node_filesystem_size_bytes{mountpoint=\"/\", instance=\"node-3\"} - node_filesystem_free_bytes{mountpoint=\"/\", instance=\"node-3\"})"
+                ]
+            ],
+            "answer_similarity": 92.55,
+            "answer_relevancy": 74.99
+        },
+        {
+            "query": "what is the promql query for network transmit rate on eth0 for node-4?",
+            "retrieved_contexts": [
+                "rate(container_network_transmit_bytes_total{interface=\"eth0\", instance=\"node-4\"}[5m])"
+            ],
+            "expected_contexts": [
+                "rate(node_network_transmit_bytes_total{instance=\"node-4\", device=\"eth0\"}[5m])"
+            ],
+            "ground_truth": [
+                [
+                    "rate(node_network_transmit_bytes_total{instance=\"node-4\", device=\"eth0\"}[5m])",
+                    "sum by (instance) (rate(node_network_transmit_bytes_total{device=\"eth0\"}[5m]))",
+                    "rate(node_network_transmit_packets_total{device=\"eth0\", instance=\"node-4\"}[5m])\n"
+                ]
+            ],
+            "answer_similarity": 93.86,
+            "answer_relevancy": 80.82
+        },
+        {
+            "query": "what is the promql query for network receive rate on eth0 for node-5?",
+            "retrieved_contexts": [
+                "rate(container_network_receive_bytes_total{instance=\"node-5\", interface=\"eth0\"}[60m])"
+            ],
+            "expected_contexts": [
+                "rate(node_network_receive_bytes_total{instance=\"node-5\", device=\"eth0\"}[5m])"
+            ],
+            "ground_truth": [
+                [
+                    "rate(node_network_receive_bytes_total{instance=\"node-5\", device=\"eth0\"}[5m])",
+                    "sum by (instance) (rate(node_network_receive_bytes_total{device=\"eth0\"}[5m]))"
+                ]
+            ],
+            "answer_similarity": 94.83,
+            "answer_relevancy": 79.92
+        },
+        {
+            "query": "what is the promql query for number of running pods in the production namespace?",
+            "retrieved_contexts": [
+                "sum(kube_pod_status_phase{namespace=\"production\", phase=\"Running\"})"
+            ],
+            "expected_contexts": [
+                "count(kube_pod_status_phase{namespace=\"production\", phase=\"Running\"})"
+            ],
+            "ground_truth": [
+                [
+                    "count(kube_pod_status_phase{namespace=\"production\", phase=\"Running\"})",
+                    "sum by (namespace) (kube_pod_status_phase{namespace=\"production\", phase=\"Running\"})",
+                    "kubelet_running_pods{namespace=\"production\"}"
+                ]
+            ],
+            "answer_similarity": 96.24,
+            "answer_relevancy": 84.64
+        },
+        {
+            "query": "what is the promql query for total number of replicas for the nginx deployment?",
+            "retrieved_contexts": [
+                "kube_deployment_status_replicas{deployment=\"nginx\"}"
+            ],
+            "expected_contexts": [
+                "kube_deployment_spec_replicas{deployment=\"nginx\"}"
+            ],
+            "ground_truth": [
+                [
+                    "kube_deployment_spec_replicas{deployment=\"nginx\"}",
+                    "sum(kube_deployment_spec_replicas{deployment=\"nginx\"})"
+                ]
+            ],
+            "answer_similarity": 92.19,
+            "answer_relevancy": 82.12
+        },
+        {
+            "query": "what is the promql query for how many nodes are ready in the Kubernetes cluster?",
+            "retrieved_contexts": [
+                "sum(kube_node_status_condition{condition=\"Ready\", status=\"true\"})"
+            ],
+            "expected_contexts": [
+                "count(kube_node_status_condition{condition=\"Ready\", status=\"true\"})"
+            ],
+            "ground_truth": [
+                [
+                    "count(kube_node_status_condition{condition=\"Ready\", status=\"true\"})"
+                ]
+            ],
+            "answer_similarity": 97.08,
+            "answer_relevancy": 83.57
+        },
+        {
+            "query": "what is the promql query for disk usage percentage on node-6?",
+            "retrieved_contexts": [
+                "node_filesystem_avail_bytes{instance=\"node-6\"}"
+            ],
+            "expected_contexts": [
+                "(node_filesystem_size_bytes{instance=\"node-6\", mountpoint=\"/\"} - node_filesystem_free_bytes{instance=\"node-6\", mountpoint=\"/\"}) / node_filesystem_size_bytes{instance=\"node-6\", mountpoint=\"/\"} * 100"
+            ],
+            "ground_truth": [
+                [
+                    "(node_filesystem_size_bytes{instance=\"node-6\", mountpoint=\"/\"} - node_filesystem_free_bytes{instance=\"node-6\", mountpoint=\"/\"}) / node_filesystem_size_bytes{instance=\"node-6\", mountpoint=\"/\"} * 100"
+                ]
+            ],
+            "answer_similarity": 91.59,
+            "answer_relevancy": 73.99
+        },
+        {
+            "query": "what is the promql query for total CPU usage on node-2, including all modes?",
+            "retrieved_contexts": [
+                "sum(rate(node_cpu_seconds_total{instance=\"node-2\"}[5m]))"
+            ],
+            "expected_contexts": [
+                "sum(rate(node_cpu_seconds_total{instance=\"node-2\"}[1m]))"
+            ],
+            "ground_truth": [
+                [
+                    "sum(rate(node_cpu_seconds_total{instance=\"node-2\"}[1m]))",
+                    "sum(rate(node_cpu_seconds_total{instance=\"node-2\", mode!=\"idle\"}[1m]))",
+                    "node_resources_cpu_usage_seconds_total{instance=~\".*node.2.*\"}"
+                ]
+            ],
+            "answer_similarity": 94.98,
+            "answer_relevancy": 80.25
+        },
+        {
+            "query": "what is the promql query for how many persistent volume claims are bound in the staging namespace?",
+            "retrieved_contexts": [
+                "sum(kube_persistentvolumeclaim_status_phase{namespace=\"staging\", phase=\"Bound\"})"
+            ],
+            "expected_contexts": [
+                "count(kube_persistentvolumeclaim_status_phase{namespace=\"staging\", phase=\"Bound\"})"
+            ],
+            "ground_truth": [
+                [
+                    "count(kube_persistentvolumeclaim_status_phase{namespace=\"staging\", phase=\"Bound\"})",
+                    "sum(kube_persistentvolume_claim_ref{claim_namespace=\"staging\"})"
+                ]
+            ],
+            "answer_similarity": 97.64,
+            "answer_relevancy": 86.11
+        },
+        {
+            "query": "what is the promql query for memory usage percentage on node-3?",
+            "retrieved_contexts": [
+                "(node_memory_MemTotal_bytes{instance=\"node-3\"} - node_memory_MemAvailable_bytes{instance=\"node-3\"}) / node_memory_MemTotal_bytes{instance=\"node-3\"} * 100"
+            ],
+            "expected_contexts": [
+                "(node_memory_MemTotal_bytes{instance=\"node-3\"} - node_memory_MemAvailable_bytes{instance=\"node-3\"}) / node_memory_MemTotal_bytes{instance=\"node-3\"} * 100"
+            ],
+            "ground_truth": [
+                [
+                    "(node_memory_MemTotal_bytes{instance=\"node-3\"} - node_memory_MemAvailable_bytes{instance=\"node-3\"}) / node_memory_MemTotal_bytes{instance=\"node-3\"} * 100",
+                    "(node_resources_memory_usage_bytes{node=\"node-3\"} / node_resources_memory_total_bytes{node=\"node-3\"}) * 100"
+                ]
+            ],
+            "answer_similarity": 98.6,
+            "answer_relevancy": 83.65
+        },
+        {
+            "query": "what is the promql query for how many HTTP 200 responses occurred for the nginx pod?",
+            "retrieved_contexts": [
+                ""
+            ],
+            "expected_contexts": [
+                "increase(container_http_requests_total{pod=\"nginx\", status=\"200\"}[5m])"
+            ],
+            "ground_truth": [
+                [
+                    "increase(container_http_requests_total{pod=\"nginx\", status=\"200\"}[5m])",
+                    "rest_client_requests_total{pod=~\".*nginx.*\", code=\"200\"}"
+                ]
+            ],
+            "answer_similarity": 52.66,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "what is the promql query for total CPU usage for the Kubernetes API server?",
+            "retrieved_contexts": [
+                "sum(rate(container_cpu_usage_seconds_total{pod=~\"kube-apiserver.*\"}[5m]))"
+            ],
+            "expected_contexts": [
+                "sum(rate(process_cpu_seconds_total{job=\"kube-apiserver\"}[1m]))"
+            ],
+            "ground_truth": [
+                [
+                    "sum(rate(process_cpu_seconds_total{job=\"kube-apiserver\"}[1m]))",
+                    "sum(rate(process_cpu_seconds_total{pod=~\".*kube.*apiserver.*\"}[1m]))"
+                ]
+            ],
+            "answer_similarity": 96.53,
+            "answer_relevancy": 82.73
+        },
+        {
+            "query": "what is the promql query for uptime for the node-exporter service on node-1?",
+            "retrieved_contexts": [
+                ""
+            ],
+            "expected_contexts": [
+                "up{job=\"node-exporter\", instance=\"node-1\"}"
+            ],
+            "ground_truth": [
+                [
+                    "up{job=\"node-exporter\", instance=\"node-1\"}",
+                    "node_uptime_seconds{instance=~\".*node.1.*\"}"
+                ]
+            ],
+            "answer_similarity": 54.24,
+            "answer_relevancy": 0.0
+        },
+        {
+            "query": "what is the promql query for how many pods are in a failed state in the dev namespace?",
+            "retrieved_contexts": [
+                "sum(kube_pod_status_phase{namespace=\"dev\", phase=\"Failed\"})"
+            ],
+            "expected_contexts": [
+                "count(kube_pod_status_phase{namespace=\"dev\", phase=\"Failed\"})"
+            ],
+            "ground_truth": [
+                [
+                    "count(kube_pod_status_phase{namespace=\"dev\", phase=\"Failed\"})",
+                    "sum by (namespace) (kube_pod_status_phase{namespace=\"dev\", phase=\"Failed\"})"
+                ]
+            ],
+            "answer_similarity": 97.69,
+            "answer_relevancy": 85.85
+        }
+    ],
+    "summary": {
+        "total_queries": 31,
+        "answer_similarity": 90.4,
+        "answer_relevancy": 72.9,
+        "overall_accuracy": 81.65
+    }
+}

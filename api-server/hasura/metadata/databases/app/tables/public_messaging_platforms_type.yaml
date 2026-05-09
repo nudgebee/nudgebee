@@ -1,0 +1,41 @@
+table:
+  name: messaging_platforms_type
+  schema: public
+is_enum: true
+select_permissions:
+  - role: account_admin
+    permission:
+      columns:
+        - value
+      filter: {}
+    comment: ""
+  - role: account_admin_readonly
+    permission:
+      columns:
+        - value
+      filter: {}
+    comment: ""
+  - role: k8s_namespace_admin
+    permission:
+      columns:
+        - value
+      filter: {}
+    comment: ""
+  - role: k8s_namespace_admin_readonly
+    permission:
+      columns:
+        - value
+      filter: {}
+    comment: ""
+  - role: tenant_admin
+    permission:
+      columns:
+        - value
+      filter: {}
+    comment: ""
+  - role: tenant_admin_readonly
+    permission:
+      columns:
+        - value
+      filter: {}
+    comment: ""

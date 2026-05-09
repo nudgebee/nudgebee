@@ -1,0 +1,9 @@
+user_prompt: Write a LogQL query to count requests by HTTP method (e.g., GET/POST)
+  from the ingress job over 5 minutes?
+expected_output:
+- sum by (method) (count_over_time({job="ingress"} | regexp `method="(?P<method>[A-Z]+)"`
+  [5m]))
+- sum by (method) (rate({app="nginx"} | regexp `method=(?P<method>\w+)` [10m]))
+tags:
+- command
+- datadog

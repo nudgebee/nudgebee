@@ -1,0 +1,6 @@
+user_prompt: List all Athena workgroups.
+expected_output:
+- aws athena list-work-groups
+tags:
+- command
+- aws

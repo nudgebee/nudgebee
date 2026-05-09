@@ -1,0 +1,6 @@
+user_prompt: Create a new deployment named nudgebee-frontend with the image nudgebee/frontend:latest.
+expected_output:
+- kubectl create deployment <deployment-name> --image=<image-name>
+tags:
+- command
+- kubernetes

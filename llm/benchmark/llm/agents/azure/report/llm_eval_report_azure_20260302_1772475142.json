@@ -1,0 +1,29 @@
+{
+    "details": [
+        {
+            "query": "Our team cannot SSH into the bastion host 'e01-bastion-nsg' in resource group 'azure-agent-test-E01'. Connections time out immediately. The VM is running and reachable by ping. What is wrong?",
+            "query_type": "rca",
+            "retrieved_command": "\n### Root Cause Identified\nThe connection timeout is caused by a misconfiguration in the Network Security Group (NSG) **`e01-bastion-nsg`**.\n\n1.  **Missing SSH Rule:** The NSG currently has **zero** custom security rules (as seen in [Azure - E7](#task-E7)).\n2.  **Default Blocking:** Without an explicit \"Allow\" rule for SSH, the NSG reverts to the default rule **`DenyAllInBound`**, which blocks all traffic from the internet.\n3.  **Resource Confusion:** You referred to `e01-bastion-nsg` as the host, but this is actually the name of the Network Security Group. The actual Virtual Machine appears to be missing from this resource group or is located elsewhere, but any VM attached to the `E01-BASTION-SUBNET` is affected by this NSG blocking.\n\n### Evidence\nFrom the NSG configuration `e01-bastion-nsg`:\n```json\n\"securityRules\": [],\n\"defaultSecurityRules\": [\n  {\n    \"access\": \"Deny\",\n    \"name\": \"DenyAllInBound\",\n    \"direction\": \"Inbound\",\n    ...\n  }\n]\n```\n\n### Recommendations\nTo fix this, you must add an inbound security rule to the NSG `e01-bastion-nsg` to allow SSH traffic.\n\n**Required Rule Settings:**\n*   **Source:** `Any` (or your specific IP address for better security)\n*   **Source Port Ranges:** `*`\n*   **Destination:** `Any`\n*   **Destination Port Ranges:** `22`\n*   **Protocol:** `TCP`\n*   **Action:** `Allow`\n*   **Priority:** `100` (or any number lower than 65000)\n    ",
+            "retrieved_response": "\n### Root Cause Identified\nThe connection timeout is caused by a misconfiguration in the Network Security Group (NSG) **`e01-bastion-nsg`**.\n\n1.  **Missing SSH Rule:** The NSG currently has **zero** custom security rules (as seen in [Azure - E7](#task-E7)).\n2.  **Default Blocking:** Without an explicit \"Allow\" rule for SSH, the NSG reverts to the default rule **`DenyAllInBound`**, which blocks all traffic from the internet.\n3.  **Resource Confusion:** You referred to `e01-bastion-nsg` as the host, but this is actually the name of the Network Security Group. The actual Virtual Machine appears to be missing from this resource group or is located elsewhere, but any VM attached to the `E01-BASTION-SUBNET` is affected by this NSG blocking.\n\n### Evidence\nFrom the NSG configuration `e01-bastion-nsg`:\n```json\n\"securityRules\": [],\n\"defaultSecurityRules\": [\n  {\n    \"access\": \"Deny\",\n    \"name\": \"DenyAllInBound\",\n    \"direction\": \"Inbound\",\n    ...\n  }\n]\n```\n\n### Recommendations\nTo fix this, you must add an inbound security rule to the NSG `e01-bastion-nsg` to allow SSH traffic.\n\n**Required Rule Settings:**\n*   **Source:** `Any` (or your specific IP address for better security)\n*   **Source Port Ranges:** `*`\n*   **Destination:** `Any`\n*   **Destination Port Ranges:** `22`\n*   **Protocol:** `TCP`\n*   **Action:** `Allow`\n*   **Priority:** `100` (or any number lower than 65000)\n    ",
+            "expected_contexts": [
+                "Resource group: azure-agent-test-E01. NSG 'e01-bastion-nsg' is attached to the bastion host subnet. The VM is in running state. SSH attempts on port 22 time out.",
+                "az network nsg rule list --nsg-name e01-bastion-nsg --resource-group azure-agent-test-E01 --output table",
+                "az network nsg show --name e01-bastion-nsg --resource-group azure-agent-test-E01"
+            ],
+            "ground_truth": "The NSG 'e01-bastion-nsg' has no inbound security rules defined. Without an explicit Allow rule for TCP port 22, all inbound SSH traffic is blocked by the default Deny-all rule. Fix: Add an inbound rule allowing TCP port 22 from the required source IP range.",
+            "answer_similarity": 90.8,
+            "answer_relevancy": 71.52,
+            "rca_quality_score": 5.0,
+            "rca_quality_normalized": 100.0
+        }
+    ],
+    "summary": {
+        "total_queries": 1,
+        "answer_similarity": 90.8,
+        "answer_relevancy": 71.52,
+        "overall_accuracy": 81.16,
+        "rca_scenarios_count": 1,
+        "avg_rca_quality_score": 100.0,
+        "failed_indices_after_retries": []
+    }
+}

@@ -1,0 +1,8 @@
+user_prompt: what is the promql query for how many pods are in a failed state in the
+  dev namespace?
+expected_output:
+- count(kube_pod_status_phase{namespace="dev", phase="Failed"})
+- sum by (namespace) (kube_pod_status_phase{namespace="dev", phase="Failed"})
+tags:
+- command
+- promql

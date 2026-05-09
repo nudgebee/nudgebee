@@ -1,0 +1,5909 @@
+[
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_node_deletion_timestamp",
+    "type": "gauge",
+    "help": "Unix deletion timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_init_container_info",
+    "type": "gauge",
+    "help": "[STABLE] Information about an init container in a pod.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_id",
+      "endpoint",
+      "image",
+      "image_id",
+      "image_spec",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_replicationcontroller_status_replicas",
+    "type": "gauge",
+    "help": "[STABLE] The number of replicas per ReplicationController.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_configmap_info",
+    "type": "gauge",
+    "help": "[STABLE] Information about configmap.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "configmap",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_endpoint_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_horizontalpodautoscaler_status_desired_replicas",
+    "type": "gauge",
+    "help": "[STABLE] Desired number of replicas of pods managed by this autoscaler.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_ingress_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "ingress",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_node_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_persistentvolumeclaim_status_phase",
+    "type": "gauge",
+    "help": "[STABLE] The phase the persistent volume claim is currently in.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "persistentvolumeclaim",
+      "phase",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_poddisruptionbudget_status_current_healthy",
+    "type": "gauge",
+    "help": "[STABLE] Current number of healthy pods",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "poddisruptionbudget",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_node_status_capacity",
+    "type": "gauge",
+    "help": "[STABLE] The capacity for different resources of a node.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "node",
+      "pod",
+      "resource",
+      "service",
+      "unit"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_poddisruptionbudget_status_observed_generation",
+    "type": "gauge",
+    "help": "[STABLE] Most recent generation observed when updating this PDB status",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "poddisruptionbudget",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_restart_policy",
+    "type": "gauge",
+    "help": "[STABLE] Describes the restart policy in use by this pod.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "type",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_statefulset_status_replicas_current",
+    "type": "gauge",
+    "help": "[STABLE] The number of current replicas per StatefulSet.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "statefulset"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_deployment_status_condition",
+    "type": "gauge",
+    "help": "[STABLE] The current status conditions of a deployment.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "condition",
+      "container",
+      "deployment",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "status"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_node_labels",
+    "type": "gauge",
+    "help": "[STABLE] Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_container_status_ready",
+    "type": "gauge",
+    "help": "[STABLE] Describes whether the containers readiness check succeeded.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_init_container_status_ready",
+    "type": "gauge",
+    "help": "[STABLE] Describes whether the init containers readiness check succeeded.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_job_status_completion_time",
+    "type": "gauge",
+    "help": "[STABLE] CompletionTime represents time when the job was completed.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "job_name",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_service_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_certificatesigningrequest_cert_length",
+    "type": "gauge",
+    "help": "[STABLE] Length of the issued cert",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "certificatesigningrequest",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "signer_name"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_statefulset_status_replicas",
+    "type": "gauge",
+    "help": "[STABLE] The number of replicas per StatefulSet.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "statefulset"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_node_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_storageclass_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "storageclass"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_networkpolicy_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_container_status_running",
+    "type": "gauge",
+    "help": "[STABLE] Describes whether the container is currently in running state.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_volumeattachment_status_attachment_metadata",
+    "type": "gauge",
+    "help": "volumeattachment metadata.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metadata_device_path",
+      "namespace",
+      "pod",
+      "service",
+      "volumeattachment"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_cronjob_status_last_successful_time",
+    "type": "gauge",
+    "help": "LastSuccessfulTime keeps information of when was the last time the job was completed successfully.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_daemonset_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "daemonset",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_daemonset_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "daemonset",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_container_status_last_terminated_reason",
+    "type": "gauge",
+    "help": "Describes the last reason the container was in terminated state.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "reason",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_secret_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "secret",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_service_labels",
+    "type": "gauge",
+    "help": "[STABLE] Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_configmap_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "configmap",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_deployment_spec_strategy_rollingupdate_max_unavailable",
+    "type": "gauge",
+    "help": "[STABLE] Maximum number of unavailable replicas during a rolling update of a deployment.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "deployment",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_namespace_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_secret_info",
+    "type": "gauge",
+    "help": "[STABLE] Information about secret.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "secret",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_statefulset_status_update_revision",
+    "type": "gauge",
+    "help": "[STABLE] Indicates the version of the StatefulSet used to generate Pods in the sequence [replicas-updatedReplicas,replicas)",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "revision",
+      "service",
+      "statefulset"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_persistentvolumeclaim_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "persistentvolumeclaim",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_persistentvolumeclaim_info",
+    "type": "gauge",
+    "help": "[STABLE] Information about persistent volume claim.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "persistentvolumeclaim",
+      "pod",
+      "service",
+      "storageclass",
+      "volumename"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_poddisruptionbudget_status_desired_healthy",
+    "type": "gauge",
+    "help": "[STABLE] Minimum desired number of healthy pods",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "poddisruptionbudget",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_job_status_failed",
+    "type": "gauge",
+    "help": "[STABLE] The number of pods which reached Phase Failed and the reason for failure.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "job_name",
+      "namespace",
+      "pod",
+      "reason",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_container_status_waiting_reason",
+    "type": "gauge",
+    "help": "[STABLE] Describes the reason the container is currently in waiting state.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "reason",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_statefulset_status_current_revision",
+    "type": "gauge",
+    "help": "[STABLE] Indicates the version of the StatefulSet used to generate Pods in the sequence [0,currentReplicas).",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "revision",
+      "service",
+      "statefulset"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_endpoint_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_ingress_labels",
+    "type": "gauge",
+    "help": "[STABLE] Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "ingress",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_job_labels",
+    "type": "gauge",
+    "help": "[STABLE] Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "job_name",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_limitrange_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_init_container_status_last_terminated_reason",
+    "type": "gauge",
+    "help": "Describes the last reason the init container was in terminated state.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_statefulset_status_replicas_available",
+    "type": "gauge",
+    "help": "The number of available replicas per StatefulSet.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "statefulset"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_statefulset_replicas",
+    "type": "gauge",
+    "help": "[STABLE] Number of desired pods for a StatefulSet.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "statefulset"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_statefulset_labels",
+    "type": "gauge",
+    "help": "[STABLE] Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "statefulset"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_certificatesigningrequest_condition",
+    "type": "gauge",
+    "help": "[STABLE] The number of each certificatesigningrequest condition",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "certificatesigningrequest",
+      "condition",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "signer_name"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_cronjob_metadata_resource_version",
+    "type": "gauge",
+    "help": "[STABLE] Resource version representing a specific version of the cronjob.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_deployment_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "deployment",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_deployment_status_replicas_available",
+    "type": "gauge",
+    "help": "[STABLE] The number of available replicas per deployment.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "deployment",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_deployment_spec_paused",
+    "type": "gauge",
+    "help": "[STABLE] Whether the deployment is paused and will not be processed by the deployment controller.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "deployment",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_limitrange",
+    "type": "gauge",
+    "help": "[STABLE] Information about limit range.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_namespace_status_condition",
+    "type": "gauge",
+    "help": "The condition of a namespace.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "condition",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "status"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_poddisruptionbudget_labels",
+    "type": "gauge",
+    "help": "Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "poddisruptionbudget",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_poddisruptionbudget_status_pod_disruptions_allowed",
+    "type": "gauge",
+    "help": "[STABLE] Number of pod disruptions that are currently allowed",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "poddisruptionbudget",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_init_container_status_waiting_reason",
+    "type": "gauge",
+    "help": "Describes the reason the init container is currently in waiting state.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "reason",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_tolerations",
+    "type": "gauge",
+    "help": "Information about the pod tolerations",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "effect",
+      "endpoint",
+      "instance",
+      "job",
+      "key",
+      "namespace",
+      "operator",
+      "pod",
+      "service",
+      "toleration_seconds",
+      "uid",
+      "value"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_statefulset_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "statefulset"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_daemonset_status_desired_number_scheduled",
+    "type": "gauge",
+    "help": "[STABLE] The number of nodes that should be running the daemon pod.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "daemonset",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_job_status_succeeded",
+    "type": "gauge",
+    "help": "[STABLE] The number of pods which reached Phase Succeeded.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "job_name",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_mutatingwebhookconfiguration_created",
+    "type": "gauge",
+    "help": "Unix creation timestamp.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "mutatingwebhookconfiguration",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_status_container_ready_time",
+    "type": "gauge",
+    "help": "Readiness achieved time in unix timestamp for a pod containers.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_secret_labels",
+    "type": "gauge",
+    "help": "[STABLE] Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "secret",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_replicaset_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "replicaset",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_deployment_labels",
+    "type": "gauge",
+    "help": "[STABLE] Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "deployment",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_overhead_cpu_cores",
+    "type": "gauge",
+    "help": "The pod overhead in regards to cpu cores associated with running a pod.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_replicaset_owner",
+    "type": "gauge",
+    "help": "[STABLE] Information about the ReplicaSet's owner.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "owner_is_controller",
+      "owner_kind",
+      "owner_name",
+      "pod",
+      "replicaset",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_start_time",
+    "type": "gauge",
+    "help": "[STABLE] Start time in unix timestamp for a pod.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_status_scheduled_time",
+    "type": "gauge",
+    "help": "[STABLE] Unix timestamp when pod moved into scheduled status",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_daemonset_labels",
+    "type": "gauge",
+    "help": "[STABLE] Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "daemonset",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_networkpolicy_spec_egress_rules",
+    "type": "gauge",
+    "help": "Number of egress rules on the networkpolicy",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_validatingwebhookconfiguration_info",
+    "type": "gauge",
+    "help": "Information about the ValidatingWebhookConfiguration.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "pod",
+      "service",
+      "validatingwebhookconfiguration"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_container_resource_limits",
+    "type": "gauge",
+    "help": "The number of requested limit resource by a container. It is recommended to use the kube_pod_resource_limits metric exposed by kube-scheduler instead, as it is more precise.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "node",
+      "pod",
+      "resource",
+      "service",
+      "uid",
+      "unit"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_status_reason",
+    "type": "gauge",
+    "help": "The pod status reasons",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "reason",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_storageclass_labels",
+    "type": "gauge",
+    "help": "[STABLE] Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "storageclass"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_ingress_metadata_resource_version",
+    "type": "gauge",
+    "help": "Resource version representing a specific version of ingress.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "ingress",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_job_owner",
+    "type": "gauge",
+    "help": "[STABLE] Information about the Job's owner.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "job_name",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_spec_volumes_persistentvolumeclaims_info",
+    "type": "gauge",
+    "help": "[STABLE] Information about persistentvolumeclaim volumes in a pod.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "persistentvolumeclaim",
+      "pod",
+      "service",
+      "uid",
+      "volume"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_statefulset_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "statefulset"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_deployment_status_replicas_ready",
+    "type": "gauge",
+    "help": "[STABLE] The number of ready replicas per deployment.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "deployment",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_namespace_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_persistentvolumeclaim_resource_requests_storage_bytes",
+    "type": "gauge",
+    "help": "[STABLE] The capacity of storage requested by the persistent volume claim.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "persistentvolumeclaim",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_container_status_restarts_total",
+    "type": "counter",
+    "help": "[STABLE] The number of container restarts per container.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_ips",
+    "type": "gauge",
+    "help": "Pod IP addresses",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "ip",
+      "ip_family",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_runtimeclass_name_info",
+    "type": "gauge",
+    "help": "The runtimeclass associated with the pod.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_deployment_status_observed_generation",
+    "type": "gauge",
+    "help": "[STABLE] The generation observed by the deployment controller.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "deployment",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_horizontalpodautoscaler_spec_target_metric",
+    "type": "gauge",
+    "help": "The metric specifications used by this autoscaler when calculating the desired replica count.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_info",
+    "type": "gauge",
+    "help": "[STABLE] Information about pod.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "created_by_kind",
+      "created_by_name",
+      "endpoint",
+      "host_ip",
+      "host_network",
+      "instance",
+      "job",
+      "namespace",
+      "node",
+      "pod",
+      "pod_ip",
+      "priority_class",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_resourcequota",
+    "type": "gauge",
+    "help": "[STABLE] Information about resource quota.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_endpoint_ports",
+    "type": "gauge",
+    "help": "[STABLE] Information about the Endpoint ports.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "port_name",
+      "port_number",
+      "port_protocol",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_horizontalpodautoscaler_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_job_info",
+    "type": "gauge",
+    "help": "[STABLE] Information about job.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "job_name",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_container_status_last_terminated_exitcode",
+    "type": "gauge",
+    "help": "Describes the exit code for the last container in terminated state.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_status_qos_class",
+    "type": "gauge",
+    "help": "The pods current qosClass.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "qos_class",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_cronjob_status_last_schedule_time",
+    "type": "gauge",
+    "help": "[STABLE] LastScheduleTime keeps information of when was the last time the job was successfully scheduled.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_deployment_metadata_generation",
+    "type": "gauge",
+    "help": "[STABLE] Sequence number representing a specific generation of the desired state.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "deployment",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_deletion_timestamp",
+    "type": "gauge",
+    "help": "Unix deletion timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_replicaset_status_ready_replicas",
+    "type": "gauge",
+    "help": "[STABLE] The number of ready replicas per ReplicaSet.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "replicaset",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_endpoint_address_not_ready",
+    "type": "gauge",
+    "help": "(Deprecated since v2.6.0) Number of addresses not ready in endpoint",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_init_container_resource_requests",
+    "type": "gauge",
+    "help": "The number of requested request resource by an init container.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "node",
+      "pod",
+      "resource",
+      "service",
+      "uid",
+      "unit"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_service_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_networkpolicy_spec_ingress_rules",
+    "type": "gauge",
+    "help": "Number of ingress rules on the networkpolicy",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_node_spec_unschedulable",
+    "type": "gauge",
+    "help": "[STABLE] Whether a node can schedule new pods.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_init_container_status_restarts_total",
+    "type": "counter",
+    "help": "[STABLE] The number of restarts for the init container.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_replicaset_spec_replicas",
+    "type": "gauge",
+    "help": "[STABLE] Number of desired pods for a ReplicaSet.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "replicaset",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_job_spec_active_deadline_seconds",
+    "type": "gauge",
+    "help": "[STABLE] The duration in seconds relative to the startTime that the job may be active before the system tries to terminate it.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_job_failed",
+    "type": "gauge",
+    "help": "[STABLE] The job has failed its execution.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "condition",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "job_name",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_namespace_labels",
+    "type": "gauge",
+    "help": "[STABLE] Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_persistentvolume_status_phase",
+    "type": "gauge",
+    "help": "[STABLE] The phase indicates if a volume is available, bound to a claim, or released by a claim.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "persistentvolume",
+      "phase",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_status_unschedulable",
+    "type": "gauge",
+    "help": "[STABLE] Describes the unschedulable status for the pod.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_volumeattachment_info",
+    "type": "gauge",
+    "help": "Information about volumeattachment.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "attacher",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "node",
+      "pod",
+      "service",
+      "volumeattachment"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_endpoint_info",
+    "type": "gauge",
+    "help": "[STABLE] Information about endpoint.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_horizontalpodautoscaler_metadata_generation",
+    "type": "gauge",
+    "help": "[STABLE] The generation observed by the HorizontalPodAutoscaler controller.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_daemonset_status_observed_generation",
+    "type": "gauge",
+    "help": "[STABLE] The most recent generation observed by the daemon set controller.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "daemonset",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_deployment_spec_strategy_rollingupdate_max_surge",
+    "type": "gauge",
+    "help": "[STABLE] Maximum number of replicas that can be scheduled above the desired number of replicas during a rolling update of a deployment.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "deployment",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_job_status_start_time",
+    "type": "gauge",
+    "help": "[STABLE] StartTime represents time when the job was acknowledged by the Job Manager.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "job_name",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_persistentvolumeclaim_access_mode",
+    "type": "gauge",
+    "help": "[STABLE] The access mode(s) specified by the persistent volume claim.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "access_mode",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "persistentvolumeclaim",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_replicationcontroller_status_observed_generation",
+    "type": "gauge",
+    "help": "[STABLE] The generation observed by the ReplicationController controller.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_secret_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "secret",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_configmap_metadata_resource_version",
+    "type": "gauge",
+    "help": "Resource version representing a specific version of the configmap.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "configmap",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_cronjob_next_schedule_time",
+    "type": "gauge",
+    "help": "[STABLE] Next time the cronjob should be scheduled. The time after lastScheduleTime, or after the cron job's creation time if it's never been scheduled. Use this to determine if the job is delayed.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_daemonset_status_number_available",
+    "type": "gauge",
+    "help": "[STABLE] The number of nodes that should be running the daemon pod and have one or more of the daemon pod running and available",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "daemonset",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_ingress_info",
+    "type": "gauge",
+    "help": "[STABLE] Information about ingress.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "ingress",
+      "ingressclass",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_mutatingwebhookconfiguration_info",
+    "type": "gauge",
+    "help": "Information about the MutatingWebhookConfiguration.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "mutatingwebhookconfiguration",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_replicaset_status_observed_generation",
+    "type": "gauge",
+    "help": "[STABLE] The generation observed by the ReplicaSet controller.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "replicaset",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_storageclass_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "storageclass"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_certificatesigningrequest_labels",
+    "type": "gauge",
+    "help": "[STABLE] Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "certificatesigningrequest",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "signer_name"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_deployment_status_replicas_unavailable",
+    "type": "gauge",
+    "help": "[STABLE] The number of unavailable replicas per deployment.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "deployment",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_horizontalpodautoscaler_status_current_replicas",
+    "type": "gauge",
+    "help": "[STABLE] Current number of replicas of pods managed by this autoscaler.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_ingress_path",
+    "type": "gauge",
+    "help": "[STABLE] Ingress host, paths and backend service information.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "host",
+      "ingress",
+      "instance",
+      "job",
+      "namespace",
+      "path",
+      "pod",
+      "service",
+      "service_name",
+      "service_port"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_persistentvolume_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "persistentvolume",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_ingress_tls",
+    "type": "gauge",
+    "help": "[STABLE] Ingress TLS host and secret information.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "ingress",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "secret",
+      "service",
+      "tls_host"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_init_container_status_running",
+    "type": "gauge",
+    "help": "[STABLE] Describes whether the init container is currently in running state.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_replicaset_status_replicas",
+    "type": "gauge",
+    "help": "[STABLE] The number of replicas per ReplicaSet.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "replicaset",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_replicaset_labels",
+    "type": "gauge",
+    "help": "[STABLE] Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "replicaset",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_configmap_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "configmap",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_cronjob_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_daemonset_status_number_ready",
+    "type": "gauge",
+    "help": "[STABLE] The number of nodes that should be running the daemon pod and have one or more of the daemon pod running and ready.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "daemonset",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_horizontalpodautoscaler_status_condition",
+    "type": "gauge",
+    "help": "[STABLE] The condition of this autoscaler.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_job_complete",
+    "type": "gauge",
+    "help": "[STABLE] The job has completed its execution.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "condition",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "job_name",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_init_container_status_terminated_reason",
+    "type": "gauge",
+    "help": "Describes the reason the init container is currently in terminated state.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "reason",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_replicaset_metadata_generation",
+    "type": "gauge",
+    "help": "[STABLE] Sequence number representing a specific generation of the desired state.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "replicaset",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_validatingwebhookconfiguration_created",
+    "type": "gauge",
+    "help": "Unix creation timestamp.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "pod",
+      "service",
+      "validatingwebhookconfiguration"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_deployment_status_replicas",
+    "type": "gauge",
+    "help": "[STABLE] The number of replicas per deployment.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "deployment",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_deployment_status_replicas_updated",
+    "type": "gauge",
+    "help": "[STABLE] The number of updated replicas per deployment.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "deployment",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_container_status_terminated",
+    "type": "gauge",
+    "help": "[STABLE] Describes whether the container is currently in terminated state.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_service_spec_external_ip",
+    "type": "gauge",
+    "help": "[STABLE] Service external ips. One series for each ip",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_statefulset_status_replicas_updated",
+    "type": "gauge",
+    "help": "[STABLE] The number of updated replicas per StatefulSet.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "statefulset"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_volumeattachment_status_attached",
+    "type": "gauge",
+    "help": "Information about volumeattachment.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "volumeattachment"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_container_status_waiting",
+    "type": "gauge",
+    "help": "[STABLE] Describes whether the container is currently in waiting state.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_job_spec_parallelism",
+    "type": "gauge",
+    "help": "[STABLE] The maximum desired number of pods the job should run at any given time.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "job_name",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_persistentvolume_claim_ref",
+    "type": "gauge",
+    "help": "[STABLE] Information about the Persistent Volume Claim Reference.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "claim_namespace",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "name",
+      "namespace",
+      "persistentvolume",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_owner",
+    "type": "gauge",
+    "help": "[STABLE] Information about the Pod's owner.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "owner_is_controller",
+      "owner_kind",
+      "owner_name",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_status_ready_time",
+    "type": "gauge",
+    "help": "Readiness achieved time in unix timestamp for a pod.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_cronjob_info",
+    "type": "gauge",
+    "help": "[STABLE] Info about cronjob.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_endpoint_labels",
+    "type": "gauge",
+    "help": "[STABLE] Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_horizontalpodautoscaler_info",
+    "type": "gauge",
+    "help": "Information about this autoscaler.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_persistentvolumeclaim_labels",
+    "type": "gauge",
+    "help": "[STABLE] Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "persistentvolumeclaim",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_persistentvolumeclaim_created",
+    "type": "gauge",
+    "help": "Unix creation timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "persistentvolumeclaim",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_daemonset_status_number_misscheduled",
+    "type": "gauge",
+    "help": "[STABLE] The number of nodes running a daemon pod but are not supposed to.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "daemonset",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_endpoint_address_available",
+    "type": "gauge",
+    "help": "(Deprecated since v2.6.0) Number of addresses available in endpoint.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_job_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "job_name",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_job_status_active",
+    "type": "gauge",
+    "help": "[STABLE] The number of actively running pods.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "job_name",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_cronjob_spec_suspend",
+    "type": "gauge",
+    "help": "[STABLE] Suspend flag tells the controller to suspend subsequent executions.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_container_resource_requests",
+    "type": "gauge",
+    "help": "The number of requested request resource by a container. It is recommended to use the kube_pod_resource_requests metric exposed by kube-scheduler instead, as it is more precise.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "node",
+      "pod",
+      "resource",
+      "service",
+      "uid",
+      "unit"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_replicationcontroller_spec_replicas",
+    "type": "gauge",
+    "help": "[STABLE] Number of desired pods for a ReplicationController.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_cronjob_spec_successful_job_history_limit",
+    "type": "gauge",
+    "help": "Successful job history limit tells the controller how many completed jobs should be preserved.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_mutatingwebhookconfiguration_metadata_resource_version",
+    "type": "gauge",
+    "help": "Resource version representing a specific version of the MutatingWebhookConfiguration.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "mutatingwebhookconfiguration",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_namespace_status_phase",
+    "type": "gauge",
+    "help": "[STABLE] kubernetes namespace status phase.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "phase",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_init_container_status_waiting",
+    "type": "gauge",
+    "help": "[STABLE] Describes whether the init container is currently in waiting state.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_replicationcontroller_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_resourcequota_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_job_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "job_name",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_node_info",
+    "type": "gauge",
+    "help": "[STABLE] Information about a cluster node.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_runtime_version",
+      "endpoint",
+      "instance",
+      "internal_ip",
+      "job",
+      "kernel_version",
+      "kubelet_version",
+      "kubeproxy_version",
+      "namespace",
+      "node",
+      "os_image",
+      "pod",
+      "provider_id",
+      "service",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_poddisruptionbudget_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "poddisruptionbudget",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_overhead_memory_bytes",
+    "type": "gauge",
+    "help": "The pod overhead in regards to memory associated with running a pod.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_status_ready",
+    "type": "gauge",
+    "help": "[STABLE] Describes whether the pod is ready to serve requests.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "condition",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_replicationcontroller_status_ready_replicas",
+    "type": "gauge",
+    "help": "[STABLE] The number of ready replicas per ReplicationController.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_service_spec_type",
+    "type": "gauge",
+    "help": "[STABLE] Type about service.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "type",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_service_status_load_balancer_ingress",
+    "type": "gauge",
+    "help": "[STABLE] Service load balancer ingress status",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "hostname",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_statefulset_status_replicas_ready",
+    "type": "gauge",
+    "help": "[STABLE] The number of ready replicas per StatefulSet.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "statefulset"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_daemonset_status_current_number_scheduled",
+    "type": "gauge",
+    "help": "[STABLE] The number of nodes running at least one daemon pod and are supposed to.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "daemonset",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_job_spec_completions",
+    "type": "gauge",
+    "help": "[STABLE] The desired number of successfully finished pods the job should be run with.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "job_name",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_container_info",
+    "type": "gauge",
+    "help": "[STABLE] Information about a container in a pod.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_id",
+      "endpoint",
+      "image",
+      "image_id",
+      "image_spec",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_volumeattachment_created",
+    "type": "gauge",
+    "help": "Unix creation timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "volumeattachment"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_node_role",
+    "type": "gauge",
+    "help": "The role of a cluster node.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_container_status_terminated_reason",
+    "type": "gauge",
+    "help": "Describes the reason the container is currently in terminated state.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "reason",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_lease_owner",
+    "type": "gauge",
+    "help": "Information about the Lease's owner.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "lease",
+      "lease_holder",
+      "namespace",
+      "owner_kind",
+      "owner_name",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_persistentvolume_info",
+    "type": "gauge",
+    "help": "[STABLE] Information about persistentvolume.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "csi_driver",
+      "csi_volume_handle",
+      "ebs_volume_id",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "persistentvolume",
+      "pod",
+      "service",
+      "storageclass"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_persistentvolume_capacity_bytes",
+    "type": "gauge",
+    "help": "[STABLE] Persistentvolume capacity in bytes.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "persistentvolume",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_status_phase",
+    "type": "gauge",
+    "help": "[STABLE] The pods current phase.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "phase",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_validatingwebhookconfiguration_metadata_resource_version",
+    "type": "gauge",
+    "help": "Resource version representing a specific version of the ValidatingWebhookConfiguration.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "pod",
+      "service",
+      "validatingwebhookconfiguration"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_volumeattachment_spec_source_persistentvolume",
+    "type": "gauge",
+    "help": "PersistentVolume source reference.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "volumeattachment",
+      "volumename"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_certificatesigningrequest_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "certificatesigningrequest",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "signer_name"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_configmap_labels",
+    "type": "gauge",
+    "help": "[STABLE] Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "configmap",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_lease_renew_time",
+    "type": "gauge",
+    "help": "Kube lease renew time.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "lease",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_labels",
+    "type": "gauge",
+    "help": "[STABLE] Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_replicaset_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "replicaset",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_replicationcontroller_status_available_replicas",
+    "type": "gauge",
+    "help": "[STABLE] The number of available replicas per ReplicationController.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_certificatesigningrequest_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "certificatesigningrequest",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "signer_name"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_cronjob_spec_failed_job_history_limit",
+    "type": "gauge",
+    "help": "Failed job history limit tells the controller how many failed jobs should be preserved.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_deployment_annotations",
+    "type": "gauge",
+    "help": "Kubernetes annotations converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "deployment",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_node_spec_taint",
+    "type": "gauge",
+    "help": "[STABLE] The taint of a cluster node.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "effect",
+      "endpoint",
+      "instance",
+      "job",
+      "key",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_status_scheduled",
+    "type": "gauge",
+    "help": "[STABLE] Describes the status of the scheduling process for the pod.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "condition",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_horizontalpodautoscaler_labels",
+    "type": "gauge",
+    "help": "[STABLE] Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_persistentvolume_created",
+    "type": "gauge",
+    "help": "Unix creation timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "persistentvolume",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_spec_volumes_persistentvolumeclaims_readonly",
+    "type": "gauge",
+    "help": "[STABLE] Describes whether a persistentvolumeclaim is mounted read only.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "persistentvolumeclaim",
+      "pod",
+      "service",
+      "uid",
+      "volume"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_storageclass_info",
+    "type": "gauge",
+    "help": "[STABLE] Information about storageclass.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "provisioner",
+      "reclaim_policy",
+      "service",
+      "storageclass",
+      "volume_binding_mode"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_networkpolicy_created",
+    "type": "gauge",
+    "help": "Unix creation timestamp of network policy",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_daemonset_status_number_unavailable",
+    "type": "gauge",
+    "help": "[STABLE] The number of nodes that should be running the daemon pod and have none of the daemon pod running and available",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "daemonset",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_completion_time",
+    "type": "gauge",
+    "help": "[STABLE] Completion time in unix timestamp for a pod.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_replicationcontroller_status_fully_labeled_replicas",
+    "type": "gauge",
+    "help": "[STABLE] The number of fully labeled replicas per ReplicationController.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_deployment_spec_replicas",
+    "type": "gauge",
+    "help": "[STABLE] Number of desired pods for a deployment.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "deployment",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_persistentvolumeclaim_status_condition",
+    "type": "gauge",
+    "help": "Information about status of different conditions of persistent volume claim.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_secret_type",
+    "type": "gauge",
+    "help": "[STABLE] Type about secret.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "secret",
+      "service",
+      "type"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_service_info",
+    "type": "gauge",
+    "help": "[STABLE] Information about service.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "cluster_ip",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_horizontalpodautoscaler_status_target_metric",
+    "type": "gauge",
+    "help": "The current metric status used by this autoscaler when calculating the desired replica count.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_node_status_allocatable",
+    "type": "gauge",
+    "help": "[STABLE] The allocatable for different resources of a node that are available for scheduling.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "node",
+      "pod",
+      "resource",
+      "service",
+      "unit"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_statefulset_status_observed_generation",
+    "type": "gauge",
+    "help": "[STABLE] The generation observed by the StatefulSet controller.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "statefulset"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_volumeattachment_labels",
+    "type": "gauge",
+    "help": "Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "volumeattachment"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_daemonset_metadata_generation",
+    "type": "gauge",
+    "help": "[STABLE] Sequence number representing a specific generation of the desired state.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "daemonset",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_endpoint_address",
+    "type": "gauge",
+    "help": "[STABLE] Information about Endpoint available and non available addresses.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "ip",
+      "job",
+      "namespace",
+      "pod",
+      "ready",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_statefulset_metadata_generation",
+    "type": "gauge",
+    "help": "[STABLE] Sequence number representing a specific generation of the desired state for the StatefulSet.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "statefulset"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_cronjob_labels",
+    "type": "gauge",
+    "help": "[STABLE] Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_daemonset_status_updated_number_scheduled",
+    "type": "gauge",
+    "help": "[STABLE] The total number of nodes that are running updated daemon pod",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "daemonset",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_horizontalpodautoscaler_spec_min_replicas",
+    "type": "gauge",
+    "help": "[STABLE] Lower limit for the number of pods that can be set by the autoscaler, default 1.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_networkpolicy_labels",
+    "type": "gauge",
+    "help": "Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_poddisruptionbudget_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "poddisruptionbudget",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_node_status_condition",
+    "type": "gauge",
+    "help": "[STABLE] The condition of a cluster node.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "condition",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "node",
+      "pod",
+      "service",
+      "status"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_persistentvolume_labels",
+    "type": "gauge",
+    "help": "[STABLE] Kubernetes labels converted to Prometheus labels.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "persistentvolume",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_replicaset_status_fully_labeled_replicas",
+    "type": "gauge",
+    "help": "[STABLE] The number of fully labeled replicas per ReplicaSet.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "replicaset",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_cronjob_status_active",
+    "type": "gauge",
+    "help": "[STABLE] Active holds pointers to currently running jobs.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_cronjob_spec_starting_deadline_seconds",
+    "type": "gauge",
+    "help": "[STABLE] Deadline in seconds for starting the job if it misses scheduled time for any reason.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_init_container_status_terminated",
+    "type": "gauge",
+    "help": "[STABLE] Describes whether the init container is currently in terminated state.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_replicationcontroller_metadata_generation",
+    "type": "gauge",
+    "help": "[STABLE] Sequence number representing a specific generation of the desired state.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_replicationcontroller_owner",
+    "type": "gauge",
+    "help": "Information about the ReplicationController's owner.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_cronjob_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_horizontalpodautoscaler_spec_max_replicas",
+    "type": "gauge",
+    "help": "[STABLE] Upper limit for the number of pods that can be set by the autoscaler; cannot be smaller than MinReplicas.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_ingress_created",
+    "type": "gauge",
+    "help": "[STABLE] Unix creation timestamp",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "ingress",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_secret_metadata_resource_version",
+    "type": "gauge",
+    "help": "Resource version representing a specific version of secret.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "secret",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_poddisruptionbudget_status_expected_pods",
+    "type": "gauge",
+    "help": "[STABLE] Total number of pods counted by this disruption budget",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "poddisruptionbudget",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_container_state_started",
+    "type": "gauge",
+    "help": "[STABLE] Start time in unix timestamp for a pod container.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_pod_init_container_resource_limits",
+    "type": "gauge",
+    "help": "The number of requested limit resource by an init container.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "node",
+      "pod",
+      "resource",
+      "service",
+      "uid",
+      "unit"
+    ]
+  },
+  {
+    "target": {
+      "container": "kube-state-metrics",
+      "endpoint": "http",
+      "job": "kube-state-metrics",
+      "namespace": "prometheus",
+      "pod": "prometheus-kube-state-metrics-8665c5b9f9-szr9j",
+      "service": "prometheus-kube-state-metrics"
+    },
+    "metric": "kube_statefulset_persistentvolumeclaim_retention_policy",
+    "type": "gauge",
+    "help": "Count of retention policy for StatefulSet template PVCs",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "namespace",
+      "pod",
+      "service",
+      "statefulset",
+      "when_deleted",
+      "when_scaled"
+    ]
+  }
+]

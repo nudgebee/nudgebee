@@ -1,0 +1,3 @@
+table:
+  name: spends_count_aggregate
+  schema: public

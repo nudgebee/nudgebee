@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+
+# terminal-bench trial outputs (regenerated on every run)
+runs/
