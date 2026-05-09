@@ -80,7 +80,7 @@
     "xterm-addon-fit": "^0.8.0"
   },
   "devDependencies": {
-    "@babel/core": "^7.26.10",
+    "@babel/core": "^7.29.0",
     "@babel/preset-env": "^7.29.2",
     "@babel/preset-react": "^7.26.3",
     "@babel/preset-typescript": "^7.26.0",
