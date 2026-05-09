@@ -123,7 +123,7 @@ dependencies = [
     "pluggy==1.6.0",
     "pre-commit==3.4.0",
     "propcache==0.3.1",
-    "proto-plus==1.26.1",
+    "proto-plus==1.28.0",
     "protobuf==5.29.6",
     "psycopg2-binary>=2.9.10",
     "pyarrow==19.0.1",
