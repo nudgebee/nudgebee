@@ -112,7 +112,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.67.4
 	github.com/aws/aws-sdk-go-v2/service/sts v1.42.0
 	github.com/aws/aws-sdk-go-v2/service/support v1.31.17
-	github.com/aws/aws-sdk-go-v2/service/wafv2 v1.70.2
+	github.com/aws/aws-sdk-go-v2/service/wafv2 v1.71.5
 	github.com/aws/aws-sdk-go-v2/service/xray v1.36.7
 	github.com/aws/smithy-go v1.25.1
 	github.com/gin-contrib/pprof v1.5.0
