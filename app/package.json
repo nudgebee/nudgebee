@@ -71,7 +71,7 @@
     "sass": "^1.98.0",
     "sharp": "^0.33.5",
     "socket.io": "^4.8.3",
-    "socket.io-client": "^4.7.5",
+    "socket.io-client": "^4.8.3",
     "swiper": "^12.1.2",
     "uuid": "^14.0.0",
     "web-vitals": "^2.1.4",
