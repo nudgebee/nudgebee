@@ -4243,19 +4243,20 @@ files = [
 
 [[package]]
 name = "types-tensorflow"
-version = "2.12.0.10"
+version = "2.18.0.20260508"
 description = "Typing stubs for tensorflow"
 optional = false
-python-versions = ">=3.7"
+python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "types-tensorflow-2.12.0.10.tar.gz", hash = "sha256:e1c694b50337f0d4c587ecad29bbe9b91a87f7f437f07ddf093685c82f33648c"},
-    {file = "types_tensorflow-2.12.0.10-py3-none-any.whl", hash = "sha256:af47f3bb398923a9b5bdb27089b832a8cd0df95b4ae86fae39bd7f55b28f11a8"},
+    {file = "types_tensorflow-2.18.0.20260508-py3-none-any.whl", hash = "sha256:57dfe78dc00b953b0eb13539d2808377bf3ff2e0870c0de85a73f2db3c5295a8"},
+    {file = "types_tensorflow-2.18.0.20260508.tar.gz", hash = "sha256:87addf7cee54b44a994d73ac627c95d745c8ff4611070cb1ac1b6ff37b31d51a"},
 ]
 
 [package.dependencies]
 numpy = ">=1.20"
 types-protobuf = "*"
+types-requests = "*"
 
 [[package]]
 name = "typing-extensions"
@@ -4529,4 +4530,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.13"
-content-hash = "abfb7ea17374f3dbbd956ede088b0d8857b035533aa70501c654972a887a007a"
+content-hash = "cb8bc66af033595360059669344043fb1d84600587826337fb3bb1d55fcd445f"
