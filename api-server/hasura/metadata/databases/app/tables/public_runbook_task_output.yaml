@@ -1,0 +1,7 @@
+table:
+  name: runbook_task_output
+  schema: public
+object_relationships:
+- name: auto_playbook_task
+  using:
+    foreign_key_constraint_on: task_id

@@ -1,0 +1,6 @@
+user_prompt: Get events in the nudgebee-system namespace.
+expected_output:
+- kubectl get events -n <namespace>
+tags:
+- command
+- kubernetes

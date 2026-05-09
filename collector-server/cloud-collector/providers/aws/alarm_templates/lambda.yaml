@@ -1,0 +1,85 @@
+# Lambda CloudWatch Alarm Recommendations
+# Converted from IDR CLI alarm templates
+service_name: "lambda"
+
+templates:
+  - name: "aws_lambda_error_rate_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Monitors the ratio of errors to successful Lambda invocations"
+    configuration:
+      namespace: "AWS/Lambda"
+      metric_name: "Errors"
+      statistic: "Sum"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 5.0
+    # Note: IDR uses math metric (errors/invocations)*100 with threshold 5%
+    # Simplified to absolute error count threshold for collector
+
+  - name: "aws_lambda_throttles_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Monitors invocation request throughput and throttling"
+    configuration:
+      namespace: "AWS/Lambda"
+      metric_name: "Throttles"
+      statistic: "Average"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 1.0
+
+  - name: "aws_lambda_dead_letter_errors_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "CONDITIONAL"
+    category: "Configuration"
+    severity: "High"
+    description: "Monitors when messages fail to reach the DLQ"
+    configuration:
+      namespace: "AWS/Lambda"
+      metric_name: "DeadLetterErrors"
+      statistic: "Sum"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 1.0
+    conditions:
+      # Only recommend for functions with DLQ configured
+      - field: "Meta.DeadLetterConfig"
+        operator: "exists"
+        logic: "AND"
+      - field: "Meta.DeadLetterConfig.TargetArn"
+        operator: "not_empty"
+
+  - name: "aws_lambda_concurrent_executions_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "Tracks the number of function instances running concurrently"
+    configuration:
+      namespace: "AWS/Lambda"
+      metric_name: "ConcurrentExecutions"
+      statistic: "Average"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 900.0

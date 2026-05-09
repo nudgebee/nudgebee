@@ -1,0 +1,14 @@
+agent: aws_debug
+expected_output:
+- The root cause is a health check path mismatch. The ALB target group 'e05-catalog-tg' is configured with health check path
+  '/health', but the application running on the EC2 instance serves its health endpoint at '/healthz'. The health check receives
+  a 404 response, marking the target as unhealthy (Target.ResponseCodeMismatch). Since all targets are unhealthy, the ALB
+  returns 502 Bad Gateway to clients. The fix is to update the target group health check path from '/health' to '/healthz'.
+scenario: E05
+tags:
+- command
+- aws
+- easy
+type: rca
+user_prompt: Our application load balancer 'e05-catalog-alb' in us-east-1 is returning 502 Bad Gateway errors. The app team
+  says the application is running fine on the instance. Can you investigate why the ALB is returning 502s?

@@ -1,0 +1,653 @@
+{
+  "100": {
+    "Code": 100,
+    "Message": "Untagged docker image in use",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Container"
+  },
+  "101": {
+    "Code": 101,
+    "Message": "Image tagged \"latest\" in use",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Container"
+  },
+  "102": {
+    "Code": 102,
+    "Message": "No probes defined",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Container"
+  },
+  "103": {
+    "Code": 103,
+    "Message": "No liveness probe",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Container"
+  },
+  "104": {
+    "Code": 104,
+    "Message": "No readiness probe",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Container"
+  },
+  "105": {
+    "Code": 105,
+    "Message": "%s probe uses a port#, prefer a named port",
+    "Severity": 1,
+    "Info / Reference": "",
+    "category": "Container"
+  },
+  "106": {
+    "Code": 106,
+    "Message": "No resources requests/limits defined",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Container"
+  },
+  "107": {
+    "Code": 107,
+    "Message": "No resource limits defined",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Container"
+  },
+  "108": {
+    "Code": 108,
+    "Message": "Unnamed port %d",
+    "Severity": 1,
+    "Info / Reference": "",
+    "category": "Container"
+  },
+  "109": {
+    "Code": 109,
+    "Message": "CPU Current/Request (%s/%s) reached user %d%% threshold (%d%%)",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Container"
+  },
+  "110": {
+    "Code": 110,
+    "Message": "Memory Current/Request (%s/%s) reached user %d%% threshold (%d%%)",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Container"
+  },
+  "111": {
+    "Code": 111,
+    "Message": "CPU Current/Limit (%s/%s) reached user %d%% threshold (%d%%)",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Container"
+  },
+  "112": {
+    "Code": 112,
+    "Message": "Memory Current/Limit (%s/%s) reached user %d%% threshold (%d%%)",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Container"
+  },
+  "113": {
+    "Code": 113,
+    "Message": "Container image %s is not hosted on an allowed docker registry",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Container"
+  },
+  "200": {
+    "Code": 200,
+    "Message": "Pod is terminating [%d/%d]",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Pod"
+  },
+  "201": {
+    "Code": 201,
+    "Message": "Pod is terminating [%d/%d] %s",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Pod"
+  },
+  "202": {
+    "Code": 202,
+    "Message": "Pod is waiting [%d/%d]",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Pod"
+  },
+  "203": {
+    "Code": 203,
+    "Message": "Pod is waiting [%d/%d] %s",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Pod"
+  },
+  "204": {
+    "Code": 204,
+    "Message": "Pod is not ready",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Pod"
+  },
+  "205": {
+    "Code": 205,
+    "Message": "Pod was restarted a number of times",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Pod"
+  },
+  "206": {
+    "Code": 206,
+    "Message": "No PodDisruptionBudget defined",
+    "Severity": 1,
+    "Info / Reference": "",
+    "category": "Pod"
+  },
+  "207": {
+    "Code": 207,
+    "Message": "Pod is in an unhappy phase",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Pod"
+  },
+  "208": {
+    "Code": 208,
+    "Message": "Unmanaged pod detected. Best to use a controller",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Pod"
+  },
+  "209": {
+    "Code": 209,
+    "Message": "Pod is managed by multiple PodDisruptionBudgets (%s)",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Pod"
+  },
+  "300": {
+    "Code": 300,
+    "Message": "Using \"default\" ServiceAccount",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Security"
+  },
+  "301": {
+    "Code": 301,
+    "Message": "Connects to API Server? ServiceAccount token is mounted",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Security"
+  },
+  "302": {
+    "Code": 302,
+    "Message": "Pod could be running as root user. Check SecurityContext/Image",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Security"
+  },
+  "303": {
+    "Code": 303,
+    "Message": "Do you mean it? ServiceAccount is automounting APIServer credentials",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Security"
+  },
+  "304": {
+    "Code": 304,
+    "Message": "References a secret which does not exist",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Security"
+  },
+  "305": {
+    "Code": 305,
+    "Message": "References a docker-image \"%s\" pull secret which does not exist",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Security"
+  },
+  "306": {
+    "Code": 306,
+    "Message": "Container could be running as root user. Check SecurityContext/Image",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Security"
+  },
+  "400": {
+    "Code": 400,
+    "Message": "Used? Unable to locate resource reference",
+    "Severity": 1,
+    "Info / Reference": "",
+    "category": "General"
+  },
+  "401": {
+    "Code": 401,
+    "Message": "Key \"%s\" used? Unable to locate key reference",
+    "Severity": 1,
+    "Info / Reference": "",
+    "category": "General"
+  },
+  "402": {
+    "Code": 402,
+    "Message": "No metrics-server detected",
+    "Severity": 1,
+    "Info / Reference": "",
+    "category": "General"
+  },
+  "403": {
+    "Code": 403,
+    "Message": "Deprecated %s API group \"%s\". Use \"%s\" instead",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "General"
+  },
+  "404": {
+    "Code": 404,
+    "Message": "Deprecation check failed. %v",
+    "Severity": 1,
+    "Info / Reference": "",
+    "category": "General"
+  },
+  "405": {
+    "Code": 405,
+    "Message": "Is this a jurassic cluster? Might want to upgrade K8s a bit",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "General"
+  },
+  "406": {
+    "Code": 406,
+    "Message": "K8s version OK",
+    "Severity": 0,
+    "Info / Reference": "",
+    "category": "General"
+  },
+  "500": {
+    "Code": 500,
+    "Message": "Zero scale detected",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Workloads (Deployment and StatefulSet)"
+  },
+  "501": {
+    "Code": 501,
+    "Message": "Unhealthy %d desired but have %d available",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Workloads (Deployment and StatefulSet)"
+  },
+  "502": {
+    "Code": 502,
+    "Message": "MISSING",
+    "Severity": null,
+    "Info / Reference": "",
+    "category": "Workloads (Deployment and StatefulSet)"
+  },
+  "503": {
+    "Code": 503,
+    "Message": "At current load, CPU under allocated. Current:%s vs Requested:%s (%s)",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Workloads (Deployment and StatefulSet)"
+  },
+  "504": {
+    "Code": 504,
+    "Message": "At current load, CPU over allocated. Current:%s vs Requested:%s (%s)",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Workloads (Deployment and StatefulSet)"
+  },
+  "505": {
+    "Code": 505,
+    "Message": "At current load, Memory under allocated. Current:%s vs Requested:%s (%s)",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Workloads (Deployment and StatefulSet)"
+  },
+  "506": {
+    "Code": 506,
+    "Message": "At current load, Memory over allocated. Current:%s vs Requested:%s (%s)",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Workloads (Deployment and StatefulSet)"
+  },
+  "507": {
+    "Code": 507,
+    "Message": "Deployment references ServiceAccount %q which does not exist",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Workloads (Deployment and StatefulSet)"
+  },
+  "600": {
+    "Code": 600,
+    "Message": "HPA %s references a Deployment %s which does not exist",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "HorizontalPodAutoscaler"
+  },
+  "601": {
+    "Code": 601,
+    "Message": "HPA %s references a StatefulSet %s which does not exist",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "HorizontalPodAutoscaler"
+  },
+  "602": {
+    "Code": 602,
+    "Message": "Replicas (%d/%d) at burst will match/exceed cluster CPU(%s) capacity by %s",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "HorizontalPodAutoscaler"
+  },
+  "603": {
+    "Code": 603,
+    "Message": "Replicas (%d/%d) at burst will match/exceed cluster memory(%s) capacity by %s",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "HorizontalPodAutoscaler"
+  },
+  "604": {
+    "Code": 604,
+    "Message": "If ALL HPAs triggered, %s will match/exceed cluster CPU(%s) capacity by %s",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "HorizontalPodAutoscaler"
+  },
+  "605": {
+    "Code": 605,
+    "Message": "If ALL HPAs triggered, %s will match/exceed cluster memory(%s) capacity by %s",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "HorizontalPodAutoscaler"
+  },
+  "700": {
+    "Code": 700,
+    "Message": "Found taint \"%s\" but no pod can tolerate",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Node"
+  },
+  "701": {
+    "Code": 701,
+    "Message": "Node is in an unknown condition",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Node"
+  },
+  "702": {
+    "Code": 702,
+    "Message": "Node is not in ready state",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Node"
+  },
+  "703": {
+    "Code": 703,
+    "Message": "Out of disk space",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Node"
+  },
+  "704": {
+    "Code": 704,
+    "Message": "Insufficient memory",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Node"
+  },
+  "705": {
+    "Code": 705,
+    "Message": "Insufficient disk space",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Node"
+  },
+  "706": {
+    "Code": 706,
+    "Message": "Insufficient PIDs on Node",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Node"
+  },
+  "707": {
+    "Code": 707,
+    "Message": "No network configured on node",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Node"
+  },
+  "708": {
+    "Code": 708,
+    "Message": "No node metrics available",
+    "Severity": 1,
+    "Info / Reference": "",
+    "category": "Node"
+  },
+  "709": {
+    "Code": 709,
+    "Message": "CPU threshold (%d%%) reached %d%%",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Node"
+  },
+  "710": {
+    "Code": 710,
+    "Message": "Memory threshold (%d%%) reached %d%%",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Node"
+  },
+  "711": {
+    "Code": 711,
+    "Message": "Scheduling disabled",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Node"
+  },
+  "712": {
+    "Code": 712,
+    "Message": "Found only one master node",
+    "Severity": 1,
+    "Info / Reference": "",
+    "category": "Node"
+  },
+  "800": {
+    "Code": 800,
+    "Message": "Namespace is inactive",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Namespace"
+  },
+  "900": {
+    "Code": 900,
+    "Message": "Used? No pods match selector",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "PodDisruptionBudget"
+  },
+  "901": {
+    "Code": 901,
+    "Message": "MinAvailable (%d) is greater than the number of pods(%d) currently running",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "PodDisruptionBudget"
+  },
+  "1000": {
+    "Code": 1000,
+    "Message": "Available",
+    "Severity": 1,
+    "Info / Reference": "",
+    "category": "PersistentVolume /PersistentVolumeClaim"
+  },
+  "1001": {
+    "Code": 1001,
+    "Message": "Pending volume detected",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "PersistentVolume /PersistentVolumeClaim"
+  },
+  "1002": {
+    "Code": 1002,
+    "Message": "Lost volume detected",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "PersistentVolume /PersistentVolumeClaim"
+  },
+  "1003": {
+    "Code": 1003,
+    "Message": "Pending claim detected",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "PersistentVolume /PersistentVolumeClaim"
+  },
+  "1004": {
+    "Code": 1004,
+    "Message": "Lost claim detected",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "PersistentVolume /PersistentVolumeClaim"
+  },
+  "1100": {
+    "Code": 1100,
+    "Message": "No pods match service selector",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Service"
+  },
+  "1101": {
+    "Code": 1101,
+    "Message": "Skip ports check. No explicit ports detected on pod %s",
+    "Severity": 1,
+    "Info / Reference": "",
+    "category": "Service"
+  },
+  "1102": {
+    "Code": 1102,
+    "Message": "Use of target port #%s for service port %s. Prefer named port",
+    "Severity": 1,
+    "Info / Reference": "",
+    "category": "Service"
+  },
+  "1103": {
+    "Code": 1103,
+    "Message": "Type Loadbalancer detected. Could be expensive",
+    "Severity": 1,
+    "Info / Reference": "",
+    "category": "Service"
+  },
+  "1104": {
+    "Code": 1104,
+    "Message": "Do you mean it? Type NodePort detected",
+    "Severity": 1,
+    "Info / Reference": "",
+    "category": "Service"
+  },
+  "1105": {
+    "Code": 1105,
+    "Message": "No associated endpoints",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Service"
+  },
+  "1106": {
+    "Code": 1106,
+    "Message": "No target ports match service port %s",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Service"
+  },
+  "1107": {
+    "Code": 1107,
+    "Message": "LoadBalancer detected but service sets externalTrafficPolicy to \"Cluster\"",
+    "Severity": 1,
+    "Info / Reference": "",
+    "category": "Service"
+  },
+  "1108": {
+    "Code": 1108,
+    "Message": "NodePort detected but service sets externalTrafficPolicy to \"Local\"",
+    "Severity": 1,
+    "Info / Reference": "",
+    "category": "Service"
+  },
+  "1109": {
+    "Code": 1109,
+    "Message": "Only one Pod associated with this endpoint",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Service"
+  },
+  "1120": {
+    "Code": 1120,
+    "Message": "Unhealthy ReplicaSet %d desired but have %d ready",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "ReplicaSet"
+  },
+  "1200": {
+    "Code": 1200,
+    "Message": "No pods match %s pod selector",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "NetworkPolicies"
+  },
+  "1201": {
+    "Code": 1201,
+    "Message": "No namespaces match %s namespace selector",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "NetworkPolicies"
+  },
+  "1300": {
+    "Code": 1300,
+    "Message": "References a %s (%s) which does not exist",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "RBAC"
+  },
+  "1400": {
+    "Code": 1400,
+    "Message": "Ingress LoadBalancer port reported an error: %s",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Ingress"
+  },
+  "1401": {
+    "Code": 1401,
+    "Message": "Ingress references a service backend which does not exist: %s",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Ingress"
+  },
+  "1402": {
+    "Code": 1402,
+    "Message": "Ingress hostname un-resolvable: %s",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Ingress"
+  },
+  "1403": {
+    "Code": 1403,
+    "Message": "Ingress TLS contains a secret which does not exist: %s",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Ingress"
+  },
+  "1404": {
+    "Code": 1404,
+    "Message": "Ingress references non existent rules %v",
+    "Severity": 3,
+    "Info / Reference": "",
+    "category": "Ingress"
+  },
+  "1405": {
+    "Code": 1405,
+    "Message": "Ingress with no rules detected",
+    "Severity": 2,
+    "Info / Reference": "",
+    "category": "Ingress"
+  }
+}

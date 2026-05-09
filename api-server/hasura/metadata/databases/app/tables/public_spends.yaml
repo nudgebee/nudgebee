@@ -1,0 +1,13 @@
+table:
+  name: spends
+  schema: public
+object_relationships:
+- name: cloudAccountByCloudAccount
+  using:
+    foreign_key_constraint_on: cloud_account
+- name: cloud_resourse
+  using:
+    foreign_key_constraint_on: cloud_resource_id
+- name: tenantByTenant
+  using:
+    foreign_key_constraint_on: tenant

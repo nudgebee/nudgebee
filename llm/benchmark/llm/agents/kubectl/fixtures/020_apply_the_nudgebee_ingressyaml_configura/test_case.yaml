@@ -1,0 +1,6 @@
+user_prompt: Apply the nudgebee-ingress.yaml configuration file.
+expected_output:
+- kubectl apply -f <file-name>.yaml
+tags:
+- command
+- kubernetes

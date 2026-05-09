@@ -1,0 +1,16 @@
+agent: aws_debug
+expected_output:
+- The root cause is that the CloudWatch alarm 'e09-ordering-cpu-critical' has an unreasonably high threshold and long evaluation
+  period. The alarm is configured with a threshold of 99% (practically unreachable for average CPU), a period of 3600 seconds
+  (1 hour), and requires 3 consecutive evaluation periods. This means the average CPU utilization would need to exceed 99%
+  for 3 consecutive hours before the alarm fires. The fix is to lower the threshold to a reasonable value like 80%, reduce
+  the period to 300 seconds (5 minutes), and reduce evaluation periods to 2.
+scenario: E09
+tags:
+- command
+- aws
+- easy
+type: rca
+user_prompt: We have a CloudWatch alarm 'e09-ordering-cpu-critical' in us-east-1 for our ordering service EC2 instance. The
+  alarm is supposed to alert us when CPU is high, but it has never triggered even though we've seen the instance under heavy
+  load. Can you check what's wrong with the alarm?

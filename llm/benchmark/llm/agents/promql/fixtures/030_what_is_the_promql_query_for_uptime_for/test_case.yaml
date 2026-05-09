@@ -1,0 +1,8 @@
+user_prompt: what is the promql query for uptime for the node-exporter service on
+  node-1?
+expected_output:
+- up{job="node-exporter", instance="node-1"}
+- node_uptime_seconds{instance=~".*node.1.*"}
+tags:
+- command
+- promql

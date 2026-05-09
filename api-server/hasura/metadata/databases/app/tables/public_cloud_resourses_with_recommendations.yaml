@@ -1,0 +1,3 @@
+table:
+  name: cloud_resourses_with_recommendations
+  schema: public

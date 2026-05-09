@@ -1,0 +1,4 @@
+table:
+  name: event_log_analysis_status
+  schema: public
+is_enum: true

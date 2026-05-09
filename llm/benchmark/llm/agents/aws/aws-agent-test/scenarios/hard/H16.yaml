@@ -1,0 +1,131 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H16: WAF rate-based rule blocking legitimate traffic from corporate NAT.
+  User complaint: "Random customers get 403 Forbidden from our ALB 'h16-api-alb'.
+  It's not all requests — some go through fine. Started after we enabled WAF.
+  The application logs show no errors for requests that do get through."
+  Root cause: WAF rate-based rule set to 100 requests per 5 minutes per IP.
+  Customers behind corporate NAT gateways share a single public IP. Their
+  combined traffic exceeds 100 requests, triggering the rate limit and blocking
+  the shared IP. Individual customers aren't abusive — it's the shared IP.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = WAF rate limit 100 req/5min (too low for shared IPs).
+      Fixed = WAF rate limit 10000 req/5min (accommodates shared IPs).
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ALB security group
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: h16-api-alb-sg
+
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: h16-api-alb
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !ImportValue aws-agent-test-public-subnet-a
+        - !ImportValue aws-agent-test-public-subnet-b
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: h16-api-alb
+        - Key: Environment
+          Value: production
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: h16-api-tg
+      Port: 80
+      Protocol: HTTP
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      TargetType: ip
+      Tags:
+        - Key: Name
+          Value: h16-api-tg
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # THE BUG: WAF with extremely low rate limit
+  WebACL:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: h16-api-waf
+      Scope: REGIONAL
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: h16-api-waf
+      Rules:
+        - Name: h16-rate-limit
+          Priority: 1
+          Action:
+            Block: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: h16-rate-limit
+          Statement:
+            RateBasedStatement:
+              # BUG: 100 is way too low — corporate NATs share IPs
+              Limit: !If [IsFixed, 10000, 100]
+              AggregateKeyType: IP
+      Tags:
+        - Key: Name
+          Value: h16-api-waf
+
+  WebACLAssociation:
+    Type: AWS::WAFv2::WebACLAssociation
+    Properties:
+      ResourceArn: !Ref ALB
+      WebACLArn: !GetAtt WebACL.Arn
+
+Outputs:
+  ALBDNSName:
+    Description: ALB DNS Name
+    Value: !GetAtt ALB.DNSName
+  WebACLName:
+    Description: WAF Web ACL Name
+    Value: h16-api-waf
+  WebACLArn:
+    Description: WAF Web ACL ARN
+    Value: !GetAtt WebACL.Arn
+  RateLimit:
+    Description: WAF rate limit (requests per 5 minutes per IP)
+    Value: !If [IsFixed, '10000', '100 (too low for shared corporate IPs)']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

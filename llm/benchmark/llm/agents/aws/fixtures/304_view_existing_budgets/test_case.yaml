@@ -1,0 +1,6 @@
+user_prompt: View existing budgets.
+expected_output:
+- aws budgets describe-budgets
+tags:
+- command
+- aws

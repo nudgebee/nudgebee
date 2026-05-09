@@ -1,0 +1,31 @@
+FROM golang:1.26-alpine AS build-stage
+
+WORKDIR /app
+
+# Install git (needed for go mod)
+RUN apk add --no-cache git
+
+# Copy only go mod files first (better caching)
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy application source
+COPY . .
+
+# Build binary
+RUN CGO_ENABLED=0 \
+    GOOS=linux \
+    go build -o /app/cloud-collector-server cmd/*.go
+
+FROM registry.nudgebee.com/nudgebee-cloud-collector-base:20260112-0715
+
+WORKDIR /app
+
+# Copy only the compiled binary
+COPY --from=build-stage /app/cloud-collector-server /app/cloud-collector-server
+
+RUN chmod +x /app/cloud-collector-server
+
+EXPOSE 8000
+
+CMD ["/app/cloud-collector-server"]

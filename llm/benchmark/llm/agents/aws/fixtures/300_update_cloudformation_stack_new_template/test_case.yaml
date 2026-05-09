@@ -1,0 +1,7 @@
+user_prompt: Update CloudFormation stack (new template).
+expected_output:
+- aws cloudformation update-stack --stack-name <stack-name> --template-body <template-body
+  or template-url>
+tags:
+- command
+- aws

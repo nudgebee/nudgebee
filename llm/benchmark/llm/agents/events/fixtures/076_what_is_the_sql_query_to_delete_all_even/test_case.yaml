@@ -1,0 +1,6 @@
+user_prompt: What is the SQL query to delete all events older than 30 days?
+expected_output:
+- DELETE FROM events WHERE starts_at < NOW() - INTERVAL '30 days';
+tags:
+- command
+- events

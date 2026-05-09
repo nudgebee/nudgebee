@@ -1,0 +1,134 @@
+# Default values for llm-server-server.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+image:
+  repository: nudgebee-llm-server
+  pullPolicy: Always
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: 'latest'
+
+global:
+  image: {}
+  imagePullSecrets: []
+nameOverride: ''
+fullnameOverride: ''
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ''
+
+podAnnotations: {}
+
+podSecurityContext:
+  {}
+  # fsGroup: 2000
+
+securityContext:
+  {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  # -- Enable [ingress](https://kubernetes.io/docs/concepts/services-networking/ingress/).
+  enabled: false
+  # -- Ingress [class name](https://kubernetes.io/docs/concepts/services-networking/ingress/#ingress-class).
+  className: 'nginx'
+  # -- Annotations to be added to the ingress.
+  annotations: {}
+  # -- Ingress host configuration.
+  # @default -- See [values.yaml](values.yaml).
+  hosts: [] # -- Ingress TLS configuration.
+  # @default -- See [values.yaml](values.yaml).
+  tls: []
+
+secretName: 'nudgebee'
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 500Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+annotations: {}
+
+# NetworkPolicy applied to workspace pods (`workspace-{accountId}`) created by
+# llm-server. Restricts ingress/egress so a workspace pod cannot reach internal
+# services, scan the cluster, or read cloud instance metadata (IMDS).
+#
+# See: https://github.com/nudgebee/nudgebee/issues/27732
+workspaceNetworkPolicy:
+  # Set to false to disable the policy entirely (not recommended).
+  enabled: true
+  # Optional annotations to add to the NetworkPolicy resource.
+  annotations: {}
+  # Port the workspace HTTP server listens on (must match
+  # LLM_SERVER_WORKSPACE_PORT / llm_server_workspace_port — default 8080).
+  workspacePort: 8080
+  # Port llm-server listens on for workspace callbacks.
+  llmServerPort: 8000
+  # Name (app.kubernetes.io/name label) of the relay-server workload that
+  # workspace pods are allowed to reach.
+  relayServerName: relay-server
+  # Port relay-server listens on.
+  relayServerPort: 8080
+  # If true, workspace pods may reach the public internet *except* the CIDRs
+  # listed in `externalEgressExcept`. Required for tools like `git clone`,
+  # `curl`, `pip install`, etc. Set to false for maximum lockdown.
+  allowExternalEgress: true
+  # CIDRs excluded from the external egress rule. Blocks cloud-provider IMDS
+  # endpoints and RFC1918/link-local ranges to prevent SSRF and credential
+  # theft from AWS/GCP/Azure instance metadata services.
+  externalEgressExcept:
+    - 169.254.0.0/16 # link-local, covers AWS IMDSv1/v2 (169.254.169.254)
+    - 10.0.0.0/8 # RFC1918
+    - 172.16.0.0/12 # RFC1918
+    - 192.168.0.0/16 # RFC1918
+    - 100.64.0.0/10 # carrier-grade NAT (GCP metadata proxy)
+    - 127.0.0.0/8 # loopback
+  # Namespace selector for DNS (kube-dns). Empty default allows DNS cluster-wide.
+  dnsNamespaceSelector: {}
+  # Pod selector for DNS. Set to {k8s-app: kube-dns} for a tighter policy.
+  dnsPodSelector: {}
+  # List of node subnet CIDRs. When set, workspace pods accept inbound
+  # connections from those node IPs, which is required for `kubectl port-forward`
+  # to work. kubectl port-forward traffic originates from the kubelet (node IP),
+  # not from a pod, so the llm-server podSelector rule alone does not cover it.
+  # Multi-AZ clusters typically have one subnet per AZ — list all of them.
+  # Example: ["10.0.0.0/20", "10.0.16.0/20", "10.0.32.0/20"]
+  # Leave empty (default) in production to keep the policy tight.
+  portForwardCIDRs: []
+  # Additional ingress rules appended to the policy (free-form list of
+  # NetworkPolicyIngressRule entries) — escape hatch for custom access patterns.
+  extraIngress: []
+  # Additional egress rules appended to the policy (free-form list of
+  # NetworkPolicyEgressRule entries) — useful for allowing in-cluster services
+  # like rag-server, api-server, or custom MCP sidecars.
+  extraEgress: []

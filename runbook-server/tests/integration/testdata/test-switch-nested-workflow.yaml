@@ -1,0 +1,42 @@
+name: switch-nested-workflow-test
+definition:
+  version: "v1"
+  inputs:
+    - id: path
+      type: string
+      default: "nested"
+    - id: sub_path
+      type: string
+      default: "A"
+  triggers:
+    - type: manual
+  tasks:
+    - id: root-switch
+      type: core.switch
+      params:
+        expression: "{{ Inputs.path }}"
+        cases:
+          - value: "nested"
+            next: "nested-switch"
+          - value: "direct"
+            next: "task-chain-1"
+
+    # Nested Switch Task
+    - id: nested-switch
+      type: core.switch
+      params:
+        expression: "{{ Inputs.sub_path }}"
+        cases:
+          - value: "A"
+            next: "task-nested-a"
+
+    # Leaf Tasks
+    - id: task-nested-a
+      type: core.print
+      params:
+        message: "Nested Task A"
+
+    - id: task-chain-1
+      type: core.print
+      params:
+        message: "Chain 1"

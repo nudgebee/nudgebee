@@ -1,0 +1,13 @@
+table:
+  name: auto_pilot_task
+  schema: public
+object_relationships:
+- name: auto_pilot
+  using:
+    foreign_key_constraint_on: auto_pilot_id
+- name: auto_pilot_task_status
+  using:
+    foreign_key_constraint_on: status
+- name: tenant
+  using:
+    foreign_key_constraint_on: tenant_id

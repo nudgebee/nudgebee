@@ -1,0 +1,4 @@
+table:
+  name: event_rule_source
+  schema: public
+is_enum: true

@@ -1,0 +1,92 @@
+# ALB (Application Load Balancer) CloudWatch Alarm Recommendations
+# Based on AWS best practices for ALB monitoring
+service_name: "alb"
+
+templates:
+  - name: "aws_alb_http_error_rate_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Monitors ratio of HTTP errors (4XX+5XX) to total requests for application stability"
+    configuration:
+      # Metric math alarm - combines multiple metrics
+      metrics:
+        - id: "m1"
+          return_data: false
+          metric_stat:
+            metric:
+              namespace: "AWS/ApplicationELB"
+              metric_name: "HTTPCode_Target_4XX_Count"
+              dimensions: {}  # Will be populated at runtime with LoadBalancer dimension
+            period: 60
+            stat: "Sum"
+
+        - id: "m2"
+          return_data: false
+          metric_stat:
+            metric:
+              namespace: "AWS/ApplicationELB"
+              metric_name: "HTTPCode_Target_5XX_Count"
+              dimensions: {}
+            period: 60
+            stat: "Sum"
+
+        - id: "m3"
+          return_data: false
+          metric_stat:
+            metric:
+              namespace: "AWS/ApplicationELB"
+              metric_name: "RequestCount"
+              dimensions: {}
+            period: 60
+            stat: "Sum"
+
+        - id: "error_rate"
+          return_data: true
+          expression: "((m1 + m2) / m3) * 100"
+          label: "HTTP Error Rate %"
+
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 5.0  # 5% error rate
+
+  - name: "aws_alb_rejected_connection_count_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Monitors rejected connections when load balancer reaches maximum capacity"
+    configuration:
+      namespace: "AWS/ApplicationELB"
+      metric_name: "RejectedConnectionCount"
+      statistic: "Sum"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 1.0  # Any rejected connection is a problem
+
+  - name: "aws_alb_target_response_time_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "Monitors time elapsed from request leaving load balancer until target starts sending response headers"
+    configuration:
+      namespace: "AWS/ApplicationELB"
+      metric_name: "TargetResponseTime"
+      statistic: "Average"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 1.0  # 1 second response time

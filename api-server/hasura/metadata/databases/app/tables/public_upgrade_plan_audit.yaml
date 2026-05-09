@@ -1,0 +1,7 @@
+table:
+  name: upgrade_plan_audit
+  schema: public
+object_relationships:
+- name: userActionedBy
+  using:
+    foreign_key_constraint_on: actioned_by

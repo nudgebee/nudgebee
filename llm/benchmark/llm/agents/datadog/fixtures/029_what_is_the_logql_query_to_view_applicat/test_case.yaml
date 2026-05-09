@@ -1,0 +1,8 @@
+user_prompt: What is the LogQL query to view application logs for my-app while excluding
+  health-check probes like /health or /ready?
+expected_output:
+- '{app="my-app"} !~ "/health|/ready"'
+- '{container="my-app"} != "GET /healthz"'
+tags:
+- command
+- datadog

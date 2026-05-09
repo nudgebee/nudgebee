@@ -1,0 +1,7 @@
+table:
+  name: user_attrs
+  schema: public
+object_relationships:
+  - name: userByUser
+    using:
+      foreign_key_constraint_on: user

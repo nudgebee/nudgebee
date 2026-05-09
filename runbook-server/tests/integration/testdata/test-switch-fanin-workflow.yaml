@@ -1,0 +1,46 @@
+name: switch-fanin-workflow-test
+definition:
+  triggers:
+    - type: manual
+  inputs:
+    - id: value
+      type: string
+      default: "A"
+  tasks:
+    - id: router
+      type: core.switch
+      params:
+        expression: "{{ Inputs.value }}"
+        cases:
+          - value: "A"
+            next: "leaf-a"
+          - value: "B"
+            next: "leaf-b"
+          - value: "C"
+            next: "leaf-c"
+        default_next: "leaf-default"
+    - id: leaf-a
+      type: core.print
+      params:
+        message: "ran-leaf-a"
+    - id: leaf-b
+      type: core.print
+      params:
+        message: "ran-leaf-b"
+    - id: leaf-c
+      type: core.print
+      params:
+        message: "ran-leaf-c"
+    - id: leaf-default
+      type: core.print
+      params:
+        message: "ran-leaf-default"
+    - id: converge
+      type: core.print
+      depends_on:
+        - leaf-a
+        - leaf-b
+        - leaf-c
+        - leaf-default
+      params:
+        message: "joined:{{ Tasks['leaf-a'].status }}/{{ Tasks['leaf-a'].output.data | default('-') }}|{{ Tasks['leaf-b'].status }}/{{ Tasks['leaf-b'].output.data | default('-') }}|{{ Tasks['leaf-c'].status }}/{{ Tasks['leaf-c'].output.data | default('-') }}|{{ Tasks['leaf-default'].status }}/{{ Tasks['leaf-default'].output.data | default('-') }}"

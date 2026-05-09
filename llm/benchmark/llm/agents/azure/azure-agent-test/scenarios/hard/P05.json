@@ -1,0 +1,92 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "P05: Function App with system-assigned managed identity tries to access a Storage Account, but the identity has Storage Blob Data Reader role (read-only) while the function needs to WRITE blobs. Write operations fail with 403 AuthorizationPermissionMismatch. Common production issue when wrong RBAC role is assigned."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "funcAppName": "[concat('p05func', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "storageName": "[concat('p05sa', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "brokenRoleId": "2a2b9908-6ea1-4ae2-8e65-a410df84e7d1",
+    "fixedRoleId": "ba92f5b4-2d11-453d-a403-e96b0029c9fe",
+    "roleDefinitionId": "[if(equals(parameters('scenarioMode'), 'Fixed'), variables('fixedRoleId'), variables('brokenRoleId'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2022-09-01",
+      "name": "[variables('storageName')]",
+      "location": "[resourceGroup().location]",
+      "sku": { "name": "Standard_LRS" },
+      "kind": "StorageV2",
+      "tags": { "Environment": "production", "Team": "data-pipeline", "Scenario": "P05" },
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2022-09-01",
+      "name": "[concat(variables('storageName'), '/default/output-reports')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ],
+      "properties": { "publicAccess": "None" }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('funcAppName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "functionapp",
+      "identity": { "type": "SystemAssigned" },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ],
+      "tags": { "Environment": "production", "Team": "reports", "ScenarioMode": "[parameters('scenarioMode')]" },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "siteConfig": {
+          "appSettings": [
+            { "name": "AzureWebJobsStorage", "value": "[concat('DefaultEndpointsProtocol=https;AccountName=', variables('storageName'), ';AccountKey=', listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), '2022-09-01').keys[0].value, ';EndpointSuffix=core.windows.net')]" },
+            { "name": "FUNCTIONS_WORKER_RUNTIME", "value": "python" },
+            { "name": "FUNCTIONS_EXTENSION_VERSION", "value": "~4" },
+            { "name": "OUTPUT_STORAGE_ACCOUNT", "value": "[variables('storageName')]" },
+            { "name": "OUTPUT_CONTAINER", "value": "output-reports" }
+          ]
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceGroup().id, variables('funcAppName'), variables('roleDefinitionId'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', variables('funcAppName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ],
+      "scope": "[concat('Microsoft.Storage/storageAccounts/', variables('storageName'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleDefinitionId'))]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', variables('funcAppName')), '2022-03-01', 'Full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      }
+    }
+  ],
+  "outputs": {
+    "funcAppName": { "type": "string", "value": "[variables('funcAppName')]" },
+    "storageAccountName": { "type": "string", "value": "[variables('storageName')]" },
+    "assignedRole": { "type": "string", "value": "[if(equals(parameters('scenarioMode'), 'Fixed'), 'Storage Blob Data Contributor', 'Storage Blob Data Reader')]" },
+    "bugNote": { "type": "string", "value": "Function App has Storage Blob Data Reader role (read-only) but needs Storage Blob Data Contributor to write blobs. Write operations fail with 403 AuthorizationPermissionMismatch." },
+    "scenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

@@ -1,0 +1,3 @@
+table:
+  name: ms_teams_channels
+  schema: public

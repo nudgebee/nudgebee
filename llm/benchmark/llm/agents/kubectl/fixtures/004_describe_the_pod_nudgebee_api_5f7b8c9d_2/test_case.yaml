@@ -1,0 +1,7 @@
+user_prompt: Describe the pod nudgebee-api-5f7b8c9d-2clx5.
+expected_output:
+- kubectl describe pod <pod-name>
+- kubectl describe po <pod-name>
+tags:
+- command
+- kubernetes

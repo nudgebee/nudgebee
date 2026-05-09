@@ -1,0 +1,24 @@
+user_prompt: "Show me the logs for the inventory-sync container (not the sidecar) in namespace log-default-09 and explain the failure."
+description: |
+  Kubectl fallback — no provider configured. The pod has two containers; the
+  prompt asks specifically for the main container. kubectl_log must target the
+  right one and surface the schema-migration-failed fatal.
+expected_output: |
+  The response identifies the schema migration failure on the inventory-sync
+  container (missing 'sku' column on inventory.items). It must NOT be polluted
+  by the sidecar-metrics 'tick' logs. The answer must arrive via kubectl_log
+  fallback since no observability provider is configured for this namespace.
+setup_timeout: 240
+before_test: |
+  kubectl create namespace log-default-09 || true
+  kubectl label namespace log-default-09 benchmark=true --overwrite || true
+  kubectl apply -f manifest.yaml -n log-default-09
+  kubectl wait --for=jsonpath='{.status.containerStatuses[?(@.name=="inventory-sync")].state.waiting.reason}'=CrashLoopBackOff \
+    pod -l app=inventory-sync -n log-default-09 --timeout=300s || exit 1
+after_test: |
+  kubectl delete namespace log-default-09 --wait=false || true
+tags:
+  - medium
+  - kubernetes
+  - multi-container
+  - kubectl-fallback

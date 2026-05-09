@@ -1,0 +1,63 @@
+name: ML-K8s-Server CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ml-k8s-server/**
+      - .github/workflows/ml-k8s-server.yaml
+
+jobs:
+  lint:
+    name: Lint and Code Quality
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.set-tag.outputs.IMAGE_TAG }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        id: setup-python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.11
+
+      - name: Install Build Essentials
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: 1.8.5
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Load Cached env
+        id: cached-poetry-dependencies
+        uses: actions/cache@v3
+        with:
+          path: ./ml-k8s-server/.venv
+          key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('./ml-k8s-server/poetry.lock') }}
+
+      - name: Install dependencies
+        working-directory: ./ml-k8s-server
+        if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
+        run: poetry install --no-interaction --no-root
+
+      - name: Install project
+        working-directory: ./ml-k8s-server
+        run: poetry install --no-interaction
+
+      - name: Run Linters and Type Checks
+        working-directory: ml-k8s-server
+        run: |
+          poetry run black --check .
+          poetry run flake8 .
+          poetry run mypy server/**/*.py --namespace-packages

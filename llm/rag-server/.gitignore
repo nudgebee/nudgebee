@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.env.local
+.mypy_cache/
+.pytest_cache/
+
+# Local data directories (don't commit)
+.nudgebee/
+
+# Qdrant data
+qdrant_storage/
+
+# Logs
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Locks
+.locks/
+
+# Temporary migration files
+/tmp/qdrant_migration_state.json

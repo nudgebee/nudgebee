@@ -1,0 +1,47 @@
+[
+  {
+    "question": "Find all high priority bugs in the Integrations project",
+    "answer": "project = Integrations AND issuetype = Bug AND priority = High ORDER BY created DESC",
+    "conversation_id": "benchmark-jira-1"
+  },
+  {
+    "question": "Show me open issues assigned to __TEST_TICKET_ASSIGNEE_EMAIL__ in the last month",
+    "answer": "assignee = __TEST_TICKET_ASSIGNEE_EMAIL__ AND status = Open AND created >= startOfMonth(-1) AND created <= endOfMonth(-1) ORDER BY created DESC",
+    "conversation_id": "benchmark-jira-2"
+  },
+  {
+    "question": "What are the unresolved issues in Integrations project with highest priority?",
+    "answer": "project = Integrations AND resolution = Unresolved AND priority = Highest ORDER BY created DESC",
+    "conversation_id": "benchmark-jira-3"
+  },
+  {
+    "question": "Find all critical bugs reported this week",
+    "answer": "issuetype = Bug AND priority = Critical AND created >= startOfWeek() ORDER BY created DESC",
+    "conversation_id": "benchmark-jira-4"
+  },
+  {
+    "question": "List all issues updated by Sarah in the last 24 hours",
+    "answer": "updatedBy = sarah AND updated >= -24h ORDER BY updated DESC",
+    "conversation_id": "benchmark-jira-6"
+  },
+  {
+    "question": "Find documentation issues with In Progress status",
+    "answer": "issuetype = Documentation AND status = \"In Progress\" ORDER BY priority DESC",
+    "conversation_id": "benchmark-jira-7"
+  },
+  {
+    "question": "Show me all blocked issues in the current sprint",
+    "answer": "sprint in openSprints() AND status = Blocked ORDER BY priority DESC",
+    "conversation_id": "benchmark-jira-8"
+  },
+  {
+    "question": "List all issues affecting the production environment",
+    "answer": "environment = Production AND status != Resolved ORDER BY priority DESC, created DESC",
+    "conversation_id": "benchmark-jira-9"
+  },
+  {
+    "question": "Find security issues with high or critical priority",
+    "answer": "labels = security AND priority in (High, Critical) ORDER BY priority DESC, created DESC",
+    "conversation_id": "benchmark-jira-10"
+  }
+]

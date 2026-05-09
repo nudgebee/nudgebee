@@ -1,0 +1,6 @@
+user_prompt: Describe a Step Functions execution.
+expected_output:
+- aws stepfunctions describe-execution --execution-arn <execution-arn>
+tags:
+- command
+- aws

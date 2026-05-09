@@ -1,0 +1,3 @@
+table:
+  name: cloud_resource_metrics_cloud_resourses_cloud_accounts
+  schema: public

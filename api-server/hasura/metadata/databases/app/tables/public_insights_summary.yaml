@@ -1,0 +1,7 @@
+table:
+  name: insights_summary
+  schema: public
+object_relationships:
+- name: insights_summary_tenant
+  using:
+    foreign_key_constraint_on: tenant_id

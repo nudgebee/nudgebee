@@ -1,0 +1,12 @@
+table:
+  name: auth_type
+  schema: public
+is_enum: true
+array_relationships:
+  - name: user_auths
+    using:
+      foreign_key_constraint_on:
+        column: provider
+        table:
+          name: user_auths
+          schema: public

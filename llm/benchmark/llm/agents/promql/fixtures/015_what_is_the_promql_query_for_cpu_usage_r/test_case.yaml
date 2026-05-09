@@ -1,0 +1,7 @@
+user_prompt: what is the promql query for CPU usage rate on node-1?
+expected_output:
+- rate(node_cpu_seconds_total{instance="node-1", mode="user"}[5m])
+- sum(rate(node_cpu_seconds_total{instance="node-1"}[5m]))
+tags:
+- command
+- promql

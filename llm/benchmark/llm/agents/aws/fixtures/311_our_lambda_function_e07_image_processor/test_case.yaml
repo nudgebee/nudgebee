@@ -1,0 +1,15 @@
+agent: aws_debug
+expected_output:
+- The root cause is that the Lambda function 'e07-image-processor' is configured with only 128MB of memory and a 5-second
+  timeout, which is insufficient for its CPU-intensive workload. In AWS Lambda, CPU power scales linearly with allocated memory
+  - at 128MB, the function gets only a fraction of a vCPU. The image processing workload requires more CPU than 128MB provides,
+  causing it to exceed the 5-second timeout on every invocation. The fix is to increase the memory allocation (e.g., to 512MB
+  or higher) which will also increase the CPU allocation proportionally, and optionally increase the timeout.
+scenario: E07
+tags:
+- command
+- aws
+- easy
+type: rca
+user_prompt: Our Lambda function 'e07-image-processor' in us-east-1 keeps timing out on every single invocation. It's part
+  of our image processing pipeline. The function has never worked since we deployed it. Can you investigate?

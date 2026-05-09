@@ -1,0 +1,9 @@
+user_prompt: What is the ratio of 'Open' to 'Closed' recommendations in the 'production'
+  namespace?
+expected_output:
+- SELECT (SUM(CASE WHEN status = 'Open' THEN 1 ELSE 0 END)::decimal / SUM(CASE WHEN
+  status = 'Closed' THEN 1 ELSE 0 END)) AS open_to_closed_ratio FROM recommendation_view
+  WHERE namespace = 'production';
+tags:
+- command
+- recommendations

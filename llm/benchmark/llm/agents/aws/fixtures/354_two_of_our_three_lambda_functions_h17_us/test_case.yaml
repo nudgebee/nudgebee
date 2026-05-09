@@ -1,0 +1,18 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is that all three Lambda functions share a single IAM role ''h17-shared-lambda-role''. When the role policy
+  was updated for the analytics service (s3:GetObject was replaced with dynamodb:PutItem/GetItem), the user-service and notification-service
+  lost their required s3:GetObject permission. Shared IAM roles create coupling — permission changes for one function break
+  others. Check: (1) aws lambda get-function-configuration for each function to see they all use the same role ''h17-shared-lambda-role'',
+  (2) aws iam get-role-policy --role-name h17-shared-lambda-role --policy-name app-access to see s3:GetObject is missing,
+  only dynamodb actions remain. The fix requires: (1) Immediate: add s3:GetObject back to the shared role, (2) Long-term:
+  create separate IAM roles for each Lambda function with only the permissions each one needs (principle of least privilege).'
+scenario: H17
+tags:
+- command
+- aws
+- hard
+type: rca
+user_prompt: Two of our three Lambda functions — 'h17-user-service' and 'h17-notification-service' in us-east-1 — stopped
+  working with AccessDenied errors after we updated permissions for 'h17-analytics-service'. The analytics function works
+  fine now but the other two broke simultaneously. They were all working before the permission change. What happened?

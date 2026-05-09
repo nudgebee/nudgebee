@@ -1,0 +1,17 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is that the Lambda ''h03-search-service'' uses the wrong GSI name for DynamoDB queries. The environment
+  variable SEARCH_INDEX_NAME is set to ''ByCategory'', but the actual GSI on the table ''h03-products'' is named ''CategoryIndex''.
+  Check: (1) aws lambda get-function-configuration --function-name h03-search-service to see SEARCH_INDEX_NAME=ByCategory,
+  (2) aws dynamodb describe-table --table-name h03-products to see the actual GSI names. The GSI ''ByCategory'' does not exist;
+  the correct name is ''CategoryIndex''. The fix is to update the Lambda environment variable: aws lambda update-function-configuration
+  --function-name h03-search-service --environment Variables={TABLE_NAME=h03-products,SEARCH_INDEX_NAME=CategoryIndex}.'
+scenario: H03
+tags:
+- command
+- aws
+- hard
+type: rca
+user_prompt: Our product search Lambda 'h03-search-service' returns empty results for every category search. The DynamoDB
+  table 'h03-products' has data in it. Direct table scans return products. Only queries using the category search feature
+  return nothing. The Lambda logs show no errors, just 0 items returned. What's wrong?

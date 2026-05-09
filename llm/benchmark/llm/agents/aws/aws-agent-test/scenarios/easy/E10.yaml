@@ -1,0 +1,108 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E10: App Crashes on Boot - missing environment variable.
+  User complaint: "EC2 app crashes immediately after deploy."
+  Root cause: DB_HOST env var is empty in UserData, app can't connect to anything.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = DB_HOST env var is empty string.
+      Fixed = DB_HOST has actual RDS endpoint.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for notification service
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !ImportValue aws-agent-test-vpc-cidr
+      Tags:
+        - Key: Name
+          Value: e10-notification-sg
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: e10-notification-svc-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: e10-notification-svc-profile
+      Roles:
+        - !Ref InstanceRole
+
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      SubnetId: !ImportValue aws-agent-test-private-subnet-a
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      IamInstanceProfile: !Ref InstanceProfile
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            # Notification service startup configuration
+            export DB_HOST="${DbHost}"
+            export DB_PORT="5432"
+            export DB_NAME="notifications"
+            export DB_USER="notif_svc"
+            export REDIS_HOST="redis.internal.example.com"
+            export APP_PORT="8080"
+
+            # Simulate app startup that requires DB_HOST
+            echo "Starting notification service..." >> /var/log/notification-svc.log
+            echo "DB_HOST=$DB_HOST" >> /var/log/notification-svc.log
+            echo "DB_PORT=$DB_PORT" >> /var/log/notification-svc.log
+
+            if [ -z "$DB_HOST" ]; then
+              echo "FATAL: DB_HOST is not set. Cannot start notification service." >> /var/log/notification-svc.log
+              echo "Application startup failed at $(date)" >> /var/log/notification-svc.log
+              exit 1
+            fi
+
+            echo "Connecting to database at $DB_HOST:$DB_PORT/$DB_NAME..." >> /var/log/notification-svc.log
+            echo "Service started successfully" >> /var/log/notification-svc.log
+          - DbHost: !If [IsFixed, 'notifications-db.cxyz123.us-east-1.rds.amazonaws.com', '']
+      Tags:
+        - Key: Name
+          Value: e10-notification-svc-01
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: communications
+        - Key: Application
+          Value: notification-service
+
+Outputs:
+  InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref EC2Instance
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

@@ -1,0 +1,6 @@
+user_prompt: Delete a VPC.
+expected_output:
+- aws ec2 delete-vpc --vpc-id <vpc-id>
+tags:
+- command
+- aws

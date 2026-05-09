@@ -1,0 +1,3 @@
+table:
+  name: account_purpose_type
+  schema: public

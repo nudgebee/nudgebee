@@ -1,0 +1,24 @@
+agent: k8s_debug
+expected_output:
+- The cartservice is experiencing failures due to the cartFailure feature flag being enabled. This prevents users from adding
+  items to their cart and proceeding with checkout.
+expected_root_cause:
+  affected_service: cartservice
+  issue_type: service_unavailable
+  symptoms:
+  - add to cart button not working
+  - cart operations failing
+  - checkout process blocked
+  telemetry_signals:
+    logs: ERROR logs in cartservice indicating failures
+    metrics: cart operation failure rate spike in metrics
+    traces: failed cart service traces showing errors in AddItem operations
+feature_flag: cartFailure
+flag_variant: 'on'
+scenario_id: cart_service_failure
+tags:
+- rca
+- kubernetes
+type: rca
+user_prompt: Customers cannot add items to their shopping cart. Investigate the cart deployment in nudgebee-demo namespace.
+wait_time_seconds: 60

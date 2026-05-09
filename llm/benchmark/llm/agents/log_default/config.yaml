@@ -1,0 +1,13 @@
+# logs_default agent benchmark configuration.
+#
+# We target the parent `logs` agent (not `logs_default` directly). The parent
+# wires logs_default (provider path) first, kubectl_log second. Fixtures in this
+# suite exercise both arms:
+#   - No provider registered  → parent skips logs_default → kubectl_log answers
+#   - Provider registered + logs present → logs_default answers (Completed)
+#   - Provider registered + no matching logs → logs_default Failed → kubectl_log answers
+agent: logs
+tool_names:
+  - query_generator
+  - logs_execute
+  - kubectl_log_execute

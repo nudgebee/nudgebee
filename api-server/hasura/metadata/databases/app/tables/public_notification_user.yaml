@@ -1,0 +1,13 @@
+table:
+  name: notification_user
+  schema: public
+object_relationships:
+- name: notificationByNotification
+  using:
+    foreign_key_constraint_on: notification
+- name: notification_user_status_type
+  using:
+    foreign_key_constraint_on: status
+- name: user
+  using:
+    foreign_key_constraint_on: user_id

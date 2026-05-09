@@ -1,0 +1,1171 @@
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import { Box, Popover, Typography, InputBase, Chip } from '@mui/material';
+import Text from '@components1/common/format/Text';
+import CustomTooltip from '@components1/common/CustomTooltip';
+import SafeIcon from '@components1/common/SafeIcon';
+import PropTypes from 'prop-types';
+import { colors } from '@utils/colors';
+import { toKebabCase } from '@utils/common';
+
+const VIRTUALIZATION_THRESHOLD = 200;
+const OPTION_HEIGHT = 36;
+const OVERSCAN_COUNT = 10;
+
+// Safe key helper: falls back to label when getValue returns a non-primitive
+const getOptionKey = (option, fallback) => {
+  const val = getValue(option);
+  const valStr = val != null && typeof val !== 'object' ? val : getLabel(option);
+  return `${getLabel(option)}-${valStr}-${fallback}`;
+};
+
+const getLabel = (option) => {
+  if (typeof option === 'string') return option;
+  if (option == null) return '';
+  return option.label || option.name || String(option.value ?? '');
+};
+
+const getValue = (option) => {
+  if (typeof option === 'string') return option;
+  if (option == null) return '';
+  return option.value ?? option;
+};
+
+const ChevronIcon = ({ open = false }) => (
+  <svg
+    width='12'
+    height='12'
+    viewBox='0 0 10 10'
+    fill='none'
+    style={{
+      opacity: 0.3,
+      transition: 'transform 0.2s ease',
+      transform: open ? 'rotate(180deg)' : 'rotate(0deg)',
+      flexShrink: 0,
+    }}
+  >
+    <path d='M2 3.5L5 6.5L8 3.5' stroke='currentColor' strokeWidth='1.5' strokeLinecap='round' strokeLinejoin='round' />
+  </svg>
+);
+
+const SearchIcon = () => (
+  <svg
+    width='12'
+    height='12'
+    viewBox='0 0 12 12'
+    fill='none'
+    style={{ opacity: 0.35, position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)' }}
+  >
+    <circle cx='5' cy='5' r='4' stroke='currentColor' strokeWidth='1.5' />
+    <line x1='8' y1='8' x2='11' y2='11' stroke='currentColor' strokeWidth='1.5' strokeLinecap='round' />
+  </svg>
+);
+
+const CheckmarkIcon = () => (
+  <svg width='10' height='10' viewBox='0 0 10 10' fill='none'>
+    <path d='M2 5L4.2 7L8 3' stroke='white' strokeWidth='1.5' strokeLinecap='round' strokeLinejoin='round' />
+  </svg>
+);
+
+const PlusIcon = () => (
+  <svg width='12' height='12' viewBox='0 0 12 12' fill='none' style={{ opacity: 0.4 }}>
+    <line x1='6' y1='2' x2='6' y2='10' stroke='currentColor' strokeWidth='1.5' strokeLinecap='round' />
+    <line x1='2' y1='6' x2='10' y2='6' stroke='currentColor' strokeWidth='1.5' strokeLinecap='round' />
+  </svg>
+);
+
+const OptionItem = React.memo(function OptionItem({ opt, selected, multiple, onToggle, style }) {
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onToggle(opt);
+    }
+  };
+
+  return (
+    <Box
+      role='option'
+      tabIndex={0}
+      aria-selected={selected}
+      onClick={() => onToggle(opt)}
+      onKeyDown={handleKeyDown}
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '10px',
+        padding: '8px 10px',
+        margin: '0 5px',
+        borderRadius: '6px',
+        cursor: 'pointer',
+        fontSize: '13px',
+        fontFamily: 'inherit',
+        fontWeight: selected ? 500 : 400,
+        color: selected ? colors.text.primary : colors.text.secondary,
+        backgroundColor: selected ? 'rgba(59, 130, 246, 0.08)' : 'transparent',
+        transition: 'background 0.1s ease',
+        boxSizing: 'border-box',
+        '&:hover': {
+          backgroundColor: selected ? 'rgba(59, 130, 246, 0.08)' : colors.background.tertiaryLightestestest,
+        },
+        ...style,
+      }}
+    >
+      {multiple && (
+        <Box
+          sx={{
+            width: 16,
+            height: 16,
+            borderRadius: '4px',
+            border: selected ? 'none' : `1.5px solid ${colors.border.secondary}`,
+            backgroundColor: selected ? colors.background.primary : 'transparent',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            transition: 'all 0.15s ease',
+            flexShrink: 0,
+          }}
+        >
+          {selected && <CheckmarkIcon />}
+        </Box>
+      )}
+      {opt && typeof opt === 'object' && opt.icon && (
+        <SafeIcon src={opt.icon} alt={opt.type ?? ''} style={{ width: 16, height: 16, flexShrink: 0, objectFit: 'contain' }} />
+      )}
+      <Box sx={{ flex: 1, minWidth: 0, display: 'flex' }}>
+        <Text sx={{ color: 'inherit' }} value={getLabel(opt)} showAutoEllipsis />
+      </Box>
+      {opt && typeof opt === 'object' && opt.type && (
+        <Chip
+          label={opt.type}
+          size='small'
+          sx={{
+            height: 18,
+            fontSize: 10,
+            bgcolor: '#f5f5f5',
+            color: colors.text.secondary,
+            flexShrink: 0,
+            '& .MuiChip-label': { px: 0.75 },
+          }}
+        />
+      )}
+    </Box>
+  );
+});
+
+OptionItem.propTypes = {
+  opt: PropTypes.any,
+  selected: PropTypes.bool,
+  multiple: PropTypes.bool,
+  onToggle: PropTypes.func,
+  style: PropTypes.object,
+};
+
+function OptionsList({ isOptionsLoading, filteredOptions, multiple, isSelected, handleToggle, handleClear, handleSelectAll }) {
+  const scrollRef = useRef(null);
+  const [scrollTop, setScrollTop] = useState(0);
+
+  const handleScroll = useCallback((e) => {
+    setScrollTop(e.currentTarget.scrollTop);
+  }, []);
+
+  // Reset scroll when options change (e.g., search)
+  useEffect(() => {
+    setScrollTop(0);
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = 0;
+    }
+  }, [filteredOptions]);
+
+  const { selectedOptions, unselectedOptions } = useMemo(() => {
+    const sel = filteredOptions.filter((opt) => isSelected(opt));
+    const unsel = filteredOptions.filter((opt) => !isSelected(opt));
+    return { selectedOptions: sel, unselectedOptions: unsel };
+  }, [filteredOptions, isSelected]);
+
+  const useVirtualization = unselectedOptions.length > VIRTUALIZATION_THRESHOLD;
+
+  // Header height: "Selected" label (28px) + selected items + divider (18px)
+  const selectedSectionHeight =
+    selectedOptions.length > 0 ? 28 + selectedOptions.length * OPTION_HEIGHT + (unselectedOptions.length > 0 ? 18 : 0) : 0;
+
+  // For virtualized mode, compute which unselected items are visible
+  const virtualizedContent = useMemo(() => {
+    if (!useVirtualization) {
+      return null;
+    }
+
+    const totalHeight = selectedSectionHeight + unselectedOptions.length * OPTION_HEIGHT;
+    const viewportHeight = 260;
+
+    // Compute visible range of unselected items based on scroll position
+    const unselectedScrollOffset = Math.max(0, scrollTop - selectedSectionHeight);
+    const startIndex = Math.max(0, Math.floor(unselectedScrollOffset / OPTION_HEIGHT) - OVERSCAN_COUNT);
+    const endIndex = Math.min(unselectedOptions.length, Math.ceil((unselectedScrollOffset + viewportHeight) / OPTION_HEIGHT) + OVERSCAN_COUNT);
+
+    const topSpacerHeight = startIndex * OPTION_HEIGHT;
+    const bottomSpacerHeight = Math.max(0, (unselectedOptions.length - endIndex) * OPTION_HEIGHT);
+
+    return { totalHeight, startIndex, endIndex, topSpacerHeight, bottomSpacerHeight };
+  }, [useVirtualization, scrollTop, selectedSectionHeight, unselectedOptions.length]);
+
+  const scrollboxSx = {
+    maxHeight: '260px',
+    overflowY: 'auto',
+    padding: '4px 0',
+    '&::-webkit-scrollbar': { width: '4px' },
+    '&::-webkit-scrollbar-track': { background: 'transparent' },
+    '&::-webkit-scrollbar-thumb': { background: '#d0d0d0', borderRadius: '4px' },
+    '&::-webkit-scrollbar-thumb:hover': { background: '#b0b0b0' },
+  };
+
+  if (isOptionsLoading) {
+    return (
+      <Box sx={scrollboxSx}>
+        <Typography sx={{ padding: '16px 14px', fontSize: '13px', color: colors.text.tertiary, textAlign: 'center' }}>Loading...</Typography>
+      </Box>
+    );
+  }
+
+  if (filteredOptions.length === 0) {
+    return (
+      <Box sx={scrollboxSx}>
+        <Typography sx={{ padding: '16px 14px', fontSize: '13px', color: colors.text.tertiary, textAlign: 'center' }}>No results found</Typography>
+      </Box>
+    );
+  }
+
+  return (
+    <Box ref={scrollRef} onScroll={handleScroll} sx={scrollboxSx}>
+      {/* Select All — shown as a checkbox row in multiple mode */}
+      {multiple && filteredOptions.length > 0 && (
+        <>
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '8px 10px',
+              margin: '0 5px',
+              borderRadius: '6px',
+            }}
+          >
+            <Box
+              component='button'
+              onClick={filteredOptions.every(isSelected) ? handleClear : handleSelectAll}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  filteredOptions.every(isSelected) ? handleClear(e) : handleSelectAll(e);
+                }
+              }}
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                cursor: 'pointer',
+                fontSize: '13px',
+                fontFamily: 'inherit',
+                fontWeight: 500,
+                color: colors.text.primary,
+                transition: 'background 0.1s ease',
+                border: 'none',
+                background: 'none',
+                padding: 0,
+              }}
+            >
+              <Box
+                sx={{
+                  width: 16,
+                  height: 16,
+                  borderRadius: '4px',
+                  border: filteredOptions.every(isSelected) ? 'none' : `1.5px solid ${colors.border.secondary}`,
+                  backgroundColor: filteredOptions.every(isSelected) ? colors.background.primary : 'transparent',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  transition: 'all 0.15s ease',
+                  flexShrink: 0,
+                }}
+              >
+                {filteredOptions.every(isSelected) && <CheckmarkIcon />}
+              </Box>
+              Select All
+            </Box>
+            {selectedOptions.length > 0 && (
+              <Typography
+                role='button'
+                tabIndex={0}
+                onClick={handleClear}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleClear(e);
+                  }
+                }}
+                sx={{ fontSize: '11px', fontWeight: 500, color: colors.text.primary, cursor: 'pointer', '&:hover': { opacity: 0.7 } }}
+              >
+                Clear All
+              </Typography>
+            )}
+          </Box>
+          <Box sx={{ borderBottom: '0.5px solid #e8e8e8', margin: '6px 10px' }} />
+        </>
+      )}
+
+      {/* Selected section — always fully rendered (small count) */}
+      {selectedOptions.length > 0 &&
+        selectedOptions.map((opt, idx) => (
+          <OptionItem
+            key={`sel-${getOptionKey(opt, idx)}`}
+            opt={opt}
+            selected
+            multiple={multiple}
+            onToggle={handleToggle}
+            style={{ height: `${OPTION_HEIGHT}px` }}
+          />
+        ))}
+
+      {/* Unselected section — virtualized when large */}
+      {useVirtualization ? (
+        <>
+          <div style={{ height: virtualizedContent.topSpacerHeight }} aria-hidden='true' />
+          {unselectedOptions.slice(virtualizedContent.startIndex, virtualizedContent.endIndex).map((opt, i) => {
+            const idx = virtualizedContent.startIndex + i;
+            return (
+              <OptionItem
+                key={`unsel-${getOptionKey(opt, idx)}`}
+                opt={opt}
+                selected={false}
+                multiple={multiple}
+                onToggle={handleToggle}
+                style={{ height: `${OPTION_HEIGHT}px` }}
+              />
+            );
+          })}
+          <div style={{ height: virtualizedContent.bottomSpacerHeight }} aria-hidden='true' />
+        </>
+      ) : (
+        unselectedOptions.map((opt, idx) => (
+          <OptionItem key={`unsel-${getOptionKey(opt, idx)}`} opt={opt} selected={false} multiple={multiple} onToggle={handleToggle} />
+        ))
+      )}
+    </Box>
+  );
+}
+
+OptionsList.propTypes = {
+  isOptionsLoading: PropTypes.bool,
+  filteredOptions: PropTypes.array,
+  multiple: PropTypes.bool,
+  isSelected: PropTypes.func,
+  handleToggle: PropTypes.func,
+  handleClear: PropTypes.func,
+  handleSelectAll: PropTypes.func,
+};
+
+function snakeToTitleCase(str) {
+  return str
+    .split('_')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+}
+
+function GroupedOptionsList({ isOptionsLoading, filteredOptions, multiple, isSelected, handleToggle, value, onSelect, groupIcon }) {
+  const groups = useMemo(() => {
+    const groupMap = new Map();
+    filteredOptions.forEach((opt) => {
+      const rawGroup = typeof opt === 'object' && opt.group ? opt.group : 'Other';
+      const groupName = snakeToTitleCase(rawGroup);
+      if (!groupMap.has(groupName)) groupMap.set(groupName, { options: [], rawGroup });
+      groupMap.get(groupName).options.push(opt);
+    });
+    return Array.from(groupMap.entries()).map(([name, data]) => [name, data.options, data.rawGroup]);
+  }, [filteredOptions]);
+
+  const [openGroups, setOpenGroups] = useState({});
+
+  const toggleGroup = useCallback((groupName) => {
+    setOpenGroups((prev) => ({ ...prev, [groupName]: !prev[groupName] }));
+  }, []);
+
+  const handleGroupClear = useCallback(
+    (groupOptions) => (e) => {
+      e.stopPropagation();
+      if (!onSelect) return;
+      if (multiple) {
+        const groupVals = new Set(groupOptions.map(getValue));
+        const currentArr = Array.isArray(value) ? value : [];
+        const newValue = currentArr.filter((v) => !groupVals.has(getValue(v)));
+        onSelect({ target: { value: newValue } }, newValue);
+      } else {
+        onSelect({ target: { value: null } }, null);
+      }
+    },
+    [value, onSelect, multiple]
+  );
+
+  const handleGroupSelectAll = useCallback(
+    (groupOptions) => (e) => {
+      e.stopPropagation();
+      if (!onSelect || !multiple) return;
+      const currentArr = Array.isArray(value) ? value : [];
+      const currentVals = new Set(currentArr.map(getValue));
+      const toAdd = groupOptions.filter((opt) => !currentVals.has(getValue(opt)));
+      onSelect({ target: { value: [...currentArr, ...toAdd] } }, [...currentArr, ...toAdd]);
+    },
+    [value, onSelect, multiple]
+  );
+
+  const scrollboxSx = {
+    maxHeight: '260px',
+    overflowY: 'auto',
+    paddingBottom: '4px',
+    '&::-webkit-scrollbar': { width: '4px' },
+    '&::-webkit-scrollbar-track': { background: 'transparent' },
+    '&::-webkit-scrollbar-thumb': { background: '#d0d0d0', borderRadius: '4px' },
+    '&::-webkit-scrollbar-thumb:hover': { background: '#b0b0b0' },
+  };
+
+  if (isOptionsLoading) {
+    return (
+      <Box sx={scrollboxSx}>
+        <Typography sx={{ padding: '16px 14px', fontSize: '13px', color: colors.text.tertiary, textAlign: 'center' }}>Loading...</Typography>
+      </Box>
+    );
+  }
+
+  if (filteredOptions.length === 0) {
+    return (
+      <Box sx={scrollboxSx}>
+        <Typography sx={{ padding: '16px 14px', fontSize: '13px', color: colors.text.tertiary, textAlign: 'center' }}>No results found</Typography>
+      </Box>
+    );
+  }
+
+  return (
+    <Box sx={scrollboxSx}>
+      {groups.map(([groupName, groupOptions, rawGroup]) => {
+        const selectedInGroup = groupOptions.filter(isSelected);
+        const unselectedInGroup = groupOptions.filter((opt) => !isSelected(opt));
+        const hasGroupSelection = selectedInGroup.length > 0;
+        const isOpen = !!openGroups[groupName];
+
+        return (
+          <Box key={groupName}>
+            {/* Sticky group header with per-group actions */}
+            <Box
+              role='button'
+              tabIndex={0}
+              onClick={() => toggleGroup(groupName)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  toggleGroup(groupName);
+                }
+              }}
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '0 14px',
+                height: `${OPTION_HEIGHT}px`,
+                position: 'sticky',
+                top: 0,
+                zIndex: 10,
+                backgroundColor: '#ffffff',
+                cursor: 'pointer',
+                '&:hover': { backgroundColor: '#f9f9f9' },
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                {groupIcon && typeof groupIcon === 'function' && groupIcon(rawGroup)}
+                <Typography
+                  sx={{ fontSize: '11px', fontWeight: 600, color: colors.text.secondary, textTransform: 'uppercase', letterSpacing: '0.02em' }}
+                >
+                  {groupName}
+                </Typography>
+                {hasGroupSelection && (
+                  <Box
+                    component='span'
+                    sx={{
+                      backgroundColor: colors.background.primary,
+                      color: colors.white,
+                      borderRadius: '4px',
+                      minWidth: '10px',
+                      height: '18px',
+                      padding: '0 4px',
+                      fontSize: '10px',
+                      fontWeight: 600,
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      cursor: 'default',
+                    }}
+                  >
+                    {selectedInGroup.length}
+                  </Box>
+                )}
+              </Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                {isOpen &&
+                  (hasGroupSelection ? (
+                    <Typography
+                      role='button'
+                      tabIndex={0}
+                      onClick={handleGroupClear(groupOptions)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          handleGroupClear(groupOptions)(e);
+                        }
+                      }}
+                      sx={{ fontSize: '11px', fontWeight: 500, color: colors.text.primary, cursor: 'pointer', '&:hover': { opacity: 0.7 } }}
+                    >
+                      {multiple ? 'Clear All' : 'Clear'}
+                    </Typography>
+                  ) : (
+                    multiple &&
+                    unselectedInGroup.length > 0 && (
+                      <Typography
+                        role='button'
+                        tabIndex={0}
+                        onClick={handleGroupSelectAll(groupOptions)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            handleGroupSelectAll(groupOptions)(e);
+                          }
+                        }}
+                        sx={{ fontSize: '11px', fontWeight: 500, color: colors.text.primary, cursor: 'pointer', '&:hover': { opacity: 0.7 } }}
+                      >
+                        Select All
+                      </Typography>
+                    )
+                  ))}
+                <ChevronIcon open={isOpen} />
+              </Box>
+            </Box>
+
+            {isOpen && (
+              <Box sx={{ paddingLeft: '12px' }}>
+                {/* Selected items first */}
+                {selectedInGroup.map((opt, idx) => (
+                  <OptionItem key={`sel-${groupName}-${getOptionKey(opt, idx)}`} opt={opt} selected multiple={multiple} onToggle={handleToggle} />
+                ))}
+
+                {/* Divider between selected and unselected */}
+                {selectedInGroup.length > 0 && unselectedInGroup.length > 0 && (
+                  <Box sx={{ borderBottom: '0.5px solid #e8e8e8', margin: '6px 10px' }} />
+                )}
+
+                {/* Unselected items */}
+                {unselectedInGroup.map((opt, idx) => (
+                  <OptionItem
+                    key={`unsel-${groupName}-${getOptionKey(opt, idx)}`}
+                    opt={opt}
+                    selected={false}
+                    multiple={multiple}
+                    onToggle={handleToggle}
+                  />
+                ))}
+              </Box>
+            )}
+          </Box>
+        );
+      })}
+    </Box>
+  );
+}
+
+GroupedOptionsList.propTypes = {
+  isOptionsLoading: PropTypes.bool,
+  filteredOptions: PropTypes.array,
+  multiple: PropTypes.bool,
+  isSelected: PropTypes.func,
+  handleToggle: PropTypes.func,
+  value: PropTypes.any,
+  onSelect: PropTypes.func,
+  groupIcon: PropTypes.func,
+};
+
+function TruncatedLabel({ label, maxWidth = '90px', color, fontWeight = 500, placement = 'top', fluid = false }) {
+  const spanRef = useRef(null);
+  const [isOverflowing, setIsOverflowing] = useState(false);
+
+  useEffect(() => {
+    const el = spanRef.current;
+    if (!el) return undefined;
+    const checkOverflow = () => setIsOverflowing(el.scrollWidth > el.clientWidth);
+    checkOverflow();
+    if (!fluid || typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(checkOverflow);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [label, fluid]);
+
+  const sizingStyle = fluid ? { flex: '0 1 auto', minWidth: 0, maxWidth: '100%' } : { maxWidth };
+
+  return (
+    <CustomTooltip ref={spanRef} title={isOverflowing ? label : ''} placement={placement}>
+      <span
+        style={{
+          color: color ?? colors.text.primary,
+          fontWeight,
+          ...sizingStyle,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          display: 'inline-block',
+          verticalAlign: 'middle',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {label}
+      </span>
+    </CustomTooltip>
+  );
+}
+
+TruncatedLabel.propTypes = {
+  label: PropTypes.string,
+  maxWidth: PropTypes.string,
+  color: PropTypes.string,
+  fontWeight: PropTypes.number,
+  placement: PropTypes.string,
+  fluid: PropTypes.bool,
+};
+
+function FilterDropdownButton({
+  id,
+  label,
+  placeholder,
+  options = [],
+  value,
+  multiple = false,
+  grouped = false,
+  groupIcon,
+  freeSolo = false,
+  onSelect,
+  disabled = false,
+  isOptionsLoading = false,
+  limitTag = 1,
+  sx = {},
+  searchPlaceholder,
+  required = false,
+}) {
+  const [anchorEl, setAnchorEl] = useState(null);
+  const [search, setSearch] = useState('');
+  const searchRef = useRef(null);
+  const open = Boolean(anchorEl);
+
+  // Compute selected count and display text
+  const selectedCount = useMemo(() => {
+    if (multiple) {
+      return Array.isArray(value) ? value.length : 0;
+    }
+    return value != null && value !== '' ? 1 : 0;
+  }, [value, multiple]);
+
+  const hasSelection = selectedCount > 0;
+
+  // Pre-index options into a Map for O(1) value→option lookups.
+  // Avoids O(N*M) linear scans during render when many items are selected.
+  const optionByValueMap = useMemo(() => {
+    const map = new Map();
+    options.forEach((opt) => map.set(getValue(opt), opt));
+    return map;
+  }, [options]);
+
+  // Resolve a raw value (e.g. an ID string) back to its display label
+  // using the pre-indexed map. Falls back to getLabel(v) when the value
+  // is already an option object or no matching option is found.
+  const resolveLabel = useCallback(
+    (v) => {
+      if (v != null && typeof v !== 'object') {
+        const opt = optionByValueMap.get(v);
+        return opt != null ? getLabel(opt) : getLabel(v);
+      }
+      return getLabel(v);
+    },
+    [optionByValueMap]
+  );
+
+  // Resolve to the option object (for icon lookup on selected display).
+  // Returns null when the value isn't a known option.
+  const resolveOption = useCallback(
+    (v) => {
+      if (v != null && typeof v === 'object') return v;
+      return optionByValueMap.get(v) ?? null;
+    },
+    [optionByValueMap]
+  );
+
+  // Build display values: max limitTag for multi, 1 for single
+  const selectedDisplayText = useMemo(() => {
+    if (!hasSelection) return null;
+    if (multiple && Array.isArray(value)) {
+      const visible = value.slice(0, limitTag).map((v) => resolveLabel(v));
+      const hidden = value.slice(limitTag).map((v) => resolveLabel(v));
+      return { labels: visible, extra: hidden.length, hiddenLabels: hidden };
+    }
+    return { labels: [resolveLabel(value)], extra: 0, hiddenLabels: [] };
+  }, [value, multiple, hasSelection, limitTag, resolveLabel]);
+
+  // Filter options by search.
+  // Supports glob wildcards `*` (any sequence) and `?` (single char) — useful
+  // for long index/label lists like `fluentk8s-prod-2026.04.03`. Plain queries
+  // keep their existing case-insensitive substring semantics.
+  const filteredOptions = useMemo(() => {
+    const q = search.trim();
+    if (!q) return options;
+    const hasWildcard = /[*?]/.test(q);
+    if (hasWildcard) {
+      // Escape regex specials, then translate glob → regex.
+      const escaped = q
+        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+        .replace(/\*/g, '.*')
+        .replace(/\?/g, '.');
+      try {
+        const re = new RegExp(escaped, 'i');
+        return options.filter((opt) => re.test(getLabel(opt)));
+      } catch {
+        // Fall through to substring match on regex compile failure.
+      }
+    }
+    const lower = q.toLowerCase();
+    return options.filter((opt) => getLabel(opt).toLowerCase().includes(lower));
+  }, [options, search]);
+
+  // Check if an option is selected
+  const isSelected = useCallback(
+    (opt) => {
+      const optVal = getValue(opt);
+      if (multiple && Array.isArray(value)) {
+        return value.some((v) => getValue(v) === optVal);
+      }
+      if (!multiple && value != null) {
+        const currentVal = typeof value === 'object' ? getValue(value) : value;
+        return optVal === currentVal;
+      }
+      return false;
+    },
+    [multiple, value]
+  );
+
+  const handleToggle = (opt) => {
+    if (!onSelect) return;
+
+    if (multiple) {
+      const optVal = getValue(opt);
+      const currentArr = Array.isArray(value) ? value : [];
+      let newValue;
+      if (currentArr.some((v) => getValue(v) === optVal)) {
+        newValue = currentArr.filter((v) => getValue(v) !== optVal);
+      } else {
+        newValue = [...currentArr, opt];
+      }
+      onSelect({ target: { value: newValue } }, newValue);
+    } else {
+      const newVal = opt?.value ?? opt;
+      onSelect({ target: { value: newVal } }, opt);
+      setAnchorEl(null);
+    }
+  };
+
+  const handleClear = (e) => {
+    e.stopPropagation();
+    if (!onSelect) return;
+    if (multiple) {
+      onSelect({ target: { value: [] } }, []);
+    } else {
+      onSelect({ target: { value: null } }, null);
+    }
+  };
+
+  const handleClearFiltered = (e) => {
+    e.stopPropagation();
+    if (!onSelect) return;
+    if (multiple) {
+      const currentArr = Array.isArray(value) ? value : [];
+      const filteredVals = new Set(filteredOptions.map(getValue));
+      const newValue = currentArr.filter((v) => !filteredVals.has(getValue(v)));
+      onSelect({ target: { value: newValue } }, newValue);
+    } else {
+      onSelect({ target: { value: null } }, null);
+    }
+  };
+
+  const handleSelectAllFiltered = (e) => {
+    e.stopPropagation();
+    if (!onSelect || !multiple) return;
+    const currentArr = Array.isArray(value) ? value : [];
+    const currentVals = new Set(currentArr.map(getValue));
+    const toAdd = filteredOptions.filter((opt) => !currentVals.has(getValue(opt)));
+    onSelect({ target: { value: [...currentArr, ...toAdd] } }, [...currentArr, ...toAdd]);
+  };
+
+  // freeSolo: check if search text can be added as a new custom value
+  const canAddCustom = useMemo(() => {
+    if (!freeSolo || !search.trim()) return false;
+    const q = search.trim().toLowerCase();
+    // Don't show "Add" if it already exists in options or selected values
+    const existsInOptions = options.some((opt) => getLabel(opt).toLowerCase() === q);
+    const existsInValue = multiple && Array.isArray(value) && value.some((v) => getLabel(v).toLowerCase() === q);
+    return !existsInOptions && !existsInValue;
+  }, [freeSolo, search, options, value, multiple]);
+
+  const handleAddCustom = () => {
+    if (!onSelect || !canAddCustom) return;
+    const customVal = search.trim();
+    if (multiple) {
+      const currentArr = Array.isArray(value) ? value : [];
+      const newValue = [...currentArr, customVal];
+      onSelect({ target: { value: newValue } }, newValue);
+    } else {
+      onSelect({ target: { value: customVal } }, customVal);
+      setAnchorEl(null);
+    }
+    setSearch('');
+  };
+
+  useEffect(() => {
+    if (!open) setSearch('');
+  }, [open]);
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Escape') {
+      setAnchorEl(null);
+    }
+  };
+
+  const inputId = toKebabCase(id || label || '');
+
+  return (
+    <>
+      <Box
+        component='button'
+        type='button'
+        id={inputId ? `auto-complete-${inputId}` : 'auto-complete'}
+        onClick={(e) => !disabled && setAnchorEl(e.currentTarget)}
+        onKeyDown={handleKeyDown}
+        disabled={disabled}
+        sx={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '5px',
+          padding: '10px 12px',
+          fontSize: '13px',
+          minWidth: '160px',
+          height: '34px',
+          fontWeight: 450,
+          fontFamily: 'inherit',
+          color: hasSelection ? colors.text.primary : colors.text.secondary,
+          backgroundColor: hasSelection ? 'rgba(185, 212, 255, 0.12)' : colors.background.white,
+          border: hasSelection ? '1px solid rgba(0, 98, 255, 0.21)' : '1px solid #e2e2e2c4',
+          boxShadow: hasSelection ? '0 0 0 2px #e7eeff' : '0 4px 4px rgba(0, 0, 0, 0.04)',
+          borderRadius: '6px',
+          cursor: disabled ? 'default' : 'pointer',
+          transition: 'all 0.2s ease',
+          opacity: disabled ? 0.5 : 1,
+          whiteSpace: 'nowrap',
+          outline: 'none',
+          lineHeight: 1,
+          ...(open && {
+            backgroundColor: colors.background.white,
+            border: '1px solid #89aeff',
+            boxShadow: '0 0 0 3px #e7eeff',
+          }),
+          ...(!open &&
+            !hasSelection && {
+              '&:hover': {
+                backgroundColor: colors.background.tertiaryLightest,
+                color: colors.text.secondary,
+              },
+            }),
+          ...sx,
+        }}
+      >
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', flex: 1, overflow: 'hidden', minWidth: 0 }}>
+          {(label || (!hasSelection && placeholder) || isOptionsLoading) && (
+            <span style={{ color: hasSelection ? colors.text.tertiary : 'inherit', fontWeight: 400, flexShrink: 0 }}>
+              {label || (!hasSelection ? placeholder : '')}
+              {required && (label || !hasSelection) && <span style={{ color: colors.border.error }}> *</span>}
+              {isOptionsLoading && <span style={{ marginLeft: '4px', fontSize: '11px', color: colors.text.tertiary, fontWeight: 400 }}>...</span>}
+            </span>
+          )}
+          {hasSelection && selectedDisplayText && (
+            <>
+              {!multiple &&
+                (() => {
+                  const selectedOpt = resolveOption(value);
+                  return selectedOpt?.icon ? (
+                    <SafeIcon
+                      src={selectedOpt.icon}
+                      alt={selectedOpt.type ?? ''}
+                      style={{ width: 16, height: 16, flexShrink: 0, objectFit: 'contain' }}
+                    />
+                  ) : null;
+                })()}
+              {selectedDisplayText.labels.map((lbl, idx) => (
+                <React.Fragment key={lbl}>
+                  {idx > 0 && <span style={{ color: colors.text.primary, fontWeight: 500 }}>, </span>}
+                  <TruncatedLabel label={lbl} fluid={!!(sx?.minWidth || sx?.width)} />
+                </React.Fragment>
+              ))}
+              {selectedDisplayText.extra > 0 && (
+                <CustomTooltip
+                  variant='interactive'
+                  title={
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      {selectedDisplayText.hiddenLabels.map((lbl) => (
+                        <TruncatedLabel key={lbl} label={lbl} maxWidth='220px' color={colors.text.secondary} fontWeight={400} placement='top' />
+                      ))}
+                    </Box>
+                  }
+                  placement='top'
+                >
+                  <Box
+                    component='span'
+                    sx={{
+                      backgroundColor: colors.background.primary,
+                      color: colors.white,
+                      borderRadius: '4px',
+                      padding: '0 4px',
+                      fontSize: '10px',
+                      fontWeight: 600,
+                      lineHeight: '18px',
+                      display: 'inline-block',
+                      cursor: 'default',
+                    }}
+                  >
+                    +{selectedDisplayText.extra}
+                  </Box>
+                </CustomTooltip>
+              )}
+            </>
+          )}
+        </span>
+        {hasSelection ? (
+          <svg
+            width='14'
+            height='14'
+            viewBox='0 0 12 12'
+            fill='none'
+            onClick={handleClear}
+            style={{ opacity: 0.4, cursor: 'pointer', flexShrink: 0 }}
+          >
+            <line x1='3' y1='3' x2='9' y2='9' stroke='currentColor' strokeWidth='1.5' strokeLinecap='round' />
+            <line x1='9' y1='3' x2='3' y2='9' stroke='currentColor' strokeWidth='1.5' strokeLinecap='round' />
+          </svg>
+        ) : (
+          <ChevronIcon open={open} />
+        )}
+      </Box>
+
+      <Popover
+        open={open}
+        anchorEl={anchorEl}
+        onClose={() => setAnchorEl(null)}
+        disablePortal
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'left' }}
+        slotProps={{
+          paper: {
+            sx: {
+              mt: '7px',
+              borderRadius: '10px',
+              border: 'none',
+              boxShadow: '0 4px 6px rgba(0,0,0,0.04), 0 12px 28px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.05)',
+              width: '280px',
+              overflow: 'hidden',
+              transformOrigin: 'top left',
+              animation: 'filterDropdownSlideIn 250ms cubic-bezier(0.16, 1, 0.3, 1)',
+              '@keyframes filterDropdownSlideIn': {
+                '0%': { opacity: 0, transform: 'scaleY(0.9) translateY(-8px)' },
+                '100%': { opacity: 1, transform: 'scaleY(1) translateY(0)' },
+              },
+            },
+          },
+        }}
+        onKeyDown={handleKeyDown}
+      >
+        {/* Search - show when more than 8 options, or always when freeSolo */}
+        {(options.length > 8 || freeSolo) && (
+          <Box sx={{ margin: '10px 10px 6px 10px', position: 'relative' }}>
+            <SearchIcon />
+            <InputBase
+              inputRef={searchRef}
+              autoFocus
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={searchPlaceholder || (freeSolo ? 'Search or type to add...' : 'Search...')}
+              onKeyDown={(e) => {
+                handleKeyDown(e);
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  if (canAddCustom) {
+                    handleAddCustom();
+                  } else if (filteredOptions.length > 0) {
+                    // Select exact match first, otherwise select if only one result
+                    const q = search.trim().toLowerCase();
+                    const exactMatch = filteredOptions.find((opt) => getLabel(opt).toLowerCase() === q);
+                    if (exactMatch) {
+                      handleToggle(exactMatch);
+                    } else if (filteredOptions.length === 1) {
+                      handleToggle(filteredOptions[0]);
+                    }
+                  }
+                }
+              }}
+              sx={{
+                width: '100%',
+                fontSize: '13px',
+                fontFamily: 'inherit',
+                color: colors.text.secondary,
+                boxShadow: '0 0 0 1px rgba(59, 130, 246, 0.15)',
+                border: '1px solid #ededed',
+                backgroundColor: colors.background.tertiaryLightestestest,
+                borderRadius: '6px',
+                padding: '7px 10px 7px 12px',
+                transition: 'all 0.15s ease',
+                '&.Mui-focused': {
+                  backgroundColor: colors.background.white,
+                  boxShadow: '0 0 0 2px rgba(59, 130, 246, 0.3)',
+                },
+                '& input::placeholder': {
+                  color: colors.text.tertiary,
+                  opacity: 1,
+                },
+                '& .MuiInputBase-input': {
+                  padding: 0,
+                },
+              }}
+            />
+          </Box>
+        )}
+
+        {/* freeSolo: Add custom value option */}
+        {canAddCustom && (
+          <Box
+            role='option'
+            tabIndex={0}
+            onClick={handleAddCustom}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                handleAddCustom();
+              }
+            }}
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              padding: '8px 14px',
+              cursor: 'pointer',
+              fontSize: '13px',
+              fontFamily: 'inherit',
+              fontWeight: 500,
+              color: colors.text.primary,
+              borderBottom: '0.5px solid #e8e8e8',
+              '&:hover': { backgroundColor: colors.background.tertiaryLightestestest },
+            }}
+          >
+            <PlusIcon />
+            <span>Add &ldquo;{search.trim()}&rdquo;</span>
+          </Box>
+        )}
+
+        {/* Options */}
+        {grouped ? (
+          <GroupedOptionsList
+            isOptionsLoading={isOptionsLoading}
+            filteredOptions={filteredOptions}
+            multiple={multiple}
+            isSelected={isSelected}
+            handleToggle={handleToggle}
+            value={value}
+            onSelect={onSelect}
+            groupIcon={groupIcon}
+          />
+        ) : (
+          <OptionsList
+            isOptionsLoading={isOptionsLoading}
+            filteredOptions={filteredOptions}
+            multiple={multiple}
+            isSelected={isSelected}
+            handleToggle={handleToggle}
+            handleClear={handleClearFiltered}
+            handleSelectAll={handleSelectAllFiltered}
+          />
+        )}
+      </Popover>
+    </>
+  );
+}
+
+/**
+ * Styled "+N more filters" button per the design spec
+ */
+export function MoreFiltersButton({ count, expanded, onClick }) {
+  return (
+    <Box
+      component='button'
+      onClick={onClick}
+      sx={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '4px',
+        background: 'transparent',
+        border: 'none',
+        padding: '4px 2px',
+        fontSize: '12px',
+        fontWeight: 450,
+        fontFamily: 'inherit',
+        color: colors.text.tertiary,
+        cursor: 'pointer',
+        transition: 'color 0.15s ease',
+        whiteSpace: 'nowrap',
+        outline: 'none',
+        '&:hover': {
+          color: colors.text.primary,
+          '& svg': { opacity: 0.9 },
+        },
+      }}
+    >
+      {!expanded && <PlusIcon />}
+      {expanded ? 'Show less' : `${count} more filters`}
+    </Box>
+  );
+}
+
+ChevronIcon.propTypes = {
+  open: PropTypes.bool,
+};
+
+FilterDropdownButton.propTypes = {
+  id: PropTypes.string,
+  label: PropTypes.string,
+  placeholder: PropTypes.string,
+  options: PropTypes.array,
+  value: PropTypes.any,
+  multiple: PropTypes.bool,
+  grouped: PropTypes.bool,
+  groupIcon: PropTypes.func,
+  freeSolo: PropTypes.bool,
+  onSelect: PropTypes.func,
+  disabled: PropTypes.bool,
+  isOptionsLoading: PropTypes.bool,
+  limitTag: PropTypes.number,
+  sx: PropTypes.object,
+  searchPlaceholder: PropTypes.string,
+  required: PropTypes.bool,
+};
+FilterDropdownButton.displayName = 'FilterDropdownButton';
+
+MoreFiltersButton.propTypes = {
+  count: PropTypes.number,
+  expanded: PropTypes.bool,
+  onClick: PropTypes.func,
+};
+MoreFiltersButton.displayName = 'MoreFiltersButton';
+
+export default FilterDropdownButton;

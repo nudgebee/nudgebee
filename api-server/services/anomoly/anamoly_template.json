@@ -1,0 +1,32 @@
+[
+    {
+        "anomaly_type": "CPU",
+        "change_operator": "GT",
+        "title": "Increase in CPU Usage",
+        "buffer_percentage": 0.1
+    },
+    {
+        "anomaly_type": "Memory",
+        "change_operator": "GT",
+        "title": "Increase in Memory Usage",
+        "buffer_percentage": 0.1
+    },
+    {
+        "anomaly_type": "Latency",
+        "change_operator": "GT",
+        "title": "Increase in Latency",
+        "buffer_percentage": 0.1
+    },
+    {
+        "anomaly_type": "Network",
+        "change_operator": "GT",
+        "title": "Increase in Network Usage",
+        "buffer_percentage": 0.1
+    },
+    {
+        "anomaly_type": "ErrorRate",
+        "change_operator": "GT",
+        "title": "Increase in Error Rate",
+        "buffer_percentage": 0.1
+    }
+]

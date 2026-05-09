@@ -1,0 +1,3 @@
+table:
+  name: recommendation_resourceservice
+  schema: public

@@ -1,0 +1,6 @@
+user_prompt: What is the SQL query to list all distinct sources of events?
+expected_output:
+- SELECT DISTINCT source   FROM events;
+tags:
+- command
+- events

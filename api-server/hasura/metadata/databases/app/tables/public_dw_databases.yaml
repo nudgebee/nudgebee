@@ -1,0 +1,3 @@
+table:
+  name: dw_databases
+  schema: public

@@ -1,0 +1,17 @@
+agent: aws_debug
+expected_output:
+- The root cause is that the Lambda 'm07-user-service' reads from the RDS read replica 'm07-userdb-replica' via DB_READ_HOST
+  environment variable, and this replica has high ReplicaLag causing it to serve stale data. RDS read replicas replicate asynchronously
+  from the primary, so there is inherent replication lag. When the lag is high, reads from the replica return old data. The
+  Lambda's DB_READ_HOST is set to the replica endpoint, so all read queries hit the lagging replica. The fix is to either
+  point DB_READ_HOST to the primary RDS endpoint 'm07-userdb-primary' for consistency-critical reads, or implement read-after-write
+  consistency logic. Check CloudWatch metric ReplicaLag on 'm07-userdb-replica' to confirm the lag.
+scenario: M07
+tags:
+- command
+- aws
+- medium
+type: rca
+user_prompt: Our user service Lambda 'm07-user-service' in us-east-1 is returning stale data on read operations. Users report
+  seeing their profile changes from 10 minutes ago still showing old values. We recently added a read replica to scale RDS
+  reads. The database writes appear to be going through fine. What's causing the stale reads?

@@ -1,0 +1,6 @@
+user_prompt: Count the number of recommendations with 'Info' severity.
+expected_output:
+- SELECT COUNT(*) AS info_count from recommendation_view WHERE severity = 'Info';
+tags:
+- command
+- recommendations

@@ -1,0 +1,54 @@
+
+UPDATE
+    auto_pilot
+SET
+    rule = jsonb_set(
+        rule,
+        '{resource_filter, resourse_id}',
+        jsonb_build_object(
+            'exclusions',
+            rule -> 'resource_filter' -> 'resourse_id' -> 'exclusion'
+        ) || jsonb_build_object(
+            'inclusions',
+            rule -> 'resource_filter' -> 'resourse_id' -> 'inclusion'
+        )
+    )
+WHERE
+    rule -> 'resource_filter' -> 'resourse_id' -> 'exclusion' is not null
+    and rule -> 'resource_filter' -> 'resourse_id' -> 'inclusion' is not null;
+
+UPDATE
+    auto_pilot
+SET
+    rule = jsonb_set(
+        rule,
+        '{resource_filter, owner_resource_id}',
+        jsonb_build_object(
+            'exclusions',
+            rule -> 'resource_filter' -> 'owner_resource_id' -> 'exclusion'
+        ) || jsonb_build_object(
+            'inclusions',
+            rule -> 'resource_filter' -> 'owner_resource_id' -> 'inclusion'
+        )
+    )
+WHERE
+    rule -> 'resource_filter' -> 'owner_resource_id' -> 'exclusion' is not null
+    and rule -> 'resource_filter' -> 'owner_resource_id' -> 'inclusion' is not null;
+
+UPDATE
+    auto_pilot
+SET
+    rule = jsonb_set(
+        rule,
+        '{resource_filter, namespace}',
+        jsonb_build_object(
+            'exclusions',
+            rule -> 'resource_filter' -> 'namespace' -> 'exclusion'
+        ) || jsonb_build_object(
+            'inclusions',
+            rule -> 'resource_filter' -> 'namespace' -> 'inclusion'
+        )
+    )
+WHERE
+    rule -> 'resource_filter' -> 'namespace' -> 'exclusion' is not null
+    and rule -> 'resource_filter' -> 'namespace' -> 'inclusion' is not null;

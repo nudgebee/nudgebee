@@ -1,0 +1,18 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is a typo in the CloudWatch alarm dimension. The alarm ''m17-worker-high-cpu'' has AutoScalingGroupName
+  dimension set to ''m17-workers-asg'' (with an ''s''), but the actual ASG name is ''m17-worker-asg'' (without the ''s'').
+  Since no ASG matches ''m17-workers-asg'', CloudWatch never receives metric data for this dimension, and the alarm stays
+  in INSUFFICIENT_DATA state permanently. An alarm in INSUFFICIENT_DATA never triggers scaling actions. Check: (1) aws cloudwatch
+  describe-alarms --alarm-names m17-worker-high-cpu to see StateValue=INSUFFICIENT_DATA and the wrong dimension, (2) aws autoscaling
+  describe-auto-scaling-groups --auto-scaling-group-names m17-worker-asg to confirm the actual name. The fix is to update
+  the alarm dimension to match the correct ASG name.'
+scenario: M17
+tags:
+- command
+- aws
+- medium
+type: rca
+user_prompt: Our Auto Scaling Group 'm17-worker-asg' in us-east-1 won't scale up even though all instances are running at
+  very high CPU. The scaling policy exists and has a CloudWatch alarm 'm17-worker-high-cpu' configured. But the ASG stays
+  at the minimum count. What's preventing it from scaling?

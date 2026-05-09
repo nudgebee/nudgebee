@@ -1,0 +1,8 @@
+user_prompt: What is the LogQL query to see all Nginx logs originating from the private
+  IP range 10.0.x.x?
+expected_output:
+- '{job="nginx"} |~ "10\.0\.\d{1,3}\.\d{1,3}"'
+- '{app="nginx"} |~ "ip=10\.0\.[0-9]+\.[0-9]+"'
+tags:
+- command
+- loki

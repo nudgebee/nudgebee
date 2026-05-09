@@ -1,0 +1,12 @@
+user_prompt: List all failed requests (HTTP status code >= 400) in the 'staging' namespace
+  today.
+expected_output:
+- SELECT * FROM traces_view WHERE workload_namespace = 'staging' AND http_status_code
+  >= 400 AND timestamp >= toStartOfDay(now()) ORDER BY timestamp DESC;
+- SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name,
+  destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE
+  workload_namespace = 'staging' AND http_status_code >= 400 AND timestamp >= toStartOfDay(now())
+  ORDER BY timestamp DESC;
+tags:
+- command
+- trace

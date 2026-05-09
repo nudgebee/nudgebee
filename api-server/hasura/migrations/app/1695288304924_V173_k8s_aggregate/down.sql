@@ -1,0 +1,220 @@
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- create materialized view cloudaccount_k8s_aggregate as
+-- with
+-- cluster_ranked_nodes as (
+-- 	select cksna.tenant_id, cksna.account_id, "timestamp" :: date, cksna.node_name, cksna.node_flavor, cksna.avg_cpu_used, cksna.max_cpu_used, cksna.avg_memory_used, cksna.max_memory_used, cksna.node_type
+-- 		, DENSE_RANK () OVER ( partition by tenant_id, account_id, "timestamp" :: date, node_name, node_flavor ORDER BY tenant_id, account_id, "timestamp" :: date, node_name, node_flavor DESC) node_rank
+-- 	from cloudaccount_k8s_node_aggregate cksna
+-- )
+-- ,cluster_nodes as (
+-- 	select cksna.tenant_id, cksna.account_id, "timestamp" :: date, cksna.node_name, cksna.node_flavor
+-- 		, count(distinct cksna.node_name) as node_count
+-- 		, count(distinct case when cksna.node_type = 'spot' then cksna.node_name end) as spot_node_count
+-- 		, count(distinct case when cksna.node_type = 'on_demand' then cksna.node_name  end) as ondemand_node_count		
+-- 		, sum(case when cksna.node_rank = 1 then cksna.avg_cpu_used end ) as avg_cpu_used_node
+-- 		, sum(case when cksna.node_rank = 1 then cksna.max_cpu_used end ) as max_cpu_used_node
+-- 		, sum(case when cksna.node_rank = 1 then (crd.resource_capacity ->> 'cpu_virtual') :: int end) as total_cpu_capacity
+-- 		, sum(case when cksna.node_rank = 1 then cksna.avg_memory_used end ) as avg_memory_used_node
+-- 		, sum(case when cksna.node_rank = 1 then cksna.max_memory_used end ) as max_memory_used_node
+-- 		, sum(case when cksna.node_rank = 1 then (crd.resource_capacity ->> 'memory_gb') :: int end) as total_memory_capacity
+-- 	from cluster_ranked_nodes cksna
+-- 	left join cloud_resource_details crd on crd.resource_type = cksna.node_flavor	
+-- 	group by cksna.tenant_id, cksna.account_id, "timestamp" :: date, cksna.node_name, cksna.node_flavor
+-- 	order by cksna.tenant_id, cksna.account_id, "timestamp" :: date desc, cksna.node_name, cksna.node_flavor
+-- ),
+-- cluster_pods as (
+-- 	select ckspa.tenant_id, ckspa.account_id, "timestamp" :: date
+-- 		, count(distinct ckspa.pod_name) as pod_count
+-- 		, count(case when ckspa.is_active = false then 1 end) as failed_pod_count
+-- 		, count(distinct (ckspa.namespace_name || '.' || ckspa.workload_name)) as workload_count
+-- 		, sum(ckspa.pod_cost) as pod_cost
+-- 	from cloudaccount_k8s_pod_aggregate ckspa
+-- 	group by ckspa.tenant_id, ckspa.account_id, "timestamp" :: date
+-- )
+-- select cn.tenant_id
+-- 	, cn.account_id
+-- 	, ca.account_name
+-- 	, cn.timestamp
+-- 	, cn.node_count
+-- 	, cn.spot_node_count
+-- 	, cn.ondemand_node_count
+-- 	, cn.avg_cpu_used_node
+-- 	, cn.max_cpu_used_node
+-- 	, cn.avg_memory_used_node
+-- 	, cn.max_memory_used_node
+-- 	, cp.workload_count
+-- 	, cp.pod_count
+-- 	, cp.failed_pod_count
+-- 	, cp.pod_cost
+-- from cluster_nodes cn
+-- join cluster_pods cp on cn.tenant_id = cp.tenant_id and cn.account_id = cp.account_id and cn.timestamp = cp.timestamp
+-- join cloud_accounts ca on cn.tenant_id = ca.tenant and cn.account_id = ca.id
+-- order by cn.timestamp desc;
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- DROP MATERIALIZED VIEW "public"."cloudaccount_k8s_aggregate";
+
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- create materialized view cloudaccount_k8s_aggregate as
+-- with
+-- cluster_ranked_nodes as (
+-- 	select cksna.tenant_id, cksna.account_id, "timestamp" :: date, cksna.node_name, cksna.node_flavor, cksna.avg_cpu_used, cksna.max_cpu_used, cksna.avg_memory_used, cksna.max_memory_used, cksna.node_type
+-- 		, DENSE_RANK () OVER ( partition by tenant_id, account_id, "timestamp" :: date, node_name, node_flavor ORDER BY tenant_id, account_id, "timestamp" :: date, node_name, node_flavor DESC) node_rank
+-- 	from cloudaccount_k8s_node_aggregate cksna
+-- )
+-- ,cluster_nodes as (
+-- 	select cksna.tenant_id, cksna.account_id, "timestamp" :: date, cksna.node_name, cksna.node_flavor
+-- 		, count(distinct cksna.node_name) as node_count
+-- 		, count(distinct case when cksna.node_type = 'spot' then cksna.node_name end) as spot_node_count
+-- 		, count(distinct case when cksna.node_type = 'on_demand' then cksna.node_name  end) as ondemand_node_count		
+-- 		, sum(case when cksna.node_rank = 1 then cksna.avg_cpu_used end ) as avg_cpu_used_node
+-- 		, sum(case when cksna.node_rank = 1 then cksna.max_cpu_used end ) as max_cpu_used_node
+-- 		, sum(case when cksna.node_rank = 1 then (crd.resource_capacity ->> 'cpu_virtual') :: int end) as total_cpu_capacity
+-- 		, sum(case when cksna.node_rank = 1 then cksna.avg_memory_used end ) as avg_memory_used_node
+-- 		, sum(case when cksna.node_rank = 1 then cksna.max_memory_used end ) as max_memory_used_node
+-- 		, sum(case when cksna.node_rank = 1 then (crd.resource_capacity ->> 'memory_gb') :: int end) as total_memory_capacity
+-- 	from cluster_ranked_nodes cksna
+-- 	left join cloud_resource_details crd on crd.resource_type = cksna.node_flavor	
+-- 	group by cksna.tenant_id, cksna.account_id, "timestamp" :: date, cksna.node_name, cksna.node_flavor
+-- 	order by cksna.tenant_id, cksna.account_id, "timestamp" :: date desc, cksna.node_name, cksna.node_flavor
+-- ),
+-- cluster_pods as (
+-- 	select ckspa.tenant_id, ckspa.account_id, "timestamp" :: date
+-- 		, count(distinct ckspa.pod_name) as pod_count
+-- 		, count(case when ckspa.is_active = false then 1 end) as failed_pod_count
+-- 		, sum(ckspa.pod_cost) as pod_cost
+-- 	from cloudaccount_k8s_pod_aggregate ckspa
+-- 	group by ckspa.tenant_id, ckspa.account_id, "timestamp" :: date
+-- )
+-- select cn.tenant_id
+-- 	, cn.account_id
+-- 	, ca.account_name
+-- 	, cn.timestamp
+-- 	, cn.node_count
+-- 	, cn.spot_node_count
+-- 	, cn.ondemand_node_count
+-- 	, cn.avg_cpu_used_node
+-- 	, cn.max_cpu_used_node
+-- 	, cn.avg_memory_used_node
+-- 	, cn.max_memory_used_node
+-- 	, cp.pod_count
+-- 	, cp.failed_pod_count
+-- 	, cp.pod_cost
+-- from cluster_nodes cn
+-- join cluster_pods cp on cn.tenant_id = cp.tenant_id and cn.account_id = cp.account_id and cn.timestamp = cp.timestamp
+-- join cloud_accounts ca on cn.tenant_id = ca.tenant and cn.account_id = ca.id
+-- order by cn.timestamp desc;
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- DROP MATERIALIZED VIEW "public"."cloudaccount_k8s_aggregate";
+
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- create materialized view cloudaccount_k8s_aggregate as
+-- with
+-- cluster_ranked_nodes as (
+-- 	select cksna.tenant_id, cksna.account_id, "timestamp" :: date, cksna.node_name, cksna.node_flavor, cksna.avg_cpu_used, cksna.max_cpu_used, cksna.avg_memory_used, cksna.max_memory_used, cksna.node_type
+-- 		, DENSE_RANK () OVER ( partition by tenant_id, account_id, "timestamp" :: date, node_name, node_flavor ORDER BY tenant_id, account_id, "timestamp" :: date, node_name, node_flavor DESC) node_rank
+-- 	from cloudaccount_k8s_node_aggregate cksna
+-- )
+-- ,cluster_nodes as (
+-- 	select cksna.tenant_id, cksna.account_id, "timestamp" :: date, cksna.node_name, cksna.node_flavor
+-- 		, count(distinct cksna.node_name) as node_count
+-- 		, count(distinct case when cksna.node_type = 'spot' then cksna.node_name end) as spot_node_count
+-- 		, count(distinct case when cksna.node_type = 'on_demand' then cksna.node_name  end) as ondemand_node_count		
+-- 		, sum(case when cksna.node_rank = 1 then cksna.avg_cpu_used end ) as avg_cpu_used_node
+-- 		, sum(case when cksna.node_rank = 1 then cksna.max_cpu_used end ) as max_cpu_used_node
+-- 		, sum(case when cksna.node_rank = 1 then (crd.resource_capacity ->> 'cpu_virtual') :: int end) as total_cpu_capacity
+-- 		, sum(case when cksna.node_rank = 1 then cksna.avg_memory_used end ) as avg_memory_used_node
+-- 		, sum(case when cksna.node_rank = 1 then cksna.max_memory_used end ) as max_memory_used_node
+-- 		, sum(case when cksna.node_rank = 1 then (crd.resource_capacity ->> 'memory_gb') :: int end) as total_memory_capacity
+-- 	from cluster_ranked_nodes cksna
+-- 	left join cloud_resource_details crd on crd.resource_type = cksna.node_flavor	
+-- 	group by cksna.tenant_id, cksna.account_id, "timestamp" :: date, cksna.node_name, cksna.node_flavor
+-- 	order by cksna.tenant_id, cksna.account_id, "timestamp" :: date desc, cksna.node_name, cksna.node_flavor
+-- ),
+-- cluster_pods as (
+-- 	select ckspa.tenant_id, ckspa.account_id, "timestamp" :: date
+-- 		, count(distinct ckspa.pod_name) as pod_count
+-- 		, count(case when ckspa.is_active = false then 1 end) as failed_pod_count
+-- 		, sum(ckspa.pod_cost) as pod_cost
+-- 	from cloudaccount_k8s_pod_aggregate ckspa
+-- 	group by ckspa.tenant_id, ckspa.account_id, "timestamp" :: date
+-- )
+-- select cn.tenant_id
+-- 	, cn.account_id
+-- 	, cn.timestamp
+-- 	, cn.node_count
+-- 	, cn.spot_node_count
+-- 	, cn.ondemand_node_count
+-- 	, cn.avg_cpu_used_node
+-- 	, cn.max_cpu_used_node
+-- 	, cn.avg_memory_used_node
+-- 	, cn.max_memory_used_node
+-- 	, cp.pod_count
+-- 	, cp.failed_pod_count
+-- 	, cp.pod_cost
+-- from cluster_nodes cn
+-- join cluster_pods cp on cn.tenant_id = cp.tenant_id and cn.account_id = cp.account_id and cn.timestamp = cp.timestamp
+-- order by cn.timestamp desc;
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- create materialized view cloudaccount_k8s_aggregate as
+-- with
+-- cluster_ranked_nodes as (
+-- 	select cksna.tenant_id, cksna.account_id, "timestamp" :: date, cksna.node_name, cksna.node_flavor, cksna.avg_cpu_used, cksna.max_cpu_used, cksna.avg_memory_used, cksna.max_memory_used, cksna.node_type
+-- 		, DENSE_RANK () OVER ( partition by tenant_id, account_id, "timestamp" :: date, node_name, node_flavor ORDER BY tenant_id, account_id, "timestamp" :: date, node_name, node_flavor DESC) node_rank
+-- 	from cloudaccount_k8s_node_aggregate cksna
+-- )
+-- ,cluster_nodes as (
+-- 	select cksna.tenant_id, cksna.account_id, "timestamp" :: date, cksna.node_name, cksna.node_flavor
+-- 		, count(distinct cksna.node_name) as node_count
+-- 		, count(distinct case when cksna.node_type = 'spot' then cksna.node_name end) as spot_node_count
+-- 		, count(distinct case when cksna.node_type = 'on_demand' then cksna.node_name  end) as ondemand_node_count		
+-- 		, sum(case when cksna.node_rank = 1 then cksna.avg_cpu_used end ) as avg_cpu_used_node
+-- 		, sum(case when cksna.node_rank = 1 then cksna.max_cpu_used end ) as max_cpu_used_node
+-- 		, sum(case when cksna.node_rank = 1 then (crd.resource_capacity ->> 'cpu_virtual') :: int end) as total_cpu_capacity
+-- 		, sum(case when cksna.node_rank = 1 then cksna.avg_memory_used end ) as avg_memory_used_node
+-- 		, sum(case when cksna.node_rank = 1 then cksna.max_memory_used end ) as max_memory_used_node
+-- 		, sum(case when cksna.node_rank = 1 then (crd.resource_capacity ->> 'memory_gb') :: int end) as total_memory_capacity
+-- 	from cluster_ranked_nodes cksna
+-- 	left join cloud_resource_details crd on crd.resource_type = cksna.node_flavor	
+-- 	group by cksna.tenant_id, cksna.account_id, "timestamp" :: date, cksna.node_name, cksna.node_flavor
+-- 	order by cksna.tenant_id, cksna.account_id, "timestamp" :: date desc, cksna.node_name, cksna.node_flavor
+-- ),
+-- cluster_pods as (
+-- 	select ckspa.tenant_id, ckspa.account_id, "timestamp" :: date
+-- 		, count(distinct ckspa.pod_name) as pod_count
+-- 		, count(case when ckspa.is_active = false then 1 end) as failed_pod_count
+-- 		, sum(ckspa.pod_cost) as pod_cost
+-- 	from cloudaccount_k8s_pod_aggregate ckspa
+-- 	group by ckspa.tenant_id, ckspa.account_id, "timestamp" :: date
+-- )
+-- select cn.tenant_id
+-- 	, cn.account_id
+-- 	, cn.timestamp
+-- 	, cn.node_count
+-- 	, cn.spot_node_count
+-- 	, cn.ondemand_node_count
+-- 	, cn.avg_cpu_used_node
+-- 	, cn.max_cpu_used_node
+-- 	, cn.avg_memory_used_node
+-- 	, cn.max_memory_used_node
+-- 	, cp.pod_count
+-- 	, cp.failed_pod_count
+-- 	, cp.pod_cost
+-- from cluster_nodes cn
+-- join cluster_pods cp on cn.tenant_id = cp.tenant_id and cn.account_id = cp.account_id and cn.timestamp = cp.timestamp
+-- order by cn.timestamp desc;
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- DROP MATERIALIZED VIEW "public"."cloudaccount_k8s_aggregate";

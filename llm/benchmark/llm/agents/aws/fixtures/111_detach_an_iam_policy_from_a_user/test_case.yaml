@@ -1,0 +1,6 @@
+user_prompt: Detach an IAM policy from a user.
+expected_output:
+- aws iam detach-user-policy --user-name <user-name> --policy-arn <policy-arn>
+tags:
+- command
+- aws

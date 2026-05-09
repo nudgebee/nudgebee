@@ -1,0 +1,3 @@
+table:
+  name: sent_notifications
+  schema: public

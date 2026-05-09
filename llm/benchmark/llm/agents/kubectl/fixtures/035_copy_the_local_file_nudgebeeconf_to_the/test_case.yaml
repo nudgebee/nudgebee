@@ -1,0 +1,7 @@
+user_prompt: Copy the local file 'nudgebee.conf' to the nudgebee-api-pod in the '/etc/nginx/'
+  directory.
+expected_output:
+- kubectl cp /path/to/local/file <pod-name>:/path/in/pod
+tags:
+- command
+- kubernetes

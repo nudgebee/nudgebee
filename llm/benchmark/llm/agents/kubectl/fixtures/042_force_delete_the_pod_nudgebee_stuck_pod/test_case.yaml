@@ -1,0 +1,7 @@
+user_prompt: Force delete the pod 'nudgebee-stuck-pod-xyz' that is stuck in the 'Terminating'
+  state.
+expected_output:
+- kubectl delete pod <pod-name> --grace-period=0 --force
+tags:
+- command
+- kubernetes

@@ -1,0 +1,6 @@
+user_prompt: Create high-CPU alarm for EC2.
+expected_output:
+- aws cloudwatch put-metric-alarm
+tags:
+- command
+- aws

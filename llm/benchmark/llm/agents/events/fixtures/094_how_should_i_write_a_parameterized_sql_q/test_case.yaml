@@ -1,0 +1,9 @@
+user_prompt: How should I write a parameterized SQL query to select an event by id
+  (to avoid SQL injection)?
+expected_output:
+- SELECT id, title, starts_at, status, priority, subject_node FROM events WHERE id
+  = $1;
+- SELECT * FROM events WHERE id = $1;
+tags:
+- command
+- events

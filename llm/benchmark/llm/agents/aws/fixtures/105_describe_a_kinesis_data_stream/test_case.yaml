@@ -1,0 +1,6 @@
+user_prompt: Describe a Kinesis data stream.
+expected_output:
+- aws kinesis describe-stream --stream-name <stream-name>
+tags:
+- command
+- aws

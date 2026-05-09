@@ -1,0 +1,25 @@
+agent: k8s_debug
+expected_output:
+- The adservice is completely failing due to the adFailure feature flag being enabled. This prevents all advertisements from
+  being served, resulting in blank ad slots and potential revenue loss.
+expected_root_cause:
+  affected_service: adservice
+  issue_type: service_failure
+  symptoms:
+  - ads not displaying
+  - blank ad slots
+  - ad service errors
+  - revenue loss from missing ads
+  telemetry_signals:
+    logs: ERROR logs in adservice showing service failures
+    metrics: ad service error rate spike, failed ad requests
+    traces: failed traces in GetAds operation with error spans
+feature_flag: adFailure
+flag_variant: 'on'
+scenario_id: ad_service_failure
+tags:
+- rca
+- kubernetes
+type: rca
+user_prompt: Advertisements are not displaying on the website. Investigate the ad deployment in nudgebee-demo namespace.
+wait_time_seconds: 60

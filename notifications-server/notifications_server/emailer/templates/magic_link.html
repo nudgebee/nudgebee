@@ -1,0 +1,55 @@
+{% extends "_base.html" %}
+
+{% block title %}Sign in to {{ _brand_name }}{% endblock %}
+
+{% block content %}
+  <!-- SUBJECT -->
+  <h1 class="subject-h" style="font-family:'DM Serif Display',Georgia,serif; font-size:26px; color:#0D1B2A; line-height:1.25; margin:0 0 28px; letter-spacing:-0.3px; font-weight:400;">
+    Sign in to your account
+  </h1>
+
+  <!-- BODY COPY -->
+  <p style="font-family:'DM Sans',Arial,sans-serif; font-size:15.5px; color:#3D3D3D; line-height:1.85; font-weight:300; margin:0 0 18px;">
+    You requested a magic link to sign in to {{ _brand_name }}. Please click the button below to continue.
+  </p>
+
+  <!-- CTA BUTTON -->
+  <table style="border-collapse:collapse; border-spacing:0; border:0; margin:28px 0;">
+    <tr style="height:0; font-size:0; line-height:0;"><th style="padding:0; height:0; font-size:0; line-height:0; overflow:hidden;" scope="col">&nbsp;</th></tr>
+    <tr>
+      <td style="border-radius:4px; background-color:{{ _primary_color }};">
+        <a href="{{ magic_link_url }}" target="_blank" rel="noopener noreferrer"
+          style="font-family:'DM Sans',Arial,sans-serif; font-size:16px; font-weight:600; color:#374151; text-decoration:none; padding:12px 32px; display:inline-block; border-radius:4px;">
+          Sign In
+        </a>
+      </td>
+    </tr>
+  </table>
+
+  <!-- FOOTNOTE -->
+  <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:#999999; font-weight:300; font-style:italic; margin:0; line-height:1.65;">
+    This link will expire in 10 minutes. If you did not request this email, you can safely ignore it.
+  </p>
+
+  <!-- DIVIDER -->
+  <div style="border-top:1px solid #F0F0F0; margin:28px 0;"></div>
+
+  <!-- CLOSING -->
+  <p style="font-family:'DM Sans',Arial,sans-serif; font-size:15.5px; color:#3D3D3D; line-height:1.85; font-weight:300; margin:0 0 18px;">
+    If anything comes up, write to us at
+    <a href="mailto:{{ _support_email }}"
+      style="color:#F5A623; text-decoration:none; font-weight:500; border-bottom:1px solid rgba(245,166,35,0.4);">{{ _support_email }}</a>.
+  </p>
+{% endblock %}
+
+{% block card_footer %}
+  <!-- SIGNATURE -->
+  <div style="border-top:1px solid #F0F0F0; margin-top:28px; padding-top:22px;">
+    <p style="font-family:'DM Serif Display',Georgia,serif; font-size:18px; color:#0D1B2A; font-weight:400; letter-spacing:-0.2px; margin:0 0 4px;">
+      — The {{ _brand_name }} Team
+    </p>
+    <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:#999999; font-weight:300; margin:0; line-height:1.6;">
+      {{ _branding_url }} &nbsp;&middot;&nbsp; {{ _support_email }}
+    </p>
+  </div>
+{% endblock %}

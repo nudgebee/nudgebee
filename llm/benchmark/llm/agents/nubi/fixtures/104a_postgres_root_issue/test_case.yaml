@@ -1,0 +1,29 @@
+user_prompt: "The user-lookup deployment in namespace-104a is experiencing slow response times. What's causing the performance issue?"
+expected_output:
+  The `user-lookup` deployment's slow response times are due to its dependency, the `postgres` pod, being in a `CrashLoopBackOff` state.
+  The `postgres` pod is failing because it is attempting to start the PostgreSQL server as the `root` user, which is not permitted.
+
+tags:
+  - hard
+  - database
+
+before_test: |
+  kubectl create namespace namespace-104a
+  kubectl label namespace namespace-104a benchmark=true --overwrite || true
+  kubectl apply -f ./manifest.yaml -n namespace-104a
+  # Wait for postgres pod to exist and enter CrashLoopBackOff (it fails because it runs as root)
+  echo "Waiting for postgres pod to start crashing..."
+  for i in $(seq 1 30); do
+    STATUS=$(kubectl get pod -l app=postgres -n namespace-104a -o jsonpath='{.items[0].status.containerStatuses[0].state.waiting.reason}' 2>/dev/null)
+    RESTARTS=$(kubectl get pod -l app=postgres -n namespace-104a -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}' 2>/dev/null)
+    if [ "$STATUS" = "CrashLoopBackOff" ] || [ "$RESTARTS" -ge 2 ] 2>/dev/null; then
+      echo "Postgres pod is in CrashLoopBackOff (restarts: $RESTARTS)"
+      break
+    fi
+    sleep 2
+  done
+  # user-lookup may or may not be ready depending on postgres — don't fail if it isn't
+  kubectl wait --for=condition=ready pod -l app=user-lookup -n namespace-104a --timeout=60s || true
+after_test: |
+  kubectl delete -f ./manifest.yaml -n namespace-104a --ignore-not-found
+  kubectl delete namespace namespace-104a --ignore-not-found

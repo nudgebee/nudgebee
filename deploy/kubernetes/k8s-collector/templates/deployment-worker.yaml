@@ -1,0 +1,81 @@
+{{- if .Values.dualMode.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "k8s_collector.fullname" . }}-worker
+  labels:
+    {{- include "k8s_collector.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+  annotations:
+  {{- with .Values.annotations }}
+    {{- toYaml . | nindent 4 }}
+  {{- end }}    
+spec:
+  {{- if not ((.Values.dualMode.worker.autoscaling.enabled | default .Values.autoscaling.enabled) | default false) }}
+  replicas: {{ .Values.dualMode.worker.replicaCount | default .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "k8s_collector.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      annotations:
+        rollme: {{ randAlphaNum 5 | quote }}
+      {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "k8s_collector.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+      {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with (( default .Values.global.imagePullSecrets .Values.imagePullSecrets )) }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "k8s_collector.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.initCheckEnabled | default true }}
+      initContainers:
+        - name: db-check
+          image: registry.nudgebee.com/postgres:15.10
+          command: ['sh', '-c', 'until pg_isready -h $(echo "$COLLECTOR_DB_URL" | sed "s/.*@\(.*\):.*/\1/") -U $(echo "$COLLECTOR_DB_URL" | sed "s/.*:\/\/\([^:]*\):.*/\1/"); do echo "Waiting for PostgreSQL to be ready..."; sleep 2; done;']
+          envFrom:
+            - secretRef:
+                name: {{ include "nudgebee.secretName" . | quote }}
+       {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}-worker
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "imageName" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: COLLECTOR_MODE
+              value: "worker"
+          envFrom:
+            - secretRef:
+                name: {{ include "nudgebee.secretName" . | quote }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.serverPort }}
+              protocol: TCP
+          resources:
+            {{- toYaml (.Values.dualMode.worker.resources | default .Values.resources) | nindent 12 }}
+      {{- with (.Values.dualMode.worker.nodeSelector | default .Values.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.dualMode.worker.affinity | default .Values.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with (.Values.dualMode.worker.tolerations | default .Values.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

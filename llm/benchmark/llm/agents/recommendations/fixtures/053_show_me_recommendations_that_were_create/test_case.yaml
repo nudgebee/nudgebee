@@ -1,0 +1,7 @@
+user_prompt: Show me recommendations that were created but never updated.
+expected_output:
+- SELECT namespace, name, recommendation FROM recommendation_view WHERE created_at
+  = updated_at;
+tags:
+- command
+- recommendations

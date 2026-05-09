@@ -1,0 +1,92 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H05: RDS automated backups disabled (BackupRetentionPeriod=0), PITR not available.
+  User complaint: "We tried to restore our production database to 2 hours ago using
+  point-in-time recovery after an accidental mass-delete. AWS says
+  'LatestRestorableTime is not set' and PITR is unavailable. How?"
+  Root cause: BackupRetentionPeriod=0 disables automated backups entirely.
+  Without automated backups, RDS cannot perform PITR. The backup setting was
+  accidentally changed during a cost-optimization review.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = BackupRetentionPeriod=0 (automated backups disabled, PITR unavailable).
+      Fixed = BackupRetentionPeriod=7 (7-day backup window, PITR available).
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for analytics DB
+      SubnetIds:
+        - !ImportValue aws-agent-test-private-subnet-a
+        - !ImportValue aws-agent-test-private-subnet-b
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for analytics DB
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: !ImportValue aws-agent-test-vpc-cidr
+      Tags:
+        - Key: Name
+          Value: h05-analytics-db-sg
+
+  # THE BUG: BackupRetentionPeriod=0 disables automated backups → PITR unavailable
+  AnalyticsDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: h05-analytics-db
+      DBInstanceClass: db.t3.micro
+      Engine: postgres
+      EngineVersion: '16.4'
+      MasterUsername: analytics_user
+      MasterUserPassword: Analytics123!
+      AllocatedStorage: 20
+      StorageType: gp2
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      PubliclyAccessible: false
+      MultiAZ: false
+      # THE BUG: 0 = automated backups disabled, PITR not possible
+      # Fixed: 7 = 7-day backup retention, PITR available
+      BackupRetentionPeriod: !If [IsFixed, 7, 0]
+      DeletionProtection: false
+      Tags:
+        - Key: Name
+          Value: h05-analytics-db
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: analytics
+
+Outputs:
+  DBIdentifier:
+    Description: RDS DB Instance Identifier
+    Value: !Ref AnalyticsDB
+  DBEndpoint:
+    Description: RDS DB Endpoint
+    Value: !GetAtt AnalyticsDB.Endpoint.Address
+  BackupRetentionPeriod:
+    Description: Backup retention period (0 = disabled in Broken mode)
+    Value: !If [IsFixed, '7', '0']
+  BugNote:
+    Description: The bug
+    Value: 'BackupRetentionPeriod=0 disables automated backups - LatestRestorableTime will be null'
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

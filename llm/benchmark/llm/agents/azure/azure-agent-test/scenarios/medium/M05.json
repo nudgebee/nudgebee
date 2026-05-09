@@ -1,0 +1,65 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "M05: Log Analytics workspace retentionInDays=30 (minimum/default). Compliance policy requires 90 days. User complaint: logs older than 30 days missing during security audit and incident post-mortems. Requires inspecting workspace retention settings and comparing against policy."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "workspaceName": "m05-platform-logs",
+    "retentionInDays": "[if(equals(parameters('scenarioMode'), 'Fixed'), 90, 30)]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2022-10-01",
+      "name": "[variables('workspaceName')]",
+      "location": "[resourceGroup().location]",
+      "tags": {
+        "Environment": "production",
+        "Team": "platform",
+        "Scenario": "M05",
+        "ScenarioMode": "[parameters('scenarioMode')]"
+      },
+      "properties": {
+        "sku": { "name": "PerGB2018" },
+        "retentionInDays": "[variables('retentionInDays')]",
+        "features": {
+          "enableLogAccessUsingOnlyResourcePermissions": true
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "m05-app-insights",
+      "location": "[resourceGroup().location]",
+      "kind": "web",
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('workspaceName'))]"
+      ],
+      "tags": { "Environment": "production", "Scenario": "M05" },
+      "properties": {
+        "Application_Type": "web",
+        "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('workspaceName'))]",
+        "RetentionInDays": "[variables('retentionInDays')]"
+      }
+    }
+  ],
+  "outputs": {
+    "WorkspaceName": { "type": "string", "value": "[variables('workspaceName')]" },
+    "RetentionInDays": { "type": "int", "value": "[variables('retentionInDays')]" },
+    "BugNote": { "type": "string", "value": "Log Analytics workspace retentionInDays=30 (minimum/default) - logs unavailable past 30 days, violates 90-day compliance requirement" },
+    "ScenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

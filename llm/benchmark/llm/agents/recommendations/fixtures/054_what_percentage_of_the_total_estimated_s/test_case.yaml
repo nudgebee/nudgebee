@@ -1,0 +1,9 @@
+user_prompt: What percentage of the total estimated savings comes from the 'K8sSpotRecommendation'
+  category?
+expected_output:
+- SELECT (SUM(CASE WHEN category = 'K8sSpotRecommendation' THEN estimated_saving ELSE
+  0 END) * 100.0 / SUM(estimated_saving)) AS percentage_of_total_savings FROM recommendation_view
+  WHERE estimated_saving IS NOT NULL;
+tags:
+- command
+- recommendations

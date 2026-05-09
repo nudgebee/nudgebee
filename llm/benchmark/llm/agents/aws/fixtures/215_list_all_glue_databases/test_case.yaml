@@ -1,0 +1,6 @@
+user_prompt: List all Glue databases.
+expected_output:
+- aws glue get-databases
+tags:
+- command
+- aws

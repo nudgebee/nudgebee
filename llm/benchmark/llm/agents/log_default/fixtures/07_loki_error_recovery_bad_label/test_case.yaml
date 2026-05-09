@@ -1,0 +1,45 @@
+user_prompt: "Show me errors from the auth-gateway service in namespace log-default-07."
+description: |
+  Tests the 2-retry error-recovery loop at agent_log_default.go:366. The prompt
+  uses 'service=...' phrasing, tempting query_generator to emit service=... which
+  is NOT a configured Loki label here (only 'namespace' and 'app' are). The first
+  logs_execute call should return no data; the agent must analyse the empty
+  result, regenerate using 'app=auth-gateway', and succeed on the second attempt.
+expected_output: |
+  The response identifies jwt-validation-failed errors from auth-gateway (token
+  expired). Critically, the AgentStepResponse/effort log must show two attempts
+  at query generation+execution (first empty, second succeeded) — proving the
+  error-recovery loop fired and corrected the label.
+setup_timeout: 300
+before_test: |
+  set -e
+  kubectl create namespace log-default-07 || true
+  kubectl label namespace log-default-07 benchmark=true --overwrite || true
+  kubectl apply -f ../../../nubi/shared/loki.yaml -n log-default-07
+  kubectl apply -f promtail-config.yaml -n log-default-07
+  kubectl wait --for=condition=ready pod -l app=loki -n log-default-07 --timeout=120s
+  kubectl apply -f manifest.yaml -n log-default-07
+  kubectl wait --for=condition=ready pod -l app=auth-gateway -n log-default-07 --timeout=120s
+  sleep 20
+
+  pkill -f "kubectl port-forward.*svc/loki" 2>/dev/null || true
+  sleep 1
+  nohup kubectl port-forward -n log-default-07 svc/loki 3100:3100 \
+    >/tmp/pf-log-default-07.log 2>&1 &
+  echo $! > /tmp/pf-log-default-07.pid
+  for i in {1..30}; do
+    if curl -s http://localhost:3100/ready | grep -q ready; then break; fi
+    sleep 1
+  done
+after_test: |
+  if [ -f /tmp/pf-log-default-07.pid ]; then
+    kill $(cat /tmp/pf-log-default-07.pid) 2>/dev/null || true
+    rm -f /tmp/pf-log-default-07.pid
+  fi
+  pkill -f "kubectl port-forward.*log-default-07" 2>/dev/null || true
+  kubectl delete namespace log-default-07 --wait=false || true
+tags:
+  - hard
+  - loki
+  - error-recovery
+  - provider-path

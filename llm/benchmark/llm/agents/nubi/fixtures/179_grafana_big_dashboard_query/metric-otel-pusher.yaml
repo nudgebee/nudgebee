@@ -1,0 +1,124 @@
+# Pushes a custom metric via OTLP-HTTP to the cluster's OTel Collector.
+# Mirrors how the otel-demo apps publish metrics — OTel resource attributes
+# (service.name, k8s.namespace.name, k8s.cluster.name, etc.) get auto-attached
+# by the collector's k8sattributes processor, which is what makes the metric
+# appear in the agent's catalog (the catalog filters by these resource attrs).
+#
+# Pure shell + curl — no Python/Go SDK required. Pushes every 10s. The
+# collector forwards to cluster vmsingle via remote_write.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-pusher-script
+data:
+  push.sh: |
+    #!/bin/sh
+    set -eu
+    : "${OTLP_HTTP_ENDPOINT:?must be set}"
+
+    while true; do
+      NOW_NS=$(date +%s)000000000
+      cat > /tmp/payload.json <<EOF
+    {
+      "resourceMetrics": [{
+        "resource": {
+          "attributes": [
+            {"key": "service.name", "value": {"stringValue": "checkout-test"}},
+            {"key": "service.namespace", "value": {"stringValue": "ecommerce-test"}},
+            {"key": "service.version", "value": {"stringValue": "1.0.0"}},
+            {"key": "k8s.namespace.name", "value": {"stringValue": "app-179"}},
+            {"key": "k8s.pod.name", "value": {"stringValue": "${HOSTNAME}"}},
+            {"key": "telemetry.sdk.language", "value": {"stringValue": "shell"}},
+            {"key": "telemetry.sdk.name", "value": {"stringValue": "otlp-curl"}}
+          ]
+        },
+        "scopeMetrics": [{
+          "scope": {"name": "ecommerce-test"},
+          "metrics": [{
+            "name": "ecommerce_checkout_processing_delay_seconds",
+            "description": "Average checkout processing time per payment gateway and region",
+            "unit": "s",
+            "gauge": {
+              "dataPoints": [
+                {"asDouble": 1.234, "timeUnixNano": "${NOW_NS}", "attributes": [{"key":"payment_gateway","value":{"stringValue":"stripe"}},{"key":"region","value":{"stringValue":"us_east"}}]},
+                {"asDouble": 0.987, "timeUnixNano": "${NOW_NS}", "attributes": [{"key":"payment_gateway","value":{"stringValue":"stripe"}},{"key":"region","value":{"stringValue":"eu_west"}}]},
+                {"asDouble": 1.567, "timeUnixNano": "${NOW_NS}", "attributes": [{"key":"payment_gateway","value":{"stringValue":"paypal"}},{"key":"region","value":{"stringValue":"us_east"}}]},
+                {"asDouble": 1.123, "timeUnixNano": "${NOW_NS}", "attributes": [{"key":"payment_gateway","value":{"stringValue":"paypal"}},{"key":"region","value":{"stringValue":"us_west"}}]}
+              ]
+            }
+          }, {
+            "name": "ecommerce_orders_total",
+            "description": "Total number of orders placed",
+            "unit": "1",
+            "sum": {
+              "isMonotonic": true,
+              "aggregationTemporality": 2,
+              "dataPoints": [
+                {"asInt": "8421", "timeUnixNano": "${NOW_NS}", "startTimeUnixNano": "${NOW_NS}", "attributes": [{"key":"status","value":{"stringValue":"completed"}}]},
+                {"asInt": "17", "timeUnixNano": "${NOW_NS}", "startTimeUnixNano": "${NOW_NS}", "attributes": [{"key":"status","value":{"stringValue":"failed"}}]}
+              ]
+            }
+          }, {
+            "name": "ecommerce_cart_size_items",
+            "description": "Number of items currently in shopping carts",
+            "unit": "1",
+            "gauge": {
+              "dataPoints": [
+                {"asInt": "5", "timeUnixNano": "${NOW_NS}", "attributes": [{"key":"region","value":{"stringValue":"us_east"}}]},
+                {"asInt": "3", "timeUnixNano": "${NOW_NS}", "attributes": [{"key":"region","value":{"stringValue":"eu_west"}}]}
+              ]
+            }
+          }]
+        }]
+      }]
+    }
+    EOF
+      curl -sS -o /dev/null -w "%{http_code}" -X POST \
+        -H "Content-Type: application/json" \
+        --data-binary @/tmp/payload.json \
+        "${OTLP_HTTP_ENDPOINT}/v1/metrics" || true
+      echo " — pushed at $(date -u +%H:%M:%S)"
+      sleep 10
+    done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metric-otel-pusher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metric-otel-pusher
+  template:
+    metadata:
+      labels:
+        app: metric-otel-pusher
+    spec:
+      containers:
+      - name: pusher
+        image: curlimages/curl:8.10.1
+        command: ["sh", "/script/push.sh"]
+        env:
+        - name: OTLP_HTTP_ENDPOINT
+          value: "http://otel-deployment-collector-collector.otel.svc.cluster.local:4318"
+        - name: HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        volumeMounts:
+        - name: script
+          mountPath: /script
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "16Mi"
+          limits:
+            cpu: "100m"
+            memory: "64Mi"
+      volumes:
+      - name: script
+        configMap:
+          name: otel-pusher-script
+          defaultMode: 0755

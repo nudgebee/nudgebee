@@ -1,0 +1,4 @@
+# Log Analysis agent benchmark configuration
+agent: loganalysis
+tool_names: []
+max_retries: 2

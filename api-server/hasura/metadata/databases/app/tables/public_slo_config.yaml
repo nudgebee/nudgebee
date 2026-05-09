@@ -1,0 +1,3 @@
+table:
+  name: slo_config
+  schema: public

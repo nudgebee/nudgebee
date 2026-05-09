@@ -1,0 +1,13 @@
+table:
+  name: runbook_action
+  schema: public
+object_relationships:
+- name: runbook_action_library
+  using:
+    foreign_key_constraint_on: library_id
+- name: runbook_action_status
+  using:
+    foreign_key_constraint_on: status
+- name: user
+  using:
+    foreign_key_constraint_on: created_by

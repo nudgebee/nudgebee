@@ -1,0 +1,8 @@
+user_prompt: List distinct destination workloads called by 'data-processor' in the
+  'default' namespace.
+expected_output:
+- SELECT DISTINCT destination_workload_name, destination_workload_namespace FROM traces_view
+  WHERE workload_name LIKE '%data-processor%' AND workload_namespace = 'default';
+tags:
+- command
+- trace

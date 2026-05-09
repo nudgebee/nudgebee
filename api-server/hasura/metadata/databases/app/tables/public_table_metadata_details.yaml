@@ -1,0 +1,3 @@
+table:
+  name: table_metadata_details
+  schema: public

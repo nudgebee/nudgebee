@@ -1,0 +1,4 @@
+table:
+  name: notification_platform_types
+  schema: public
+is_enum: true

@@ -1,0 +1,96 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E13: EC2 instance in public subnet but unreachable — no public IP assigned.
+  User complaint: "EC2 instance 'e13-api-server-01' is in a public subnet with an
+  internet gateway route, but I can't reach it from the internet."
+  Root cause: Instance was launched without a public IP (AssociatePublicIpAddress=false)
+  and no Elastic IP is attached. Without a public IP, the instance has no internet-
+  routable address despite being in a public subnet.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = EC2 instance has no public IP.
+      Fixed = EC2 instance has an Elastic IP.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for API server
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: e13-api-server-sg
+
+  ApiServerInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      SubnetId: !ImportValue aws-agent-test-public-subnet-a
+      # THE BUG: No public IP assignment despite being in a public subnet
+      NetworkInterfaces:
+        - DeviceIndex: '0'
+          SubnetId: !ImportValue aws-agent-test-public-subnet-a
+          GroupSet:
+            - !Ref InstanceSecurityGroup
+          AssociatePublicIpAddress: false
+      Tags:
+        - Key: Name
+          Value: e13-api-server-01
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: api-service
+        - Key: Team
+          Value: backend
+
+  # Fixed mode: attach an Elastic IP
+  ApiServerEIP:
+    Type: AWS::EC2::EIP
+    Condition: IsFixed
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref ApiServerInstance
+      Tags:
+        - Key: Name
+          Value: e13-api-server-eip
+
+Outputs:
+  InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref ApiServerInstance
+  PrivateIp:
+    Description: Private IP of the instance
+    Value: !GetAtt ApiServerInstance.PrivateIp
+  SecurityGroupId:
+    Description: Security Group ID
+    Value: !Ref InstanceSecurityGroup
+  HasPublicIp:
+    Description: Whether instance has a public IP
+    Value: !If [IsFixed, 'Yes (Elastic IP)', 'No']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

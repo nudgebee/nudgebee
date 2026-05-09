@@ -1,0 +1,44 @@
+user_prompt: "In namespace log-default-06, find HTTP 500 errors from the billing-api service only — exclude shipping-api."
+description: |
+  Tests that logs_default generates a structured where-clause with multiple
+  conditions (namespace AND app AND status) and correctly excludes the other
+  app whose logs are in the same namespace.
+expected_output: |
+  The response identifies 500s from billing-api citing 'db-deadlock'. It must
+  NOT surface carrier-unreachable errors (that's shipping-api, which was
+  excluded). The generated Loki query should filter on app=billing-api AND
+  status=500 (or equivalent where-clause JSON).
+setup_timeout: 300
+before_test: |
+  set -e
+  kubectl create namespace log-default-06 || true
+  kubectl label namespace log-default-06 benchmark=true --overwrite || true
+  kubectl apply -f ../../../nubi/shared/loki.yaml -n log-default-06
+  kubectl apply -f promtail-config.yaml -n log-default-06
+  kubectl wait --for=condition=ready pod -l app=loki -n log-default-06 --timeout=120s
+  kubectl apply -f manifest.yaml -n log-default-06
+  kubectl wait --for=condition=ready pod -l app=billing-api -n log-default-06 --timeout=120s
+  kubectl wait --for=condition=ready pod -l app=shipping-api -n log-default-06 --timeout=120s
+  sleep 20
+
+  pkill -f "kubectl port-forward.*svc/loki" 2>/dev/null || true
+  sleep 1
+  nohup kubectl port-forward -n log-default-06 svc/loki 3100:3100 \
+    >/tmp/pf-log-default-06.log 2>&1 &
+  echo $! > /tmp/pf-log-default-06.pid
+  for i in {1..30}; do
+    if curl -s http://localhost:3100/ready | grep -q ready; then break; fi
+    sleep 1
+  done
+after_test: |
+  if [ -f /tmp/pf-log-default-06.pid ]; then
+    kill $(cat /tmp/pf-log-default-06.pid) 2>/dev/null || true
+    rm -f /tmp/pf-log-default-06.pid
+  fi
+  pkill -f "kubectl port-forward.*log-default-06" 2>/dev/null || true
+  kubectl delete namespace log-default-06 --wait=false || true
+tags:
+  - hard
+  - loki
+  - multi-condition
+  - provider-path

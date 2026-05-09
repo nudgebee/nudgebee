@@ -1,0 +1,9 @@
+global:
+  image: {}
+  imagePullSecrets: []
+
+image:
+  repository: hasura-migrations
+  pullPolicy: IfNotPresent
+  tag: 'latest'
+imagePullSecrets: []

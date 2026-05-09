@@ -1,0 +1,8 @@
+user_prompt: What is the LogQL query to find logs that contain either panic or fatal
+  from kubernetes-logs?
+expected_output:
+- '{job="kubernetes-logs"} |= "panic" |= "fatal"'
+- '{namespace="default"} |= "panic" |= "fatal"'
+tags:
+- command
+- loki

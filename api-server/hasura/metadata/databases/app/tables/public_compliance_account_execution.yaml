@@ -1,0 +1,3 @@
+table:
+  name: compliance_account_execution
+  schema: public

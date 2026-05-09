@@ -1,0 +1,8 @@
+user_prompt: What is the LogQL query to filter logs where the JSON field status_code
+  is greater than 499 from kubernetes-logs?
+expected_output:
+- '{job="kubernetes-logs"} | json | status_code > 499'
+- '{namespace="production"} | json | status_code > 499'
+tags:
+- command
+- loki

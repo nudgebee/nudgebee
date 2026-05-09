@@ -1,0 +1,6 @@
+user_prompt: Create a VPC.
+expected_output:
+- aws ec2 create-vpc
+tags:
+- command
+- aws

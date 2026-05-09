@@ -1,0 +1,6 @@
+user_prompt: Start a Glue crawler.
+expected_output:
+- aws glue start-crawler --name <crawler-name>
+tags:
+- command
+- aws

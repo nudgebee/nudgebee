@@ -1,0 +1,135 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M23: Glue ETL job succeeds but writes zero rows — missing S3 permissions.
+  User complaint: "Our Glue ETL job 'm23-data-transform' completes with SUCCEEDED
+  status but the output S3 path has zero files. The job ran for 2 minutes and shows
+  no errors. Source data in 's3://...source/' has 10K records."
+  Root cause: Glue job IAM role has s3:PutObject on the output bucket but is missing
+  s3:GetObject on the source bucket. Glue silently succeeds with an empty DataFrame
+  when it can't read source data (no records to process = success).
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Glue role missing s3:GetObject on source bucket.
+      Fixed = Glue role has full S3 access on both source and target buckets.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  SourceBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'm23-etl-source-${AWS::AccountId}'
+      Tags:
+        - Key: Name
+          Value: m23-etl-source
+        - Key: Environment
+          Value: production
+
+  OutputBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'm23-etl-output-${AWS::AccountId}'
+      Tags:
+        - Key: Name
+          Value: m23-etl-output
+        - Key: Environment
+          Value: production
+
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref 'AWS::AccountId'
+      DatabaseInput:
+        Name: m23_analytics_db
+        Description: Analytics database for ETL pipeline
+
+  # THE BUG: Missing s3:GetObject on source bucket in Broken mode
+  GlueRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m23-glue-etl-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: glue.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole
+      Policies:
+        - PolicyName: s3-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # Output bucket — always has write access
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt OutputBucket.Arn
+                  - !Sub '${OutputBucket.Arn}/*'
+              # Source bucket — missing GetObject in Broken mode
+              - Effect: Allow
+                Action: !If
+                  - IsFixed
+                  - - s3:GetObject
+                    - s3:ListBucket
+                  - - s3:ListBucket
+                Resource:
+                  - !GetAtt SourceBucket.Arn
+                  - !Sub '${SourceBucket.Arn}/*'
+
+  GlueJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: m23-data-transform
+      Role: !GetAtt GlueRole.Arn
+      GlueVersion: '4.0'
+      WorkerType: G.1X
+      NumberOfWorkers: 2
+      Timeout: 30
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub 's3://${OutputBucket}/scripts/transform.py'
+        PythonVersion: '3'
+      DefaultArguments:
+        '--source_path': !Sub 's3://${SourceBucket}/raw/'
+        '--output_path': !Sub 's3://${OutputBucket}/transformed/'
+        '--database': m23_analytics_db
+        '--enable-metrics': 'true'
+        '--enable-continuous-cloudwatch-log': 'true'
+      Tags:
+        Environment: production
+        Application: analytics-pipeline
+
+Outputs:
+  JobName:
+    Description: Glue Job Name
+    Value: m23-data-transform
+  SourceBucket:
+    Description: Source S3 bucket
+    Value: !Ref SourceBucket
+  OutputBucket:
+    Description: Output S3 bucket
+    Value: !Ref OutputBucket
+  GlueRoleName:
+    Description: Glue IAM Role
+    Value: m23-glue-etl-role
+  SourcePermissions:
+    Description: Source bucket permissions (missing GetObject in Broken mode)
+    Value: !If [IsFixed, 's3:GetObject + s3:ListBucket', 's3:ListBucket only (missing GetObject)']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

@@ -1,0 +1,7 @@
+user_prompt: Count the number of 'Open' recommendations for each category.
+expected_output:
+- SELECT category, COUNT(*) AS open_recommendation_count from recommendation_view
+  WHERE status = 'Open' GROUP BY category ORDER BY open_recommendation_count DESC;
+tags:
+- command
+- recommendations

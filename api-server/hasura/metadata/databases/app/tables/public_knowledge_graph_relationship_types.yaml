@@ -1,0 +1,3 @@
+table:
+  name: knowledge_graph_relationship_types
+  schema: public

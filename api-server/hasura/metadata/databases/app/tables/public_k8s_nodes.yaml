@@ -1,0 +1,3 @@
+table:
+  name: k8s_nodes
+  schema: public

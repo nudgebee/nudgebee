@@ -1,0 +1,6 @@
+user_prompt: Delete a CloudWatch alarm.
+expected_output:
+- aws cloudwatch delete-alarms --alarm-names <alarm-name>
+tags:
+- command
+- aws

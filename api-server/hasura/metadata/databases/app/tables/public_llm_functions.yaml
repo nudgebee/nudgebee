@@ -1,0 +1,3 @@
+table:
+  name: llm_functions
+  schema: public

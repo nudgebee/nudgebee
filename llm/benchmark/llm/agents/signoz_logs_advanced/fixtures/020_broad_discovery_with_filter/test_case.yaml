@@ -1,0 +1,6 @@
+user_prompt: Which services are throwing errors in the production namespace in the last 30 minutes?
+expected_output: '{"where": {"service.namespace": {"_ilike": "%production%"}, "severity_text": {"_eq": "ERROR"}}, "time_range": "30m"}'
+tags:
+  - complex
+  - discovery
+  - signoz

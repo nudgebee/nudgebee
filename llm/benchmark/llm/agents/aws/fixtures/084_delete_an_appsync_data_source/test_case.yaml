@@ -1,0 +1,6 @@
+user_prompt: Delete an AppSync data source.
+expected_output:
+- aws appsync delete-data-source --api-id <api-id> --name <data-source-name>
+tags:
+- command
+- aws

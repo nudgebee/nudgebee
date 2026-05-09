@@ -1,0 +1,19 @@
+{
+    "apiVersion": "v1",
+    "data": {
+        "mapRoles": "- groups:\n  - system:bootstrappers\n  - system:nodes\n  rolearn: arn:aws:iam::xxxxxxxxxxxx:role/nudgebee-dev-node-role\n  username: system:node:{{EC2PrivateDNSName}}\n- groups:\n  - system:bootstrappers\n  - system:nodes\n  rolearn: arn:aws:iam::xxxxxxxxxxxx:role/KarpenterNodeRole-nudgebee-dev\n  username: system:node:{{EC2PrivateDNSName}}\n",
+        "mapUsers": "- groups:\n  - system:bootstrappers\n  - system:nodes\n  - system:masters\n  userarn: arn:aws:iam::xxxxxxxxxxxx:user/random\n",
+        "username": "system:node:{{EC2PrivateDNSName}}"
+    },
+    "kind": "ConfigMap",
+    "metadata": {
+        "creationTimestamp": "2023-01-10T20:48:55Z",
+        "labels": {
+            "k8slens-edit-resource-version": "v1"
+        },
+        "name": "aws-auth",
+        "namespace": "kube-system",
+        "resourceVersion": "191641407",
+        "uid": "1e93b1f3-3f57-4ec4-9a80-3d3eb9059815"
+    }
+}

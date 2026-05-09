@@ -1,0 +1,7 @@
+user_prompt: List all ConfigMaps.
+expected_output:
+- kubectl get configmaps
+- kubectl get cm
+tags:
+- command
+- kubernetes

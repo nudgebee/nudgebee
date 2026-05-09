@@ -1,0 +1,9 @@
+user_prompt: what is the promql query for total CPU usage on node-2, including all
+  modes?
+expected_output:
+- sum(rate(node_cpu_seconds_total{instance="node-2"}[1m]))
+- sum(rate(node_cpu_seconds_total{instance="node-2", mode!="idle"}[1m]))
+- node_resources_cpu_usage_seconds_total{instance=~".*node.2.*"}
+tags:
+- command
+- promql

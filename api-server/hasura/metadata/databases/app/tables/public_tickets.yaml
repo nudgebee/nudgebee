@@ -1,0 +1,13 @@
+table:
+  name: tickets
+  schema: public
+object_relationships:
+- name: integration
+  using:
+    foreign_key_constraint_on: integration_id
+- name: tenantByTenant
+  using:
+    foreign_key_constraint_on: tenant
+- name: user
+  using:
+    foreign_key_constraint_on: created_by

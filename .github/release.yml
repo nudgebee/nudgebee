@@ -1,0 +1,51 @@
+changelog:
+  categories:
+    - title: 🏕 K8s
+      labels:
+        - K8s
+    - title: 🏕 Troubleshooting
+      labels:
+        - Troubleshooting        
+    - title: 🏕 Admin
+      labels:
+        - Admin
+    - title: 🏕 Auth
+      labels:
+        - Auth
+    - title: 🏕 AutoOptimize
+      labels:
+        - AutoOptimize
+        - Recommendation
+    - title: 🏕 AutoRunbook
+      labels:
+        - AutoRunbook
+    - title: 🏕 Notifications
+      labels:
+        - Notifications
+    - title: 🏕 Tickets
+      labels:
+        - Tickets
+    - title: 🏕 Workflow
+      labels:
+        - Workflow        
+    - title: 🏕 Cloud
+      labels:
+        - Cloud        
+    - title: 🏕 Security
+      labels:
+        - Security
+    - title: 🏕 Performance
+      labels:
+        - Performance
+    - title: 🏕 Ai
+      labels:
+        - Ai
+    - title: 🏕 Docs
+      labels:
+        - Docs
+    - title: 🏕 Other
+      labels:
+        - feat
+    - title: 👒 Fixes
+      labels:
+        - fix

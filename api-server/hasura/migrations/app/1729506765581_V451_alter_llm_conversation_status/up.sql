@@ -1,0 +1,1 @@
+ALTER TYPE llm_conversation_status ADD VALUE 'FAILED' AFTER 'COMPLETED';

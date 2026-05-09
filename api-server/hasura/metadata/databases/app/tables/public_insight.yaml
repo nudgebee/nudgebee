@@ -1,0 +1,3 @@
+table:
+  name: insight
+  schema: public

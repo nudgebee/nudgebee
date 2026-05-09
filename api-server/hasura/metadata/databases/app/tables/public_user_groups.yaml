@@ -1,0 +1,35 @@
+table:
+  name: user_groups
+  schema: public
+object_relationships:
+- name: businessUnitByBusinessUnit
+  using:
+    foreign_key_constraint_on: business_unit
+- name: tenantByTenant
+  using:
+    foreign_key_constraint_on: tenant
+- name: user
+  using:
+    foreign_key_constraint_on: owner
+array_relationships:
+- name: funding_sources
+  using:
+    foreign_key_constraint_on:
+      column: user_groups
+      table:
+        name: funding_sources
+        schema: public
+- name: group_roles
+  using:
+    foreign_key_constraint_on:
+      column: group_id
+      table:
+        name: group_roles
+        schema: public
+- name: usergroup_users
+  using:
+    foreign_key_constraint_on:
+      column: group
+      table:
+        name: usergroup_users
+        schema: public

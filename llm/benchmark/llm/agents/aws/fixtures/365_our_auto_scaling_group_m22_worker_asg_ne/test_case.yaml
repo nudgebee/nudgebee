@@ -1,0 +1,23 @@
+user_prompt: Our Auto Scaling Group 'm22-worker-asg' never scales out even though
+  CloudWatch shows CPU utilization at 90%+. The alarm 'm22-cpu-alarm' stays in
+  INSUFFICIENT_DATA state and never transitions to ALARM. We've been manually
+  adding instances. The alarm is configured to trigger when CPU exceeds 70%.
+  What's preventing the alarm from firing?
+expected_output:
+- The root cause is that the CloudWatch alarm 'm22-cpu-alarm' has a dimension value
+  that doesn't match the actual Auto Scaling Group name. The alarm's
+  AutoScalingGroupName dimension is set to 'm22-workers-asg' (with an extra 's')
+  but the actual ASG name is 'm22-worker-asg'. Since the dimension doesn't match
+  any existing ASG, CloudWatch never receives CPUUtilization data points for this
+  alarm, keeping it permanently in INSUFFICIENT_DATA state. The alarm never
+  transitions to ALARM, so the scale-out policy never triggers. The fix is to
+  correct the alarm dimension from 'm22-workers-asg' to 'm22-worker-asg' to
+  match the actual Auto Scaling Group name.
+tags:
+- rca
+- aws
+- cloudwatch
+- auto-scaling
+- alarm
+type: rca
+agent: aws_debug

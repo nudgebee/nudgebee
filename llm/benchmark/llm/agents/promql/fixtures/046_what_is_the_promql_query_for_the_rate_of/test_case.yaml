@@ -1,0 +1,8 @@
+user_prompt: what is the promql query for the rate of HTTP 5xx errors from the 'user-service'
+  in the last 5 minutes?
+expected_output:
+- sum(rate(http_requests_total{job="user-service", code=~"5.."}[5m]))
+- rate(http_requests_total{job="user-service", code=~"5.."}[5m])
+tags:
+- command
+- promql

@@ -1,0 +1,18 @@
+user_prompt: "Can I rightsize the checkout-api deployment in the prod namespace?"
+expected_output:
+  - |
+    The agent should run a parallel batch covering: recommendations (for the
+    rightsizing recommendation on prod/checkout-api), prometheus_execute (CPU
+    and memory p50 AND p95 over the last 7-14 days to assess burstiness), and
+    kubectl_execute (HPA presence, deployment requests/limits, replica count).
+    The answer should include: current configuration, observed utilization
+    (p50 and p95), HPA/autoscaling status, the recommended change with dollar
+    savings, and a risk rating (Low/Medium/High) with explicit reasoning
+    (e.g. "Medium: bursty workload, p95 reaches 80% — leave headroom"). Cite
+    [prometheus_execute] and [kubectl_execute] for utilization claims.
+tags:
+  - rightsizing
+  - drilldown
+  - kubernetes
+  - hard
+  - finops

@@ -1,0 +1,10 @@
+user_prompt: Identify any recommendations that were closed on the same day they were
+  created.
+expected_output:
+- SELECT * FROM recommendation_view WHERE status = 'Closed' AND DATE(created_at) =
+  DATE(updated_at);
+- SELECT namespace, name, recommendation FROM recommendation_view WHERE status = 'Closed'
+  AND DATE(created_at) = DATE(updated_at);
+tags:
+- command
+- recommendations

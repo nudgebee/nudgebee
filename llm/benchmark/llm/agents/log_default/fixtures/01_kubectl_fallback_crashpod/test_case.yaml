@@ -1,0 +1,46 @@
+user_prompt: "Show me the logs for payment-processing-worker in namespace log-default-01 and explain why it is crashing."
+expected_output: |
+  The logs show the container exits because the DEPLOY_ENV environment variable is undefined
+  or missing. The response should mention the DEPLOY_ENV variable and the CrashLoopBackOff
+  state, with the log line 'Environment variable DEPLOY_ENV is undefined' cited from the
+  container's logs (retrieved via kubectl_log fallback because no observability provider is
+  configured for this namespace).
+before_test: |
+  kubectl create namespace log-default-01 || true
+  kubectl label namespace log-default-01 benchmark=true --overwrite || true
+  cat <<'EOF' | kubectl apply -f -
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: payment-processing-worker
+    namespace: log-default-01
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        app: payment-processing-worker
+    template:
+      metadata:
+        labels:
+          app: payment-processing-worker
+      spec:
+        containers:
+        - name: payment-processing-container
+          image: busybox:1.36
+          command: ["/bin/sh"]
+          args: ["-c", "if [ -z \"${DEPLOY_ENV}\" ]; then echo 'Environment variable DEPLOY_ENV is undefined'; exit 1; else while true; do echo hello; sleep 10; done; fi"]
+  EOF
+  for i in {1..60}; do
+    if kubectl get pod -l app=payment-processing-worker -n log-default-01 2>/dev/null | grep -q payment-processing-worker; then
+      break
+    fi
+    sleep 5
+  done
+  kubectl wait --for=jsonpath='{.status.containerStatuses[0].state.waiting.reason}'=CrashLoopBackOff \
+    pod -l app=payment-processing-worker -n log-default-01 --timeout=300s || exit 1
+after_test: |
+  kubectl delete namespace log-default-01 --wait=false || true
+tags:
+  - easy
+  - kubernetes
+  - kubectl-fallback

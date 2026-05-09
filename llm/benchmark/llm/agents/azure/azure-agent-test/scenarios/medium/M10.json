@@ -1,0 +1,104 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "M10: Azure Monitor alert action group has wrong email address (old company domain). Alert fires correctly but notifications go to a non-existent mailbox. User complaint: on-call team never gets paged even though alerts are firing. Requires tracing alert → action group → email recipient."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "appName": "[concat('m10app', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "alertEmail": "[if(equals(parameters('scenarioMode'), 'Fixed'), 'oncall@company.com', 'oncall@old-company-name.com')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('appName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "app",
+      "tags": { "Name": "m10-payment-api", "Environment": "production", "Scenario": "M10" },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]"
+      }
+    },
+    {
+      "type": "Microsoft.Insights/actionGroups",
+      "apiVersion": "2023-01-01",
+      "name": "m10-oncall-team",
+      "location": "global",
+      "tags": {
+        "Environment": "production",
+        "Team": "sre",
+        "Scenario": "M10",
+        "ScenarioMode": "[parameters('scenarioMode')]"
+      },
+      "properties": {
+        "groupShortName": "oncall",
+        "enabled": true,
+        "emailReceivers": [
+          {
+            "name": "OnCallEngineer",
+            "emailAddress": "[variables('alertEmail')]",
+            "useCommonAlertSchema": true
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Insights/metricAlerts",
+      "apiVersion": "2018-03-01",
+      "name": "m10-payment-error-alert",
+      "location": "global",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', variables('appName'))]",
+        "[resourceId('Microsoft.Insights/actionGroups', 'm10-oncall-team')]"
+      ],
+      "tags": { "Environment": "production", "Scenario": "M10" },
+      "properties": {
+        "description": "Alert on payment API 5xx errors",
+        "severity": 1,
+        "enabled": true,
+        "scopes": [ "[resourceId('Microsoft.Web/sites', variables('appName'))]" ],
+        "evaluationFrequency": "PT1M",
+        "windowSize": "PT5M",
+        "criteria": {
+          "odata.type": "Microsoft.Azure.Monitor.MultipleResourceMultipleMetricCriteria",
+          "allOf": [
+            {
+              "name": "Http5xxCriterion",
+              "metricName": "Http5xx",
+              "metricNamespace": "Microsoft.Web/sites",
+              "operator": "GreaterThan",
+              "threshold": 5,
+              "timeAggregation": "Total",
+              "criterionType": "StaticThresholdCriterion"
+            }
+          ]
+        },
+        "actions": [
+          {
+            "actionGroupId": "[resourceId('Microsoft.Insights/actionGroups', 'm10-oncall-team')]"
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "AppServiceName": { "type": "string", "value": "[variables('appName')]" },
+    "ActionGroupName": { "type": "string", "value": "m10-oncall-team" },
+    "AlertName": { "type": "string", "value": "m10-payment-error-alert" },
+    "AlertEmail": { "type": "string", "value": "[variables('alertEmail')]" },
+    "BugNote": { "type": "string", "value": "Action group 'm10-oncall-team' sends to 'oncall@old-company-name.com' (dead mailbox) - alerts never delivered" },
+    "ScenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

@@ -1,0 +1,338 @@
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- CREATE
+-- OR REPLACE FUNCTION public.cloud_account_service_groupings(
+--   group_by text [] DEFAULT '{}' :: text [],
+--   "where" json DEFAULT NULL :: json,
+--   hasura_session json DEFAULT '{}' :: json
+-- ) RETURNS SETOF cloud_account_service_groupings_type LANGUAGE sql STABLE AS $function$
+-- SELECT
+--   (
+--     CASE
+--       WHEN 'tenant_id' = ANY(group_by) THEN tenant
+--       ELSE NULL
+--     END
+--   ) AS tenant_id,
+--   (
+--     CASE
+--       WHEN 'account_id' = ANY(group_by) THEN account
+--       ELSE NULL
+--     END
+--   ) AS account_id,
+--   (
+--     CASE
+--       WHEN 'service_name' = ANY(group_by) THEN service_name
+--       ELSE NULL
+--     END
+--   ) AS service_name,
+--   (
+--     CASE
+--       WHEN 'region' = ANY(group_by) THEN region
+--       ELSE NULL
+--     END
+--   ) AS region,
+--   (
+--     CASE
+--       WHEN 'spend_date' = ANY(group_by) THEN spend_date
+--       ELSE NULL
+--     END
+--   ) AS spend_date,
+--   sum(resource_count) as resource_count,
+--   sum(spend_amount) as spend_amount,
+--   sum(resource_estimated_saving) as resource_estimated_saving
+-- from
+--   cloud_services_aggregate
+-- where
+--   (
+--     "hasura_session" ->> 'x-hasura-user-tenant-id' IS NULL
+--     OR (
+--       "tenant" = ("hasura_session" ->> 'x-hasura-user-tenant-id') :: uuid
+--     )
+--   )
+--   AND (
+--     "where" #>> '{account_id,_eq}' IS NULL
+--     OR (
+--       "account" = ("where" #>> '{account_id,_eq}') :: uuid
+--     )
+--   )
+--   AND (
+--     "where" #>> '{region,_eq}' IS NULL
+--     OR (
+--       "region" = ("where" #>> '{region,_eq}')
+--     )
+--   )
+--   AND (
+--     "where" #>> '{service_name,_eq}' IS NULL
+--     OR (
+--       "service_name" = ("where" #>> '{service_name,_eq}')
+--     )
+--   )
+--   AND (
+--     "where" #>> '{service_name,_eq}' IS NULL
+--     OR (
+--       "service_name" = ("where" #>> '{service_name,_eq}')
+--     )
+--   )
+--   AND (
+--     "where" #>> '{spend_date,_eq}' IS NULL
+--     OR (
+--       "spend_date"::date = ("where" #>> '{spend_date,_eq}')::date
+--     )
+--   )
+--   AND (
+--     "where" #>> '{spend_date,_gt}' IS NULL
+--     OR (
+--       "spend_date"::date > ("where" #>> '{spend_date,_eq}')::date
+--     )
+--   )
+--   AND (
+--     "where" #>> '{spend_date,_lt}' IS NULL
+--     OR (
+--       "spend_date"::date < ("where" #>> '{spend_date,_eq}')::date
+--     )
+--   )
+--   AND (
+--     "where" #>> '{spend_date,_le}' IS NULL
+--     OR (
+--       "spend_date"::date <= ("where" #>> '{spend_date,_eq}')::date
+--     )
+--   )
+--   AND (
+--     "where" #>> '{spend_date,_ge}' IS NULL
+--     OR (
+--       "spend_date"::date >= ("where" #>> '{spend_date,_eq}')::date
+--     )
+--   )
+--   AND (
+--     "where" #>> '{spend_date,_between,le}' IS NULL
+--     OR (
+--       "spend_date"::date <= ("where" #>> '{spend_date,_between,le}')::date
+--     )
+--   )
+--   AND (
+--     "where" #>> '{spend_date,_between,lt}' IS NULL
+--     OR (
+--       "spend_date"::date < ("where" #>> '{spend_date,_between,lt}')::date
+--     )
+--   )
+--   AND (
+--     "where" #>> '{spend_date,_between,gt}' IS NULL
+--     OR (
+--       "spend_date"::date > ("where" #>> '{spend_date,_between,gt}')::date
+--     )
+--   )
+--   AND (
+--     "where" #>> '{spend_date,_between,ge}' IS NULL
+--     OR (
+--       "spend_date"::date >= ("where" #>> '{spend_date,_between,ge}')::date
+--     )
+--   )
+-- group by
+--   (
+--     CASE
+--       WHEN 'tenant_id' = ANY(group_by) THEN tenant
+--     END
+--   ),
+--   (
+--     CASE
+--       WHEN 'account_id' = ANY(group_by) THEN account
+--     END
+--   ),
+--   (
+--     CASE
+--       WHEN 'service_name' = ANY(group_by) THEN service_name
+--     END
+--   ),
+--   (
+--     CASE
+--       WHEN 'region' = ANY(group_by) THEN region
+--     END
+--   ),
+--   (
+--     CASE
+--       WHEN 'spend_date' = ANY(group_by) THEN spend_date
+--     END
+--   )
+--   $function$;
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- CREATE
+-- OR REPLACE FUNCTION public.cloud_account_service_groupings(
+--   group_by text [] DEFAULT '{}' :: text [],
+--   "where" json DEFAULT NULL :: json,
+--   hasura_session json DEFAULT '{}' :: json
+-- ) RETURNS SETOF cloud_account_service_groupings_type LANGUAGE sql STABLE AS $function$
+-- SELECT
+--   (
+--     CASE
+--       WHEN 'tenant_id' = ANY(group_by) THEN tenant
+--       ELSE NULL
+--     END
+--   ) AS tenant_id,
+--   (
+--     CASE
+--       WHEN 'account_id' = ANY(group_by) THEN account
+--       ELSE NULL
+--     END
+--   ) AS account_id,
+--   (
+--     CASE
+--       WHEN 'service_name' = ANY(group_by) THEN service_name
+--       ELSE NULL
+--     END
+--   ) AS service_name,
+--   (
+--     CASE
+--       WHEN 'region' = ANY(group_by) THEN region
+--       ELSE NULL
+--     END
+--   ) AS region,
+--   (
+--     CASE
+--       WHEN 'spend_date' = ANY(group_by) THEN spend_date
+--       ELSE NULL
+--     END
+--   ) AS spend_date,
+--   sum(resource_count) as resource_count,
+--   sum(spend_amount) as spend_amount,
+--   sum(resource_estimated_saving) as resource_estimated_saving
+-- from
+--   cloud_services_aggregate
+-- where
+--   (
+--     "hasura_session" ->> 'x-hasura-user-tenant-id' IS NULL
+--     OR (
+--       "tenant" = ("hasura_session" ->> 'x-hasura-user-tenant-id') :: uuid
+--     )
+--   )
+--   AND (
+--     "where" #>> '{account_id,_eq}' IS NULL
+--     OR (
+--       "account" = ("where" #>> '{account_id,_eq}') :: uuid
+--     )
+--   )
+--   AND (
+--     "where" #>> '{region,_eq}' IS NULL
+--     OR (
+--       "region" = ("where" #>> '{region,_eq}')
+--     )
+--   )
+--   AND (
+--     "where" #>> '{service_name,_eq}' IS NULL
+--     OR (
+--       "service_name" = ("where" #>> '{service_name,_eq}')
+--     )
+--   )
+--   AND (
+--     "where" #>> '{service_name,_eq}' IS NULL
+--     OR (
+--       "service_name" = ("where" #>> '{service_name,_eq}')
+--     )
+--   )
+--   AND (
+--     "where" #>> '{spend_date,_eq}' IS NULL
+--     OR (
+--       "spend_date"::date = ("where" #>> '{spend_date,_eq}')::date
+--     )
+--   )
+--   AND (
+--     "where" #>> '{spend_date,_gt}' IS NULL
+--     OR (
+--       "spend_date"::date > ("where" #>> '{spend_date,_eq}')::date
+--     )
+--   )
+--   AND (
+--     "where" #>> '{spend_date,_lt}' IS NULL
+--     OR (
+--       "spend_date"::date < ("where" #>> '{spend_date,_eq}')::date
+--     )
+--   )
+--   AND (
+--     "where" #>> '{spend_date,_le}' IS NULL
+--     OR (
+--       "spend_date"::date <= ("where" #>> '{spend_date,_eq}')::date
+--     )
+--   )
+--   AND (
+--     "where" #>> '{spend_date,_ge}' IS NULL
+--     OR (
+--       "spend_date"::date >= ("where" #>> '{spend_date,_eq}')::date
+--     )
+--   )
+--   AND (
+--     "where" #>> '{spend_date,_between,le}' IS NULL
+--     OR (
+--       "spend_date"::date <= ("where" #>> '{spend_date,_between,le}')::date
+--     )
+--   )
+--   AND (
+--     "where" #>> '{spend_date,_between,lt}' IS NULL
+--     OR (
+--       "spend_date"::date < ("where" #>> '{spend_date,_between,lt}')::date
+--     )
+--   )
+--   AND (
+--     "where" #>> '{spend_date,_between,gt}' IS NULL
+--     OR (
+--       "spend_date"::date > ("where" #>> '{spend_date,_between,gt}')::date
+--     )
+--   )
+--   AND (
+--     "where" #>> '{spend_date,_between,ge}' IS NULL
+--     OR (
+--       "spend_date"::date >= ("where" #>> '{spend_date,_between,ge}')::date
+--     )
+--   )
+-- group by
+--   (
+--     CASE
+--       WHEN 'tenant_id' = ANY(group_by) THEN tenant
+--     END
+--   ),
+--   (
+--     CASE
+--       WHEN 'account_id' = ANY(group_by) THEN account
+--     END
+--   ),
+--   (
+--     CASE
+--       WHEN 'service_name' = ANY(group_by) THEN service_name
+--     END
+--   ),
+--   (
+--     CASE
+--       WHEN 'region' = ANY(group_by) THEN region
+--     END
+--   ),
+--   (
+--     CASE
+--       WHEN 'spend_date' = ANY(group_by) THEN spend_date
+--     END
+--   )
+--   $function$;
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- CREATE
+-- OR REPLACE VIEW "public"."cloud_account_service_groupings_type" AS
+-- SELECT
+--   cloud_services_aggregate.tenant AS tenant_id,
+--   cloud_services_aggregate.account AS account_id,
+--   cloud_services_aggregate.service_name AS service_name,
+--   cloud_services_aggregate.region AS region,
+--   cloud_services_aggregate.spend_date AS spend_date,
+--   sum(cloud_services_aggregate.resource_count) as resource_count,
+--   sum(cloud_services_aggregate.spend_amount) as spend_amount,
+--   sum(cloud_services_aggregate.resource_estimated_saving) as resource_estimated_saving
+-- FROM
+--   cloud_services_aggregate
+-- WHERE
+--   false
+-- GROUP BY
+--   cloud_services_aggregate.tenant,
+--   cloud_services_aggregate.account,
+--   cloud_services_aggregate.service_name,
+--   cloud_services_aggregate.region,
+--   cloud_services_aggregate.spend_date;

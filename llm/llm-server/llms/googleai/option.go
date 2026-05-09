@@ -1,0 +1,263 @@
+package googleai
+
+import (
+	"log/slog"
+	"net/http"
+	"os"
+	"reflect"
+	"strings"
+
+	"github.com/tmc/langchaingo/llms"
+	"google.golang.org/api/option"
+	"google.golang.org/grpc"
+)
+
+// Options is a set of options for GoogleAI and Vertex clients.
+type Options struct {
+	CloudProject          string
+	CloudLocation         string
+	DefaultModel          string
+	DefaultEmbeddingModel string
+	DefaultCandidateCount int
+	DefaultMaxTokens      int
+	DefaultTemperature    float64
+	DefaultTopK           int
+	DefaultTopP           float64
+	HarmThreshold         HarmBlockThreshold
+
+	// APIKey holds the API key for GoogleAI (Gemini API). Not used by Vertex.
+	APIKey string
+
+	ClientOptions []option.ClientOption
+}
+
+func DefaultOptions() Options {
+	return Options{
+		CloudProject:          "",
+		CloudLocation:         "",
+		DefaultModel:          "gemini-2.0-flash",
+		DefaultEmbeddingModel: "embedding-001",
+		DefaultCandidateCount: 1,
+		DefaultMaxTokens:      2048,
+		DefaultTemperature:    0.5,
+		DefaultTopK:           3,
+		DefaultTopP:           0.95,
+		HarmThreshold:         HarmBlockOnlyHigh,
+	}
+}
+
+// EnsureAuthPresent attempts to ensure that the client has authentication information. If it does not, it will attempt to use the GOOGLE_API_KEY environment variable.
+func (o *Options) EnsureAuthPresent() {
+	if o.APIKey == "" && !hasAuthOptions(o.ClientOptions) {
+		if key := os.Getenv("GOOGLE_API_KEY"); key != "" {
+			o.APIKey = key
+		}
+	}
+}
+
+type Option func(*Options)
+
+// WithAPIKey passes the API KEY (token) to the client. This is useful for
+// googleai clients.
+func WithAPIKey(apiKey string) Option {
+	return func(opts *Options) {
+		opts.APIKey = apiKey
+		opts.ClientOptions = append(opts.ClientOptions, option.WithAPIKey(apiKey))
+	}
+}
+
+// WithCredentialsJSON append a ClientOption that authenticates
+// API calls with the given service account or refresh token JSON
+// credentials.
+func WithCredentialsJSON(credentialsJSON []byte) Option {
+	return func(opts *Options) {
+		if len(credentialsJSON) == 0 {
+			return
+		}
+		opts.ClientOptions = append(opts.ClientOptions, option.WithCredentialsJSON(credentialsJSON)) //nolint:staticcheck // SA1019: retained for backward compatibility
+	}
+}
+
+// WithCredentialsFile append a ClientOption that authenticates
+// API calls with the given service account or refresh token JSON
+// credentials file.
+func WithCredentialsFile(credentialsFile string) Option {
+	return func(opts *Options) {
+		if credentialsFile == "" {
+			return
+		}
+		opts.ClientOptions = append(opts.ClientOptions, option.WithCredentialsFile(credentialsFile)) //nolint:staticcheck // SA1019: retained for backward compatibility
+	}
+}
+
+// WithRest configures the client to use the REST API.
+// Note: The new SDK (google.golang.org/genai) uses HTTP/REST by default, so this is a no-op.
+func WithRest() Option {
+	return func(opts *Options) {
+		// The new SDK uses REST by default; no action needed.
+	}
+}
+
+// WithHTTPClient append a ClientOption that uses the provided HTTP client to
+// make requests.
+// This is useful for vertex clients.
+func WithHTTPClient(httpClient *http.Client) Option {
+	return func(opts *Options) {
+		opts.ClientOptions = append(opts.ClientOptions, option.WithHTTPClient(httpClient))
+	}
+}
+
+// WithGRPCConn appends a ClientOption that uses the provided gRPC client connection to
+// make requests.
+// This is useful for testing embeddings in vertex clients.
+func WithGRPCConn(conn *grpc.ClientConn) Option {
+	return func(opts *Options) {
+		opts.ClientOptions = append(opts.ClientOptions, option.WithGRPCConn(conn))
+	}
+}
+
+// WithCloudProject passes the GCP cloud project name to the client. This is
+// useful for vertex clients.
+func WithCloudProject(p string) Option {
+	return func(opts *Options) {
+		opts.CloudProject = p
+	}
+}
+
+// WithCloudLocation passes the GCP cloud location (region) name to the client.
+// This is useful for vertex clients.
+func WithCloudLocation(l string) Option {
+	return func(opts *Options) {
+		opts.CloudLocation = l
+	}
+}
+
+// WithDefaultModel passes a default content model name to the client. This
+// model name is used if not explicitly provided in specific client invocations.
+func WithDefaultModel(defaultModel string) Option {
+	return func(opts *Options) {
+		opts.DefaultModel = defaultModel
+	}
+}
+
+// WithDefaultModel passes a default embedding model name to the client. This
+// model name is used if not explicitly provided in specific client invocations.
+func WithDefaultEmbeddingModel(defaultEmbeddingModel string) Option {
+	return func(opts *Options) {
+		opts.DefaultEmbeddingModel = defaultEmbeddingModel
+	}
+}
+
+// WithDefaultCandidateCount sets the candidate count for the model.
+func WithDefaultCandidateCount(defaultCandidateCount int) Option {
+	return func(opts *Options) {
+		opts.DefaultCandidateCount = defaultCandidateCount
+	}
+}
+
+// WithDefaultMaxTokens sets the maximum token count for the model.
+func WithDefaultMaxTokens(maxTokens int) Option {
+	return func(opts *Options) {
+		opts.DefaultMaxTokens = maxTokens
+	}
+}
+
+// WithDefaultTemperature sets the maximum token count for the model.
+func WithDefaultTemperature(defaultTemperature float64) Option {
+	return func(opts *Options) {
+		opts.DefaultTemperature = defaultTemperature
+	}
+}
+
+// WithDefaultTopK sets the TopK for the model.
+func WithDefaultTopK(defaultTopK int) Option {
+	return func(opts *Options) {
+		opts.DefaultTopK = defaultTopK
+	}
+}
+
+// WithDefaultTopP sets the TopP for the model.
+func WithDefaultTopP(defaultTopP float64) Option {
+	return func(opts *Options) {
+		opts.DefaultTopP = defaultTopP
+	}
+}
+
+// WithHarmThreshold sets the safety/harm setting for the model, potentially
+// limiting any harmful content it may generate.
+func WithHarmThreshold(ht HarmBlockThreshold) Option {
+	return func(opts *Options) {
+		opts.HarmThreshold = ht
+	}
+}
+
+// WithCachedContent enables the use of pre-created cached content.
+// The cached content must be created separately using Client.CreateCachedContent.
+// This is different from Anthropic's inline cache control.
+func WithCachedContent(name string) llms.CallOption {
+	return func(o *llms.CallOptions) {
+		if o.Metadata == nil {
+			o.Metadata = make(map[string]any)
+		}
+		o.Metadata["CachedContentName"] = name
+	}
+}
+
+// WithThinkingLevel sets the thinking level for models that support it (e.g. Gemini 2.5+).
+// Valid levels: "minimal", "low", "medium", "high".
+// Empty string means no thinking level is set (model uses its default).
+func WithThinkingLevel(level string) llms.CallOption {
+	return func(o *llms.CallOptions) {
+		if level == "" {
+			return
+		}
+		// Normalize: trim whitespace and uppercase to match Gemini API enum values.
+		normalized := strings.ToUpper(strings.TrimSpace(level))
+		validLevels := map[string]bool{
+			"MINIMAL": true, "LOW": true, "MEDIUM": true, "HIGH": true,
+		}
+		if !validLevels[normalized] {
+			slog.Warn("googleai: ignoring invalid ThinkingLevel override", "value", level, "valid", "minimal|low|medium|high")
+			return
+		}
+		if o.Metadata == nil {
+			o.Metadata = make(map[string]any)
+		}
+		o.Metadata["ThinkingLevel"] = normalized
+	}
+}
+
+// HarmBlockThreshold mirrors the new SDK's string-based HarmBlockThreshold enum.
+type HarmBlockThreshold string
+
+const (
+	// HarmBlockUnspecified means threshold is unspecified.
+	HarmBlockUnspecified HarmBlockThreshold = "HARM_BLOCK_THRESHOLD_UNSPECIFIED"
+	// HarmBlockLowAndAbove means content with NEGLIGIBLE will be allowed.
+	HarmBlockLowAndAbove HarmBlockThreshold = "BLOCK_LOW_AND_ABOVE"
+	// HarmBlockMediumAndAbove means content with NEGLIGIBLE and LOW will be allowed.
+	HarmBlockMediumAndAbove HarmBlockThreshold = "BLOCK_MEDIUM_AND_ABOVE"
+	// HarmBlockOnlyHigh means content with NEGLIGIBLE, LOW, and MEDIUM will be allowed.
+	HarmBlockOnlyHigh HarmBlockThreshold = "BLOCK_ONLY_HIGH"
+	// HarmBlockNone means all content will be allowed.
+	HarmBlockNone HarmBlockThreshold = "BLOCK_NONE"
+)
+
+// helper to inspect incoming client options for auth options.
+func hasAuthOptions(opts []option.ClientOption) bool {
+	for _, opt := range opts {
+		v := reflect.ValueOf(opt)
+		ts := v.Type().String()
+
+		switch ts {
+		case "option.withAPIKey":
+			return v.String() != ""
+
+		case "option.withTokenSource",
+			"option.withCredentialsFile",
+			"option.withCredentialsJSON":
+			return true
+		}
+	}
+	return false
+}

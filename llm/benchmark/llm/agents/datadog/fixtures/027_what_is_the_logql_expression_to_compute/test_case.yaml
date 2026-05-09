@@ -1,0 +1,10 @@
+user_prompt: What is the LogQL expression to compute error-rate percentage for the
+  checkout service over 5 minutes?
+expected_output:
+- sum(rate({service="checkout"} |= "error"[5m])) / sum(rate({service="checkout"}[5m]))
+  * 100
+- (sum(count_over_time({app="checkout",level="error"}[10m])) / sum(count_over_time({app="checkout"}[10m])))
+  * 100
+tags:
+- command
+- datadog

@@ -1,0 +1,6 @@
+user_prompt: Delete an IAM user.
+expected_output:
+- aws iam delete-user --user-name <user-name>
+tags:
+- command
+- aws

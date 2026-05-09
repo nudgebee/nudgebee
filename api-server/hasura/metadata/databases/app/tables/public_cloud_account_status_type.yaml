@@ -1,0 +1,12 @@
+table:
+  name: cloud_account_status_type
+  schema: public
+is_enum: true
+array_relationships:
+  - name: cloud_accounts
+    using:
+      foreign_key_constraint_on:
+        column: status
+        table:
+          name: cloud_accounts
+          schema: public

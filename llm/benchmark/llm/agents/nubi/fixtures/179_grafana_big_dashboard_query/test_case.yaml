@@ -1,0 +1,45 @@
+# Adapted from HolmesGPT 179_grafana_big_dashboard_query.
+# Original test imported a 500KB Grafana dashboard JSON and asked the agent to
+# extract one specific PromQL query embedded in it. Our nubi runner has no
+# grafana/dashboards toolset, so we test the same underlying skill — find a
+# specific metric+labels in a haystack — using OTLP-pushed metrics that flow
+# through the cluster's OTel pipeline → vmsingle → agent's metric catalog.
+#
+# Why OTLP push instead of a Prometheus scrape: the agent's metrics_list
+# catalog is fed from the OTel pipeline (with k8sattributes-enriched resource
+# labels). VMServiceScrape-based metrics land in vmsingle but don't appear in
+# the agent's catalog (verified empirically: scrape-based metrics ingested
+# during run be30a260c4d0 weren't returned by metrics_list("checkout"), while
+# OTLP-pushed metrics from the same vmsingle are discoverable).
+
+user_prompt: "What is the PromQL query that tracks checkout processing delays for the stripe payment gateway in the us_east region?"
+
+expected_output:
+  - 'ecommerce_checkout_processing_delay_seconds{payment_gateway="stripe", region="us_east"}'
+  - 'ecommerce_checkout_processing_delay_seconds{payment_gateway="stripe",region="us_east"}'
+
+before_test: |
+  set -e
+  kubectl create namespace app-179 --save-config --dry-run=client -o yaml | kubectl apply -f - || true
+  kubectl label namespace app-179 benchmark=true --overwrite || true
+  kubectl apply -f metric-otel-pusher.yaml -n app-179
+
+  echo "Waiting for pusher pod to be ready..."
+  kubectl wait --for=condition=ready pod -l app=metric-otel-pusher -n app-179 --timeout=120s
+
+  # OTel pipeline takes a bit to settle: pusher exports every 10s, collector
+  # batches and forwards via remote_write to vmsingle, then the agent's
+  # catalog refresh picks it up. 90s is the floor; 120s adds margin.
+  echo "Waiting for OTel pipeline to ingest the test metric..."
+  sleep 120
+
+after_test: |
+  kubectl delete -f metric-otel-pusher.yaml -n app-179 --ignore-not-found
+  kubectl delete namespace app-179 --ignore-not-found
+
+tags:
+  - hard
+  - metrics
+  - kubernetes
+  - prometheus
+  - holmesgpt-parity

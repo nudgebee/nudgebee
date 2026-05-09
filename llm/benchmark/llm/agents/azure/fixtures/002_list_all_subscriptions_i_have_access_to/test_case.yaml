@@ -1,0 +1,7 @@
+user_prompt: List all subscriptions I have access to.
+expected_output:
+- az account list --output table
+type: command
+tags:
+- command
+- azure

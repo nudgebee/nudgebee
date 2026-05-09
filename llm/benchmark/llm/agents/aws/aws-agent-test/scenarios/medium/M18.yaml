@@ -1,0 +1,188 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M18: Lambda in VPC can't read Secrets Manager — no VPC endpoint.
+  User complaint: "Lambda 'm18-auth-service' in VPC times out when calling
+  Secrets Manager to fetch database credentials. It was working before we
+  moved it into the VPC for compliance."
+  Root cause: Lambda is in a VPC private subnet with NAT Gateway for internet.
+  However, Secrets Manager calls go through the public internet via NAT. In
+  this scenario, the NAT route is missing for the Lambda's subnet, so Secrets
+  Manager API calls timeout. A VPC endpoint for Secrets Manager would fix this.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Lambda in VPC without Secrets Manager VPC endpoint and no NAT route.
+      Fixed = Secrets Manager VPC Interface Endpoint exists.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  # Scenario-specific private subnet (no NAT route)
+  AuthSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      CidrBlock: 10.0.219.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: m18-auth-private
+
+  AuthRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      Tags:
+        - Key: Name
+          Value: m18-auth-rt
+
+  # No NAT route — Lambda can't reach public internet
+  # This means Secrets Manager API calls timeout without a VPC endpoint
+
+  AuthSubnetAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref AuthSubnet
+      RouteTableId: !Ref AuthRouteTable
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for auth service Lambda
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: m18-auth-service-sg
+
+  # Fixed mode: VPC endpoint for Secrets Manager
+  SecretsManagerEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: IsFixed
+    Properties:
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.secretsmanager'
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      VpcEndpointType: Interface
+      SubnetIds:
+        - !Ref AuthSubnet
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+      PrivateDnsEnabled: true
+
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: IsFixed
+    Properties:
+      GroupDescription: Security group for Secrets Manager VPC endpoint
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+
+  DbSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: m18-db-credentials
+      Description: Database credentials for auth service
+      SecretString: !Sub '{"username":"admin","password":"supersecret","host":"db.example.com","port":"5432"}'
+      Tags:
+        - Key: Name
+          Value: m18-db-credentials
+        - Key: Environment
+          Value: production
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m18-auth-service-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: secrets-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref DbSecret
+
+  AuthServiceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: m18-auth-service
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      VpcConfig:
+        SubnetIds:
+          - !Ref AuthSubnet
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+      Environment:
+        Variables:
+          SECRET_NAME: m18-db-credentials
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+
+          def handler(event, context):
+              secret_name = os.environ['SECRET_NAME']
+              client = boto3.client('secretsmanager')
+              try:
+                  response = client.get_secret_value(SecretId=secret_name)
+                  creds = json.loads(response['SecretString'])
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({'connected': True, 'host': creds['host']})
+                  }
+              except Exception as e:
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({'error': str(e), 'type': type(e).__name__})
+                  }
+      Tags:
+        - Key: Name
+          Value: m18-auth-service
+        - Key: Environment
+          Value: production
+
+Outputs:
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref AuthServiceFunction
+  SecretName:
+    Description: Secret Name
+    Value: m18-db-credentials
+  HasVpcEndpoint:
+    Description: Whether Secrets Manager VPC endpoint exists
+    Value: !If [IsFixed, 'Yes', 'No — Secrets Manager calls timeout']
+  SubnetId:
+    Description: Lambda subnet
+    Value: !Ref AuthSubnet
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

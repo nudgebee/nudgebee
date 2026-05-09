@@ -1,0 +1,12 @@
+table:
+  name: recommendation_category_type
+  schema: public
+is_enum: true
+array_relationships:
+- name: recommendations
+  using:
+    foreign_key_constraint_on:
+      column: category
+      table:
+        name: recommendation
+        schema: public

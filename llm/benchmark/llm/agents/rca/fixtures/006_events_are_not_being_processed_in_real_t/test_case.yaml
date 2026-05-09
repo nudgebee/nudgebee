@@ -1,0 +1,26 @@
+agent: k8s_debug
+expected_output:
+- Kafka is experiencing queue problems with consumer lag due to the kafkaQueueProblems feature flag. The queue is being overloaded
+  while consumers have introduced delays, creating a lag spike and causing events to be processed with significant delay.
+expected_root_cause:
+  affected_service: kafka
+  issue_type: message_queue_lag
+  symptoms:
+  - delayed event processing
+  - order processing delays
+  - consumer lag
+  - message backlog
+  telemetry_signals:
+    logs: consumer lag warnings, slow message processing logs
+    metrics: kafka consumer lag metrics, queue depth increasing
+    traces: delayed message processing in kafka consumer traces
+feature_flag: kafkaQueueProblems
+flag_variant: 'on'
+scenario_id: kafka_queue_lag
+tags:
+- rca
+- kubernetes
+type: rca
+user_prompt: Events are not being processed in real-time and there's a delay in order processing. Investigate the kafka deployment
+  in nudgebee-demo namespace.
+wait_time_seconds: 90

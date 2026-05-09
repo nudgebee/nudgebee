@@ -1,0 +1,3 @@
+table:
+  name: spends_account_monthly_aggregate
+  schema: public

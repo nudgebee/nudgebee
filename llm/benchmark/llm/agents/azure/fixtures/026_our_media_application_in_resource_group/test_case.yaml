@@ -1,0 +1,15 @@
+user_prompt: Our media application in resource group 'azure-agent-test-E06' is getting
+  403 AuthorizationFailure errors when trying to read blobs from storage. The storage
+  account exists and the container has public blob access. What is blocking access?
+expected_output:
+- 'The storage account has networkAcls.defaultAction=Deny with no IP rules or VNet
+  rules configured. This blocks all public network access regardless of container-level
+  public access settings. Fix: Change networkAcls.defaultAction to ''Allow'', or add
+  specific IP/VNet rules to permit legitimate access.'
+agent: azure_debug
+scenario: E06
+type: rca
+tags:
+- rca
+- easy
+- azure

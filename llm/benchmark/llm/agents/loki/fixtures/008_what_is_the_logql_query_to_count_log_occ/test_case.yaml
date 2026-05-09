@@ -1,0 +1,8 @@
+user_prompt: What is the LogQL query to count log occurrences containing timeout in
+  the kubernetes-logs job over the last 10 minutes?
+expected_output:
+- count_over_time({job="kubernetes-logs"} |= "timeout" [10m])
+- sum(count_over_time({namespace="staging"} |= "timeout" [10m]))
+tags:
+- command
+- loki

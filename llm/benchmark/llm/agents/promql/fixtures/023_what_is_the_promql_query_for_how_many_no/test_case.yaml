@@ -1,0 +1,7 @@
+user_prompt: what is the promql query for how many nodes are ready in the Kubernetes
+  cluster?
+expected_output:
+- count(kube_node_status_condition{condition="Ready", status="true"})
+tags:
+- command
+- promql

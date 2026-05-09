@@ -1,0 +1,59 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- -- V637_system_default_duplicate_rule up.sql
+--
+-- -- 1. Add match_occurrence_greater_than column to event_triage_rules
+-- ALTER TABLE event_triage_rules
+-- ADD COLUMN IF NOT EXISTS match_occurrence_greater_than INTEGER DEFAULT NULL;
+--
+-- -- 2. Create event_triage_rule_overrides table for account-level overrides
+-- CREATE TABLE IF NOT EXISTS event_triage_rule_overrides (
+--   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+--   system_rule_id UUID NOT NULL,
+--   tenant_id UUID NOT NULL,
+--   account_id UUID NOT NULL,
+--   disabled BOOLEAN NOT NULL DEFAULT FALSE,
+--   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+--   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+--   UNIQUE(system_rule_id, account_id)
+-- );
+--
+-- -- 3. Add indexes for efficient lookups
+-- CREATE INDEX IF NOT EXISTS idx_triage_rule_overrides_account
+-- ON event_triage_rule_overrides(account_id, system_rule_id);
+--
+-- CREATE INDEX IF NOT EXISTS idx_triage_rule_overrides_system_rule
+-- ON event_triage_rule_overrides(system_rule_id);
+--
+-- -- 4. Insert the system default auto-duplicate rule
+-- INSERT INTO event_triage_rules (
+--   id,
+--   tenant_id,
+--   account_id,
+--   rule_type,
+--   action,
+--   match_occurrence_greater_than,
+--   priority,
+--   enabled,
+--   is_editable,
+--   can_override,
+--   name,
+--   description,
+--   created_at,
+--   updated_at
+-- ) VALUES (
+--   '00000000-0000-0000-0000-000000000001',
+--   NULL,
+--   NULL,
+--   'classification',
+--   'auto_classify_duplicate',
+--   1,
+--   1000,
+--   true,
+--   false,
+--   true,
+--   'System: Auto-mark Duplicates',
+--   'Automatically marks events as duplicates when they share a fingerprint with an existing event.',
+--   NOW(),
+--   NOW()
+-- ) ON CONFLICT (id) DO NOTHING;

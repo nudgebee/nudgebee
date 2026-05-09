@@ -1,0 +1,3 @@
+
+CREATE TABLE "public"."audit" ("id" uuid NOT NULL DEFAULT gen_random_uuid(), "user_id" uuid NOT NULL, "tenant_id" text NOT NULL DEFAULT '''', "account_id" text NOT NULL DEFAULT '''', "event_time" timestamp NOT NULL DEFAULT now(), "event_category" text NOT NULL, "event_type" text NOT NULL, "event_prev_state" text NOT NULL DEFAULT '''', "event_state" text NOT NULL DEFAULT '''', "event_actor" text NOT NULL, "event_target" text NOT NULL, "event_action" text NOT NULL, "event_status" text NOT NULL, "transaction_id" text NOT NULL DEFAULT '''', "event_attr" text NOT NULL DEFAULT '''', PRIMARY KEY ("id") );
+CREATE EXTENSION IF NOT EXISTS pgcrypto;

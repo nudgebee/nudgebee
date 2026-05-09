@@ -1,0 +1,16 @@
+user_prompt: |
+  2026-04-04T01:18:20.145Z ERROR [otel.AccountingService] - Failed to connect to Kafka broker at kafka:9092
+  2026-04-04T01:18:20.146Z ERROR [otel.AccountingService] - org.apache.kafka.common.errors.TimeoutException: Timed out waiting for a node assignment. Call: describeCluster
+  2026-04-04T01:18:20.148Z WARN  [otel.AccountingService] - Retrying connection to Kafka (attempt 5/5)
+  2026-04-04T01:18:25.150Z ERROR [otel.AccountingService] - All retry attempts exhausted. Unable to establish Kafka connection.
+  2026-04-04T01:18:25.151Z FATAL [otel.AccountingService] - Application startup failed: Cannot initialize consumer group 'accounting-group' - Kafka broker unavailable
+  2026-04-04T01:18:25.152Z INFO  [otel.AccountingService] - Shutting down accounting service
+  namespace: demo, pod: accounting-5f5d977d98-xc5rr, container: accounting
+expected_output:
+  - The accounting service in the demo namespace is in CrashLoopBackOff because it cannot connect to the Kafka broker at kafka:9092. The service exhausted all 5 retry attempts and failed to initialize the consumer group 'accounting-group'. The root cause is that the Kafka broker is unreachable, which prevents the accounting service from starting. Suggested actions include verifying the Kafka deployment is running, checking network policies between the accounting and kafka pods, and ensuring the Kafka service DNS resolves correctly.
+tags:
+  - crashloopbackoff
+  - kafka
+  - dependency
+  - demo
+type: log_analysis

@@ -1,0 +1,9 @@
+user_prompt: What is the LogQL query to get a count of webserver logs grouped by status_code
+  over the last 10 minutes?
+expected_output:
+- sum by (status_code) (count_over_time({app="webserver"} | json | unwrap status_code
+  [10m]))
+- sum by (status) (rate({job="nginx"} | logfmt [5m]))
+tags:
+- command
+- datadog

@@ -1,0 +1,6 @@
+user_prompt: Scale the nudgebee-backend deployment to 3 replicas.
+expected_output:
+- kubectl scale deployment <deployment-name> --replicas=3
+tags:
+- command
+- kubernetes

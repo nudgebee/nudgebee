@@ -1,0 +1,6 @@
+user_prompt: Delete a CloudWatch Events rule.
+expected_output:
+- aws events delete-rule --name <rule-name>
+tags:
+- command
+- aws

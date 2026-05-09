@@ -1,0 +1,6 @@
+user_prompt: Create an ECR repository.
+expected_output:
+- aws ecr create-repository --repository-name <repository-name>
+tags:
+- command
+- aws

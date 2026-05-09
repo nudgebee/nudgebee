@@ -1,0 +1,7 @@
+user_prompt: Find workloads that have both 'Security' and 'RightSizing' recommendations.
+expected_output:
+- SELECT name, namespace FROM recommendation_view WHERE category IN ('Security', 'RightSizing')
+  GROUP BY name, namespace HAVING COUNT(DISTINCT category) = 2;
+tags:
+- command
+- recommendations

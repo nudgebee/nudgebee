@@ -1,0 +1,4 @@
+table:
+  name: compliance_check_status_type
+  schema: public
+is_enum: true

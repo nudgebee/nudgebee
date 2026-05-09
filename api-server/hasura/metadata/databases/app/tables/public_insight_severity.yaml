@@ -1,0 +1,4 @@
+table:
+  name: insight_severity
+  schema: public
+is_enum: true

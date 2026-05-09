@@ -1,0 +1,19 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- BEGIN;
+--
+-- -- 1. Delete signoz entries where a loki entry already exists for the same account
+-- DELETE FROM cloud_account_attrs
+-- WHERE name = 'signoz_labels_values'
+-- AND cloud_account_id IN (
+--     SELECT cloud_account_id
+--     FROM cloud_account_attrs
+--     WHERE name = 'loki_labels_values'
+-- );
+--
+-- -- 2. Rename all remaining old labels to the new log_labels
+-- UPDATE cloud_account_attrs
+-- SET name = 'log_labels'
+-- WHERE name IN ('loki_labels_values', 'signoz_labels_values');
+--
+-- COMMIT;

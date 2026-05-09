@@ -1,0 +1,6 @@
+user_prompt: List ECS tasks in a cluster.
+expected_output:
+- aws ecs list-tasks --cluster <cluster-name>
+tags:
+- command
+- aws

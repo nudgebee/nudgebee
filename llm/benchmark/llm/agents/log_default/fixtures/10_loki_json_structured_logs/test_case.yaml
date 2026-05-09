@@ -1,0 +1,45 @@
+user_prompt: "In namespace log-default-10, find the ERROR-level logs from reporting-worker and identify the slowest operations based on duration_ms."
+description: |
+  Tests querying against structured JSON log fields. Promtail extracts 'level'
+  and 'service' as Loki labels, while duration_ms and trace_id are preserved
+  as JSON fields in the line. logs_default must (a) filter by level=ERROR as
+  a label, (b) surface duration_ms in the final summary from the log body,
+  and (c) name the warehouse-query-timeout error.
+expected_output: |
+  The response isolates ERROR-level logs from reporting-worker, names the
+  warehouse-query-timeout issue, and explicitly cites a duration_ms value
+  (e.g. 15000ms / 15s) as the slow operation. A specific trace_id (t-5, t-10,
+  …) should appear in the evidence.
+setup_timeout: 300
+before_test: |
+  set -e
+  kubectl create namespace log-default-10 || true
+  kubectl label namespace log-default-10 benchmark=true --overwrite || true
+  kubectl apply -f ../../../nubi/shared/loki.yaml -n log-default-10
+  kubectl apply -f promtail-config.yaml -n log-default-10
+  kubectl wait --for=condition=ready pod -l app=loki -n log-default-10 --timeout=120s
+  kubectl apply -f manifest.yaml -n log-default-10
+  kubectl wait --for=condition=ready pod -l app=reporting-worker -n log-default-10 --timeout=120s
+  sleep 30  # let JSON logs accumulate so at least one ERROR is ingested
+
+  pkill -f "kubectl port-forward.*svc/loki" 2>/dev/null || true
+  sleep 1
+  nohup kubectl port-forward -n log-default-10 svc/loki 3100:3100 \
+    >/tmp/pf-log-default-10.log 2>&1 &
+  echo $! > /tmp/pf-log-default-10.pid
+  for i in {1..30}; do
+    if curl -s http://localhost:3100/ready | grep -q ready; then break; fi
+    sleep 1
+  done
+after_test: |
+  if [ -f /tmp/pf-log-default-10.pid ]; then
+    kill $(cat /tmp/pf-log-default-10.pid) 2>/dev/null || true
+    rm -f /tmp/pf-log-default-10.pid
+  fi
+  pkill -f "kubectl port-forward.*log-default-10" 2>/dev/null || true
+  kubectl delete namespace log-default-10 --wait=false || true
+tags:
+  - hard
+  - loki
+  - json-logs
+  - provider-path

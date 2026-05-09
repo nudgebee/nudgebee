@@ -1,0 +1,10 @@
+user_prompt: Check what processes are running on a Windows VM named 'win-server-01'
+  in resource group 'prod-rg'
+expected_output:
+- az vm run-command invoke --command-id RunPowerShellScript --name win-server-01 --resource-group
+  prod-rg --scripts "Get-Process"
+type: command
+tags:
+- command
+- azure
+- windows

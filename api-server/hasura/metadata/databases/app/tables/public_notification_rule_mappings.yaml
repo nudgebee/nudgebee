@@ -1,0 +1,3 @@
+table:
+  name: notification_rule_mappings
+  schema: public

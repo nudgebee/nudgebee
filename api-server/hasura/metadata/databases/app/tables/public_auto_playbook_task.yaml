@@ -1,0 +1,27 @@
+table:
+  name: auto_playbook_task
+  schema: public
+object_relationships:
+- name: auto_playbook
+  using:
+    foreign_key_constraint_on: auto_playbook_id
+- name: auto_playbook_execution
+  using:
+    foreign_key_constraint_on: execution_id
+- name: auto_playbook_task_status
+  using:
+    foreign_key_constraint_on: status
+- name: cloud_account
+  using:
+    foreign_key_constraint_on: account_id
+- name: tenant
+  using:
+    foreign_key_constraint_on: tenant_id
+array_relationships:
+- name: runbook_task_outputs
+  using:
+    foreign_key_constraint_on:
+      column: task_id
+      table:
+        name: runbook_task_output
+        schema: public

@@ -1,0 +1,3 @@
+table:
+  name: upgrade_plan_tasks
+  schema: public

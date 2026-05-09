@@ -1,0 +1,6 @@
+user_prompt: Download an object from S3.
+expected_output:
+- aws s3 cp s3://bucket/object localfile
+tags:
+- command
+- aws

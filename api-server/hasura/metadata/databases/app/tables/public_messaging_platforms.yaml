@@ -1,0 +1,3 @@
+table:
+  name: messaging_platforms
+  schema: public

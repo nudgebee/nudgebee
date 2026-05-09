@@ -1,0 +1,10 @@
+user_prompt: Show me EBS volume read operations
+expected_output:
+  - "avg:aws.ebs.volume_read_ops{*} by {host}"
+  - "sum:aws.ebs.volume_read_ops{*} by {host}"
+  - "avg:aws.ebs.volume_read_ops{*}"
+tags:
+  - command
+  - aws
+  - ebs
+  - disk

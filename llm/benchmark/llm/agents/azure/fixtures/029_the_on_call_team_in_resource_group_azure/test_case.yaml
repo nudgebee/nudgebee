@@ -1,0 +1,15 @@
+user_prompt: The on-call team in resource group 'azure-agent-test-E09' never receives
+  alerts for the commerce API even during production incidents with high error rates.
+  The alert rule 'e09-http-error-alert' exists. Why does it never fire?
+expected_output:
+- 'The metric alert ''e09-http-error-alert'' has its Http5xx threshold set to 9999,
+  meaning it only fires if the app generates more than 9999 server errors in a 5-minute
+  window - an unrealistically high value that is never reached. Fix: Lower the threshold
+  to a reasonable value like 10.'
+agent: azure_debug
+scenario: E09
+type: rca
+tags:
+- rca
+- easy
+- azure

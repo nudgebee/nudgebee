@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to rank aggregation keys by frequency in the last
+  7 days?
+expected_output:
+- SELECT aggregation_key, COUNT(*) AS freq FROM events WHERE starts_at >= NOW() -
+  INTERVAL '7 days' GROUP BY aggregation_key ORDER BY freq DESC;
+tags:
+- command
+- events

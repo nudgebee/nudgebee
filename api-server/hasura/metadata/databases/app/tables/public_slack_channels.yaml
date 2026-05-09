@@ -1,0 +1,13 @@
+table:
+  name: slack_channels
+  schema: public
+object_relationships:
+- name: slack_installation
+  using:
+    foreign_key_constraint_on: installation_id
+- name: tenant
+  using:
+    foreign_key_constraint_on: tenant_id
+- name: user
+  using:
+    foreign_key_constraint_on: created_by

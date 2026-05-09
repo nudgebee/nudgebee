@@ -1,0 +1,8 @@
+user_prompt: Write a LogQL query to Extract user_id from JSON logs for frontend and
+  count events per user over 5 minutes.
+expected_output:
+- sum by (user_id) (count_over_time({app="frontend"} | json [5m]))
+- topk(10, sum by (user) (rate({job="api"} | logfmt [10m])))
+tags:
+- command
+- datadog

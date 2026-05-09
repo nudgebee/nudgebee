@@ -1,0 +1,6 @@
+user_prompt: Boost DynamoDB capacity.
+expected_output:
+- aws dynamodb update-table --table-name <table-name> --provisioned-throughput ...
+tags:
+- command
+- aws

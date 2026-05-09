@@ -1,0 +1,4 @@
+table:
+  name: event_rule_alert_type
+  schema: public
+is_enum: true

@@ -1,0 +1,21 @@
+{
+  "target": {
+    "path": "deployment/llm-server",
+    "namespace": "nudgebee"
+  },
+  "feature": {
+    "network": {
+      "incoming": {
+        "mode": "steal",
+        "http_filter": {
+          "path_filter": "/v1/completions/workflow-generate|/v2/completions/workflow-generate",
+          "ports": [8000]
+        }
+      },
+      "outgoing": true,
+      "dns": true
+    },
+    "fs": "read",
+    "env": true
+  }
+}

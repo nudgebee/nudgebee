@@ -1,0 +1,6 @@
+user_prompt: Get EC2 instance status.
+expected_output:
+- aws ec2 describe-instances
+tags:
+- command
+- aws

@@ -1,0 +1,3 @@
+table:
+  name: spends_amount_sum_daily_aggregate
+  schema: public

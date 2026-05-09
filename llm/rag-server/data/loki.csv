@@ -1,0 +1,12 @@
+question,answer
+"Search for generic errors, failures, and timeouts in job nudgebee/rag-server logs","{job=""nudgebee/rag-server"""}  |~ ""(error|failed|timeout)"""
+"Logs from pod loki-0",{ pod=""loki-0""}
+"Logs from a specific container in a pod","{ pod=""my-pod"", container=""my-container""}"
+"Get me logs from container xyz", "{container=""xyz""}"
+"Logs from all pods in a namespace xyz","{namespace=""xyz""}"
+"Logs from a node k3s-nudgebee-node ","{ node_name=""{node_name="k3s-nudgebee-node"}""}"
+"Logs containing a specific label","{ label_name=""my-label""}"
+"Logs for a Kubernetes job","{ job=""my-job""}"
+"Get logs for app cache-service excluding the debug level,"{app=""cache-service""} != {level=""debug""}"
+"Search for logs containing warnings, crashes, or exceptions in job payment-service logs", "{job=""payment-service""} |~ ""(warning|crash|exception)"""
+"Count occurrences of timeout errors in namespace nudgebee over the last 30 minutes", "count_over_time({namespace=""default""} |= ""timeout"" [30m])"

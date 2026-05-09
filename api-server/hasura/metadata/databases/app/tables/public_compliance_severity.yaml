@@ -1,0 +1,19 @@
+table:
+  name: compliance_severity
+  schema: public
+is_enum: true
+array_relationships:
+- name: compliance_check_findings
+  using:
+    foreign_key_constraint_on:
+      column: severity
+      table:
+        name: compliance_check_findings
+        schema: public
+- name: compliance_checks
+  using:
+    foreign_key_constraint_on:
+      column: severity
+      table:
+        name: compliance_check
+        schema: public

@@ -1,0 +1,7 @@
+table:
+  name: group_roles
+  schema: public
+object_relationships:
+- name: user_group
+  using:
+    foreign_key_constraint_on: group_id

@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS idx_workflow_templates_event_sources_gin;
+DROP INDEX IF EXISTS idx_workflow_templates_alert_names_gin;

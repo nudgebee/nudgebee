@@ -1,0 +1,24 @@
+
+                    __           __            
+   ____  __  ______/ /___ ____  / /_  ___  ___ 
+  / __ \/ / / / __  / __ `/ _ \/ __ \/ _ \/ _ \
+ / / / / /_/ / /_/ / /_/ /  __/ /_/ /  __/  __/
+/_/ /_/\__,_/\__,_/\__, /\___/_.___/\___/\___/ 
+                  /____/                       
+============================================================================
+
+Thank you for installing {{ .Chart.Name | title }} {{ .Chart.AppVersion }}
+
+Visit the web UI at: {{ .Values.nudgebee_secret.BASE_URL}}
+
+{{- if contains "localhost" .Values.nudgebee_secret.BASE_URL }}
+{{- $port := regexFind "[0-9]+$" .Values.nudgebee_secret.BASE_URL }}
+To access locally, run:
+kubectl port-forward svc/app -n {{ .Release.Namespace }} {{ $port }}:80
+{{- end }}
+
+{{- if .Values.nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED }}
+To retrieve the password from the secret, run the following command:
+kubectl get secret nudgebee -n {{ .Release.Namespace }} -o jsonpath='{.data.NEXTAUTH_DUMMY_CREDS_PASSWORD}' | base64 --decode
+{{- end }}
+============================================================================s

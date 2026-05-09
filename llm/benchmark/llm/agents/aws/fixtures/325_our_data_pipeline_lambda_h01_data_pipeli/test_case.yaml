@@ -1,0 +1,16 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is a typo in the Lambda function handler configuration. The handler is configured as ''index.handelr'' but
+  the actual Python function in the code is named ''handler''. Check aws lambda get-function-configuration --function-name
+  h01-data-pipeline and look at the Handler field — it will show ''index.handelr''. The Lambda runtime tries to import the
+  ''index'' module and look for attribute ''handelr'', which does not exist. The fix is to update the function configuration:
+  aws lambda update-function-configuration --function-name h01-data-pipeline --handler index.handler.'
+scenario: H01
+tags:
+- command
+- aws
+- hard
+type: rca
+user_prompt: Our data pipeline Lambda 'h01-data-pipeline' fails every invocation with a Runtime.HandlerNotFound error right
+  after a code deployment. The deployment looked successful. The code itself is correct — we can see the handler function
+  in the ZIP. What's wrong?

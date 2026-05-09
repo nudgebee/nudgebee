@@ -1,0 +1,18 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is a Network ACL (NACL) rule blocking all inbound traffic to the subnet. The subnet ''e15-web-subnet'' has
+  a custom NACL ''e15-web-nacl'' with an explicit DENY ALL rule at rule number 50. NACLs are evaluated in order of rule number
+  (lowest first) and are stateless. The DENY ALL at rule 50 blocks all inbound traffic before any higher-numbered ALLOW rules
+  are checked. NACLs are evaluated BEFORE security groups — even though the security group allows ports 80 and 22, traffic
+  never reaches the SG evaluation because the NACL denies it first. Check: aws ec2 describe-network-acls and look for the
+  subnet''s NACL entries. The fix is to either remove the DENY ALL rule or change its rule number to be higher than the ALLOW
+  rules.'
+scenario: E15
+tags:
+- command
+- aws
+- easy
+type: rca
+user_prompt: Our EC2 instance 'e15-web-server-01' in us-east-1 was working yesterday but now can't be reached at all — not
+  HTTP, not SSH, nothing. The security group 'e15-web-server-sg' shows rules allowing port 80 and port 22 from 0.0.0.0/0.
+  The instance is running. Nothing was changed on the instance itself. Can you investigate?

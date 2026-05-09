@@ -1,0 +1,6 @@
+user_prompt: Create a Systems Manager Parameter Store parameter.
+expected_output:
+- aws ssm put-parameter --name <parameter-name> --value <parameter-value> --type <parameter-type>
+tags:
+- command
+- aws

@@ -1,0 +1,7 @@
+user_prompt: Start a Step Functions execution.
+expected_output:
+- aws stepfunctions start-execution --state-machine-arn <state-machine-arn> --input
+  <input>
+tags:
+- command
+- aws

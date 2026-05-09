@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to find events where the 'evidences' JSON contains
+  a key named 'errorMessage'?
+expected_output:
+- SELECT id, title, evidences FROM events WHERE evidences->>'errorMessage' IS NOT
+  NULL;
+tags:
+- command
+- events

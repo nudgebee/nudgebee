@@ -1,0 +1,4 @@
+table:
+  name: compliance_rule_execution_status_type
+  schema: public
+is_enum: true

@@ -1,0 +1,3 @@
+table:
+  name: event_classification
+  schema: public

@@ -1,0 +1,27 @@
+user_prompt: Existing users can log in fine to our app, but new user signups return
+  HTTP 500 errors intermittently. The error rate correlates with traffic spikes.
+  Cognito user pool 'h19-app-users' and the pre-signup trigger Lambda
+  'h19-signup-validator' both seem healthy. API Gateway 'h19-auth-api' returns 500
+  not 429. Individual test signups work but burst signups fail. What's causing this?
+expected_output:
+- The root cause is that the Cognito pre-signup trigger Lambda 'h19-signup-validator'
+  has ReservedConcurrentExecutions set to 1, which severely limits its throughput.
+  During signup traffic bursts, only one Lambda instance can run at a time. Additional
+  concurrent signup requests cause the Lambda to be throttled (TooManyRequestsException).
+  When Cognito invokes the pre-signup trigger and it's throttled, Cognito treats the
+  trigger failure as a signup error and returns an error response to the caller. The
+  API Gateway integration maps this Cognito error to HTTP 500 (Internal Server Error)
+  instead of 429 (Too Many Requests), which hides the true throttling root cause.
+  Existing users can log in because authentication doesn't go through the pre-signup
+  trigger. The fix is to increase the Lambda's ReservedConcurrentExecutions to a value
+  that can handle peak signup traffic (e.g., 50-100), and also fix the API Gateway
+  integration response mapping to properly surface throttling errors as 429.
+tags:
+- rca
+- aws
+- cognito
+- lambda
+- throttling
+- api-gateway
+type: rca
+agent: aws_debug

@@ -1,0 +1,51 @@
+table:
+  name: cloud_resourses
+  schema: public
+object_relationships:
+- name: cloudProviderByCloudProvider
+  using:
+    foreign_key_constraint_on: cloud_provider
+- name: cloud_account
+  using:
+    foreign_key_constraint_on: account
+- name: cloud_resource_status_type
+  using:
+    foreign_key_constraint_on: status
+- name: tenantByTenant
+  using:
+    foreign_key_constraint_on: tenant
+- name: user
+  using:
+    foreign_key_constraint_on: created_by
+- name: userByUpdatedBy
+  using:
+    foreign_key_constraint_on: updated_by
+array_relationships:
+- name: cloud_resource_attributes
+  using:
+    foreign_key_constraint_on:
+      column: resource_id
+      table:
+        name: cloud_resource_attributes
+        schema: public
+- name: cloud_resource_metrics
+  using:
+    foreign_key_constraint_on:
+      column: cloud_resource_id
+      table:
+        name: cloud_resource_metrics
+        schema: public
+- name: recommendations
+  using:
+    foreign_key_constraint_on:
+      column: resource_id
+      table:
+        name: recommendation
+        schema: public
+- name: spends
+  using:
+    foreign_key_constraint_on:
+      column: cloud_resource_id
+      table:
+        name: spends
+        schema: public

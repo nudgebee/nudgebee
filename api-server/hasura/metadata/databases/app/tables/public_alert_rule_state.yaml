@@ -1,0 +1,4 @@
+table:
+  name: alert_rule_state
+  schema: public
+is_enum: true

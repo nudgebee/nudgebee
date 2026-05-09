@@ -1,0 +1,8 @@
+user_prompt: List resources called by 'batch-job' in 'default' namespace that resulted
+  in a 503 status code.
+expected_output:
+- SELECT DISTINCT resource FROM traces_view WHERE workload_name LIKE '%batch-job%'
+  AND workload_namespace = 'default' AND http_status_code = 503;
+tags:
+- command
+- trace

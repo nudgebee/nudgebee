@@ -1,0 +1,14 @@
+agent: azure_debug
+expected_output:
+- 'The Function App ''e02-report-generator'' has a system-assigned managed identity (principal ID: bc1ea30e-ef30-41b5-a27b-692b34131602)
+  but that identity has no role assignment on storage account ''e02datarim2qtxu''. Fix: Assign the ''Storage Blob Data Reader''
+  role (or higher) to the Function App''s managed identity on the data storage account.'
+scenario: E02
+tags:
+- rca
+- easy
+- azure
+type: rca
+user_prompt: Our report generation Function App 'e02-report-generator' in resource group 'azure-agent-test-E02' is failing
+  with 403 errors when trying to read blobs from storage account 'e02datarim2qtxu'. The function app is running and the storage
+  account exists. What is wrong?

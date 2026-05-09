@@ -1,0 +1,6 @@
+user_prompt: Generate the YAML for an nginx deployment without actually creating it.
+expected_output:
+- kubectl create deployment nginx --image=nginx --dry-run=client -o yaml
+tags:
+- command
+- kubernetes

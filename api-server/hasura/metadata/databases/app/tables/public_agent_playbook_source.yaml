@@ -1,0 +1,4 @@
+table:
+  name: agent_playbook_source
+  schema: public
+is_enum: true

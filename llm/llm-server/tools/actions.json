@@ -1,0 +1,42 @@
+{
+  "toolsets": [
+    {
+      "name": "pod_oom_killer_enricher",
+      "actions": [
+        {
+          "name": "events",
+          "description": "Events",
+          "actions": [
+            {
+              "name": "metrices",
+              "description": "Metrices"
+            },
+            {
+              "name": "traces",
+              "description": "Traces"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ApplicationInvestigate",
+      "actions": [
+        {
+          "name": "events",
+          "description": "Events",
+          "actions": [
+            {
+              "name": "metrices",
+              "description": "Metrices"
+            },
+            {
+              "name": "traces",
+              "description": "Traces"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

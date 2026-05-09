@@ -1,0 +1,25 @@
+name: "Test Approval Workflow"
+definition:
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "step-1"
+      type: "core.print"
+      params:
+        message: "This is step 1"
+
+    - id: "wait-for-approval"
+      type: "core.approval"
+      params:
+        message: "Please approve to continue to step 2."
+        approval_options: ["approved", "rejected"]
+      depends_on:
+        - "step-1"
+
+    - id: "step-2"
+      type: "core.print"
+      params:
+        message: "This is step 2, approval received."
+      depends_on:
+        - "wait-for-approval"
+      if: "{{ Tasks['wait-for-approval'].output.status == 'approved' }}"

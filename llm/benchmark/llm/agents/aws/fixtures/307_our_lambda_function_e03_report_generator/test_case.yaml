@@ -1,0 +1,14 @@
+agent: aws_debug
+expected_output:
+- The root cause is that the Lambda execution role 'e03-report-generator-role' is missing the s3:PutObject permission. The
+  inline policy 's3-access' on the role only grants s3:GetObject and s3:ListBucket for the target bucket. The Lambda function
+  code calls s3.put_object() to write a report, which requires s3:PutObject permission. The fix is to add s3:PutObject to
+  the inline policy for the bucket's ARN.
+scenario: E03
+tags:
+- command
+- aws
+- easy
+type: rca
+user_prompt: Our Lambda function 'e03-report-generator' in us-east-1 is failing with AccessDenied when trying to write reports
+  to S3. It was working in dev but started failing in production. Can you investigate what's wrong?

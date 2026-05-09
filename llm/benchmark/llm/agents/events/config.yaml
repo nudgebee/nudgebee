@@ -1,0 +1,4 @@
+# Events agent benchmark configuration
+agent: events
+tool_names:
+  - events_execute

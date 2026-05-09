@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to join events with an accounts table and show
+  the account name for events in account acc-xyz?
+expected_output:
+- SELECT e.id, e.title, a.account_name FROM events e JOIN accounts a ON e.cloud_account_id
+  = a.id WHERE e.cloud_account_id = 'acc-xyz';
+tags:
+- command
+- events

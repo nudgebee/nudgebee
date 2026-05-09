@@ -1,0 +1,151 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H02: Intermittent 5xx errors — one of two AZs has no NAT route.
+  User complaint: "About 50% of our requests fail with connection errors. The errors
+  are random and don't follow a pattern. Sometimes it works, sometimes it doesn't."
+  Root cause: Two private subnets (AZ-a and AZ-b), each with separate route table.
+  AZ-a has a NAT route (0.0.0.0/0 → NAT GW). AZ-b route table is missing the NAT route.
+  Lambda in VPC randomly lands in either AZ. Half the time it can reach the internet,
+  half the time it cannot — causing intermittent failures.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = AZ-b private subnet route table missing 0.0.0.0/0 NAT route.
+      Fixed = Both private subnets have NAT route.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  # AZ-a: Uses shared PrivateSubnetA (already has NAT route from bootstrap)
+  # AZ-b: Scenario-specific subnet with its own route table (bug lives here)
+
+  # Scenario-specific private subnet for AZ-b
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      CidrBlock: 10.0.212.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: h02-checkout-private-1b
+
+  # Private route table for AZ-b — THE BUG: NAT route MISSING in Broken mode
+  PrivateRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      Tags:
+        - Key: Name
+          Value: h02-checkout-private-rt-1b
+
+  # Only exists in Fixed mode
+  PrivateRouteBFixed:
+    Type: AWS::EC2::Route
+    Condition: IsFixed
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !ImportValue aws-agent-test-nat-gateway-id
+
+  PrivateSubnetBAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTableB
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for checkout Lambda
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      Tags:
+        - Key: Name
+          Value: h02-checkout-lambda-sg
+
+  CheckoutServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h02-checkout-service-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+  CheckoutServiceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h02-checkout-service
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CheckoutServiceRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      VpcConfig:
+        SubnetIds:
+          # AZ-a: shared private subnet (has NAT route — always works)
+          - !ImportValue aws-agent-test-private-subnet-a
+          # AZ-b: scenario-specific subnet (missing NAT route in Broken mode)
+          - !Ref PrivateSubnetB
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+      Code:
+        ZipFile: |
+          import json
+          import urllib.request
+
+          def handler(event, context):
+              """Call external payment processor API."""
+              try:
+                  # Simulate calling external payment API
+                  req = urllib.request.Request(
+                      'https://httpbin.org/post',
+                      data=json.dumps({'amount': 99.99}).encode(),
+                      headers={'Content-Type': 'application/json'},
+                      method='POST'
+                  )
+                  with urllib.request.urlopen(req, timeout=5) as resp:
+                      result = json.loads(resp.read())
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({'payment': 'processed', 'txn': result.get('json', {})})
+                  }
+              except Exception as e:
+                  return {
+                      'statusCode': 502,
+                      'body': json.dumps({'error': str(e), 'type': type(e).__name__})
+                  }
+      Tags:
+        - Key: Name
+          Value: h02-checkout-service
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: checkout
+
+Outputs:
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref CheckoutServiceFunction
+  PrivateSubnetA:
+    Description: Private Subnet AZ-a (shared, has NAT route)
+    Value: !ImportValue aws-agent-test-private-subnet-a
+  PrivateSubnetB:
+    Description: Private Subnet AZ-b (missing NAT route in Broken mode)
+    Value: !Ref PrivateSubnetB
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

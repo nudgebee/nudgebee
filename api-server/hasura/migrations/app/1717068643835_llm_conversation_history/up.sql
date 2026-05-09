@@ -1,0 +1,39 @@
+CREATE TABLE IF NOT EXISTS llm_conversation_history (
+            id uuid DEFAULT gen_random_uuid() NOT NULL PRIMARY KEY,
+            user_id uuid NOT NULL,
+            account_id uuid NOT NULL,
+            session_id TEXT,
+            chain_name TEXT,
+            role TEXT,
+            message TEXT,
+            recorded_at timestamp DEFAULT now() NOT NULL,
+            UNIQUE(id, user_id, account_id, session_id)
+        );
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 
+        FROM information_schema.table_constraints 
+        WHERE constraint_type = 'FOREIGN KEY' 
+        AND table_name = 'llm_conversation_history' 
+        AND constraint_name = 'llm_conversation_history_users_fk'
+    ) THEN
+        ALTER TABLE public.llm_conversation_history
+        ADD CONSTRAINT llm_conversation_history_users_fk
+        FOREIGN KEY (user_id)
+        REFERENCES public.users(id);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 
+        FROM information_schema.table_constraints 
+        WHERE constraint_type = 'FOREIGN KEY' 
+        AND table_name = 'llm_conversation_history' 
+        AND constraint_name = 'llm_conversation_history_cloud_accounts_fk'
+    ) THEN
+        ALTER TABLE public.llm_conversation_history
+        ADD CONSTRAINT llm_conversation_history_cloud_accounts_fk
+        FOREIGN KEY (account_id)
+        REFERENCES public.cloud_accounts(id);
+    END IF;
+END $$;

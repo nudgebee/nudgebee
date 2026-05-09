@@ -1,0 +1,23 @@
+# FinOps agent benchmark configuration
+#
+# The FinOps agent is a ReAct supervisor (auto-upgrades to ReAct3) that
+# orchestrates cloud cost analysis. Its final answer is synthesized prose,
+# not a tool output, so tool_names is empty (we score the response text via
+# RAGAS, not a single tool's payload).
+#
+# extra_tool_confirmations: the agent calls delegate_agent which can spawn
+# aws / gcp / azure sub-agents and their tools. Auto-approve so benchmarks
+# don't stall on confirmation prompts.
+agent: finops
+tool_names: []
+max_retries: 2
+extra_tool_confirmations:
+  delegate_agent: "yes"
+  recommendations: "yes"
+  aws: "yes"
+  aws_observability: "yes"
+  gcp: "yes"
+  azure: "yes"
+  spend_summary: "yes"
+  anomaly_execute: "yes"
+  cloud_resource_search_execute: "yes"

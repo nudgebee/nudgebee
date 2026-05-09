@@ -1,0 +1,111 @@
+{
+  "scenarios": [
+    {
+      "name": "memory_spike_10x",
+      "description": "Large memory spike (10x baseline)",
+      "metric_type": "memory",
+      "baseline": 300000000,
+      "spike_magnitude": 10.0,
+      "spike_duration_minutes": 5,
+      "noise_level": 0.05,
+      "expected_detection": true
+    },
+    {
+      "name": "memory_spike_5x",
+      "description": "Medium memory spike (5x baseline)",
+      "metric_type": "memory",
+      "baseline": 300000000,
+      "spike_magnitude": 5.0,
+      "spike_duration_minutes": 5,
+      "noise_level": 0.05,
+      "expected_detection": true
+    },
+    {
+      "name": "memory_spike_3x",
+      "description": "Small memory spike (3x baseline)",
+      "metric_type": "memory",
+      "baseline": 300000000,
+      "spike_magnitude": 3.0,
+      "spike_duration_minutes": 5,
+      "noise_level": 0.05,
+      "expected_detection": true
+    },
+    {
+      "name": "memory_spike_2x",
+      "description": "Subtle memory spike (2x baseline)",
+      "metric_type": "memory",
+      "baseline": 300000000,
+      "spike_magnitude": 2.0,
+      "spike_duration_minutes": 5,
+      "noise_level": 0.05,
+      "expected_detection": false
+    },
+    {
+      "name": "cpu_spike_high",
+      "description": "High CPU spike",
+      "metric_type": "cpu",
+      "baseline": 0.3,
+      "spike_magnitude": 3.0,
+      "spike_duration_minutes": 5,
+      "noise_level": 0.10,
+      "expected_detection": true
+    },
+    {
+      "name": "noise_only_low",
+      "description": "Low noise without anomalies",
+      "metric_type": "memory",
+      "baseline": 300000000,
+      "spike_magnitude": 1.0,
+      "spike_duration_minutes": 0,
+      "noise_level": 0.05,
+      "expected_detection": false
+    },
+    {
+      "name": "noise_only_medium",
+      "description": "Medium noise without anomalies",
+      "metric_type": "memory",
+      "baseline": 300000000,
+      "spike_magnitude": 1.0,
+      "spike_duration_minutes": 0,
+      "noise_level": 0.10,
+      "expected_detection": false
+    },
+    {
+      "name": "noise_only_high",
+      "description": "High noise without anomalies",
+      "metric_type": "memory",
+      "baseline": 300000000,
+      "spike_magnitude": 1.0,
+      "spike_duration_minutes": 0,
+      "noise_level": 0.20,
+      "expected_detection": false
+    },
+    {
+      "name": "gradual_spike",
+      "description": "Gradual ramp-up spike",
+      "metric_type": "memory",
+      "baseline": 300000000,
+      "spike_magnitude": 5.0,
+      "ramp_up_duration": 10,
+      "plateau_duration": 5,
+      "noise_level": 0.05,
+      "expected_detection": true
+    },
+    {
+      "name": "multiple_spikes",
+      "description": "Multiple spikes in evaluation period",
+      "metric_type": "memory",
+      "baseline": 300000000,
+      "spike_magnitude": 5.0,
+      "num_spikes": 3,
+      "noise_level": 0.05,
+      "expected_detection": true
+    }
+  ],
+  "algorithms": ["DB_SCAN", "ISOLATION_TREE", "ZSCORE"],
+  "default_config": {
+    "n_points": 1000,
+    "training_ratio": 0.9,
+    "evaluation_period_minutes": 60
+  }
+}

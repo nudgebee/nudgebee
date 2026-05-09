@@ -1,0 +1,17 @@
+table:
+  name: feature_flag
+  schema: public
+object_relationships:
+- name: tenant
+  using:
+    foreign_key_constraint_on: tenant_id
+array_relationships:
+- name: cloud_account
+  using:
+    manual_configuration:
+      column_mapping:
+        account_id: id
+      insertion_order:
+      remote_table:
+        name: cloud_accounts
+        schema: public

@@ -1,0 +1,7 @@
+table:
+  name: cloud_account_attrs
+  schema: public
+object_relationships:
+- name: cloud_account
+  using:
+    foreign_key_constraint_on: cloud_account_id

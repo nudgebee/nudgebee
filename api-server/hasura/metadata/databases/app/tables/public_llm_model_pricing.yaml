@@ -1,0 +1,3 @@
+table:
+  name: llm_model_pricing
+  schema: public

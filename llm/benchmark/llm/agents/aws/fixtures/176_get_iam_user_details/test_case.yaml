@@ -1,0 +1,6 @@
+user_prompt: Get IAM user details.
+expected_output:
+- aws iam get-user
+tags:
+- command
+- aws

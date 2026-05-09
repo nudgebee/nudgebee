@@ -1,0 +1,19 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is that the Lambda execution role ''h10-transaction-processor-role'' is missing the AWSLambdaBasicExecutionRole
+  managed policy (or equivalent CloudWatch Logs permissions). Without logs:CreateLogGroup, logs:CreateLogStream, and logs:PutLogEvents,
+  Lambda cannot write to CloudWatch Logs. The function still executes and returns results, but log data is silently dropped.
+  Check: (1) aws iam list-attached-role-policies --role-name h10-transaction-processor-role to see AWSLambdaBasicExecutionRole
+  is absent, (2) aws logs describe-log-groups --log-group-name-prefix /aws/lambda/h10 to confirm no log group exists. The
+  fix is to attach AWSLambdaBasicExecutionRole to the Lambda execution role: aws iam attach-role-policy --role-name h10-transaction-processor-role
+  --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole.'
+scenario: H10
+tags:
+- command
+- aws
+- hard
+type: rca
+user_prompt: Our transaction processor Lambda 'h10-transaction-processor' in us-east-1 runs successfully (returns 200 OK with
+  correct results) but we never see any logs in CloudWatch Logs. The function was recently deployed. The CloudWatch log group
+  /aws/lambda/h10-transaction-processor doesn't even exist. We added logging statements throughout the code but still nothing.
+  What's wrong?

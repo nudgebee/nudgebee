@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to list LOW priority configuration changes?
+expected_output:
+- SELECT id, title, starts_at, subject_type, subject_name   FROM events   WHERE priority
+  = 'LOW' AND finding_type = 'configuration_change';
+- SELECT * FROM events   WHERE priority = 'LOW' AND finding_type = 'configuration_change';
+tags:
+- command
+- events

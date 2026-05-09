@@ -1,0 +1,7 @@
+user_prompt: Create a Cognito identity pool.
+expected_output:
+- aws cognito-identity create-identity-pool --identity-pool-name <identity-pool-name>
+  --allow-unauthenticated-identities
+tags:
+- command
+- aws

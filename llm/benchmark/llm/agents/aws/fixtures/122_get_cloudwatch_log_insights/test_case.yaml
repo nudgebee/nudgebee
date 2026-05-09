@@ -1,0 +1,6 @@
+user_prompt: Get CloudWatch log insights.
+expected_output:
+- aws logs start-query
+tags:
+- command
+- aws

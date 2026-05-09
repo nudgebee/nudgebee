@@ -1,0 +1,6 @@
+user_prompt: List all SNS topics.
+expected_output:
+- aws sns list-topics
+tags:
+- command
+- aws

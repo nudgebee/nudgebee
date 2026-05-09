@@ -1,0 +1,4 @@
+table:
+  name: schedule_unit_type
+  schema: public
+is_enum: true

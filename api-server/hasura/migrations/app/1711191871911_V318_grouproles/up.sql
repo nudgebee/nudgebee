@@ -1,0 +1,3 @@
+
+CREATE TABLE "public"."group_roles" ("id" uuid NOT NULL DEFAULT gen_random_uuid(), "group_id" uuid NOT NULL, "role" citext NOT NULL, "created_at" timestamp NOT NULL DEFAULT now(), "updated_at" timestamp NOT NULL DEFAULT now(), "created_by" uuid NOT NULL, PRIMARY KEY ("id") , FOREIGN KEY ("role") REFERENCES "public"."roles"("value") ON UPDATE restrict ON DELETE restrict, FOREIGN KEY ("group_id") REFERENCES "public"."user_groups"("id") ON UPDATE restrict ON DELETE restrict, FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON UPDATE restrict ON DELETE restrict, UNIQUE ("group_id", "role"));
+CREATE EXTENSION IF NOT EXISTS pgcrypto;

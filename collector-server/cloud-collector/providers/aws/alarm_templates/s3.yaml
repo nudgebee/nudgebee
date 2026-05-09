@@ -1,0 +1,27 @@
+# S3 CloudWatch Alarm Recommendations
+# Converted from IDR CLI alarm templates
+service_name: "s3"
+
+templates:
+  - name: "aws_s3_total_request_latency_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "CONDITIONAL"
+    category: "Configuration"
+    severity: "Medium"
+    description: "Measures the total time taken to process requests to an S3 bucket"
+    configuration:
+      namespace: "AWS/S3"
+      metric_name: "TotalRequestLatency"
+      statistic: "Average"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 1000.0  # 1000ms = 1 second
+    conditions:
+      # Only recommend for buckets with request metrics enabled
+      # S3 doesn't publish request metrics unless explicitly configured
+      - field: "Meta.BucketMetricsConfiguration"
+        operator: "exists"

@@ -1,0 +1,6 @@
+user_prompt: Delete an RDS instance.
+expected_output:
+- aws rds delete-db-instance
+tags:
+- command
+- aws

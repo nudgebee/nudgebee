@@ -1,0 +1,15 @@
+CREATE INDEX IF NOT EXISTS idx_k8s_pods_active_filter 
+ON k8s_pods(cloud_account_id, tenant_id, is_active) 
+WHERE is_active IS NOT FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_recommendation_security_scan_full
+ON recommendation(category, rule_name, status, severity, account_object_id)
+WHERE category = 'Security' AND rule_name = 'image_scan' 
+  AND status = 'Open' AND severity IN ('Critical', 'High')
+  AND account_object_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_k8s_pods_meta_containers_gin 
+ON k8s_pods USING GIN ((meta->'config'->'containers'));
+
+CREATE INDEX IF NOT EXISTS idx_recommendation_jsonb_image 
+ON recommendation USING GIN (recommendation);

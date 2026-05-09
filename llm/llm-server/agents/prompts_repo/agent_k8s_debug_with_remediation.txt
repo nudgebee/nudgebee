@@ -1,0 +1,4 @@
+DEPRECATED: This file has been merged into agent_k8s_debug.txt.
+Remediation-specific sections are now rendered conditionally via template
+conditional blocks controlled by the remediation_enabled flag.
+See agent_k8s_debug_2.go GetSystemPrompt() for the template rendering logic.

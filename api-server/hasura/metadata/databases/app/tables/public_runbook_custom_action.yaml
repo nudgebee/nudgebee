@@ -1,0 +1,3 @@
+table:
+  name: runbook_custom_action
+  schema: public

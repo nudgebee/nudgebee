@@ -1,0 +1,9 @@
+user_prompt: Check running services on Windows VM 'win-db-01' in resource group 'db-rg'
+expected_output:
+- az vm run-command invoke --command-id RunPowerShellScript --name win-db-01 --resource-group
+  db-rg --scripts "Get-Service | Where-Object {$_.Status -eq 'Running'}"
+type: command
+tags:
+- command
+- azure
+- windows
