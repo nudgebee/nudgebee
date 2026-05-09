@@ -1,0 +1,10 @@
+user_prompt: What is the SQL query to show all configuration changes that occurred
+  within 1 hour before a 'ServiceDown' event for the same subject name?
+expected_output:
+- SELECT c.id as change_id, c.title, c.starts_at, i.id as issue_id, i.starts_at as
+  issue_starts_at FROM events c JOIN events i ON c.subject_name = i.subject_name WHERE
+  c.finding_type = 'configuration_change' AND i.aggregation_key = 'ServiceDown' AND
+  i.starts_at BETWEEN c.starts_at AND c.starts_at + INTERVAL '1 hour';
+tags:
+- command
+- events

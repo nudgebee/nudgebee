@@ -1,0 +1,178 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- DO $$
+-- BEGIN
+--     IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'llm_conversation_status') THEN
+--         CREATE TYPE llm_conversation_status AS ENUM ('IN_PROGRESS', 'COMPLETED');
+--     END IF;
+-- END $$;
+--
+-- -- public.llm_conversations definition
+--
+-- -- Drop table
+--
+-- -- DROP TABLE public.llm_conversations;
+--
+-- CREATE TABLE IF NOT EXISTS public.llm_conversations (
+-- 	id uuid DEFAULT gen_random_uuid() NOT NULL,
+-- 	user_id uuid NOT NULL,
+-- 	account_id uuid NOT NULL,
+-- 	session_id text NULL,
+-- 	context text NULL,
+-- 	recorded_at timestamp DEFAULT now() NOT NULL,
+-- 	status public."llm_conversation_status" NULL,
+-- 	CONSTRAINT llm_conversations_pk PRIMARY KEY (id),
+-- 	CONSTRAINT llm_conversations_unique UNIQUE (user_id, account_id, session_id)
+-- );
+--
+--
+-- -- public.llm_conversation_messages definition
+--
+-- -- Drop table
+--
+-- -- DROP TABLE public.llm_conversation_messages;
+--
+-- CREATE TABLE IF NOT EXISTS public.llm_conversation_messages (
+-- 	id uuid DEFAULT gen_random_uuid() NOT NULL,
+-- 	conversation_id uuid NULL,
+-- 	message text NOT NULL,
+-- 	recorded_at timestamp DEFAULT now() NOT NULL,
+-- 	response text NULL,
+-- 	"role" text NULL,
+-- 	account_id uuid NULL,
+-- 	user_id uuid NULL,
+-- 	message_type text NULL,
+-- 	CONSTRAINT llm_messages_pk PRIMARY KEY (id)
+-- );
+--
+--
+-- -- public.llm_conversation_messages foreign keys
+--
+-- DO $$
+-- BEGIN
+--     IF NOT EXISTS (
+--         SELECT 1
+--         FROM information_schema.table_constraints
+--         WHERE constraint_name = 'llm_conversation_messages_llm_conversations_fk'
+--     ) THEN
+--         ALTER TABLE public.llm_conversation_messages
+--         ADD CONSTRAINT llm_conversation_messages_llm_conversations_fk
+--         FOREIGN KEY (conversation_id) REFERENCES public.llm_conversations(id);
+--     END IF;
+-- END $$;
+--
+--
+-- -- public.llm_conversation_agent definition
+--
+-- -- Drop table
+--
+-- -- DROP TABLE public.llm_conversation_agent;
+--
+-- CREATE TABLE IF NOT EXISTS public.llm_conversation_agent (
+-- 	id uuid DEFAULT gen_random_uuid() NOT NULL,
+-- 	agent_name text NULL,
+-- 	message_id uuid NULL,
+-- 	response text NULL,
+-- 	recorded_at timestamp DEFAULT now() NULL,
+-- 	account_id uuid NULL,
+-- 	user_id uuid NULL,
+-- 	parenat_agent_id uuid NULL,
+-- 	query text NULL,
+-- 	conversation_id uuid NULL,
+-- 	thought text NULL,
+-- 	CONSTRAINT llm_conversation_agent_pk PRIMARY KEY (id)
+-- );
+--
+--
+-- -- public.llm_conversation_agent foreign keys
+--
+-- DO $$
+-- BEGIN
+--     IF NOT EXISTS (
+--         SELECT 1
+--         FROM information_schema.table_constraints
+--         WHERE constraint_name = 'llm_conversation_agent_llm_conversation_messages_fk'
+--     ) THEN
+--         ALTER TABLE public.llm_conversation_agent
+--         ADD CONSTRAINT llm_conversation_agent_llm_conversation_messages_fk
+--         FOREIGN KEY (message_id) REFERENCES public.llm_conversation_messages(id);
+--     END IF;
+-- END $$;
+--
+-- DO $$
+-- BEGIN
+--     IF NOT EXISTS (
+--         SELECT 1
+--         FROM information_schema.table_constraints
+--         WHERE constraint_name = 'llm_conversation_agent_llm_conversations_fk'
+--     ) THEN
+--         ALTER TABLE public.llm_conversation_agent
+--         ADD CONSTRAINT llm_conversation_agent_llm_conversations_fk
+--         FOREIGN KEY (conversation_id) REFERENCES public.llm_conversations(id);
+--     END IF;
+-- END $$;
+--
+--
+-- -- public.llm_conversation_tool_calls definition
+--
+-- -- Drop table
+--
+-- -- DROP TABLE public.llm_conversation_tool_calls;
+--
+-- CREATE TABLE IF NOT EXISTS public.llm_conversation_tool_calls (
+-- 	id uuid DEFAULT gen_random_uuid() NOT NULL,
+-- 	tool_name varchar(100) NOT NULL,
+-- 	parameters text NOT NULL,
+-- 	response text NULL,
+-- 	recorded_at timestamp DEFAULT now() NOT NULL,
+-- 	tool_id varchar NULL,
+-- 	user_id varchar NULL,
+-- 	account_id varchar NULL,
+-- 	agent_id uuid NULL,
+-- 	message_id uuid NULL,
+-- 	conversation_id uuid NULL,
+-- 	CONSTRAINT llm_conversation_tool_calls_pk PRIMARY KEY (id),
+-- 	CONSTRAINT llm_conversation_tool_calls_unique UNIQUE (conversation_id, message_id, tool_id, tool_name, agent_id)
+-- );
+--
+--
+-- -- public.llm_conversation_tool_calls foreign keys
+--
+-- DO $$
+-- BEGIN
+--     IF NOT EXISTS (
+--         SELECT 1
+--         FROM information_schema.table_constraints
+--         WHERE constraint_name = 'llm_conversation_tool_calls_llm_conversation_agent_fk'
+--     ) THEN
+--         ALTER TABLE public.llm_conversation_tool_calls
+--         ADD CONSTRAINT llm_conversation_tool_calls_llm_conversation_agent_fk
+--         FOREIGN KEY (agent_id) REFERENCES public.llm_conversation_agent(id);
+--     END IF;
+-- END $$;
+--
+-- DO $$
+-- BEGIN
+--     IF NOT EXISTS (
+--         SELECT 1
+--         FROM information_schema.table_constraints
+--         WHERE constraint_name = 'llm_conversation_tool_calls_llm_conversation_messages_fk'
+--     ) THEN
+--         ALTER TABLE public.llm_conversation_tool_calls
+--         ADD CONSTRAINT llm_conversation_tool_calls_llm_conversation_messages_fk
+--         FOREIGN KEY (message_id) REFERENCES public.llm_conversation_messages(id);
+--     END IF;
+-- END $$;
+--
+-- DO $$
+-- BEGIN
+--     IF NOT EXISTS (
+--         SELECT 1
+--         FROM information_schema.table_constraints
+--         WHERE constraint_name = 'llm_conversation_tool_calls_llm_conversations_fk'
+--     ) THEN
+--         ALTER TABLE public.llm_conversation_tool_calls
+--         ADD CONSTRAINT llm_conversation_tool_calls_llm_conversations_fk
+--         FOREIGN KEY (conversation_id) REFERENCES public.llm_conversations(id);
+--     END IF;
+-- END $$;

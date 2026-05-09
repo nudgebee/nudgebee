@@ -1,0 +1,6 @@
+user_prompt: Delete an EKS cluster.
+expected_output:
+- aws eks delete-cluster --name <cluster-name>
+tags:
+- command
+- aws

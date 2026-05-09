@@ -1,0 +1,17 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is that Lambda ''m15-order-processor'' has ReservedConcurrentExecutions set to 1. This means only ONE instance
+  of the Lambda can run at a time. When messages arrive faster than the Lambda can process them (5 seconds each), a bottleneck
+  forms. Messages sit in the queue, the visibility timeout expires, they get re-delivered, and after maxReceiveCount (3) they
+  go to the DLQ. Check: aws lambda get-function-concurrency --function-name m15-order-processor to see ReservedConcurrentExecutions=1.
+  The fix is to either remove the reserved concurrency limit (allowing Lambda to scale automatically) or increase it to match
+  expected throughput: aws lambda delete-function-concurrency --function-name m15-order-processor.'
+scenario: M15
+tags:
+- command
+- aws
+- medium
+type: rca
+user_prompt: Messages in our DLQ 'm15-orders-dlq' in us-east-1 keep increasing. The main queue 'm15-orders-queue' has a growing
+  backlog. Lambda 'm15-order-processor' processes some messages successfully but many end up in the DLQ. The Lambda function
+  code works correctly when tested individually. What's causing the DLQ buildup?

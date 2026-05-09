@@ -1,0 +1,34 @@
+table:
+  name: auto_pilot
+  schema: public
+object_relationships:
+- name: auto_pilot_status
+  using:
+    foreign_key_constraint_on: status
+- name: cloud_account
+  using:
+    foreign_key_constraint_on: account_id
+- name: tenant
+  using:
+    foreign_key_constraint_on: tenant_id
+- name: user
+  using:
+    foreign_key_constraint_on: created_by
+- name: user_updated_by
+  using:
+    foreign_key_constraint_on: update_by
+array_relationships:
+- name: auto_optimize_resource_maps
+  using:
+    foreign_key_constraint_on:
+      column: auto_optimize_id
+      table:
+        name: auto_optimize_resource_map
+        schema: public
+- name: auto_pilot_tasks
+  using:
+    foreign_key_constraint_on:
+      column: auto_pilot_id
+      table:
+        name: auto_pilot_task
+        schema: public

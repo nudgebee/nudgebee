@@ -1,0 +1,157 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M10: EC2 instance running CloudWatch agent, but IAM instance profile
+  is missing CloudWatchAgentServerPolicy. Agent runs but cannot ship logs.
+  User complaint: "Application logs configured in CloudWatch agent config
+  are not appearing in CloudWatch Logs groups."
+  Root cause: EC2 instance profile lacks cloudwatch:PutLogEvents permission.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Instance profile missing CloudWatchAgentServerPolicy (logs fail silently).
+      Fixed = Instance profile has CloudWatchAgentServerPolicy.
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for app server
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      Tags:
+        - Key: Name
+          Value: m10-app-server-sg
+
+  # THE BUG: In Broken mode, the role has SSM access but NOT CloudWatch Logs write access.
+  # The CloudWatch agent installs and starts fine, but PutLogEvents calls fail silently.
+  AppServerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m10-app-server-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        # CloudWatchAgentServerPolicy only attached in Fixed mode
+        - !If
+          - IsFixed
+          - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+          - !Ref AWS::NoValue
+
+  AppServerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: m10-app-server-profile
+      Roles:
+        - !Ref AppServerRole
+
+  AppServer:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: !Ref LatestAmiId
+      SubnetId: !ImportValue aws-agent-test-public-subnet-a
+      SecurityGroupIds:
+        - !Ref InstanceSecurityGroup
+      IamInstanceProfile: !Ref AppServerInstanceProfile
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          set -e
+
+          # Install CloudWatch agent
+          yum install -y amazon-cloudwatch-agent
+
+          # Write application that generates logs
+          mkdir -p /opt/app
+          cat > /opt/app/server.py << 'PYEOF'
+          import time
+          import logging
+          import datetime
+
+          logging.basicConfig(
+              filename='/var/log/app/application.log',
+              level=logging.INFO,
+              format='%(asctime)s %(levelname)s %(message)s'
+          )
+
+          while True:
+              logging.info(f"Health check OK - {datetime.datetime.utcnow().isoformat()}")
+              logging.info("Processing order batch - 47 orders completed")
+              time.sleep(30)
+          PYEOF
+
+          # Create log directory
+          mkdir -p /var/log/app
+
+          # Configure CloudWatch agent to ship /var/log/app/application.log
+          mkdir -p /opt/aws/amazon-cloudwatch-agent/etc
+          cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CWEOF'
+          {
+            "agent": {
+              "run_as_user": "root"
+            },
+            "logs": {
+              "logs_collected": {
+                "files": {
+                  "collect_list": [
+                    {
+                      "file_path": "/var/log/app/application.log",
+                      "log_group_name": "/m10/app-server/application",
+                      "log_stream_name": "{instance_id}",
+                      "timezone": "UTC"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+          CWEOF
+
+          # Start CW agent (will fail to ship logs due to missing IAM permissions in Broken mode)
+          /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+            -a fetch-config -m ec2 \
+            -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s
+
+          # Start app in background
+          python3 /opt/app/server.py &
+      Tags:
+        - Key: Name
+          Value: m10-app-server-01
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: platform
+
+Outputs:
+  InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref AppServer
+  InstanceProfile:
+    Description: IAM Instance Profile
+    Value: !Ref AppServerInstanceProfile
+  RoleName:
+    Description: IAM Role Name
+    Value: !Ref AppServerRole
+  LogGroupName:
+    Description: Expected CloudWatch Log Group
+    Value: /m10/app-server/application
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

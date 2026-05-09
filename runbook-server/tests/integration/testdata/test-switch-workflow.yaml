@@ -1,0 +1,31 @@
+name: switch-workflow-test
+definition:
+  triggers:
+    - type: manual
+  inputs:
+    - id: value
+      type: string
+      default: "A"
+  tasks:
+      - id: my-switch
+        type: core.switch
+        params:
+          expression: "{{ Inputs.value }}"
+          cases:
+            - value: "A"
+              next: "task-a"
+            - value: "B"
+              next: "task-b"
+          default_next: "task-c"
+      - id: task-a
+        type: core.print
+        params:
+          message: "Executed Task A"
+      - id: task-b
+        type: core.print
+        params:
+          message: "Executed Task B"
+      - id: task-c
+        type: core.print
+        params:
+          message: "Executed Task C (Default)"

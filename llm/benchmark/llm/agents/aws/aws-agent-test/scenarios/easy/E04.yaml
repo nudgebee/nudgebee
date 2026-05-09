@@ -1,0 +1,166 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E04: RDS Connection Refused - Port mismatch.
+  User complaint: "App can't connect to the database, connection refused."
+  Root cause: App connects to port 3306 (MySQL) but RDS is PostgreSQL on port 5432.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Lambda env var DB_PORT=3306 but RDS is Postgres on 5432.
+      Fixed = Lambda env var DB_PORT=5432 matching RDS.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for payments database
+      SubnetIds:
+        - !ImportValue aws-agent-test-private-subnet-a
+        - !ImportValue aws-agent-test-private-subnet-b
+      Tags:
+        - Key: Name
+          Value: e04-payments-db-subnet-group
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for payments database
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: !ImportValue aws-agent-test-vpc-cidr
+      Tags:
+        - Key: Name
+          Value: e04-payments-db-sg
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for payments app Lambda
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: e04-payments-app-sg
+
+  PaymentsDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: e04-payments-db
+      DBInstanceClass: db.t3.micro
+      Engine: postgres
+      EngineVersion: '16.4'
+      MasterUsername: payments_admin
+      MasterUserPassword: TempPass123!
+      AllocatedStorage: 20
+      StorageType: gp2
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      PubliclyAccessible: false
+      MultiAZ: false
+      BackupRetentionPeriod: 0
+      DeletionProtection: false
+      Tags:
+        - Key: Name
+          Value: e04-payments-db
+        - Key: Environment
+          Value: staging
+        - Key: Team
+          Value: payments
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: e04-payments-api-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+  PaymentsApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: e04-payments-api
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue aws-agent-test-private-subnet-a
+        SecurityGroupIds:
+          - !Ref AppSecurityGroup
+      Environment:
+        Variables:
+          DB_HOST: !GetAtt PaymentsDB.Endpoint.Address
+          DB_PORT: !If [IsFixed, '5432', '3306']
+          DB_NAME: payments
+          DB_USER: payments_admin
+      Code:
+        ZipFile: |
+          import socket
+          import os
+          import json
+
+          def handler(event, context):
+              host = os.environ['DB_HOST']
+              port = int(os.environ['DB_PORT'])
+              db_name = os.environ['DB_NAME']
+
+              try:
+                  sock = socket.create_connection((host, port), timeout=5)
+                  sock.close()
+                  return {'statusCode': 200, 'body': json.dumps({'status': 'connected', 'port': port})}
+              except ConnectionRefusedError:
+                  return {'statusCode': 500, 'body': json.dumps({'error': f'Connection refused to {host}:{port}'})}
+              except socket.timeout:
+                  return {'statusCode': 500, 'body': json.dumps({'error': f'Connection timeout to {host}:{port}'})}
+      Tags:
+        - Key: Name
+          Value: e04-payments-api
+        - Key: Environment
+          Value: staging
+        - Key: Team
+          Value: payments
+        - Key: Application
+          Value: payments-service
+
+Outputs:
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref PaymentsApiFunction
+  DBInstanceId:
+    Description: RDS Instance Identifier
+    Value: !Ref PaymentsDB
+  DBEndpoint:
+    Description: RDS Endpoint Address
+    Value: !GetAtt PaymentsDB.Endpoint.Address
+  DBPort:
+    Description: Actual RDS Port
+    Value: !GetAtt PaymentsDB.Endpoint.Port
+  AppConfiguredPort:
+    Description: Port the app is configured to use
+    Value: !If [IsFixed, '5432', '3306']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

@@ -1,0 +1,97 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "P04: App Service has autoscale configured but the metric threshold is set to CPU > 95% (practically unreachable) with minimum instances=1, maximum=1. Under load the single instance gets overwhelmed but autoscale never triggers. Common production misconfiguration."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "appName": "[concat('p04app', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "brokenThreshold": 95,
+    "fixedThreshold": 70,
+    "cpuThreshold": "[if(equals(parameters('scenarioMode'), 'Fixed'), variables('fixedThreshold'), variables('brokenThreshold'))]",
+    "brokenMaxInstances": "1",
+    "fixedMaxInstances": "3",
+    "maxInstances": "[if(equals(parameters('scenarioMode'), 'Fixed'), variables('fixedMaxInstances'), variables('brokenMaxInstances'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('appName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "app",
+      "tags": { "Environment": "production", "Team": "api", "ScenarioMode": "[parameters('scenarioMode')]" },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "siteConfig": {
+          "appSettings": [
+            { "name": "APP_ENV", "value": "production" },
+            { "name": "EXPECTED_RPS", "value": "500" }
+          ]
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Insights/autoscalesettings",
+      "apiVersion": "2022-10-01",
+      "name": "[concat(variables('appName'), '-autoscale')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', variables('appName'))]"
+      ],
+      "tags": { "Environment": "production", "Team": "platform", "Scenario": "P04" },
+      "properties": {
+        "enabled": true,
+        "targetResourceUri": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "profiles": [
+          {
+            "name": "DefaultProfile",
+            "capacity": {
+              "minimum": "1",
+              "maximum": "[variables('maxInstances')]",
+              "default": "1"
+            },
+            "rules": [
+              {
+                "metricTrigger": {
+                  "metricName": "CpuPercentage",
+                  "metricResourceUri": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+                  "timeGrain": "PT1M",
+                  "statistic": "Average",
+                  "timeWindow": "PT10M",
+                  "timeAggregation": "Average",
+                  "operator": "GreaterThan",
+                  "threshold": "[variables('cpuThreshold')]"
+                },
+                "scaleAction": {
+                  "direction": "Increase",
+                  "type": "ChangeCount",
+                  "value": "1",
+                  "cooldown": "PT5M"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "appServiceName": { "type": "string", "value": "[variables('appName')]" },
+    "autoscaleThreshold": { "type": "int", "value": "[variables('cpuThreshold')]" },
+    "maxInstances": { "type": "string", "value": "[variables('maxInstances')]" },
+    "bugNote": { "type": "string", "value": "Autoscale threshold=95% (nearly unreachable) AND maximum instances=1 (same as minimum, so scaling out is impossible)" },
+    "scenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

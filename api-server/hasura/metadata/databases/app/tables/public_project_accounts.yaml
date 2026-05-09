@@ -1,0 +1,7 @@
+table:
+  name: project_accounts
+  schema: public
+object_relationships:
+  - name: projectById
+    using:
+      foreign_key_constraint_on: project_id

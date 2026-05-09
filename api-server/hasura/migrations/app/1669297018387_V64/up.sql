@@ -1,0 +1,5 @@
+
+CREATE TABLE "public"."recommendation_assignment" ("id" uuid NOT NULL DEFAULT gen_random_uuid(), "recommendation_id" uuid NOT NULL, "user_id" uuid NOT NULL, "created_at" timestamp NOT NULL DEFAULT now(), "updated_at" timestamp NOT NULL DEFAULT now(), "created_by" uuid, "updated_by" uuid, "enable_ticket" boolean NOT NULL DEFAULT false, "enable_slack" boolean NOT NULL DEFAULT false, "additionl_input_config" jsonb, "status" text, PRIMARY KEY ("id") , FOREIGN KEY ("recommendation_id") REFERENCES "public"."recommendation"("id") ON UPDATE restrict ON DELETE restrict, FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON UPDATE restrict ON DELETE restrict, FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON UPDATE restrict ON DELETE restrict, FOREIGN KEY ("updated_by") REFERENCES "public"."users"("id") ON UPDATE restrict ON DELETE restrict);
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+alter table "public"."recommendation_assignment" add constraint "recommendation_assignment_recommendation_id_key" unique ("recommendation_id");

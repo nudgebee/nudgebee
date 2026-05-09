@@ -1,0 +1,6 @@
+user_prompt: Show CloudWatch logs.
+expected_output:
+- aws logs get-log-events --log-group-name <log-group-name> --log-stream-name <log-stream-name>
+tags:
+- command
+- aws

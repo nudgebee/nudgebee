@@ -1,0 +1,7 @@
+user_prompt: Which rule has the highest average estimated savings per recommendation?
+expected_output:
+- SELECT rule_name, AVG(estimated_saving) AS avg_saving FROM recommendation_view WHERE
+  estimated_saving IS NOT NULL GROUP BY rule_name ORDER BY avg_saving DESC LIMIT 1;
+tags:
+- command
+- recommendations

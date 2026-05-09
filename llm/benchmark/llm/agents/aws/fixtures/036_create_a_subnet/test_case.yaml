@@ -1,0 +1,6 @@
+user_prompt: Create a subnet.
+expected_output:
+- aws ec2 create-subnet
+tags:
+- command
+- aws

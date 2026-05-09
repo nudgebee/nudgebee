@@ -1,0 +1,6 @@
+user_prompt: Get logs from the worker container in staging namespace
+expected_output: '{"where": {"container_name": {"_ilike": "%worker%"}, "service.namespace": {"_ilike": "%staging%"}}}'
+tags:
+  - command
+  - container
+  - signoz

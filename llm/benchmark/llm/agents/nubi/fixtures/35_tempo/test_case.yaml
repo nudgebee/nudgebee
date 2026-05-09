@@ -1,0 +1,10 @@
+user_prompt: "Why is the app in the minishop namespace slow?"
+expected_output: Fraud service is slow due to a database query
+evaluation:
+  correctness: 1
+tags:
+  - medium
+  - traces
+
+skip: true
+skip_reason: "Requires Grafana Cloud (GRAFANA_API_KEY, GRAFANA_URL) and pre-deployed minishop namespace"

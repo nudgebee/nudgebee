@@ -1,0 +1,18 @@
+name: test-conditional-output-workflow
+definition:
+  triggers:
+    - type: manual
+  tasks:
+    - id: transform_task
+      type: data.transform
+      params:
+        expression: "true"
+        inputType: json
+        input: "{}"
+    - id: conditional-task
+      type: core.print
+      if: "{{ Tasks.transform_task.output.data }}"
+      depends_on:
+        - transform_task
+      params:
+        message: "Conditional task executed"

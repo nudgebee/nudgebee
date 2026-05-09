@@ -1,0 +1,10 @@
+user_prompt: List all 'InProgress' recommendations for the 'kube-system' namespace
+  that are related to version upgrades.
+expected_output:
+- SELECT * FROM recommendation_view WHERE namespace = 'kube-system' AND status = 'InProgress'
+  AND category = 'K8sVersionUpgrade';
+- SELECT name, recommendation, updated_at FROM recommendation_view WHERE namespace
+  = 'kube-system' AND status = 'InProgress' AND category = 'K8sVersionUpgrade';
+tags:
+- command
+- recommendations

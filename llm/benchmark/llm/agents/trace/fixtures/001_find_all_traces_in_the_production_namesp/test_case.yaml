@@ -1,0 +1,10 @@
+user_prompt: Find all traces in the 'production' namespace from the last hour.
+expected_output:
+- SELECT * FROM traces_view WHERE workload_namespace = 'production' AND timestamp
+  >= now() - interval 1 hour;
+- SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name,
+  destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE
+  workload_namespace = 'production' AND timestamp >= now() - interval 1 hour;
+tags:
+- command
+- trace

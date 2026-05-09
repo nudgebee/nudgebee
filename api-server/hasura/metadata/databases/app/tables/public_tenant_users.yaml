@@ -1,0 +1,16 @@
+table:
+  name: tenant_users
+  schema: public
+object_relationships:
+- name: tenantByTenant
+  using:
+    foreign_key_constraint_on: tenant
+- name: userByCreatedBy
+  using:
+    foreign_key_constraint_on: created_by
+- name: userByUpdatedBy
+  using:
+    foreign_key_constraint_on: updated_by
+- name: userByUser
+  using:
+    foreign_key_constraint_on: user

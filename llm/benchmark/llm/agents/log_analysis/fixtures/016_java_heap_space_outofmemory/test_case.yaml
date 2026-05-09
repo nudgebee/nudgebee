@@ -1,0 +1,21 @@
+user_prompt: |
+  2026-04-05T19:30:45.123Z INFO  [ad] AdService starting with JVM heap: -Xmx256m -Xms128m
+  2026-04-05T19:31:00.456Z WARN  [ad] GC overhead limit exceeded: GC time 98% of last 60 seconds
+  2026-04-05T19:31:00.789Z WARN  [ad] java.lang.OutOfMemoryError: Java heap space - Old Gen usage: 248MB/256MB
+  2026-04-05T19:31:00.790Z ERROR [ad] Exception in thread "grpc-default-executor-12" java.lang.OutOfMemoryError: Java heap space
+  	at java.base/java.util.Arrays.copyOf(Arrays.java:3512)
+  	at java.base/java.util.ArrayList.grow(ArrayList.java:237)
+  	at io.opentelemetry.demo.ad.AdService.getAdsByCategory(AdService.java:148)
+  	at io.opentelemetry.demo.ad.AdService$AdServiceImpl.getAds(AdService.java:92)
+  	at io.grpc.stub.ServerCalls$UnaryServerCallHandler.invoke(ServerCalls.java:222)
+  2026-04-05T19:31:01.012Z ERROR [ad] gRPC server shutting down due to unrecoverable error
+  2026-04-05T19:31:01.345Z INFO  [ad] Heap dump written to /tmp/heapdump-20260405-193101.hprof
+  namespace: demo, pod: ad-54cdd9d898-8pmq2, container: ad
+expected_output:
+  - The ad service (AdService) in the demo namespace crashed with a Java heap space OutOfMemoryError. The JVM was configured with only 256MB max heap (-Xmx256m) and Old Gen reached 248MB/256MB with GC consuming 98% of CPU time. The OOM occurred in AdService.java at line 148 in getAdsByCategory when growing an ArrayList, called from the gRPC getAds handler at line 92. The root cause is insufficient JVM heap size for the ad service's workload, particularly the getAdsByCategory method which appears to load too much data into memory. Suggested actions include increasing the -Xmx JVM heap setting and container memory limits, analyzing the heap dump at /tmp/heapdump-20260405-193101.hprof to identify memory-heavy objects, and optimizing the getAdsByCategory method to use pagination or streaming instead of loading all ads into an ArrayList.
+tags:
+  - java
+  - oom
+  - heap
+  - demo
+type: log_analysis

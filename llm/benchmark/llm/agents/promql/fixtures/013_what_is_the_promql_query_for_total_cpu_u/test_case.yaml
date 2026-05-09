@@ -1,0 +1,9 @@
+user_prompt: what is the promql query for total CPU usage across all machines in the
+  last 15 minutes?
+expected_output:
+- sum(rate(node_cpu_seconds_total[15m]))
+- sum by (instance) (rate(node_cpu_seconds_total[15m]))
+- sum(rate(node_resources_cpu_usage_seconds_total[15m]))
+tags:
+- command
+- promql

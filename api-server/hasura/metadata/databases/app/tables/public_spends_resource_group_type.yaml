@@ -1,0 +1,7 @@
+table:
+  name: spends_resource_group_type
+  schema: public
+object_relationships:
+- name: cloudProviderByCloudProvider
+  using:
+    foreign_key_constraint_on: cloud_provider

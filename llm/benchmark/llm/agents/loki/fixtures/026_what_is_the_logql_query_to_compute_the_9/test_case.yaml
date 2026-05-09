@@ -1,0 +1,8 @@
+user_prompt: What is the LogQL query to compute the 99th percentile (0.99) of latency_ms
+  for the api service over 5 minutes?
+expected_output:
+- quantile_over_time(0.99, {service="api"} | json | unwrap latency_ms [5m])
+- quantile_over_time(0.99, {job="api-service"} | logfmt | unwrap duration [10m])
+tags:
+- command
+- loki

@@ -1,0 +1,61 @@
+{#
+Nudgebee GCP Deployment Manager Template (Jinja2)
+Simpler alternative to Python template
+#}
+
+resources:
+  # Pub/Sub Topic for Cloud Monitoring alerts
+  - name: {{ properties['topicName'] }}
+    type: pubsub.v1.topic
+    properties:
+      topic: {{ properties['topicName'] }}
+      labels:
+        managed-by: nudgebee
+        purpose: monitoring-alerts
+
+  # IAM binding for Nudgebee service account to subscribe
+  - name: {{ properties['topicName'] }}-iam-subscriber
+    type: gcp-types/pubsub-v1:virtual.topics.iamMemberBinding
+    properties:
+      resource: {{ properties['topicName'] }}
+      role: roles/pubsub.subscriber
+      member: serviceAccount:cloud-collector@{{ properties['nudgebeeProjectId'] }}.iam.gserviceaccount.com
+    metadata:
+      dependsOn:
+        - {{ properties['topicName'] }}
+
+  # IAM binding for Cloud Monitoring to publish
+  - name: {{ properties['topicName'] }}-iam-publisher
+    type: gcp-types/pubsub-v1:virtual.topics.iamMemberBinding
+    properties:
+      resource: {{ properties['topicName'] }}
+      role: roles/pubsub.publisher
+      member: serviceAccount:cloud-monitoring-notification@system.gserviceaccount.com
+    metadata:
+      dependsOn:
+        - {{ properties['topicName'] }}
+
+  # Cloud Monitoring Notification Channel
+  - name: nudgebee-pubsub-channel
+    type: gcp-types/monitoring-v3:projects.notificationChannels
+    properties:
+      type: pubsub
+      displayName: Nudgebee Alert Integration
+      description: Sends Cloud Monitoring alerts to Nudgebee for analysis and remediation
+      enabled: true
+      labels:
+        topic: projects/{{ env['project'] }}/topics/{{ properties['topicName'] }}
+      userLabels:
+        nudgebee_account_token: {{ properties['nudgebeeAccountToken'] }}
+        managed_by: nudgebee
+    metadata:
+      dependsOn:
+        - {{ properties['topicName'] }}
+
+outputs:
+  - name: topicName
+    value: projects/{{ env['project'] }}/topics/{{ properties['topicName'] }}
+  - name: notificationChannelId
+    value: $(ref.nudgebee-pubsub-channel.name)
+  - name: notificationChannelName
+    value: $(ref.nudgebee-pubsub-channel.displayName)

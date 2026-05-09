@@ -1,0 +1,5 @@
+# Nubi agent benchmark configuration
+# Nubi does NOT use @agent prefix — queries go directly to the orchestrator
+agent: nubi
+tool_names: []
+prefix_query: false

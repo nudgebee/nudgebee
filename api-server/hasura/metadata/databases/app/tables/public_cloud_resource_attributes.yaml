@@ -1,0 +1,7 @@
+table:
+  name: cloud_resource_attributes
+  schema: public
+object_relationships:
+- name: cloud_resourse
+  using:
+    foreign_key_constraint_on: resource_id

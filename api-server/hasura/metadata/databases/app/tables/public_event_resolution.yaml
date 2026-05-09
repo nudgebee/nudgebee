@@ -1,0 +1,19 @@
+table:
+  name: event_resolution
+  schema: public
+object_relationships:
+- name: event
+  using:
+    manual_configuration:
+      column_mapping:
+        event_id: id
+      insertion_order:
+      remote_table:
+        name: events
+        schema: public
+computed_fields:
+- name: resolver_user
+  definition:
+    function:
+      name: get_event_resolution_resolver_user
+      schema: public

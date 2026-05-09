@@ -1,0 +1,43 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- delete from
+--   audit
+-- where
+--   event_type = 'AUTOPILOT_UPDATE'
+--   and event_category = 'AUTO_PILOT'
+--   and event_prev_state :: jsonb -> 'last_schedule_time' != event_state :: jsonb -> 'last_schedule_time';
+--
+-- delete from
+--   audit
+-- where
+--   event_type = 'AUTOPILOT_UPDATE'
+--   and event_category = 'AUTO_PILOT'
+--   and event_prev_state :: jsonb -> 'last_executed_time' != event_state :: jsonb -> 'last_executed_time';
+--
+-- delete from
+--   audit
+-- where
+--   event_type = 'AUTOPILOT_UPDATE'
+--   and event_category = 'AUTO_PILOT'
+--   and event_prev_state :: jsonb -> 'next_schedule_time' != event_state :: jsonb -> 'next_schedule_time';
+--
+-- delete from
+--   audit
+-- where
+--   event_type = 'AUTORUNBOOK_UPDATE'
+--   and event_category = 'AUTO_RUNBOOK'
+--   and event_prev_state :: jsonb -> 'execution_status' != event_state :: jsonb -> 'execution_status';
+--
+-- delete from
+--   audit
+-- where
+--   event_prev_state :: jsonb -> 'last_executed_time' != event_state :: jsonb -> 'last_executed_time'
+--   and event_type = 'AUTORUNBOOK_UPDATE'
+--   and event_category = 'AUTO_RUNBOOK';
+--
+-- delete from
+--   audit
+-- where
+--   event_prev_state :: jsonb -> 'last_schedule_time' != event_state :: jsonb -> 'last_schedule_time'
+--   and event_type = 'AUTORUNBOOK_UPDATE'
+--   and event_category = 'AUTO_RUNBOOK';

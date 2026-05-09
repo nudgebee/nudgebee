@@ -1,0 +1,7 @@
+user_prompt: List distinct controller names associated with 'RightSizing' recommendations.
+expected_output:
+- SELECT DISTINCT controller_name from recommendation_view WHERE category = 'RightSizing'
+  AND controller_name IS NOT NULL;
+tags:
+- command
+- recommendations

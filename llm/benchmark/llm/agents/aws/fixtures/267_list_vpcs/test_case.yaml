@@ -1,0 +1,6 @@
+user_prompt: List VPCs.
+expected_output:
+- aws ec2 describe-vpcs
+tags:
+- command
+- aws

@@ -1,0 +1,7 @@
+user_prompt: Find recommendations with estimated savings between $50 and $100.
+expected_output:
+- SELECT namespace, name, category, estimated_saving from recommendation_view WHERE
+  estimated_saving BETWEEN 50 AND 100;
+tags:
+- command
+- recommendations

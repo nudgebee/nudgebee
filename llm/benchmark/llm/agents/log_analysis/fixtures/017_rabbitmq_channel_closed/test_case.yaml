@@ -1,0 +1,19 @@
+user_prompt: |
+  2026-04-06T01:15:22.345Z INFO  [services-server] gorabbit INFO: establishing connection to amqp://rabbit.rabbit.svc:5672
+  2026-04-06T01:15:22.678Z INFO  [services-server] gorabbit INFO: connection established
+  2026-04-06T01:15:22.901Z INFO  [services-server] gorabbit INFO: opening channel...
+  2026-04-06T01:15:23.234Z ERROR [services-server] gorabbit ERROR: channel closed: PRECONDITION_FAILED - inequivalent arg 'x-message-ttl' for queue 'nudgebee.troubleshoot.events' in vhost '/': received '86400000' but current is '604800000'
+  2026-04-06T01:15:23.235Z ERROR [services-server] gorabbit ERROR: channel exception (406): PRECONDITION_FAILED
+  2026-04-06T01:15:23.567Z WARN  [services-server] gorabbit INFO: reconnecting channel (attempt 1/5)
+  2026-04-06T01:15:24.890Z ERROR [services-server] gorabbit ERROR: channel closed: PRECONDITION_FAILED - inequivalent arg 'x-message-ttl' for queue 'nudgebee.troubleshoot.events'
+  2026-04-06T01:15:25.123Z ERROR [services-server] gorabbit ERROR: all reconnection attempts failed for queue 'nudgebee.troubleshoot.events'
+  2026-04-06T01:15:25.124Z ERROR [services-server] {"time":"2026-04-06T01:15:25.124Z","level":"ERROR","msg":"event publisher: unable to publish troubleshoot event","error":"channel closed"}
+  namespace: nudgebee, pod: services-server-7dbb7f76c9-7b78p, container: services-server
+expected_output:
+  - The services-server in the nudgebee namespace is unable to publish to the RabbitMQ queue 'nudgebee.troubleshoot.events' due to a PRECONDITION_FAILED error. The channel is being closed because of an argument mismatch on x-message-ttl — the service is sending 86400000 (1 day) but the existing queue has 604800000 (7 days). All 5 reconnection attempts failed because the same mismatch occurs on every attempt. The root cause is that the queue was originally created with a 7-day TTL, but the service code or configuration was updated to use a 1-day TTL without deleting and recreating the queue. Suggested actions include either updating the service configuration to match the existing queue TTL (604800000), or manually deleting and recreating the queue with the new TTL via the RabbitMQ management console.
+tags:
+  - rabbitmq
+  - queue
+  - configuration
+  - nudgebee
+type: log_analysis

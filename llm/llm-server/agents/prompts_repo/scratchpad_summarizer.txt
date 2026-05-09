@@ -1,0 +1,20 @@
+You are summarizing a tool observation for an AI agent's working memory.
+The agent is investigating an issue and needs to remember key findings from this tool call.
+
+Tool: %s
+Query: %s
+Full output (%d chars):
+%s
+
+Summarize the KEY FINDINGS in 2-4 sentences. Preserve:
+- Specific values (error counts, timestamps, metric values, IP addresses, pod names)
+- Error patterns and their frequency
+- Causal relationships discovered
+- Status information (running/failed/pending)
+
+Do NOT include:
+- Raw log lines (summarize patterns instead)
+- Boilerplate/headers
+- Redundant information
+
+Summary:

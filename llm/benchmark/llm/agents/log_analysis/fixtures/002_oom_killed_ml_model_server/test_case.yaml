@@ -1,0 +1,21 @@
+user_prompt: |
+  2026-04-05T14:32:10.234Z INFO  [ml-k8s-server] Loading model weights for anomaly-detection-v3...
+  2026-04-05T14:32:15.891Z INFO  [ml-k8s-server] Model file size: 4.2GB, available memory: 1.8GB
+  2026-04-05T14:32:16.003Z WARN  [ml-k8s-server] Memory usage at 89% during model loading
+  2026-04-05T14:32:18.445Z ERROR [ml-k8s-server] MemoryError: Unable to allocate 2.1 GiB for array with shape (268435456,) and data type float64
+  2026-04-05T14:32:18.446Z ERROR [ml-k8s-server] Traceback (most recent call last):
+    File "/app/server/model_loader.py", line 142, in load_model
+      weights = np.fromfile(model_path, dtype=np.float64)
+    File "/opt/conda/lib/python3.11/site-packages/numpy/core/records.py", line 285, in fromfile
+      return np.frombuffer(fd.read(), dtype=dtype)
+  numpy.core._exceptions.MemoryError: Unable to allocate 2.1 GiB
+  2026-04-05T14:32:18.450Z ERROR [ml-k8s-server] Container killed: OOMKilled (exit code 137)
+  namespace: nudgebee, pod: ml-k8s-server-5f597f46bc-g9wdp, container: ml-k8s-server
+expected_output:
+  - The ml-k8s-server pod in the nudgebee namespace was OOMKilled (exit code 137) while trying to load the anomaly-detection-v3 model. The model requires 4.2GB but only 1.8GB of memory was available. The specific failure occurred in model_loader.py at line 142 when numpy attempted to allocate 2.1 GiB for a float64 array. The root cause is insufficient memory limits for the container relative to the model size. Suggested actions include increasing the memory limit in the deployment manifest, using a quantized or smaller model variant, or implementing streaming model loading to reduce peak memory usage.
+tags:
+  - oom
+  - memory
+  - ml
+  - nudgebee
+type: log_analysis

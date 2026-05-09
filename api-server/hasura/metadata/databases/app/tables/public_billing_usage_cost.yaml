@@ -1,0 +1,7 @@
+table:
+  name: billing_usage_cost
+  schema: public
+object_relationships:
+- name: cloud_account
+  using:
+    foreign_key_constraint_on: account_id

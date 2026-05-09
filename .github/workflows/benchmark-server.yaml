@@ -1,0 +1,40 @@
+name: Benchmark-Server CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ['main']
+    paths:
+      - llm/benchmark/server/**
+      - .github/workflows/benchmark-server-dev-civo.yaml
+
+jobs:
+  app-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.13
+
+      - name: Install Build Essentials
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies with uv
+        working-directory: ./llm/benchmark
+        run: |
+          # Verify and install from lock file first
+          uv pip install --system -r uv.lock
+
+          # Install in editable mode
+          uv pip install --system -e .

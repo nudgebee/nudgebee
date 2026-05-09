@@ -1,0 +1,4 @@
+table:
+  name: notifications_delivery_mode_type
+  schema: public
+is_enum: true

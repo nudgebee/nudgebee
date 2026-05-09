@@ -1,0 +1,4 @@
+table:
+  name: account_type
+  schema: public
+is_enum: true

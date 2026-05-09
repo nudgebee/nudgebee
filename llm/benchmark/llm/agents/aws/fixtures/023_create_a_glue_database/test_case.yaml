@@ -1,0 +1,6 @@
+user_prompt: Create a Glue database.
+expected_output:
+- 'aws glue create-database --database-input ''{\Name\": \"<database-name>\"}'''
+tags:
+- command
+- aws

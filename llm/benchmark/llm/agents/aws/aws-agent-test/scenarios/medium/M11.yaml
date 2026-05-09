@@ -1,0 +1,138 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M11: ECS service can't start tasks — image tag doesn't exist.
+  User complaint: "ECS service 'm11-api-svc' on cluster 'm11-api-cluster' keeps failing.
+  Tasks start and immediately stop with CannotPullContainerError. We just updated
+  the task definition with a new image version."
+  Root cause: The task definition references image tag nginx:99.99.99 which doesn't
+  exist. The previous working version used nginx:1.25.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Task definition references non-existent image tag nginx:99.99.99.
+      Fixed = Task definition references valid image tag nginx:1.25.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: m11-api-cluster
+      Tags:
+        - Key: Name
+          Value: m11-api-cluster
+        - Key: Environment
+          Value: production
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m11-api-task-execution-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m11-api-task-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: m11-api-service
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: api
+          # THE BUG: non-existent image tag
+          Image: !If [IsFixed, 'nginx:1.25', 'nginx:99.99.99']
+          Essential: true
+          PortMappings:
+            - ContainerPort: 80
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: /ecs/m11-api-service
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: api
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/m11-api-service
+      RetentionInDays: 7
+
+  ECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: m11-api-svc
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !ImportValue aws-agent-test-public-subnet-a
+          SecurityGroups:
+            - !Ref ServiceSecurityGroup
+
+  ServiceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for m11 API service
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: m11-api-svc-sg
+
+Outputs:
+  ClusterName:
+    Description: ECS Cluster Name
+    Value: !Ref ECSCluster
+  ServiceName:
+    Description: ECS Service Name
+    Value: !GetAtt ECSService.Name
+  TaskDefinitionArn:
+    Description: Task Definition ARN
+    Value: !Ref TaskDefinition
+  ImageTag:
+    Description: Container image tag used
+    Value: !If [IsFixed, 'nginx:1.25', 'nginx:99.99.99']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

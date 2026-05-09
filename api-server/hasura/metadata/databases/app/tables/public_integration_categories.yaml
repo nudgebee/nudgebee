@@ -1,0 +1,3 @@
+table:
+  name: integration_categories
+  schema: public

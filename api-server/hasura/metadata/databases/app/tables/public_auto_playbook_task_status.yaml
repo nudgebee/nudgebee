@@ -1,0 +1,3 @@
+table:
+  name: auto_playbook_task_status
+  schema: public

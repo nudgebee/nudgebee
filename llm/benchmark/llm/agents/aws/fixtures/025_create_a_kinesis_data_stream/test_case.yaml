@@ -1,0 +1,6 @@
+user_prompt: Create a Kinesis data stream.
+expected_output:
+- aws kinesis create-stream --stream-name <stream-name> --shard-count <shard-count>
+tags:
+- command
+- aws

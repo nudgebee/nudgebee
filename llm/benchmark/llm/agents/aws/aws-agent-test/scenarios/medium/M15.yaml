@@ -1,0 +1,129 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M15: SQS DLQ filling up — Lambda reserved concurrency too low.
+  User complaint: "Messages in DLQ 'm15-orders-dlq' keep increasing. Main queue
+  'm15-orders-queue' has a growing backlog. Some orders process but most fail."
+  Root cause: Lambda consumer 'm15-order-processor' has reserved concurrency of 1.
+  It can only process 1 message at a time. Incoming messages exceed processing
+  capacity, messages sit in queue past visibility timeout, get re-delivered,
+  exceed maxReceiveCount, and land in DLQ.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Lambda reserved concurrency = 1, can't keep up with message volume.
+      Fixed = Lambda reserved concurrency removed (uses unreserved account pool).
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  OrdersDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: m15-orders-dlq
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Name
+          Value: m15-orders-dlq
+
+  OrdersQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: m15-orders-queue
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OrdersDLQ.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Name
+          Value: m15-orders-queue
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m15-order-processor-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: sqs-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - !GetAtt OrdersQueue.Arn
+                  - !GetAtt OrdersDLQ.Arn
+
+  OrderProcessor:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: m15-order-processor
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      # THE BUG: Reserved concurrency of 1 — can only process 1 message at a time
+      ReservedConcurrentExecutions: !If [IsFixed, !Ref 'AWS::NoValue', 1]
+      Code:
+        ZipFile: |
+          import json
+          import time
+
+          def handler(event, context):
+              for record in event['Records']:
+                  body = json.loads(record['body'])
+                  order_id = body.get('orderId', 'unknown')
+                  print(f"Processing order {order_id}")
+                  # Simulate processing time
+                  time.sleep(5)
+                  print(f"Order {order_id} processed")
+              return {'statusCode': 200}
+      Tags:
+        - Key: Name
+          Value: m15-order-processor
+        - Key: Environment
+          Value: production
+
+  EventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt OrdersQueue.Arn
+      FunctionName: !Ref OrderProcessor
+      BatchSize: 1
+      Enabled: true
+
+Outputs:
+  QueueUrl:
+    Description: Orders Queue URL
+    Value: !Ref OrdersQueue
+  DLQUrl:
+    Description: Dead Letter Queue URL
+    Value: !Ref OrdersDLQ
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref OrderProcessor
+  ReservedConcurrency:
+    Description: Lambda reserved concurrency
+    Value: !If [IsFixed, 'Unreserved (account default)', '1']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

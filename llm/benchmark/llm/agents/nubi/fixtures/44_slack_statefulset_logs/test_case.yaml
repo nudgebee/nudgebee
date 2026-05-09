@@ -1,0 +1,9 @@
+user_prompt: "Fetch the logs of the alertmanager stateful set in namespace app-44 from the past 3 hours"
+tags:
+  - slackbot
+  - medium
+expected_output: "alertmanager running without issues"
+before_test: 'kubectl apply -f ./manifest.yaml'
+after_test: 'kubectl delete -f ./manifest.yaml'
+
+test_type: server

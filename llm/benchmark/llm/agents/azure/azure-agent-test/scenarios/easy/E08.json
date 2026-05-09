@@ -1,0 +1,69 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "E08: App Service APPINSIGHTS_INSTRUMENTATIONKEY points to a fake/nonexistent key. User complaint: No telemetry or traces appearing in Application Insights dashboard. Uses shared App Service Plan from bootstrap."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "appName": "[concat('e08app', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "appInsightsName": "e08-telemetry",
+    "fakeKey": "00000000-0000-0000-0000-000000000000",
+    "instrumentationKey": "[if(equals(parameters('scenarioMode'), 'Fixed'), reference(resourceId('Microsoft.Insights/components', variables('appInsightsName'))).InstrumentationKey, variables('fakeKey'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[variables('appInsightsName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "web",
+      "tags": { "Environment": "production", "Scenario": "E08" },
+      "properties": { "Application_Type": "web", "RetentionInDays": 30 }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('appName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "app",
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]"
+      ],
+      "tags": {
+        "Name": "e08-metrics-api",
+        "Environment": "production",
+        "Scenario": "E08",
+        "ScenarioMode": "[parameters('scenarioMode')]"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "siteConfig": {
+          "appSettings": [
+            { "name": "APPINSIGHTS_INSTRUMENTATIONKEY", "value": "[variables('instrumentationKey')]" },
+            { "name": "ApplicationInsightsAgent_EXTENSION_VERSION", "value": "~3" },
+            { "name": "APP_ENV", "value": "production" }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "AppServiceName": { "type": "string", "value": "[variables('appName')]" },
+    "AppInsightsName": { "type": "string", "value": "[variables('appInsightsName')]" },
+    "ActualKey": { "type": "string", "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName'))).InstrumentationKey]" },
+    "ConfiguredKey": { "type": "string", "value": "[variables('instrumentationKey')]" },
+    "BugNote": { "type": "string", "value": "APPINSIGHTS_INSTRUMENTATIONKEY=00000000-0000-0000-0000-000000000000 (fake) - no telemetry sent" },
+    "ScenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

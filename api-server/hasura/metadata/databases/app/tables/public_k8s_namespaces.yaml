@@ -1,0 +1,3 @@
+table:
+  name: k8s_namespaces
+  schema: public

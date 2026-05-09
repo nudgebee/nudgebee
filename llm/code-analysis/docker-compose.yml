@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  code-analysis-agent:
+    build: .
+    ports:
+      - "8081:8080"
+    environment:
+      # LLM Configuration (consistent with llm-server env var naming)
+      - LLM_PROVIDER=${LLM_PROVIDER:-googleai}
+      - LLM_MODEL_NAME=${LLM_MODEL_NAME:-gemini-2.5-flash-lite-preview-06-1}
+      - LLM_PROVIDER_REGION=${LLM_PROVIDER_REGION:-us-west-2}
+      - LLM_PROVIDER_API_KEY=${LLM_PROVIDER_API_KEY}
+      
+      # GitHub Authentication
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      
+      # Agent Configuration
+      - AGENT_REACT_MAX_ITERATIONS=${AGENT_REACT_MAX_ITERATIONS:-20}
+      
+      # Workspace Configuration
+      - ANALYSIS_WORKSPACE_DIR=/tmp/code-analysis
+    volumes:
+      # Mount workspace directory for persistence during development
+      - ./workspace:/tmp/code-analysis
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+volumes:
+  workspace:
+    driver: local

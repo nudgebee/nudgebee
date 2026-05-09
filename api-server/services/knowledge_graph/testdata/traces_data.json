@@ -1,0 +1,162 @@
+{
+  "traces": [
+    {
+      "trace_id": "trace-001",
+      "source_service": "frontend-deployment",
+      "source_namespace": "production",
+      "destination_service": "api-deployment",
+      "destination_namespace": "production",
+      "operation": "GET /api/users",
+      "latency_ms": 45.5,
+      "request_rate_per_min": 500.0,
+      "error_rate": 0.01,
+      "timestamp": "2024-12-24T10:00:00Z",
+      "metadata": {
+        "http_method": "GET",
+        "status_code": 200,
+        "user_agent": "Mozilla/5.0"
+      }
+    },
+    {
+      "trace_id": "trace-002",
+      "source_service": "api-deployment",
+      "source_namespace": "production",
+      "destination_service": "mydb-instance",
+      "destination_namespace": "external",
+      "operation": "SELECT * FROM users",
+      "latency_ms": 25.5,
+      "request_rate_per_min": 1000.0,
+      "error_rate": 0.005,
+      "timestamp": "2024-12-24T10:00:01Z",
+      "metadata": {
+        "db_type": "postgres",
+        "query_type": "SELECT",
+        "rows_returned": 100
+      }
+    },
+    {
+      "trace_id": "trace-003",
+      "source_service": "api-deployment",
+      "source_namespace": "production",
+      "destination_service": "redis-cluster-001",
+      "destination_namespace": "external",
+      "operation": "GET user:12345",
+      "latency_ms": 2.5,
+      "request_rate_per_min": 5000.0,
+      "error_rate": 0.001,
+      "timestamp": "2024-12-24T10:00:01Z",
+      "metadata": {
+        "cache_type": "redis",
+        "operation": "GET",
+        "cache_hit": true
+      }
+    },
+    {
+      "trace_id": "trace-004",
+      "source_service": "frontend-deployment",
+      "source_namespace": "production",
+      "destination_service": "my-app-bucket",
+      "destination_namespace": "external",
+      "operation": "GET /static/images/logo.png",
+      "latency_ms": 15.0,
+      "request_rate_per_min": 200.0,
+      "error_rate": 0.0,
+      "timestamp": "2024-12-24T10:00:02Z",
+      "metadata": {
+        "storage_type": "s3",
+        "object_size_bytes": 102400,
+        "content_type": "image/png"
+      }
+    },
+    {
+      "trace_id": "trace-005",
+      "source_service": "api-deployment",
+      "source_namespace": "production",
+      "destination_service": "postgres-statefulset",
+      "destination_namespace": "production",
+      "operation": "INSERT INTO audit_log",
+      "latency_ms": 8.0,
+      "request_rate_per_min": 300.0,
+      "error_rate": 0.0,
+      "timestamp": "2024-12-24T10:00:03Z",
+      "metadata": {
+        "db_type": "postgres",
+        "query_type": "INSERT",
+        "rows_affected": 1
+      }
+    },
+    {
+      "trace_id": "trace-006",
+      "source_service": "api-deployment",
+      "source_namespace": "production",
+      "destination_service": "users-table",
+      "destination_namespace": "external",
+      "operation": "GetItem userId=12345",
+      "latency_ms": 5.0,
+      "request_rate_per_min": 800.0,
+      "error_rate": 0.002,
+      "timestamp": "2024-12-24T10:00:04Z",
+      "metadata": {
+        "db_type": "dynamodb",
+        "operation": "GetItem",
+        "consumed_capacity": 1.0
+      }
+    }
+  ],
+  "service_dependencies": [
+    {
+      "source": "frontend-deployment",
+      "destination": "api-deployment",
+      "dependency_type": "synchronous",
+      "call_count_per_hour": 30000,
+      "avg_latency_ms": 45.0,
+      "p95_latency_ms": 80.0,
+      "p99_latency_ms": 150.0
+    },
+    {
+      "source": "api-deployment",
+      "destination": "mydb-instance",
+      "dependency_type": "synchronous",
+      "call_count_per_hour": 60000,
+      "avg_latency_ms": 25.0,
+      "p95_latency_ms": 45.0,
+      "p99_latency_ms": 100.0
+    },
+    {
+      "source": "api-deployment",
+      "destination": "redis-cluster-001",
+      "dependency_type": "synchronous",
+      "call_count_per_hour": 300000,
+      "avg_latency_ms": 2.5,
+      "p95_latency_ms": 5.0,
+      "p99_latency_ms": 10.0
+    },
+    {
+      "source": "frontend-deployment",
+      "destination": "my-app-bucket",
+      "dependency_type": "synchronous",
+      "call_count_per_hour": 12000,
+      "avg_latency_ms": 15.0,
+      "p95_latency_ms": 25.0,
+      "p99_latency_ms": 50.0
+    },
+    {
+      "source": "api-deployment",
+      "destination": "postgres-statefulset",
+      "dependency_type": "synchronous",
+      "call_count_per_hour": 18000,
+      "avg_latency_ms": 8.0,
+      "p95_latency_ms": 15.0,
+      "p99_latency_ms": 30.0
+    },
+    {
+      "source": "api-deployment",
+      "destination": "users-table",
+      "dependency_type": "synchronous",
+      "call_count_per_hour": 48000,
+      "avg_latency_ms": 5.0,
+      "p95_latency_ms": 10.0,
+      "p99_latency_ms": 20.0
+    }
+  ]
+}

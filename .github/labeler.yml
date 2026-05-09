@@ -1,0 +1,58 @@
+# labeler "simple" schema
+# Comment is applied to both issues and pull requests.
+# If you need a more robust solution, consider the "full" schema.
+comment: |
+  👍 Thanks for this!
+  🏷 I have applied any labels matching special text in your issue.
+
+  Please review the labels and make any necessary changes.
+
+# Labels is an object where:
+# - keys are labels
+# - values are array of string patterns to match against title + body in issues/prs
+labels:
+  'bug':
+    - '^fix\(.+\): .+'
+  'feat':
+    - '^feat\(.+\): .+'
+  'infra':
+    - '^ci\(.+\): .+'
+
+file_labels:
+  'UI/UX':
+    - '^app/src/.*'
+    - '^app/public/.*'
+    - '^app/__tests__/.*'
+  'API':
+    - '^api-server/services/.*'
+  'Database':
+    - '^api-server/hasura/.*'
+    - '^migrations/.*'
+  'Ai':
+    - '^llm/llm-server/.*'
+    - '^llm/rag-server/.*'
+    - '^llm/code-analysis/.*'
+    - '^llm/benchmark/.*'
+    - '^ml-k8s-server/.*'
+  'Notifications':
+    - '^notifications-server/.*'
+  'Testing':
+    - '^app-e2e-tests/.*'
+    - '^api-server/test_servicemap/.*'
+  'Tickets':
+    - '^ticket-server/.*'
+  'AutoRunbook':
+    - '^auto-pilot/.*'
+  'Cloud':
+    - '^collector-server/cloud-collector/.*'
+  'Workflow':
+    - '^runbook-server/.*'
+  'Observability':
+    - '^collector-server/otel-collector/.*'
+  'K8s':
+    - '^collector-server/k8s-collector/.*'
+    - '^deploy/kubernetes/.*'
+  'infra':
+    - '^deploy/.*'
+    - '^ops/.*'
+    - '^\.github/.*'

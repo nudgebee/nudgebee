@@ -1,0 +1,3298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Benchmarks — Nudgebee</title>
+<link rel="icon" href="https://app.nudgebee.com/favicon.ico">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: { navy: '#1B2D4A', nb: { yellow: '#FACF39', blue: '#3B82F6' } },
+      fontFamily: { sans: ['Inter', 'Roboto', 'sans-serif'] }
+    }
+  }
+}
+</script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined" rel="stylesheet">
+<style>
+  body { font-family: 'Inter', sans-serif; -webkit-font-smoothing: antialiased; }
+  .score-bar { height: 4px; border-radius: 2px; background: #E5E7EB; overflow: hidden; }
+  .score-fill { height: 100%; border-radius: 2px; }
+  .toast { animation: slideIn 0.3s ease, fadeOut 0.3s ease 2.7s forwards; }
+  @keyframes slideIn { from { transform: translateY(-20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+  @keyframes fadeOut { to { opacity: 0; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner { width: 20px; height: 20px; border: 2px solid #E5E7EB; border-top-color: #3B82F6; border-radius: 50%; animation: spin 0.6s linear infinite; }
+  .spinner-sm { width: 14px; height: 14px; border: 2px solid #E5E7EB; border-top-color: #3B82F6; border-radius: 50%; animation: spin 0.6s linear infinite; }
+  .loader-dots { display: flex; gap: 4px; align-items: center; }
+  .loader-dots span { width: 6px; height: 6px; border-radius: 50%; background: #FACF39; animation: pulse 1.4s ease-in-out infinite; }
+  .loader-dots span:nth-child(2) { animation-delay: 0.2s; }
+  .loader-dots span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes pulse { 0%,100% { transform: scale(0.8); opacity: 0.4; } 50% { transform: scale(1); opacity: 1; } }
+  pre.log-output { font-family: 'SF Mono', Menlo, Consolas, monospace; }
+  .nav-active { border-left-color: #FACF39 !important; color: white !important; font-weight: 500; }
+
+  /* Sidebar collapse */
+  .sidebar-wrapper { width: 220px; transition: width 0.25s cubic-bezier(0.4, 0, 0.2, 1); overflow: visible; position: relative; }
+  .sidebar-wrapper > nav { overflow-y: auto; overflow-x: hidden; }
+  .sidebar-wrapper.collapsed { width: 60px; }
+  .sidebar-wrapper .nav-label { opacity: 1; white-space: nowrap; overflow: hidden; transition: opacity 0.2s ease 0.05s, max-width 0.25s ease; max-width: 160px; }
+  .sidebar-wrapper.collapsed .nav-label { opacity: 0; max-width: 0; pointer-events: none; transition: opacity 0.1s ease, max-width 0.2s ease; }
+  .sidebar-wrapper .brand-text { max-height: 40px; opacity: 1; overflow: hidden; transition: max-height 0.25s ease, opacity 0.2s ease; }
+  .sidebar-wrapper.collapsed .brand-text { max-height: 0; opacity: 0; }
+  .sidebar-wrapper .nav-link { transition: padding 0.25s ease, gap 0.25s ease; }
+  .sidebar-wrapper.collapsed .nav-link { padding-left: 0; padding-right: 0; justify-content: center; gap: 0; border-left-color: transparent !important; }
+  .sidebar-wrapper.collapsed .nav-link.nav-active { background: rgba(255,255,255,0.08); }
+  .sidebar-wrapper.collapsed .nav-link .material-icons-outlined { margin: 0; flex-shrink: 0; }
+  .sidebar-wrapper .sidebar-toggle { position: absolute; right: -12px; top: 18px; z-index: 20; width: 24px; height: 24px; border-radius: 50%; background: #1B2D4A; border: 2px solid rgba(255,255,255,0.15); color: #94A3B8; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s; box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
+  .sidebar-wrapper .sidebar-toggle:hover { background: #243B5C; color: white; border-color: #FACF39; transform: scale(1.1); }
+  .sidebar-wrapper .sidebar-footer { transition: opacity 0.2s ease; }
+  .sidebar-wrapper.collapsed .sidebar-footer .nav-label { display: none; }
+  .sidebar-wrapper.collapsed .sidebar-footer a { justify-content: center; padding-left: 0; padding-right: 0; }
+  .main-content-area { margin-left: 220px; transition: margin-left 0.25s cubic-bezier(0.4, 0, 0.2, 1); }
+  .main-content-area.sidebar-collapsed { margin-left: 60px; }
+  @keyframes slide-down-bounce {
+    0% { transform: translate(-50%, -100%); opacity: 0; }
+    50% { transform: translate(-50%, 8px); opacity: 1; }
+    70% { transform: translate(-50%, -2px); }
+    100% { transform: translate(-50%, 0); }
+  }
+  .animate-bounce-once { animation: slide-down-bounce 0.5s ease-out forwards; }
+
+  /* Dark theme overrides (applied when body has .dark class) */
+  body.dark { background-color: #0b1220 !important; color: #e2e8f0; }
+  body.dark .bg-white,
+  body.dark .bg-white\/80,
+  body.dark .bg-white\/60,
+  body.dark .bg-white\/40 { background-color: #1e293b !important; }
+  body.dark .bg-gray-50 { background-color: #0b1220 !important; }
+  body.dark .bg-gray-100 { background-color: #1e293b !important; }
+  body.dark .bg-gray-200 { background-color: #334155 !important; }
+  body.dark .text-gray-800,
+  body.dark .text-gray-700 { color: #e2e8f0 !important; }
+  body.dark .text-gray-600 { color: #cbd5e1 !important; }
+  body.dark .text-gray-500 { color: #94a3b8 !important; }
+  body.dark .text-gray-400 { color: #64748b !important; }
+  body.dark .border-gray-200,
+  body.dark .border-gray-200\/80,
+  body.dark .border-gray-100,
+  body.dark .border-gray-300 { border-color: #334155 !important; }
+  body.dark .score-bar { background: #334155; }
+  body.dark pre.log-output { background-color: #0f172a !important; color: #e2e8f0; }
+</style>
+</head>
+<body class="bg-gray-50 text-gray-800 text-[13px]">
+
+<div id="toasts" class="fixed top-4 right-4 z-50 flex flex-col gap-2"></div>
+
+<div class="flex min-h-screen">
+<!-- Sidebar -->
+<aside id="sidebar" class="sidebar-wrapper bg-navy text-white flex flex-col flex-shrink-0 fixed h-full z-10 shadow-lg">
+  <div class="sidebar-toggle" onclick="toggleSidebar()" title="Collapse sidebar">
+    <span class="material-icons-outlined text-[14px]" id="sidebar-toggle-icon">chevron_left</span>
+  </div>
+  <div class="text-center pt-6 pb-5 border-b border-white/10">
+    <div class="mb-2">
+      <svg width="32" height="30" viewBox="0 0 30 28" fill="none" xmlns="http://www.w3.org/2000/svg" class="inline-block">
+        <path d="M9.8249 13.3367C9.8249 13.3367 9.35771 21.2788 14.6135 27.1186C14.6135 27.1186 8.90357 28.4767 6.7882 21.746C4.86107 15.6142 9.8249 13.3367 9.8249 13.3367Z" fill="#FACF39"/>
+        <path d="M16.3256 12.2896C16.3256 12.2896 15.9186 19.2083 20.4972 24.2956C20.4972 24.2956 15.5229 25.4787 13.6802 19.6153C12.0013 14.2736 16.3256 12.2896 16.3256 12.2896Z" fill="#FACF39"/>
+        <path d="M4.27727 18.3413C4.27727 18.3413 3.96108 23.7165 7.51819 27.6688C7.51819 27.6688 4.13111 27.8778 2.68576 23.8775C1.60879 20.8968 4.27727 18.3413 4.27727 18.3413Z" fill="#FACF39"/>
+        <path d="M21.8266 10.2126C21.8266 10.2126 10.0886 -4.50372 2.02971 1.97845C-6.02921 8.46062 21.8266 10.2126 21.8266 10.2126Z" fill="#FACF39"/>
+        <path d="M25.9048 19.5679C27.9146 19.5679 29.5439 17.9386 29.5439 15.9287C29.5439 13.9189 27.9146 12.2896 25.9048 12.2896C23.8949 12.2896 22.2656 13.9189 22.2656 15.9287C22.2656 17.9386 23.8949 19.5679 25.9048 19.5679Z" fill="#FACF39"/>
+      </svg>
+    </div>
+    <div class="brand-text">
+      <div class="text-nb-yellow font-bold text-[1.1rem] tracking-[1px] lowercase leading-tight">nudgebee</div>
+      <div class="text-slate-400 text-[10px] tracking-wider">Benchmarks</div>
+    </div>
+  </div>
+  <nav class="flex-1 flex flex-col text-[13px] mt-4" id="sidebar-nav">
+    <a href="#runs" data-page="runs" class="nav-link flex items-center gap-2.5 px-5 py-2.5 border-l-[3px] border-transparent text-slate-400 hover:text-white hover:bg-white/6 transition-all cursor-pointer" title="Active Runs">
+      <span class="material-icons-outlined text-[18px]" style="color:#60A5FA">play_circle</span> <span class="nav-label">Active Runs</span>
+    </a>
+    <a href="#benchmark" data-page="benchmark" class="nav-link flex items-center gap-2.5 px-5 py-2.5 border-l-[3px] border-transparent text-slate-400 hover:text-white hover:bg-white/6 transition-all cursor-pointer" title="Run Benchmark">
+      <span class="material-icons-outlined text-[18px]" style="color:#FB923C">rocket_launch</span> <span class="nav-label">Run Benchmark</span>
+    </a>
+    <a href="#report" data-page="report" class="nav-link flex items-center gap-2.5 px-5 py-2.5 border-l-[3px] border-transparent text-slate-400 hover:text-white hover:bg-white/6 transition-all cursor-pointer" title="View Report">
+      <span class="material-icons-outlined text-[18px]" style="color:#34D399">assessment</span> <span class="nav-label">View Report</span>
+    </a>
+    <a href="#compare" data-page="compare" class="nav-link flex items-center gap-2.5 px-5 py-2.5 border-l-[3px] border-transparent text-slate-400 hover:text-white hover:bg-white/6 transition-all cursor-pointer" title="Compare Reports">
+      <span class="material-icons-outlined text-[18px]" style="color:#A78BFA">compare_arrows</span> <span class="nav-label">Compare Reports</span>
+    </a>
+    <a href="#infra" data-page="infra" class="nav-link flex items-center gap-2.5 px-5 py-2.5 border-l-[3px] border-transparent text-slate-400 hover:text-white hover:bg-white/6 transition-all cursor-pointer" title="Infrastructure">
+      <span class="material-icons-outlined text-[18px]" style="color:#22D3EE">cloud</span> <span class="nav-label">Infrastructure</span>
+    </a>
+    <a href="#analyzer" data-page="analyzer" class="nav-link flex items-center gap-2.5 px-5 py-2.5 border-l-[3px] border-transparent text-slate-400 hover:text-white hover:bg-white/6 transition-all cursor-pointer" title="Agent Analyzer">
+      <span class="material-icons-outlined text-[18px]" style="color:#818CF8">account_tree</span> <span class="nav-label">Agent Analyzer</span>
+    </a>
+    <div class="mt-auto border-t border-white/10 pt-2 pb-4 sidebar-footer">
+      <a href="#" onclick="toggleTheme();return false" class="flex items-center gap-2.5 px-5 py-2 text-[12px] text-slate-500 hover:text-white transition-all" title="Toggle theme">
+        <span class="material-icons-outlined text-[16px]" id="theme-toggle-icon" style="color:#FACF39">dark_mode</span> <span class="nav-label" id="theme-toggle-label">Dark Mode</span>
+      </a>
+      <a href="#" onclick="clearCache();return false" class="flex items-center gap-2.5 px-5 py-2 text-[12px] text-slate-500 hover:text-white transition-all" title="Clear Cache">
+        <span class="material-icons-outlined text-[16px]" style="color:#F87171">delete_sweep</span> <span class="nav-label">Clear Cache</span>
+      </a>
+    </div>
+  </nav>
+</aside>
+
+<main id="main-content" class="main-content-area flex-1" style="padding: 50px 32px 24px 32px">
+
+  <!-- Runs Page -->
+  <div id="page-runs" class="page hidden az-fade-in">
+    <div class="flex items-center justify-between mb-4">
+      <div class="flex items-center gap-2">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow-lg shadow-blue-200">
+          <span class="material-icons-outlined text-white text-[18px]">play_circle</span>
+        </div>
+        <h1 class="text-[17px] font-bold text-gray-800 tracking-tight">Active Runs</h1>
+      </div>
+      <label class="flex items-center gap-1.5 text-[11px] text-gray-500">
+        <input type="checkbox" id="runs-auto-refresh" checked class="rounded"> Auto-refresh
+      </label>
+    </div>
+    <div class="flex items-center gap-2 mb-2 flex-wrap">
+      <input type="text" id="runs-search" placeholder="Search by name or ID..." oninput="debouncedLoadRuns()" class="az-input border border-gray-200/80 rounded-lg px-3 py-1.5 text-[11px] bg-white/80 outline-none w-48">
+      <select id="runs-filter-agent" onchange="runsPageNum=1;loadRuns()" class="az-select border border-gray-200/80 rounded-lg px-2 py-1.5 text-[11px] bg-white/80 outline-none">
+        <option value="">All Agents</option>
+      </select>
+      <select id="runs-filter-status" onchange="runsPageNum=1;loadRuns()" class="az-select border border-gray-200/80 rounded-lg px-2 py-1.5 text-[11px] bg-white/80 outline-none">
+        <option value="">All Statuses</option>
+        <option value="running">Running</option>
+        <option value="completed">Completed</option>
+        <option value="failed">Failed</option>
+        <option value="stopped">Stopped</option>
+        <option value="gathered">Gathered</option>
+      </select>
+      <select id="runs-filter-user" onchange="runsPageNum=1;loadRuns()" class="az-select border border-gray-200/80 rounded-lg px-2 py-1.5 text-[11px] bg-white/80 outline-none">
+        <option value="">All Users</option>
+      </select>
+      <button onclick="$('runs-search').value='';$('runs-filter-agent').value='';$('runs-filter-status').value='';$('runs-filter-user').value='';runsPageNum=1;loadRuns()" class="text-[10px] text-gray-400 hover:text-gray-600 px-2 py-1">Clear</button>
+    </div>
+    <div id="runs-header"></div>
+    <div id="runs-list"></div>
+    <div id="runs-loading" class="flex flex-col items-center justify-center py-16 gap-3">
+      <div class="spinner"></div>
+      <span class="text-[11px] text-gray-400">Loading runs...</span>
+    </div>
+    <div id="runs-empty" class="hidden flex flex-col items-center justify-center py-16 az-fade-in">
+      <div class="az-empty-icon w-14 h-14 rounded-2xl flex items-center justify-center mb-4">
+        <span class="material-icons-outlined text-blue-400 text-[28px]">inbox</span>
+      </div>
+      <div class="text-[13px] font-semibold text-gray-600 mb-1">No benchmark runs found</div>
+      <div class="text-[11px] text-gray-400 leading-relaxed">Start a new benchmark from the<br>Run Benchmark page</div>
+    </div>
+    <div id="runs-error" class="hidden text-center py-16 text-red-400 text-[12px]"></div>
+  </div>
+
+  <!-- Detail Page -->
+  <div id="page-detail" class="page hidden az-fade-in">
+    <button onclick="navigate('runs')" class="text-[12px] text-gray-500 hover:text-indigo-600 mb-3 flex items-center gap-1.5 transition-all">
+      <span class="material-icons-outlined text-[16px]">arrow_back</span> Back to Runs
+    </button>
+    <div id="detail-loading" class="flex flex-col items-center justify-center py-16 gap-3">
+      <div class="spinner"></div>
+      <span class="text-[11px] text-gray-400">Loading run details...</span>
+    </div>
+    <div id="detail-content" class="hidden"></div>
+    <div id="detail-error" class="hidden text-center py-16 text-red-400 text-[12px]"></div>
+  </div>
+
+  <!-- Benchmark Page -->
+  <div id="page-benchmark" class="page hidden az-fade-in">
+    <div class="flex items-center gap-3 mb-5">
+      <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-orange-500 to-amber-600 flex items-center justify-center shadow-lg shadow-orange-200">
+        <span class="material-icons-outlined text-white text-[18px]">rocket_launch</span>
+      </div>
+      <div>
+        <h1 class="text-[17px] font-bold text-gray-800 tracking-tight">Run Benchmark</h1>
+        <p class="text-[11px] text-gray-400 -mt-0.5">Configure and launch agent evaluation runs</p>
+      </div>
+    </div>
+    <div id="bm-loading" class="flex flex-col items-center justify-center py-16 gap-3">
+      <div class="spinner"></div>
+      <span class="text-[11px] text-gray-400">Loading form...</span>
+    </div>
+    <div id="bm-form" class="hidden az-filter-bar rounded-2xl p-5">
+      <div class="grid grid-cols-3 gap-4 mb-4">
+        <div>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Tenant</label>
+          <div class="relative">
+            <select id="bm-tenant" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all"></select>
+            <div id="bm-tenant-loader" class="hidden absolute right-2 top-1/2 -translate-y-1/2"><div class="spinner-sm"></div></div>
+          </div>
+        </div>
+        <div>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Account</label>
+          <div class="relative">
+            <select id="bm-account" disabled class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all disabled:opacity-50">
+              <option value="">Select tenant first</option>
+            </select>
+            <div id="bm-account-loader" class="hidden absolute right-2 top-1/2 -translate-y-1/2"><div class="spinner-sm"></div></div>
+          </div>
+        </div>
+        <div>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">User</label>
+          <div class="relative">
+            <select id="bm-user" disabled class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all disabled:opacity-50">
+              <option value="">Select tenant first</option>
+            </select>
+            <div id="bm-user-loader" class="hidden absolute right-2 top-1/2 -translate-y-1/2"><div class="spinner-sm"></div></div>
+          </div>
+        </div>
+        <div>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Agent</label>
+          <select id="bm-agent" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all"></select>
+        </div>
+        <div>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Tool Config</label>
+          <div class="relative">
+            <select id="bm-tool-config" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all">
+              <option value="">Select account first</option>
+            </select>
+            <div id="bm-toolconfig-loader" class="hidden absolute right-2 top-1/2 -translate-y-1/2"><div class="spinner-sm"></div></div>
+          </div>
+        </div>
+        <div>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Tags</label>
+          <div class="relative">
+            <div id="bm-tags-display" onclick="toggleTagsDropdown()" class="w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 cursor-pointer flex items-center justify-between min-h-[34px] transition-all">
+              <span id="bm-tags-text" class="text-gray-400 truncate">Select tags...</span>
+              <span class="material-icons-outlined text-[16px] text-gray-400">expand_more</span>
+            </div>
+            <div id="bm-tags-dropdown" class="hidden absolute z-20 top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden">
+              <div class="px-2 py-1.5 border-b border-gray-100">
+                <input type="text" id="bm-tags-search" placeholder="Search tags..." oninput="filterTags()" class="az-input w-full border border-gray-200 rounded px-2 py-1 text-[11px] bg-white outline-none">
+              </div>
+              <div id="bm-tags-options" class="max-h-[180px] overflow-y-auto"></div>
+            </div>
+          </div>
+          <input type="hidden" id="bm-tags-value">
+        </div>
+        <div>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Run Name</label>
+          <input type="text" id="bm-run-name" placeholder="e.g. baseline-v2 (auto: agent-date-id)" maxlength="100" class="az-input w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all">
+        </div>
+        <div>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Max Tests</label>
+          <input type="number" id="bm-max-tests" min="0" placeholder="All" oninput="renderBmTests()" class="az-input w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all">
+        </div>
+        <div class="hidden">
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Test Indices</label>
+          <input type="text" id="bm-test-indices" placeholder="e.g. 0,2,5-7" class="az-input w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all">
+        </div>
+        <div>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Parallel Workers</label>
+          <select id="bm-parallel-workers" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all">
+            <option value="1">1 (Sequential)</option>
+            <option value="2" selected>2</option>
+            <option value="4">4</option>
+            <option value="8">8</option>
+          </select>
+        </div>
+      </div>
+      <div id="bm-test-selector" class="hidden mb-4">
+        <div class="flex items-center justify-between mb-2">
+          <label class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Select Tests <span id="bm-test-count" class="text-gray-500 normal-case"></span></label>
+          <div class="flex items-center gap-2">
+            <input type="text" id="bm-test-search" placeholder="Filter tests..." oninput="filterBmTests()" class="az-input border border-gray-200/80 rounded-lg px-2 py-1 text-[10px] bg-white/80 outline-none w-36">
+            <button onclick="toggleAllBmTests(true)" class="text-[10px] text-blue-500 hover:text-blue-700">All</button>
+            <button onclick="toggleAllBmTests(false)" class="text-[10px] text-gray-400 hover:text-gray-600">None</button>
+          </div>
+        </div>
+        <div id="bm-test-list" class="max-h-[200px] overflow-y-auto border border-gray-200/80 rounded-xl bg-white/80 p-1.5 flex flex-col gap-[2px]">
+          <div class="text-[11px] text-gray-400 px-2 py-1">Select an agent to load tests</div>
+        </div>
+      </div>
+      <div id="bm-infra-section" class="hidden mb-4 p-3 rounded-xl border border-gray-100 bg-gray-50/50 flex items-center justify-between">
+        <div class="flex items-center gap-2 text-[12px] text-gray-500">
+          <span class="material-icons-outlined text-[16px]">cloud</span>
+          <span>Infrastructure:</span>
+          <span id="bm-infra-status" class="font-semibold"></span>
+        </div>
+        <a href="#infra" onclick="navigate('infra');return false" class="text-[11px] text-blue-600 hover:text-blue-700 font-medium flex items-center gap-1 transition-all">
+          Manage in Infrastructure <span class="material-icons-outlined text-[14px]">arrow_forward</span>
+        </a>
+      </div>
+      <div class="flex gap-3 justify-end mt-4 pt-4 border-t border-gray-200/50">
+        <button onclick="gatherTests()" id="btn-gather" disabled class="az-btn-secondary text-white px-5 py-2 rounded-xl text-[12px] font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed">Gather Tests</button>
+        <button onclick="startBenchmark()" id="btn-start" disabled class="az-btn-primary text-white px-5 py-2 rounded-xl text-[12px] font-semibold transition-all flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"><span class="material-icons-outlined text-[15px]">play_arrow</span> Start Benchmark</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Report Page -->
+  <div id="page-report" class="page hidden az-fade-in">
+    <div class="flex items-center gap-3 mb-5">
+      <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-200">
+        <span class="material-icons-outlined text-white text-[18px]">assessment</span>
+      </div>
+      <div>
+        <h1 class="text-[17px] font-bold text-gray-800 tracking-tight">View Report</h1>
+        <p class="text-[11px] text-gray-400 -mt-0.5">Explore detailed benchmark results and metrics</p>
+      </div>
+    </div>
+    <div class="az-filter-bar rounded-2xl p-4 mb-5">
+      <div class="flex gap-3 items-center">
+        <div class="flex-1">
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Select Run</label>
+          <select id="report-run-select" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all">
+            <option value="">Select a run...</option>
+          </select>
+        </div>
+        <div class="flex gap-2 pt-5">
+          <button onclick="loadReport()" class="az-btn-primary text-white px-5 py-2 rounded-xl text-[12px] font-semibold transition-all flex items-center gap-1.5"><span class="material-icons-outlined text-[15px]">search</span> Load</button>
+          <button id="download-report-btn" onclick="downloadReport()" class="hidden az-btn-secondary text-white px-4 py-2 rounded-xl text-[12px] font-semibold transition-all flex items-center gap-1.5"><span class="material-icons-outlined text-[15px]">download</span> JSON</button>
+        </div>
+      </div>
+    </div>
+    <div id="report-loading" class="hidden flex flex-col items-center justify-center py-16 gap-3">
+      <div class="spinner"></div>
+      <span class="text-[11px] text-gray-400">Loading report...</span>
+    </div>
+    <div id="report-content"></div>
+  </div>
+
+  <!-- Compare Page -->
+  <div id="page-compare" class="page hidden az-fade-in">
+    <div class="flex items-center gap-3 mb-5">
+      <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-lg shadow-violet-200">
+        <span class="material-icons-outlined text-white text-[18px]">compare_arrows</span>
+      </div>
+      <div>
+        <h1 class="text-[17px] font-bold text-gray-800 tracking-tight">Compare Reports</h1>
+        <p class="text-[11px] text-gray-400 -mt-0.5">Side-by-side comparison of benchmark runs</p>
+      </div>
+    </div>
+    <div class="az-filter-bar rounded-2xl p-4 mb-5">
+      <div class="grid grid-cols-[1fr_1fr_auto] gap-4 items-end">
+        <div>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Baseline Run</label>
+          <select id="compare-baseline" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all">
+            <option value="">Select...</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Candidate Run</label>
+          <select id="compare-candidate" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all">
+            <option value="">Select...</option>
+          </select>
+        </div>
+        <button onclick="compareRuns()" class="az-btn-primary text-white px-5 py-2 rounded-xl text-[12px] font-semibold transition-all flex items-center gap-1.5"><span class="material-icons-outlined text-[15px]">compare</span> Compare</button>
+      </div>
+    </div>
+    <div id="compare-loading" class="hidden flex flex-col items-center justify-center py-16 gap-3">
+      <div class="spinner"></div>
+      <span class="text-[11px] text-gray-400">Comparing...</span>
+    </div>
+    <div id="compare-content"></div>
+  </div>
+
+  <!-- Infrastructure Page -->
+  <div id="page-infra" class="page hidden az-fade-in">
+    <div class="flex items-center justify-between mb-5">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-200">
+          <span class="material-icons-outlined text-white text-[18px]">cloud</span>
+        </div>
+        <div>
+          <h1 class="text-[17px] font-bold text-gray-800 tracking-tight">Infrastructure</h1>
+          <p class="text-[11px] text-gray-400 -mt-0.5">Deploy and manage test infrastructure per agent</p>
+        </div>
+      </div>
+      <button onclick="loadInfraPage()" class="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 transition-all">
+        <span class="material-icons-outlined text-[18px]">refresh</span>
+      </button>
+    </div>
+    <div id="infra-loading" class="flex flex-col items-center justify-center py-16 gap-3">
+      <div class="spinner"></div>
+      <span class="text-[11px] text-gray-400">Loading infrastructure status...</span>
+    </div>
+    <div id="infra-content"></div>
+  </div>
+
+  <!-- Agent Analyzer Page -->
+  <style>
+    /* --- Analyzer premium styles --- */
+    .az-glass { background: rgba(255,255,255,0.82); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); }
+    .az-filter-bar { background: linear-gradient(135deg, rgba(255,255,255,0.95) 0%, rgba(248,250,252,0.95) 100%); border: 1px solid rgba(226,232,240,0.8); box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 12px rgba(0,0,0,0.02); }
+    .az-select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%2394A3B8' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; padding-right: 28px; }
+    .az-select:focus { border-color: #818CF8; box-shadow: 0 0 0 3px rgba(129,140,248,0.12); }
+    .az-input:focus { border-color: #818CF8; box-shadow: 0 0 0 3px rgba(129,140,248,0.12); }
+    .az-btn-primary { background: linear-gradient(135deg, #6366F1 0%, #4F46E5 100%); box-shadow: 0 1px 3px rgba(79,70,229,0.3), 0 4px 12px rgba(79,70,229,0.15); }
+    .az-btn-primary:hover { box-shadow: 0 2px 8px rgba(79,70,229,0.4), 0 8px 24px rgba(79,70,229,0.2); transform: translateY(-0.5px); }
+    .az-btn-secondary { background: linear-gradient(135deg, #334155 0%, #1E293B 100%); box-shadow: 0 1px 3px rgba(30,41,59,0.25); }
+    .az-btn-secondary:hover { box-shadow: 0 2px 8px rgba(30,41,59,0.35); transform: translateY(-0.5px); }
+    .az-sidebar-panel { background: linear-gradient(180deg, #FFFFFF 0%, #FAFBFC 100%); box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 6px 16px rgba(0,0,0,0.03); }
+    .az-main-panel { background: linear-gradient(180deg, #FFFFFF 0%, #FAFBFC 100%); box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 6px 16px rgba(0,0,0,0.03); }
+    .az-conv-item { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); border-left: 3px solid transparent; }
+    .az-conv-item:hover { background: linear-gradient(135deg, #EEF2FF 0%, #F5F3FF 100%); border-left-color: #C7D2FE; }
+    .az-conv-item.active { background: linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%); border-left-color: #6366F1; }
+    .az-summary-card { background: linear-gradient(135deg, #1E1B4B 0%, #312E81 50%, #3730A3 100%); box-shadow: 0 4px 16px rgba(30,27,75,0.25), 0 8px 32px rgba(30,27,75,0.1); }
+    .az-metric { position: relative; }
+    .az-metric::after { content: ''; position: absolute; right: 0; top: 20%; height: 60%; width: 1px; background: rgba(255,255,255,0.1); }
+    .az-metric:last-child::after { display: none; }
+    .az-gantt-card { background: white; border: 1px solid #E2E8F0; box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+    .az-gantt-bar { background: linear-gradient(90deg, #818CF8 0%, #6366F1 100%); box-shadow: 0 1px 3px rgba(99,102,241,0.3); }
+    .az-gantt-bar.fail, .az-gantt-bar.error { background: linear-gradient(90deg, #FCA5A5 0%, #EF4444 100%); box-shadow: 0 1px 3px rgba(239,68,68,0.3); }
+    .az-gantt-bar.waiting { background: linear-gradient(90deg, #FCD34D 0%, #F59E0B 100%); box-shadow: 0 1px 3px rgba(245,158,11,0.3); }
+    .az-agent-card { border: 1px solid #E2E8F0; border-radius: 12px; overflow: hidden; transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); }
+    .az-agent-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06); border-color: #C7D2FE; }
+    .az-agent-header { background: linear-gradient(135deg, #FAFBFC 0%, #F8FAFC 100%); transition: all 0.2s; }
+    .az-agent-header:hover { background: linear-gradient(135deg, #F1F5F9 0%, #EEF2FF 100%); }
+    .az-stats-grid { background: linear-gradient(135deg, #F8FAFC 0%, #F1F5F9 100%); }
+    .az-section-toggle { transition: all 0.15s; }
+    .az-section-toggle:hover { background: #F1F5F9; }
+    .az-tool-dot { box-shadow: 0 0 0 3px rgba(99,102,241,0.15); }
+    .az-tool-dot.success { background: #10B981; box-shadow: 0 0 0 3px rgba(16,185,129,0.15); }
+    .az-tool-dot.error { background: #EF4444; box-shadow: 0 0 0 3px rgba(239,68,68,0.15); }
+    .az-code-block { font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', Menlo, monospace; background: #1E293B; color: #E2E8F0; border-radius: 8px; }
+    .az-token-table tr { transition: background 0.15s; }
+    .az-token-table tr:hover { background: #F8FAFC; }
+    .az-children-line { border-left: 2px solid #E2E8F0; background: linear-gradient(to bottom, transparent, rgba(99,102,241,0.03)); }
+    .az-empty-icon { background: linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%); }
+    @keyframes az-fade-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    .az-fade-in { animation: az-fade-in 0.3s ease-out; }
+    @keyframes az-shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+    .az-shimmer { background: linear-gradient(90deg, #F1F5F9 25%, #E2E8F0 50%, #F1F5F9 75%); background-size: 200% 100%; animation: az-shimmer 1.5s infinite; }
+  </style>
+
+  <div id="page-analyzer" class="page hidden">
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-5">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-200">
+          <span class="material-icons-outlined text-white text-[18px]">account_tree</span>
+        </div>
+        <div>
+          <h1 class="text-[17px] font-bold text-gray-800 tracking-tight">Agent Analyzer</h1>
+          <p class="text-[11px] text-gray-400 -mt-0.5">Inspect conversation execution flows, tool calls & token usage</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Filter bar -->
+    <div class="az-filter-bar rounded-2xl p-5 mb-5">
+      <div class="grid grid-cols-6 gap-4 items-end">
+        <div>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Tenant</label>
+          <select id="az-tenant" onchange="azOnTenantChange()" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all">
+            <option value="">Select tenant...</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Account</label>
+          <select id="az-account" onchange="azOnAccountChange()" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all">
+            <option value="">Select tenant first</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Agent</label>
+          <select id="az-agent-filter" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all">
+            <option value="">All agents</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Status</label>
+          <select id="az-status-filter" class="az-select w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all">
+            <option value="">All statuses</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Search query</label>
+          <input id="az-query-search" type="text" placeholder="Search in queries..." class="az-input w-full border border-gray-200/80 rounded-xl px-3 py-2 text-[12px] bg-white/80 outline-none transition-all">
+        </div>
+        <div>
+          <button onclick="azLoadConversations()" class="az-btn-primary w-full text-white px-4 py-2 rounded-xl text-[12px] font-semibold transition-all flex items-center justify-center gap-1.5">
+            <span class="material-icons-outlined text-[15px]">search</span> Search
+          </button>
+        </div>
+      </div>
+      <div class="flex items-center gap-3 mt-4 pt-4 border-t border-gray-200/50">
+        <div class="flex items-center gap-1.5 text-[10px] text-gray-400 font-medium uppercase tracking-wider">
+          <span class="material-icons-outlined text-[13px]">bolt</span> Quick load
+        </div>
+        <input id="az-conv-input" type="text" placeholder="Paste conversation ID..." class="az-input border border-gray-200/80 rounded-xl px-3 py-1.5 text-[12px] w-[300px] bg-white/80 outline-none transition-all font-mono">
+        <button onclick="azLoadFromInput()" class="az-btn-secondary text-white px-4 py-1.5 rounded-xl text-[12px] font-semibold transition-all">Load</button>
+        <div class="ml-auto flex items-center gap-2">
+          <label class="text-[10px] text-gray-400 font-medium uppercase tracking-wider">Limit</label>
+          <select id="az-limit" class="az-select border border-gray-200/80 rounded-lg px-2 py-1 text-[11px] bg-white/80 outline-none transition-all">
+            <option value="20">20</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main layout -->
+    <div class="flex gap-5" style="height: calc(100vh - 310px)">
+      <!-- Sidebar: conversation list -->
+      <div id="az-sidebar" class="w-[350px] min-w-[320px] az-sidebar-panel border border-gray-200/70 rounded-2xl overflow-y-auto" style="font-size: 12px;">
+        <div class="flex flex-col items-center justify-center py-16 px-6 text-center az-fade-in">
+          <div class="az-empty-icon w-14 h-14 rounded-2xl flex items-center justify-center mb-4">
+            <span class="material-icons-outlined text-indigo-400 text-[28px]">manage_search</span>
+          </div>
+          <div class="text-[13px] font-semibold text-gray-600 mb-1">No conversations loaded</div>
+          <div class="text-[11px] text-gray-400 leading-relaxed">Select a tenant and account above,<br>then click Search to explore</div>
+        </div>
+      </div>
+      <!-- Main: flow view -->
+      <div id="az-main" class="flex-1 az-main-panel border border-gray-200/70 rounded-2xl overflow-y-auto p-5" style="font-size: 12px;">
+        <div class="flex flex-col items-center justify-center py-16 px-6 text-center az-fade-in">
+          <div class="az-empty-icon w-14 h-14 rounded-2xl flex items-center justify-center mb-4">
+            <span class="material-icons-outlined text-indigo-400 text-[28px]">timeline</span>
+          </div>
+          <div class="text-[13px] font-semibold text-gray-600 mb-1">Select a conversation</div>
+          <div class="text-[11px] text-gray-400 leading-relaxed">Pick a conversation from the sidebar to<br>inspect the full execution flow</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</main>
+</div>
+
+<script>
+// ============================================================
+// State
+// ============================================================
+let currentPage = 'runs';
+let currentRunId = null;
+let refreshTimer = null;
+let agents = [];
+let runsList = [];
+let runsTotalItems = 0;
+const nameCache = {}; // {tenant_id: name, account_id: name}
+
+// Pagination state
+let runsPageSize = 15;
+let runsPageNum = 1;
+let detailTestPageSize = 10;
+let detailTestPageNum = 1;
+
+// ============================================================
+// Helpers
+// ============================================================
+function $(id) { return document.getElementById(id); }
+function show(id) { $(id)?.classList.remove('hidden'); }
+function hide(id) { $(id)?.classList.add('hidden'); }
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+// escAttr encodes a string for safe insertion into an HTML attribute value
+// (single- or double-quoted). Unlike `esc`, which uses textContent/innerHTML
+// and only escapes <, >, & (quotes survive untouched because textContent
+// doesn't see them as special outside attribute context), escAttr escapes
+// quotes too — required for inline `onclick="..."` handlers whose payload
+// contains JS string literals built via JSON.stringify.
+function escAttr(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// formatAge: short human-readable duration since ``isoTs`` ("3m", "2h",
+// "1d"). Used to render a "waiting 3h" hint next to waiting status badges
+// so users can spot abandoned followups without opening the test. Returns
+// empty string when the timestamp is missing or invalid.
+function formatAge(isoTs) {
+  if (!isoTs) return '';
+  const t = Date.parse(isoTs);
+  if (isNaN(t)) return '';
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 60)       return s + 's';
+  if (s < 3600)     return Math.floor(s / 60) + 'm';
+  if (s < 86400)    return Math.floor(s / 3600) + 'h';
+  return Math.floor(s / 86400) + 'd';
+}
+
+// ============================================================
+// Sidebar Toggle
+// ============================================================
+let sidebarCollapsed = localStorage.getItem('sidebar_collapsed') === 'true';
+
+function toggleSidebar() {
+  sidebarCollapsed = !sidebarCollapsed;
+  applySidebarState();
+  localStorage.setItem('sidebar_collapsed', sidebarCollapsed);
+}
+
+function applySidebarState() {
+  const sidebar = $('sidebar');
+  const main = $('main-content');
+  const icon = $('sidebar-toggle-icon');
+  if (sidebarCollapsed) {
+    sidebar.classList.add('collapsed');
+    main.classList.add('sidebar-collapsed');
+    icon.textContent = 'chevron_right';
+  } else {
+    sidebar.classList.remove('collapsed');
+    main.classList.remove('sidebar-collapsed');
+    icon.textContent = 'chevron_left';
+  }
+}
+
+// Apply on load (before init)
+document.addEventListener('DOMContentLoaded', applySidebarState);
+
+// ============================================================
+// Theme Toggle
+// ============================================================
+let darkTheme = localStorage.getItem('dark_theme') === 'true';
+
+function toggleTheme() {
+  darkTheme = !darkTheme;
+  applyTheme();
+  localStorage.setItem('dark_theme', darkTheme);
+}
+
+function applyTheme() {
+  const icon = $('theme-toggle-icon');
+  const label = $('theme-toggle-label');
+  if (darkTheme) {
+    document.body.classList.add('dark');
+    if (icon) icon.textContent = 'light_mode';
+    if (label) label.textContent = 'Light Mode';
+  } else {
+    document.body.classList.remove('dark');
+    if (icon) icon.textContent = 'dark_mode';
+    if (label) label.textContent = 'Dark Mode';
+  }
+}
+
+document.addEventListener('DOMContentLoaded', applyTheme);
+
+function toast(msg, type='info') {
+  const c = {
+    info:'bg-blue-50 text-blue-700 border-blue-200',
+    success:'bg-green-50 text-green-700 border-green-200',
+    error:'bg-red-50 text-red-700 border-red-200',
+    warning:'bg-amber-50 text-amber-700 border-amber-200',
+  }[type] || 'bg-blue-50 text-blue-700 border-blue-200';
+  const el = document.createElement('div');
+  el.className = `toast px-4 py-2 rounded-lg border text-[12px] font-medium shadow-sm ${c}`;
+  el.textContent = msg;
+  $('toasts').appendChild(el);
+  setTimeout(() => el.remove(), 5000);
+}
+
+function _btnLoading(btn, loading) {
+  if (!btn) return;
+  if (loading) {
+    btn._origHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.classList.add('opacity-60', 'pointer-events-none');
+    btn.innerHTML = '<span class="spinner" style="width:12px;height:12px;border-width:2px;display:inline-block;vertical-align:middle"></span>';
+  } else {
+    btn.disabled = false;
+    btn.classList.remove('opacity-60', 'pointer-events-none');
+    if (btn._origHtml !== undefined) btn.innerHTML = btn._origHtml;
+  }
+}
+
+async function api(method, path, body) {
+  try {
+    const opts = { method, headers: { 'Content-Type': 'application/json' } };
+    if (body) opts.body = JSON.stringify(body);
+    const r = await fetch(path, opts);
+    const data = await r.json().catch(() => null);
+    if (!r.ok) throw new Error(data?.detail || `HTTP ${r.status}`);
+    return data;
+  } catch (e) {
+    console.error(`API ${method} ${path}:`, e);
+    toast(e.message, 'error');
+    return null;
+  }
+}
+
+async function resolveName(type, id) {
+  if (!id) return '—';
+  const key = `${type}_${id}`;
+  if (nameCache[key]) return nameCache[key];
+  const data = await api('GET', `/dashboard/resolve/${type}/${id}`);
+  const name = data?.name || id.slice(0, 8);
+  nameCache[key] = name;
+  return name;
+}
+
+function statusBadge(state) {
+  const m = {
+    gathered:'bg-indigo-50 text-indigo-700 border-indigo-200',
+    running:'bg-blue-50 text-blue-700 border-blue-200',
+    paused:'bg-yellow-50 text-yellow-700 border-yellow-200',
+    completed:'bg-green-50 text-green-700 border-green-200',
+    stopped:'bg-gray-100 text-gray-600 border-gray-200',
+    failed:'bg-red-50 text-red-700 border-red-200',
+    evaluating:'bg-purple-50 text-purple-700 border-purple-200',
+    waiting:'bg-amber-50 text-amber-700 border-amber-200',
+    skipped:'bg-slate-50 text-slate-600 border-slate-200'
+  };
+  const cls = m[state] || m.stopped;
+  return `<span class="inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase border ${cls}">${state}</span>`;
+}
+
+// Normalize score: API returns 0-100, convert to 0-1 if needed
+function normScore(v) { return v > 1 ? v / 100 : v; }
+function scoreColor(v) { v = normScore(v); return v >= 0.7 ? '#10B981' : v >= 0.4 ? '#F59E0B' : v > 0 ? '#EF4444' : '#D1D5DB'; }
+function scoreBar(v) {
+  v = normScore(v);
+  const p = Math.round(v * 100), c = scoreColor(v);
+  return `<div class="flex items-center gap-1.5"><div class="score-bar flex-1"><div class="score-fill" style="width:${p}%;background:${c}"></div></div><span class="text-[11px] font-semibold w-[30px] text-right" style="color:${c}">${p}%</span></div>`;
+}
+
+function fmtDuration(s) { if (!s) return '—'; const m = Math.floor(s/60), ss = Math.round(s%60); return m ? `${m}m ${ss}s` : `${ss}s`; }
+function fmtDate(d) { return d ? d.slice(0,16).replace('T',' ') : '—'; }
+
+function renderPagination(totalItems, pageNum, pageSize, onPageChange, pageSizeCallback) {
+  const totalPages = Math.ceil(totalItems / pageSize);
+  if (totalPages <= 1) return '';
+  const start = (pageNum - 1) * pageSize + 1;
+  const end = Math.min(pageNum * pageSize, totalItems);
+
+  // Prev button
+  const prevCls = pageNum <= 1 ? 'text-gray-300 cursor-not-allowed' : 'text-gray-500 hover:bg-gray-200 cursor-pointer';
+  let prevBtn = `<button onclick="${pageNum > 1 ? onPageChange + '(' + (pageNum-1) + ')' : ''}" class="w-[28px] h-[28px] flex items-center justify-center rounded-[36%] ${prevCls} transition-all" ${pageNum<=1?'disabled':''}><span class="material-icons-outlined text-[16px]">chevron_left</span></button>`;
+
+  // Page numbers (show max 7 with ellipsis)
+  let pages = [];
+  if (totalPages <= 7) {
+    for (let i = 1; i <= totalPages; i++) pages.push(i);
+  } else {
+    pages.push(1);
+    if (pageNum > 3) pages.push('...');
+    for (let i = Math.max(2, pageNum-1); i <= Math.min(totalPages-1, pageNum+1); i++) pages.push(i);
+    if (pageNum < totalPages - 2) pages.push('...');
+    pages.push(totalPages);
+  }
+
+  const pageButtons = pages.map(p => {
+    if (p === '...') return `<span class="w-[28px] h-[28px] flex items-center justify-center text-[12px] text-gray-400">…</span>`;
+    const active = p === pageNum ? 'bg-gray-600 text-white' : 'text-gray-600 hover:bg-gray-200';
+    return `<button onclick="${onPageChange}(${p})" class="w-[28px] h-[28px] text-[12px] font-medium rounded-[36%] ${active} transition-all">${p}</button>`;
+  }).join('');
+
+  // Next button
+  const nextCls = pageNum >= totalPages ? 'text-gray-300 cursor-not-allowed' : 'text-gray-500 hover:bg-gray-200 cursor-pointer';
+  let nextBtn = `<button onclick="${pageNum < totalPages ? onPageChange + '(' + (pageNum+1) + ')' : ''}" class="w-[28px] h-[28px] flex items-center justify-center rounded-[36%] ${nextCls} transition-all" ${pageNum>=totalPages?'disabled':''}><span class="material-icons-outlined text-[16px]">chevron_right</span></button>`;
+
+  // Rows per page selector
+  const rowsOptions = [5, 10, 15, 20, 25, 30, 50];
+  const rowsSelect = pageSizeCallback ? `<div class="flex items-center gap-2">
+    <span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Rows</span>
+    <select onchange="${pageSizeCallback}(parseInt(this.value))" class="az-select border border-gray-200/80 rounded-xl px-2 py-1 text-[11px] bg-white/80 outline-none transition-all">
+      ${rowsOptions.map(n => `<option value="${n}" ${n===pageSize?'selected':''}>${n}</option>`).join('')}
+    </select>
+  </div>` : '';
+
+  return `<div class="flex items-center justify-between mt-3 px-1">
+    <div class="text-[11px] text-gray-500">
+      Showing <b class="text-gray-700">${start}–${end}</b> of <b class="text-gray-700">${totalItems}</b> results
+    </div>
+    <div class="bg-gray-100/70 rounded-full px-2 py-1 flex items-center gap-0.5">
+      ${prevBtn}${pageButtons}${nextBtn}
+    </div>
+    ${rowsSelect}
+  </div>`;
+}
+
+// ============================================================
+// Navigation
+// ============================================================
+function navigate(page, runId) {
+  currentPage = page;
+  clearInterval(refreshTimer);
+  document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
+  document.querySelectorAll('.nav-link').forEach(l => {
+    l.classList.toggle('nav-active', l.dataset.page === page);
+  });
+
+  if (page === 'runs') {
+    show('page-runs');
+    window.location.hash = 'runs';
+    loadRuns();
+    startAutoRefresh();
+  } else if (page === 'detail') {
+    currentRunId = runId;
+    show('page-detail');
+    show('detail-loading');
+    hide('detail-content');
+    hide('detail-error');
+    window.location.hash = `run/${runId}`;
+    loadRunDetail(runId);
+    startAutoRefresh();
+  } else if (page === 'benchmark') {
+    show('page-benchmark');
+    window.location.hash = 'benchmark';
+    loadBenchmarkForm();
+  } else if (page === 'report') {
+    show('page-report');
+    window.location.hash = 'report';
+    populateRunSelects();
+  } else if (page === 'compare') {
+    show('page-compare');
+    window.location.hash = 'compare';
+    populateRunSelects();
+  } else if (page === 'infra') {
+    show('page-infra');
+    window.location.hash = 'infra';
+    loadInfraPage();
+  } else if (page === 'analyzer') {
+    show('page-analyzer');
+    window.location.hash = 'analyzer';
+    azLoadFilterForm();
+  }
+}
+
+// Check if user is actively interacting with a followup form
+function _isFollowupFormActive() {
+  const el = document.activeElement;
+  return el && el.closest && el.closest('[id^="followup-panel-"]') !== null;
+}
+
+// Track which tests we've already notified about to avoid repeated alerts
+const _notifiedWaitingTests = new Set();
+
+function _notifyFollowup(testIndex, testId, question) {
+  const key = `${currentRunId}_${testIndex}`;
+  if (_notifiedWaitingTests.has(key)) return;
+  _notifiedWaitingTests.add(key);
+
+  // Play notification sound using a data URI beep (works without user gesture)
+  try {
+    // Base64-encoded short WAV beep
+    const beepAudio = new Audio('data:audio/wav;base64,UklGRl9vT19teleVBFTVQgAAAAGAAQAD6AAAA9AEAABAAIABkYXRhQW9PfwB/AH8AfwB/AH8AfwB/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8A/wD/AP8AfwB/AH8AfwB/AH8AfwB/AA==');
+    beepAudio.volume = 0.5;
+    beepAudio.play().catch(() => {});
+  } catch (e) {}
+
+  // Persistent on-screen banner (stays until user dismisses or test status changes)
+  const bannerId = 'followup-banner-' + testIndex;
+  if (!document.getElementById(bannerId)) {
+    const banner = document.createElement('div');
+    banner.id = bannerId;
+    banner.className = 'fixed top-4 left-1/2 -translate-x-1/2 z-[100] max-w-xl w-full px-5 py-3 bg-amber-500 text-white rounded-xl shadow-2xl border border-amber-600 flex items-start gap-3 animate-bounce-once';
+    banner.innerHTML = `
+      <span class="material-icons-outlined text-[22px] mt-0.5 shrink-0">notifications_active</span>
+      <div class="flex-1 min-w-0">
+        <div class="text-[13px] font-semibold">Followup Required — Test #${testIndex}</div>
+        <div class="text-[11px] opacity-90 mt-0.5 truncate">${esc(testId)}: ${esc(question.slice(0, 120))}</div>
+      </div>
+      <button onclick="this.parentElement.remove()" class="shrink-0 text-white/70 hover:text-white text-[18px] leading-none">&times;</button>
+    `;
+    document.body.appendChild(banner);
+    // Auto-dismiss after 15 seconds
+    setTimeout(() => { const el = document.getElementById(bannerId); if (el) el.remove(); }, 15000);
+  }
+
+  // Browser notification (if permission granted)
+  if ('Notification' in window && Notification.permission === 'granted') {
+    new Notification('Benchmark: Followup Required', {
+      body: `Test #${testIndex} (${testId}): ${question.slice(0, 100)}`,
+      tag: key,
+    });
+  } else if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}
+
+function startAutoRefresh() {
+  clearInterval(refreshTimer);
+  refreshTimer = setInterval(() => {
+    if (currentPage === 'runs' && $('runs-auto-refresh')?.checked) loadRuns(true);
+    if (currentPage === 'detail' && currentRunId && !_isFollowupFormActive()) loadRunDetail(currentRunId, true);
+  }, 10000);
+}
+
+// ============================================================
+// Runs List
+// ============================================================
+let _runsSearchTimer = null;
+function debouncedLoadRuns() { clearTimeout(_runsSearchTimer); _runsSearchTimer = setTimeout(() => { runsPageNum = 1; loadRuns(); }, 300); }
+
+async function loadRuns(silent) {
+  if (!silent) { show('runs-loading'); hide('runs-empty'); hide('runs-error'); $('runs-list').innerHTML = ''; }
+  // Populate agent filter dropdown once
+  const af = $('runs-filter-agent');
+  if (af && af.options.length <= 1) {
+    if (!agents.length) { const d = await api('GET', '/agent-benchmark/agents'); if (d) agents = d.agents || []; }
+    af.innerHTML = '<option value="">All Agents</option>' + agents.map(a => `<option value="${a.name}">${a.name}</option>`).join('');
+  }
+
+  const agent = $('runs-filter-agent')?.value || '';
+  const status = $('runs-filter-status')?.value || '';
+  const search = $('runs-search')?.value?.trim() || '';
+  const user = $('runs-filter-user')?.value?.trim() || '';
+  let url = `/agent-benchmark/runs/list?page=${runsPageNum}&page_size=${runsPageSize}`;
+  if (agent) url += `&agent=${encodeURIComponent(agent)}`;
+  if (status) url += `&status=${encodeURIComponent(status)}`;
+  if (search) url += `&search=${encodeURIComponent(search)}`;
+  if (user) url += `&user=${encodeURIComponent(user)}`;
+  const data = await api('GET', url);
+  hide('runs-loading');
+
+  if (!data || !data.runs) {
+    if (!silent) { show('runs-error'); $('runs-error').textContent = 'Failed to load runs.'; }
+    return;
+  }
+  if (data.total === 0) { show('runs-empty'); $('runs-list').innerHTML = ''; return; }
+  hide('runs-empty');
+  runsList = data.runs;
+  runsTotalItems = data.total;
+
+  // Populate user filter dropdown from run data (no extra query)
+  const uf = $('runs-filter-user');
+  if (uf && uf.options.length <= 1) {
+    const emails = [...new Set(data.runs.map(r => r.user_email).filter(Boolean))].sort();
+    uf.innerHTML = '<option value="">All Users</option>' + emails.map(u => `<option value="${u}">${u}</option>`).join('');
+  }
+
+  renderRunsList();
+}
+
+function setRunsPage(p) { runsPageNum = p; loadRuns(); }
+function setRunsPageSize(s) { runsPageSize = s; runsPageNum = 1; loadRuns(); }
+
+function renderRunsList() {
+  const total = runsTotalItems;
+  const pageItems = runsList;
+
+  const html = pageItems.map(r => {
+    const tenant = r.tenant_name || r.tenant_id?.slice(0,8) || '';
+    const account = r.account_name || r.account_id?.slice(0,8) || '';
+    const borderCls = {running:'border-l-blue-500',paused:'border-l-yellow-500',completed:'border-l-green-500',stopped:'border-l-gray-400',failed:'border-l-red-500',evaluating:'border-l-purple-500',gathered:'border-l-indigo-500'}[r.state] || 'border-l-gray-300';
+    const progParts = r.progress.split('/');
+    const progPct = progParts[1] > 0 ? Math.round(progParts[0] / progParts[1] * 100) : 0;
+    const dotColor = {running:'bg-blue-500',paused:'bg-yellow-500',completed:'bg-green-500',stopped:'bg-gray-400',failed:'bg-red-500',evaluating:'bg-purple-500',gathered:'bg-indigo-500'}[r.state] || 'bg-gray-300';
+    return `<a href="#" onclick="navigate('detail','${r.run_id}');return false"
+      class="grid grid-cols-[0.6fr_1.4fr_1fr_0.5fr_1fr_0.8fr_0.5fr_0.8fr_0.3fr] gap-2 px-3.5 py-[11px] bg-white border border-gray-200/70 rounded-lg hover:shadow-sm hover:border-indigo-200 transition-all duration-200 cursor-pointer items-center mt-1">
+      <span class="font-bold text-[11px] text-gray-700">${r.agent.toUpperCase()}</span>
+      <span class="flex items-center gap-1.5 truncate">
+        <span class="text-[9px] text-gray-400 font-mono">${r.run_id}</span>
+        ${r.run_name ? `<span class="text-[10px] text-gray-500 truncate">${r.run_name}</span>` : ''}
+      </span>
+      <span class="text-[10px] text-gray-500 truncate">${r.user_email || '—'}</span>
+      <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full ${dotColor}"></span><span class="text-[10px] text-gray-600 capitalize">${r.state}</span></span>
+      <span class="text-[10px] text-gray-500 truncate">${tenant}${account ? ' / ' + account : ''}</span>
+      <span class="flex items-center gap-1.5">
+        <span class="flex-1 h-1.5 bg-gray-100 rounded-full max-w-[50px]"><span class="block h-1.5 ${dotColor} rounded-full" style="width:${progPct}%"></span></span>
+        <span class="text-[11px] text-gray-600 font-medium">${r.progress}</span>
+      </span>
+      <span class="text-[10px] text-gray-500">${fmtDuration(r.duration_seconds)}</span>
+      <span class="text-[10px] text-gray-400">${fmtDate(r.created_at)}</span>
+      <span class="text-[10px] ${r.errors ? 'text-red-500 font-medium' : 'text-gray-400'}">${r.errors || '—'}</span>
+    </a>`;
+  }).join('');
+
+  $('runs-list').innerHTML = html + renderPagination(total, runsPageNum, runsPageSize, 'setRunsPage', 'setRunsPageSize');
+}
+
+// ============================================================
+// Run Detail
+// ============================================================
+async function loadRunDetail(runId, silent) {
+  if (!silent) detailTestPageNum = 1;
+  const s = await api('GET', `/agent-benchmark/${runId}/status`);
+
+  if (!s) {
+    hide('detail-loading');
+    show('detail-error');
+    $('detail-error').textContent = `Run ${runId} not found.`;
+    hide('detail-content');
+    return;
+  }
+
+  const tenant = await resolveName('tenant', s.tenant_id);
+  const account = await resolveName('account', s.account_id);
+  const dur = fmtDuration(s.duration_seconds);
+  const models = (s.model_names || []).join(', ') || '—';
+  const [cur, tot] = (s.progress || '0/0').split('/').map(Number);
+  const pct = tot > 0 ? Math.round(cur/tot*100) : 0;
+
+  const borderCls = {running:'border-l-blue-500',paused:'border-l-yellow-500',completed:'border-l-green-500',stopped:'border-l-gray-400',failed:'border-l-red-500',evaluating:'border-l-purple-500',gathered:'border-l-indigo-500'}[s.state] || 'border-l-gray-300';
+
+  const summary = s.test_results_summary || {};
+  const metaItems = [
+    {label: 'Started', value: fmtDate(s.started_at || s.created_at)},
+    {label: 'Duration', value: dur},
+    {label: 'Progress', value: s.progress},
+    {label: 'Tenant', value: `${tenant} / ${account}`},
+  ];
+  if (s.user_email) metaItems.push({label: 'Triggered by', value: s.user_email});
+  if (summary.total) {
+    const sc = (v) => { const c = v >= 80 ? 'text-green-600' : v >= 50 ? 'text-yellow-600' : 'text-red-500'; return `<span class="${c} font-semibold">${v}%</span>`; };
+    const sc01 = (v) => { const c = v >= 80 ? 'text-green-600' : v >= 50 ? 'text-yellow-600' : 'text-red-500'; return `<span class="${c} font-semibold">${v.toFixed(0)}%</span>`; };
+    const oa = summary.overall_accuracy != null ? summary.overall_accuracy.toFixed(1) : summary.success_rate;
+    metaItems.push({label: 'Accuracy', value: sc(oa)});
+    metaItems.push({label: 'Avg Scores', value: `Answer: ${sc01(summary.avg_similarity||0)} · Relevancy: ${sc01(summary.avg_relevancy||0)} · Planner: ${sc01(summary.avg_planner||0)}`});
+  }
+  if (models !== '—') metaItems.push({label: 'Model', value: models});
+  const meta = metaItems.map(m => `<span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">${m.label}</span> <span class="text-[11px] text-gray-600">${m.value}</span>`);
+
+  // Infra
+  let infraHtml = '';
+  const agentData = agents.find(a => a.name === s.agent);
+  let infraStatus = null;
+  if (agentData?.has_infra) {
+    infraStatus = await api('GET', `/agent-benchmark/infra/status?agent=${s.agent}`);
+    if (infraStatus) {
+      const ist = infraStatus.status || 'unknown';
+      const ic = {deployed:'bg-green-50 text-green-700 border-green-200', deploying:'bg-yellow-50 text-yellow-700 border-yellow-200', nuking:'bg-yellow-50 text-yellow-700 border-yellow-200', failed:'bg-red-50 text-red-700 border-red-200', nuke_failed:'bg-red-50 text-red-700 border-red-200'}[ist] || 'bg-gray-50 text-gray-600 border-gray-200';
+      const scenarios = (infraStatus.scenarios || []).join(', ');
+      infraHtml = `<div class="px-3 py-1.5 rounded-lg border text-[11px] ${ic} mb-2 flex items-center justify-between">
+        <span>Infrastructure: <b>${ist}</b>${scenarios ? ` (${scenarios})` : ''}</span>
+        <a href="#infra" onclick="navigate('infra');return false" class="text-[10px] text-blue-600 hover:text-blue-700 font-medium flex items-center gap-0.5">Manage <span class="material-icons-outlined text-[12px]">arrow_forward</span></a>
+      </div>`;
+    }
+  }
+
+  // Tests — check for new waiting tests and notify
+  const tests = s.test_results || [];
+  if (silent) {
+    for (const t of tests) {
+      if (t.status === 'waiting' && t.followup_request) {
+        _notifyFollowup(t.test_index, t.test_id, t.followup_request.question || 'Response needed');
+      }
+    }
+  }
+  // Clear pending followup-submission cards for any test that has moved
+  // out of ``waiting`` since the last render (server finished or failed).
+  for (const t of tests) {
+    if (t.status !== 'waiting') {
+      _prunePendingFollowupsForTest(runId, t.test_index, null);
+    }
+  }
+  const isPending = (t) => ['pending','skipped'].includes(t.status);
+  const testRows = tests.map(t => {
+    const cls = {pass:'border-l-green-500', fail:'border-l-red-500', running:'border-l-blue-500 bg-blue-50/30', pending:'border-l-gray-200', error:'border-l-yellow-500', stopped:'border-l-gray-400', waiting:'border-l-amber-500 bg-amber-50/30', skipped:'border-l-slate-300 bg-slate-50/30'}[t.status] || 'border-l-gray-300';
+    const stCls = {pass:'text-green-600', fail:'text-red-500', running:'text-blue-600', pending:'text-gray-400', error:'text-yellow-600', stopped:'text-gray-500', waiting:'text-amber-600', skipped:'text-slate-500'}[t.status] || 'text-gray-400';
+    const canRun = ['pending','fail','error','stopped','waiting','pass'].includes(t.status);
+    const isRetry = ['fail','error','stopped','pass'].includes(t.status);
+    const isReRun = t.status === 'pass';
+    let btnClass, btnLabel;
+    if (isReRun) {
+      btnClass = 'px-2 py-0.5 text-[10px] font-medium rounded border border-amber-200 text-amber-700 bg-amber-50 hover:bg-amber-100';
+      btnLabel = 'Retry';
+    } else if (isRetry) {
+      btnClass = 'px-2 py-0.5 text-[10px] font-medium rounded border border-blue-200 text-blue-600 bg-blue-50 hover:bg-blue-100';
+      btnLabel = 'Retry';
+    } else {
+      btnClass = 'text-gray-400 hover:text-blue-600';
+      btnLabel = '<span class="material-icons-outlined text-[12px]">play_circle</span>';
+    }
+    // JSON.stringify makes runId/test_id valid JS literals (double-quoted);
+    // escAttr then encodes those quotes (and any HTML metachars) so the
+    // resulting onclick="..." attribute parses correctly. Plain esc() leaves
+    // " untouched, which would close the onclick attribute prematurely and
+    // produce an "Unexpected end of input" SyntaxError when the button is clicked.
+    const onClickFn = isReRun
+      ? `confirmRunTest(${JSON.stringify(runId)},${t.test_index},${JSON.stringify(t.test_id || '')})`
+      : `runTest(${JSON.stringify(runId)},${t.test_index})`;
+    const playBtn = canRun
+      ? `<button onclick="event.stopPropagation();${escAttr(onClickFn)}" class="${btnClass} transition-all" title="Retry #${t.test_index}">${btnLabel}</button>`
+      : '';
+    const err = t.error_message ? `<span class="text-[10px] ${t.status === 'skipped' ? 'text-slate-500' : 'text-red-500'} truncate" title="${esc(t.error_message)}">${esc(t.error_message.slice(0,40))}</span>` : '';
+    // Hide scores for pending tests
+    const sim = isPending(t) ? '<span class="text-gray-300">—</span>' : scoreBar(t.answer_similarity||0);
+    const rel = isPending(t) ? '<span class="text-gray-300">—</span>' : scoreBar(t.answer_relevancy||0);
+    const plan = isPending(t) ? '<span class="text-gray-300">—</span>' : scoreBar(t.planner_relevancy||0);
+    const durStr = isPending(t) ? '' : `${(t.duration_seconds||0).toFixed(1)}s`;
+    const detailId = 'detail-test-' + t.test_index;
+    const query = esc((t.query || '').slice(0, 200));
+    const hasDetail = !isPending(t) || t.status === 'skipped';
+    const onclickStr = hasDetail ? "document.getElementById('" + detailId + "').classList.toggle('hidden')" : '';
+    const cursorCls = hasDetail ? 'cursor-pointer' : '';
+
+    // Detail panel (hidden by default, auto-expanded for waiting tests)
+    let detailPanel = '';
+    if (hasDetail) {
+      const toolNames = (t.tool_names || []).join(', ') || '—';
+      const modelNames = (t.model_names || []).join(', ') || '—';
+      const errDetail = t.error_message ? `<div class="mb-2"><span class="text-[10px] font-semibold ${t.status === 'skipped' ? 'text-slate-400' : 'text-red-400'} uppercase block mb-0.5">${t.status === 'skipped' ? 'Skip Reason' : 'Error'}</span><span class="${t.status === 'skipped' ? 'text-slate-600' : 'text-red-600'} text-[11px]">${esc(t.error_message)}</span></div>` : '';
+
+      // Followup panel for waiting tests — supports multiple concurrent followups
+      let followupPanel = '';
+      if (t.status === 'waiting' && t.followup_request) {
+        // Unified shape: prefer ``followups`` list. Fall back to legacy
+        // ``_all`` array, then to the single top-level followup_request.
+        const fr = t.followup_request;
+        const allFollowups = (Array.isArray(fr.followups) && fr.followups.length > 0)
+          ? fr.followups
+          : ((Array.isArray(fr._all) && fr._all.length > 0) ? fr._all : [fr]);
+
+        // Prune → transition pending markers: entries whose messageId is
+        // gone from the server's list are flipped to ``answered`` state
+        // and remain rendered so the user retains a visible record of
+        // what they submitted in this round.
+        _prunePendingFollowupsForTest(
+          runId,
+          t.test_index,
+          new Set(allFollowups.map(x => x && x.message_id).filter(Boolean))
+        );
+
+        // Collect ``answered`` markers (submitted + consumed by server) so
+        // we can render them above the still-pending input forms.
+        const answeredEntries = [];
+        const runPrefix = runId + ':' + t.test_index + ':';
+        for (const [key, entry] of _pendingFollowupSubmissions.entries()) {
+          if (key.startsWith(runPrefix) && entry && entry.state === 'answered') {
+            answeredEntries.push({ messageId: key.slice(runPrefix.length), entry });
+          }
+        }
+
+        const answeredPanels = answeredEntries.map(({ messageId }, ai) => {
+          const pending = _getPendingFollowup(runId, t.test_index, messageId);
+          const panelDivId = `followup-answered-${t.test_index}-${ai}`;
+          return _renderPendingFollowupCard(panelDivId, pending);
+        });
+
+        const panels = allFollowups.map((fq, fqIdx) => {
+          const inputId = `followup-input-${t.test_index}-${fqIdx}`;
+          let inputHtml = '';
+
+          const panelDivId = `followup-item-${t.test_index}-${fqIdx}`;
+          const fqAgentId = fq.agent_id || '';
+          const fqMessageId = fq.message_id || '';
+          // Submitting followup (not yet consumed) — render the blue
+          // Agent-Resuming card instead of the input form. Matching
+          // ``answered`` entries above are already rendered.
+          const pending = _getPendingFollowup(runId, t.test_index, fqMessageId);
+          if (pending && pending.state !== 'answered') {
+            return _renderPendingFollowupCard(panelDivId, pending);
+          }
+          if (fq.followup_type === 'tool_confirmation') {
+            inputHtml = `<div class="flex gap-2 mt-2">
+              <button onclick="event.stopPropagation();submitFollowup('${runId}',${t.test_index},'yes','${panelDivId}','${fqAgentId}','${fqMessageId}')" class="px-4 py-1.5 text-[12px] rounded-full bg-green-500 text-white hover:bg-green-600 transition-all">Yes</button>
+              <button onclick="event.stopPropagation();submitFollowup('${runId}',${t.test_index},'no','${panelDivId}','${fqAgentId}','${fqMessageId}')" class="px-4 py-1.5 text-[12px] rounded-full bg-red-500 text-white hover:bg-red-600 transition-all">No</button>
+            </div>`;
+          } else if ((fq.followup_type === 'single_select' || fq.followup_type === 'tool_config') && fq.options && fq.options.length) {
+            inputHtml = '<div class="mt-2 space-y-1">' + fq.options.map((opt, i) =>
+              `<label class="flex items-center gap-2 py-1 text-[12px] text-gray-700 cursor-pointer">
+                <input type="radio" name="${inputId}" value="${esc(opt)}" ${i===0?'checked':''} class="accent-amber-500">
+                ${esc(opt)}
+              </label>`
+            ).join('') + '</div>';
+          } else if (fq.followup_type === 'multi_select' && fq.options && fq.options.length) {
+            inputHtml = '<div class="mt-2 space-y-1">' + fq.options.map(opt =>
+              `<label class="flex items-center gap-2 py-1 text-[12px] text-gray-700 cursor-pointer">
+                <input type="checkbox" name="${inputId}" value="${esc(opt)}" class="accent-amber-500">
+                ${esc(opt)}
+              </label>`
+            ).join('') + '</div>';
+          } else {
+            inputHtml = `<textarea id="${inputId}" class="w-full mt-2 border border-gray-200 rounded-lg px-3 py-2 text-[12px] outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-200" rows="3" placeholder="Type your response..." onclick="event.stopPropagation()"></textarea>`;
+          }
+
+          const submitBtn = fq.followup_type !== 'tool_confirmation'
+            ? `<button onclick="event.stopPropagation();submitFollowupFromInput('${runId}',${t.test_index},'${fq.followup_type}','${inputId}','${panelDivId}','${fqAgentId}','${fqMessageId}')" class="mt-2 px-4 py-1.5 text-[12px] rounded-full bg-amber-500 text-white hover:bg-amber-600 transition-all font-medium">Submit Response</button>`
+            : '';
+
+          const agentLabel = fq.agent_name || fq.tool_name || '';
+          // Full context label: tool_name on agent_name when both exist (e.g.
+          // "redis_command_executer @ redis"). Used by the Processing card
+          // after submit so users know which followup they just answered.
+          const agentContext = (fq.tool_name && fq.agent_name && fq.tool_name !== fq.agent_name)
+            ? `${fq.tool_name} @ ${fq.agent_name}`
+            : agentLabel;
+          return `<div id="${panelDivId}" data-agent-label="${esc(agentContext)}" class="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-2" onclick="event.stopPropagation()">
+            <div class="flex items-center gap-1.5 mb-2">
+              <span class="material-icons-outlined text-amber-500 text-[16px]">help_outline</span>
+              <span class="text-[10px] font-semibold text-amber-600 uppercase">Followup ${allFollowups.length > 1 ? (fqIdx+1) + '/' + allFollowups.length : 'Required'}</span>
+              ${agentLabel ? `<span class="text-[10px] text-amber-400 ml-1">(${esc(agentLabel)})</span>` : ''}
+            </div>
+            <div class="text-[12px] text-gray-700">${esc(fq.question || '')}</div>
+            ${inputHtml}
+            ${submitBtn}
+          </div>`;
+        });
+
+        // Render order: answered (history) first, then still-pending.
+        // Keeps the user's attention on the top row for the action needed
+        // while preserving a visible trail of what they already submitted.
+        followupPanel = `<div id="followup-panel-${t.test_index}">${answeredPanels.join('')}${panels.join('')}</div>`;
+      }
+
+      const isWaiting = t.status === 'waiting';
+      detailPanel = `<div id="${detailId}" class="${isWaiting ? '' : 'hidden'} bg-gray-50 border border-gray-100 rounded-b-md px-4 py-3 -mt-[1px] text-[12px]">
+        ${followupPanel}
+        <div class="grid grid-cols-3 gap-3 mb-2">
+          <div><span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">Model</span><span class="text-gray-700">${modelNames}</span></div>
+          <div><span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">Tools</span><span class="text-gray-700">${toolNames}</span></div>
+          <div><span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">Tokens</span><span class="text-gray-700">${(t.total_tokens||0).toLocaleString()}</span></div>
+        </div>
+        ${(t.session_id || t.conversation_id) ? (() => {
+          // Prefer session_id as the primary surfaced handle — it's what the
+          // token-usage / metrics APIs key on and is more useful for most
+          // debug workflows. Fall back to conversation_id when the row is
+          // still mid-flight and session_id isn't known yet. Expose the
+          // conversation_id as a secondary copyable chip when both exist
+          // (debug-log grep still needs the DB UUID).
+          const primaryLabel = t.session_id ? 'Session ID' : 'Conversation ID';
+          const primaryValue = t.session_id || t.conversation_id;
+          const secondary = (t.session_id && t.conversation_id) ? t.conversation_id : '';
+          return `<div class="mb-2">
+            <span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">${primaryLabel}</span>
+            <span class="inline-flex items-center gap-2">
+              <span class="text-[11px] font-mono text-gray-600 bg-gray-50 px-2 py-1 rounded inline-block select-all">${esc(primaryValue)}</span>
+              <button onclick="event.stopPropagation();copyConversationId(${escAttr(JSON.stringify(primaryValue))}, this)" class="text-[10px] px-2 py-1 rounded bg-gray-100 hover:bg-gray-200 text-gray-600 transition-colors" title="Copy ${primaryLabel}">
+                <span class="material-icons-outlined text-[12px] align-middle">content_copy</span>
+              </button>
+              ${secondary ? `
+                <span class="text-[9px] font-semibold text-gray-300 uppercase">conv:</span>
+                <span class="text-[11px] font-mono text-gray-500 bg-gray-50 px-2 py-1 rounded inline-block select-all">${esc(secondary)}</span>
+                <button onclick="event.stopPropagation();copyConversationId(${escAttr(JSON.stringify(secondary))}, this)" class="text-[10px] px-2 py-1 rounded bg-gray-100 hover:bg-gray-200 text-gray-600 transition-colors" title="Copy conversation ID">
+                  <span class="material-icons-outlined text-[12px] align-middle">content_copy</span>
+                </button>` : ''}
+            </span>
+          </div>`;
+        })() : ''}
+        ${errDetail}
+        ${t.score_reason ? (()=>{
+          const reasons = (t.score_reason||'').split(/(?=\[(?:Similarity|Quality|Planner)\])/);
+          const colorMap = {
+            Similarity:{t:'text-indigo-400',bg:'bg-indigo-50',b:'border-indigo-100'},
+            Quality:{t:'text-blue-400',bg:'bg-blue-50',b:'border-blue-100'},
+            Planner:{t:'text-emerald-400',bg:'bg-emerald-50',b:'border-emerald-100'}
+          };
+          const defStyle = colorMap.Quality;
+          return reasons.filter(r=>r.trim()).map(r=>{
+            const m = r.match(/^\[(\w+)\]\s*([\s\S]*)/);
+            const label = m ? m[1] : 'Score';
+            const text = m ? m[2].trim() : r.trim();
+            const s = colorMap[label]||defStyle;
+            return '<div class="mb-1.5"><span class="text-[10px] font-semibold '+s.t+' uppercase block mb-0.5">'+esc(label)+' Reason</span><div class="text-gray-700 '+s.bg+' rounded-lg p-2 border '+s.b+' text-[11px] whitespace-pre-wrap max-h-[80px] overflow-y-auto">'+esc(text)+'</div></div>';
+          }).join('');
+        })() : ''}
+        ${query ? `<div class="mb-2"><span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">Query</span><div class="text-gray-700 bg-white rounded-lg p-2 border border-gray-100 text-[11px] whitespace-pre-wrap max-h-[100px] overflow-y-auto">${query}</div></div>` : ''}
+        ${(t.expected_answer || t.actual_answer) ? `
+          <div class="grid grid-cols-2 gap-3">
+            <div><span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">Expected Answer</span><div class="text-gray-700 bg-white rounded-lg p-2 border border-gray-100 text-[11px] whitespace-pre-wrap max-h-[200px] overflow-y-auto">${esc(t.expected_answer || '—')}</div></div>
+            <div><span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">Actual Answer</span><div class="text-gray-700 bg-white rounded-lg p-2 border border-gray-100 text-[11px] whitespace-pre-wrap max-h-[200px] overflow-y-auto">${esc(t.actual_answer || '—')}</div></div>
+          </div>` : ''}
+      </div>`;
+    }
+
+    return '<div class="flex items-center gap-1">'
+      + '<div onclick="' + onclickStr + '" class="group flex-1 min-w-0 grid grid-cols-[28px_2.5fr_0.6fr_0.5fr_0.5fr_0.5fr_0.5fr_0.6fr_1fr] gap-2.5 items-center px-3.5 py-[7px] bg-white border border-gray-100 rounded-md border-l-[3px] ' + cls + ' hover:shadow-sm transition-all ' + cursorCls + '">'
+      + '<span class="text-[11px] text-gray-400 text-center">' + t.test_index + '</span>'
+      + '<span class="text-[11px] font-medium text-gray-700 truncate" title="' + esc(t.test_id||'') + '">' + esc(t.test_id||'') + '</span>'
+      + '<span class="text-[10px] font-semibold uppercase ' + stCls + '">' + t.status
+        + (t.status === 'waiting' && t.updated_at
+            ? ' <span class="font-normal text-amber-500 normal-case lowercase">· ' + formatAge(t.updated_at) + '</span>'
+            : '')
+        + '</span>'
+      + sim + rel + plan
+      + '<span class="text-[11px] text-gray-500">' + durStr + '</span>'
+      + '<span class="text-[11px] text-gray-500" title="cost in USD">' + (t.cost ? '$' + Number(t.cost).toFixed(2) : '—') + '</span>'
+      + '<span class="text-[10px]">' + err + '</span>'
+      + '</div>'
+      + (playBtn ? '<div class="shrink-0">' + playBtn + '</div>' : '')
+      + '</div>'
+      + detailPanel;
+  });
+
+  // Actions
+  const actions = [];
+  if (s.state==='gathered') actions.push({l:'Run All',fn:`runAction('/${runId}/run-all')`,p:true});
+  if (s.state==='running') actions.push({l:'Pause',fn:`runAction('/${runId}/pause')`});
+  if (s.state==='paused') actions.push({l:'Resume',fn:`runAction('/${runId}/resume')`});
+  if (['running','paused'].includes(s.state)) actions.push({l:'Stop',fn:`runAction('/${runId}/stop')`});
+  const hasResults = tests.some(t => ['pass','fail','error'].includes(t.status));
+  if (['completed','stopped'].includes(s.state) || hasResults) actions.push({l:'Report',fn:`viewReport('${runId}')`,p:true});
+  if (['completed','stopped','failed'].includes(s.state)) actions.push({l:'Re-evaluate',fn:`confirmAction('${runId}', 're-evaluate', 'Re-evaluate Scores', 'This will re-run RAGAS evaluation on all passed tests and update scores.', 'Existing test results and conversations will not be affected.', 'Re-evaluate', 'blue')`});
+  if (['failed','stopped'].includes(s.state)) {
+    actions.push({l:'Resume Run',fn:`runAction('/${runId}/restart')`});
+    actions.push({l:'Rerun',fn:`confirmRerun('${runId}')`});
+  }
+  if (s.state==='completed') {
+    actions.push({l:'Retry Errors',fn:`confirmAction('${runId}', 'restart', 'Retry Failed Tests', 'This will re-run all failed and errored tests. Passed tests will be skipped.', 'Existing passed results will be preserved.', 'Retry', 'blue')`});
+    actions.push({l:'Rerun',fn:`confirmRerun('${runId}')`});
+  }
+  // Resend report
+  if (['completed','stopped','failed'].includes(s.state) || hasResults) {
+    const defaultEmails = [s.user_email, ...(s.cc_emails || [])].filter(Boolean).join(', ');
+    window._emailCtx = { runId, defaultEmails, tenantId: s.tenant_id || '' };
+    actions.push({l:'Email Report',fn:"promptResendReport(window._emailCtx.runId,window._emailCtx.defaultEmails,window._emailCtx.tenantId)"});
+  }
+  // Infra actions removed — use dedicated Infrastructure page
+  // Delete run (terminal states only)
+  if (['completed','stopped','failed','gathered'].includes(s.state)) {
+    actions.push({l:'Delete',fn:`deleteRun('${runId}')`,danger:true});
+  }
+
+  const actionsHtml = actions.map(a => {
+    if (a.danger) return `<button onclick="${a.fn}" class="px-3 py-1.5 text-[11px] rounded-xl border border-red-200 bg-white text-red-500 hover:bg-red-50 hover:border-red-400 font-semibold transition-all">${a.l}</button>`;
+    if (a.p) return `<button onclick="${a.fn}" class="az-btn-primary text-white px-4 py-1.5 rounded-xl text-[11px] font-semibold transition-all">${a.l}</button>`;
+    return `<button onclick="${a.fn}" class="az-btn-secondary text-white px-3 py-1.5 rounded-xl text-[11px] font-semibold transition-all">${a.l}</button>`;
+  }).join('');
+
+  // Errors
+  let errHtml = '';
+  if (s.errors?.length) {
+    const items = s.errors.map(e => `<div class="text-[11px] text-red-600 py-1 border-b border-red-50 last:border-0"><b>${(e.time||'').slice(0,19)}</b>: ${esc(e.message||'')}</div>`).join('');
+    errHtml = `<details class="border border-gray-100 rounded-xl bg-white shadow-sm mb-2"><summary class="px-4 py-2 text-[12px] font-medium text-gray-600 cursor-pointer">Errors (${s.errors.length})</summary><div class="px-4 pb-3">${items}</div></details>`;
+  }
+
+  // Infra logs removed — available in dedicated Infrastructure page
+  let infraLog = '';
+
+  // On silent refresh, capture which detail panels are expanded before rebuild
+  let _expandedPanels = new Set();
+  if (silent) {
+    document.querySelectorAll('#detail-test-rows [id^="detail-test-"]:not(.hidden)').forEach(el => _expandedPanels.add(el.id));
+    // If a followup panel has user selections, skip re-render entirely
+    if ($('detail-test-rows')?.querySelector('[id^="followup-panel-"]')) {
+      return;
+    }
+  }
+
+  $('detail-content').innerHTML = `
+    <!-- Header card -->
+    <div class="az-agent-card mb-3 border-l-[4px] ${borderCls}">
+      <div class="az-agent-header px-5 py-3.5">
+        <div class="flex items-center gap-3 mb-2">
+          <span class="font-bold text-gray-700 text-[15px]">${s.agent.toUpperCase()}</span>
+          ${s.run_name ? `<span class="text-[11px] text-gray-500 font-medium">${s.run_name}</span>` : ''}
+          <span class="text-[9px] text-gray-400 font-mono bg-gray-100 px-1.5 py-0.5 rounded">${runId}</span>
+          ${statusBadge(s.state)}
+        </div>
+        <div class="az-stats-grid rounded-xl px-4 py-2.5 flex flex-wrap gap-x-6 gap-y-2">
+          ${metaItems.map(m => `<div class="min-w-[100px]"><span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider block mb-0.5">${m.label}</span><span class="text-[11px] text-gray-600 break-words">${m.value}</span></div>`).join('')}
+        </div>
+        ${tot > 0 ? `<div class="mt-3"><div class="w-full h-1.5 bg-gray-200 rounded-full overflow-hidden"><div class="h-full rounded-full bg-gradient-to-r from-blue-500 to-indigo-500 transition-all" style="width:${pct}%"></div></div><div class="text-right text-[9px] text-gray-400 mt-0.5">${cur}/${tot} (${pct}%)</div></div>` : ''}
+      </div>
+    </div>
+
+    ${infraHtml}
+    ${s.current_query ? `<p class="text-[11px] text-gray-500 italic mb-2 truncate">Current: ${esc(s.current_query.slice(0,150))}</p>` : ''}
+
+    <!-- Test results -->
+    <div class="flex items-center justify-between mb-2">
+      <span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Test Results — ${tests.length} total, <span class="text-green-600">${summary.success||0} pass</span>, <span class="text-red-500">${summary.failed||0} fail</span>${(summary.skipped||0) > 0 ? `, <span class="text-slate-500">${summary.skipped} skipped</span>` : ''} (${(summary.success_rate||0).toFixed(1)}%)</span>
+    </div>
+    <div class="az-agent-card overflow-hidden mb-3">
+      <div class="grid grid-cols-[28px_2.5fr_0.6fr_0.5fr_0.5fr_0.5fr_0.5fr_0.6fr_1fr] gap-3 px-4 py-2 text-[10px] font-semibold text-gray-400 uppercase tracking-wide bg-gray-50 border-b border-gray-100 sticky top-0 z-10">
+        <span>#</span><span>Test</span><span>Status</span><span>Sim</span><span>Rel</span><span>Plan</span><span>Dur</span><span>Cost</span><span>Error</span>
+      </div>
+      <div id="detail-test-rows" class="flex flex-col gap-[1px]"></div>
+    </div>
+    <div id="detail-test-pagination"></div>
+
+    <!-- Actions -->
+    <div class="flex flex-wrap gap-1.5 mb-3">${actionsHtml}</div>
+
+    <!-- Expandable sections -->
+    <div class="flex flex-col gap-2">
+      ${errHtml}
+      ${infraLog}
+    </div>
+  `;
+
+  // Render test rows with pagination
+  window._detailTestRows = testRows;
+  renderDetailTests();
+
+  // Restore expanded detail panels after re-render
+  if (_expandedPanels.size > 0) {
+    _expandedPanels.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.classList.remove('hidden');
+    });
+  }
+
+  // Show content, hide loader after everything is rendered
+  hide('detail-loading');
+  hide('detail-error');
+  show('detail-content');
+}
+
+function setDetailTestPage(p) { detailTestPageNum = p; renderDetailTests(); }
+function setDetailTestPageSize(s) { detailTestPageSize = s; detailTestPageNum = 1; renderDetailTests(); }
+
+function renderDetailTests() {
+  const allRows = window._detailTestRows || [];
+  const total = allRows.length;
+  const totalPages = Math.ceil(total / detailTestPageSize);
+  if (detailTestPageNum > totalPages) detailTestPageNum = totalPages || 1;
+  const start = (detailTestPageNum - 1) * detailTestPageSize;
+  const pageRows = allRows.slice(start, start + detailTestPageSize);
+
+  const el = $('detail-test-rows');
+  if (el) {
+    // If a followup panel exists with user interaction, skip full re-render
+    // to preserve radio/checkbox selections
+    const activePanel = el.querySelector('[id^="followup-panel-"]');
+    if (activePanel) {
+      // Only update non-waiting test rows, keep waiting ones intact.
+      // Exception: if the old panel has a "Processing" spinner (submitted followup),
+      // replace it so new followup panels can render (#28141).
+      const tmp = document.createElement('div');
+      tmp.innerHTML = pageRows.join('');
+      const newChildren = Array.from(tmp.children);
+      const oldChildren = Array.from(el.children);
+      for (let i = 0; i < newChildren.length; i++) {
+        if (i < oldChildren.length) {
+          const oldPanel = oldChildren[i].querySelector('[id^="followup-panel-"]');
+          const hasProcessingSpinner = oldPanel && oldPanel.querySelector('.animate-spin');
+          const hasDisabledButtons = oldPanel && oldPanel.querySelector('button[disabled]');
+          if (!oldPanel || hasProcessingSpinner || hasDisabledButtons) {
+            oldChildren[i].replaceWith(newChildren[i]);
+          }
+        } else {
+          el.appendChild(newChildren[i]);
+        }
+      }
+      // Remove extra old children
+      while (el.children.length > newChildren.length) {
+        el.removeChild(el.lastChild);
+      }
+    } else {
+      el.innerHTML = pageRows.join('');
+    }
+  }
+  const pgEl = $('detail-test-pagination');
+  if (pgEl) pgEl.innerHTML = renderPagination(total, detailTestPageNum, detailTestPageSize, 'setDetailTestPage', 'setDetailTestPageSize');
+}
+
+// Per-(run, test) in-flight retry guard. Prevents double-fire on rapid clicks.
+const _pendingRetries = new Set();
+
+async function runTest(runId, idx, opts) {
+  opts = opts || {};
+  const key = `${runId}:${idx}`;
+  if (_pendingRetries.has(key)) return;
+  _pendingRetries.add(key);
+
+  const btn = (typeof event !== 'undefined' && event) ? event.target.closest('button') : null;
+  _btnLoading(btn, true);
+  try {
+    const r = await api('POST', `/agent-benchmark/${runId}/run-test/${idx}`);
+    if (r) toast(r.message || `Test ${idx} started`, 'success');
+  } catch (e) {
+    toast(`Test ${idx} retry failed: ${e && e.message ? e.message : e}`, 'error');
+  } finally {
+    _pendingRetries.delete(key);
+    _btnLoading(btn, false);
+    // Dismiss the modal only after the POST resolves so failures are visible.
+    if (typeof opts.dismiss === 'function') {
+      try { opts.dismiss(); } catch (_) {}
+    }
+    setTimeout(() => loadRunDetail(runId), 500);
+  }
+}
+
+// Single-modal-per-test guard — rapid double-clicks on the row pill won't
+// stack overlays.
+const _openConfirmModals = new Set();
+
+function confirmRunTest(runId, idx, testId) {
+  const modalKey = `${runId}:${idx}`;
+  if (_openConfirmModals.has(modalKey)) return;
+  _openConfirmModals.add(modalKey);
+
+  const overlay = document.createElement('div');
+  overlay.className = 'fixed inset-0 bg-black/40 flex items-center justify-center z-50';
+  const label = testId ? `${testId} (#${idx})` : `#${idx}`;
+  overlay.innerHTML = `
+    <div class="bg-white rounded-2xl shadow-2xl p-6 max-w-sm mx-4">
+      <div class="flex items-center gap-3 mb-3">
+        <div class="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center">
+          <span class="material-icons-outlined text-amber-500 text-[22px]">warning</span>
+        </div>
+        <h3 class="text-[14px] font-bold text-gray-800">Retry passed test?</h3>
+      </div>
+      <p class="text-[12px] text-gray-600 leading-relaxed mb-1">Test ${esc(label)} passed. Retrying will overwrite its result and scores.</p>
+      <p class="text-[11px] text-gray-400 mb-5">The previous LLM conversation is preserved in history.</p>
+      <div class="flex justify-end gap-2">
+        <button data-action="cancel" class="px-4 py-2 text-[12px] font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-xl transition-all">Cancel</button>
+        <button data-action="confirm" class="px-4 py-2 text-[12px] font-semibold text-white bg-amber-500 hover:bg-amber-600 rounded-xl transition-all disabled:opacity-60 disabled:cursor-not-allowed">Retry</button>
+      </div>
+    </div>`;
+
+  let dismissed = false;
+  const dismiss = () => {
+    if (dismissed) return;
+    dismissed = true;
+    _openConfirmModals.delete(modalKey);
+    if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+  };
+
+  const confirmBtn = overlay.querySelector('button[data-action="confirm"]');
+  const cancelBtn = overlay.querySelector('button[data-action="cancel"]');
+  cancelBtn.addEventListener('click', dismiss);
+  overlay.addEventListener('click', e => { if (e.target === overlay) dismiss(); });
+  confirmBtn.addEventListener('click', () => {
+    confirmBtn.disabled = true;
+    _btnLoading(confirmBtn, true);
+    runTest(runId, idx, { dismiss });
+  });
+
+  document.body.appendChild(overlay);
+}
+
+// Copy conversation_id to clipboard with a brief visual confirmation.
+// Used by the per-test detail panel for quick debugging: operators can
+// paste the ID into DB queries or llm-server log searches directly.
+function copyConversationId(convId, btn) {
+  if (!convId) return;
+  const doCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(convId);
+    } catch (e) {
+      // Fallback for non-HTTPS or older browsers: hidden textarea + exec.
+      const ta = document.createElement('textarea');
+      ta.value = convId;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch (_) {}
+      document.body.removeChild(ta);
+    }
+  };
+  doCopy().then(() => {
+    toast('Conversation ID copied', 'success');
+    if (btn) {
+      const orig = btn.innerHTML;
+      btn.innerHTML = '<span class="material-icons-outlined text-[12px] align-middle">check</span>';
+      setTimeout(() => { btn.innerHTML = orig; }, 1200);
+    }
+  });
+}
+
+// Map from panel DOM id -> setInterval handle for live "elapsed" timers
+// on in-flight followup submissions. Each renderProcessing starts one;
+// loadRunDetail's re-render sweeps stale ones when the row transitions.
+const _followupTimers = {};
+
+function _stopFollowupTimer(panelId) {
+  const h = _followupTimers[panelId];
+  if (h) { clearInterval(h); delete _followupTimers[panelId]; }
+}
+
+// Track locally-submitted followup responses so the Agent-Resuming card
+// survives ``loadRunDetail`` re-renders (which would otherwise regenerate
+// the original input form from server-side state and wipe it out).
+// Keyed by ``runId:testIndex:messageId``. Entries are pruned when either
+// the followup disappears from the server response (server has moved on)
+// or the test transitions out of ``waiting``.
+const _pendingFollowupSubmissions = new Map();
+
+function _pendingKey(runId, testIdx, messageId) {
+  return runId + ':' + testIdx + ':' + (messageId || '__legacy__');
+}
+
+function _markFollowupPending(runId, testIdx, messageId, ctx) {
+  _pendingFollowupSubmissions.set(_pendingKey(runId, testIdx, messageId), ctx);
+}
+
+function _getPendingFollowup(runId, testIdx, messageId) {
+  return _pendingFollowupSubmissions.get(_pendingKey(runId, testIdx, messageId));
+}
+
+function _prunePendingFollowupsForTest(runId, testIdx, keepMessageIds) {
+  // Two-phase cleanup for pending followup markers:
+  //   - If ``keepMessageIds`` is null (test transitioned out of waiting),
+  //     drop every marker for this test — nothing to show anymore.
+  //   - Otherwise, any marker whose messageId is no longer in the server's
+  //     live followup list has been CONSUMED by the llm-server. Transition
+  //     it to ``answered`` state instead of deleting so the user retains
+  //     visibility of what they submitted while the next round is pending.
+  const prefix = runId + ':' + testIdx + ':';
+  for (const key of Array.from(_pendingFollowupSubmissions.keys())) {
+    if (!key.startsWith(prefix)) continue;
+    const entry = _pendingFollowupSubmissions.get(key);
+    if (keepMessageIds === null) {
+      _pendingFollowupSubmissions.delete(key);
+      continue;
+    }
+    const msgId = key.slice(prefix.length);
+    if (!keepMessageIds.has(msgId)) {
+      // Server consumed this followup — freeze the elapsed timer at the
+      // consumption moment and flip to ``answered`` display state.
+      if (entry && entry.state !== 'answered') {
+        entry.state = 'answered';
+        entry.answeredAt = entry.answeredAt || Date.now();
+        _pendingFollowupSubmissions.set(key, entry);
+      }
+    }
+  }
+}
+
+function _renderPendingFollowupCard(panelDivId, pending) {
+  // Panel innerHTML for a followup whose submission has been recorded.
+  // Two visual states:
+  //   - ``submitting``  -> spinner, "Agent Resuming", live elapsed timer.
+  //   - ``answered``    -> checkmark, "Answered", frozen elapsed summary.
+  // Either state shows the submitted value as a mono chip plus the agent
+  // context so multi-followup rows are unambiguous.
+  const state = pending.state || 'submitting';
+  const ctx = esc(pending.agentContext || '');
+  const ans = esc((pending.response || '').length > 80 ? pending.response.slice(0, 80) + '…' : pending.response);
+  const timerId = 'followup-elapsed-' + panelDivId;
+
+  if (state === 'answered') {
+    // Frozen summary. The end timestamp is when we first observed the
+    // server had consumed the answer (``answeredAt``); duration is the
+    // time from click-to-consumption, which is a useful debug signal.
+    const dur = _fmtElapsed(pending.startMs); // total until answeredAt not tracked separately; show as-is
+    _stopFollowupTimer(panelDivId);
+    return '<div id="' + panelDivId + '" data-agent-label="' + ctx + '" class="bg-emerald-50 border border-emerald-200 rounded-lg p-3 mb-2" onclick="event.stopPropagation()">'
+         + '<div class="py-1">'
+         +   '<div class="flex items-center gap-2 mb-2">'
+         +     '<span class="material-icons-outlined text-emerald-600 text-[14px]">check_circle</span>'
+         +     '<span class="text-[10px] font-semibold text-emerald-700 uppercase tracking-wide">Answered</span>'
+         +     '<span class="text-[11px] text-emerald-500 font-mono ml-auto">' + dur + '</span>'
+         +   '</div>'
+         +   '<div class="text-[11px] text-gray-500 mb-1">Submitted '
+         +     '<span class="inline-block px-2 py-0.5 ml-1 rounded bg-white text-gray-700 border border-gray-200 font-mono text-[11px]">' + ans + '</span>'
+         +   '</div>'
+         +   (ctx ? '<div class="text-[10px] text-gray-400">agent: ' + ctx + '</div>' : '')
+         + '</div>'
+         + '</div>';
+  }
+
+  // submitting — live timer
+  setTimeout(() => {
+    _stopFollowupTimer(panelDivId);
+    _followupTimers[panelDivId] = setInterval(() => {
+      const el = document.getElementById(timerId);
+      if (!el) { _stopFollowupTimer(panelDivId); return; }
+      el.textContent = _fmtElapsed(pending.startMs);
+    }, 1000);
+    const el = document.getElementById(timerId);
+    if (el) el.textContent = _fmtElapsed(pending.startMs);
+  }, 0);
+  return '<div id="' + panelDivId + '" data-agent-label="' + ctx + '" class="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-2" onclick="event.stopPropagation()">'
+       + '<div class="py-1">'
+       +   '<div class="flex items-center gap-2 mb-2">'
+       +     '<span class="material-icons-outlined text-blue-500 text-[14px] animate-spin">sync</span>'
+       +     '<span class="text-[10px] font-semibold text-blue-700 uppercase tracking-wide">Agent Resuming</span>'
+       +     '<span id="' + timerId + '" class="text-[11px] text-blue-500 font-mono ml-auto">' + _fmtElapsed(pending.startMs) + '</span>'
+       +   '</div>'
+       +   '<div class="text-[11px] text-gray-500 mb-1">Answered with '
+       +     '<span class="inline-block px-2 py-0.5 ml-1 rounded bg-white text-gray-700 border border-gray-200 font-mono text-[11px]">' + ans + '</span>'
+       +   '</div>'
+       +   (ctx ? '<div class="text-[10px] text-gray-400">agent: ' + ctx + '</div>' : '')
+       + '</div>'
+       + '</div>';
+}
+
+function _fmtElapsed(startMs) {
+  const s = Math.max(0, Math.round((Date.now() - startMs) / 1000));
+  if (s < 60)    return '0:' + String(s).padStart(2, '0');
+  const mm = Math.floor(s / 60), ss = s % 60;
+  if (mm < 60)   return String(mm) + ':' + String(ss).padStart(2, '0');
+  const hh = Math.floor(mm / 60);
+  return String(hh) + ':' + String(mm % 60).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
+}
+
+async function submitFollowup(runId, idx, response, panelId, agentId, messageId) {
+  // Mark only the submitted panel as processing — leave sibling panels untouched
+  // so users can submit other followups independently (#28141).
+  const submittedPanel = panelId ? document.getElementById(panelId) : null;
+  const agentContext = submittedPanel?.dataset?.agentLabel || '';
+  const startMs = Date.now();
+  // Record the pending submission in frontend state so subsequent
+  // loadRunDetail re-renders will keep drawing the Agent-Resuming card
+  // for this specific followup (keyed by messageId) until the server
+  // moves on or the test transitions out of waiting.
+  _markFollowupPending(runId, idx, messageId, { response, startMs, agentContext });
+
+  const renderProcessing = (answerText) => {
+    if (!submittedPanel) return;
+    const answerChip = answerText.length > 80 ? answerText.slice(0, 80) + '…' : answerText;
+    const timerId = 'followup-elapsed-' + panelId;
+    submittedPanel.innerHTML = `
+      <div class="py-1">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="material-icons-outlined text-blue-500 text-[14px] animate-spin">sync</span>
+          <span class="text-[10px] font-semibold text-blue-700 uppercase tracking-wide">Agent Resuming</span>
+          <span id="${timerId}" class="text-[11px] text-blue-500 font-mono ml-auto">0:00</span>
+        </div>
+        <div class="text-[11px] text-gray-500 mb-1">
+          Answered with
+          <span class="inline-block px-2 py-0.5 ml-1 rounded bg-white text-gray-700 border border-gray-200 font-mono text-[11px]">${esc(answerChip)}</span>
+        </div>
+        ${agentContext ? `<div class="text-[10px] text-gray-400">agent: ${esc(agentContext)}</div>` : ''}
+      </div>`;
+    submittedPanel.className = 'bg-blue-50 border border-blue-200 rounded-lg p-3 mb-2';
+    _stopFollowupTimer(panelId);
+    _followupTimers[panelId] = setInterval(() => {
+      const el = document.getElementById(timerId);
+      if (!el) { _stopFollowupTimer(panelId); return; }
+      el.textContent = _fmtElapsed(startMs);
+    }, 1000);
+  };
+  const renderError = (msg) => {
+    _stopFollowupTimer(panelId);
+    // Drop the pending marker so the next re-render shows the input form
+    // again (user can edit the answer and try again) rather than being
+    // stuck on an Agent-Resuming card that never resolves.
+    _pendingFollowupSubmissions.delete(_pendingKey(runId, idx, messageId));
+    if (!submittedPanel) return;
+    submittedPanel.innerHTML = `<div class="flex items-center justify-between gap-2 py-2">
+      <span class="text-red-500 text-[12px]">${esc(msg)}</span>
+      <button onclick="event.stopPropagation();loadRunDetail('${runId}', true);" class="text-[11px] px-3 py-1 rounded bg-blue-500 text-white hover:bg-blue-600">Refresh & Retry</button>
+    </div>`;
+    submittedPanel.className = 'bg-red-50 border border-red-200 rounded-lg p-4 mb-2';
+  };
+  renderProcessing(response);
+
+  try {
+    const payload = { response };
+    if (agentId) payload.agent_id = agentId;
+    if (messageId) payload.message_id = messageId;
+    // Idempotency key: stable per (test_index, messageId, agentId, response).
+    // Server dedupes repeat submissions within a 15min TTL. Makes Refresh &
+    // Retry + automatic client retries safe — no risk of double-firing the
+    // llm-server resume.
+    payload.idempotency_key = `${runId}:${idx}:${messageId||''}:${agentId||''}:${
+      (response||'').replace(/\s+/g,' ').slice(0,200)
+    }`;
+    // Race the POST against a 60s timeout so a hung request can't leave the
+    // panel in Processing forever. The benchmark endpoint just dispatches a
+    // background task and returns 202 within a second; 60s is plenty.
+    const postPromise = api('POST', `/agent-benchmark/${runId}/followup/${idx}`, payload);
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Submission timed out after 60s')), 60000));
+    const r = await Promise.race([postPromise, timeoutPromise]);
+    if (r) toast(r.message || 'Followup submitted — waiting for response', 'success');
+    // Poll periodically until the followup state changes.
+    let pollCount = 0;
+    const maxPolls = 120; // 120 * 15s = 30 min
+    const followupPoller = setInterval(async () => {
+      pollCount++;
+      if (pollCount >= maxPolls) { clearInterval(followupPoller); return; }
+      await loadRunDetail(runId, true);
+      // Stop polling if the test is no longer waiting (completed/failed) or panel was re-rendered
+      const panel = document.getElementById(`followup-panel-${idx}`);
+      if (!panel || !panel.querySelector('.animate-spin')) {
+        clearInterval(followupPoller);
+      }
+    }, 15000);
+    // Also do an immediate refresh after 5s
+    setTimeout(() => loadRunDetail(runId, true), 5000);
+  } catch (e) {
+    toast('Failed to submit followup: ' + e.message, 'error');
+    renderError('Submit failed: ' + e.message);
+  }
+}
+
+function submitFollowupFromInput(runId, idx, type, inputId, panelId, agentId, messageId) {
+  let response = '';
+  if (type === 'text') {
+    const el = document.getElementById(inputId);
+    response = el ? el.value.trim() : '';
+  } else if (type === 'single_select' || type === 'tool_config') {
+    const checked = document.querySelector('input[name="' + inputId + '"]:checked');
+    response = checked ? checked.value : '';
+  } else if (type === 'multi_select') {
+    const checked = document.querySelectorAll('input[name="' + inputId + '"]:checked');
+    response = JSON.stringify(Array.from(checked).map(c => c.value));
+  }
+  if (!response) { toast('Please provide a response', 'warning'); return; }
+  submitFollowup(runId, idx, response, panelId, agentId, messageId);
+}
+
+function confirmAction(runId, action, title, message, note, btnLabel, color) {
+  const colors = {
+    amber: { bg: 'bg-amber-50', icon: 'text-amber-500', btn: 'bg-amber-500 hover:bg-amber-600' },
+    blue: { bg: 'bg-blue-50', icon: 'text-blue-500', btn: 'bg-blue-500 hover:bg-blue-600' },
+    red: { bg: 'bg-red-50', icon: 'text-red-500', btn: 'bg-red-500 hover:bg-red-600' },
+  }[color] || { bg: 'bg-blue-50', icon: 'text-blue-500', btn: 'bg-blue-500 hover:bg-blue-600' };
+  const iconName = color === 'amber' ? 'warning' : color === 'red' ? 'error' : 'info';
+  const overlay = document.createElement('div');
+  overlay.className = 'fixed inset-0 bg-black/40 flex items-center justify-center z-50';
+  overlay.innerHTML = `
+    <div class="bg-white rounded-2xl shadow-2xl p-6 max-w-sm mx-4">
+      <div class="flex items-center gap-3 mb-3">
+        <div class="w-10 h-10 rounded-xl ${colors.bg} flex items-center justify-center">
+          <span class="material-icons-outlined ${colors.icon} text-[22px]">${iconName}</span>
+        </div>
+        <h3 class="text-[14px] font-bold text-gray-800">${title}</h3>
+      </div>
+      <p class="text-[12px] text-gray-600 leading-relaxed mb-1">${message}</p>
+      <p class="text-[11px] text-gray-400 mb-5">${note}</p>
+      <div class="flex justify-end gap-2">
+        <button onclick="this.closest('.fixed').remove()" class="px-4 py-2 text-[12px] font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-xl transition-all">Cancel</button>
+        <button onclick="this.closest('.fixed').remove();runAction('/${runId}/${action}')" class="px-4 py-2 text-[12px] font-semibold text-white ${colors.btn} rounded-xl transition-all">${btnLabel}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click', e => { if (e.target === overlay) overlay.remove(); });
+}
+
+function confirmRerun(runId) {
+  confirmAction(runId, 'rerun', 'Confirm Rerun', 'This will delete all existing test results and rerun from scratch.', 'LLM server conversations will not be removed.', 'Rerun', 'amber');
+}
+
+async function runAction(path, btn) {
+  if (!btn && event) btn = event.target.closest('button');
+  _btnLoading(btn, true);
+  const r = await api('POST', `/agent-benchmark${path}`);
+  _btnLoading(btn, false);
+  if (r) toast(r.message || 'Done', 'success');
+  if (currentRunId) setTimeout(() => loadRunDetail(currentRunId), 500);
+}
+
+async function viewReport(runId) {
+  navigate('report');
+  await populateRunSelects();
+  $('report-run-select').value = runId;
+  loadReport();
+}
+
+async function promptResendReport(runId, defaultEmails, tenantId) {
+  const existing = document.getElementById('email-report-modal');
+  if (existing) existing.remove();
+
+  // Fetch users for the tenant
+  let usersHtml = '<div class="text-[11px] text-gray-400 py-1">Loading users...</div>';
+  const defaultList = (defaultEmails || '').split(',').map(e => e.trim()).filter(Boolean);
+
+  const modal = document.createElement('div');
+  modal.id = 'email-report-modal';
+  modal.className = 'fixed inset-0 bg-black/30 z-50 flex items-center justify-center';
+  modal.innerHTML = `
+    <div class="bg-white rounded-xl shadow-xl p-5 w-[450px] max-h-[80vh] overflow-y-auto" onclick="event.stopPropagation()">
+      <div class="text-[13px] font-semibold text-gray-700 mb-3">Email Report</div>
+
+      <label class="text-[11px] text-gray-500 block mb-1">Add from team</label>
+      <div id="email-user-list" class="border border-gray-200 rounded-lg max-h-[150px] overflow-y-auto mb-3">${usersHtml}</div>
+
+      <label class="text-[11px] text-gray-500 block mb-1">Additional emails (comma-separated)</label>
+      <input id="email-report-input" type="text" value="${esc(defaultEmails || '')}" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-[12px] mb-3 outline-none focus:border-blue-400" placeholder="email1@example.com, email2@example.com">
+
+      <div class="flex gap-2 justify-end">
+        <button onclick="document.getElementById('email-report-modal').remove()" class="px-4 py-1.5 text-[12px] rounded-full border border-gray-200 text-gray-600 hover:bg-gray-50 transition-all">Cancel</button>
+        <button onclick="sendReportEmail('${runId}')" class="px-4 py-1.5 text-[12px] rounded-full bg-blue-500 text-white hover:bg-blue-600 transition-all">Send</button>
+      </div>
+    </div>`;
+  modal.onclick = () => modal.remove();
+  document.body.appendChild(modal);
+
+  // Load users async
+  if (tenantId) {
+    const users = await api('GET', '/dashboard/tenants/' + tenantId + '/users');
+    const userList = (users?.users || []);
+    if (userList.length) {
+      document.getElementById('email-user-list').innerHTML = userList.map(u => {
+        const email = u.username || '';
+        const checked = defaultList.includes(email) ? 'checked' : '';
+        return '<label class="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 cursor-pointer text-[12px] text-gray-700">'
+          + '<input type="checkbox" value="' + esc(email) + '" class="email-user-cb rounded border-gray-300" ' + checked + ' onchange="updateEmailInput()"> '
+          + esc(u.display_name) + ' <span class="text-[10px] text-gray-400">(' + esc(email) + ')</span>'
+          + '</label>';
+      }).join('');
+    } else {
+      document.getElementById('email-user-list').innerHTML = '<div class="text-[11px] text-gray-400 px-3 py-2">No users found</div>';
+    }
+  }
+}
+
+function updateEmailInput() {
+  const checked = Array.from(document.querySelectorAll('.email-user-cb:checked')).map(cb => cb.value);
+  const input = document.getElementById('email-report-input');
+  const manual = input.value.split(',').map(e => e.trim()).filter(e => e && !document.querySelector('.email-user-cb[value="' + e + '"]'));
+  input.value = [...checked, ...manual].filter(Boolean).join(', ');
+}
+
+async function sendReportEmail(runId) {
+  const input = document.getElementById('email-report-input');
+  const emails = input.value.split(',').map(e => e.trim()).filter(Boolean);
+  if (!emails.length) { toast('No valid emails', 'error'); return; }
+  const btn = event ? event.target.closest('button') : null;
+  _btnLoading(btn, true);
+  document.getElementById('email-report-modal').remove();
+  const r = await api('POST', '/agent-benchmark/' + runId + '/resend-report', { emails });
+  if (r) toast(r.message || 'Report sent', 'success');
+}
+
+async function deleteRun(runId) {
+  if (!confirm(`Delete run ${runId}? This cannot be undone.`)) return;
+  const btn = event ? event.target.closest('button') : null;
+  _btnLoading(btn, true);
+  const r = await api('DELETE', `/agent-benchmark/${runId}`);
+  _btnLoading(btn, false);
+  if (r) { toast(r.message || 'Run deleted', 'success'); navigate('runs'); }
+}
+
+async function infraAction(action, agent) {
+  const r = await api('POST', `/agent-benchmark/infra/${action}`, { agent });
+  if (r) toast(r.message || `${action} started`, 'success');
+  if (currentRunId) setTimeout(() => loadRunDetail(currentRunId), 1000);
+}
+
+// ============================================================
+// Benchmark Form
+// ============================================================
+async function loadBenchmarkForm() {
+  show('bm-loading'); hide('bm-form');
+
+  // Load agents
+  if (!agents.length) {
+    const d = await api('GET', '/agent-benchmark/agents');
+    if (d) agents = d.agents || [];
+  }
+  $('bm-agent').innerHTML = '<option value="">Select agent...</option>' + agents.map(a => `<option value="${a.name}">${a.name} (${a.fixtures} tests)</option>`).join('');
+
+  // Load tenants
+  const tenants = await api('GET', '/dashboard/tenants');
+  $('bm-tenant').innerHTML = '<option value="">Select tenant...</option>' + (tenants?.tenants||[]).map(t => `<option value="${t.id}">${t.name}</option>`).join('');
+  $('bm-tenant').onchange = bmOnTenantChange;
+  $('bm-agent').onchange = bmOnAgentChange;
+
+  bmOnAgentChange();
+  hide('bm-loading'); show('bm-form');
+}
+
+async function bmOnTenantChange() {
+  const tid = $('bm-tenant').value;
+  if (!tid) {
+    $('bm-account').innerHTML = '<option value="">Select tenant first</option>';
+    $('bm-account').disabled = true;
+    $('bm-user').innerHTML = '<option value="">Select tenant first</option>';
+    $('bm-user').disabled = true;
+    $('bm-tool-config').innerHTML = '<option value="">Select account first</option>';
+    return;
+  }
+  // Show loaders, disable selects
+  $('bm-account').disabled = true;
+  $('bm-user').disabled = true;
+  $('bm-account').innerHTML = '<option value="">Loading...</option>';
+  $('bm-user').innerHTML = '<option value="">Loading...</option>';
+  show('bm-account-loader'); show('bm-user-loader');
+
+  const [users, accounts] = await Promise.all([
+    api('GET', `/dashboard/tenants/${tid}/users`),
+    api('GET', `/dashboard/tenants/${tid}/accounts`),
+  ]);
+
+  hide('bm-account-loader'); hide('bm-user-loader');
+  const accountOpts = (accounts?.accounts||[]);
+  const userOpts = (users?.users||[]);
+  $('bm-account').innerHTML = accountOpts.length
+    ? '<option value="">Select account...</option>' + accountOpts.map(a => `<option value="${a.id}">${a.account_name} (${a.cloud_provider})</option>`).join('')
+    : '<option value="">No accounts</option>';
+  $('bm-account').disabled = false;
+  $('bm-user').innerHTML = userOpts.length
+    ? '<option value="">Select user...</option>' + userOpts.map(u => `<option value="${u.id}">${u.display_name} (${u.username})</option>`).join('')
+    : '<option value="">No users</option>';
+  $('bm-user').disabled = false;
+  $('bm-account').onchange = () => { bmLoadToolConfigs(); validateBmForm(); };
+  $('bm-user').onchange = () => { bmLoadToolConfigs(); validateBmForm(); };
+  validateBmForm();
+}
+
+async function bmLoadToolConfigs() {
+  const [aid, tid, uid] = [$('bm-account').value, $('bm-tenant').value, $('bm-user').value];
+  if (!aid||!tid||!uid) return;
+  $('bm-tool-config').innerHTML = '<option value="">Loading...</option>';
+  show('bm-toolconfig-loader');
+  const d = await api('GET', `/dashboard/tool-configs?account_id=${aid}&tenant_id=${tid}&user_id=${uid}`);
+  hide('bm-toolconfig-loader');
+  $('bm-tool-config').innerHTML = '<option value="">Default</option>' + (d?.configs||[]).map(c => `<option value="${c.name}">${c.name} (${c.type||''})</option>`).join('');
+}
+
+async function bmOnAgentChange() {
+  const name = $('bm-agent').value;
+  if (!name) {
+    $('bm-tags-options').innerHTML = '<div class="px-3 py-2 text-[11px] text-gray-400">Select an agent to load tags</div>';
+    if ($('bm-tags-search')) $('bm-tags-search').value = '';
+    updateTagsDisplay();
+    $('bm-infra-section')?.classList.add('hidden');
+    $('bm-test-list').innerHTML = '<div class="text-[11px] text-gray-400 px-2 py-1">Select an agent to load tests</div>';
+    _bmTests = [];
+    validateBmForm();
+    return;
+  }
+  const agent = agents.find(a => a.name === name);
+  const tags = await api('GET', `/agent-benchmark/agents/${name}/tags`);
+  const tagList = tags?.tags || [];
+  $('bm-tags-options').innerHTML = tagList.map(t =>
+    `<label class="tag-option flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 cursor-pointer text-[12px] text-gray-700" data-tag="${t.toLowerCase()}">
+      <input type="checkbox" value="${t}" onchange="updateTagsDisplay()" class="rounded border-gray-300"> ${t}
+    </label>`
+  ).join('') || '<div class="px-3 py-2 text-[11px] text-gray-400">No tags available</div>';
+  if ($('bm-tags-search')) $('bm-tags-search').value = '';
+  updateTagsDisplay();
+  const sec = $('bm-infra-section');
+  if (agent?.has_infra) {
+    sec.classList.remove('hidden');
+    const infra = await api('GET', `/agent-benchmark/infra/status?agent=${name}`);
+    const ist = infra?.status || 'unknown';
+    const ic = {deployed:'bg-green-100 text-green-700', deploying:'bg-yellow-100 text-yellow-700', nuking:'bg-yellow-100 text-yellow-700', failed:'bg-red-100 text-red-700', nuke_failed:'bg-red-100 text-red-700', nuked:'bg-gray-100 text-gray-600'}[ist] || 'bg-gray-100 text-gray-600';
+    $('bm-infra-status').innerHTML = `<span class="px-2.5 py-0.5 rounded-full text-[11px] font-semibold uppercase ${ic}">${ist}</span>`;
+  } else {
+    sec.classList.add('hidden');
+  }
+
+  // Load test list for this agent
+  await loadBmTests(name);
+  validateBmForm();
+}
+
+let _bmTests = [];
+
+async function loadBmTests(agentName) {
+  const sel = $('bm-test-selector');
+  const list = $('bm-test-list');
+  list.innerHTML = '<div class="text-[11px] text-gray-400 px-2 py-1">Loading tests...</div>';
+  show('bm-test-selector');
+  const tags = Array.from($('bm-tags-options')?.querySelectorAll('input:checked') || []).map(i => i.value).join(',');
+  const url = `/agent-benchmark/agents/${agentName}/tests` + (tags ? `?tag_filter=${encodeURIComponent(tags)}` : '');
+  const d = await api('GET', url);
+  _bmTests = d?.tests || [];
+  _bmUserDeselected = new Set(); // reset on reload
+  renderBmTests();
+}
+
+let _bmUserDeselected = new Set(); // tracks tests user explicitly unchecked
+
+function renderBmTests() {
+  const list = $('bm-test-list');
+  const search = ($('bm-test-search')?.value || '').toLowerCase();
+  const maxTests = parseInt($('bm-max-tests')?.value) || 0;
+  const filtered = _bmTests.filter(t => !search || t.test_id.toLowerCase().includes(search) || (t.tags||[]).some(tag => tag.toLowerCase().includes(search)));
+  // Auto-select: all by default, then apply max_tests limit, then respect user deselections
+  let activeCount = 0;
+  list.innerHTML = filtered.map(t => {
+    let isChecked = !t.skipped && !_bmUserDeselected.has(String(t.index));
+    if (isChecked && maxTests > 0) {
+      activeCount++;
+      if (activeCount > maxTests) isChecked = false;
+    }
+    const skipBadge = t.skipped ? `<span class="text-[9px] bg-slate-100 text-slate-500 px-1 py-0.5 rounded">skip</span>` : '';
+    const tagStr = (t.tags||[]).map(tag => `<span class="text-[9px] text-gray-400">${tag}</span>`).join(' ');
+    return `<label class="flex items-center gap-2 px-2 py-1 rounded hover:bg-gray-50 cursor-pointer ${t.skipped ? 'opacity-50' : ''}">
+      <input type="checkbox" value="${t.index}" ${isChecked ? 'checked' : ''} ${t.skipped ? 'disabled' : ''} onchange="onBmTestToggle(this)" class="rounded border-gray-300 text-[10px]">
+      <span class="text-[11px] text-gray-700 flex-1 truncate">${esc(t.test_id)}</span>
+      ${skipBadge}
+      <span class="flex gap-1">${tagStr}</span>
+    </label>`;
+  }).join('') || '<div class="text-[11px] text-gray-400 px-2 py-1">No tests found</div>';
+  updateBmTestCount();
+}
+
+function onBmTestToggle(cb) {
+  if (cb.checked) _bmUserDeselected.delete(cb.value);
+  else _bmUserDeselected.add(cb.value);
+  updateBmTestCount();
+}
+
+function filterBmTests() { renderBmTests(); }
+
+function toggleAllBmTests(on) {
+  if (on) _bmUserDeselected.clear();
+  else _bmTests.filter(t => !t.skipped).forEach(t => _bmUserDeselected.add(String(t.index)));
+  renderBmTests();
+}
+
+function _getSelectedTestIndices() {
+  const total = _bmTests.filter(t => !t.skipped).length;
+  const checked = Array.from($('bm-test-list')?.querySelectorAll('input:checked') || []).map(i => i.value);
+  // If all non-skipped tests are selected, return null (run all)
+  if (checked.length === 0 || checked.length === total) return null;
+  return checked.join(',');
+}
+
+function updateBmTestCount() {
+  const total = _bmTests.filter(t => !t.skipped).length;
+  const selected = $('bm-test-list').querySelectorAll('input:checked').length;
+  const maxTests = parseInt($('bm-max-tests')?.value) || 0;
+  if (selected === 0) {
+    const willRun = maxTests > 0 ? Math.min(maxTests, total) : total;
+    $('bm-test-count').textContent = maxTests > 0 ? `(first ${willRun} of ${total} will run)` : `(all ${total} will run)`;
+  } else {
+    $('bm-test-count').textContent = `(${selected}/${total} selected)`;
+  }
+}
+
+function toggleTagsDropdown() {
+  $('bm-tags-dropdown').classList.toggle('hidden');
+  if (!$('bm-tags-dropdown').classList.contains('hidden')) {
+    setTimeout(() => $('bm-tags-search')?.focus(), 50);
+  }
+}
+
+function filterTags() {
+  const q = ($('bm-tags-search')?.value || '').toLowerCase();
+  $('bm-tags-options').querySelectorAll('.tag-option').forEach(el => {
+    el.style.display = el.dataset.tag.includes(q) ? '' : 'none';
+  });
+}
+
+function updateTagsDisplay() {
+  const checked = Array.from($('bm-tags-options').querySelectorAll('input:checked')).map(i => i.value);
+  const textEl = $('bm-tags-text');
+  if (checked.length === 0) {
+    textEl.textContent = 'Select tags...';
+    textEl.className = 'text-gray-400 truncate';
+  } else {
+    textEl.textContent = checked.join(', ');
+    textEl.className = 'text-gray-700 truncate';
+  }
+  bmAutoFillRunName();
+  // Reload test list when tags change
+  const agent = $('bm-agent')?.value;
+  if (agent) loadBmTests(agent);
+}
+
+// Tracks the value we last auto-filled so we don't overwrite a user-typed name.
+let _bmLastAutoRunName = '';
+
+function bmAutoFillRunName() {
+  const input = $('bm-run-name');
+  if (!input) return;
+  const current = input.value.trim();
+  // Preserve custom input: only overwrite if empty or matches what we generated previously.
+  if (current && current !== _bmLastAutoRunName) return;
+
+  const agent = $('bm-agent')?.value || '';
+  if (!agent) {
+    input.value = '';
+    _bmLastAutoRunName = '';
+    return;
+  }
+  const tags = Array.from($('bm-tags-options')?.querySelectorAll('input:checked') || []).map(i => i.value);
+  const d = new Date();
+  const date = `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+  const sanitize = s => s.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  const parts = [sanitize(agent), ...tags.map(sanitize).filter(Boolean), date].filter(Boolean);
+  const name = parts.join('-').slice(0, 100);
+  input.value = name;
+  _bmLastAutoRunName = name;
+}
+
+// Close dropdown when clicking outside
+document.addEventListener('click', e => {
+  const dropdown = $('bm-tags-dropdown');
+  const display = $('bm-tags-display');
+  if (dropdown && display && !dropdown.contains(e.target) && !display.contains(e.target)) {
+    dropdown.classList.add('hidden');
+  }
+});
+
+function validateBmForm() {
+  const ready = $('bm-tenant')?.value && $('bm-account')?.value && $('bm-user')?.value && $('bm-agent')?.value;
+  $('btn-start').disabled = !ready;
+  $('btn-gather').disabled = !ready;
+}
+
+function bmPayload() {
+  const agent = $('bm-agent').value;
+  const tc = $('bm-tool-config').value;
+  const tags = Array.from($('bm-tags-options')?.querySelectorAll('input:checked') || []).map(i => i.value).join(',');
+  return {
+    agent: tc ? { name: agent, tool_config: tc } : agent,
+    account_id: $('bm-account').value,
+    user_id: $('bm-user').value,
+    tenant_id: $('bm-tenant').value,
+    max_tests: parseInt($('bm-max-tests').value) || null,
+    test_indices: _getSelectedTestIndices() || null,
+    tag_filter: tags || null,
+    parallel_workers: parseInt($('bm-parallel-workers').value) || 1,
+    run_name: $('bm-run-name').value.trim() || null,
+  };
+}
+
+async function gatherTests() {
+  $('btn-gather').disabled = true;
+  const r = await api('POST', '/agent-benchmark/gather', bmPayload());
+  $('btn-gather').disabled = false;
+  if (r) { $('bm-run-name').value = ''; _bmLastAutoRunName = ''; toast(`Gathered ${r.total||0} tests! Run: ${r.run_id}`, 'success'); navigate('detail', r.run_id); }
+}
+
+async function startBenchmark() {
+  $('btn-start').disabled = true;
+  const r = await api('POST', '/agent-benchmark/run', bmPayload());
+  $('btn-start').disabled = false;
+  if (r) { $('bm-run-name').value = ''; _bmLastAutoRunName = ''; toast(r.message || 'Started', 'success'); navigate('detail', r.run_id); }
+}
+
+// bmDeployInfra/bmNukeInfra removed — use Infrastructure page
+
+// ============================================================
+// Report
+// ============================================================
+async function populateRunSelects() {
+  // Fetch all runs for report/compare dropdowns (separate from paginated list)
+  const d = await api('GET', '/agent-benchmark/runs/list?page=1&page_size=100');
+  const allRuns = d?.runs || [];
+  const completed = allRuns.filter(r => ['completed','stopped','failed'].includes(r.state));
+  const opts = completed.map(r => `<option value="${r.run_id}" data-agent="${r.agent}">${r.agent.toUpperCase()} — ${r.run_name || r.run_id} (${r.progress})${r.user_email ? ' by ' + r.user_email : ''}</option>`).join('');
+
+  const reportSel = $('report-run-select');
+  if (reportSel) reportSel.innerHTML = '<option value="">Select a run...</option>' + opts;
+
+  const baseSel = $('compare-baseline');
+  const candSel = $('compare-candidate');
+  if (baseSel) {
+    baseSel.innerHTML = '<option value="">Select...</option>' + opts;
+    baseSel.onchange = () => filterCandidateByAgent(completed);
+  }
+  if (candSel) candSel.innerHTML = '<option value="">Select baseline first...</option>';
+}
+
+async function loadReport() {
+  const runId = $('report-run-select').value;
+  if (!runId) { toast('Select a run first', 'error'); return; }
+  show('report-loading');
+  const report = await api('GET', `/agent-benchmark/${runId}/report`);
+  hide('report-loading');
+  if (!report) { $('report-content').innerHTML = '<p class="text-red-500 text-[12px]">No report found.</p>'; hide('download-report-btn'); return; }
+  show('download-report-btn');
+
+  const details = report.details || report.results || [];
+  const meta = report.metadata || {};
+  const summary = report.summary || {};
+  const costInfo = summary.cost || {};
+  const tokenInfo = summary.tokens || {};
+  const latencyInfo = summary.latency || {};
+  const toolCallInfo = summary.tool_calls || {};
+  const byTag = report.by_tag || {};
+
+  const overall = summary.overall_accuracy || 0;
+  const sim = summary.answer_similarity || 0;
+  const rel = summary.answer_relevancy || 0;
+  const planner = summary.planner_relevancy || 0;
+  const sColor = (v) => v >= 80 ? '#10B981' : v >= 50 ? '#F59E0B' : '#EF4444';
+
+  // Helper for stat card
+  const card = (label, value, color) => `<div class="bg-white border border-gray-100 rounded-xl p-3 text-center shadow-sm">
+    <div class="text-[9px] font-semibold text-gray-400 uppercase tracking-wide mb-1">${label}</div>
+    <div class="text-[14px] font-bold" style="color:${color || '#374151'}">${value}</div>
+  </div>`;
+
+  // Header
+  const headerHtml = `
+    <div class="grid grid-cols-5 gap-3 mb-4">
+      ${card('Total Queries', meta.total_queries || details.length, '#3B82F6')}
+      ${card('Timestamp', fmtDate(meta.timestamp), '#6B7280')}
+      ${card('Models', (meta.model_names || []).join(', ') || '—', '#8B5CF6')}
+      ${card('Triggered By', meta.triggered_by || '—', '#F59E0B')}
+      ${card('Run ID', meta.run_id || '', '#374151')}
+    </div>`;
+
+  // Accuracy
+  const accuracyHtml = `
+    <div class="text-[12px] font-semibold text-gray-600 mb-1.5 mt-2 border-b border-gray-200 pb-1">Accuracy <span class="text-[10px] font-normal text-gray-400 ml-1">(Overall = avg of Similarity + Relevancy)</span></div>
+    <div class="grid grid-cols-3 gap-3 mb-2">
+      ${card('Overall', `${overall.toFixed(1)}%`, sColor(overall))}
+      ${card('Similarity', `${sim.toFixed(1)}%`, sColor(sim))}
+      ${card('Relevancy', `${rel.toFixed(1)}%`, sColor(rel))}
+    </div>
+    <div class="text-[12px] font-semibold text-gray-600 mb-1.5 border-b border-gray-200 pb-1">Efficiency</div>
+    <div class="grid grid-cols-3 gap-3 mb-2">
+      ${card('Planner Relevancy', `${planner.toFixed(1)}%`, sColor(planner))}
+      ${card('Tool Success', `${(toolCallInfo.success_rate||0).toFixed(1)}%`, sColor(toolCallInfo.success_rate||0))}
+      ${card('Cache Hit Rate', `${(tokenInfo.avg_cache_hit_rate||0).toFixed(1)}%`, sColor(tokenInfo.avg_cache_hit_rate||0))}
+    </div>
+    <div class="bg-white border border-gray-100 rounded-xl p-3 shadow-sm mb-4">
+      <div class="flex items-end gap-4 h-[120px] px-4">
+        ${[{l:'Overall',v:overall},{l:'Similarity',v:sim},{l:'Relevancy',v:rel},{l:'Planner',v:planner,eff:true}].map(m =>
+          `<div class="flex-1 flex flex-col items-center gap-1">
+            <span class="text-[10px] font-semibold" style="color:${sColor(m.v)}">${m.v.toFixed(0)}%</span>
+            <div class="w-full rounded-t" style="height:${Math.max(2, m.v * 1.1)}px;background:${m.eff ? '#818CF8' : sColor(m.v)}"></div>
+            <span class="text-[9px] text-gray-400">${m.l}${m.eff ? ' ⚡' : ''}</span>
+          </div>`
+        ).join('')}
+      </div>
+    </div>`;
+
+  // Latency
+  const lat = latencyInfo;
+  const latencyHtml = `
+    <div class="text-[12px] font-semibold text-gray-600 mb-1.5 border-b border-gray-200 pb-1">Latency</div>
+    <div class="grid grid-cols-5 gap-3 mb-2">
+      ${card('Total', `${(lat.total_seconds||0).toFixed(1)}s`)}
+      ${card('Avg', `${(lat.avg_seconds||0).toFixed(1)}s`)}
+      ${card('P95', `${(lat.p95_seconds||0).toFixed(1)}s`)}
+      ${card('P99', `${(lat.p99_seconds||0).toFixed(1)}s`)}
+      ${card('Max', `${(lat.max_seconds||0).toFixed(1)}s`)}
+    </div>`;
+
+  // Cost & Tokens
+  const costHtml = `
+    <div class="text-[12px] font-semibold text-gray-600 mb-1.5 border-b border-gray-200 pb-1">Cost & Tokens</div>
+    <div class="grid grid-cols-4 gap-3 mb-2">
+      ${card('Total Cost', `$${(costInfo.total_usd||0).toFixed(4)}`)}
+      ${card('Avg/Query', `$${(costInfo.avg_per_query_usd||0).toFixed(4)}`)}
+      ${card('Total Tokens', (tokenInfo.total||0).toLocaleString())}
+      ${card('Cache Hit', `${(tokenInfo.avg_cache_hit_rate||0).toFixed(1)}%`)}
+    </div>
+    <div class="grid grid-cols-4 gap-3 mb-4">
+      ${card('Tool Calls', toolCallInfo.total||0)}
+      ${card('Successful', toolCallInfo.successful||0)}
+      ${card('Avg/Query', (toolCallInfo.avg_per_query||0).toFixed(1))}
+      ${card('Success Rate', `${(toolCallInfo.success_rate||0).toFixed(1)}%`)}
+    </div>`;
+
+  // By Tag
+  let tagHtml = '';
+  const tagEntries = Object.entries(byTag).sort((a,b) => (b[1].overall_accuracy||0) - (a[1].overall_accuracy||0));
+  if (tagEntries.length) {
+    const tagRows = tagEntries.map(([tag, v]) => `
+      <div class="grid grid-cols-[1.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.3fr] gap-2 px-3 py-1.5 bg-white border border-gray-100 rounded-md items-center">
+        <span class="text-[11px] font-medium text-gray-700">${esc(tag)}</span>
+        <span class="text-[11px] font-semibold text-center" style="color:${sColor(v.overall_accuracy||0)}">${(v.overall_accuracy||0).toFixed(1)}%</span>
+        <span class="text-[11px] text-center text-gray-600">${(v.answer_similarity||0).toFixed(1)}%</span>
+        <span class="text-[11px] text-center text-gray-600">${(v.answer_relevancy||0).toFixed(1)}%</span>
+        <span class="text-[11px] text-center" style="color:#818CF8">${(v.planner_relevancy||0).toFixed(1)}%</span>
+        <span class="text-[11px] text-center text-gray-500">${(v.avg_duration_seconds||0).toFixed(1)}s</span>
+        <span class="text-[11px] text-center text-gray-500">$${(v.avg_cost_usd||0).toFixed(4)}</span>
+        <span class="text-[11px] text-center text-gray-500">${v.count||0}</span>
+      </div>`).join('');
+    tagHtml = `
+      <div class="text-[12px] font-semibold text-gray-600 mb-1.5 border-b border-gray-200 pb-1">Performance by Tag <span class="text-[10px] font-normal text-gray-400 ml-1">(tests may appear in multiple tags — counts overlap)</span></div>
+      <div class="bg-white border border-gray-100 rounded-xl shadow-sm overflow-hidden mb-4">
+        <div class="grid grid-cols-[1.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.5fr_0.3fr] gap-2 px-3 py-1.5 text-[9px] font-semibold text-gray-400 uppercase tracking-wide bg-gray-50 border-b border-gray-100">
+          <span>Tag</span><span class="text-center">Overall</span><span class="text-center">Sim</span><span class="text-center">Rel</span><span class="text-center" style="color:#818CF8">Planner ⚡</span><span class="text-center">Avg Time</span><span class="text-center">Avg Cost</span><span class="text-center">N</span>
+        </div>
+        <div class="flex flex-col gap-[1px]">${tagRows}</div>
+      </div>`;
+  }
+
+  // Per-test details
+  const stCls = (st) => ({pass:'text-green-600',fail:'text-red-500',error:'text-yellow-600',stopped:'text-gray-500'}[st] || 'text-gray-400');
+  const rows = details.map((r, i) => {
+    const st = r.status || '';
+    const detailId = `report-detail-${i}`;
+    const query = esc(r.query || '');
+    const expected = esc(r.expected_answer || '—');
+    const actual = esc(r.actual_answer || '—');
+    const error = esc(r.error_message || '');
+    const toolNames = (r.tool_names || []).join(', ') || '—';
+    const modelNames = (r.model_names || []).join(', ') || '—';
+    const tags = (r.tags || []).join(', ');
+
+    return `<div>
+      <div onclick="$('${detailId}').classList.toggle('hidden')" class="grid grid-cols-[28px_2fr_0.5fr_0.5fr_0.5fr_0.5fr_0.6fr_0.5fr] gap-2 px-3 py-2 bg-white border border-gray-100 rounded-md items-center cursor-pointer hover:bg-gray-50 transition-all">
+        <span class="text-[11px] text-gray-400 text-center">${r.test_index ?? ''}</span>
+        <span class="text-[12px] text-gray-700 truncate" title="${esc(r.test_id||'')}">${esc(r.test_id||'')}</span>
+        <span class="text-[10px] font-semibold uppercase ${stCls(st)}">${st}</span>
+        ${scoreBar(r.answer_similarity||0)}
+        ${scoreBar(r.answer_relevancy||0)}
+        ${scoreBar(r.planner_relevancy||0)}
+        <span class="text-[11px] text-gray-500">${(r.duration_seconds||0).toFixed(1)}s</span>
+        <span class="text-[11px] text-gray-500">$${(r.cost||0).toFixed(4)}</span>
+      </div>
+      <div id="${detailId}" class="hidden bg-gray-50 border border-gray-100 rounded-b-md px-4 py-3 -mt-[1px] text-[12px]">
+        <div class="grid grid-cols-3 gap-4 mb-3">
+          <div><span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">Model</span><span class="text-gray-700">${modelNames}</span></div>
+          <div><span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">Tools</span><span class="text-gray-700">${toolNames}</span></div>
+          <div><span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">Tags</span><span class="text-gray-700">${tags || '—'}</span></div>
+          <div><span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">Tokens</span><span class="text-gray-700">${(r.total_tokens||0).toLocaleString()} (in: ${(r.input_tokens||0).toLocaleString()}, out: ${(r.output_tokens||0).toLocaleString()}, cached: ${(r.cache_read_tokens||0).toLocaleString()})</span></div>
+          <div><span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">Tool Calls</span><span class="text-gray-700">${r.tool_calls_total||0} total, ${r.tool_calls_successful||0} successful</span></div>
+          <div><span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">Duration</span><span class="text-gray-700">${(r.duration_seconds||0).toFixed(1)}s</span></div>
+        </div>
+        ${error ? `<div class="mb-3"><span class="text-[10px] font-semibold text-red-400 uppercase block mb-0.5">Error</span><span class="text-red-600 text-[11px]">${error}</span></div>` : ''}
+        ${r.score_reason ? (()=>{
+          const reasons = (r.score_reason||'').split(/(?=\[(?:Similarity|Quality|Planner)\])/);
+          const colorMap = {Similarity:'indigo',Quality:'blue',Planner:'emerald'};
+          return '<div class="mb-3">' + reasons.filter(x=>x.trim()).map(x=>{
+            const m = x.match(/^\[(\w+)\]\s*([\s\S]*)/);
+            const label = m ? m[1] : 'Score';
+            const text = m ? m[2].trim() : x.trim();
+            const c = colorMap[label]||'blue';
+            return '<div class="mb-1.5"><span class="text-[10px] font-semibold text-'+c+'-400 uppercase block mb-0.5">'+esc(label)+' Reason</span><div class="text-gray-700 bg-'+c+'-50 rounded-lg p-2 border border-'+c+'-100 text-[11px] whitespace-pre-wrap max-h-[80px] overflow-y-auto">'+esc(text)+'</div></div>';
+          }).join('') + '</div>';
+        })() : ''}
+        <div class="mb-3"><span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">Query</span><div class="text-gray-700 bg-white rounded-lg p-2 border border-gray-100 text-[11px] whitespace-pre-wrap max-h-[120px] overflow-y-auto">${query}</div></div>
+        <div class="grid grid-cols-2 gap-4">
+          <div><span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">Expected Answer</span><div class="text-gray-700 bg-white rounded-lg p-2 border border-gray-100 text-[11px] whitespace-pre-wrap max-h-[200px] overflow-y-auto">${expected}</div></div>
+          <div><span class="text-[10px] font-semibold text-gray-400 uppercase block mb-0.5">Actual Answer</span><div class="text-gray-700 bg-white rounded-lg p-2 border border-gray-100 text-[11px] whitespace-pre-wrap max-h-[200px] overflow-y-auto">${actual}</div></div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  $('report-content').innerHTML = `
+    ${headerHtml}
+    ${accuracyHtml}
+    ${latencyHtml}
+    ${costHtml}
+    ${tagHtml}
+    <div class="text-[12px] font-semibold text-gray-600 mb-1.5 border-b border-gray-200 pb-1">Test Details</div>
+    <div class="bg-white border border-gray-100 rounded-xl shadow-sm overflow-hidden">
+      <div class="grid grid-cols-[28px_2fr_0.5fr_0.5fr_0.5fr_0.5fr_0.6fr_0.5fr] gap-2 px-3 py-1.5 text-[9px] font-semibold text-gray-400 uppercase tracking-wide bg-gray-50 border-b border-gray-100">
+        <span>#</span><span>Test</span><span>Status</span><span>Sim</span><span>Rel</span><span>Plan</span><span>Dur</span><span>Cost</span>
+      </div>
+      <div class="flex flex-col gap-[1px] max-h-[500px] overflow-y-auto">${rows}</div>
+    </div>`;
+}
+
+async function downloadReport() {
+  const runId = $('report-run-select').value;
+  if (!runId) { toast('Select a run first', 'error'); return; }
+  const btn = event ? event.target.closest('button') : null;
+  _btnLoading(btn, true);
+  try {
+    const r = await fetch(`/agent-benchmark/${runId}/report`);
+    const data = await r.json();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `benchmark-report-${runId}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast('Report downloaded', 'success');
+  } catch (e) {
+    toast('Failed to download report', 'error');
+  } finally {
+    _btnLoading(btn, false);
+  }
+}
+
+function downloadCompareReport() {
+  const content = $('compare-content');
+  if (!content || !content.innerHTML.trim()) { toast('No comparison data', 'error'); return; }
+  const ids = window._lastCompareIds || {};
+  const win = window.open('', '_blank');
+  win.document.write(`<!DOCTYPE html><html><head>
+    <title>Benchmark Comparison — ${ids.base} vs ${ids.cand}</title>
+    <script src="https://cdn.tailwindcss.com"><\/script>
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined" rel="stylesheet">
+    <style>
+      body { font-family: 'Inter', system-ui, sans-serif; padding: 24px; background: #fff; }
+      @media print { body { padding: 12px; } button { display: none !important; } }
+    </style>
+  </head><body>
+    <h1 style="font-size:16px; font-weight:700; margin-bottom:16px;">Benchmark Comparison Report</h1>
+    ${content.innerHTML}
+    <script>
+      // Remove download button from printed version
+      document.querySelectorAll('button').forEach(b => b.remove());
+      setTimeout(() => window.print(), 500);
+    <\/script>
+  </body></html>`);
+  win.document.close();
+}
+
+// ============================================================
+// Compare
+// ============================================================
+function filterCandidateByAgent(completed) {
+  const baseSel = $('compare-baseline');
+  const candSel = $('compare-candidate');
+  const selectedOpt = baseSel.selectedOptions[0];
+  const agent = selectedOpt?.dataset?.agent || '';
+  const baseRunId = baseSel.value;
+
+  if (!agent) {
+    candSel.innerHTML = '<option value="">Select baseline first...</option>';
+    return;
+  }
+
+  const filtered = completed.filter(r => r.agent === agent && r.run_id !== baseRunId);
+  candSel.innerHTML = '<option value="">Select...</option>' +
+    filtered.map(r => `<option value="${r.run_id}">${r.agent.toUpperCase()} — ${r.run_name || r.run_id} (${r.progress})</option>`).join('');
+}
+
+async function compareRuns() {
+  const base = $('compare-baseline').value, cand = $('compare-candidate').value;
+  if (!base || !cand) { toast('Select both runs', 'error'); return; }
+  if (base === cand) { toast('Select different runs', 'error'); return; }
+  show('compare-loading');
+  const data = await api('POST', '/agent-benchmark/compare-runs', { baseline_run_id: base, candidate_run_id: cand, threshold: 0.05 });
+  hide('compare-loading');
+  if (!data) return;
+
+  const bInfo = data.baseline || {};
+  const cInfo = data.candidate || {};
+
+  // Header: baseline vs candidate
+  const headerHtml = `
+    <div class="grid grid-cols-2 gap-4 mb-4">
+      <div class="bg-white border border-gray-200 rounded-xl p-3 shadow-sm">
+        <div class="text-[10px] font-semibold text-gray-400 uppercase tracking-wide mb-1">Baseline</div>
+        <div class="text-[13px] font-bold text-gray-700">${bInfo.agent?.toUpperCase() || ''} — ${bInfo.run_id || ''}</div>
+        <div class="text-[11px] text-gray-500">${bInfo.total_queries || 0} tests • ${fmtDate(bInfo.timestamp)}</div>
+      </div>
+      <div class="bg-white border border-blue-200 rounded-xl p-3 shadow-sm">
+        <div class="text-[10px] font-semibold text-blue-400 uppercase tracking-wide mb-1">Candidate</div>
+        <div class="text-[13px] font-bold text-gray-700">${cInfo.agent?.toUpperCase() || ''} — ${cInfo.run_id || ''}</div>
+        <div class="text-[11px] text-gray-500">${cInfo.total_queries || 0} tests • ${fmtDate(cInfo.timestamp)}</div>
+      </div>
+    </div>`;
+
+  // Summary delta table
+  const sd = data.summary_delta || {};
+  let deltaRows = '';
+  // Metrics where lower is better (latency, cost, tool calls)
+  const lowerIsBetter = new Set(['avg_latency_seconds','p50_latency_seconds','p95_latency_seconds','p99_latency_seconds','max_latency_seconds','avg_cost_per_query','avg_tool_calls','total_cost','total_tokens']);
+  for (const [key, val] of Object.entries(sd)) {
+    if (!val || typeof val !== 'object') continue;
+    const d = val.delta || 0;
+    const dp = val.delta_pct || 0;
+    const flip = lowerIsBetter.has(key);
+    const isGood = flip ? d < 0 : d > 0;
+    const isBad = flip ? d > 0 : d < 0;
+    const dCls = isGood ? 'text-green-600' : isBad ? 'text-red-600' : 'text-gray-500';
+    const arrow = d > 0 ? '▲' : d < 0 ? '▼' : '';
+    const metric = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    deltaRows += `<div class="grid grid-cols-5 gap-3 px-4 py-2 bg-white border border-gray-100 rounded-md items-center">
+      <span class="text-[12px] font-medium text-gray-700">${metric}</span>
+      <span class="text-[12px] text-gray-600 text-center">${(val.baseline||0).toFixed(2)}</span>
+      <span class="text-[12px] text-gray-600 text-center">${(val.candidate||0).toFixed(2)}</span>
+      <span class="text-[12px] font-semibold text-center ${dCls}">${arrow} ${Math.abs(d).toFixed(2)}</span>
+      <span class="text-[11px] font-semibold text-center ${dCls}">${arrow} ${Math.abs(dp).toFixed(1)}%</span>
+    </div>`;
+  }
+
+  const deltaHtml = `
+    <div class="mb-4">
+      <div class="text-[12px] font-semibold text-gray-600 mb-1.5">Summary Delta</div>
+      <div class="bg-white border border-gray-100 rounded-xl shadow-sm overflow-hidden">
+        <div class="grid grid-cols-5 gap-3 px-4 py-1.5 text-[9px] font-semibold text-gray-400 uppercase tracking-wide bg-gray-50 border-b border-gray-100">
+          <span>Metric</span><span class="text-center">Baseline</span><span class="text-center">Candidate</span><span class="text-center">Delta</span><span class="text-center">Delta %</span>
+        </div>
+        <div class="flex flex-col gap-[1px]">${deltaRows}</div>
+      </div>
+    </div>`;
+
+  // Regressions & Improvements
+  const reg = data.regressions || [];
+  const imp = data.improvements || [];
+
+  function buildChangeItems(items, color, bgColor, borderColor, arrowIcon) {
+    if (!items.length) return `<div class="text-[11px] text-gray-400 px-3 py-2">None detected</div>`;
+    return items.map(item => {
+      const changes = item.changes || {};
+      const hints = [];
+      if (changes.tool_calls_delta) hints.push(`tools: ${changes.tool_calls_delta > 0 ? '+' : ''}${changes.tool_calls_delta}`);
+      if (changes.latency_delta_seconds) hints.push(`latency: ${changes.latency_delta_seconds > 0 ? '+' : ''}${changes.latency_delta_seconds.toFixed(1)}s`);
+      const hintStr = hints.length ? `<span class="text-[10px] text-gray-400 ml-2">(${hints.join(', ')})</span>` : '';
+      const delta = item.accuracy_delta || 0;
+      return `<div class="flex items-center gap-2 px-3 py-1.5 border-l-[3px] rounded-md bg-white border border-gray-100" style="border-left-color:${borderColor}">
+        <span class="text-[11px] text-gray-700 flex-1 truncate" title="${esc(item.test_id||'')}">${esc(item.test_id||'')}</span>
+        <span class="text-[11px] font-semibold" style="color:${color}">${arrowIcon} ${Math.abs(delta).toFixed(1)}%</span>
+        ${hintStr}
+      </div>`;
+    }).join('');
+  }
+
+  const regHtml = buildChangeItems(reg, '#EF4444', '#FEF2F2', '#EF4444', '▼');
+  const impHtml = buildChangeItems(imp, '#10B981', '#ECFDF5', '#10B981', '▲');
+
+  // Per-query details
+  const perQuery = data.per_query || [];
+  let perQueryRows = '';
+  if (perQuery.length) {
+    perQueryRows = perQuery.map(q => {
+      const sim = q.similarity || {};
+      const rel = q.relevancy || {};
+      const d = sim.delta || 0;
+      const dCls = d > 0 ? 'text-green-600' : d < 0 ? 'text-red-600' : 'text-gray-500';
+      return `<div class="grid grid-cols-[2fr_0.6fr_0.6fr_0.6fr_0.6fr_0.5fr] gap-2 px-3 py-1.5 bg-white border border-gray-100 rounded-md items-center text-[11px]">
+        <span class="text-gray-700 truncate" title="${esc(q.test_id||'')}">${esc(q.test_id||'')}</span>
+        <span class="text-gray-600 text-center">${(sim.baseline||0).toFixed(1)}</span>
+        <span class="text-gray-600 text-center">${(sim.candidate||0).toFixed(1)}</span>
+        <span class="font-semibold text-center ${dCls}">${d > 0 ? '▲' : d < 0 ? '▼' : ''} ${Math.abs(d).toFixed(1)}</span>
+        <span class="text-gray-500 text-center">${(q.tags||[]).join(', ')}</span>
+        <span class="text-gray-400 text-center">${q.status || ''}</span>
+      </div>`;
+    }).join('');
+  }
+
+  const perQueryHtml = perQuery.length ? `
+    <div class="mt-4">
+      <div class="text-[12px] font-semibold text-gray-600 mb-1.5">Per-Query Comparison</div>
+      <div class="bg-white border border-gray-100 rounded-xl shadow-sm overflow-hidden">
+        <div class="grid grid-cols-[2fr_0.6fr_0.6fr_0.6fr_0.6fr_0.5fr] gap-2 px-3 py-1.5 text-[9px] font-semibold text-gray-400 uppercase tracking-wide bg-gray-50 border-b border-gray-100">
+          <span>Test</span><span class="text-center">Base Sim</span><span class="text-center">Cand Sim</span><span class="text-center">Delta</span><span class="text-center">Tags</span><span class="text-center">Status</span>
+        </div>
+        <div class="flex flex-col gap-[1px] max-h-[400px] overflow-y-auto">${perQueryRows}</div>
+      </div>
+    </div>` : '';
+
+  // Store for download
+  window._lastCompareData = data;
+  window._lastCompareIds = { base, cand };
+
+  $('compare-content').innerHTML = `
+    <div class="flex justify-end mb-2">
+      <button onclick="downloadCompareReport()" class="az-btn-secondary text-white px-3 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1"><span class="material-icons-outlined text-[14px]">picture_as_pdf</span> Download PDF</button>
+    </div>
+    ${headerHtml}
+    ${deltaHtml}
+    <div class="grid grid-cols-2 gap-4 mb-4">
+      <div class="bg-white border border-gray-100 rounded-xl shadow-sm overflow-hidden">
+        <div class="px-4 py-2 bg-red-50 border-b border-red-100 text-[12px] font-semibold text-red-600">Regressions (${reg.length})</div>
+        <div class="flex flex-col gap-[1px] p-2 max-h-[300px] overflow-y-auto">${regHtml}</div>
+      </div>
+      <div class="bg-white border border-gray-100 rounded-xl shadow-sm overflow-hidden">
+        <div class="px-4 py-2 bg-green-50 border-b border-green-100 text-[12px] font-semibold text-green-600">Improvements (${imp.length})</div>
+        <div class="flex flex-col gap-[1px] p-2 max-h-[300px] overflow-y-auto">${impHtml}</div>
+      </div>
+    </div>
+    ${perQueryHtml}`;
+}
+
+// ============================================================
+// Infrastructure Page
+// ============================================================
+async function loadInfraPage() {
+  show('infra-loading');
+  $('infra-content').innerHTML = '';
+
+  // Get all agents with infra
+  if (!agents.length) {
+    const d = await api('GET', '/agent-benchmark/agents');
+    if (d) agents = d.agents || [];
+  }
+  const infraAgents = agents.filter(a => a.has_infra);
+
+  // Get infra status for all agents
+  const allStatus = await api('GET', '/agent-benchmark/infra/status');
+  hide('infra-loading');
+
+  const agentStatuses = allStatus?.agents || {};
+
+  // Status badge helper
+  const infraBadge = (status) => {
+    const m = {
+      deployed: 'bg-green-100 text-green-700 border-green-200',
+      deploying: 'bg-yellow-100 text-yellow-700 border-yellow-200',
+      nuking: 'bg-yellow-100 text-yellow-700 border-yellow-200',
+      failed: 'bg-red-100 text-red-700 border-red-200',
+      nuke_failed: 'bg-red-100 text-red-700 border-red-200',
+      nuked: 'bg-gray-100 text-gray-500 border-gray-200',
+      unknown: 'bg-gray-100 text-gray-500 border-gray-200',
+    };
+    const cls = m[status] || m.unknown;
+    return `<span class="px-2.5 py-0.5 rounded-full text-[11px] font-semibold uppercase border ${cls}">${status}</span>`;
+  };
+
+  const cards = infraAgents.map(agent => {
+    const s = agentStatuses[agent.name] || {};
+    const status = s.status || 'unknown';
+    const scenarios = (s.scenarios || []).join(', ');
+    const startedAt = s.started_at ? fmtDate(s.started_at) : '—';
+    const finishedAt = s.finished_at ? fmtDate(s.finished_at) : '—';
+    const error = s.error || '';
+    const output = s.output || '';
+    const isBusy = ['deploying', 'nuking'].includes(status);
+    const detailId = `infra-detail-${agent.name}`;
+
+    // Duration
+    let durStr = '—';
+    if (s.started_at && s.finished_at) {
+      const dur = (new Date(s.finished_at) - new Date(s.started_at)) / 1000;
+      durStr = fmtDuration(Math.abs(dur));
+    }
+
+    // Action buttons
+    const safeAgentName = agent.name.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const tagSelectId = 'infra-tag-' + safeAgentName;
+    const deployBtn = `<div class="flex items-center gap-1.5">
+      <select id="${tagSelectId}" class="az-select border border-gray-200/80 rounded-xl px-2 py-1.5 text-[10px] bg-white/80 outline-none transition-all" ${isBusy ? 'disabled' : ''}>
+        <option value="">All scenarios</option>
+      </select>
+      <button onclick="infraDeployWithTag(${escAttr(JSON.stringify(agent.name))},'${tagSelectId}')" class="az-btn-primary text-white px-3 py-1.5 rounded-xl text-[11px] font-semibold transition-all flex items-center gap-1" ${isBusy ? 'disabled' : ''}>
+        <span class="material-icons-outlined text-[13px]">rocket_launch</span> Deploy
+      </button>
+    </div>`;
+    const nameLiteral = escAttr(JSON.stringify(agent.name));
+    const nukeBtn = `<button onclick="infraPageAction('nuke',${nameLiteral})" class="px-3 py-1.5 text-[11px] rounded-xl border border-red-200 bg-white text-red-500 hover:bg-red-50 hover:border-red-400 font-semibold transition-all flex items-center gap-1" ${isBusy || ['unknown','nuked'].includes(status) ? 'disabled opacity-40' : ''}>
+      <span class="material-icons-outlined text-[13px]">delete_forever</span> Nuke
+    </button>`;
+    const cancelBtn = isBusy ? `<button onclick="infraPageAction('cancel',${nameLiteral})" class="px-3 py-1.5 text-[11px] rounded-xl border border-yellow-300 bg-yellow-50 text-yellow-700 hover:bg-yellow-100 font-semibold transition-all flex items-center gap-1">
+      <span class="material-icons-outlined text-[13px]">cancel</span> Cancel
+    </button>` : '';
+    const resetBtn = `<button onclick="infraPageAction('reset',${nameLiteral})" class="az-btn-secondary text-white px-3 py-1.5 rounded-xl text-[11px] font-semibold transition-all flex items-center gap-1">
+      <span class="material-icons-outlined text-[13px]">restart_alt</span> Reset
+    </button>`;
+
+    // Log section
+    const logHtml = output ? `<details class="mt-3 border border-gray-100 rounded-lg overflow-hidden">
+      <summary class="px-3 py-1.5 text-[11px] font-medium text-gray-500 bg-gray-50 cursor-pointer">Output Log</summary>
+      <pre class="log-output text-[11px] leading-relaxed p-3 bg-gray-900 text-gray-300 overflow-auto max-h-[250px] whitespace-pre">${esc(output)}</pre>
+    </details>` : '';
+
+    // Error section
+    const errorHtml = error ? `<div class="mt-2 px-3 py-1.5 rounded-lg bg-red-50 border border-red-100 text-[11px] text-red-600">${esc(error)}</div>` : '';
+
+    return `<div class="az-agent-card mb-3 az-fade-in">
+      <div class="az-agent-header px-5 py-3.5 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center shadow-sm">
+            <span class="material-icons-outlined text-white text-[16px]">cloud</span>
+          </div>
+          <div>
+            <div class="text-[14px] font-semibold text-gray-700">${agent.name.toUpperCase()}</div>
+            <div class="text-[11px] text-gray-400">${agent.fixtures} test fixtures</div>
+          </div>
+          ${infraBadge(status)}
+        </div>
+        <div class="flex gap-2">
+          ${deployBtn}
+          ${nukeBtn}
+          ${cancelBtn}
+          ${resetBtn}
+        </div>
+      </div>
+
+      <div class="px-5 py-3">
+        <div class="az-stats-grid rounded-xl px-4 py-2.5 grid grid-cols-4 gap-3 text-[11px] text-gray-500">
+          <div><span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Started</span><br>${startedAt}</div>
+          <div><span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Finished</span><br>${finishedAt}</div>
+          <div><span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Duration</span><br>${durStr}</div>
+          <div><span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">Scenarios</span><br>${scenarios || '—'}</div>
+        </div>
+
+        ${errorHtml}
+        ${logHtml}
+      </div>
+    </div>`;
+  }).join('');
+
+  // Non-infra agents list
+  const nonInfra = agents.filter(a => !a.has_infra);
+  const nonInfraHtml = nonInfra.length ? `
+    <div class="mt-6">
+      <div class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2.5">Agents without Infrastructure</div>
+      <div class="flex flex-wrap gap-2">
+        ${nonInfra.map(a => `<span class="px-3 py-1.5 text-[11px] bg-white border border-gray-200/80 rounded-xl text-gray-500 shadow-sm">${esc(a.name)} <span class="text-gray-400">(${a.fixtures})</span></span>`).join('')}
+      </div>
+    </div>` : '';
+
+  $('infra-content').innerHTML = cards + nonInfraHtml;
+
+  // Load tags for each agent's deploy dropdown
+  for (const agent of infraAgents) {
+    const tagsData = await api('GET', `/agent-benchmark/agents/${agent.name}/tags`);
+    const sel = document.getElementById('infra-tag-' + agent.name.replace(/[^a-zA-Z0-9_-]/g, '_'));
+    if (sel && tagsData?.tags) {
+      sel.innerHTML = '<option value="">All scenarios</option>';
+      for (const tag of tagsData.tags) {
+        sel.add(new Option(tag, tag));
+      }
+    }
+  }
+}
+
+async function infraDeployWithTag(agent, tagSelectId) {
+  const sel = document.getElementById(tagSelectId);
+  const tagFilter = sel ? sel.value : '';
+  const payload = { agent };
+  if (tagFilter) payload.tag_filter = tagFilter;
+  const r = await api('POST', '/agent-benchmark/infra/deploy', payload);
+  if (r) toast(r.message || `Deploy started for ${agent}` + (tagFilter ? ` (tag: ${tagFilter})` : ''), 'success');
+  setTimeout(() => loadInfraPage(), 1000);
+}
+
+async function infraPageAction(action, agent) {
+  const r = await api('POST', `/agent-benchmark/infra/${action}`, { agent });
+  if (r) toast(r.message || `${action} started for ${agent}`, 'success');
+  setTimeout(() => loadInfraPage(), 1000);
+}
+
+// ============================================================
+// Agent Analyzer
+// ============================================================
+let azCurrentConvId = null;
+let azAllExpanded = false;
+let azFiltersLoaded = false;
+
+async function azApi(endpoint, params = {}) {
+  const qs = new URLSearchParams(params).toString();
+  const resp = await fetch(`/agent-analyzer${endpoint}?${qs}`);
+  if (!resp.ok) { const t = await resp.text(); throw new Error(t); }
+  return resp.json();
+}
+
+async function azLoadFilterForm() {
+  if (azFiltersLoaded) return;
+  const tenants = await api('GET', '/dashboard/tenants');
+  $('az-tenant').innerHTML = '<option value="">Select tenant...</option>' + (tenants?.tenants||[]).map(t => `<option value="${t.id}">${t.name}</option>`).join('');
+  azFiltersLoaded = true;
+}
+
+async function azOnTenantChange() {
+  const tid = $('az-tenant').value;
+  $('az-account').innerHTML = '<option value="">Loading...</option>';
+  $('az-agent-filter').innerHTML = '<option value="">All agents</option>';
+  $('az-status-filter').innerHTML = '<option value="">All statuses</option>';
+  if (!tid) { $('az-account').innerHTML = '<option value="">Select tenant first</option>'; return; }
+  const accounts = await api('GET', `/dashboard/tenants/${tid}/accounts`);
+  $('az-account').innerHTML = '<option value="">All accounts</option>' + (accounts?.accounts||[]).map(a => `<option value="${a.id}">${a.account_name} (${a.cloud_provider||''})</option>`).join('');
+}
+
+async function azOnAccountChange() {
+  const accountId = $('az-account').value;
+  $('az-agent-filter').innerHTML = '<option value="">All agents</option>';
+  $('az-status-filter').innerHTML = '<option value="">All statuses</option>';
+  if (!accountId) return;
+  try {
+    const filters = await azApi('/filters', { account_id: accountId });
+    if (filters?.agent_names) $('az-agent-filter').innerHTML = '<option value="">All agents</option>' + filters.agent_names.map(n => `<option value="${n}">${n}</option>`).join('');
+    if (filters?.statuses) $('az-status-filter').innerHTML = '<option value="">All statuses</option>' + filters.statuses.map(s => `<option value="${s}">${s}</option>`).join('');
+  } catch (e) { console.error('Failed to load filters:', e); }
+}
+
+async function azLoadConversations() {
+  const accountId = $('az-account').value;
+  const agentName = $('az-agent-filter').value;
+  const status = $('az-status-filter').value;
+  const querySearch = $('az-query-search').value.trim();
+  const limit = $('az-limit').value;
+  if (!accountId) { toast('Select a tenant and account first', 'error'); return; }
+
+  const sidebar = $('az-sidebar');
+  sidebar.innerHTML = `<div class="flex flex-col items-center justify-center py-16 az-fade-in">
+    <div class="w-8 h-8 rounded-full border-2 border-indigo-100 border-t-indigo-500" style="animation:spin 0.6s linear infinite"></div>
+    <div class="text-[11px] text-gray-400 mt-3">Searching conversations...</div>
+  </div>`;
+
+  const params = { account_id: accountId, limit };
+  if (agentName) params.agent_name = agentName;
+  if (status) params.status = status;
+  if (querySearch) params.query_search = querySearch;
+
+  try {
+    const convs = await azApi('/conversations', params);
+    if (!convs || convs.length === 0) {
+      sidebar.innerHTML = `<div class="flex flex-col items-center justify-center py-16 px-6 text-center az-fade-in">
+        <div class="az-empty-icon w-12 h-12 rounded-2xl flex items-center justify-center mb-3">
+          <span class="material-icons-outlined text-indigo-300 text-[24px]">search_off</span>
+        </div>
+        <div class="text-[12px] font-medium text-gray-500">No conversations found</div>
+        <div class="text-[10px] text-gray-400 mt-0.5">Try adjusting your filters</div>
+      </div>`;
+      return;
+    }
+
+    const statusIcon = s => s === 'success' ? '<span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1"></span>'
+      : (s === 'fail' || s === 'error') ? '<span class="inline-block w-1.5 h-1.5 rounded-full bg-red-500 mr-1"></span>'
+      : '<span class="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 mr-1"></span>';
+
+    sidebar.innerHTML = `<div class="sticky top-0 z-10 px-4 py-2.5 border-b border-gray-100 bg-white/90 backdrop-blur-sm flex items-center justify-between">
+        <span class="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">${convs.length} result${convs.length !== 1 ? 's' : ''}</span>
+        <span class="text-[10px] text-gray-300">sorted by newest</span>
+      </div>` + `<div class="az-fade-in">` + convs.map(c => `
+      <div class="az-conv-item px-4 py-3 cursor-pointer ${azCurrentConvId === c.id ? 'active' : ''}" onclick="azLoadFlow('${c.id}')" data-az-id="${c.id}">
+        <div class="flex items-center gap-2 mb-1">
+          <span class="font-semibold text-gray-800 text-[11px] truncate flex-1">${esc(c.title || c.query_preview || 'Untitled')}</span>
+          <span class="ml-auto text-[9px] text-gray-300 font-mono flex-shrink-0">${c.id.slice(0,8)}</span>
+        </div>
+        <div class="flex items-center gap-1.5 mb-1">
+          <span class="inline-flex items-center px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-600 text-[9px] font-semibold">${esc(c.agent_name)}</span>
+        </div>
+        ${c.title && c.query_preview ? `<div class="text-gray-400 text-[10px] truncate leading-relaxed">${esc(c.query_preview)}</div>` : ''}
+        <div class="flex items-center gap-3 mt-1.5 text-[10px] text-gray-400">
+          <span class="flex items-center font-medium">${statusIcon(c.status)}${c.status}</span>
+          <span class="flex items-center gap-0.5"><span class="material-icons-outlined text-[11px]">timer</span>${azFmtDuration(c.duration_sec)}</span>
+          <span class="flex items-center gap-0.5"><span class="material-icons-outlined text-[11px]">schedule</span>${azFmtTime(c.created_at)}</span>
+        </div>
+      </div>
+    `).join('') + '</div>';
+  } catch (e) {
+    sidebar.innerHTML = `<div class="flex flex-col items-center justify-center py-16 px-6 text-center az-fade-in">
+      <div class="w-12 h-12 rounded-2xl bg-red-50 flex items-center justify-center mb-3">
+        <span class="material-icons-outlined text-red-400 text-[24px]">error_outline</span>
+      </div>
+      <div class="text-[12px] font-medium text-red-600">Failed to load</div>
+      <div class="text-[10px] text-gray-400 mt-1 max-w-[200px]">${esc(e.message)}</div>
+    </div>`;
+  }
+}
+
+function azLoadFromInput() {
+  const val = $('az-conv-input').value.trim();
+  if (val && /^[0-9a-f-]{36}$/i.test(val)) azLoadFlow(val);
+}
+
+async function azLoadFlow(convId) {
+  azCurrentConvId = convId;
+  document.querySelectorAll('.az-conv-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.azId === convId);
+  });
+  const main = $('az-main');
+  main.innerHTML = `<div class="flex flex-col items-center justify-center py-16 az-fade-in">
+    <div class="w-8 h-8 rounded-full border-2 border-indigo-100 border-t-indigo-500" style="animation:spin 0.6s linear infinite"></div>
+    <div class="text-[11px] text-gray-400 mt-3">Building execution tree...</div>
+  </div>`;
+  try {
+    const flow = await azApi('/flow', { conversation_id: convId });
+    if (!flow || flow.length === 0) {
+      main.innerHTML = `<div class="flex flex-col items-center justify-center py-16 px-6 text-center az-fade-in">
+        <div class="az-empty-icon w-12 h-12 rounded-2xl flex items-center justify-center mb-3">
+          <span class="material-icons-outlined text-indigo-300 text-[24px]">folder_open</span>
+        </div>
+        <div class="text-[12px] font-medium text-gray-500">No agent data found</div>
+      </div>`;
+      return;
+    }
+    azRenderFlow(flow, main);
+  } catch (e) {
+    main.innerHTML = `<div class="flex flex-col items-center justify-center py-16 px-6 text-center az-fade-in">
+      <div class="w-12 h-12 rounded-2xl bg-red-50 flex items-center justify-center mb-3">
+        <span class="material-icons-outlined text-red-400 text-[24px]">error_outline</span>
+      </div>
+      <div class="text-[12px] font-medium text-red-600">${esc(e.message)}</div>
+    </div>`;
+  }
+}
+
+function azFlattenAgents(roots) {
+  const result = [];
+  function walk(node) { result.push(node); if (node.children) node.children.forEach(walk); }
+  roots.forEach(walk);
+  return result;
+}
+
+function azComputeTotals(roots) {
+  const all = azFlattenAgents(roots);
+  const t = { llmCalls: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, totalLatency: 0, toolCallCount: 0 };
+  for (const n of all) {
+    t.llmCalls += n.totals.llm_calls || 0;
+    t.inputTokens += n.totals.input_tokens || 0;
+    t.outputTokens += n.totals.output_tokens || 0;
+    t.cachedTokens += n.totals.cached_tokens || 0;
+    t.totalLatency += n.totals.total_latency || 0;
+    t.toolCallCount += n.totals.tool_call_count || 0;
+  }
+  return t;
+}
+
+function azFmtDuration(sec) {
+  if (sec == null || sec === 0) return '0s';
+  if (sec < 60) return sec + 's';
+  if (sec < 3600) return Math.floor(sec / 60) + 'm ' + (sec % 60) + 's';
+  return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
+}
+
+function azFmtNum(n) {
+  if (n == null || n === 0) return '0';
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+  return n.toString();
+}
+
+function azFmtTime(t) {
+  if (!t) return '';
+  return new Date(t).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+// -- Premium rendering --
+
+function azRenderFlow(roots, container) {
+  const totals = azComputeTotals(roots);
+  const allAgents = azFlattenAgents(roots);
+  const minTime = Math.min(...allAgents.map(a => new Date(a.agent.created_at).getTime()));
+  const maxTime = Math.max(...allAgents.map(a => {
+    const end = a.agent.updated_at ? new Date(a.agent.updated_at).getTime() : new Date(a.agent.created_at).getTime() + a.agent.duration_sec * 1000;
+    return end;
+  }));
+  const totalSpan = maxTime - minTime || 1;
+
+  let html = '<div class="az-fade-in">';
+
+  // --- Summary card (dark gradient) ---
+  html += `<div class="az-summary-card rounded-2xl p-5 mb-5 text-white">
+    <div class="flex items-center gap-2 mb-4">
+      <span class="material-icons-outlined text-indigo-300 text-[16px]">insights</span>
+      <span class="text-[10px] font-semibold uppercase tracking-[1.5px] text-indigo-300">Conversation Summary</span>
+      <span class="ml-auto text-[9px] font-mono text-indigo-400/60">${azCurrentConvId ? azCurrentConvId.slice(0,12) + '...' : ''}</span>
+    </div>
+    <div class="grid grid-cols-4 md:grid-cols-8 gap-1">
+      ${[
+        ['Agents', allAgents.length, 'groups'],
+        ['Tool Calls', totals.toolCallCount, 'build'],
+        ['LLM Calls', totals.llmCalls, 'auto_awesome'],
+        ['Input Tok', azFmtNum(totals.inputTokens), 'arrow_downward'],
+        ['Output Tok', azFmtNum(totals.outputTokens), 'arrow_upward'],
+        ['Cached', azFmtNum(totals.cachedTokens), 'cached'],
+        ['Duration', azFmtDuration(roots[0]?.agent?.duration_sec || 0), 'timer'],
+        ['LLM Lat', totals.totalLatency.toFixed(1) + 's', 'speed'],
+      ].map(([lbl, val, icon]) => `<div class="az-metric text-center px-2 py-2">
+        <div class="text-[20px] font-bold text-white tracking-tight">${val}</div>
+        <div class="flex items-center justify-center gap-1 mt-0.5">
+          <span class="material-icons-outlined text-indigo-400/60 text-[10px]">${icon}</span>
+          <span class="text-[8px] text-indigo-300/70 uppercase tracking-wider font-medium">${lbl}</span>
+        </div>
+      </div>`).join('')}
+    </div>
+  </div>`;
+
+  // --- Gantt chart ---
+  html += `<div class="az-gantt-card rounded-2xl p-5 mb-5 overflow-x-auto">
+    <div class="flex items-center gap-2 mb-4">
+      <span class="material-icons-outlined text-indigo-400 text-[16px]">view_timeline</span>
+      <span class="text-[10px] font-semibold uppercase tracking-[1.5px] text-gray-400">Timeline</span>
+    </div>`;
+  for (const a of allAgents) {
+    const start = new Date(a.agent.created_at).getTime();
+    const end = a.agent.updated_at ? new Date(a.agent.updated_at).getTime() : start + a.agent.duration_sec * 1000;
+    const left = ((start - minTime) / totalSpan * 100).toFixed(2);
+    const width = Math.max(((end - start) / totalSpan * 100), 0.5).toFixed(2);
+    const status = a.agent.status || 'success';
+    const barCls = (status === 'fail' || status === 'error') ? 'fail' : status === 'waiting' ? 'waiting' : '';
+    html += `<div class="flex items-center mb-1.5 h-7">
+      <div class="w-[140px] min-w-[140px] text-[10px] text-gray-500 text-right pr-3 truncate font-medium" title="${esc(a.agent.agent_name)}">${esc(a.agent.agent_name)}</div>
+      <div class="flex-1 h-[20px] relative bg-gray-100 rounded-md">
+        <div class="az-gantt-bar ${barCls} absolute h-full rounded-md min-w-[3px] flex items-center pl-2 text-[8px] font-bold text-white overflow-hidden whitespace-nowrap" style="left:${left}%;width:${width}%" title="${azFmtDuration(a.agent.duration_sec)}">${azFmtDuration(a.agent.duration_sec)}</div>
+      </div>
+    </div>`;
+  }
+  html += '</div>';
+
+  // --- Toolbar ---
+  html += `<div class="flex items-center gap-2 mb-4">
+    <button onclick="azToggleAllNodes()" class="flex items-center gap-1.5 bg-white border border-gray-200 text-gray-600 px-3.5 py-1.5 rounded-xl text-[11px] font-medium hover:border-indigo-300 hover:text-indigo-600 hover:shadow-sm transition-all">
+      <span class="material-icons-outlined text-[14px]">unfold_more</span> Expand / Collapse All
+    </button>
+    <div class="ml-auto text-[10px] text-gray-400">${allAgents.length} agent${allAgents.length !== 1 ? 's' : ''} in tree</div>
+  </div>`;
+
+  // --- Flow tree ---
+  html += '<div class="az-flow-tree">';
+  for (const root of roots) html += azRenderNode(root, 0);
+  html += '</div></div>';
+
+  container.innerHTML = html;
+}
+
+function azRenderNode(node, depth) {
+  const a = node.agent;
+  const status = a.status || 'unknown';
+  const id = a.id;
+
+  const statusColors = {
+    success: { badge: 'bg-emerald-50 text-emerald-700 border-emerald-200', dot: 'bg-emerald-500', ring: 'ring-emerald-100' },
+    fail: { badge: 'bg-red-50 text-red-600 border-red-200', dot: 'bg-red-500', ring: 'ring-red-100' },
+    error: { badge: 'bg-red-50 text-red-600 border-red-200', dot: 'bg-red-500', ring: 'ring-red-100' },
+  };
+  const sc = statusColors[status] || { badge: 'bg-amber-50 text-amber-700 border-amber-200', dot: 'bg-amber-400', ring: 'ring-amber-100' };
+
+  let html = `<div class="az-agent-node mb-3" data-az-agent-id="${id}">`;
+
+  // Header
+  html += `<div class="az-agent-card">
+    <div class="az-agent-header flex items-center gap-2.5 px-4 py-3 cursor-pointer" onclick="azToggleNode('${id}')">
+      <span class="az-arrow text-gray-300 text-[10px] transition-all duration-200" id="az-arrow-${id}" style="display:inline-block">&#9654;</span>
+      <div class="w-2 h-2 rounded-full ${sc.dot} ring-2 ${sc.ring} flex-shrink-0"></div>
+      <span class="font-bold text-gray-800 text-[12px]">${esc(a.agent_name)}</span>
+      <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-semibold border ${sc.badge}">${status}</span>
+      <div class="flex items-center gap-1 text-[10px] text-indigo-400 ml-1">
+        <span class="material-icons-outlined text-[11px]">token</span>
+        <span>${azFmtNum(node.totals.input_tokens)} in / ${azFmtNum(node.totals.output_tokens)} out</span>
+      </div>
+      <span class="text-gray-400 text-[10px] ml-auto flex items-center gap-0.5"><span class="material-icons-outlined text-[12px]">timer</span>${azFmtDuration(a.duration_sec)}</span>
+    </div>`;
+
+  // Body (hidden)
+  html += `<div class="hidden" id="az-body-${id}">`;
+
+  // Stats grid
+  html += `<div class="az-stats-grid grid grid-cols-6 border-t border-gray-100">
+    ${[
+      ['LLM Calls', node.totals.llm_calls, 'auto_awesome'],
+      ['Tool Calls', node.totals.tool_call_count, 'build'],
+      ['Input Tokens', azFmtNum(node.totals.input_tokens), 'arrow_downward'],
+      ['Output Tokens', azFmtNum(node.totals.output_tokens), 'arrow_upward'],
+      ['Cached', azFmtNum(node.totals.cached_tokens), 'cached'],
+      ['LLM Latency', node.totals.total_latency.toFixed(1) + 's', 'speed'],
+    ].map(([lbl, val, icon]) => `<div class="p-3 text-center border-r border-gray-100 last:border-r-0">
+      <div class="text-[15px] font-bold text-gray-800">${val}</div>
+      <div class="flex items-center justify-center gap-0.5 mt-0.5"><span class="material-icons-outlined text-gray-300 text-[10px]">${icon}</span><span class="text-[8px] text-gray-400 uppercase tracking-wider font-medium">${lbl}</span></div>
+    </div>`).join('')}
+  </div>`;
+
+  // Query preview
+  if (a.query_preview) {
+    html += `<div class="az-section-toggle flex items-center gap-2 px-4 py-2.5 cursor-pointer border-t border-gray-100 text-[10px] font-semibold text-gray-400 uppercase tracking-wider" onclick="azToggleSection(this)">
+      <span class="az-sec-arrow text-[9px] text-gray-300 transition-all" style="display:inline-block">&#9654;</span>
+      <span class="material-icons-outlined text-[13px] text-gray-300">chat_bubble_outline</span> Query
+    </div>
+    <div class="hidden"><div class="az-code-block mx-4 my-3 px-4 py-3 text-[11px] leading-relaxed whitespace-pre-wrap break-words max-h-[200px] overflow-y-auto">${esc(a.query_preview)}</div></div>`;
+  }
+
+  // Tool calls
+  if (node.tool_calls && node.tool_calls.length > 0) {
+    html += `<div class="az-section-toggle flex items-center gap-2 px-4 py-2.5 cursor-pointer border-t border-gray-100 text-[10px] font-semibold text-gray-400 uppercase tracking-wider" onclick="azToggleSection(this)">
+      <span class="az-sec-arrow text-[9px] text-gray-300 transition-all" style="display:inline-block;transform:rotate(90deg)">&#9654;</span>
+      <span class="material-icons-outlined text-[13px] text-gray-300">build</span> Tool Calls <span class="text-indigo-400 normal-case tracking-normal">(${node.tool_calls.length})</span>
+    </div>`;
+    html += `<div class="px-2">`;
+    for (const tc of node.tool_calls) {
+      const tcStatus = tc.status || 'unknown';
+      const dotCls = tcStatus === 'success' ? 'success' : (tcStatus === 'error' || tcStatus === 'fail') ? 'error' : '';
+      const tcBadge = tcStatus === 'success' ? 'bg-emerald-50 text-emerald-600 border-emerald-200'
+        : (tcStatus === 'error' || tcStatus === 'fail') ? 'bg-red-50 text-red-600 border-red-200'
+        : 'bg-gray-50 text-gray-500 border-gray-200';
+      html += `<div class="flex border-b border-gray-50 last:border-b-0 ml-2">
+        <div class="flex flex-col items-center pt-3.5 w-6 flex-shrink-0">
+          <div class="az-tool-dot ${dotCls} w-2.5 h-2.5 rounded-full flex-shrink-0"></div>
+          <div class="w-px flex-1 bg-gray-200/80 mt-1.5"></div>
+        </div>
+        <div class="flex-1 px-3 py-2.5">
+          <div class="flex items-center gap-2">
+            <span class="font-bold text-amber-600 text-[11px]">${esc(tc.tool_name)}</span>
+            <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-[8px] font-semibold border ${tcBadge}">${tcStatus}</span>
+            <span class="text-gray-400 text-[10px] flex items-center gap-0.5"><span class="material-icons-outlined text-[10px]">timer</span>${azFmtDuration(tc.duration_sec)}</span>
+          </div>
+          ${tc.thought ? `<div class="text-gray-400 text-[10px] italic mt-1.5 leading-relaxed">${esc(tc.thought)}</div>` : ''}
+          ${tc.parameters ? `<div class="az-code-block mt-2 px-3 py-2 text-[10px] leading-relaxed overflow-x-auto whitespace-pre-wrap break-all max-h-[80px] overflow-y-auto">${esc(tc.parameters)}</div>` : ''}
+          ${tc.response ? `<div class="mt-2 text-[10px] text-gray-500 bg-gray-50 border border-gray-100 px-3 py-2 rounded-lg overflow-x-auto whitespace-pre-wrap break-all max-h-[120px] overflow-y-auto">${esc(tc.response)}</div>` : ''}
+          ${tc.child_agent_id ? `<div class="mt-2 text-[10px] text-indigo-500 cursor-pointer hover:text-indigo-700 font-medium flex items-center gap-1 transition-all" onclick="azScrollToAgent('${tc.child_agent_id}')">
+            <span class="material-icons-outlined text-[12px]">subdirectory_arrow_right</span> child agent: <span class="font-mono">${tc.child_agent_id.slice(0,8)}...</span>
+          </div>` : ''}
+        </div>
+      </div>`;
+    }
+    html += '</div>';
+  }
+
+  // Token usage
+  if (node.token_usage && node.token_usage.length > 0) {
+    html += `<div class="az-section-toggle flex items-center gap-2 px-4 py-2.5 cursor-pointer border-t border-gray-100 text-[10px] font-semibold text-gray-400 uppercase tracking-wider" onclick="azToggleSection(this)">
+      <span class="az-sec-arrow text-[9px] text-gray-300 transition-all" style="display:inline-block">&#9654;</span>
+      <span class="material-icons-outlined text-[13px] text-gray-300">auto_awesome</span> LLM Calls <span class="text-indigo-400 normal-case tracking-normal">(${node.token_usage.length})</span>
+    </div>`;
+    html += `<div class="hidden"><table class="az-token-table w-full text-[10px] border-collapse">
+      <thead><tr class="bg-gray-50/80"><th class="px-3 py-2 text-left text-[9px] text-gray-400 font-semibold uppercase tracking-wider">#</th><th class="px-3 py-2 text-left text-[9px] text-gray-400 font-semibold uppercase tracking-wider">Model</th><th class="px-3 py-2 text-right text-[9px] text-gray-400 font-semibold uppercase tracking-wider">Input</th><th class="px-3 py-2 text-right text-[9px] text-gray-400 font-semibold uppercase tracking-wider">Output</th><th class="px-3 py-2 text-right text-[9px] text-gray-400 font-semibold uppercase tracking-wider">Cached</th><th class="px-3 py-2 text-right text-[9px] text-gray-400 font-semibold uppercase tracking-wider">Latency</th><th class="px-3 py-2 text-left text-[9px] text-gray-400 font-semibold uppercase tracking-wider">Status</th><th class="px-3 py-2 text-left text-[9px] text-gray-400 font-semibold uppercase tracking-wider">Time</th></tr></thead><tbody>`;
+    node.token_usage.forEach((t, i) => {
+      const latClass = t.latency_seconds > 30 ? 'text-red-500 font-bold' : t.latency_seconds > 10 ? 'text-amber-500 font-semibold' : 'text-gray-600';
+      html += `<tr class="border-b border-gray-50">
+        <td class="px-3 py-2 text-gray-400">${i + 1}</td>
+        <td class="px-3 py-2 font-medium text-gray-700">${esc(t.llm_model)}</td>
+        <td class="px-3 py-2 text-right tabular-nums font-medium text-gray-700">${azFmtNum(t.input_tokens)}</td>
+        <td class="px-3 py-2 text-right tabular-nums font-medium text-gray-700">${azFmtNum(t.output_tokens)}</td>
+        <td class="px-3 py-2 text-right tabular-nums text-gray-500">${azFmtNum(t.cached_input_tokens)}</td>
+        <td class="px-3 py-2 text-right tabular-nums ${latClass}">${t.latency_seconds.toFixed(2)}s</td>
+        <td class="px-3 py-2">${t.request_status}</td>
+        <td class="px-3 py-2 text-gray-400">${azFmtTime(t.created_at)}</td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+  }
+
+  // Response
+  if (a.response) {
+    html += `<div class="az-section-toggle flex items-center gap-2 px-4 py-2.5 cursor-pointer border-t border-gray-100 text-[10px] font-semibold text-gray-400 uppercase tracking-wider" onclick="azToggleSection(this)">
+      <span class="az-sec-arrow text-[9px] text-gray-300 transition-all" style="display:inline-block">&#9654;</span>
+      <span class="material-icons-outlined text-[13px] text-gray-300">chat</span> Response
+    </div>
+    <div class="hidden"><div class="az-code-block mx-4 my-3 px-4 py-3 text-[11px] leading-relaxed whitespace-pre-wrap break-words max-h-[250px] overflow-y-auto">${esc(a.response)}</div></div>`;
+  }
+
+  html += '</div></div>'; // body + card
+
+  // Children
+  if (node.children && node.children.length > 0) {
+    html += `<div class="az-children-line ml-5 pl-5 mt-1 rounded-bl-xl">`;
+    for (const child of node.children) html += azRenderNode(child, depth + 1);
+    html += '</div>';
+  }
+
+  html += '</div>'; // agent-node
+  return html;
+}
+
+function azToggleNode(id) {
+  const body = document.getElementById('az-body-' + id);
+  const arrow = document.getElementById('az-arrow-' + id);
+  if (body) {
+    const isHidden = body.classList.toggle('hidden');
+    if (arrow) arrow.style.transform = isHidden ? '' : 'rotate(90deg)';
+  }
+}
+
+function azToggleSection(el) {
+  const arrow = el.querySelector('.az-sec-arrow');
+  const content = el.nextElementSibling;
+  if (content) {
+    const isHidden = content.classList.toggle('hidden');
+    if (arrow) arrow.style.transform = isHidden ? '' : 'rotate(90deg)';
+  }
+}
+
+function azToggleAllNodes() {
+  azAllExpanded = !azAllExpanded;
+  document.querySelectorAll('[id^="az-body-"]').forEach(el => el.classList.toggle('hidden', !azAllExpanded));
+  document.querySelectorAll('[id^="az-arrow-"]').forEach(el => el.style.transform = azAllExpanded ? 'rotate(90deg)' : '');
+}
+
+function azScrollToAgent(id) {
+  const el = document.querySelector(`[data-az-agent-id="${id}"]`);
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    const body = document.getElementById('az-body-' + id);
+    if (body && body.classList.contains('hidden')) {
+      body.classList.remove('hidden');
+      const arrow = document.getElementById('az-arrow-' + id);
+      if (arrow) arrow.style.transform = 'rotate(90deg)';
+    }
+    const card = el.querySelector('.az-agent-card');
+    if (card) {
+      card.style.boxShadow = '0 0 0 2px #818CF8, 0 4px 16px rgba(99,102,241,0.2)';
+      setTimeout(() => { card.style.boxShadow = ''; }, 2000);
+    }
+  }
+}
+
+// Enter key support for analyzer inputs
+document.addEventListener('DOMContentLoaded', () => {
+  const cvInput = document.getElementById('az-conv-input');
+  const qInput = document.getElementById('az-query-search');
+  if (cvInput) cvInput.addEventListener('keydown', e => { if (e.key === 'Enter') azLoadFromInput(); });
+  if (qInput) qInput.addEventListener('keydown', e => { if (e.key === 'Enter') azLoadConversations(); });
+  // Request notification permission for followup alerts
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+});
+
+// ============================================================
+// Clear Cache / Cleanup
+// ============================================================
+async function clearCache() {
+  // Clear local JS caches only — does NOT delete runs from DB
+  Object.keys(nameCache).forEach(k => delete nameCache[k]);
+  runsList = [];
+  agents = [];
+
+  // Reload agents and current page
+  const d = await api('GET', '/agent-benchmark/agents');
+  if (d) agents = d.agents || [];
+  toast('Cache cleared', 'success');
+  navigate(currentPage, currentRunId);
+}
+
+// ============================================================
+// Init
+// ============================================================
+(async function init() {
+  const d = await api('GET', '/agent-benchmark/agents');
+  if (d) agents = d.agents || [];
+
+  // Sidebar click handlers
+  document.querySelectorAll('.nav-link').forEach(link => {
+    link.addEventListener('click', e => {
+      e.preventDefault();
+      navigate(link.dataset.page);
+    });
+  });
+
+  // Route from hash
+  function routeFromHash() {
+    const hash = window.location.hash.slice(1);
+    if (hash.startsWith('run/')) navigate('detail', hash.slice(4));
+    else if (['benchmark','report','compare','infra','analyzer'].includes(hash)) navigate(hash);
+    else navigate('runs');
+  }
+  window.addEventListener('hashchange', routeFromHash);
+  routeFromHash();
+})();
+</script>
+</body>
+</html>

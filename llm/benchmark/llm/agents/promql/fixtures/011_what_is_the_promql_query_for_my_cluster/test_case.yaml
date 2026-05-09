@@ -1,0 +1,10 @@
+user_prompt: what is the promql query for my cluster memory usage for each node?
+expected_output:
+- (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes
+  * 100
+- sum by (instance) ((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes)
+  / node_memory_MemTotal_bytes * 100)
+- node_resources_memory_total_bytes
+tags:
+- command
+- promql

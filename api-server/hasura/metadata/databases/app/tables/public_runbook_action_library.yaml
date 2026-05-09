@@ -1,0 +1,11 @@
+table:
+  name: runbook_action_library
+  schema: public
+array_relationships:
+- name: runbook_actions
+  using:
+    foreign_key_constraint_on:
+      column: library_id
+      table:
+        name: runbook_action
+        schema: public

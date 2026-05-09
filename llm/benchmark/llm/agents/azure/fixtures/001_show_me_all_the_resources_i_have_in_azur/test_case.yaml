@@ -1,0 +1,7 @@
+user_prompt: Show me all the resources I have in Azure.
+expected_output:
+- az resource list --output table
+type: command
+tags:
+- command
+- azure

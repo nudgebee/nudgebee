@@ -1,0 +1,71 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "H03: App Service has three simultaneous misconfigurations: (1) App Insights sampling at 5% so most telemetry is lost, (2) health check path /api/health returns 404 causing instance restarts, (3) alwaysOn=false causing cold starts. User sees intermittent 503s, missing telemetry, AND slow first requests. Agent must identify ALL three issues."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "appName": "[concat('h03app', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "aiName": "h03-app-insights",
+    "brokenSampling": "5",
+    "fixedSampling": "100",
+    "samplingPct": "[if(equals(parameters('scenarioMode'), 'Fixed'), variables('fixedSampling'), variables('brokenSampling'))]",
+    "brokenHealthPath": "/api/health",
+    "fixedHealthPath": "",
+    "healthPath": "[if(equals(parameters('scenarioMode'), 'Fixed'), variables('fixedHealthPath'), variables('brokenHealthPath'))]",
+    "brokenAlwaysOn": false,
+    "fixedAlwaysOn": true,
+    "alwaysOn": "[if(equals(parameters('scenarioMode'), 'Fixed'), variables('fixedAlwaysOn'), variables('brokenAlwaysOn'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[variables('aiName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "web",
+      "tags": { "Environment": "production", "Team": "observability", "Scenario": "H03" },
+      "properties": { "Application_Type": "web" }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('appName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "app",
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('aiName'))]"
+      ],
+      "tags": { "Environment": "production", "Team": "api", "ScenarioMode": "[parameters('scenarioMode')]" },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "siteConfig": {
+          "alwaysOn": "[variables('alwaysOn')]",
+          "healthCheckPath": "[variables('healthPath')]",
+          "appSettings": [
+            { "name": "APPINSIGHTS_INSTRUMENTATIONKEY", "value": "[reference(resourceId('Microsoft.Insights/components', variables('aiName'))).InstrumentationKey]" },
+            { "name": "APPINSIGHTS_SAMPLING_PERCENTAGE", "value": "[variables('samplingPct')]" },
+            { "name": "APPLICATION_ENV", "value": "production" }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "appServiceName": { "type": "string", "value": "[variables('appName')]" },
+    "appInsightsName": { "type": "string", "value": "[variables('aiName')]" },
+    "bugNote": { "type": "string", "value": "Triple misconfig: (1) APPINSIGHTS_SAMPLING_PERCENTAGE=5, (2) healthCheckPath=/api/health returns 404, (3) alwaysOn=false" },
+    "scenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

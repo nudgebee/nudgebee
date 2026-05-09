@@ -1,0 +1,6 @@
+user_prompt: Remove a tag from an EC2 instance.
+expected_output:
+- aws ec2 delete-tags --resources <instance-id> --tags Key=Name
+tags:
+- command
+- aws

@@ -1,0 +1,14 @@
+# Signoz log agent benchmark — advanced/complex test cases
+# Tests multi-field, negation, ambiguous, nested logic, partial names
+#
+# Shares the same answer extractor and structural JSON evaluator
+# as signoz_logs (basic suite).
+agent: logs
+tool_names:
+  - logs_execute
+  - query_generator
+  - resource_search
+config_types:
+  - signoz
+answer_extractor: llm.agents.signoz_logs.benchmark_llm_signoz_logs._extract_signoz_query
+result_enricher: llm.agents.signoz_logs.benchmark_llm_signoz_logs._signoz_query_enricher

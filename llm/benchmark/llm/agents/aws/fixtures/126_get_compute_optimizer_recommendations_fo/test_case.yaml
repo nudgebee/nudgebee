@@ -1,0 +1,6 @@
+user_prompt: Get Compute Optimizer recommendations for Lambda functions.
+expected_output:
+- aws compute-optimizer get-lambda-function-recommendations
+tags:
+- command
+- aws

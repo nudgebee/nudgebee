@@ -1,0 +1,35 @@
+# Promtail sidecar config — tails the shared log file and pushes to the
+# in-namespace Loki service.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config
+data:
+  promtail-config.yaml: |
+    server:
+      http_listen_port: 9080
+    positions:
+      filename: /tmp/positions.yaml
+      sync_period: 10s
+      ignore_invalid_yaml: true
+    clients:
+      - url: http://loki:3100/loki/api/v1/push
+        batchwait: 100ms
+        batchsize: 102400
+        timeout: 10s
+    scrape_configs:
+      - job_name: checkout-api
+        static_configs:
+          - targets:
+              - localhost
+            labels:
+              job: checkout-api
+              namespace: log-default-03
+              app: checkout-api
+              __path__: /var/log/app/*.log
+        pipeline_stages:
+          - regex:
+              expression: '(?P<level>INFO|WARN|ERROR)\s+status=(?P<status>\d+)'
+          - labels:
+              level:
+              status:

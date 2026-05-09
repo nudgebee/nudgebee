@@ -1,0 +1,6 @@
+user_prompt: List all CodeCommit repositories.
+expected_output:
+- aws codecommit list-repositories
+tags:
+- command
+- aws

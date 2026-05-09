@@ -1,0 +1,17 @@
+user_prompt: "Tell me more about the second one."
+expected_output:
+  - |
+    This is a follow-up question that requires resolving the referent ("the
+    second one") from the session notebook. The agent should look up the
+    second item from the most recently surfaced recommendation list rather
+    than re-querying from scratch or asking what the user means. The
+    response should provide deeper detail on that recommendation: resource
+    identification, current configuration, estimated savings in dollars,
+    risk level with reasoning, and the next action. If no prior list exists
+    in the conversation context, the agent should ask for clarification
+    rather than guessing. Cite the source tool.
+tags:
+  - notebook
+  - followup
+  - medium
+  - finops

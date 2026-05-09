@@ -1,0 +1,12 @@
+table:
+  name: feature
+  schema: public
+is_enum: true
+array_relationships:
+- name: feature_flags
+  using:
+    foreign_key_constraint_on:
+      column: feature_id
+      table:
+        name: feature_flag
+        schema: public

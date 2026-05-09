@@ -1,0 +1,22 @@
+user_prompt: |
+  2026-04-05T11:45:22.890Z INFO  [notifications] Processing notification batch: 15 pending
+  2026-04-05T11:45:23.123Z INFO  [notifications] Rendering email template for event: KubePodCrashLooping
+  2026-04-05T11:45:23.456Z ERROR [notifications] Traceback (most recent call last):
+    File "/app/notifications/email_renderer.py", line 89, in render_template
+      body = template.render(context)
+    File "/opt/conda/lib/python3.11/site-packages/jinja2/environment.py", line 1301, in render
+      self.environment.handle_exception()
+    File "/app/notifications/templates/alert_email.html", line 23, in top-level template code
+      <p>{{ event.description }}</p>
+  UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 142: invalid start byte
+  2026-04-05T11:45:23.457Z ERROR [notifications] Failed to render notification for event_id=evt-3f8a2b: event description contains non-UTF-8 characters
+  2026-04-05T11:45:23.458Z WARN  [notifications] Skipping 3 notifications in batch due to encoding errors
+  namespace: nudgebee, pod: notifications-6b4846f689-j4l8n, container: notifications
+expected_output:
+  - The notifications service in the nudgebee namespace is failing to render email notifications due to a UnicodeDecodeError. The error occurs in email_renderer.py at line 89 when rendering the alert_email.html Jinja2 template, specifically at line 23 when accessing event.description. The byte 0xff at position 142 is not valid UTF-8. This affects the KubePodCrashLooping event notification and caused 3 notifications in the batch to be skipped. The root cause is that event descriptions stored in the database contain non-UTF-8 encoded characters, likely injected from pod logs or external alert sources that use different encodings. Suggested actions include sanitizing event descriptions when storing them, adding UTF-8 encoding validation in the event ingestion pipeline, and wrapping the template rendering with a fallback that strips non-UTF-8 bytes.
+tags:
+  - python
+  - encoding
+  - notifications
+  - nudgebee
+type: log_analysis

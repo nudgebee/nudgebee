@@ -1,0 +1,6 @@
+user_prompt: Get the approximate number of messages in an SQS queue.
+expected_output:
+- aws sqs get-queue-attributes --queue-url <queue-url> --attribute-names ApproximateNumberOfMessages
+tags:
+- command
+- aws

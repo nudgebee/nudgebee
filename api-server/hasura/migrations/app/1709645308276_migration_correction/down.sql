@@ -1,0 +1,6 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- delete from
+--     auto_pilot_execution_status
+-- where
+--     value = 'Disabled';

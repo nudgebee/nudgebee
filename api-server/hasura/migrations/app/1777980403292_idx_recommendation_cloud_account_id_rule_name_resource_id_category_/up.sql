@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS recommendation_cloud_account_id_rule_name_resource_id_category ON public.recommendation USING btree (cloud_account_id, rule_name, resource_id, category, account_object_id);

@@ -1,0 +1,3 @@
+table:
+  name: k8s_account_resource_usage
+  schema: public

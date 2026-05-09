@@ -1,0 +1,108 @@
+{
+  "pod_cpu_memory": {
+    "data": {
+      "k8s_pod_groupings": [
+        {
+          "account_id": "demo",
+          "tenant_id": "demo",
+          "timestamp": "2024-03-20T00:00:00",
+          "pod_cost": 0.13368,
+          "avg_cpu_used": 0.0005733333333333334,
+          "avg_cpu_request": 0.25,
+          "avg_memory_used": 172974640.71686333,
+          "avg_memory_request": 268435456
+        },
+        {
+          "account_id": "demo",
+          "tenant_id": "demo",
+          "timestamp": "2024-03-20T00:00:00",
+          "pod_cost": 0.08813,
+          "avg_cpu_used": 0.00055,
+          "avg_cpu_request": 0.25,
+          "avg_memory_used": 128022293.89331,
+          "avg_memory_request": 268435456
+        },
+        {
+          "account_id": "demo",
+          "tenant_id": "demo",
+          "timestamp": "2024-03-19T00:00:00",
+          "pod_cost": 0.33024,
+          "avg_cpu_used": 0.0008,
+          "avg_cpu_request": 0.2324,
+          "avg_memory_used": 175976044.05380398,
+          "avg_memory_request": 256481689.6
+        },
+        {
+          "account_id": "demo",
+          "tenant_id": "demo",
+          "timestamp": "2024-03-19T00:00:00",
+          "pod_cost": 0.2136,
+          "avg_cpu_used": 0.0006100000000000001,
+          "avg_cpu_request": 0.25,
+          "avg_memory_used": 151117758.67013,
+          "avg_memory_request": 268435456
+        },
+        {
+          "account_id": "demo",
+          "tenant_id": "demo",
+          "timestamp": "2024-03-18T00:00:00",
+          "pod_cost": 0.25437,
+          "avg_cpu_used": 0.0009316666666666666,
+          "avg_cpu_request": 0.19720000000000001,
+          "avg_memory_used": 152441494.069108,
+          "avg_memory_request": 232574156.8
+        },
+        {
+          "account_id": "demo",
+          "tenant_id": "demo",
+          "timestamp": "2024-03-18T00:00:00",
+          "pod_cost": 0.21434,
+          "avg_cpu_used": 0.00121,
+          "avg_cpu_request": 0.25,
+          "avg_memory_used": 176020750.22222,
+          "avg_memory_request": 268435456
+        },
+        {
+          "account_id": "demo",
+          "tenant_id": "demo",
+          "timestamp": "2024-03-17T00:00:00",
+          "pod_cost": 0.34429,
+          "avg_cpu_used": 0.0015300000000000001,
+          "avg_cpu_request": 0.25,
+          "avg_memory_used": 131893131.48489399,
+          "avg_memory_request": 268435456
+        },
+        {
+          "account_id": "demo",
+          "tenant_id": "demo",
+          "timestamp": "2024-03-17T00:00:00",
+          "pod_cost": 0.21434,
+          "avg_cpu_used": 0.00125,
+          "avg_cpu_request": 0.25,
+          "avg_memory_used": 175552243.2,
+          "avg_memory_request": 268435456
+        },
+        {
+          "account_id": "demo",
+          "tenant_id": "demo",
+          "timestamp": "2024-03-16T00:00:00",
+          "pod_cost": 0.02838,
+          "avg_cpu_used": 0.00028,
+          "avg_cpu_request": 0.25,
+          "avg_memory_used": 65396089.26316,
+          "avg_memory_request": 268435456
+        },
+        {
+          "account_id": "demo",
+          "tenant_id": "demo",
+          "timestamp": "2024-03-16T00:00:00",
+          "pod_cost": 0.21434,
+          "avg_cpu_used": 0.00091,
+          "avg_cpu_request": 0.25,
+          "avg_memory_used": 157344899.59115,
+          "avg_memory_request": 268435456
+        }
+      ]
+    }
+  }
+}

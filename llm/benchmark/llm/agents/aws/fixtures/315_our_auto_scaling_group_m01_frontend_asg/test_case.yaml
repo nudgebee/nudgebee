@@ -1,0 +1,15 @@
+agent: aws_debug
+expected_output:
+- The root cause is a port mismatch between the application and the ALB health check. The launch template 'm01-frontend-lt'
+  UserData starts the application on port 3000, but the target group 'm01-frontend-tg' health check is configured to check
+  port 8080. Since nothing listens on port 8080, health checks fail with connection refused, targets are marked unhealthy,
+  the ASG terminates them and launches replacements - creating an infinite launch/terminate cycle. The fix is to either change
+  the health check port to 3000 or update the application to listen on 8080.
+scenario: M01
+tags:
+- command
+- aws
+- medium
+type: rca
+user_prompt: Our Auto Scaling group 'm01-frontend-asg' in us-east-1 keeps launching and terminating instances in a loop. The
+  ALB 'm01-frontend-alb' shows all targets as unhealthy. The frontend app should be working - can you investigate?

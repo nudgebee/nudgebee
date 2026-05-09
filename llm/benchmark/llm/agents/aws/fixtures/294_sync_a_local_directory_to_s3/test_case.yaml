@@ -1,0 +1,6 @@
+user_prompt: Sync a local directory to S3.
+expected_output:
+- aws s3 sync localdir s3://bucket-name/remotedir
+tags:
+- command
+- aws

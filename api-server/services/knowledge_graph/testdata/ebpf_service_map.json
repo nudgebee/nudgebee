@@ -1,0 +1,209 @@
+{
+  "services": [
+    {
+      "name": "api-deployment",
+      "namespace": "production",
+      "cluster": "my-eks-cluster",
+      "service_type": "http",
+      "upstreams": [
+        {
+          "name": "frontend-deployment",
+          "namespace": "production",
+          "port": 8080,
+          "protocol": "http"
+        }
+      ],
+      "downstreams": [
+        {
+          "name": "mydb-instance",
+          "namespace": "production",
+          "port": 5432,
+          "protocol": "postgres",
+          "connection_type": "external_rds"
+        },
+        {
+          "name": "redis-cluster-001",
+          "namespace": "production",
+          "port": 6379,
+          "protocol": "redis",
+          "connection_type": "external_elasticache"
+        },
+        {
+          "name": "postgres-statefulset",
+          "namespace": "production",
+          "port": 5432,
+          "protocol": "postgres"
+        }
+      ],
+      "metrics": {
+        "request_rate": 1500.0,
+        "error_rate": 0.02,
+        "p99_latency_ms": 150.0
+      }
+    },
+    {
+      "name": "frontend-deployment",
+      "namespace": "production",
+      "cluster": "my-eks-cluster",
+      "service_type": "http",
+      "upstreams": [],
+      "downstreams": [
+        {
+          "name": "api-deployment",
+          "namespace": "production",
+          "port": 8080,
+          "protocol": "http"
+        },
+        {
+          "name": "my-app-bucket",
+          "namespace": "production",
+          "port": 443,
+          "protocol": "https",
+          "connection_type": "external_s3"
+        }
+      ],
+      "metrics": {
+        "request_rate": 5000.0,
+        "error_rate": 0.01,
+        "p99_latency_ms": 50.0
+      }
+    },
+    {
+      "name": "postgres-statefulset",
+      "namespace": "production",
+      "cluster": "my-eks-cluster",
+      "service_type": "postgres",
+      "upstreams": [
+        {
+          "name": "api-deployment",
+          "namespace": "production",
+          "port": 5432,
+          "protocol": "postgres"
+        }
+      ],
+      "downstreams": [],
+      "metrics": {
+        "connection_count": 25,
+        "query_rate": 800.0,
+        "p99_latency_ms": 10.0
+      }
+    }
+  ],
+  "external_services": [
+    {
+      "name": "mydb-instance",
+      "type": "rds_postgres",
+      "endpoint": "mydb.abc123.us-east-1.rds.amazonaws.com",
+      "port": 5432,
+      "resolved_from": "dns"
+    },
+    {
+      "name": "redis-cluster-001",
+      "type": "elasticache_redis",
+      "endpoint": "redis-cluster.abc123.cache.amazonaws.com",
+      "port": 6379,
+      "resolved_from": "dns"
+    },
+    {
+      "name": "my-app-bucket",
+      "type": "s3",
+      "endpoint": "my-app-bucket.s3.amazonaws.com",
+      "port": 443,
+      "resolved_from": "dns"
+    }
+  ],
+  "network_flows": [
+    {
+      "source": "frontend-deployment",
+      "source_namespace": "production",
+      "destination": "api-deployment",
+      "destination_namespace": "production",
+      "protocol": "http",
+      "bytes_sent": 1024000,
+      "bytes_received": 5120000,
+      "packets_sent": 8000,
+      "packets_received": 12000
+    },
+    {
+      "source": "api-deployment",
+      "source_namespace": "production",
+      "destination": "mydb-instance",
+      "destination_namespace": "external",
+      "protocol": "postgres",
+      "bytes_sent": 512000,
+      "bytes_received": 2048000,
+      "packets_sent": 4000,
+      "packets_received": 6000
+    },
+    {
+      "source": "api-deployment",
+      "source_namespace": "production",
+      "destination": "redis-cluster-001",
+      "destination_namespace": "external",
+      "protocol": "redis",
+      "bytes_sent": 256000,
+      "bytes_received": 1024000,
+      "packets_sent": 2000,
+      "packets_received": 3000
+    },
+    {
+      "source": "api-deployment",
+      "source_namespace": "production",
+      "destination": "order-queue",
+      "destination_namespace": "external",
+      "protocol": "https",
+      "bytes_sent": 128000,
+      "bytes_received": 64000,
+      "packets_sent": 1000,
+      "packets_received": 800
+    },
+    {
+      "source": "api-handler-function",
+      "source_namespace": "lambda",
+      "destination": "mydb-instance",
+      "destination_namespace": "external",
+      "protocol": "postgres",
+      "bytes_sent": 256000,
+      "bytes_received": 1024000,
+      "packets_sent": 2000,
+      "packets_received": 3500
+    },
+    {
+      "source": "orders-api",
+      "source_namespace": "api-gateway",
+      "destination": "api-handler-function",
+      "destination_namespace": "lambda",
+      "protocol": "https",
+      "bytes_sent": 512000,
+      "bytes_received": 256000,
+      "packets_sent": 4000,
+      "packets_received": 2000
+    }
+  ],
+  "lambda_invocations": [
+    {
+      "function_name": "api-handler-function",
+      "invocation_source": "orders-api",
+      "invocation_type": "synchronous",
+      "invocations_per_hour": 15000,
+      "avg_duration_ms": 250,
+      "error_rate": 0.01
+    }
+  ],
+  "messaging_flows": [
+    {
+      "source": "api-deployment",
+      "queue": "order-queue",
+      "message_type": "sqs",
+      "messages_per_hour": 5000,
+      "avg_message_size_bytes": 2048
+    },
+    {
+      "source": "api-handler-function",
+      "topic": "order-notifications",
+      "message_type": "sns",
+      "messages_per_hour": 4500,
+      "avg_message_size_bytes": 1024
+    }
+  ]
+}

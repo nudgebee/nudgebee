@@ -1,0 +1,9 @@
+user_prompt: Show me EC2 CPU utilization broken down by host
+expected_output:
+  - "avg:aws.ec2.cpuutilization{*} by {host}"
+  - "max:aws.ec2.cpuutilization{*} by {host}"
+tags:
+  - command
+  - aws
+  - ec2
+  - cpu

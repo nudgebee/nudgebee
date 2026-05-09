@@ -1,0 +1,6 @@
+user_prompt: List Cognito identity pools.
+expected_output:
+- aws cognito-identity list-identity-pools --max-results 60
+tags:
+- command
+- aws

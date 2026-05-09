@@ -1,0 +1,6 @@
+user_prompt: List AppSync resolvers.
+expected_output:
+- aws appsync list-resolvers --api-id <api-id>
+tags:
+- command
+- aws

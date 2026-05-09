@@ -1,0 +1,3 @@
+table:
+  name: integration_sources
+  schema: public

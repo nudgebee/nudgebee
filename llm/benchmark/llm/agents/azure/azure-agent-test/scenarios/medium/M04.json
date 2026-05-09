@@ -1,0 +1,79 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "M04: Function App has FUNCTIONS_WORKER_RUNTIME=dotnet but the deployed code is Python. Function App fails to load functions with 'Worker runtime mismatch' error. User complaint: all functions return 500, no functions listed. Requires checking runtime vs actual code."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "funcAppName": "[concat('m04func', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "funcStorageName": "[concat('m04st', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "workerRuntime": "[if(equals(parameters('scenarioMode'), 'Fixed'), 'python', 'dotnet')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('funcStorageName')]",
+      "location": "[resourceGroup().location]",
+      "sku": { "name": "Standard_LRS" },
+      "kind": "StorageV2",
+      "tags": { "Environment": "production", "Purpose": "function-runtime" }
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2022-03-01",
+      "name": "m04-data-plan",
+      "location": "[resourceGroup().location]",
+      "sku": { "name": "Y1", "tier": "Dynamic" },
+      "kind": "functionapp",
+      "tags": { "Environment": "production" },
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('funcAppName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "functionapp",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', 'm04-data-plan')]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('funcStorageName'))]"
+      ],
+      "tags": {
+        "Name": "m04-data-processor",
+        "Environment": "production",
+        "Team": "data",
+        "ScenarioMode": "[parameters('scenarioMode')]"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', 'm04-data-plan')]",
+        "siteConfig": {
+          "appSettings": [
+            { "name": "AzureWebJobsStorage", "value": "[concat('DefaultEndpointsProtocol=https;AccountName=', variables('funcStorageName'), ';AccountKey=', listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('funcStorageName')), '2023-01-01').keys[0].value)]" },
+            { "name": "FUNCTIONS_EXTENSION_VERSION", "value": "~4" },
+            { "name": "FUNCTIONS_WORKER_RUNTIME", "value": "[variables('workerRuntime')]" },
+            { "name": "PYTHON_ENABLE_WORKER_EXTENSIONS", "value": "1" },
+            { "name": "SOURCE_STORAGE_CONTAINER", "value": "raw-data" }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "FunctionAppName": { "type": "string", "value": "[variables('funcAppName')]" },
+    "WorkerRuntime": { "type": "string", "value": "[variables('workerRuntime')]" },
+    "BugNote": { "type": "string", "value": "FUNCTIONS_WORKER_RUNTIME=dotnet but Python code deployed - runtime mismatch causes 500 errors" },
+    "ScenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

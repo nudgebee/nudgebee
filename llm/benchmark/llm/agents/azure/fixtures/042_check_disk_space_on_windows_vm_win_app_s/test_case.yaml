@@ -1,0 +1,9 @@
+user_prompt: Check disk space on Windows VM 'win-app-server' in resource group 'app-rg'
+expected_output:
+- az vm run-command invoke --command-id RunPowerShellScript --name win-app-server
+  --resource-group app-rg --scripts "Get-PSDrive -PSProvider FileSystem"
+type: command
+tags:
+- command
+- azure
+- windows

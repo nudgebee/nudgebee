@@ -1,0 +1,10 @@
+user_prompt: What is the SQL query to find out-of-memory (pod_oom_killer_enricher)
+  events for job data-processor?
+expected_output:
+- SELECT id, title, starts_at, status, priority, subject_node FROM events WHERE aggregation_key='pod_oom_killer_enricher'
+  AND subject_type='job' AND subject_name='data-processor';
+- SELECT * FROM events WHERE aggregation_key='pod_oom_killer_enricher' AND subject_type='job'
+  AND subject_name='data-processor';
+tags:
+- command
+- events

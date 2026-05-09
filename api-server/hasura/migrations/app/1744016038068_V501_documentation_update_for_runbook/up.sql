@@ -1,0 +1,142 @@
+UPDATE
+    runbook_action
+SET
+    attributes = jsonb_set(
+        attributes :: jsonb,
+        '{doc_link}',
+        '"{{doc_url}}/docs/features/autopilot/auto_runbook/create_ticket/pvc_rightsize"'
+    )
+WHERE
+    created_by is null
+    and account_type = 'K8s'
+    and internal_identifier = 'pv_rightsize';
+
+UPDATE
+    runbook_action
+SET
+    attributes = jsonb_set(
+        attributes :: jsonb,
+        '{doc_link}',
+        '"{{doc_url}}/docs/features/autopilot/auto_runbook/create_ticket/workload_scaler"'
+    )
+WHERE
+    created_by is null
+    and account_type = 'K8s'
+    and internal_identifier = 'workload_scalar';
+
+UPDATE
+    runbook_action
+SET
+    attributes = jsonb_set(
+        attributes :: jsonb,
+        '{doc_link}',
+        '"{{doc_url}}/docs/features/autopilot/auto_runbook/create_ticket/create_ticket"'
+    )
+WHERE
+    created_by is null
+    and account_type = 'K8s'
+    and internal_identifier = 'ticket_create';
+
+UPDATE
+    runbook_action
+SET
+    attributes = jsonb_set(
+        attributes :: jsonb,
+        '{doc_link}',
+        '"{{doc_url}}/docs/features/autopilot/auto_runbook/create_ticket/horizontal_rightsize"'
+    )
+WHERE
+    created_by is null
+    and account_type = 'K8s'
+    and internal_identifier = 'horizontal_rightsize';
+
+UPDATE
+    runbook_action
+SET
+    attributes = jsonb_set(
+        attributes :: jsonb,
+        '{doc_link}',
+        '"{{doc_url}}/docs/features/autopilot/auto_runbook/create_ticket/rest_api"'
+    )
+WHERE
+    created_by is null
+    and account_type = 'K8s'
+    and internal_identifier = 'rest_api';
+
+UPDATE
+    runbook_action
+SET
+    attributes = jsonb_set(
+        attributes :: jsonb,
+        '{doc_link}',
+        '"{{doc_url}}/docs/features/autopilot/auto_runbook/create_ticket/delete_pod_gracefully"'
+    )
+WHERE
+    created_by is null
+    and account_type = 'K8s'
+    and internal_identifier = 'pod_delete';
+
+UPDATE
+    runbook_action
+SET
+    attributes = jsonb_set(
+        attributes :: jsonb,
+        '{doc_link}',
+        '"{{doc_url}}/docs/features/autopilot/auto_runbook/create_ticket/node_shutdown"'
+    )
+WHERE
+    created_by is null
+    and account_type = 'K8s'
+    and internal_identifier = 'k8s_node_graceful_shutdown';
+
+UPDATE
+    runbook_action
+SET
+    attributes = jsonb_set(
+        attributes :: jsonb,
+        '{doc_link}',
+        '"{{doc_url}}/docs/features/autopilot/auto_runbook/create_ticket/vertical_rightsize"'
+    )
+WHERE
+    created_by is null
+    and account_type = 'K8s'
+    and internal_identifier = 'vertical_rightsize';
+
+UPDATE
+    runbook_action
+SET
+    attributes = jsonb_set(
+        attributes :: jsonb,
+        '{doc_link}',
+        '"{{doc_url}}/docs/features/autopilot/auto_runbook/create_ticket/execute_bash"'
+    )
+WHERE
+    created_by is null
+    and account_type = 'K8s'
+    and internal_identifier = 'k8s_bash';
+
+UPDATE
+    runbook_action
+SET
+    attributes = jsonb_set(
+        attributes :: jsonb,
+        '{doc_link}',
+        '"{{doc_url}}/docs/features/autopilot/auto_runbook/create_ticket/notify"'
+    )
+WHERE
+    created_by is null
+    and account_type = 'K8s'
+    and internal_identifier = 'notification';
+
+UPDATE
+    runbook_action
+SET
+    attributes = jsonb_set(
+        attributes :: jsonb,
+        '{doc_link}',
+        '"{{doc_url}}/docs/features/autopilot/auto_runbook/create_ticket/execute_custom_image"'
+    )
+WHERE
+    created_by is null
+    and account_type = 'K8s'
+    and internal_identifier = 'custom_image_execute';

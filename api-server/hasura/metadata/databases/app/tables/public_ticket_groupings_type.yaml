@@ -1,0 +1,3 @@
+table:
+  name: ticket_groupings_type
+  schema: public

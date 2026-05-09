@@ -1,0 +1,2 @@
+CREATE TABLE IF NOT EXISTS "public"."event_log_analysis" ("id" uuid NOT NULL DEFAULT gen_random_uuid(), "event_id" uuid NOT NULL, "recorded_at" timestamptz NOT NULL DEFAULT now(), "analysis" text, PRIMARY KEY ("id") , FOREIGN KEY ("event_id") REFERENCES "public"."events"("id") ON UPDATE restrict ON DELETE restrict, UNIQUE ("id"), UNIQUE ("event_id"));COMMENT ON TABLE "public"."event_log_analysis" IS E'Log analysis of event';
+CREATE EXTENSION IF NOT EXISTS pgcrypto;

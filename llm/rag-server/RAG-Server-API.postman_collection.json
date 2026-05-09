@@ -1,0 +1,772 @@
+{
+  "info": {
+    "_postman_id": "rag-server-api-collection",
+    "name": "RAG Server API",
+    "description": "Complete API collection for RAG Server - Document loading, search, knowledge base management, and administration",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:9988",
+      "type": "string"
+    },
+    {
+      "key": "account_id",
+      "value": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
+      "type": "string"
+    },
+    {
+      "key": "tenant_id",
+      "value": "890cad87-c452-4aa7-b84a-742cee0454a1",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Check if the RAG server is running"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Document Management",
+      "item": [
+        {
+          "name": "Load Documents",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"module\": \"prometheus\",\n  \"force\": false,\n  \"account_id\": [\"{{account_id}}\"]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/load_docs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "load_docs"
+              ]
+            },
+            "description": "Load documents for a specific module or all modules. Modules: prometheus, loki, elastic_search, events, recommendations, planner, rabbitmq, aws, kubectl, postgresql, mysql, github, docs"
+          }
+        },
+        {
+          "name": "Load Account Module Documents",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"module\": \"custom_module\",\n  \"account_id\": \"{{account_id}}\",\n  \"data\": \"Document content here\\nLine 2\\nLine 3\",\n  \"format\": \"text\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/load_account_module_docs",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "load_account_module_docs"
+              ]
+            },
+            "description": "Load documents for a specific account and module. Formats: text, json, xml, csv"
+          }
+        },
+        {
+          "name": "Delete All Collections",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/delete_collections",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "delete_collections"
+              ]
+            },
+            "description": "Delete all vector collections (use with caution!)"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Search",
+      "item": [
+        {
+          "name": "Get Matching Documents",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"What is CPU usage?\",\n  \"k\": 3,\n  \"account_id\": \"{{account_id}}\",\n  \"module\": \"prometheus\",\n  \"collection_name\": null,\n  \"conversation_id\": \"conv_001\",\n  \"message_id\": \"msg_001\",\n  \"user_id\": \"user_001\",\n  \"agent_id\": \"agent_001\",\n  \"track_token_usage\": true,\n  \"metadata_filter\": null\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/get_matching_doc",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "get_matching_doc"
+              ]
+            },
+            "description": "Search for matching documents with optional metadata filtering"
+          }
+        },
+        {
+          "name": "Get Matching Documents with Metadata Filter",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"What is CPU usage?\",\n  \"k\": 3,\n  \"account_id\": \"{{account_id}}\",\n  \"module\": \"prometheus\",\n  \"conversation_id\": \"conv_001\",\n  \"message_id\": \"msg_001\",\n  \"track_token_usage\": true,\n  \"metadata_filter\": {\n    \"source\": \"docs.example.com\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/get_matching_doc",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "get_matching_doc"
+              ]
+            },
+            "description": "Search with metadata filtering. Example filters: {\"source\": \"value\"}, {\"must\": [{\"field\": \"priority\", \"values\": [\"high\"]}]}"
+          }
+        },
+        {
+          "name": "Get Prometheus Matching Documents",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"query\": \"cpu_usage_percent\",\n  \"k\": 3,\n  \"account_id\": \"{{account_id}}\",\n  \"module\": \"prometheus\",\n  \"conversation_id\": \"conv_001\",\n  \"message_id\": \"msg_001\",\n  \"track_token_usage\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/get_prometheus_matching_doc",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "get_prometheus_matching_doc"
+              ]
+            },
+            "description": "Search for Prometheus metrics with metadata enrichment"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Knowledge Base",
+      "item": [
+        {
+          "name": "Create Knowledge Base (Account-based)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"account_id\": \"{{account_id}}\",\n  \"kb_id\": \"kb_001\",\n  \"data\": \"Knowledge base content here\\nAnother line of knowledge\\nMore information\",\n  \"format\": \"text\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/kb/create",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "kb",
+                "create"
+              ]
+            },
+            "description": "Create a knowledge base for a specific account. Formats: text, json, xml, csv"
+          }
+        },
+        {
+          "name": "Delete Knowledge Base (Account-based)",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/kb/{{account_id}}/kb_001",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "kb",
+                "{{account_id}}",
+                "kb_001"
+              ]
+            },
+            "description": "Delete a specific account's knowledge base"
+          }
+        },
+        {
+          "name": "Load Tenant Knowledge Base",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"data\": \"Tenant knowledge base content\\nLine 2\\nLine 3\",\n  \"format\": \"text\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/knowledge",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "knowledge"
+              ]
+            },
+            "description": "Load knowledge base documents for a tenant. Formats: text, json, xml, csv"
+          }
+        },
+        {
+          "name": "List All Knowledge Bases",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/knowledge",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "knowledge"
+              ]
+            },
+            "description": "List all tenant knowledge bases"
+          }
+        },
+        {
+          "name": "Delete Tenant Knowledge Base",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/knowledge/{{tenant_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "knowledge",
+                "{{tenant_id}}"
+              ]
+            },
+            "description": "Delete a specific tenant's knowledge base"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Cache Management",
+      "item": [
+        {
+          "name": "Get Cache Statistics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/cache/stats",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "cache",
+                "stats"
+              ]
+            },
+            "description": "Get collection index cache statistics"
+          }
+        },
+        {
+          "name": "Clear Cache",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/cache/clear",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "cache",
+                "clear"
+              ]
+            },
+            "description": "Clear the collection index cache"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Collection Management",
+      "item": [
+        {
+          "name": "List All Collections",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/collections",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "collections"
+              ]
+            },
+            "description": "List all vector collections in Qdrant"
+          }
+        },
+        {
+          "name": "Query Collection",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/collections/prometheus_global/query?limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "collections",
+                "prometheus_global",
+                "query"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": "Query a specific collection"
+          }
+        },
+        {
+          "name": "Download Collection",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/collections/prometheus_global/download",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "collections",
+                "prometheus_global",
+                "download"
+              ]
+            },
+            "description": "Download collection data as JSON"
+          }
+        },
+        {
+          "name": "Get Collection Info",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/collections/prometheus_global",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "collections",
+                "prometheus_global"
+              ]
+            },
+            "description": "Get information about a specific collection"
+          }
+        },
+        {
+          "name": "Delete All Collections",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/collections",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "collections"
+              ]
+            },
+            "description": "Delete all collections (admin only)"
+          }
+        },
+        {
+          "name": "Delete Specific Collection",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/collections/prometheus_global",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "collections",
+                "prometheus_global"
+              ]
+            },
+            "description": "Delete a specific collection"
+          }
+        },
+        {
+          "name": "Delete Collections by Module",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/collections/module/prometheus",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "collections",
+                "module",
+                "prometheus"
+              ]
+            },
+            "description": "Delete all collections for a specific module"
+          }
+        },
+        {
+          "name": "Configure On-Disk Storage",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"collection_names\": [\"prometheus_global\", \"loki_123\"]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/admin/configure-ondisk",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "configure-ondisk"
+              ]
+            },
+            "description": "Configure collections to use on-disk storage (admin only)"
+          }
+        },
+        {
+          "name": "Export Qdrant Collections",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"collection_names\": [\"prometheus_global\"],\n  \"output_dir\": \"./exports\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/admin/export-qdrant-collections",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "export-qdrant-collections"
+              ]
+            },
+            "description": "Export collections to JSON files (admin only)"
+          }
+        },
+        {
+          "name": "Import Qdrant Collections",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"collection_names\": [\"prometheus_global\"],\n  \"input_dir\": \"./exports\",\n  \"skip_existing\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/admin/import-qdrant-collections",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "admin",
+                "import-qdrant-collections"
+              ]
+            },
+            "description": "Import collections from JSON files (admin only)"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Migration",
+      "item": [
+        {
+          "name": "Validate Migration",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_url\": \"http://localhost:6333\",\n  \"target_url\": \"http://localhost:6334\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/qdrant-to-qdrant/validate",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "qdrant-to-qdrant",
+                "validate"
+              ]
+            },
+            "description": "Validate Qdrant-to-Qdrant migration connectivity"
+          }
+        },
+        {
+          "name": "Start Migration",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"source_url\": \"http://localhost:6333\",\n  \"target_url\": \"http://localhost:6334\",\n  \"batch_size\": 100,\n  \"collection_names\": null,\n  \"recreate_collections\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/qdrant-to-qdrant/start",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "qdrant-to-qdrant",
+                "start"
+              ]
+            },
+            "description": "Start Qdrant-to-Qdrant migration"
+          }
+        },
+        {
+          "name": "Get Migration Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/qdrant-to-qdrant/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "qdrant-to-qdrant",
+                "status"
+              ]
+            },
+            "description": "Get current migration status"
+          }
+        },
+        {
+          "name": "Get Migration Stats",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/qdrant-to-qdrant/stats",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "qdrant-to-qdrant",
+                "stats"
+              ]
+            },
+            "description": "Get detailed migration statistics"
+          }
+        },
+        {
+          "name": "Get Collection Mappings",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sample_size\": 5\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/rag-collections/get-mappings",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rag-collections",
+                "get-mappings"
+              ]
+            },
+            "description": "Get suggested collection name mappings"
+          }
+        },
+        {
+          "name": "Rename Collections",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mappings\": {\n    \"old_collection_name\": \"new_collection_name\"\n  },\n  \"dry_run\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/rag-collections/rename",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rag-collections",
+                "rename"
+              ]
+            },
+            "description": "Rename collections based on mappings. Use dry_run=true to preview changes."
+          }
+        },
+        {
+          "name": "Verify Collections",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/rag-collections/verify",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rag-collections",
+                "verify"
+              ]
+            },
+            "description": "Verify collection naming consistency"
+          }
+        },
+        {
+          "name": "Cleanup Invalid Collections",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dry_run\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/rag-collections/cleanup",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "rag-collections",
+                "cleanup"
+              ]
+            },
+            "description": "Clean up invalid or orphaned collections. Use dry_run=true to preview."
+          }
+        }
+      ]
+    }
+  ]
+}

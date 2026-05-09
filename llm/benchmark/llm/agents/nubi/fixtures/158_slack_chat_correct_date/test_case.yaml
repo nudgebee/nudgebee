@@ -1,0 +1,10 @@
+user_prompt: "**@user_U02T52YMHH9** • 2025-09-08T11:32:33Z • (in thread)\n\n  <@U08QARDG9LZ>\n  Investigate this alert and when did it happen\n  **Do not return an investigation without any relevant times/dates. This investigation is a failure without any dates explicitly listed**\n  "
+
+expected_output: This must mention the date 2025-08-23
+tags:
+  - prometheus
+port_forwards:
+  - namespace: victoria
+    service: vmsingle-victoria-victoria-metrics-k8s-stack
+    local_port: 9090
+    remote_port: 8429

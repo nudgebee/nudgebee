@@ -1,0 +1,1148 @@
+  [
+  {
+    "unique_id": "1",
+    "insight_format": "API Latency (>5000ms)",
+    "type": "TraceAggregation",
+    "source": "Event",
+    "category": "Troubleshooting",
+    "subcategory": "Trace",
+    "ui_filters": [
+      {
+        "name": "duration",
+        "value": "5000"
+      }
+    ],
+    "threshold": 5000000000,
+    "range": 1,
+    "range_unit": "DAY",
+    "grouped_by": ["workload_name", "workload_namespace"],
+    "filters": [],
+    "aggregate_column": "p95_latency",
+    "severity": "Medium",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "2",
+    "insight_format": "API Error Rate (>50%)",
+    "type": "TraceAggregation",
+    "source": "Event",
+    "category": "Troubleshooting",
+    "subcategory": "Trace",
+    "ui_filters": [
+      {
+        "name": "status_code",
+        "value": "error"
+      }
+    ],
+    "threshold": 0.5,
+    "range": 1,
+    "range_unit": "DAY",
+    "grouped_by": ["workload_name", "workload_namespace"],
+    "filters": [],
+    "aggregate_column": "error_rate",
+    "severity": "High",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "3",
+    "insight_format": "Frequent Log Errors",
+    "type": "EventAggregation",
+    "source": "Event",
+    "category": "Troubleshooting",
+    "subcategory": "LogGroup",
+    "ui_filters": [
+      {
+        "name": "aggregation_key",
+        "value": "HighErrorCriticalLogs"
+      }
+    ],
+    "threshold": 0,
+    "range": 1,
+    "range_unit": "DAY",
+    "grouped_by": [],
+    "filters": [
+      { "column": "aggregation_key", "value": "HighErrorCriticalLogs", "operator": "=" },
+      { "column": "status", "value": "FIRING", "operator": "=" }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "High",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "4",
+    "insight_format": "Frequent Restarts",
+    "type": "EventAggregation",
+    "source": "Event",
+    "category": "Troubleshooting",
+    "subcategory": "Events",
+    "ui_filters": [
+      {
+        "name": "aggregation_key",
+        "value": "report_crash_loop"
+      }
+    ],
+    "threshold": 0,
+    "range": 1,
+    "range_unit": "DAY",
+    "grouped_by": [],
+    "filters": [
+      { "column": "aggregation_key", "value": "report_crash_loop", "operator": "=" },
+      { "column": "status", "value": "FIRING", "operator": "=" }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Critical",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "5",
+    "insight_format": "High Memory Usage (>80%)",
+    "type": "EventAggregation",
+    "source": "Event",
+    "category": "Troubleshooting",
+    "subcategory": "Events",
+    "ui_filters": [
+      {
+        "name": "aggregation_key",
+        "value": "PodMemoryReachingLimit"
+      }
+    ],
+    "threshold": 0,
+    "range": 1,
+    "range_unit": "DAY",
+    "grouped_by": [],
+    "filters": [
+      { "column": "aggregation_key", "value": "PodMemoryReachingLimit", "operator": "=" },
+      { "column": "status", "value": "FIRING", "operator": "=" }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "High",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "6",
+    "insight_format": "CPU Throttling",
+    "type": "EventAggregation",
+    "source": "Event",
+    "category": "Troubleshooting",
+    "subcategory": "Application",
+    "ui_filters": [
+      {
+        "name": "aggregation_key",
+        "value": "CPUThrottlingHigh"
+      }
+    ],
+    "threshold": 0,
+    "range": 1,
+    "range_unit": "DAY",
+    "grouped_by": [],
+    "filters": [
+      { "column": "aggregation_key", "value": "CPUThrottlingHigh", "operator": "=" },
+      { "column": "status", "value": "FIRING", "operator": "=" }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Medium",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "7",
+    "insight_format": "High Disk Usage (>80%)",
+    "type": "EventAggregation",
+    "source": "Event",
+    "category": "Troubleshooting",
+    "subcategory": "Application",
+    "ui_filters": [
+      {
+        "name": "aggregation_key",
+        "value": "KubernetesVolumeOutOfDiskSpace"
+      }
+    ],
+    "threshold": 0,
+    "range": 1,
+    "range_unit": "DAY",
+    "grouped_by": [],
+    "filters": [
+      { "column": "aggregation_key", "value": "KubernetesVolumeOutOfDiskSpace", "operator": "=" },
+      { "column": "status", "value": "FIRING", "operator": "=" }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "High",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "8",
+    "insight_format": "Node System Saturation (Network/Disk)",
+    "type": "EventAggregation",
+    "source": "Event",
+    "category": "Troubleshooting",
+    "subcategory": "Application",
+    "ui_filters": [
+      {
+        "name": "aggregation_key",
+        "value": "NodeSystemSaturation"
+      }
+    ],
+    "threshold": 0,
+    "range": 1,
+    "range_unit": "DAY",
+    "grouped_by": [],
+    "filters": [
+      { "column": "aggregation_key", "value": "NodeSystemSaturation", "operator": "=" },
+      { "column": "status", "value": "FIRING", "operator": "=" }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Medium",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "13",
+    "insight_format": "{} workload seems to be abandoned with no load",
+    "type": "Addition",
+    "source": "Recommendation",
+    "category": "Optimization",
+    "range": -1,
+    "filters": [
+      {
+        "column": "rule_name",
+        "value": "abandoned_resource",
+        "operator": "="
+      },
+      {
+        "column": "status",
+        "value": "Open",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Low",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "14",
+    "insight_format": "{} persistent volume can be rightsized",
+    "type": "Addition",
+    "source": "Recommendation",
+    "category": "Optimization",
+    "range": -1,
+    "filters": [
+      {
+        "column": "rule_name",
+        "value": "pv_rightsize",
+        "operator": "="
+      },
+      {
+        "column": "status",
+        "value": "Open",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Low",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "15",
+    "insight_format": "{} persistent volume seems to be abandoned",
+    "type": "Addition",
+    "source": "Recommendation",
+    "category": "Optimization",
+    "range": -1,
+    "filters": [
+      {
+        "column": "rule_name",
+        "value": "unused_pvc",
+        "operator": "="
+      },
+      {
+        "column": "status",
+        "value": "Open",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Low",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "16",
+    "insight_format": "{} workload can be vertically right sized",
+    "type": "Addition",
+    "source": "Recommendation",
+    "category": "Optimization",
+    "range": -1,
+    "filters": [
+      {
+        "column": "rule_name",
+        "value": "pod_right_sizing",
+        "operator": "="
+      },
+      {
+        "column": "category",
+        "value": "RightSizing",
+        "operator": "="
+      },
+      {
+        "column": "status",
+        "value": [
+          "Open",
+          "InProgress"
+        ],
+        "operator": "in"
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Medium",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "17",
+    "insight_format": "{} workload has Critical/High security vulnerabilities",
+    "type": "Ratio",
+    "source": "Recommendation",
+    "view_name": "workload_security_issues",
+    "with": "WITH active_images AS ( SELECT DISTINCT cr.cloud_account_id, cr.tenant_id, container ->> 'image' AS image FROM k8s_pods cr CROSS JOIN LATERAL jsonb_array_elements(cr.meta->'config'->'containers') AS container WHERE cr.is_active IS NOT FALSE AND {{ACCOUNT_FILTER}} ), vulnerable_recommendations AS ( SELECT cloud_account_id, tenant_id, recommendation->>'image_name' AS image_name FROM recommendation WHERE category = 'Security' AND rule_name = 'image_scan' AND account_object_id IS NOT NULL AND severity IN ('Critical', 'High') AND status = 'Open' AND recommendation->>'image_name' IS NOT NULL AND {{ACCOUNT_FILTER}} ), matched_images AS ( SELECT DISTINCT ai.cloud_account_id AS matched_account_id, ai.tenant_id AS matched_tenant_id, ai.image FROM active_images ai INNER JOIN vulnerable_recommendations vr ON ai.cloud_account_id = vr.cloud_account_id AND ai.tenant_id = vr.tenant_id AND ai.image = vr.image_name ), workload_security_issues AS ( SELECT COUNT(DISTINCT cr.workload_name || '-' || cr.\"namespace\") * 1.0 AS workload_namespace_count, cr.cloud_account_id, cr.tenant_id FROM k8s_pods cr CROSS JOIN LATERAL jsonb_array_elements(cr.meta->'config'->'containers') AS container INNER JOIN matched_images mi ON cr.cloud_account_id = mi.matched_account_id AND cr.tenant_id = mi.matched_tenant_id AND container->>'image' = mi.image WHERE cr.is_active IS NOT FALSE AND {{ACCOUNT_FILTER}} GROUP BY cr.cloud_account_id, cr.tenant_id )",
+    "grouped_by": [
+      "cloud_account_id",
+      "tenant_id"
+    ],
+    "account_column": "cloud_account_id",
+    "threshold": 0,
+    "category": "Ops",
+    "aggregate_column": "max(workload_namespace_count)",
+    "severity": "Critical",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "18",
+    "insight_format": "PV(s) Getting Full (<15% space)",
+    "type": "EventAggregation",
+    "source": "Event",
+    "category": "Troubleshooting",
+    "subcategory": "Storage",
+    "ui_filters": [
+      {
+        "name": "aggregation_key",
+        "value": "KubePersistentVolumeFillingUp"
+      }
+    ],
+    "threshold": 0,
+    "range": 1,
+    "range_unit": "DAY",
+    "grouped_by": [],
+    "filters": [
+      { "column": "aggregation_key", "value": "KubePersistentVolumeFillingUp", "operator": "=" },
+      { "column": "status", "value": "FIRING", "operator": "=" }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "High",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "19",
+    "insight_format": "Save an estimated ${} per month by upgrading EKS clusters from extended support",
+    "type": "Ratio",
+    "source": "Recommendation",
+    "view_name": "eks_upgrade_potential_savings",
+    "with": "WITH eks_upgrade_potential_savings AS ( SELECT SUM(r.estimated_savings) AS total_monthly_savings, r.cloud_account_id, r.tenant_id FROM recommendation r WHERE r.category = 'InfraUpgrade' AND r.rule_name = 'eks_cluster_upgrade' AND r.status = 'Open' GROUP BY r.cloud_account_id, r.tenant_id )",
+    "grouped_by": [
+      "cloud_account_id",
+      "tenant_id"
+    ],
+    "account_column": "cloud_account_id",
+    "threshold": 0,
+    "category": "Ops",
+    "aggregate_column": "SUM(total_monthly_savings)",
+    "severity": "High",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "20",
+    "insight_format": "{} rds instances can have alternate machine types to save cost",
+    "type": "Addition",
+    "source": "Recommendation",
+    "category": "Optimization",
+    "range": -1,
+    "filters": [
+      {
+        "column": "rule_name",
+        "value": "aws_rds_alternate_instances",
+        "operator": "="
+      },
+      {
+        "column": "status",
+        "value": "Open",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Medium",
+    "cloud_providers": ["aws"]
+  },
+  {
+    "unique_id": "23",
+    "insight_format": "{} infra upgrade recommendations are available",
+    "type": "Addition",
+    "source": "Recommendation",
+    "category": "InfraUpgrade",
+    "range": -1,
+    "filters": [
+      {
+        "column": "status",
+        "value": "Open",
+        "operator": "="
+      },
+      {
+        "column": "category",
+        "value": "InfraUpgrade",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Medium",
+    "cloud_providers": ["aws", "gcp", "azure"]
+  },
+  {
+    "unique_id": "100",
+    "insight_format": "Weekly cloud spend: ${}",
+    "type": "Ratio",
+    "source": "Spends",
+    "view_name": "weekly_cost_status",
+    "with": "WITH all_accounts AS (\n  SELECT DISTINCT cloud_account AS cloud_account_id, tenant AS tenant_id\n  FROM spends\n  WHERE exclude_aggregate = false\n    AND date >= DATE_TRUNC('week', NOW()) - INTERVAL '1 week'\n),\ncurrent_week AS (\n  SELECT cloud_account AS cloud_account_id, tenant AS tenant_id, SUM(amount) AS current_cost\n  FROM spends\n  WHERE date >= DATE_TRUNC('week', NOW())\n    AND date < DATE_TRUNC('week', NOW()) + INTERVAL '1 week'\n    AND exclude_aggregate = false\n  GROUP BY cloud_account, tenant\n),\nweekly_cost_status AS (\n  SELECT a.cloud_account_id, a.tenant_id,\n    ROUND(GREATEST(COALESCE(cw.current_cost, 0), 0)::numeric, 2) AS current_week_spend\n  FROM all_accounts a\n  LEFT JOIN current_week cw\n    ON a.cloud_account_id = cw.cloud_account_id\n    AND a.tenant_id = cw.tenant_id\n)",
+    "grouped_by": [
+      "cloud_account_id",
+      "tenant_id"
+    ],
+    "account_column": "cloud_account_id",
+    "threshold": -1,
+    "category": "Cost",
+    "aggregate_column": "MAX(current_week_spend)",
+    "severity": "Low",
+    "cloud_providers": ["aws", "gcp", "azure"]
+  },
+  {
+    "unique_id": "101",
+    "insight_format": "Wasting ${}/month on unattached resources (EBS/IPs/Disks)",
+    "type": "Ratio",
+    "source": "Recommendation",
+    "view_name": "wasted_resource_cost",
+    "with": "WITH wasted_resource_cost AS ( SELECT SUM(r.estimated_savings) AS total_monthly_savings, r.cloud_account_id, r.tenant_id FROM recommendation r WHERE r.rule_name IN ('aws_ec2_orphaned_volume', 'aws_vpc_unallocated_elastic_ip', 'azure_disk_unattached_volume') AND r.status = 'Open' AND r.estimated_savings > 0 GROUP BY r.cloud_account_id, r.tenant_id HAVING SUM(r.estimated_savings) > 10 )",
+    "grouped_by": [
+      "cloud_account_id",
+      "tenant_id"
+    ],
+    "account_column": "cloud_account_id",
+    "threshold": 10,
+    "category": "Cost",
+    "aggregate_column": "MAX(total_monthly_savings)",
+    "severity": "High",
+    "cloud_providers": ["aws", "azure"]
+  },
+  {
+    "unique_id": "102",
+    "insight_format": "Save ${}/month by rightsizing underutilized instances",
+    "type": "Ratio",
+    "source": "Recommendation",
+    "view_name": "rightsizing_savings",
+    "with": "WITH rightsizing_savings AS ( SELECT SUM(r.estimated_savings) AS total_monthly_savings, r.cloud_account_id, r.tenant_id FROM recommendation r WHERE r.rule_name IN ('aws_ec2_underutilized', 'aws_ec2_idle_instance', 'aws_ec2_alternate_instances', 'aws_rds_alternate_instances', 'azure_vm_auto_shutdown_disabled') AND r.status = 'Open' AND r.estimated_savings > 0 GROUP BY r.cloud_account_id, r.tenant_id HAVING SUM(r.estimated_savings) > 20 )",
+    "grouped_by": [
+      "cloud_account_id",
+      "tenant_id"
+    ],
+    "account_column": "cloud_account_id",
+    "threshold": 20,
+    "category": "Cost",
+    "aggregate_column": "MAX(total_monthly_savings)",
+    "severity": "Medium",
+    "cloud_providers": ["aws", "azure"]
+  },
+  {
+    "unique_id": "103",
+    "insight_format": "{} CRITICAL security vulnerabilities require immediate action",
+    "type": "Addition",
+    "source": "Recommendation",
+    "category": "Security",
+    "range": -1,
+    "filters": [
+      {
+        "column": "status",
+        "value": "Open",
+        "operator": "="
+      },
+      {
+        "column": "category",
+        "value": "Security",
+        "operator": "="
+      },
+      {
+        "column": "severity",
+        "value": "Critical",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Critical",
+    "cloud_providers": ["aws", "gcp", "azure"]
+  },
+  {
+    "unique_id": "104",
+    "insight_format": "{} resources are publicly accessible (S3/RDS/Storage)",
+    "type": "Addition",
+    "source": "Recommendation",
+    "category": "Security",
+    "range": -1,
+    "filters": [
+      {
+        "column": "rule_name",
+        "value": [
+          "aws_s3_public_access_acl",
+          "aws_s3_public_access_policy",
+          "aws_rds_public_access",
+          "azure_storage_public_network_access_enabled",
+          "azure_disk_public_network_access_enabled"
+        ],
+        "operator": "in"
+      },
+      {
+        "column": "status",
+        "value": "Open",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Critical",
+    "cloud_providers": ["aws", "azure"]
+  },
+  {
+    "unique_id": "105",
+    "insight_format": "{} critical resources missing encryption at rest",
+    "type": "Addition",
+    "source": "Recommendation",
+    "category": "Security",
+    "range": -1,
+    "filters": [
+      {
+        "column": "rule_name",
+        "value": [
+          "aws_rds_storage_encrypted",
+          "aws_ec2_ebs_encrypt",
+          "aws_dynamodb_sse_cmk",
+          "azure_storage_cmk_disabled",
+          "azure_vm_disk_encryption_cmk_missing",
+          "gcp_bigquery_dataset_no_cmek"
+        ],
+        "operator": "in"
+      },
+      {
+        "column": "status",
+        "value": "Open",
+        "operator": "="
+      },
+      {
+        "column": "severity",
+        "value": ["Critical", "High"],
+        "operator": "in"
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "High",
+    "cloud_providers": ["aws", "azure", "gcp"]
+  },
+  {
+    "unique_id": "106",
+    "insight_format": "{} IAM users without MFA (critical access risk)",
+    "type": "Addition",
+    "source": "Recommendation",
+    "category": "Security",
+    "range": -1,
+    "filters": [
+      {
+        "column": "rule_name",
+        "value": ["iam_mfa_not_enabled", "iam_root_mfa_not_enabled"],
+        "operator": "in"
+      },
+      {
+        "column": "status",
+        "value": "Open",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Critical",
+    "cloud_providers": ["aws"]
+  },
+  {
+    "unique_id": "107",
+    "insight_format": "{} ECR/ACR images with critical vulnerabilities",
+    "type": "Addition",
+    "source": "Recommendation",
+    "category": "Security",
+    "range": -1,
+    "filters": [
+      {
+        "column": "rule_name",
+        "value": "image_scan",
+        "operator": "="
+      },
+      {
+        "column": "severity",
+        "value": "Critical",
+        "operator": "="
+      },
+      {
+        "column": "status",
+        "value": "Open",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Critical",
+    "cloud_providers": ["aws", "azure"]
+  },
+  {
+    "unique_id": "108",
+    "insight_format": "{} Lambda functions have high error rates",
+    "type": "Ratio",
+    "source": "Metric",
+    "view_name": "lambda_high_errors",
+    "with": "WITH lambda_high_errors AS ( SELECT COUNT(DISTINCT tags->>'resource_id') AS error_count, crm.cloud_account_id, crm.tenant_id FROM cloud_resource_metrics crm WHERE metric = 'average_errors' AND value > 5 AND timestamp >= NOW() - INTERVAL '24 hours' GROUP BY crm.cloud_account_id, crm.tenant_id HAVING COUNT(DISTINCT tags->>'resource_id') > 0 )",
+    "grouped_by": [
+      "cloud_account_id",
+      "tenant_id"
+    ],
+    "account_column": "cloud_account_id",
+    "threshold": 0,
+    "category": "Performance",
+    "aggregate_column": "MAX(error_count)",
+    "severity": "High",
+    "cloud_providers": ["aws"]
+  },
+  {
+    "unique_id": "109",
+    "insight_format": "{} Lambda functions experiencing throttling",
+    "type": "Ratio",
+    "source": "Metric",
+    "view_name": "lambda_throttling",
+    "with": "WITH lambda_throttling AS ( SELECT COUNT(DISTINCT tags->>'resource_id') AS throttled_count, crm.cloud_account_id, crm.tenant_id FROM cloud_resource_metrics crm WHERE metric = 'average_throttles' AND value > 0 AND timestamp >= NOW() - INTERVAL '24 hours' GROUP BY crm.cloud_account_id, crm.tenant_id HAVING COUNT(DISTINCT tags->>'resource_id') > 0 )",
+    "grouped_by": [
+      "cloud_account_id",
+      "tenant_id"
+    ],
+    "account_column": "cloud_account_id",
+    "threshold": 0,
+    "category": "Performance",
+    "aggregate_column": "MAX(throttled_count)",
+    "severity": "Medium",
+    "cloud_providers": ["aws"]
+  },
+  {
+    "unique_id": "110",
+    "insight_format": "{} RDS/EC2 instances missing High/critical performance alarms",
+    "type": "Addition",
+    "source": "Recommendation",
+    "category": "Ops",
+    "range": -1,
+    "filters": [
+      {
+        "column": "rule_name",
+        "value": [
+          "aws_rds_cpu_utilization_alarm_missing",
+          "aws_rds_freeable_memory_alarm_missing",
+          "aws_rds_free_storage_space_alarm_missing",
+          "aws_ec2_status_check_ebs_alarm_missing",
+          "aws_ec2_status_check_instance_alarm_missing"
+        ],
+        "operator": "in"
+      },
+      {
+        "column": "status",
+        "value": "Open",
+        "operator": "="
+      },
+      {
+        "column": "severity",
+        "value": ["High", "Critical"],
+        "operator": "in"
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "High",
+    "cloud_providers": ["aws"]
+  },
+  {
+    "unique_id": "111",
+    "insight_format": "{} critical resources missing backups (RDS/VM/SQL)",
+    "type": "Addition",
+    "source": "Recommendation",
+    "category": "Ops",
+    "range": -1,
+    "filters": [
+      {
+        "column": "rule_name",
+        "value": [
+          "aws_rds_backupservice_enabled",
+          "azure_vm_backups_disabled",
+          "azure_vm_backup_disabled",
+          "azure_sql_geo_redundant_backups_disabled"
+        ],
+        "operator": "in"
+      },
+      {
+        "column": "status",
+        "value": "Open",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Critical",
+    "cloud_providers": ["aws", "azure"]
+  },
+  {
+    "unique_id": "112",
+    "insight_format": "{} databases missing high availability configuration",
+    "type": "Addition",
+    "source": "Recommendation",
+    "category": "Ops",
+    "range": -1,
+    "filters": [
+      {
+        "column": "rule_name",
+        "value": [
+          "gcp_sql_no_ha",
+          "azure_storage_geo_redundant_storage_disabled"
+        ],
+        "operator": "in"
+      },
+      {
+        "column": "status",
+        "value": "Open",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "High",
+    "cloud_providers": ["gcp", "azure"]
+  },
+  {
+    "unique_id": "113",
+    "insight_format": "{} CloudWatch alarms are currently FIRING",
+    "type": "Addition",
+    "source": "Event",
+    "category": "Ops",
+    "range": 1,
+    "range_unit": "DAY",
+    "filters": [
+      {
+        "column": "source",
+        "value": "AWS_CloudWatch_Alarm",
+        "operator": "="
+      },
+      {
+        "column": "status",
+        "value": "FIRING",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "High",
+    "cloud_providers": ["aws"]
+  },
+  {
+    "unique_id": "116",
+    "insight_format": "{} Monitor alerts are currently FIRING",
+    "type": "Addition",
+    "source": "Event",
+    "category": "Ops",
+    "range": 1,
+    "range_unit": "DAY",
+    "filters": [
+      {
+        "column": "source",
+        "value": ["Azure_Monitor_Alert", "azure_monitor_webhook"],
+        "operator": "in"
+      },
+      {
+        "column": "status",
+        "value": "FIRING",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "High",
+    "cloud_providers": ["azure"]
+  },
+  {
+    "unique_id": "114",
+    "insight_format": "{} resources missing required tags/labels",
+    "type": "Addition",
+    "source": "Recommendation",
+    "category": "Configuration",
+    "range": -1,
+    "filters": [
+      {
+        "column": "rule_name",
+        "value": [
+          "aws_tags",
+          "azure_missing_tags",
+          "gcp_compute_no_labels",
+          "gcp_sql_no_labels",
+          "gcp_storage_no_labels",
+          "gcp_bigquery_dataset_no_labels",
+          "gcp_bigquery_table_no_labels"
+        ],
+        "operator": "in"
+      },
+      {
+        "column": "status",
+        "value": "Open",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Low",
+    "cloud_providers": ["aws", "gcp", "azure"]
+  },
+  {
+    "unique_id": "115",
+    "insight_format": "{} High/Critical configuration issues need attention",
+    "type": "Addition",
+    "source": "Recommendation",
+    "category": "Configuration",
+    "range": -1,
+    "filters": [
+      {
+        "column": "status",
+        "value": "Open",
+        "operator": "="
+      },
+      {
+        "column": "category",
+        "value": "Configuration",
+        "operator": "="
+      },
+      {
+        "column": "severity",
+        "value": ["Critical", "High"],
+        "operator": "in"
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "High",
+    "cloud_providers": ["aws", "gcp", "azure"]
+  },
+  {
+    "unique_id": "117",
+    "insight_format": "Estimated monthly spend: ${}",
+    "type": "Ratio",
+    "source": "Spends",
+    "view_name": "monthly_spend_forecast",
+    "with": "WITH all_accounts AS (\n  SELECT DISTINCT cloud_account AS cloud_account_id, tenant AS tenant_id\n  FROM spends\n  WHERE exclude_aggregate = false\n    AND date >= DATE_TRUNC('month', NOW()) - INTERVAL '1 month'\n),\nmonth_to_date AS (\n  SELECT cloud_account AS cloud_account_id, tenant AS tenant_id,\n    SUM(amount) AS mtd_spend,\n    COUNT(DISTINCT DATE(date)) AS days_elapsed\n  FROM spends\n  WHERE date >= DATE_TRUNC('month', NOW())\n    AND exclude_aggregate = false\n  GROUP BY cloud_account, tenant\n),\nmonthly_spend_forecast AS (\n  SELECT a.cloud_account_id, a.tenant_id,\n    ROUND(GREATEST(COALESCE(\n      (mtd.mtd_spend / NULLIF(mtd.days_elapsed, 0) *\n       EXTRACT(DAY FROM (DATE_TRUNC('month', NOW()) + INTERVAL '1 month' - INTERVAL '1 day')::date)),\n      0), 0)::numeric, 2) AS estimated_monthly_spend\n  FROM all_accounts a\n  LEFT JOIN month_to_date mtd\n    ON a.cloud_account_id = mtd.cloud_account_id\n    AND a.tenant_id = mtd.tenant_id\n  WHERE COALESCE(mtd.days_elapsed, 0) >= 1 OR mtd.days_elapsed IS NULL\n)",
+    "grouped_by": [
+      "cloud_account_id",
+      "tenant_id"
+    ],
+    "account_column": "cloud_account_id",
+    "threshold": -1,
+    "category": "Cost",
+    "aggregate_column": "MAX(estimated_monthly_spend)",
+    "severity": "Low",
+    "cloud_providers": ["aws", "gcp", "azure"]
+  },
+  {
+    "unique_id": "118",
+    "insight_format": "{} PagerDuty incidents are FIRING",
+    "type": "Addition",
+    "source": "Event",
+    "category": "Troubleshooting",
+    "range": 1,
+    "range_unit": "DAY",
+    "filters": [
+      {
+        "column": "source",
+        "value": "pagerduty_webhook",
+        "operator": "="
+      },
+      {
+        "column": "status",
+        "value": "FIRING",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Critical",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "119",
+    "insight_format": "{} Datadog incidents are FIRING",
+    "type": "Addition",
+    "source": "Event",
+    "category": "Troubleshooting",
+    "range": 1,
+    "range_unit": "DAY",
+    "filters": [
+      {
+        "column": "source",
+        "value": "datadog_webhook",
+        "operator": "="
+      },
+      {
+        "column": "status",
+        "value": "FIRING",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Critical",
+    "cloud_providers": ["k8s", "aws", "azure", "gcp"]
+  },
+  {
+    "unique_id": "120",
+    "insight_format": "{} ServiceNow/Zenduty incidents are FIRING",
+    "type": "Addition",
+    "source": "Event",
+    "category": "Troubleshooting",
+    "range": 1,
+    "range_unit": "DAY",
+    "filters": [
+      {
+        "column": "source",
+        "value": ["servicenow_webhook", "zenduty_webhook"],
+        "operator": "in"
+      },
+      {
+        "column": "status",
+        "value": "FIRING",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Critical",
+    "cloud_providers": ["k8s", "aws", "azure", "gcp"]
+  },
+  {
+    "unique_id": "121",
+    "insight_format": "{} OOMKill events active",
+    "type": "Addition",
+    "source": "Event",
+    "category": "Troubleshooting",
+    "range": 1,
+    "range_unit": "DAY",
+    "filters": [
+      {
+        "column": "aggregation_key",
+        "value": "pod_oom_killer_enricher",
+        "operator": "="
+      },
+      {
+        "column": "status",
+        "value": "FIRING",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Critical",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "122",
+    "insight_format": "{} pods CrashLooping",
+    "type": "Addition",
+    "source": "Event",
+    "category": "Troubleshooting",
+    "range": 1,
+    "range_unit": "DAY",
+    "filters": [
+      {
+        "column": "aggregation_key",
+        "value": "report_crash_loop",
+        "operator": "="
+      },
+      {
+        "column": "status",
+        "value": "FIRING",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "Critical",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "123",
+    "insight_format": "{} pods have ImagePullBackoff",
+    "type": "Addition",
+    "source": "Event",
+    "category": "Troubleshooting",
+    "range": 1,
+    "range_unit": "DAY",
+    "filters": [
+      {
+        "column": "aggregation_key",
+        "value": "image_pull_backoff_reporter",
+        "operator": "="
+      },
+      {
+        "column": "status",
+        "value": "FIRING",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "High",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "124",
+    "insight_format": "{} SLO violations active",
+    "type": "Addition",
+    "source": "Event",
+    "category": "Troubleshooting",
+    "range": 1,
+    "range_unit": "DAY",
+    "filters": [
+      {
+        "column": "source",
+        "value": "slo",
+        "operator": "="
+      },
+      {
+        "column": "status",
+        "value": "FIRING",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "High",
+    "cloud_providers": ["k8s"]
+  },
+  {
+    "unique_id": "125",
+    "insight_format": "{} certificates expiring within 30 days",
+    "type": "Addition",
+    "source": "Recommendation",
+    "category": "Ops",
+    "range": -1,
+    "filters": [
+      {
+        "column": "rule_name",
+        "value": "certificate_expiry",
+        "operator": "="
+      },
+      {
+        "column": "status",
+        "value": "Open",
+        "operator": "="
+      }
+    ],
+    "account_column": "cloud_account_id",
+    "severity": "High",
+    "cloud_providers": [
+      "k8s"
+    ]
+  },
+  {
+    "unique_id": "126",
+    "insight_format": "Event volume increased by {} vs last week",
+    "type": "Diff",
+    "source": "Event",
+    "category": "Troubleshooting",
+    "range": 7,
+    "range_unit": "DAY",
+    "grouped_by": [
+      "cloud_account_id",
+      "tenant"
+    ],
+    "filters": [],
+    "threshold": 5,
+    "account_column": "cloud_account_id",
+    "severity": "Medium",
+    "cloud_providers": [
+      "k8s"
+    ]
+  },
+  {
+    "unique_id": "127",
+    "insight_format": "{subject_name} is noisiest with {} events this week",
+    "type": "Ratio",
+    "source": "Event",
+    "view_name": "noisy_workloads",
+    "with": "WITH noisy_workloads AS ( SELECT subject_name, cloud_account_id, tenant, COUNT(*) AS event_count, ROW_NUMBER() OVER (PARTITION BY cloud_account_id, tenant ORDER BY COUNT(*) DESC) AS rn FROM events WHERE created_at >= NOW() - INTERVAL '7 days' AND subject_name IS NOT NULL AND subject_name != '' GROUP BY subject_name, cloud_account_id, tenant )",
+    "grouped_by": [
+      "cloud_account_id",
+      "tenant",
+      "subject_name"
+    ],
+    "filters": [
+      {
+        "column": "rn",
+        "value": 1,
+        "operator": "="
+      }
+    ],
+    "threshold": 10,
+    "account_column": "cloud_account_id",
+    "category": "Troubleshooting",
+    "aggregate_column": "MAX(event_count)",
+    "severity": "Medium",
+    "cloud_providers": [
+      "k8s"
+    ]
+  },
+  {
+    "unique_id": "128",
+    "insight_format": "{} high-priority events need attention",
+    "type": "Addition",
+    "source": "Event",
+    "category": "Troubleshooting",
+    "range": 1,
+    "range_unit": "DAY",
+    "filters": [
+      {
+        "column": "computed_priority",
+        "value": [
+          "HIGH",
+          "CRITICAL"
+        ],
+        "operator": "in"
+      },
+      {
+        "column": "status",
+        "value": "FIRING",
+        "operator": "="
+      }
+    ],
+    "threshold": 0,
+    "account_column": "cloud_account_id",
+    "severity": "High",
+    "cloud_providers": [
+      "k8s"
+    ]
+  },
+  {
+    "unique_id": "129",
+    "insight_format": "Most frequent issue: {aggregation_key} ({} FIRING events)",
+    "type": "Ratio",
+    "source": "Event",
+    "view_name": "frequent_errors",
+    "with": "WITH frequent_errors AS ( SELECT aggregation_key, cloud_account_id, tenant, COUNT(*) AS event_count, ROW_NUMBER() OVER (PARTITION BY cloud_account_id, tenant ORDER BY COUNT(*) DESC) AS rn FROM events WHERE created_at >= NOW() - INTERVAL '7 days' AND status = 'FIRING' AND aggregation_key IS NOT NULL AND aggregation_key != '' GROUP BY aggregation_key, cloud_account_id, tenant )",
+    "grouped_by": [
+      "cloud_account_id",
+      "tenant",
+      "aggregation_key"
+    ],
+    "filters": [
+      {
+        "column": "rn",
+        "value": 1,
+        "operator": "="
+      }
+    ],
+    "threshold": 5,
+    "account_column": "cloud_account_id",
+    "category": "Troubleshooting",
+    "aggregate_column": "MAX(event_count)",
+    "severity": "Medium",
+    "cloud_providers": [
+      "k8s"
+    ]
+  }
+]

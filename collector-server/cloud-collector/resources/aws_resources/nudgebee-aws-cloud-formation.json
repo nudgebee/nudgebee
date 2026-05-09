@@ -1,0 +1,757 @@
+{
+    "Parameters": {
+        "NudgebeeIamRole": {
+            "Description": "The Nudgebee iam role which has permission to your account.",
+            "MinLength": "1",
+            "Type": "String"
+        },
+        "ReportName": {
+            "Description": "The name of the Cost and Usage Report.",
+            "MinLength": "1",
+            "Type": "String"
+        },
+        "BucketName": {
+            "Description": "The name of the bucket where the cost and usage reports will be stored.",
+            "MinLength": "1",
+            "Type": "String"
+        },
+        "NudgebeeID": {
+            "Description": "The Nudgebee customer ID to sync your account. Do not change or share this.",
+            "MinLength": "1",
+            "Type": "String"
+        },
+        "NudgebeeDomain": {
+            "Description": "The Nudgebee domain.",
+            "MinLength": "1",
+            "Type": "String"
+        },
+        "NudgebeeUserId": {
+            "Description": "The Nudgebee user id.",
+            "MinLength": "1",
+            "Type": "String"
+        },
+        "NudgebeeAccountName": {
+            "Description": "The Nudgebee account name used to create account.",
+            "MinLength": "5",
+            "Type": "String"
+        },
+        "NudgebeeExternalId": {
+            "Description": "The Nudgebee external ID for EventBridge token-based account lookup. Do not change or share this.",
+            "MinLength": "1",
+            "Type": "String"
+        },
+        "NudgebeeAwsAccountId": {
+            "Description": "The Nudgebee AWS account ID for EventBridge cross-account integration.",
+            "Default": "740395098545",
+            "Type": "String"
+        },
+        "NudgebeeSqsQueueName": {
+            "Description": "The name of the Nudgebee SQS queue for EventBridge events.",
+            "Default": "nudgebee-eventbridge-queue",
+            "Type": "String"
+        },
+        "NudgebeePingbackArn": {
+            "Description": "SNS Topic ARN for auto-registration callback. Leave empty for manual role-copy flow.",
+            "Default": "",
+            "Type": "String"
+        },
+        "NudgebeeVerificationToken": {
+            "Description": "One-time verification token for auto-registration.",
+            "Default": "",
+            "Type": "String",
+            "NoEcho": true
+        },
+        "NudgebeeAccessMode": {
+            "Description": "Access mode for this integration. 'readwrite' enables alerting and automated actions. 'readonly' enables monitoring and cost reporting only.",
+            "Type": "String",
+            "Default": "readwrite",
+            "AllowedValues": [
+                "readwrite",
+                "readonly"
+            ]
+        },
+        "NudgebeeSsmAccess": {
+            "Description": "Enable read access to AWS Systems Manager Parameter Store values. Only enable if your parameters do not contain secrets.",
+            "Type": "String",
+            "Default": "disabled",
+            "AllowedValues": [
+                "enabled",
+                "disabled"
+            ]
+        }
+    },
+    "Conditions": {
+        "HasPingbackArn": {
+            "Fn::Not": [
+                {
+                    "Fn::Equals": [
+                        {
+                            "Ref": "NudgebeePingbackArn"
+                        },
+                        ""
+                    ]
+                }
+            ]
+        },
+        "IsReadWrite": {
+            "Fn::Equals": [
+                {
+                    "Ref": "NudgebeeAccessMode"
+                },
+                "readwrite"
+            ]
+        },
+        "IsSsmAccessDisabled": {
+            "Fn::Equals": [
+                {
+                    "Ref": "NudgebeeSsmAccess"
+                },
+                "disabled"
+            ]
+        }
+    },
+    "Resources": {
+        "CrossAccountRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "AWS": {
+                                    "Ref": "NudgebeeIamRole"
+                                }
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                },
+                "ManagedPolicyArns": [
+                    "arn:aws:iam::aws:policy/ReadOnlyAccess"
+                ],
+                "Path": "/",
+                "Policies": [
+                    {
+                        "PolicyName": "root",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Action": [
+                                        "aws-portal:View*",
+                                        "budgets:Describe*",
+                                        "budgets:View*",
+                                        "ce:Get*",
+                                        "ce:Describe*",
+                                        "ce:List*",
+                                        "cur:Describe*",
+                                        "pricing:*",
+                                        "organizations:Describe*",
+                                        "organizations:List*",
+                                        "savingsplans:Describe*"
+                                    ],
+                                    "Resource": "*",
+                                    "Effect": "Allow",
+                                    "Sid": "NudgebeeBillingReadOnly"
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "PolicyName": "NudgebeeObservabilityReadOnly",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Sid": "NudgebeeLogsQueryAccess",
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "logs:StartQuery",
+                                        "logs:StopQuery"
+                                    ],
+                                    "Resource": "arn:aws:logs:*:*:log-group:*:*"
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "Fn::If": [
+                            "IsReadWrite",
+                            {
+                                "PolicyName": "NudgebeeCloudWatchAlarmManagement",
+                                "PolicyDocument": {
+                                    "Version": "2012-10-17",
+                                    "Statement": [
+                                        {
+                                            "Sid": "CloudWatchAlarmWriteAccess",
+                                            "Effect": "Allow",
+                                            "Action": [
+                                                "cloudwatch:PutMetricAlarm",
+                                                "cloudwatch:DeleteAlarms"
+                                            ],
+                                            "Resource": "*"
+                                        },
+                                        {
+                                            "Sid": "CloudWatchLogsWriteAccess",
+                                            "Effect": "Allow",
+                                            "Action": [
+                                                "logs:CreateLogGroup",
+                                                "logs:TagLogGroup",
+                                                "logs:PutMetricFilter",
+                                                "logs:DeleteMetricFilter"
+                                            ],
+                                            "Resource": "arn:aws:logs:*:*:log-group:*"
+                                        }
+                                    ]
+                                }
+                            },
+                            {
+                                "Ref": "AWS::NoValue"
+                            }
+                        ]
+                    },
+                    {
+                        "Fn::If": [
+                            "IsReadWrite",
+                            {
+                                "PolicyName": "NudgebeeResourceActions",
+                                "PolicyDocument": {
+                                    "Version": "2012-10-17",
+                                    "Statement": [
+                                        {
+                                            "Sid": "EC2InstanceActions",
+                                            "Effect": "Allow",
+                                            "Action": [
+                                                "ec2:StartInstances",
+                                                "ec2:StopInstances",
+                                                "ec2:RebootInstances"
+                                            ],
+                                            "Resource": "*"
+                                        },
+                                        {
+                                            "Sid": "RDSInstanceActions",
+                                            "Effect": "Allow",
+                                            "Action": [
+                                                "rds:StartDBInstance",
+                                                "rds:StopDBInstance",
+                                                "rds:RebootDBInstance"
+                                            ],
+                                            "Resource": "*"
+                                        },
+                                        {
+                                            "Sid": "ECSServiceActions",
+                                            "Effect": "Allow",
+                                            "Action": [
+                                                "ecs:UpdateService"
+                                            ],
+                                            "Resource": "*"
+                                        },
+                                        {
+                                            "Sid": "SSMRunCommandActions",
+                                            "Effect": "Allow",
+                                            "Action": [
+                                                "ssm:SendCommand",
+                                                "ssm:GetCommandInvocation",
+                                                "ssm:ListCommandInvocations",
+                                                "ssm:DescribeInstanceInformation"
+                                            ],
+                                            "Resource": "*"
+                                        }
+                                    ]
+                                }
+                            },
+                            {
+                                "Ref": "AWS::NoValue"
+                            }
+                        ]
+                    },
+                    {
+                        "PolicyName": "NudgebeeSensitiveDataDeny",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Sid": "DenyS3ObjectReadExceptCUR",
+                                    "Effect": "Deny",
+                                    "Action": [
+                                        "s3:GetObject",
+                                        "s3:GetObjectVersion"
+                                    ],
+                                    "NotResource": [
+                                        {
+                                            "Fn::Sub": "arn:aws:s3:::${BucketName}/*"
+                                        }
+                                    ]
+                                },
+                                {
+                                    "Sid": "DenyDataPlaneAccess",
+                                    "Effect": "Deny",
+                                    "Action": [
+                                        "secretsmanager:GetSecretValue",
+                                        "dynamodb:GetItem",
+                                        "dynamodb:BatchGetItem",
+                                        "dynamodb:Query",
+                                        "dynamodb:Scan",
+                                        "sqs:ReceiveMessage",
+                                        "kinesis:GetRecords",
+                                        "kinesis:GetShardIterator"
+                                    ],
+                                    "Resource": "*"
+                                },
+                                {
+                                    "Fn::If": [
+                                        "IsSsmAccessDisabled",
+                                        {
+                                            "Sid": "DenySsmParameterAccess",
+                                            "Effect": "Deny",
+                                            "Action": [
+                                                "ssm:GetParameter",
+                                                "ssm:GetParameters",
+                                                "ssm:GetParametersByPath"
+                                            ],
+                                            "Resource": "*"
+                                        },
+                                        {
+                                            "Ref": "AWS::NoValue"
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "CostandUsageReportBucket": {
+            "Type": "AWS::S3::Bucket",
+            "Properties": {
+                "AccessControl": "Private",
+                "PublicAccessBlockConfiguration": {
+                    "BlockPublicAcls": true,
+                    "BlockPublicPolicy": true,
+                    "IgnorePublicAcls": true,
+                    "RestrictPublicBuckets": true
+                },
+                "LifecycleConfiguration": {
+                    "Rules": [
+                        {
+                            "Id": "ExpireOldObjects",
+                            "Status": "Enabled",
+                            "ExpirationInDays": 200
+                        }
+                    ]
+                },
+                "AnalyticsConfigurations": [],
+                "BucketName": {
+                    "Ref": "BucketName"
+                }
+            }
+        },
+        "CostandUsageReportBucketPolicy": {
+            "Type": "AWS::S3::BucketPolicy",
+            "DependsOn": "CostandUsageReportBucket",
+            "Properties": {
+                "Bucket": {
+                    "Ref": "CostandUsageReportBucket"
+                },
+                "PolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Action": [
+                                "s3:GetBucketAcl",
+                                "s3:GetBucketPolicy",
+                                "s3:GetLifecycleConfiguration"
+                            ],
+                            "Effect": "Allow",
+                            "Resource": {
+                                "Fn::Sub": "arn:aws:s3:::${CostandUsageReportBucket}"
+                            },
+                            "Principal": {
+                                "Service": "billingreports.amazonaws.com"
+                            }
+                        },
+                        {
+                            "Action": [
+                                "s3:PutObject"
+                            ],
+                            "Effect": "Allow",
+                            "Resource": {
+                                "Fn::Sub": "arn:aws:s3:::${CostandUsageReportBucket}/*"
+                            },
+                            "Principal": {
+                                "Service": "billingreports.amazonaws.com"
+                            }
+                        },
+                        {
+                            "Action": [
+                                "s3:GetObject",
+                                "s3:GetObjectAcl"
+                            ],
+                            "Effect": "Allow",
+                            "Resource": {
+                                "Fn::Sub": "arn:aws:s3:::${CostandUsageReportBucket}/*"
+                            },
+                            "Principal": {
+                                "AWS": {
+                                    "Fn::GetAtt": [
+                                        "CrossAccountRole",
+                                        "Arn"
+                                    ]
+                                }
+                            }
+                        },
+                        {
+                            "Action": [
+                                "s3:GetLifecycleConfiguration"
+                            ],
+                            "Resource": {
+                                "Fn::Sub": "arn:aws:s3:::${CostandUsageReportBucket}"
+                            },
+                            "Effect": "Allow",
+                            "Principal": {
+                                "AWS": {
+                                    "Fn::GetAtt": [
+                                        "CrossAccountRole",
+                                        "Arn"
+                                    ]
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        },
+        "CostandUsageReport": {
+            "Type": "AWS::CUR::ReportDefinition",
+            "DependsOn": "CostandUsageReportBucketPolicy",
+            "Properties": {
+                "AdditionalArtifacts": [],
+                "AdditionalSchemaElements": [
+                    "RESOURCES"
+                ],
+                "Compression": "GZIP",
+                "Format": "textORcsv",
+                "RefreshClosedReports": true,
+                "ReportName": {
+                    "Ref": "ReportName"
+                },
+                "ReportVersioning": "OVERWRITE_REPORT",
+                "S3Bucket": {
+                    "Ref": "CostandUsageReportBucket"
+                },
+                "S3Prefix": "daily-v1",
+                "S3Region": {
+                    "Ref": "AWS::Region"
+                },
+                "TimeUnit": "DAILY"
+            }
+        },
+        "ObjectGetIAMPolicy": {
+            "Type": "AWS::IAM::Policy",
+            "DependsOn": "CostandUsageReportBucket",
+            "Properties": {
+                "PolicyName": "ObjectGetCostandUsageReports",
+                "PolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "s3:GetObject",
+                                "s3:GetObjectAcl"
+                            ],
+                            "Resource": [
+                                {
+                                    "Fn::Sub": "arn:aws:s3:::${CostandUsageReportBucket}/*"
+                                }
+                            ]
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "s3:GetLifecycleConfiguration"
+                            ],
+                            "Resource": [
+                                {
+                                    "Fn::Sub": "arn:aws:s3:::${CostandUsageReportBucket}/*"
+                                }
+                            ]
+                        }
+                    ]
+                },
+                "Roles": [
+                    {
+                        "Ref": "CrossAccountRole"
+                    }
+                ]
+            }
+        },
+        "EventBridgeToSQSRole": {
+            "Type": "AWS::IAM::Role",
+            "Condition": "IsReadWrite",
+            "Properties": {
+                "Description": "Role for EventBridge to send events to cross-account Nudgebee SQS queue",
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": "events.amazonaws.com"
+                            },
+                            "Action": "sts:AssumeRole"
+                        }
+                    ]
+                },
+                "Policies": [
+                    {
+                        "PolicyName": "SendToNudgebeeSQS",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "sqs:SendMessage"
+                                    ],
+                                    "Resource": {
+                                        "Fn::Sub": "arn:aws:sqs:us-east-1:${NudgebeeAwsAccountId}:${NudgebeeSqsQueueName}"
+                                    }
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "events:PutEvents"
+                                    ],
+                                    "Resource": {
+                                        "Fn::Sub": "arn:aws:events:*:${AWS::AccountId}:event-bus/default"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "MultiRegionDeployRole": {
+            "Type": "AWS::IAM::Role",
+            "Condition": "IsReadWrite",
+            "Properties": {
+                "Description": "Role for Lambda that deploys EventBridge rules to all AWS regions",
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": "lambda.amazonaws.com"
+                            },
+                            "Action": "sts:AssumeRole"
+                        }
+                    ]
+                },
+                "Policies": [
+                    {
+                        "PolicyName": "MultiRegionEventBridgeDeploy",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "ec2:DescribeRegions"
+                                    ],
+                                    "Resource": "*"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "events:PutRule",
+                                        "events:PutTargets",
+                                        "events:DeleteRule",
+                                        "events:RemoveTargets",
+                                        "events:ListTargetsByRule"
+                                    ],
+                                    "Resource": {
+                                        "Fn::Sub": "arn:aws:events:*:${AWS::AccountId}:rule/nudgebee-multi-region-*"
+                                    }
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": "iam:PassRole",
+                                    "Resource": {
+                                        "Fn::GetAtt": [
+                                            "EventBridgeToSQSRole",
+                                            "Arn"
+                                        ]
+                                    }
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "logs:CreateLogGroup",
+                                        "logs:CreateLogStream",
+                                        "logs:PutLogEvents"
+                                    ],
+                                    "Resource": {
+                                        "Fn::Sub": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "MultiRegionEventBridgeLambda": {
+            "Type": "AWS::Lambda::Function",
+            "Condition": "IsReadWrite",
+            "DependsOn": "MultiRegionDeployRole",
+            "Properties": {
+                "Description": "Deploys Nudgebee EventBridge passthrough rules to all enabled AWS regions",
+                "Runtime": "python3.12",
+                "Handler": "index.handler",
+                "Timeout": 300,
+                "Role": {
+                    "Fn::GetAtt": [
+                        "MultiRegionDeployRole",
+                        "Arn"
+                    ]
+                },
+                "Code": {
+                    "ZipFile": {
+                        "Fn::Sub": "import json,boto3,urllib.request\ndef send(e,c,s,pid,rd={},r=''):\n  b=json.dumps({'Status':s,'Reason':r,'PhysicalResourceId':pid,'StackId':e['StackId'],'RequestId':e['RequestId'],'LogicalResourceId':e['LogicalResourceId'],'Data':rd}).encode()\n  urllib.request.urlopen(urllib.request.Request(e['ResponseURL'],data=b,method='PUT'))\ndef handler(e,c):\n  pid=e.get('PhysicalResourceId',c.log_stream_name)\n  try:\n    p=e['ResourceProperties']\n    token=p['Token'];role_arn=p['RoleArn'];sqs_arn=p['SqsArn'];stack_region=p['StackRegion']\n    sqs_region=sqs_arn.split(':')[3];account_id=e['StackId'].split(':')[4]\n    rule_name='nudgebee-multi-region-'+token[:8];pid=rule_name\n    pattern=json.dumps({'source':['aws.ec2','aws.rds','aws.ecs','aws.lambda','aws.cloudwatch'],'detail-type':['EC2 Instance State-change Notification','RDS DB Instance Event','ECS Task State Change','ECS Service Action','AWS API Call via CloudTrail','CloudWatch Alarm State Change']})\n    tpl=json.dumps({'nudgebeeAccountToken':token,'source':'<source>','detail-type':'<detail-type>','detail':'__DETAIL__','account':'<account>','region':'<region>','time':'<time>','resources':'__RESOURCES__'}).replace('\"__DETAIL__\"','<detail>').replace('\"__RESOURCES__\"','<resources>')\n    ip={'source':'$.source','detail-type':'$.detail-type','detail':'$.detail','account':'$.account','region':'$.region','time':'$.time','resources':'$.resources'}\n    regions=[r['RegionName'] for r in boto3.client('ec2',region_name=stack_region).describe_regions(Filters=[{'Name':'opt-in-status','Values':['opt-in-not-required','opted-in']}])['Regions']]\n    ok=0;fail=0\n    if e['RequestType'] in ('Create','Update'):\n      for rg in regions:\n        try:\n          eb=boto3.client('events',region_name=rg)\n          eb.put_rule(Name=rule_name,EventPattern=pattern,State='ENABLED',Description='Nudgebee multi-region passthrough')\n          if rg==sqs_region:\n            eb.put_targets(Rule=rule_name,Targets=[{'Id':'NudgebeeSQS','Arn':sqs_arn,'RoleArn':role_arn,'InputTransformer':{'InputPathsMap':ip,'InputTemplate':tpl}}])\n          else:\n            eb.put_targets(Rule=rule_name,Targets=[{'Id':'NudgebeeSQS','Arn':'arn:aws:events:'+sqs_region+':'+account_id+':event-bus/default','RoleArn':role_arn}])\n          ok+=1\n        except Exception as x:\n          print(f'WARN {rg}: {x}');fail+=1\n    elif e['RequestType']=='Delete':\n      old_pid=e.get('PhysicalResourceId','')\n      if old_pid!=rule_name:\n        print(f'SKIP delete: CF cleanup of old resource {old_pid}')\n      else:\n        for rg in regions:\n          try:\n            eb=boto3.client('events',region_name=rg)\n            try:\n              eb.remove_targets(Rule=rule_name,Ids=['NudgebeeSQS'])\n            except:pass\n            try:\n              eb.delete_rule(Name=rule_name)\n            except:pass\n            ok+=1\n          except Exception as x:\n            print(f'WARN delete {rg}: {x}');fail+=1\n    send(e,c,'SUCCESS',pid,{'RegionsOk':str(ok),'RegionsFailed':str(fail)})\n  except Exception as x:\n    print(f'ERROR: {x}');send(e,c,'FAILED',pid,r=str(x))\n"
+                    }
+                }
+            }
+        },
+        "MultiRegionEventBridgeDeployment": {
+            "Type": "Custom::MultiRegionEventBridge",
+            "Condition": "IsReadWrite",
+            "DependsOn": [
+                "MultiRegionEventBridgeLambda",
+                "EventBridgeToSQSRole"
+            ],
+            "Properties": {
+                "ServiceToken": {
+                    "Fn::GetAtt": [
+                        "MultiRegionEventBridgeLambda",
+                        "Arn"
+                    ]
+                },
+                "Token": {
+                    "Ref": "NudgebeeExternalId"
+                },
+                "RoleArn": {
+                    "Fn::GetAtt": [
+                        "EventBridgeToSQSRole",
+                        "Arn"
+                    ]
+                },
+                "SqsArn": {
+                    "Fn::Sub": "arn:aws:sqs:us-east-1:${NudgebeeAwsAccountId}:${NudgebeeSqsQueueName}"
+                },
+                "StackRegion": {
+                    "Ref": "AWS::Region"
+                },
+                "ForceUpdateTag": {
+                    "Fn::Sub": "${NudgebeeExternalId}-v5"
+                }
+            }
+        },
+        "RegistrationResource": {
+            "Type": "Custom::NudgebeeRegistration",
+            "Condition": "HasPingbackArn",
+            "DependsOn": [
+                "CrossAccountRole",
+                "CostandUsageReportBucket",
+                "CostandUsageReport"
+            ],
+            "Properties": {
+                "ServiceToken": {
+                    "Ref": "NudgebeePingbackArn"
+                },
+                "RoleArn": {
+                    "Fn::GetAtt": [
+                        "CrossAccountRole",
+                        "Arn"
+                    ]
+                },
+                "AccountNumber": {
+                    "Ref": "AWS::AccountId"
+                },
+                "TenantId": {
+                    "Ref": "NudgebeeID"
+                },
+                "VerificationToken": {
+                    "Ref": "NudgebeeVerificationToken"
+                },
+                "ExternalId": {
+                    "Ref": "NudgebeeExternalId"
+                },
+                "AccountName": {
+                    "Ref": "NudgebeeAccountName"
+                },
+                "UserId": {
+                    "Ref": "NudgebeeUserId"
+                },
+                "CurBucketName": {
+                    "Ref": "CostandUsageReportBucket"
+                },
+                "CurBucketArn": {
+                    "Fn::GetAtt": [
+                        "CostandUsageReportBucket",
+                        "Arn"
+                    ]
+                },
+                "CurReportName": {
+                    "Ref": "ReportName"
+                },
+                "CurS3Prefix": "daily-v1",
+                "CurS3Region": {
+                    "Ref": "AWS::Region"
+                },
+                "CurCompression": "GZIP",
+                "CurTimeUnit": "DAILY",
+                "CurReportVersioning": "OVERWRITE_REPORT",
+                "CurFormat": "textORcsv",
+                "TemplateVersion": "3"
+            }
+        }
+    },
+    "Outputs": {
+        "RoleArn": {
+            "Value": {
+                "Fn::GetAtt": [
+                    "CrossAccountRole",
+                    "Arn"
+                ]
+            },
+            "Description": "The ARN value of the Cross-Account Role with IAM read-only permissions. Add this ARN value to Nudgebee."
+        },
+        "EventBridgeRoleArn": {
+            "Condition": "IsReadWrite",
+            "Value": {
+                "Fn::GetAtt": [
+                    "EventBridgeToSQSRole",
+                    "Arn"
+                ]
+            },
+            "Description": "The ARN of the IAM role used by EventBridge to send events to Nudgebee SQS queue"
+        },
+        "ExternalId": {
+            "Value": {
+                "Ref": "NudgebeeExternalId"
+            },
+            "Description": "External ID for EventBridge token-based account lookup (automatically handled by Nudgebee UI)"
+        },
+        "NudgebeeTemplateVersion": {
+            "Value": "3",
+            "Description": "Nudgebee CloudFormation template version"
+        }
+    }
+}

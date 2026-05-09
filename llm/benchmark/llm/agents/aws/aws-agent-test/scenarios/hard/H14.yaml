@@ -1,0 +1,200 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H14: Step Function execution stuck — long heartbeat timeout + no error handling.
+  User complaint: "Step Function 'h14-order-pipeline' executions hang at the
+  'ProcessPayment' step for hours before failing. The Lambda for that step
+  completes in under 10 seconds when tested directly."
+  Root cause: State machine task has TimeoutSeconds=7200 (2 hours) and no
+  Catch/Retry blocks. When the Lambda encounters a transient error, the Step
+  Function waits the full 2 hours before timing out. Combined with no error
+  handling, failures are never caught quickly.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Task timeout 7200s + no Catch/Retry.
+      Fixed = Task timeout 60s + Catch for errors + Retry with backoff.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  StepFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h14-order-pipeline-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: invoke-lambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !GetAtt ValidateOrderFunction.Arn
+                  - !GetAtt ProcessPaymentFunction.Arn
+                  - !GetAtt SendConfirmationFunction.Arn
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h14-order-lambda-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  ValidateOrderFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h14-validate-order
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 10
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              return {'orderId': event.get('orderId', 'test'), 'valid': True}
+
+  ProcessPaymentFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h14-process-payment
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 10
+      Code:
+        ZipFile: |
+          import random
+          def handler(event, context):
+              # Simulate transient payment gateway errors (30% failure rate)
+              if random.random() < 0.3:
+                  raise Exception("PaymentGatewayTimeout: Connection timed out")
+              return {'orderId': event['orderId'], 'paymentId': 'pay-123', 'status': 'charged'}
+
+  SendConfirmationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h14-send-confirmation
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 10
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              return {'orderId': event['orderId'], 'confirmed': True}
+
+  OrderPipeline:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: h14-order-pipeline
+      RoleArn: !GetAtt StepFunctionRole.Arn
+      DefinitionString: !If
+        - IsFixed
+        - !Sub |
+            {
+              "StartAt": "ValidateOrder",
+              "States": {
+                "ValidateOrder": {
+                  "Type": "Task",
+                  "Resource": "${ValidateOrderFunction.Arn}",
+                  "TimeoutSeconds": 60,
+                  "Next": "ProcessPayment"
+                },
+                "ProcessPayment": {
+                  "Type": "Task",
+                  "Resource": "${ProcessPaymentFunction.Arn}",
+                  "TimeoutSeconds": 60,
+                  "Retry": [
+                    {
+                      "ErrorEquals": ["States.ALL"],
+                      "IntervalSeconds": 2,
+                      "MaxAttempts": 3,
+                      "BackoffRate": 2.0
+                    }
+                  ],
+                  "Catch": [
+                    {
+                      "ErrorEquals": ["States.ALL"],
+                      "Next": "PaymentFailed"
+                    }
+                  ],
+                  "Next": "SendConfirmation"
+                },
+                "SendConfirmation": {
+                  "Type": "Task",
+                  "Resource": "${SendConfirmationFunction.Arn}",
+                  "TimeoutSeconds": 60,
+                  "End": true
+                },
+                "PaymentFailed": {
+                  "Type": "Fail",
+                  "Error": "PaymentError",
+                  "Cause": "Payment processing failed after retries"
+                }
+              }
+            }
+        # BROKEN: Extremely long timeout + no Catch/Retry
+        - !Sub |
+            {
+              "StartAt": "ValidateOrder",
+              "States": {
+                "ValidateOrder": {
+                  "Type": "Task",
+                  "Resource": "${ValidateOrderFunction.Arn}",
+                  "TimeoutSeconds": 7200,
+                  "Next": "ProcessPayment"
+                },
+                "ProcessPayment": {
+                  "Type": "Task",
+                  "Resource": "${ProcessPaymentFunction.Arn}",
+                  "TimeoutSeconds": 7200,
+                  "Next": "SendConfirmation"
+                },
+                "SendConfirmation": {
+                  "Type": "Task",
+                  "Resource": "${SendConfirmationFunction.Arn}",
+                  "TimeoutSeconds": 7200,
+                  "End": true
+                }
+              }
+            }
+      Tags:
+        - Key: Name
+          Value: h14-order-pipeline
+        - Key: Environment
+          Value: production
+
+Outputs:
+  StateMachineArn:
+    Description: Step Function State Machine ARN
+    Value: !Ref OrderPipeline
+  StateMachineName:
+    Description: State Machine Name
+    Value: h14-order-pipeline
+  TaskTimeout:
+    Description: Task timeout setting
+    Value: !If [IsFixed, '60s (with Retry/Catch)', '7200s (2 hours, no error handling)']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

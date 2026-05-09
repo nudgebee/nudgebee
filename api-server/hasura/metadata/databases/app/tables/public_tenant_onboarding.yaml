@@ -1,0 +1,3 @@
+table:
+  name: tenant_onboarding
+  schema: public

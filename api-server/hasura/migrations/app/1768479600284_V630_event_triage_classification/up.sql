@@ -1,0 +1,87 @@
+
+CREATE TABLE IF NOT EXISTS event_classification (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id UUID NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    cloud_account_id UUID NOT NULL,
+    tenant_id UUID NOT NULL,
+    classification TEXT NOT NULL CHECK (classification IN ('true_positive', 'benign_positive', 'false_positive', 'duplicate')),
+    original_priority TEXT,
+    corrected_priority TEXT,
+    priority_direction TEXT CHECK (priority_direction IN ('too_high', 'correct', 'too_low')),
+    reason_code TEXT NOT NULL,
+    reason_text TEXT,
+    apply_scope TEXT DEFAULT 'this_event' CHECK (apply_scope IN ('this_event', 'this_fingerprint', 'time_limited')),
+    apply_until TIMESTAMP,
+    linked_event_id UUID REFERENCES events(id),
+    classified_by UUID NOT NULL,
+    classified_at TIMESTAMP DEFAULT NOW(),
+    original_score INT,
+    feature_snapshot JSONB,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(event_id, cloud_account_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_classification_tenant ON event_classification(tenant_id, cloud_account_id);
+CREATE INDEX IF NOT EXISTS idx_event_classification_event ON event_classification(event_id);
+CREATE INDEX IF NOT EXISTS idx_event_classification_type ON event_classification(classification);
+CREATE INDEX IF NOT EXISTS idx_event_classification_linked ON event_classification(linked_event_id) WHERE linked_event_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS event_triage_rules (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id UUID,
+    account_id UUID,
+    rule_type TEXT NOT NULL CHECK (rule_type IN ('suppression', 'scoring', 'classification')),
+    match_source TEXT,
+    match_alertname TEXT,
+    match_namespace TEXT,
+    match_service TEXT,
+    match_fingerprint TEXT,
+    match_labels JSONB,
+    match_priority TEXT,
+    match_finding_type TEXT,
+    action TEXT NOT NULL,
+    action_value JSONB,
+    priority INT DEFAULT 100,
+    is_editable BOOLEAN DEFAULT TRUE,
+    can_override BOOLEAN DEFAULT TRUE,
+    override_rule_id UUID REFERENCES event_triage_rules(id),
+    enabled BOOLEAN DEFAULT TRUE,
+    effective_from TIMESTAMP,
+    effective_until TIMESTAMP,
+    name TEXT,
+    description TEXT,
+    reason TEXT,
+    created_by UUID,
+    updated_by UUID,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    match_count INT DEFAULT 0,
+    last_matched_at TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_triage_rules_scope ON event_triage_rules(tenant_id, account_id) WHERE enabled = TRUE;
+CREATE INDEX IF NOT EXISTS idx_triage_rules_fingerprint ON event_triage_rules(match_fingerprint) WHERE match_fingerprint IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_triage_rules_expiration ON event_triage_rules(effective_until) WHERE effective_until IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_triage_rules_type ON event_triage_rules(rule_type, enabled);
+CREATE INDEX IF NOT EXISTS idx_triage_rules_priority ON event_triage_rules(priority) WHERE enabled = TRUE;
+
+CREATE TABLE IF NOT EXISTS event_bulk_operations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    operation_type TEXT NOT NULL,
+    fingerprint TEXT,
+    account_id UUID NOT NULL,
+    target_status TEXT NOT NULL,
+    total_events INT,
+    processed_events INT DEFAULT 0,
+    status TEXT DEFAULT 'queued' CHECK (status IN ('queued', 'processing', 'completed', 'failed')),
+    created_by UUID,
+    created_at TIMESTAMP DEFAULT NOW(),
+    completed_at TIMESTAMP,
+    rule_id UUID REFERENCES event_triage_rules(id),
+    classification_id UUID REFERENCES event_classification(id),
+    error_message TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_bulk_ops_status ON event_bulk_operations(status, account_id);
+CREATE INDEX IF NOT EXISTS idx_bulk_ops_created ON event_bulk_operations(created_at);

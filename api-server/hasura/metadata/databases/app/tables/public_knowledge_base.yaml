@@ -1,0 +1,3 @@
+table:
+  name: knowledge_base
+  schema: public

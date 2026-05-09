@@ -1,0 +1,7 @@
+user_prompt: what is the promql query for total CPU usage for the Kubernetes API server?
+expected_output:
+- sum(rate(process_cpu_seconds_total{job="kube-apiserver"}[1m]))
+- sum(rate(process_cpu_seconds_total{pod=~".*kube.*apiserver.*"}[1m]))
+tags:
+- command
+- promql

@@ -1,0 +1,16 @@
+table:
+  name: user_auths
+  schema: public
+object_relationships:
+- name: auth_provider_type
+  using:
+    foreign_key_constraint_on: provider_type
+- name: auth_type
+  using:
+    foreign_key_constraint_on: provider
+- name: userByUser
+  using:
+    foreign_key_constraint_on: user
+- name: user_status_type
+  using:
+    foreign_key_constraint_on: status

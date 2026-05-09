@@ -1,0 +1,14 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- update
+--     auto_playbook_task as bck
+-- set
+--     action_id = (
+--         select
+--             id
+--         from
+--             runbook_action
+--         where
+--             created_by is null
+--             and internal_identifier = bck.task_type
+--     );

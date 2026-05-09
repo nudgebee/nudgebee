@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config
+data:
+  promtail-config.yaml: |
+    server:
+      http_listen_port: 9080
+    positions:
+      filename: /tmp/positions.yaml
+    clients:
+      - url: http://loki:3100/loki/api/v1/push
+        batchwait: 100ms
+        batchsize: 102400
+    scrape_configs:
+      - job_name: orders-api
+        static_configs:
+          - targets: [localhost]
+            labels:
+              job: orders-api
+              namespace: log-default-05
+              app: orders-api
+              __path__: /var/log/app/*.log
+        pipeline_stages:
+          - regex:
+              expression: '(?P<level>INFO|WARN|ERROR)'
+          - labels:
+              level:

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Bootstrap: shared resources used by all Azure agent test scenarios. Deploy this once before any scenario."
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2022-03-01",
+      "name": "shared-app-plan",
+      "location": "[resourceGroup().location]",
+      "sku": { "name": "B1", "tier": "Basic" },
+      "kind": "app",
+      "tags": {
+        "Project": "azure-agent-test",
+        "Purpose": "Shared App Service Plan for all scenario App Services"
+      },
+      "properties": {}
+    }
+  ],
+  "outputs": {
+    "SharedAppPlanId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Web/serverfarms', 'shared-app-plan')]"
+    },
+    "SharedAppPlanName": {
+      "type": "string",
+      "value": "shared-app-plan"
+    }
+  }
+}

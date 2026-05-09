@@ -1,0 +1,41 @@
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- INSERT INTO knowledge_graph_relationship_types (name, value)
+-- VALUES
+--     ('CALLS', 'CALLS'),
+--     ('PUBLISHES_TO', 'PUBLISHES_TO'),
+--     ('SUBSCRIBES_TO', 'SUBSCRIBES_TO'),
+--     ('RUNS_ON', 'RUNS_ON'),
+--     ('ROUTES_THROUGH', 'ROUTES_THROUGH'),
+--     ('HOSTED_ON', 'HOSTED_ON'),
+--     ('RESOLVES_TO', 'RESOLVES_TO'),
+--     ('ROUTES_TO', 'ROUTES_TO'),
+--     ('DEPENDS_ON', 'DEPENDS_ON'),
+--     ('IS_DEPLOYED_FROM', 'IS_DEPLOYED_FROM'),
+--     ('IS_CONFIGURED_BY', 'IS_CONFIGURED_BY'),
+--     ('REFERENCES_IMAGE', 'REFERENCES_IMAGE'),
+--     ('USES_IMAGE', 'USES_IMAGE'),
+--     ('PULLS_FROM', 'PULLS_FROM'),
+--     ('BELONGS_TO', 'BELONGS_TO'),
+--     ('RUNS_IN', 'RUNS_IN'),
+--     ('MANAGES', 'MANAGES'),
+--     ('OWNS', 'OWNS'),
+--     ('USES_CONFIG', 'USES_CONFIG'),
+--     ('USES_SECRET', 'USES_SECRET'),
+--     ('STORES_IN', 'STORES_IN'),
+--     ('IS_ENCRYPTED_BY', 'IS_ENCRYPTED_BY'),
+--     ('MOUNTS', 'MOUNTS'),
+--     ('IS_BOUND_TO', 'IS_BOUND_TO'),
+--     ('PROVIDES_STORAGE', 'PROVIDES_STORAGE'),
+--     ('EXPOSES', 'EXPOSES'),
+--     ('ROUTES_TO_SERVICE', 'ROUTES_TO_SERVICE'),
+--     ('ROUTES_TO_BACKEND', 'ROUTES_TO_BACKEND'),
+--     ('PROTECTS', 'PROTECTS'),
+--     ('IS_ACCESSED_VIA', 'IS_ACCESSED_VIA'),
+--     ('EMITS_LOGS_TO', 'EMITS_LOGS_TO'),
+--     ('EMITS_METRICS_TO', 'EMITS_METRICS_TO'),
+--     ('EMITS_TRACES_TO', 'EMITS_TRACES_TO'),
+--     ('BUILT_FROM', 'BUILT_FROM'),
+--     ('ASSOCIATED_WITH', 'ASSOCIATED_WITH')
+-- ON CONFLICT (name) DO NOTHING;

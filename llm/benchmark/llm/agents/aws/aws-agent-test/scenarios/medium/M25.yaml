@@ -1,0 +1,147 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M25: X-Ray tracing gaps — Lambda missing tracing permissions.
+  User complaint: "We enabled X-Ray tracing on API Gateway 'm25-api' but traces
+  show gaps. API Gateway segments appear but Lambda 'm25-backend' segments are
+  missing. We can't debug where the latency is coming from in our backend."
+  Root cause: Lambda function has X-Ray active tracing enabled in config but
+  the IAM role is missing the AWSXRayDaemonWriteAccess managed policy. Lambda
+  silently fails to send trace segments — no error, just missing data.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Lambda role missing AWSXRayDaemonWriteAccess.
+      Fixed = Lambda role has AWSXRayDaemonWriteAccess.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m25-backend-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        # THE BUG: Missing XRay policy in Broken mode
+        - !If
+          - IsFixed
+          - arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess
+          - !Ref 'AWS::NoValue'
+
+  BackendFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: m25-backend
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      TracingConfig:
+        Mode: Active
+      Code:
+        ZipFile: |
+          import json
+          import time
+
+          def handler(event, context):
+              # Simulate some processing
+              time.sleep(0.1)
+              query = event.get('queryStringParameters', {}) or {}
+              product_id = query.get('productId', 'unknown')
+              return {
+                  'statusCode': 200,
+                  'headers': {'Content-Type': 'application/json'},
+                  'body': json.dumps({
+                      'productId': product_id,
+                      'name': f'Product {product_id}',
+                      'price': 29.99,
+                      'inStock': True
+                  })
+              }
+      Tags:
+        - Key: Name
+          Value: m25-backend
+        - Key: Environment
+          Value: production
+
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: m25-api
+      Description: Product API with X-Ray tracing
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  ApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: products
+
+  ApiMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ApiResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${BackendFunction.Arn}/invocations'
+
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref BackendFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*'
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: ApiMethod
+    Properties:
+      RestApiId: !Ref ApiGateway
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      StageName: prod
+      RestApiId: !Ref ApiGateway
+      DeploymentId: !Ref ApiDeployment
+      TracingEnabled: true
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway URL
+    Value: !Sub 'https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/products'
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref BackendFunction
+  XRayTracing:
+    Description: Lambda X-Ray tracing mode
+    Value: Active
+  XRayPermissions:
+    Description: XRay IAM policy (missing in Broken mode)
+    Value: !If [IsFixed, 'AWSXRayDaemonWriteAccess attached', 'MISSING AWSXRayDaemonWriteAccess']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

@@ -1,0 +1,9 @@
+user_prompt: what is the promql query for number of running pods in the production
+  namespace?
+expected_output:
+- count(kube_pod_status_phase{namespace="production", phase="Running"})
+- sum by (namespace) (kube_pod_status_phase{namespace="production", phase="Running"})
+- kubelet_running_pods{namespace="production"}
+tags:
+- command
+- promql

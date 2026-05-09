@@ -1,0 +1,7 @@
+user_prompt: Delete the nudgebee-worker deployment.
+expected_output:
+- kubectl delete deployment <deployment-name>
+- kubectl delete deploy <deployment-name>
+tags:
+- command
+- kubernetes

@@ -1,0 +1,6 @@
+user_prompt: List available regions.
+expected_output:
+- aws ec2 describe-regions
+tags:
+- command
+- aws

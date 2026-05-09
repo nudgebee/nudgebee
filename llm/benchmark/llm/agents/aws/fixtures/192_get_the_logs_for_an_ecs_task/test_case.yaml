@@ -1,0 +1,7 @@
+user_prompt: Get the logs for an ECS task.
+expected_output:
+- aws logs get-log-events --log-group-name /ecs/<cluster-name>/<task-id> --log-stream-name
+  <container-name>/<task-id>
+tags:
+- command
+- aws

@@ -1,0 +1,92 @@
+# To get started with Dependabot version updates, you'll need to specify which
+# package ecosystems to update and where the package manifests are located.
+# Please see the documentation for all configuration options:
+# https://docs.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
+
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/notifications-server"
+    schedule:
+      interval: "weekly"
+      
+  - package-ecosystem: "pip"
+    directory: "/ml-k8s-server"
+    schedule:
+      interval: "weekly"
+      
+  - package-ecosystem: "pip"
+    directory: "/auto-pilot"
+    schedule:
+      interval: "weekly"
+      
+  - package-ecosystem: "gomod"
+    directory: "/ticket-server"
+    schedule:
+      interval: "weekly"
+      
+  - package-ecosystem: "pip"
+    directory: "/llm/rag-server"
+    schedule:
+      interval: "weekly"
+      
+  - package-ecosystem: "gomod"
+    directory: "/llm/llm-server"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "gomod"
+    directory: "/api-server/services"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "npm"
+    directory: "/app-e2e-tests"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "npm"
+    directory: "/app"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "gomod"
+    directory: "/collector-server/cloud-collector"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "pip"
+    directory: "/collector-server/k8s-collector/app"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "gomod"
+    directory: "/collector-server/k8s-collector/relay-server"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "gomod"
+    directory: "/collector-server/otel-collector"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "pip"
+    directory: "/llm/benchmark"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "gomod"
+    directory: "/llm/code-analysis"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "gomod"
+    directory: "/ops/github-move-tickets"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "gomod"
+    directory: "/runbook-server"
+    schedule:
+      interval: "weekly"
+

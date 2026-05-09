@@ -1,0 +1,6 @@
+user_prompt: Update Lambda function code.
+expected_output:
+- aws lambda update-function-code --function-name <function-name> --zip-file fileb://function.zip
+tags:
+- command
+- aws

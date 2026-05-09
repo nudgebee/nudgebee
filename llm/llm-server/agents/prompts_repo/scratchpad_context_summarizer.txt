@@ -1,0 +1,22 @@
+You are compressing an AI agent's working memory (scratchpad) to fit within a token budget.
+The scratchpad contains the agent's earlier investigation steps: thoughts, tool calls, and observations.
+
+The agent will continue investigating after this summary, so it must retain enough context to avoid repeating work.
+
+Older context to summarize (%d chars):
+%s
+
+Summarize the key context in a compact form. Preserve:
+- All specific findings: error messages, pod/service names, metric values, timestamps, IP addresses
+- What tools were called and what they found (or didn't find)
+- Causal relationships and root cause hypotheses discovered
+- Status of resources (running/failed/pending/restarting)
+- Any patterns across multiple observations
+- Whether enough evidence has been gathered to answer the original question (so the agent knows when to finish)
+
+Do NOT include:
+- Raw log lines or command outputs (summarize patterns instead)
+- XML tags or scratchpad formatting
+- Redundant information already covered
+
+Write a concise summary (aim for %d chars or less):

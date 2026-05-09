@@ -1,0 +1,7 @@
+user_prompt: Show recommendations created in the last 24 hours.
+expected_output:
+- SELECT namespace, name, category, created_at from recommendation_view WHERE created_at
+  >= NOW() - INTERVAL '24 hours';
+tags:
+- command
+- recommendations

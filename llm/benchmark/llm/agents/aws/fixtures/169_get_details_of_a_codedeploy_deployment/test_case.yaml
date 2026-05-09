@@ -1,0 +1,6 @@
+user_prompt: Get details of a CodeDeploy deployment.
+expected_output:
+- aws codedeploy get-deployment --deployment-id <deployment-id>
+tags:
+- command
+- aws

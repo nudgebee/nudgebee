@@ -1,0 +1,4 @@
+table:
+  name: event_source
+  schema: public
+is_enum: true

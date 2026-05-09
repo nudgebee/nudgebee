@@ -1,0 +1,7 @@
+user_prompt: Count recommendations created per month.
+expected_output:
+- SELECT date_trunc('month', created_at) AS creation_month, COUNT(*) AS monthly_count
+  from recommendation_view GROUP BY creation_month ORDER BY creation_month;
+tags:
+- command
+- recommendations

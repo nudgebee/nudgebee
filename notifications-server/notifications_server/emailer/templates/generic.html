@@ -1,0 +1,9 @@
+{% extends "_base.html" %}
+
+{% block title %}{{ _brand_name }} Notification{% endblock %}
+
+{% block content %}
+  <div style="font-family:'DM Sans',Arial,sans-serif; font-size:15px; color:#3D3D3D; line-height:1.85; font-weight:300;">
+    {{ message | safe }}
+  </div>
+{% endblock %}

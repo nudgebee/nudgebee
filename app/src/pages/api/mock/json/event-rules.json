@@ -1,0 +1,294 @@
+{
+  "GetDistinctCategorySourceSeverity": {
+    "data": {
+      "distinct_category": [
+        {
+          "category": "alertmanager.rules"
+        },
+        {
+          "category": "Application Health"
+        },
+        {
+          "category": "config-reloaders"
+        },
+        {
+          "category": "general.rules"
+        },
+        {
+          "category": "ingress-nginx"
+        },
+        {
+          "category": "kubernetes-apps"
+        },
+        {
+          "category": "kubernetes-resources"
+        },
+        {
+          "category": "kubernetes-storage"
+        },
+        {
+          "category": "kubernetes-system"
+        },
+        {
+          "category": "kubernetes-system-apiserver"
+        },
+        {
+          "category": "kubernetes-system-controller-manager"
+        },
+        {
+          "category": "kubernetes-system-kubelet"
+        },
+        {
+          "category": "kubernetes-system-kube-proxy"
+        },
+        {
+          "category": "kubernetes-system-scheduler"
+        },
+        {
+          "category": "kube-state-metrics"
+        },
+        {
+          "category": "loki_alerts"
+        },
+        {
+          "category": "loki_canaries_alerts"
+        },
+        {
+          "category": "node-exporter"
+        },
+        {
+          "category": "node-network"
+        },
+        {
+          "category": "prometheus"
+        },
+        {
+          "category": "prometheus-operator"
+        }
+      ],
+      "distinct_source": [
+        {
+          "source": "prometheus"
+        }
+      ],
+      "distinct_severity": [
+        {
+          "severity": "critical"
+        },
+        {
+          "severity": "warning"
+        }
+      ]
+    }
+  },
+  "GetEventRules": {
+    "data": {
+      "event_rules": [
+        {
+          "category": "kubernetes-apps",
+          "alert": "Test777",
+          "annotations": {
+            "summary": "Test777",
+            "description": "Test777"
+          },
+          "created_at": "2024-03-18T14:17:33.905973",
+          "duration": "7m",
+          "enabled": true,
+          "expr": "Test777",
+          "id": "b8005fe4-ea67-4118-a064-80607f094526",
+          "is_editable": true,
+          "labels": {
+            "severity": "Warning"
+          },
+          "severity": "warning",
+          "source": "prometheus"
+        },
+        {
+          "category": "prometheus-operator",
+          "alert": "PrometheusOperatorRejectedResources",
+          "annotations": {
+            "summary": "Resources rejected by Prometheus operator",
+            "description": "Prometheus operator in {{ $labels.namespace }} namespace rejected {{ printf \"%0.0f\" $value }} {{ $labels.controller }}/{{ $labels.resource }} resources.",
+            "runbook_url": "https://runbooks.prometheus-operator.dev/runbooks/prometheus-operator/prometheusoperatorrejectedresources"
+          },
+          "created_at": "2024-03-13T08:15:48.116234",
+          "duration": "5m",
+          "enabled": true,
+          "expr": "min_over_time(prometheus_operator_managed_resources{state=\"rejected\",job=\"prometheus-kube-prometheus-operator\",namespace=\"prometheus\"}[5m]) > 0",
+          "id": "f34dad61-fcad-44d5-a4ed-acd6a9b87f6a",
+          "is_editable": true,
+          "labels": {
+            "severity": "warning"
+          },
+          "severity": "warning",
+          "source": "prometheus"
+        },
+        {
+          "category": "prometheus-operator",
+          "alert": "PrometheusOperatorNotReady",
+          "annotations": {
+            "summary": "Prometheus operator not ready",
+            "description": "Prometheus operator in {{ $labels.namespace }} namespace isn't ready to reconcile {{ $labels.controller }} resources.",
+            "runbook_url": "https://runbooks.prometheus-operator.dev/runbooks/prometheus-operator/prometheusoperatornotready"
+          },
+          "created_at": "2024-03-13T08:15:47.456308",
+          "duration": "5m",
+          "enabled": true,
+          "expr": "min by (controller,namespace,cluster) (max_over_time(prometheus_operator_ready{job=\"prometheus-kube-prometheus-operator\",namespace=\"prometheus\"}[5m]) == 0)",
+          "id": "6921b618-cb3f-47e8-8a6b-83c35b2c182c",
+          "is_editable": true,
+          "labels": {
+            "severity": "warning"
+          },
+          "severity": "warning",
+          "source": "prometheus"
+        },
+        {
+          "category": "prometheus-operator",
+          "alert": "PrometheusOperatorNodeLookupErrors",
+          "annotations": {
+            "summary": "Errors while reconciling Prometheus.",
+            "description": "Errors while reconciling Prometheus in {{ $labels.namespace }} Namespace.",
+            "runbook_url": "https://runbooks.prometheus-operator.dev/runbooks/prometheus-operator/prometheusoperatornodelookuperrors"
+          },
+          "created_at": "2024-03-13T08:15:46.82429",
+          "duration": "10m",
+          "enabled": true,
+          "expr": "rate(prometheus_operator_node_address_lookup_errors_total{job=\"prometheus-kube-prometheus-operator\",namespace=\"prometheus\"}[5m]) > 0.1",
+          "id": "82486c1a-76e7-488d-bf86-3f33e3eeffc5",
+          "is_editable": true,
+          "labels": {
+            "severity": "warning"
+          },
+          "severity": "warning",
+          "source": "prometheus"
+        },
+        {
+          "category": "prometheus-operator",
+          "alert": "PrometheusOperatorReconcileErrors",
+          "annotations": {
+            "summary": "Errors while reconciling controller.",
+            "description": "{{ $value | humanizePercentage }} of reconciling operations failed for {{ $labels.controller }} controller in {{ $labels.namespace }} namespace.",
+            "runbook_url": "https://runbooks.prometheus-operator.dev/runbooks/prometheus-operator/prometheusoperatorreconcileerrors"
+          },
+          "created_at": "2024-03-13T08:15:46.140704",
+          "duration": "10m",
+          "enabled": true,
+          "expr": "(sum by (controller,namespace,cluster) (rate(prometheus_operator_reconcile_errors_total{job=\"prometheus-kube-prometheus-operator\",namespace=\"prometheus\"}[5m]))) / (sum by (controller,namespace,cluster) (rate(prometheus_operator_reconcile_operations_total{job=\"prometheus-kube-prometheus-operator\",namespace=\"prometheus\"}[5m]))) > 0.1",
+          "id": "adde8b21-d3a9-4bcf-a6ba-c3648c02aa8a",
+          "is_editable": true,
+          "labels": {
+            "severity": "warning"
+          },
+          "severity": "warning",
+          "source": "prometheus"
+        },
+        {
+          "category": "prometheus-operator",
+          "alert": "PrometheusOperatorSyncFailed",
+          "annotations": {
+            "summary": "Last controller reconciliation failed",
+            "description": "Controller {{ $labels.controller }} in {{ $labels.namespace }} namespace fails to reconcile {{ $value }} objects.",
+            "runbook_url": "https://runbooks.prometheus-operator.dev/runbooks/prometheus-operator/prometheusoperatorsyncfailed"
+          },
+          "created_at": "2024-03-13T08:15:45.508057",
+          "duration": "10m",
+          "enabled": true,
+          "expr": "min_over_time(prometheus_operator_syncs{status=\"failed\",job=\"prometheus-kube-prometheus-operator\",namespace=\"prometheus\"}[5m]) > 0",
+          "id": "704c83c0-d3b0-455f-b84e-670df49220bc",
+          "is_editable": true,
+          "labels": {
+            "severity": "warning"
+          },
+          "severity": "warning",
+          "source": "prometheus"
+        },
+        {
+          "category": "prometheus-operator",
+          "alert": "PrometheusOperatorWatchErrors",
+          "annotations": {
+            "summary": "Errors while performing watch operations in controller.",
+            "description": "Errors while performing watch operations in controller {{$labels.controller}} in {{$labels.namespace}} namespace.",
+            "runbook_url": "https://runbooks.prometheus-operator.dev/runbooks/prometheus-operator/prometheusoperatorwatcherrors"
+          },
+          "created_at": "2024-03-13T08:15:44.836168",
+          "duration": "15m",
+          "enabled": true,
+          "expr": "(sum by (controller,namespace,cluster) (rate(prometheus_operator_watch_operations_failed_total{job=\"prometheus-kube-prometheus-operator\",namespace=\"prometheus\"}[5m])) / sum by (controller,namespace,cluster) (rate(prometheus_operator_watch_operations_total{job=\"prometheus-kube-prometheus-operator\",namespace=\"prometheus\"}[5m]))) > 0.4",
+          "id": "f98803c0-d554-4031-9128-1d46bc875169",
+          "is_editable": true,
+          "labels": {
+            "severity": "warning"
+          },
+          "severity": "warning",
+          "source": "prometheus"
+        },
+        {
+          "category": "prometheus-operator",
+          "alert": "PrometheusOperatorListErrors",
+          "annotations": {
+            "summary": "Errors while performing list operations in controller.",
+            "description": "Errors while performing List operations in controller {{$labels.controller}} in {{$labels.namespace}} namespace.",
+            "runbook_url": "https://runbooks.prometheus-operator.dev/runbooks/prometheus-operator/prometheusoperatorlisterrors"
+          },
+          "created_at": "2024-03-13T08:15:44.212054",
+          "duration": "15m",
+          "enabled": true,
+          "expr": "(sum by (controller,namespace,cluster) (rate(prometheus_operator_list_operations_failed_total{job=\"prometheus-kube-prometheus-operator\",namespace=\"prometheus\"}[10m])) / sum by (controller,namespace,cluster) (rate(prometheus_operator_list_operations_total{job=\"prometheus-kube-prometheus-operator\",namespace=\"prometheus\"}[10m]))) > 0.4",
+          "id": "a7b5626c-bed9-483b-9629-64a60c238514",
+          "is_editable": true,
+          "labels": {
+            "severity": "warning"
+          },
+          "severity": "warning",
+          "source": "prometheus"
+        },
+        {
+          "category": "prometheus",
+          "alert": "PrometheusErrorSendingAlertsToAnyAlertmanager",
+          "annotations": {
+            "summary": "Prometheus encounters more than 3% errors sending alerts to any Alertmanager.",
+            "description": "{{ printf \"%.1f\" $value }}% minimum errors while sending alerts from Prometheus {{$labels.namespace}}/{{$labels.pod}} to any Alertmanager.",
+            "runbook_url": "https://runbooks.prometheus-operator.dev/runbooks/prometheus/prometheuserrorsendingalertstoanyalertmanager"
+          },
+          "created_at": "2024-03-13T08:15:43.448191",
+          "duration": "15m",
+          "enabled": true,
+          "expr": "min without (alertmanager) (\n  rate(prometheus_notifications_errors_total{job=\"prometheus-kube-prometheus-prometheus\",namespace=\"prometheus\",alertmanager!~``}[5m])\n/\n  rate(prometheus_notifications_sent_total{job=\"prometheus-kube-prometheus-prometheus\",namespace=\"prometheus\",alertmanager!~``}[5m])\n)\n* 100\n> 3",
+          "id": "bdfd6362-1791-4ede-8617-c5a97745e2c7",
+          "is_editable": true,
+          "labels": {
+            "severity": "critical"
+          },
+          "severity": "warning",
+          "source": "prometheus"
+        },
+        {
+          "category": "prometheus",
+          "alert": "PrometheusHighQueryLoad",
+          "annotations": {
+            "summary": "Prometheus is reaching its maximum capacity serving concurrent requests.",
+            "description": "Prometheus {{$labels.namespace}}/{{$labels.pod}} query API has less than 20% available capacity in its query engine for the last 15 minutes.",
+            "runbook_url": "https://runbooks.prometheus-operator.dev/runbooks/prometheus/prometheushighqueryload"
+          },
+          "created_at": "2024-03-13T08:15:42.748416",
+          "duration": "15m",
+          "enabled": true,
+          "expr": "avg_over_time(prometheus_engine_queries{job=\"prometheus-kube-prometheus-prometheus\",namespace=\"prometheus\"}[5m]) / max_over_time(prometheus_engine_queries_concurrent_max{job=\"prometheus-kube-prometheus-prometheus\",namespace=\"prometheus\"}[5m]) > 0.8",
+          "id": "871b838a-bda9-4a37-9fac-9ddeb195fc87",
+          "is_editable": true,
+          "labels": {
+            "severity": "warning"
+          },
+          "severity": "warning",
+          "source": "prometheus"
+        }
+      ],
+      "event_rules_aggregate": {
+        "aggregate": {
+          "count": 138
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+user_prompt: Run a task in an ECS cluster.
+expected_output:
+- aws ecs run-task --cluster <cluster-name> --task-definition <task-definition-name>
+tags:
+- command
+- aws

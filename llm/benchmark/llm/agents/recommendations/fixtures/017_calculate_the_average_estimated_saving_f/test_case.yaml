@@ -1,0 +1,8 @@
+user_prompt: Calculate the average estimated saving for 'Open' recommendations within
+  each category.
+expected_output:
+- SELECT category, AVG(estimated_saving) AS average_saving from recommendation_view
+  WHERE status = 'Open' AND estimated_saving IS NOT NULL GROUP BY category;
+tags:
+- command
+- recommendations

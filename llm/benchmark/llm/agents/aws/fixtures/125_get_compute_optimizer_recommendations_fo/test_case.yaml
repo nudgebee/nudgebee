@@ -1,0 +1,6 @@
+user_prompt: Get Compute Optimizer recommendations for EC2.
+expected_output:
+- aws compute-optimizer get-ec2-instance-recommendations
+tags:
+- command
+- aws

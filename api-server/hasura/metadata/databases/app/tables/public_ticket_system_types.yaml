@@ -1,0 +1,4 @@
+table:
+  name: ticket_system_types
+  schema: public
+is_enum: true

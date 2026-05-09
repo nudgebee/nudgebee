@@ -1,0 +1,3 @@
+table:
+  name: event_triage_rules
+  schema: public

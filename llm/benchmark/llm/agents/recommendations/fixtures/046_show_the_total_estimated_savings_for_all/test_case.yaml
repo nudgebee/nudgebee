@@ -1,0 +1,7 @@
+user_prompt: Show the total estimated savings for all 'Closed' recommendations.
+expected_output:
+- SELECT SUM(estimated_saving) AS total_saved from recommendation_view WHERE status
+  = 'Closed' AND estimated_saving IS NOT NULL;
+tags:
+- command
+- recommendations

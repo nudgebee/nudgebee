@@ -1,0 +1,8 @@
+user_prompt: What is the LogQL query to calculate the average log volume per second
+  for the nginx pod?
+expected_output:
+- rate(count_over_time({pod="nginx"}[5m]))
+- avg(rate(count_over_time({namespace="default", pod="nginx"}[5m])))
+tags:
+- command
+- loki

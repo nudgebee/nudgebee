@@ -1,0 +1,258 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Bootstrap stack - creates shared VPC networking infrastructure and S3 artifact
+  bucket used by all AWS agent test scenarios. Deploy this once before any scenario.
+
+Resources:
+  # ===== S3 Artifact Bucket (existing) =====
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'aws-agent-test-artifacts-${AWS::AccountId}'
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Project
+          Value: aws-agent-test
+        - Key: Purpose
+          Value: Store faulty Lambda code ZIPs for Class B scenarios
+
+  # ===== Shared VPC =====
+  SharedVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: aws-agent-test-shared-vpc
+        - Key: Project
+          Value: aws-agent-test
+
+  # ===== Internet Gateway =====
+  SharedIGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: aws-agent-test-shared-igw
+        - Key: Project
+          Value: aws-agent-test
+
+  SharedIGWAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref SharedVPC
+      InternetGatewayId: !Ref SharedIGW
+
+  # ===== Public Subnets =====
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SharedVPC
+      CidrBlock: 10.0.1.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: aws-agent-test-public-1a
+        - Key: Project
+          Value: aws-agent-test
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SharedVPC
+      CidrBlock: 10.0.2.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: aws-agent-test-public-1b
+        - Key: Project
+          Value: aws-agent-test
+
+  # ===== Private Subnets =====
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SharedVPC
+      CidrBlock: 10.0.11.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: aws-agent-test-private-1a
+        - Key: Project
+          Value: aws-agent-test
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SharedVPC
+      CidrBlock: 10.0.12.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: aws-agent-test-private-1b
+        - Key: Project
+          Value: aws-agent-test
+
+  # ===== NAT Gateway (single, in AZ-a public subnet) =====
+  SharedNatEIP:
+    Type: AWS::EC2::EIP
+    DependsOn: SharedIGWAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: aws-agent-test-nat-eip
+        - Key: Project
+          Value: aws-agent-test
+
+  SharedNatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt SharedNatEIP.AllocationId
+      SubnetId: !Ref PublicSubnetA
+      Tags:
+        - Key: Name
+          Value: aws-agent-test-shared-nat
+        - Key: Project
+          Value: aws-agent-test
+
+  # ===== Public Route Table =====
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref SharedVPC
+      Tags:
+        - Key: Name
+          Value: aws-agent-test-public-rt
+        - Key: Project
+          Value: aws-agent-test
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: SharedIGWAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref SharedIGW
+
+  PublicSubnetAAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  # ===== Private Route Tables (per-AZ for H02 compatibility) =====
+  PrivateRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref SharedVPC
+      Tags:
+        - Key: Name
+          Value: aws-agent-test-private-rt-1a
+        - Key: Project
+          Value: aws-agent-test
+
+  PrivateRouteA:
+    Type: AWS::EC2::Route
+    DependsOn: SharedNatGateway
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref SharedNatGateway
+
+  PrivateSubnetAAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTableA
+
+  PrivateRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref SharedVPC
+      Tags:
+        - Key: Name
+          Value: aws-agent-test-private-rt-1b
+        - Key: Project
+          Value: aws-agent-test
+
+  PrivateRouteB:
+    Type: AWS::EC2::Route
+    DependsOn: SharedNatGateway
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref SharedNatGateway
+
+  PrivateSubnetBAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTableB
+
+Outputs:
+  # S3 outputs (existing)
+  ArtifactBucketName:
+    Description: S3 bucket name for test artifacts
+    Value: !Ref ArtifactBucket
+    Export:
+      Name: aws-agent-test-artifact-bucket
+  ArtifactBucketArn:
+    Description: S3 bucket ARN
+    Value: !GetAtt ArtifactBucket.Arn
+    Export:
+      Name: aws-agent-test-artifact-bucket-arn
+
+  # VPC
+  VpcId:
+    Description: Shared VPC ID
+    Value: !Ref SharedVPC
+    Export:
+      Name: aws-agent-test-vpc-id
+  VpcCidr:
+    Description: Shared VPC CIDR
+    Value: !GetAtt SharedVPC.CidrBlock
+    Export:
+      Name: aws-agent-test-vpc-cidr
+
+  # Public Subnets
+  PublicSubnetAId:
+    Description: Public Subnet AZ-a
+    Value: !Ref PublicSubnetA
+    Export:
+      Name: aws-agent-test-public-subnet-a
+  PublicSubnetBId:
+    Description: Public Subnet AZ-b
+    Value: !Ref PublicSubnetB
+    Export:
+      Name: aws-agent-test-public-subnet-b
+
+  # Private Subnets
+  PrivateSubnetAId:
+    Description: Private Subnet AZ-a
+    Value: !Ref PrivateSubnetA
+    Export:
+      Name: aws-agent-test-private-subnet-a
+  PrivateSubnetBId:
+    Description: Private Subnet AZ-b
+    Value: !Ref PrivateSubnetB
+    Export:
+      Name: aws-agent-test-private-subnet-b
+
+  # NAT Gateway
+  NatGatewayId:
+    Description: Shared NAT Gateway ID
+    Value: !Ref SharedNatGateway
+    Export:
+      Name: aws-agent-test-nat-gateway-id

@@ -1,0 +1,7 @@
+user_prompt: Update the trace sink 'nudgebee_trace' in project 'nudgebee-dev' to export to the BigQuery dataset 'nudgebee_traces_v2'.
+expected_output:
+  - gcloud alpha trace sinks update nudgebee_trace bigquery.googleapis.com/projects/nudgebee-dev/datasets/nudgebee_traces_v2 --project=nudgebee-dev
+tags:
+  - command
+  - trace
+  - gcp

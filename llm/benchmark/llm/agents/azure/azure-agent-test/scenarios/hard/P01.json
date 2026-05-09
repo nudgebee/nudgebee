@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "P01: App Service has minTlsVersion=1.3 which rejects TLS 1.2 clients (mobile apps, older integrations) AND httpsOnly=false allowing insecure HTTP access. Common production failure with TLS/HTTPS misconfiguration."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "appName": "[concat('p01app', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "brokenMinTls": "1.3",
+    "fixedMinTls": "1.2",
+    "minTlsVersion": "[if(equals(parameters('scenarioMode'), 'Fixed'), variables('fixedMinTls'), variables('brokenMinTls'))]",
+    "brokenHttpsOnly": false,
+    "fixedHttpsOnly": true,
+    "httpsOnly": "[if(equals(parameters('scenarioMode'), 'Fixed'), variables('fixedHttpsOnly'), variables('brokenHttpsOnly'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('appName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "app",
+      "tags": { "Environment": "production", "Team": "web", "ScenarioMode": "[parameters('scenarioMode')]" },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "httpsOnly": "[variables('httpsOnly')]",
+        "siteConfig": {
+          "minTlsVersion": "[variables('minTlsVersion')]",
+          "ftpsState": "Disabled",
+          "appSettings": [
+            { "name": "WEBSITE_CUSTOM_DOMAIN", "value": "api.example-corp.com" },
+            { "name": "FORCE_HTTPS", "value": "true" },
+            { "name": "APP_ENV", "value": "production" }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "appServiceName": { "type": "string", "value": "[variables('appName')]" },
+    "bugNote": { "type": "string", "value": "minTlsVersion=1.3 rejects most clients AND httpsOnly=false allows insecure HTTP when app expects HTTPS enforcement" },
+    "scenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

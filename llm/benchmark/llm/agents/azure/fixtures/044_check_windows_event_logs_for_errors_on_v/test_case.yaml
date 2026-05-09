@@ -1,0 +1,10 @@
+user_prompt: Check Windows event logs for errors on VM 'win-web-01' in resource group
+  'web-rg'
+expected_output:
+- az vm run-command invoke --command-id RunPowerShellScript --name win-web-01 --resource-group
+  web-rg --scripts "Get-EventLog -LogName Application -EntryType Error -Newest 20"
+type: command
+tags:
+- command
+- azure
+- windows

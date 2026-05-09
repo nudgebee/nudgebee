@@ -1,0 +1,25 @@
+table:
+  name: recommendation
+  schema: public
+object_relationships:
+- name: cloud_account
+  using:
+    foreign_key_constraint_on: cloud_account_id
+- name: cloud_resourse
+  using:
+    foreign_key_constraint_on: resource_id
+- name: recommendation__status
+  using:
+    foreign_key_constraint_on: status
+- name: recommendation_action_type
+  using:
+    foreign_key_constraint_on: recommendation_action
+- name: recommendation_category_type
+  using:
+    foreign_key_constraint_on: category
+- name: recommendation_severity
+  using:
+    foreign_key_constraint_on: severity
+- name: tenant
+  using:
+    foreign_key_constraint_on: tenant_id

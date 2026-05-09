@@ -1,0 +1,6 @@
+# Loki/LogQL agent benchmark configuration
+agent: logql_query_generator
+tool_names:
+  - loki_execute
+  - elastic_search_execute
+  - logs_execute

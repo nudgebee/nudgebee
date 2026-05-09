@@ -1,0 +1,127 @@
+# Synthetic OTLP push of `bidder_request_duration_seconds` histogram with
+# two version data points: v1.0 (~50ms avg) and v2.0 (~2s avg, 40x slower).
+# The original fixture deployed v1, ran traffic, deployed v2, ran traffic,
+# waited for HPA — a 5+ minute setup. This synthetic push delivers the
+# same comparison without the orchestration.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-pusher-script
+data:
+  push.sh: |
+    #!/bin/sh
+    set -eu
+    : "${OTLP_HTTP_ENDPOINT:?must be set}"
+
+    while true; do
+      NOW_NS=$(date +%s)000000000
+      cat > /tmp/payload.json <<EOF
+    {
+      "resourceMetrics": [{
+        "resource": {
+          "attributes": [
+            {"key": "service.name", "value": {"stringValue": "bidder"}},
+            {"key": "service.namespace", "value": {"stringValue": "app-161"}},
+            {"key": "k8s.namespace.name", "value": {"stringValue": "app-161"}},
+            {"key": "k8s.pod.name", "value": {"stringValue": "${HOSTNAME}"}},
+            {"key": "telemetry.sdk.language", "value": {"stringValue": "shell"}},
+            {"key": "telemetry.sdk.name", "value": {"stringValue": "otlp-curl"}}
+          ]
+        },
+        "scopeMetrics": [{
+          "scope": {"name": "bidder"},
+          "metrics": [{
+            "name": "bidder_request_duration_seconds",
+            "description": "Bidder request latency, broken down by version",
+            "unit": "s",
+            "histogram": {
+              "aggregationTemporality": 2,
+              "dataPoints": [
+                {
+                  "startTimeUnixNano": "${NOW_NS}",
+                  "timeUnixNano": "${NOW_NS}",
+                  "count": "1000",
+                  "sum": 50.0,
+                  "bucketCounts": ["100", "700", "180", "18", "2", "0", "0"],
+                  "explicitBounds": [0.025, 0.05, 0.1, 0.25, 0.5, 1.0],
+                  "attributes": [
+                    {"key": "version", "value": {"stringValue": "v1.0"}}
+                  ]
+                },
+                {
+                  "startTimeUnixNano": "${NOW_NS}",
+                  "timeUnixNano": "${NOW_NS}",
+                  "count": "1000",
+                  "sum": 2000.0,
+                  "bucketCounts": ["0", "0", "0", "0", "0", "0", "500", "480", "20"],
+                  "explicitBounds": [0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0],
+                  "attributes": [
+                    {"key": "version", "value": {"stringValue": "v2.0"}}
+                  ]
+                }
+              ]
+            }
+          }, {
+            "name": "bidder_active_pods",
+            "description": "Number of active bidder pods per version (HPA scaled)",
+            "unit": "1",
+            "gauge": {
+              "dataPoints": [
+                {"asInt": "2",  "timeUnixNano": "${NOW_NS}", "attributes": [{"key": "version", "value": {"stringValue": "v1.0"}}]},
+                {"asInt": "10", "timeUnixNano": "${NOW_NS}", "attributes": [{"key": "version", "value": {"stringValue": "v2.0"}}]}
+              ]
+            }
+          }]
+        }]
+      }]
+    }
+    EOF
+      curl -sS -o /dev/null -w "%{http_code}" -X POST \
+        -H "Content-Type: application/json" \
+        --data-binary @/tmp/payload.json \
+        "${OTLP_HTTP_ENDPOINT}/v1/metrics" || true
+      echo " — pushed at $(date -u +%H:%M:%S)"
+      sleep 10
+    done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metric-otel-pusher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metric-otel-pusher
+  template:
+    metadata:
+      labels:
+        app: metric-otel-pusher
+    spec:
+      containers:
+      - name: pusher
+        image: curlimages/curl:8.10.1
+        command: ["sh", "/script/push.sh"]
+        env:
+        - name: OTLP_HTTP_ENDPOINT
+          value: "http://otel-deployment-collector-collector.otel.svc.cluster.local:4318"
+        - name: HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        volumeMounts:
+        - name: script
+          mountPath: /script
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "16Mi"
+          limits:
+            cpu: "100m"
+            memory: "64Mi"
+      volumes:
+      - name: script
+        configMap:
+          name: otel-pusher-script
+          defaultMode: 0755

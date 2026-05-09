@@ -1,0 +1,86 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "H02: Function App has blob trigger but Storage Account firewall blocks the Function App's outbound IPs AND the connection string references wrong storage account name. Two independent failures: network block + wrong config. Requires checking both Storage network rules and Function App connection string."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "funcAppName": "[concat('h02func', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "storageRealName": "[concat('h02sareal', substring(uniqueString(resourceGroup().id), 0, 6))]",
+    "storageWrongName": "[concat('h02sawrong', substring(uniqueString(resourceGroup().id), 0, 5))]",
+    "brokenConnStr": "[concat('DefaultEndpointsProtocol=https;AccountName=', variables('storageWrongName'), ';AccountKey=fake;EndpointSuffix=core.windows.net')]",
+    "fixedConnStr": "[concat('DefaultEndpointsProtocol=https;AccountName=', variables('storageRealName'), ';AccountKey=', listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageRealName')), '2022-09-01').keys[0].value, ';EndpointSuffix=core.windows.net')]",
+    "storageConnStr": "[if(equals(parameters('scenarioMode'), 'Fixed'), variables('fixedConnStr'), variables('brokenConnStr'))]",
+    "brokenDefaultAction": "Deny",
+    "fixedDefaultAction": "Allow",
+    "networkDefaultAction": "[if(equals(parameters('scenarioMode'), 'Fixed'), variables('fixedDefaultAction'), variables('brokenDefaultAction'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2022-09-01",
+      "name": "[variables('storageRealName')]",
+      "location": "[resourceGroup().location]",
+      "sku": { "name": "Standard_LRS" },
+      "kind": "StorageV2",
+      "tags": { "Environment": "production", "Team": "data-pipeline", "Scenario": "H02" },
+      "properties": {
+        "networkAcls": {
+          "defaultAction": "[variables('networkDefaultAction')]",
+          "bypass": "None",
+          "ipRules": [],
+          "virtualNetworkRules": []
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2022-09-01",
+      "name": "[concat(variables('storageRealName'), '/default/incoming-data')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageRealName'))]"
+      ],
+      "properties": { "publicAccess": "None" }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('funcAppName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "functionapp",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageRealName'))]"
+      ],
+      "tags": { "Environment": "production", "Team": "data-pipeline", "ScenarioMode": "[parameters('scenarioMode')]" },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "siteConfig": {
+          "appSettings": [
+            { "name": "AzureWebJobsStorage", "value": "[variables('storageConnStr')]" },
+            { "name": "FUNCTIONS_WORKER_RUNTIME", "value": "python" },
+            { "name": "FUNCTIONS_EXTENSION_VERSION", "value": "~4" },
+            { "name": "BLOB_TRIGGER_CONTAINER", "value": "incoming-data" }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "funcAppName": { "type": "string", "value": "[variables('funcAppName')]" },
+    "storageAccountName": { "type": "string", "value": "[variables('storageRealName')]" },
+    "wrongStorageName": { "type": "string", "value": "[variables('storageWrongName')]" },
+    "bugNote": { "type": "string", "value": "Two bugs: (1) AzureWebJobsStorage points to wrong storage account name, (2) real storage account has networkAcls defaultAction=Deny blocking Function App" },
+    "scenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

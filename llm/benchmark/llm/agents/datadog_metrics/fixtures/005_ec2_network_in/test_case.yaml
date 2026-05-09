@@ -1,0 +1,10 @@
+user_prompt: What is the incoming network traffic for EC2 instances?
+expected_output:
+  - "avg:aws.ec2.network_in{*} by {host}"
+  - "sum:aws.ec2.network_in{*} by {host}"
+  - "avg:aws.ec2.network_in{*}"
+tags:
+  - command
+  - aws
+  - ec2
+  - network

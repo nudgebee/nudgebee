@@ -1,0 +1,10 @@
+user_prompt: Analyze API failures for 'k8s-collector' in 'nudgebee' namespace (last
+  day).
+expected_output:
+- SELECT resource, http_status_code, count(*) as failure_count, avg(duration_ns) as
+  avg_duration FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND workload_namespace
+  = 'nudgebee' AND http_status_code >= 400 AND timestamp >= now() - interval 1 day
+  GROUP BY resource, http_status_code ORDER BY failure_count DESC;
+tags:
+- command
+- trace

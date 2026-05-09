@@ -1,0 +1,3 @@
+table:
+  name: configuration_store
+  schema: public

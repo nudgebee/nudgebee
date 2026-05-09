@@ -1,0 +1,3 @@
+table:
+  name: agent_playbook_trigger
+  schema: public

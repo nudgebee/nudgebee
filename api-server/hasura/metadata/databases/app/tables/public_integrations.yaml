@@ -1,0 +1,40 @@
+table:
+  name: integrations
+  schema: public
+object_relationships:
+- name: integration_source
+  using:
+    foreign_key_constraint_on: source
+- name: integration_status
+  using:
+    foreign_key_constraint_on: status
+- name: integration_type
+  using:
+    foreign_key_constraint_on: type
+- name: user
+  using:
+    foreign_key_constraint_on: updated_by
+- name: userCreatedBy
+  using:
+    manual_configuration:
+      column_mapping:
+        created_by: id
+      insertion_order:
+      remote_table:
+        name: users
+        schema: public
+array_relationships:
+- name: integration_config_values
+  using:
+    foreign_key_constraint_on:
+      column: integration_id
+      table:
+        name: integration_config_values
+        schema: public
+- name: integrations_cloud_accounts
+  using:
+    foreign_key_constraint_on:
+      column: integration_id
+      table:
+        name: integrations_cloud_accounts
+        schema: public

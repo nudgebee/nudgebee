@@ -1,0 +1,373 @@
+{
+  "cluster_data": {
+    "data": {
+      "cloudaccount_k8s_aggregate": [
+        {
+          "account_id": "demo",
+          "avg_cpu_used_node": 8.94038,
+          "avg_memory_used_node": 32463.637242486875
+        }
+      ],
+      "all_node_count": {
+        "aggregate": {
+          "count": 3,
+          "sum": {
+            "cpu_capacity": 10,
+            "cpu_allocatable": 9.77,
+            "memory_capacity": 39026,
+            "memory_allocatable": 36366
+          }
+        }
+      },
+      "spot_node_count": {
+        "aggregate": {
+          "count": 1
+        }
+      },
+      "pod_count": {
+        "aggregate": {
+          "count": 107
+        }
+      },
+      "failed_pod_count": {
+        "aggregate": {
+          "count": 0
+        }
+      },
+      "pending_pod_count": {
+        "aggregate": {
+          "count": 1
+        }
+      },
+      "running_pod_count": {
+        "aggregate": {
+          "count": 102
+        }
+      },
+      "recommendation_aggregate": {
+        "aggregate": {
+          "sum": {
+            "estimated_savings": 99.6287778492647
+          }
+        },
+        "count": 837
+      },
+      "spends_aggregate": {
+        "aggregate": {
+          "sum": {
+            "amount": 185.04395
+          }
+        }
+      },
+      "lm_spends_aggregate": {
+        "aggregate": {
+          "sum": {
+            "amount": 229.5614699999993
+          }
+        }
+      },
+      "yearly_spends_aggregate": {
+        "aggregate": {
+          "sum": {
+            "amount": 676.1279400000041
+          }
+        }
+      },
+      "workload_replicaSet": {
+        "aggregate": {
+          "count": 98
+        }
+      },
+      "workload_statefulSet": {
+        "aggregate": {
+          "count": 33
+        }
+      },
+      "workload_daemonSet": {
+        "aggregate": {
+          "count": 31
+        }
+      },
+      "workload_deployement": {
+        "aggregate": {
+          "count": 150
+        }
+      },
+      "workload_job": {
+        "aggregate": {
+          "count": 1
+        }
+      },
+      "events": [
+        {
+          "aggregation_key": "ApplicationAPIFailures",
+          "event_count": 27
+        },
+        {
+          "aggregation_key": "ConfigurationChange/KubernetesResource/Change",
+          "event_count": 4
+        },
+        {
+          "aggregation_key": "HighErrorCriticalLogs",
+          "event_count": 189
+        },
+        {
+          "aggregation_key": "job_failure",
+          "event_count": 6
+        },
+        {
+          "aggregation_key": "KubeCPUOvercommit",
+          "event_count": 4
+        },
+        {
+          "aggregation_key": "KubeJobFailed",
+          "event_count": 11
+        },
+        {
+          "aggregation_key": "KubeMemoryOvercommit",
+          "event_count": 4
+        },
+        {
+          "aggregation_key": "Kubernetes Warning Event",
+          "event_count": 39
+        },
+        {
+          "aggregation_key": "PodMemoryReachingLimit",
+          "event_count": 16
+        },
+        {
+          "aggregation_key": "pod_oom_killer_enricher",
+          "event_count": 10
+        }
+      ]
+    }
+  },
+  "network_groupings": {
+    "data": {
+      "cloud_resource_metrics_groupings": [
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2023-09-01T00:00:00",
+          "metric": "networkReceiveBytes",
+          "avg_value": 16272569460.757061
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2023-09-01T00:00:00",
+          "metric": "networkTransferBytes",
+          "avg_value": 16504653600.360594
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2023-10-01T00:00:00",
+          "metric": "networkReceiveBytes",
+          "avg_value": 14055415413.05567
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2023-10-01T00:00:00",
+          "metric": "networkTransferBytes",
+          "avg_value": 13954419185.061474
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2023-11-01T00:00:00",
+          "metric": "networkReceiveBytes",
+          "avg_value": 7412829512.291293
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2023-11-01T00:00:00",
+          "metric": "networkTransferBytes",
+          "avg_value": 7291734009.487688
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2023-12-01T00:00:00",
+          "metric": "networkReceiveBytes",
+          "avg_value": 6193493022.043708
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2023-12-01T00:00:00",
+          "metric": "networkTransferBytes",
+          "avg_value": 5792409470.08004
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2024-01-01T00:00:00",
+          "metric": "networkReceiveBytes",
+          "avg_value": 2639825811.4605784
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2024-01-01T00:00:00",
+          "metric": "networkTransferBytes",
+          "avg_value": 1864753216.5375712
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2024-02-01T00:00:00",
+          "metric": "networkReceiveBytes",
+          "avg_value": 3350462523.8138175
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2024-02-01T00:00:00",
+          "metric": "networkTransferBytes",
+          "avg_value": 2717411921.4965863
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2024-03-01T00:00:00",
+          "metric": "networkReceiveBytes",
+          "avg_value": 3109072989.9371037
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2024-03-01T00:00:00",
+          "metric": "networkTransferBytes",
+          "avg_value": 2666764265.381574
+        }
+      ]
+    }
+  },
+  "spend_groupings": {
+    "data": {
+      "spend_groupings": [
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "spend_date": "2023-09-01T00:00:00",
+          "spend_amount": 27.726619999999986
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "spend_date": "2023-10-01T00:00:00",
+          "spend_amount": 334.38884999999664
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "spend_date": "2023-11-01T00:00:00",
+          "spend_amount": 351.6801600000033
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "spend_date": "2023-12-01T00:00:00",
+          "spend_amount": 369.70906000000195
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "spend_date": "2024-01-01T00:00:00",
+          "spend_amount": 254.91816000001924
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "spend_date": "2024-02-01T00:00:00",
+          "spend_amount": 229.96757000000463
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "spend_date": "2024-03-01T00:00:00",
+          "spend_amount": 184.58413999999877
+        }
+      ]
+    }
+  },
+  "listK8ClusterTrend": {
+    "data": {
+      "cloudaccount_k8s_aggregate": [
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2023-09-01T00:00:00",
+          "total_cpu_allocatable": 0.09155172413793113,
+          "avg_cpu_used_node": 0.022903121037488525,
+          "avg_memory_used_node": 243537618.6376297,
+          "total_memory_allocatable": 319831054.39583486,
+          "cost": 46.58278000000001
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2023-10-01T00:00:00",
+          "total_cpu_allocatable": 0.07635026237941626,
+          "avg_cpu_used_node": 0.021210954811663227,
+          "avg_memory_used_node": 304048800.1385646,
+          "total_memory_allocatable": 447147874.1145542,
+          "cost": 826.3586900000213
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2023-11-01T00:00:00",
+          "total_cpu_allocatable": 0.07341778768617847,
+          "avg_cpu_used_node": 0.016482803339341805,
+          "avg_memory_used_node": 413557438.78416395,
+          "total_memory_allocatable": 471571023.4777246,
+          "cost": 680.2824800000119
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2023-12-01T00:00:00",
+          "total_cpu_allocatable": 0.07613289897124878,
+          "avg_cpu_used_node": 0.016162614085993378,
+          "avg_memory_used_node": 314721883.21099603,
+          "total_memory_allocatable": 550484471.4233365,
+          "cost": 739.0530200000258
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2024-01-01T00:00:00",
+          "total_cpu_allocatable": 0.1470111673174365,
+          "avg_cpu_used_node": 0.004879498346766097,
+          "avg_memory_used_node": 211867678.6177899,
+          "total_memory_allocatable": 1807037948.0872405,
+          "cost": 516.5763799999518
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2024-02-01T00:00:00",
+          "total_cpu_allocatable": 0.16351295150252776,
+          "avg_cpu_used_node": 0.007139848379744461,
+          "avg_memory_used_node": 313892245.4635764,
+          "total_memory_allocatable": 930056024.7402669,
+          "cost": 459.5292900000022
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "timestamp": "2024-03-01T00:00:00",
+          "total_cpu_allocatable": 0.18261502776966357,
+          "avg_cpu_used_node": 0.007562024344569342,
+          "avg_memory_used_node": 360182194.5995671,
+          "total_memory_allocatable": 738886006.8862411,
+          "cost": 369.6280900000017
+        }
+      ]
+    }
+  }
+}

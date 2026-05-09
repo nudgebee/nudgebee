@@ -1,0 +1,179 @@
+package budget
+
+import (
+	"database/sql"
+	"fmt"
+	"log/slog"
+
+	"nudgebee/llm/common"
+	"nudgebee/llm/config"
+)
+
+// --- Monthly usage (existing, refactored) ---
+
+// GetTenantTokenUsage calculates the total token usage cost for a tenant in the current month
+func GetTenantTokenUsage(dbManager *common.DatabaseManager, tenantId string, module string) (float64, error) {
+	return getEntityTokenUsage(dbManager, "tenant", tenantId, module, "month")
+}
+
+// GetAccountTokenUsage calculates the total token usage cost for an account in the current month
+func GetAccountTokenUsage(dbManager *common.DatabaseManager, accountId string, module string) (float64, error) {
+	return getEntityTokenUsage(dbManager, "account", accountId, module, "month")
+}
+
+// GetTenantConversationCount counts the total conversations for a tenant in the current month
+func GetTenantConversationCount(dbManager *common.DatabaseManager, tenantId string, module string) (int, error) {
+	return getEntityConversationCount(dbManager, "tenant", tenantId, module, "month")
+}
+
+// --- Daily usage (new) ---
+
+// GetTenantDailyTokenUsage calculates the total token usage cost for a tenant today
+func GetTenantDailyTokenUsage(dbManager *common.DatabaseManager, tenantId string, module string) (float64, error) {
+	return getEntityTokenUsage(dbManager, "tenant", tenantId, module, "day")
+}
+
+// GetAccountDailyTokenUsage calculates the total token usage cost for an account today
+func GetAccountDailyTokenUsage(dbManager *common.DatabaseManager, accountId string, module string) (float64, error) {
+	return getEntityTokenUsage(dbManager, "account", accountId, module, "day")
+}
+
+// GetTenantDailyConversationCount counts the total conversations for a tenant today
+func GetTenantDailyConversationCount(dbManager *common.DatabaseManager, tenantId string, module string) (int, error) {
+	return getEntityConversationCount(dbManager, "tenant", tenantId, module, "day")
+}
+
+// GetAccountDailyConversationCount counts the total conversations for an account today
+func GetAccountDailyConversationCount(dbManager *common.DatabaseManager, accountId string, module string) (int, error) {
+	return getEntityConversationCount(dbManager, "account", accountId, module, "day")
+}
+
+// GetAccountConversationCount counts the total conversations for an account in the current month
+func GetAccountConversationCount(dbManager *common.DatabaseManager, accountId string, module string) (int, error) {
+	return getEntityConversationCount(dbManager, "account", accountId, module, "month")
+}
+
+// --- Internal helpers ---
+
+// validPeriods is a whitelist of allowed period values for SQL DATE_TRUNC
+var validPeriods = map[string]bool{
+	"month": true,
+	"day":   true,
+}
+
+// validatePeriod checks if the period is valid (prevents SQL injection in DATE_TRUNC)
+func validatePeriod(period string) error {
+	if !validPeriods[period] {
+		return fmt.Errorf("invalid period: %s", period)
+	}
+	return nil
+}
+
+// getEntityConversationCount counts conversations for an entity in the given period
+func getEntityConversationCount(dbManager *common.DatabaseManager, entityType, entityId, module, period string) (int, error) {
+	if err := validatePeriod(period); err != nil {
+		return 0, err
+	}
+	filter, ok := moduleQueryFilters[module]
+	if !ok {
+		return 0, fmt.Errorf("invalid module: %s", module)
+	}
+
+	var whereClause string
+	switch entityType {
+	case "tenant":
+		whereClause = "c.tenant_id = $1"
+	case "account":
+		whereClause = "c.account_id = $1"
+	default:
+		return 0, fmt.Errorf("invalid entity type: %s", entityType)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT COUNT(DISTINCT c.id) as count
+		FROM llm_conversations c
+		WHERE %s
+		AND c.created_at >= DATE_TRUNC('%s', CURRENT_TIMESTAMP)
+		AND c.created_at < DATE_TRUNC('%s', CURRENT_TIMESTAMP) + INTERVAL '1 %s'
+	`, whereClause, period, period, period) + filter
+
+	var count int
+	err := dbManager.Db.Get(&count, query, entityId)
+	if err != nil {
+		slog.Error("getEntityConversationCount: error executing query",
+			"error", err, "entity_type", entityType, "entity_id", entityId, "module", module, "period", period)
+		return 0, err
+	}
+
+	slog.Debug("getEntityConversationCount: count retrieved",
+		"entity_type", entityType, "entity_id", entityId,
+		"module", module, "period", period, "count", count)
+
+	return count, nil
+}
+
+// getEntityTokenUsage calculates token usage cost for an entity in the given period.
+// Optimization: Cost is calculated in a single SQL query using a JOIN with llm_model_pricing.
+func getEntityTokenUsage(dbManager *common.DatabaseManager, entityType string, entityId string, module string, period string) (float64, error) {
+	if err := validatePeriod(period); err != nil {
+		return 0, err
+	}
+	filter, ok := moduleQueryFilters[module]
+	if !ok {
+		return 0, fmt.Errorf("invalid module: %s", module)
+	}
+
+	var whereClause string
+	switch entityType {
+	case "tenant":
+		whereClause = "c.tenant_id = $1"
+	case "account":
+		whereClause = "c.account_id = $1"
+	default:
+		return 0.0, fmt.Errorf("invalid entity type: %s", entityType)
+	}
+
+	// Use global system default TTL if not specified in usage record
+	defaultTTL := config.Config.LlmCacheTTLMinutes
+
+	query := fmt.Sprintf(`
+		WITH usage_stats AS (
+			SELECT
+				t.llm_model,
+				t.llm_provider,
+				SUM(t.output_tokens) as total_output_tokens,
+				SUM(COALESCE(t.cached_input_tokens, 0)) as total_cached_input_tokens,
+				SUM(t.input_tokens - COALESCE(t.cached_input_tokens, 0)) as total_non_cached_input_tokens,
+				COALESCE(t.cache_ttl_minutes, %d) as effective_cache_ttl
+			FROM llm_conversation_token_usage t
+			INNER JOIN llm_conversations c ON c.id = t.conversation_id
+			WHERE %s
+			AND c.created_at >= DATE_TRUNC('%s', CURRENT_TIMESTAMP)
+			AND c.created_at < DATE_TRUNC('%s', CURRENT_TIMESTAMP) + INTERVAL '1 %s'
+			%s
+			GROUP BY t.llm_model, t.llm_provider, effective_cache_ttl
+		)
+		SELECT
+			SUM(
+				(u.total_non_cached_input_tokens / 1000000.0 * p.cost_per_million_input_tokens) +
+				(u.total_output_tokens / 1000000.0 * p.cost_per_million_output_tokens) +
+				(u.total_cached_input_tokens / 1000000.0 * (p.cache_cost_per_million_tokens_per_hour / 60.0) * u.effective_cache_ttl)
+			) as total_cost
+		FROM usage_stats u
+		INNER JOIN llm_model_pricing p ON p.model_name = u.llm_model AND p.provider_name = u.llm_provider
+	`, defaultTTL, whereClause, period, period, period, filter)
+
+	var totalCost sql.NullFloat64
+	err := dbManager.Db.Get(&totalCost, query, entityId)
+	if err != nil {
+		slog.Error("getEntityTokenUsage: error executing unified cost query",
+			"error", err, "entity_type", entityType, "entity_id", entityId, "period", period)
+		return 0.0, err
+	}
+
+	if !totalCost.Valid {
+		return 0.0, nil
+	}
+
+	return totalCost.Float64, nil
+}

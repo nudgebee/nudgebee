@@ -1,0 +1,13 @@
+table:
+  name: dw_queries
+  schema: public
+object_relationships:
+- name: cloud_account
+  using:
+    foreign_key_constraint_on: account_id
+- name: cloud_resourse
+  using:
+    foreign_key_constraint_on: resource_id
+- name: tenant
+  using:
+    foreign_key_constraint_on: tenant_id

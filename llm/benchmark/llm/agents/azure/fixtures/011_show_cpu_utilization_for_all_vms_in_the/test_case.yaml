@@ -1,0 +1,10 @@
+user_prompt: Show CPU utilization for all VMs in the nudgebee-dev resource group for
+  the last 6 hours.
+expected_output:
+- az monitor metrics list --resource-group NUDGEBEE-DEV_GROUP --resource-type Microsoft.Compute/virtualMachines
+  --metric "Percentage CPU" --start-time "<start-time>" --end-time "<end-time>" --interval
+  PT5M --output table
+type: command
+tags:
+- command
+- azure

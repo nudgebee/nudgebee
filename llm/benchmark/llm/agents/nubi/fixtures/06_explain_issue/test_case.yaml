@@ -1,0 +1,5 @@
+user_prompt: 'Explain << { "type": "issue", "id": "asodfkq1209edyhqawdo2uydqawidh" } >>'
+expected_output: 'The agent should search for the issue across available systems (events, tickets, monitoring) and report what it finds. If the issue ID does not exist in any system, the agent should clearly state that the issue was not found rather than hallucinating an answer.'
+tags:
+  - easy
+  - kubernetes

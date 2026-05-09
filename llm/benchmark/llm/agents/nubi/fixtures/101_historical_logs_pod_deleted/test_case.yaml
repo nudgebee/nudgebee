@@ -1,0 +1,33 @@
+# Originally HolmesGPT deployed a payment-api pod, pushed backdated logs into
+# per-test Loki, then deleted the pod — testing whether Holmes could analyze
+# historical logs without the pod still existing. On nubi the per-test Loki
+# is dead infra (agent uses cluster Loki). The "pod deleted" condition is now
+# implicit since the namespace starts (and stays) empty. Test reduces to: agent
+# must honestly report no-data with the data sources it queried — which the
+# original expected_output explicitly accepts as the fallback path.
+
+user_prompt: "The payment-api pod in namespace app-101 had issues on August 2, 2025 around 13:45 UTC. What happened?"
+
+description: |
+  Variant of 100a where the namespace contains no pods at all (simulating
+  a deleted-pod scenario). The agent cannot kubectl describe / get any pod
+  and must rely on whatever historical telemetry sources it can reach.
+
+expected_output:
+  - "The agent must state that no data is available for the requested date — either because the pod no longer exists or historical telemetry has been purged."
+  - "The agent must list at least two distinct data sources it actually queried (e.g., logs, Kubernetes events, metrics, deployment status, Loki). Naming any subset of these is acceptable; do not require specific terms like 'Loki' or 'metrics'."
+  - "Findings can be presented as confirmed or as 'unable to verify' — both phrasings are valid given the no-data scenario."
+  - "The agent must not refuse to investigate or fabricate findings."
+
+tags:
+  - logs
+  - kubernetes
+  - hard
+  - holmesgpt-parity
+
+before_test: |
+  kubectl create namespace app-101 || true
+  kubectl label namespace app-101 benchmark=true --overwrite || true
+
+after_test: |
+  kubectl delete namespace app-101 --wait=false --ignore-not-found

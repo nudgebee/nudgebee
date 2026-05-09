@@ -1,0 +1,11 @@
+table:
+  name: notification_user_status_type
+  schema: public
+array_relationships:
+- name: notification_users
+  using:
+    foreign_key_constraint_on:
+      column: status
+      table:
+        name: notification_user
+        schema: public

@@ -1,0 +1,3 @@
+table:
+  name: event_incoming_webhooks
+  schema: public

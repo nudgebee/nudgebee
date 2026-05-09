@@ -1,0 +1,6 @@
+user_prompt: Create the nudgebee-tls secret from literal values.
+expected_output:
+- kubectl create secret generic my-secret --from-literal=username=admin --from-literal=password=secret
+tags:
+- command
+- kubernetes

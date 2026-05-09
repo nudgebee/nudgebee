@@ -1,0 +1,7 @@
+user_prompt: Fetch all Azure Monitor alerts that are currently firing.
+expected_output:
+- az monitor metrics alert list --output table
+type: command
+tags:
+- command
+- azure

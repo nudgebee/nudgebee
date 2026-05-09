@@ -1,0 +1,4 @@
+table:
+  name: event_severity
+  schema: public
+is_enum: true

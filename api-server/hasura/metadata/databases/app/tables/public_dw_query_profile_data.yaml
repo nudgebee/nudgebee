@@ -1,0 +1,3 @@
+table:
+  name: dw_query_profile_data
+  schema: public

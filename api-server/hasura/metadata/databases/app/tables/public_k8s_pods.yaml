@@ -1,0 +1,3 @@
+table:
+  name: k8s_pods
+  schema: public

@@ -1,0 +1,6 @@
+user_prompt: Get details of a Glue crawler.
+expected_output:
+- aws glue get-crawler --name <crawler-name>
+tags:
+- command
+- aws

@@ -1,0 +1,9 @@
+user_prompt: What is the SQL query to find all RDS high CPU utilization alerts for
+  the 'main' instance?
+expected_output:
+- SELECT id, title, starts_at, status, priority, subject_name, description   FROM
+  events   WHERE aggregation_key = 'awsrds-main-High-CPUUtilization';
+- SELECT * FROM events   WHERE aggregation_key = 'awsrds-main-High-CPUUtilization';
+tags:
+- command
+- events

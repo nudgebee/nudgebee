@@ -1,0 +1,23 @@
+user_prompt: We're putting records into Kinesis Data Stream 'e20-clickstream' and
+  CloudWatch metrics confirm records are being ingested. But our Lambda consumer
+  'e20-click-processor' never fires — zero invocations, no errors, nothing in
+  CloudWatch Logs. The Lambda function code is correct and has proper IAM permissions
+  for Kinesis. What's going on?
+expected_output:
+- "The root cause is that the Lambda event source mapping for the Kinesis stream is\
+  \ disabled (Enabled: false). The event source mapping exists and is correctly\
+  \ configured to read from 'e20-clickstream' and invoke 'e20-click-processor', but\
+  \ its Enabled property is set to false. When disabled, Lambda does not poll the\
+  \ Kinesis stream for new records, so no invocations occur. Records accumulate in\
+  \ the stream but are never consumed. There are no errors because the mapping simply\
+  \ isn't active. The fix is to enable the event source mapping by setting Enabled\
+  \ to true."
+tags:
+- rca
+- aws
+- kinesis
+- lambda
+- event-source-mapping
+- easy
+type: rca
+agent: aws_debug

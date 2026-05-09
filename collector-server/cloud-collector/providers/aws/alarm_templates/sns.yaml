@@ -1,0 +1,110 @@
+# SNS CloudWatch Alarm Recommendations
+# Converted from IDR CLI alarm templates
+service_name: "sns"
+
+templates:
+  - name: "aws_sns_number_of_notifications_failed_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Monitors failed notifications to detect delivery issues"
+    configuration:
+      namespace: "AWS/SNS"
+      metric_name: "NumberOfNotificationsFailed"
+      statistic: "Sum"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 5.0
+
+  - name: "aws_sns_number_of_notifications_filtered_out_invalid_attributes_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "CONDITIONAL"
+    category: "Configuration"
+    severity: "Medium"
+    description: "Monitors notifications filtered due to invalid attributes"
+    configuration:
+      namespace: "AWS/SNS"
+      metric_name: "NumberOfNotificationsFilteredOut-InvalidAttributes"
+      statistic: "Sum"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "breaching"
+    threshold_rules:
+      default: 1.0
+    conditions:
+      # Only recommend for topics with filter policies
+      - field: "Meta.Subscriptions"
+        operator: "exists"
+
+  - name: "aws_sns_number_of_notifications_filtered_out_no_message_attributes_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "CONDITIONAL"
+    category: "Configuration"
+    severity: "Medium"
+    description: "Monitors notifications filtered due to missing message attributes"
+    configuration:
+      namespace: "AWS/SNS"
+      metric_name: "NumberOfNotificationsFilteredOut-NoMessageAttributes"
+      statistic: "Sum"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "breaching"
+    threshold_rules:
+      default: 1.0
+    conditions:
+      # Only recommend for topics with filter policies
+      - field: "Meta.Subscriptions"
+        operator: "exists"
+
+  - name: "aws_sns_number_of_notifications_filtered_out_invalid_message_body_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "CONDITIONAL"
+    category: "Configuration"
+    severity: "Medium"
+    description: "Monitors notifications filtered due to invalid message body"
+    configuration:
+      namespace: "AWS/SNS"
+      metric_name: "NumberOfNotificationsFilteredOut-InvalidMessageBody"
+      statistic: "Sum"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "breaching"
+    threshold_rules:
+      default: 1.0
+    conditions:
+      # Only recommend for topics with filter policies
+      - field: "Meta.Subscriptions"
+        operator: "exists"
+
+  - name: "aws_sns_number_of_notifications_redriven_to_dlq_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "CONDITIONAL"
+    category: "Configuration"
+    severity: "High"
+    description: "Monitors notifications redirected to a Dead Letter Queue"
+    configuration:
+      namespace: "AWS/SNS"
+      metric_name: "NumberOfNotificationsRedrivenToDlq"
+      statistic: "Sum"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "breaching"
+    threshold_rules:
+      default: 1.0
+    conditions:
+      # Only recommend for subscriptions with DLQ configured
+      - field: "Meta.Subscriptions"
+        operator: "exists"

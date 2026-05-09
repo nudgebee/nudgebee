@@ -1,0 +1,7 @@
+user_prompt: Estimate AWS costs.
+expected_output:
+- aws ce get-cost-and-usage
+- aws ce get-cost-forecast
+tags:
+- command
+- aws

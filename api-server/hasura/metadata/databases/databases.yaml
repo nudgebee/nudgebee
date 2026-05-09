@@ -1,0 +1,157 @@
+- name: app
+  kind: postgres
+  configuration:
+    connection_info:
+      database_url:
+        from_env: APP_DATABASE_URL
+      isolation_level: read-committed
+      use_prepared_statements: false
+  customization:
+    naming_convention: hasura-default
+  logical_models:
+    - fields:
+        - name: tenant
+          type:
+            nullable: false
+            scalar: uuid
+        - name: account
+          type:
+            nullable: false
+            scalar: uuid
+        - name: id
+          type:
+            nullable: false
+            scalar: uuid
+        - name: name
+          type:
+            nullable: true
+            scalar: text
+        - name: resourse_id
+          type:
+            nullable: true
+            scalar: text
+        - name: resourse_created_on
+          type:
+            nullable: true
+            scalar: timestamp
+        - name: status
+          type:
+            nullable: true
+            scalar: text
+        - name: type
+          type:
+            nullable: true
+            scalar: text
+        - name: region
+          type:
+            nullable: true
+            scalar: text
+        - name: service_name
+          type:
+            nullable: true
+            scalar: text
+        - name: spend_amount
+          type:
+            nullable: true
+            scalar: float8
+        - name: recommendations
+          type:
+            nullable: true
+            scalar: json
+      name: cloud_resource_v2
+      select_permissions:
+        - permission:
+            columns:
+              - tenant
+              - account
+              - id
+              - name
+              - resourse_id
+              - resourse_created_on
+              - status
+              - type
+              - region
+              - service_name
+              - spend_amount
+              - recommendations
+            filter:
+              tenant:
+                _eq: X-Hasura-User-Tenant-Id
+          role: tenant_admin
+        - permission:
+            columns:
+              - tenant
+              - account
+              - id
+              - name
+              - resourse_id
+              - resourse_created_on
+              - status
+              - type
+              - region
+              - service_name
+              - spend_amount
+              - recommendations
+            filter:
+              tenant:
+                _eq: X-Hasura-User-Tenant-Id
+          role: tenant_admin_readonly
+  native_queries:
+    - arguments:
+        spend_from:
+          description: ""
+          nullable: false
+          type: timestamp
+        spend_to:
+          description: ""
+          nullable: false
+          type: timestamp
+      code: |-
+        with recommendation_open_assigned as (
+        select
+        	*
+        from
+        	recommendation as r
+        where
+        	r.status in ('Open', 'Assigned'))
+        select
+        	cr.tenant,
+        	cr.account,
+        	cr.id,
+        	cr.name,
+        	cr.resourse_id,
+        	cr.resourse_created_on,
+        	cr.status,
+        	cr.type,
+        	cr.region,
+        	cr.service_name,
+        	sum(s.amount) as spend_amount,
+        	json_agg(json_build_object('estimated_savings',
+        	r.estimated_savings,
+        	'category',
+        	r.category)) as recommendations
+        from
+        	cloud_resourses cr
+        left join spends s on
+        	cr.id = s.cloud_resource_id
+        left join recommendation_open_assigned r on
+        	r.resource_id = cr.id
+        where
+        	s.date >= {{spend_from}}
+        	and s.date < {{spend_to}}
+        group by
+        	cr.tenant,
+        	cr.name,
+        	cr.id,
+        	cr.account,
+        	cr.resourse_id,
+        	cr.resourse_created_on,
+        	cr.status,
+        	cr.type,
+        	cr.region,
+        	cr.service_name
+        order by
+        	spend_amount desc
+      returns: cloud_resource_v2
+      root_field_name: cloud_resources_v2
+  tables: "!include app/tables/tables.yaml"

@@ -1,0 +1,8 @@
+user_prompt: Find the user who created the policy that was most recently attached,
+  assuming an 'audits' table links policies to users.
+expected_output:
+- SELECT a.user_name FROM audits a JOIN events e ON a.trace_id = e.fingerprint WHERE
+  e.aggregation_key = 'AttachUserPolicy' ORDER BY e.starts_at DESC LIMIT 1;
+tags:
+- command
+- events

@@ -1,0 +1,3 @@
+table:
+  name: cloud_services_aggregate
+  schema: public

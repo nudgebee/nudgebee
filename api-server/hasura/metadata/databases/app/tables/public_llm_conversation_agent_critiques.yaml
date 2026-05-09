@@ -1,0 +1,3 @@
+table:
+  name: llm_conversation_agent_critiques
+  schema: public

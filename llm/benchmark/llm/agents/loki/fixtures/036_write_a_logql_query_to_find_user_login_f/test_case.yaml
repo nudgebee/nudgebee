@@ -1,0 +1,8 @@
+user_prompt: Write a LogQL query to find user login failures from Firefox browsers,
+  while excluding internal IPs (like 10.0.x.x).
+expected_output:
+- '{app="auth-service"} |= "login failed" |~ "Firefox/\d+" !~ "10\.0\.\d+\.\d+"'
+- '{job="auth"} |= "failure" |= "login" |~ "User-Agent\s?=\s?\".*Firefox.*\"" !~ "ip=10.0."'
+tags:
+- command
+- loki

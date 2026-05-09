@@ -1,0 +1,6 @@
+user_prompt: Terminate an EC2 instance.
+expected_output:
+- aws ec2 terminate-instances --instance-ids <instance-id>
+tags:
+- command
+- aws

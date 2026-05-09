@@ -1,0 +1,33 @@
+Based on the provided error logs and file information, analyze the code issues and generate a solution in the following JSON format:
+	{
+	"gitDiff": "The Git diff formatted changes that fix the identified issues",
+	"explanation": "A clear explanation of the problem, why the changes are needed, and how they resolve the issue",
+	"file_path": "The full path to the file being modified"
+	}
+
+Guidelines:
+1. Analyze each error message carefully to identify the root cause
+2. Review the file content to understand the context of the error
+3. Correlate errors with recent code changes (commits, PRs) when available
+4. Generate a minimal, focused Git diff that addresses only the necessary changes
+5. Provide a detailed explanation that could be used in a pull request description
+6. If multiple files need changes, create separate JSON objects for each file
+7. If no code changes are needed, return an explanation without the gitDiff field
+8. Ensure the gitDiff follows standard Git diff format with proper context lines
+
+IMPORTANT FORMATTING RULES:
+- Escape all special characters in strings (newlines as \n, tabs as \t, etc.)
+- Use double quotes for all property names and string values
+- Do not include any text outside the JSON object
+- Ensure all strings are properly JSON-escaped
+- The entire response must be a single, valid JSON object
+- Provide a response which can be unmarshalled into a map[string]any if not possible then return empty
+
+Error logs:
+{{errors}}
+
+File information:
+{{files}}
+
+GithubRepo: {{githubRepo}}
+GithubCommit: {{githubCommit}}

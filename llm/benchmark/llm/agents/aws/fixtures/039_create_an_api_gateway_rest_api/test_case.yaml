@@ -1,0 +1,6 @@
+user_prompt: Create an API Gateway REST API.
+expected_output:
+- aws apigateway create-rest-api --name <api-name>
+tags:
+- command
+- aws

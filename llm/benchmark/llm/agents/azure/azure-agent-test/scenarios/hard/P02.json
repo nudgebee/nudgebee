@@ -1,0 +1,176 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "P02: App Service with VNet integration tries to reach a Storage Account via private endpoint, but the Private DNS zone has no A record for the storage account. DNS resolution returns the public IP which is blocked by Storage firewall. Common production failure with private endpoints."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "appName": "[concat('p02app', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "storageName": "[concat('p02sa', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "vnetName": "p02-app-vnet",
+    "subnetName": "app-subnet",
+    "peSubnetName": "pe-subnet",
+    "privateDnsZoneName": "privatelink.blob.core.windows.net"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2023-04-01",
+      "name": "[variables('vnetName')]",
+      "location": "[resourceGroup().location]",
+      "tags": { "Environment": "production", "Team": "network", "Scenario": "P02" },
+      "properties": {
+        "addressSpace": { "addressPrefixes": ["10.2.0.0/16"] },
+        "subnets": [
+          {
+            "name": "[variables('subnetName')]",
+            "properties": {
+              "addressPrefix": "10.2.1.0/24",
+              "delegations": [
+                {
+                  "name": "appServiceDelegation",
+                  "properties": { "serviceName": "Microsoft.Web/serverFarms" }
+                }
+              ]
+            }
+          },
+          {
+            "name": "[variables('peSubnetName')]",
+            "properties": {
+              "addressPrefix": "10.2.2.0/24"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2022-09-01",
+      "name": "[variables('storageName')]",
+      "location": "[resourceGroup().location]",
+      "sku": { "name": "Standard_LRS" },
+      "kind": "StorageV2",
+      "tags": { "Environment": "production", "Team": "data", "Scenario": "P02" },
+      "properties": {
+        "networkAcls": {
+          "defaultAction": "Deny",
+          "bypass": "None",
+          "ipRules": [],
+          "virtualNetworkRules": []
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2020-06-01",
+      "name": "[variables('privateDnsZoneName')]",
+      "location": "global",
+      "tags": { "Environment": "production", "Scenario": "P02" },
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2020-06-01",
+      "name": "[concat(variables('privateDnsZoneName'), '/vnet-link')]",
+      "location": "global",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ],
+      "properties": {
+        "virtualNetwork": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+        },
+        "registrationEnabled": false
+      }
+    },
+    {
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2023-04-01",
+      "name": "p02-storage-pe",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ],
+      "tags": { "Environment": "production", "Scenario": "P02" },
+      "properties": {
+        "subnet": {
+          "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('peSubnetName'))]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "storage-blob-connection",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
+              "groupIds": ["blob"]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "condition": "[equals(parameters('scenarioMode'), 'Fixed')]",
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2023-04-01",
+      "name": "p02-storage-pe/default",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/privateEndpoints', 'p02-storage-pe')]",
+        "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneName'))]"
+      ],
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "blob-dns-config",
+            "properties": {
+              "privateDnsZoneId": "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZoneName'))]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('appName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "app",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
+        "[resourceId('Microsoft.Network/privateEndpoints', 'p02-storage-pe')]"
+      ],
+      "tags": { "Environment": "production", "Team": "backend", "ScenarioMode": "[parameters('scenarioMode')]" },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "virtualNetworkSubnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('subnetName'))]",
+        "siteConfig": {
+          "vnetRouteAllEnabled": true,
+          "appSettings": [
+            { "name": "STORAGE_ACCOUNT_NAME", "value": "[variables('storageName')]" },
+            { "name": "STORAGE_CONTAINER", "value": "documents" },
+            { "name": "USE_PRIVATE_ENDPOINT", "value": "true" }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "appServiceName": { "type": "string", "value": "[variables('appName')]" },
+    "storageAccountName": { "type": "string", "value": "[variables('storageName')]" },
+    "privateDnsZone": { "type": "string", "value": "[variables('privateDnsZoneName')]" },
+    "bugNote": { "type": "string", "value": "Private DNS zone 'privatelink.blob.core.windows.net' exists and is linked to VNet but has NO A record for the storage account. DNS resolves to public IP which is blocked by storage firewall (defaultAction=Deny)." },
+    "scenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

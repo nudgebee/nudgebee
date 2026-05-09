@@ -1,0 +1,7 @@
+user_prompt: Update the image for the main-container in the nudgebee-api deployment
+  to nudgebee/api:v1.2.
+expected_output:
+- kubectl set image deployment/<deployment-name> <container-name>=<new-image>
+tags:
+- command
+- kubernetes

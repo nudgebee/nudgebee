@@ -1,0 +1,7 @@
+user_prompt: Get the '/var/log/app.log' file from the nudgebee-worker-pod back to
+  my computer.
+expected_output:
+- kubectl cp <pod-name>:/path/in/pod /path/to/local/file
+tags:
+- command
+- kubernetes

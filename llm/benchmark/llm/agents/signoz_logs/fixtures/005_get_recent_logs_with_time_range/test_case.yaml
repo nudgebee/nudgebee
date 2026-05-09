@@ -1,0 +1,6 @@
+user_prompt: Get logs from the last 2 hours for auth-service
+expected_output: '{"where": {"service.name": {"_eq": "auth-service"}}, "time_range": "2h"}'
+tags:
+  - command
+  - time-range
+  - signoz

@@ -1,0 +1,53 @@
+name: "💡 Spike Request"
+description: Explorative work to answer a question or gather information
+title: "💡 [REQUEST] - <title>"
+labels: []
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: "Summary"
+      description: Provide a brief explanation of the feature
+      placeholder: Describe in a few lines your feature request
+    validations:
+      required: true
+  - type: textarea
+    id: objectives
+    attributes:
+      label: "Objectives"
+      description: Objectives of this exploration
+      placeholder: Objectives of this exploration Task
+    validations:
+      required: true
+  - type: textarea
+    id: result_summary
+    attributes:
+      label: "Result Summary"
+      description: Summary Of Spike Results
+      placeholder: Summary Of Spike Results
+    validations:
+      required: true
+  - type: textarea
+    id: next_steps
+    attributes:
+      label: "Next Steps"
+      description: Next Steps After Exploration
+      placeholder: Next Steps After Exploration
+    validations:
+      required: true
+  - type: textarea
+    id: unresolved_question
+    attributes:
+      label: "Unresolved questions"
+      description: What questions still remain unresolved ?
+      placeholder: Identify any unresolved issues.
+    validations:
+      required: false
+  - type: textarea
+    id: reference_issues
+    attributes:
+      label: "Reference Issues"
+      description: Common issues
+      placeholder: "#Issues IDs"
+    validations:
+      required: false

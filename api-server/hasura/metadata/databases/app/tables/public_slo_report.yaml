@@ -1,0 +1,7 @@
+table:
+  name: slo_report
+  schema: public
+object_relationships:
+- name: slo_config
+  using:
+    foreign_key_constraint_on: config_id

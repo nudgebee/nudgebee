@@ -1,0 +1,11 @@
+user_prompt: what is the promql query for average response time for API endpoint /generate
+  in the last hour?
+expected_output:
+- avg(rate(container_http_requests_duration_seconds_total_sum{path="/generate"}[1h]))
+  / avg(rate(container_http_requests_duration_seconds_total_count{path="/generate"}[1h]))
+- histogram_quantile(0.5, rate(container_http_requests_duration_seconds_bucket{path="/generate"}[1h]))
+- kubelet_http_requests_duration_seconds_sum{request="/generate", verb="GET",  le="+Inf"}
+  / kubelet_http_requests_duration_seconds_count{request="/generate", verb="GET"}
+tags:
+- command
+- promql

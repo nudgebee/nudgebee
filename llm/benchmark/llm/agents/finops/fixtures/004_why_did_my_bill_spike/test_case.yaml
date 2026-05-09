@@ -1,0 +1,21 @@
+user_prompt: "Why did my cloud bill go up this month?"
+expected_output:
+  - |
+    The agent's FIRST action MUST be a parallel batch including spend_summary
+    AND anomaly_execute querying for cost anomalies (anomaly_type IN
+    ('CloudSpendService','CloudSpendAccount')). The answer should lead with:
+    "Your bill increased by $X (Y%) — driven primarily by [service/resource]."
+    It must include a "What Changed" section that focuses on NEW resources,
+    big movers (>30% increase), and detected anomalies — not on stable big
+    spenders. Each finding should follow the Signal -> Root Cause -> Evidence
+    -> Impact -> Recommendation structure. The agent must NOT stop at "costs
+    increased X%" without identifying WHAT drove the increase. If the cause
+    cannot be determined from spend data alone, the agent must invoke
+    delegate_agent with cloud-specific tools (aws/gcp/azure) to investigate.
+    Cite tools for every data point.
+tags:
+  - spike
+  - anomaly
+  - rca
+  - medium
+  - finops

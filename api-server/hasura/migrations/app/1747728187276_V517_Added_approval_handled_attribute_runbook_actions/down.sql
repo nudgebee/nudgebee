@@ -1,0 +1,53 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- UPDATE
+--     runbook_action
+-- SET
+--     attributes = jsonb_set(attributes, '{approval_handled}', 'true' :: jsonb)
+-- WHERE
+--     internal_identifier IN (
+--         'aws_rds_instance_scalar',
+--         'aws_instance_start',
+--         'pv_rightsize',
+--         'aws_eks_start',
+--         'aws_instance_scalar',
+--         'custom_image_execute',
+--         'workload_scalar',
+--         'aws_rds_instance_stop',
+--         'aws_eks_scalar',
+--         'pod_delete',
+--         'k8s_bash',
+--         'custom_image_action',
+--         'horizontal_rightsize',
+--         'aws_rds_instance_start',
+--         'workload_restart',
+--         'aws_instance_stop',
+--         'vertical_rightsize',
+--         'k8s_node_graceful_shutdown'
+--     );
+--
+-- UPDATE
+--     runbook_action
+-- SET
+--     attributes = jsonb_set(attributes, '{approval_handled}', 'false' :: jsonb)
+-- WHERE
+--     internal_identifier NOT IN (
+--         'aws_rds_instance_scalar',
+--         'aws_instance_start',
+--         'pv_rightsize',
+--         'aws_eks_start',
+--         'aws_instance_scalar',
+--         'custom_image_execute',
+--         'workload_scalar',
+--         'aws_rds_instance_stop',
+--         'aws_eks_scalar',
+--         'pod_delete',
+--         'k8s_bash',
+--         'custom_image_action',
+--         'horizontal_rightsize',
+--         'aws_rds_instance_start',
+--         'workload_restart',
+--         'aws_instance_stop',
+--         'vertical_rightsize',
+--         'k8s_node_graceful_shutdown'
+--     );

@@ -1,0 +1,9 @@
+name: test-manual-workflow
+definition:
+  triggers:
+    - type: manual
+  tasks:
+    - id: task1
+      type: core.print
+      params:
+        message: 'Hello from task1'

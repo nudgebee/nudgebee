@@ -1,0 +1,6 @@
+user_prompt: Pull an image from ECR.
+expected_output:
+- docker pull <account_id>.dkr.ecr.<region>.amazonaws.com/<repository-name>:<tag>
+tags:
+- command
+- aws

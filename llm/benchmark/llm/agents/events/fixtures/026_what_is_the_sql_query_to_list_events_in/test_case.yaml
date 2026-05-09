@@ -1,0 +1,10 @@
+user_prompt: What is the SQL query to list events in 'kube-system' namespace excluding
+  'KubePodNotReady'?
+expected_output:
+- SELECT id, title, starts_at, status, priority, aggregation_key, subject_name   FROM
+  events   WHERE subject_namespace = 'kube-system' AND aggregation_key != 'KubePodNotReady';
+- SELECT * FROM events   WHERE subject_namespace = 'kube-system' AND aggregation_key
+  != 'KubePodNotReady';
+tags:
+- command
+- events

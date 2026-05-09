@@ -1,0 +1,6 @@
+user_prompt: Get the kubeconfig for an EKS cluster.
+expected_output:
+- aws eks update-kubeconfig --name <cluster-name>
+tags:
+- command
+- aws

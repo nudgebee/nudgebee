@@ -1,0 +1,4 @@
+table:
+  name: auto_pilot_execution_status
+  schema: public
+is_enum: true

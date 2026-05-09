@@ -1,0 +1,21 @@
+table:
+  name: notification_rules
+  schema: public
+object_relationships:
+- name: cloud_account
+  using:
+    foreign_key_constraint_on: account_id
+- name: user
+  using:
+    foreign_key_constraint_on: created_by
+- name: user_updated_by
+  using:
+    foreign_key_constraint_on: updated_by
+array_relationships:
+- name: notification_rule_mappings
+  using:
+    foreign_key_constraint_on:
+      column: rule_id
+      table:
+        name: notification_rule_mappings
+        schema: public

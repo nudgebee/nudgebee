@@ -1,0 +1,9 @@
+user_prompt: Show me a breakdown of event priorities, but label them 'Critical' for
+  HIGH, 'Warning' for MEDIUM, and 'Notice' for anything else.
+expected_output:
+- SELECT COUNT(*) as event_count, CASE WHEN priority = 'HIGH' THEN 'Critical' WHEN
+  priority = 'MEDIUM' THEN 'Warning' ELSE 'Notice' END AS priority_label FROM events
+  GROUP BY priority_label;
+tags:
+- command
+- events

@@ -1,0 +1,14 @@
+user_prompt: what is the promql query for resources experiencing resource constraints
+  or bottlenecks based on the current CPU usage?
+expected_output:
+- (rate(container_cpu_cfs_throttled_periods_total{job="kubelet", container!="POD"}[5m])
+  / rate(container_cpu_cfs_periods_total{job="kubelet", container!="POD"}[5m])) *
+  100
+- topk(5, (rate(container_cpu_cfs_throttled_periods_total{job="kubelet", container!="POD"}[5m])
+  / rate(container_cpu_cfs_periods_total{job="kubelet", container!="POD"}[5m])) *
+  100)
+- rate(container_resources_cpu_usage_seconds_total{namespace=~"(.*)", pod=~"(.*)"}[60m])
+  > 0.8
+tags:
+- command
+- promql

@@ -1,0 +1,3 @@
+table:
+  name: compliance_standard_check_mappings
+  schema: public

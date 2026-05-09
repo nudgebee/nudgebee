@@ -1,0 +1,3 @@
+table:
+  name: alert_rule
+  schema: public

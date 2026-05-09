@@ -1,0 +1,18 @@
+# Signoz log agent benchmark configuration
+# Tests the LogDefaultAgent path for Signoz provider
+#
+# Answer extraction: Custom extractor fetches query_generator agent's
+# JSON response from llm_conversation_agent table (not tool_calls).
+#
+# Evaluation: Structural JSON comparison (not RAGAS semantic similarity).
+# The result_enricher overwrites answer_similarity with a structural
+# accuracy score that compares field names, operators, and values.
+agent: logs
+tool_names:
+  - logs_execute
+  - query_generator
+  - resource_search
+config_types:
+  - signoz
+answer_extractor: llm.agents.signoz_logs.benchmark_llm_signoz_logs._extract_signoz_query
+result_enricher: llm.agents.signoz_logs.benchmark_llm_signoz_logs._signoz_query_enricher

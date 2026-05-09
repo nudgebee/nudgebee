@@ -1,0 +1,7 @@
+user_prompt: Get cost and usage data by tag.
+expected_output:
+- aws ce get-cost-and-usage --time-period Start=<start-date>,End=<end-date> --metrics
+  <metrics> --group-by Tag=<tag-key>
+tags:
+- command
+- aws

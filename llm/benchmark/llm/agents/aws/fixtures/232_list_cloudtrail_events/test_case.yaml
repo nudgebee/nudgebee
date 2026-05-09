@@ -1,0 +1,6 @@
+user_prompt: List CloudTrail events.
+expected_output:
+- aws cloudtrail lookup-events
+tags:
+- command
+- aws

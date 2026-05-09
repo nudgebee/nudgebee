@@ -1,0 +1,7 @@
+user_prompt: Find all recommendations for the Kubernetes controller named 'deployment-xyz'.
+expected_output:
+- SELECT namespace, name, recommendation, category, severity from recommendation_view
+  WHERE controller_name = 'deployment-xyz';
+tags:
+- command
+- recommendations

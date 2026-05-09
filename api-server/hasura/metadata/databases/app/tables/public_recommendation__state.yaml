@@ -1,0 +1,11 @@
+table:
+  name: recommendation__state
+  schema: public
+array_relationships:
+  - name: recommendations
+    using:
+      foreign_key_constraint_on:
+        column: state
+        table:
+          name: recommendation
+          schema: public

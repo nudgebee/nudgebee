@@ -1,0 +1,3 @@
+table:
+  name: ticket_severity_type
+  schema: public

@@ -1,0 +1,136 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M13: SQS visibility timeout shorter than Lambda processing time.
+  User complaint: "Lambda 'm13-invoice-processor' processes SQS messages from
+  'm13-invoices-queue' but some invoices get processed twice and others appear
+  in the DLQ 'm13-invoices-dlq'. The Lambda function itself works correctly."
+  Root cause: SQS VisibilityTimeout (30s) is shorter than Lambda Timeout (300s).
+  When Lambda takes >30s, the message becomes visible again and another Lambda
+  picks it up, causing duplicate processing. After maxReceiveCount (3), messages
+  go to DLQ even though they were being processed.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = SQS VisibilityTimeout (30s) < Lambda Timeout (300s).
+      Fixed = SQS VisibilityTimeout (360s) > Lambda Timeout (300s).
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: m13-invoices-dlq
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Name
+          Value: m13-invoices-dlq
+        - Key: Environment
+          Value: production
+
+  InvoiceQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: m13-invoices-queue
+      # THE BUG: VisibilityTimeout (30s) is much less than Lambda Timeout (300s)
+      VisibilityTimeout: !If [IsFixed, 360, 30]
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Name
+          Value: m13-invoices-queue
+        - Key: Environment
+          Value: production
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m13-invoice-processor-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: sqs-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - !GetAtt InvoiceQueue.Arn
+                  - !GetAtt DeadLetterQueue.Arn
+
+  InvoiceProcessor:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: m13-invoice-processor
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      # Lambda timeout is 300s — much longer than SQS visibility timeout (30s)
+      Timeout: 300
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          import json
+          import time
+
+          def handler(event, context):
+              for record in event['Records']:
+                  body = json.loads(record['body'])
+                  invoice_id = body.get('invoiceId', 'unknown')
+                  print(f"Processing invoice {invoice_id}")
+                  # Simulate variable processing time (10s to 120s)
+                  # For large invoices, this exceeds the 30s visibility timeout
+                  processing_time = len(body.get('lineItems', [])) * 2
+                  time.sleep(min(processing_time, 120))
+                  print(f"Invoice {invoice_id} processed successfully")
+              return {'statusCode': 200}
+      Tags:
+        - Key: Name
+          Value: m13-invoice-processor
+        - Key: Environment
+          Value: production
+
+  EventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt InvoiceQueue.Arn
+      FunctionName: !Ref InvoiceProcessor
+      BatchSize: 1
+      Enabled: true
+
+Outputs:
+  QueueUrl:
+    Description: SQS Queue URL
+    Value: !Ref InvoiceQueue
+  QueueVisibilityTimeout:
+    Description: SQS Visibility Timeout (seconds)
+    Value: !If [IsFixed, '360', '30']
+  LambdaTimeout:
+    Description: Lambda Timeout (seconds)
+    Value: '300'
+  DLQUrl:
+    Description: Dead Letter Queue URL
+    Value: !Ref DeadLetterQueue
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

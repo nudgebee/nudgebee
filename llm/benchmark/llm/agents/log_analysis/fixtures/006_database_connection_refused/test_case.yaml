@@ -1,0 +1,19 @@
+user_prompt: |
+  2026-04-06T03:22:41.567Z INFO  [checkout] Processing checkout request for order-id: ord-8f3a2c
+  2026-04-06T03:22:41.890Z ERROR [checkout] Failed to connect to PostgreSQL: dial tcp 10.64.5.12:5432: connect: connection refused
+  2026-04-06T03:22:41.891Z ERROR [checkout] sqlx.Open failed: pq: could not connect to server: Connection refused
+  	Is the server running on host "postgresql" (10.64.5.12) and accepting TCP/IP connections on port 5432?
+  2026-04-06T03:22:42.123Z ERROR [checkout] Retry 1/3: connection to postgresql:5432 failed
+  2026-04-06T03:22:44.456Z ERROR [checkout] Retry 2/3: connection to postgresql:5432 failed
+  2026-04-06T03:22:46.789Z ERROR [checkout] Retry 3/3: connection to postgresql:5432 failed
+  2026-04-06T03:22:46.790Z ERROR [checkout] All database connection attempts failed. Cannot process checkout.
+  2026-04-06T03:22:46.791Z ERROR [checkout] Returning HTTP 503 to client for order ord-8f3a2c
+  namespace: demo, pod: checkout-548585dd89-rqk9f, container: checkout
+expected_output:
+  - The checkout service in the demo namespace is unable to process orders because the PostgreSQL database at postgresql:5432 (IP 10.64.5.12) is refusing connections. All 3 retry attempts failed, causing HTTP 503 errors for customers. The root cause is that the PostgreSQL server is either not running, crashed, or has reached its maximum connection limit. Suggested actions include checking the status of the postgresql deployment in the demo namespace, verifying the postgresql pod is healthy, checking PostgreSQL max_connections configuration, and examining postgresql pod logs for errors.
+tags:
+  - database
+  - connection
+  - postgresql
+  - demo
+type: log_analysis

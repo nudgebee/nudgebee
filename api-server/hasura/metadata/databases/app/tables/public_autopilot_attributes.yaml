@@ -1,0 +1,3 @@
+table:
+  name: autopilot_attributes
+  schema: public

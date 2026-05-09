@@ -1,0 +1,211 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- -- public.cloudaccount_k8s_resource_aggregate source
+-- DROP MATERIALIZED VIEW public.cloudaccount_k8s_resource_aggregate;
+--
+-- CREATE MATERIALIZED VIEW public.cloudaccount_k8s_resource_aggregate
+-- TABLESPACE pg_default
+-- AS WITH cluster_nodes AS (
+--          SELECT cksna.tenant_id,
+--             cksna.account_id,
+--             count(DISTINCT
+--                 CASE
+--                     WHEN cksna.is_active IS NOT FALSE THEN cksna.name
+--                     ELSE NULL::text
+--                 END) AS node_count,
+--             count(DISTINCT
+--                 CASE
+--                     WHEN lower(cksna.node_type) = 'spot'::text AND cksna.is_active IS NOT FALSE THEN cksna.name
+--                     ELSE NULL::text
+--                 END) AS spot_node_count,
+--             count(DISTINCT
+--                 CASE
+--                     WHEN lower(cksna.node_type) = 'on-demand'::text OR lower(cksna.node_type) = 'on_demand'::text AND cksna.is_active IS NOT FALSE THEN cksna.name
+--                     ELSE NULL::text
+--                 END) AS ondemand_node_count,
+--             sum(cksna.avg_cpu_used) AS avg_cpu_used_node,
+--             sum(cksna.max_cpu_used) AS max_cpu_used_node,
+--             sum(
+--                 CASE
+--                     WHEN cksna.is_active IS NOT FALSE THEN cksna.cpu_capacity
+--                     ELSE NULL::double precision
+--                 END) AS total_cpu_capacity,
+--             sum(cksna.avg_memory_used) AS avg_memory_used_node,
+--             sum(cksna.max_memory_used) AS max_memory_used_node,
+--             sum(
+--                 CASE
+--                     WHEN cksna.is_active IS NOT FALSE THEN cksna.memory_capacity
+--                     ELSE NULL::double precision
+--                 END) AS total_memory_capacity,
+--             sum(
+--                 CASE
+--                     WHEN cksna.is_active IS NOT FALSE THEN cksna.memory_allocatable
+--                     ELSE NULL::double precision
+--                 END) AS total_memory_allocatable,
+--             sum(
+--                 CASE
+--                     WHEN cksna.is_active IS NOT FALSE THEN cksna.cpu_allocatable
+--                     ELSE NULL::double precision
+--                 END) AS total_cpu_allocatable,
+--             sum(
+--                 CASE
+--                     WHEN cksna.is_active IS NOT FALSE THEN cksna.cpu_allocated
+--                     ELSE NULL::double precision
+--                 END) AS total_cpu_allocated,
+--             sum(
+--                 CASE
+--                     WHEN cksna.is_active IS NOT FALSE THEN cksna.memory_allocated
+--                     ELSE NULL::double precision
+--                 END) AS total_memory_allocated,
+--             sum(
+--                 CASE
+--                     WHEN cksna.is_active IS NOT FALSE THEN cksna.pods_count::double precision
+--                     ELSE NULL::double precision
+--                 END) AS pods_count,
+--             cksna."timestamp",
+--             sum(cksna.node_cost) AS node_cost,
+--             avg(
+--                 CASE
+--                     WHEN cksna.is_active IS NOT FALSE THEN cksna.max_total_efficiency
+--                     ELSE NULL::double precision
+--                 END) AS total_efficiency,
+--             max(cksna.node_region) AS region
+--            FROM cloudaccount_k8s_resource_node_aggregate cksna
+--           GROUP BY cksna.tenant_id, cksna.account_id, cksna."timestamp"
+--         ), cluster_pods AS (
+--          SELECT ckspa.tenant_id,
+--             ckspa.account_id,
+--             count(DISTINCT ckspa.pod_name) AS pod_count,
+--             count(
+--                 CASE
+--                     WHEN lower(ckspa.status) = 'failed'::text THEN 1
+--                     ELSE NULL::integer
+--                 END) AS failed_pod_count,
+--             count(
+--                 CASE
+--                     WHEN lower(ckspa.status) = 'running'::text THEN 1
+--                     ELSE NULL::integer
+--                 END) AS running_pod_count,
+--             count(
+--                 CASE
+--                     WHEN lower(ckspa.status) = 'succeeded'::text OR lower(ckspa.status) = 'terminated'::text THEN 1
+--                     ELSE NULL::integer
+--                 END) AS completed_pod_count,
+--             count(
+--                 CASE
+--                     WHEN lower(ckspa.status) = 'pending_pod_count'::text THEN 1
+--                     ELSE NULL::integer
+--                 END) AS pending_pod_count,
+--             count(DISTINCT (ckspa.namespace_name || '.'::text) || ckspa.workload_name) AS workload_count,
+--             sum(ckspa.pod_cost) AS pod_cost,
+--             ckspa."timestamp"
+--            FROM cloudaccount_k8s_resource_pod_aggregate ckspa
+--           GROUP BY ckspa.tenant_id, ckspa.account_id, ckspa."timestamp"
+--         ), cloud_spend_mtd AS (
+--          SELECT sum(cn_1.node_cost) AS mtd_cost,
+--             cn_1.account_id AS cloud_account_id
+--            FROM cloudaccount_k8s_resource_node_aggregate cn_1
+--           WHERE date_trunc('month'::text, cn_1."timestamp") = date_trunc('month'::text, CURRENT_DATE::timestamp without time zone) AND date_trunc('year'::text, cn_1."timestamp") = date_trunc('year'::text, CURRENT_DATE::timestamp without time zone)
+--           GROUP BY cn_1.account_id
+--         ), cloud_spend_previous AS (
+--          SELECT sum(cn_1.node_cost) AS previous_cost,
+--             cn_1.account_id AS cloud_account_id
+--            FROM cloudaccount_k8s_resource_node_aggregate cn_1
+--           WHERE date_trunc('month'::text, cn_1."timestamp") = date_trunc('month'::text, CURRENT_DATE::timestamp without time zone - '30 days'::interval) AND date_trunc('year'::text, cn_1."timestamp") = date_trunc('year'::text, CURRENT_DATE::timestamp without time zone - '30 days'::interval)
+--           GROUP BY cn_1.account_id
+--         ), account_events AS (
+--          SELECT e_1.tenant,
+--             e_1.cloud_account_id,
+--             sum(
+--                 CASE
+--                     WHEN e_1.subject_type = 'pod'::text THEN 1
+--                     ELSE 0
+--                 END) AS pod_issue_count,
+--             sum(
+--                 CASE
+--                     WHEN e_1.subject_type = 'node'::text THEN 1
+--                     ELSE 0
+--                 END) AS node_issue_count,
+--             sum(
+--                 CASE
+--                     WHEN e_1.subject_type = ANY (ARRAY['job'::text, 'deployment'::text, 'statefulset'::text, 'demonset'::text]) THEN 1
+--                     ELSE 0
+--                 END) AS workload_issue_count
+--            FROM events e_1
+--           WHERE e_1.created_at > (now() - '1 day'::interval) AND e_1.failure = 'True'::text
+--           GROUP BY e_1.tenant, e_1.cloud_account_id
+--         ), account_events_yesterday AS (
+--          SELECT e_1.tenant,
+--             e_1.cloud_account_id,
+--             sum(
+--                 CASE
+--                     WHEN e_1.subject_type = 'pod'::text THEN 1
+--                     ELSE 0
+--                 END) AS pod_issue_count,
+--             sum(
+--                 CASE
+--                     WHEN e_1.subject_type = 'node'::text THEN 1
+--                     ELSE 0
+--                 END) AS node_issue_count,
+--             sum(
+--                 CASE
+--                     WHEN e_1.subject_type = ANY (ARRAY['job'::text, 'deployment'::text, 'statefulset'::text, 'demonset'::text]) THEN 1
+--                     ELSE 0
+--                 END) AS workload_issue_count
+--            FROM events e_1
+--           WHERE e_1.created_at > (now() - '2 days'::interval) AND e_1.created_at < (now() - '1 day'::interval) AND e_1.failure = 'True'::text
+--           GROUP BY e_1.tenant, e_1.cloud_account_id
+--         )
+--  SELECT ca.tenant AS tenant_id,
+--     ca.id AS account_id,
+--     ca.account_name,
+--     cn.node_count,
+--     cn.spot_node_count,
+--     cn.ondemand_node_count,
+--     cn.avg_cpu_used_node,
+--     cn.max_cpu_used_node,
+--     cn.avg_memory_used_node,
+--     cn.max_memory_used_node,
+--     cp.workload_count,
+--     cn.pods_count AS pod_count,
+--     cp.failed_pod_count,
+--     cp.completed_pod_count,
+--     cp.running_pod_count,
+--     cp.pending_pod_count,
+--     cp.pod_cost,
+--     cn.total_cpu_capacity,
+--     cn.total_cpu_allocatable,
+--     cn.total_memory_capacity,
+--     cn.total_memory_allocatable,
+--     cn.total_memory_allocated,
+--     cn.total_cpu_allocated,
+--     csm.mtd_cost,
+--     csp.previous_cost,
+--     cn."timestamp",
+--     cn.node_cost,
+--     cn.node_cost AS workload_cost,
+--     row_number() OVER (PARTITION BY ca.tenant, ca.id ORDER BY cn."timestamp" desc NULLS LAST ) AS rn,
+--     crsa.best_practice_score,
+--     crsa.right_sizing_score,
+--     cn.total_efficiency,
+--     0 AS total_idle_cost,
+--     e.pod_issue_count,
+--     e.node_issue_count,
+--     e.workload_issue_count,
+--     ye.pod_issue_count AS old_pod_issue_count,
+--     ye.node_issue_count AS old_node_issue_count,
+--     ye.workload_issue_count AS old_workload_issue_count,
+--     cn.region
+--    FROM cloud_accounts ca
+--      LEFT JOIN cluster_nodes cn ON cn.tenant_id = ca.tenant AND cn.account_id = ca.id
+--      LEFT JOIN cluster_pods cp ON cn.tenant_id = cp.tenant_id AND cn.account_id = cp.account_id AND cn."timestamp" = cp."timestamp"
+--      LEFT JOIN cloud_spend_mtd csm ON csm.cloud_account_id = ca.id
+--      LEFT JOIN cloud_spend_previous csp ON csp.cloud_account_id = ca.id
+--      LEFT JOIN cloudaccount_k8s_resource_score_aggregate crsa ON crsa.cloud_account_id = ca.id
+--      LEFT JOIN account_events e ON e.cloud_account_id = ca.id
+--      LEFT JOIN account_events_yesterday ye ON ye.cloud_account_id = ca.id
+--   WHERE ca.cloud_provider = 'K8s'::text
+-- WITH DATA;
+--
+-- -- View indexes:
+-- CREATE UNIQUE INDEX cloudaccount_k8s_resource_aggregate_pk ON public.cloudaccount_k8s_resource_aggregate USING btree (tenant_id, account_id, "timestamp");

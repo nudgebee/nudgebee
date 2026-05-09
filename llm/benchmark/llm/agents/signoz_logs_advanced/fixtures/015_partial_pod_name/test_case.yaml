@@ -1,0 +1,6 @@
+user_prompt: Get logs from the auth pods
+expected_output: '{"where": {"pod_name": {"_ilike": "%auth%"}}}'
+tags:
+  - complex
+  - partial-name
+  - signoz

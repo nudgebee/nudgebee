@@ -1,0 +1,6 @@
+user_prompt: List EKS node groups.
+expected_output:
+- aws eks list-nodegroups --cluster-name <cluster-name>
+tags:
+- command
+- aws

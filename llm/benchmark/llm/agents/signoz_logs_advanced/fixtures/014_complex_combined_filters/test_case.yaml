@@ -1,0 +1,6 @@
+user_prompt: Error logs from nginx container in production namespace for payment-service in the last 2 hours
+expected_output: '{"where": {"service.name": {"_ilike": "%payment-service%"}, "container_name": {"_ilike": "%nginx%"}, "service.namespace": {"_ilike": "%production%"}, "severity_text": {"_eq": "ERROR"}}, "time_range": "2h"}'
+tags:
+  - complex
+  - combined
+  - signoz

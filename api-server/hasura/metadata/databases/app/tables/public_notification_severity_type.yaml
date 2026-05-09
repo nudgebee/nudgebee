@@ -1,0 +1,12 @@
+table:
+  name: notification_severity_type
+  schema: public
+is_enum: true
+array_relationships:
+- name: notifications
+  using:
+    foreign_key_constraint_on:
+      column: severity
+      table:
+        name: notifications
+        schema: public

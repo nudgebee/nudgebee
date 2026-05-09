@@ -1,0 +1,8 @@
+user_prompt: List all 'Security' category recommendations that are NOT related to
+  the 'CIS' rule.
+expected_output:
+- SELECT namespace, name, rule_name, severity from recommendation_view WHERE category
+  = 'Security' AND rule_name != 'CIS';
+tags:
+- command
+- recommendations

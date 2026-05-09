@@ -1,0 +1,119 @@
+[
+
+  {
+    "query": "Fetch ticket details for IN-20",
+    "tool_config": "AlooJira",
+    "project_key": "IN",
+    "contexts": [
+      "{\"operation_type\": \"get_ticket\", \"ticket_id\": \"IN-20\"}"
+    ],
+    "ground_truths": [
+      "{\"operation_type\": \"get_ticket\", \"ticket_id\": \"IN-20\", \"source\": \"jira\"}",
+      "{\"operation_type\": \"get_ticket\", \"ticket_id\": \"IN-20\", \"source\": \"jira\"}",
+      "{\"operation_type\": \"get_ticket\", \"ticket_id\": \"IN-20\"}"
+    ]
+  },
+   {
+    "query": "add comment for ticket IN-20 - \"looks good\" and  then list all comments",
+    "tool_config": "AlooJira",
+    "project_key": "IN",
+    "contexts": [
+      "{\"operation_type\": \"add_comment\", \"ticket_id\": \"IN-20\", \"comment\": \"looks good\"}"
+    ],
+    "ground_truths": [
+      "{\"operation_type\": \"add_comment\", \"ticket_id\": \"IN-20\", \"comment\": \"looks good\", \"source\": \"jira\"}",
+      "{\"operation_type\": \"add_comment\", \"ticket_id\": \"IN-20\", \"comment\": \"looks good\", \"source\": \"jira\"}",
+      "{\"operation_type\": \"add_comment\", \"ticket_id\": \"IN-20\", \"comment\": \"looks good\"}"
+    ]
+  }, {
+    "query": "Fetch ticket details for GitHub issue #24306 in nudgebee/nudgebee",
+    "tool_config": "nudgebee",
+    "project_key": "nudgebee/nudgebee",
+    "contexts": [
+      "{\"operation_type\": \"get_ticket\", \"ticket_id\": \"24306\"}"
+    ],
+    "ground_truths": [
+      "{\"operation_type\": \"get_ticket\", \"ticket_id\": \"24306\", \"source\": \"github\"}",
+      "{\"operation_type\": \"get_ticket\", \"ticket_id\": \"#24306\", \"source\": \"github\"}",
+      "{\"operation_type\": \"get_ticket\", \"ticket_id\": \"24306\"}"
+    ]
+  },
+   {
+    "query": "add comment for GitHub issue #24306 - looks good in nudgebee/nudgebee  and  then list all comments",
+    "tool_config": "nudgebee",
+    "project_key": "nudgebee/nudgebee",
+    "contexts": [
+      "{\"operation_type\": \"add_comment\", \"ticket_id\": \"24306\", \"comment\": \"looks good\"}"
+    ],
+    "ground_truths": [
+      "{\"operation_type\": \"add_comment\", \"ticket_id\": \"24306\", \"comment\": \"looks good\", \"source\": \"github\"}",
+      "{\"operation_type\": \"add_comment\", \"ticket_id\": \"#24306\", \"comment\": \"looks good\", \"source\": \"github\"}",
+      "{\"operation_type\": \"add_comment\", \"ticket_id\": \"24306\", \"comment\": \"looks good\"}"
+    ]
+  },
+  {
+    "query": "List all tickets in project IN",
+    "tool_config": "AlooJira",
+    "project_key": "IN",
+    "contexts": [
+      "{\"operation_type\": \"list_tickets\", \"project_key\": \"IN\"}"
+    ],
+    "ground_truths": [
+      "{\"operation_type\": \"list_tickets\", \"project_key\": \"IN\"}",
+      "{\"operation_type\": \"list_tickets\"}",
+      "{\"operation_type\": \"list_tickets\", \"project_key\": \"IN\", \"source\": \"jira\"}"
+    ]
+  },
+  {
+    "query": "Show me open high priority tickets in IN project",
+    "tool_config": "AlooJira",
+    "project_key": "IN",
+    "contexts": [
+      "{\"operation_type\": \"list_tickets\", \"project_key\": \"IN\", \"status\": \"open\", \"priority\": \"High\"}"
+    ],
+    "ground_truths": [
+      "{\"operation_type\": \"list_tickets\", \"project_key\": \"IN\", \"status\": \"open\", \"priority\": \"High\"}",
+      "{\"operation_type\": \"list_tickets\", \"status\": \"open\", \"priority\": \"High\"}",
+      "{\"operation_type\": \"list_tickets\", \"project_key\": \"IN\", \"status\": \"Open\", \"priority\": \"High\"}"
+    ]
+  },
+  {
+    "query": "List the latest 5 tickets sorted by created date in IN",
+    "tool_config": "AlooJira",
+    "project_key": "IN",
+    "contexts": [
+      "{\"operation_type\": \"list_tickets\", \"project_key\": \"IN\", \"limit\": 5, \"sort_by\": \"created_at\", \"sort_order\": \"desc\"}"
+    ],
+    "ground_truths": [
+      "{\"operation_type\": \"list_tickets\", \"project_key\": \"IN\", \"limit\": 5, \"sort_by\": \"created_at\", \"sort_order\": \"desc\"}",
+      "{\"operation_type\": \"list_tickets\", \"limit\": 5, \"sort_by\": \"created_at\", \"sort_order\": \"desc\"}",
+      "{\"operation_type\": \"list_tickets\", \"project_key\": \"IN\", \"limit\": 5}"
+    ]
+  },
+  {
+    "query": "List all open issues in nudgebee/nudgebee GitHub repo",
+    "tool_config": "nudgebee",
+    "project_key": "nudgebee/nudgebee",
+    "contexts": [
+      "{\"operation_type\": \"list_tickets\", \"project_key\": \"nudgebee/nudgebee\", \"status\": \"open\"}"
+    ],
+    "ground_truths": [
+      "{\"operation_type\": \"list_tickets\", \"project_key\": \"nudgebee/nudgebee\", \"status\": \"open\"}",
+      "{\"operation_type\": \"list_tickets\", \"status\": \"open\"}",
+      "{\"operation_type\": \"list_tickets\", \"project_key\": \"nudgebee/nudgebee\", \"status\": \"open\", \"source\": \"github\"}"
+    ]
+  },
+  {
+    "query": "Show me tickets assigned to gautamb02 in nudgebee/nudgebee",
+    "tool_config": "nudgebee",
+    "project_key": "nudgebee/nudgebee",
+    "contexts": [
+      "{\"operation_type\": \"list_tickets\", \"project_key\": \"nudgebee/nudgebee\", \"assignee\": \"gautamb02\"}"
+    ],
+    "ground_truths": [
+      "{\"operation_type\": \"list_tickets\", \"project_key\": \"nudgebee/nudgebee\", \"assignee\": \"gautamb02\"}",
+      "{\"operation_type\": \"list_tickets\", \"assignee\": \"gautamb02\"}",
+      "{\"operation_type\": \"list_tickets\", \"project_key\": \"nudgebee/nudgebee\"}"
+    ]
+  }
+]

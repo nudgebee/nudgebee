@@ -1,0 +1,16 @@
+user_prompt: The on-call team for resource group 'azure-agent-test-M10' is not receiving
+  alert notifications even though Azure Monitor metric alerts are firing. The payment
+  API has been experiencing 5xx errors. What is wrong?
+expected_output:
+- 'The action group ''m10-oncall-team'' has the email receiver ''OnCallEngineer''
+  configured with address ''oncall@old-company-name.com'', which is a dead mailbox
+  from the old company domain. Alerts fire correctly but notifications are delivered
+  to a non-existent email address. Fix: Update the email receiver in action group
+  ''m10-oncall-team'' to the current on-call address, e.g. ''oncall@company.com''.'
+agent: azure_debug
+scenario: M10
+type: rca
+tags:
+- rca
+- medium
+- azure

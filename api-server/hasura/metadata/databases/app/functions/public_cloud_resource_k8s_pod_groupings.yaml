@@ -1,0 +1,6 @@
+function:
+  name: cloud_resource_k8s_pod_groupings
+  schema: public
+configuration:
+  custom_root_fields: {}
+  session_argument: hasura_session

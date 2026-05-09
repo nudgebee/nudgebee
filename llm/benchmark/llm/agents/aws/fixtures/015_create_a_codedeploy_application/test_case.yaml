@@ -1,0 +1,6 @@
+user_prompt: Create a CodeDeploy application.
+expected_output:
+- aws codedeploy create-application --application-name <application-name>
+tags:
+- command
+- aws

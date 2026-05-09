@@ -1,0 +1,4 @@
+table:
+  name: upgrade_plan_status_type
+  schema: public
+is_enum: true

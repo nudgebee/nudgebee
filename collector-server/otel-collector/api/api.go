@@ -1,0 +1,17 @@
+package api
+
+import (
+	"log/slog"
+
+	"github.com/gin-gonic/gin"
+
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
+)
+
+func ConfigureRoutes(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {
+	handleHeathCheckApis(r, tracer, meter)
+	handleOtlpApis(r, tracer, meter, logger)
+	handlePrometheusApis(r, tracer, meter, logger)
+	handleLokiApis(r, tracer, meter, logger)
+}

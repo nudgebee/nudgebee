@@ -1,0 +1,159 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E16: ElastiCache Redis connection timeout from Lambda.
+  User complaint: "Our Lambda function 'e16-session-handler' in us-east-1 times out
+  trying to connect to our ElastiCache Redis cluster 'e16-sessions-redis'. The Lambda
+  is in our VPC but can't reach Redis."
+  Root cause: Security group on ElastiCache has no inbound rule allowing port 6379
+  from the Lambda security group. Redis silently drops the connection.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = ElastiCache SG has no inbound rule for port 6379 from Lambda SG.
+      Fixed = ElastiCache SG allows port 6379 from Lambda SG.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for session handler Lambda
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      Tags:
+        - Key: Name
+          Value: e16-lambda-sg
+        - Key: Environment
+          Value: production
+
+  RedisSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Redis cluster
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      # THE BUG: No inbound rule for port 6379 from Lambda SG in Broken mode
+      SecurityGroupIngress: !If
+        - IsFixed
+        - - IpProtocol: tcp
+            FromPort: 6379
+            ToPort: 6379
+            SourceSecurityGroupId: !Ref LambdaSecurityGroup
+        - []
+      Tags:
+        - Key: Name
+          Value: e16-redis-sg
+        - Key: Environment
+          Value: production
+
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      CacheSubnetGroupName: e16-redis-subnet-group
+      Description: Subnet group for session Redis
+      SubnetIds:
+        - !ImportValue aws-agent-test-private-subnet-a
+        - !ImportValue aws-agent-test-private-subnet-b
+
+  RedisCluster:
+    Type: AWS::ElastiCache::CacheCluster
+    Properties:
+      ClusterName: e16-sessions-redis
+      Engine: redis
+      CacheNodeType: cache.t3.micro
+      NumCacheNodes: 1
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref RedisSecurityGroup
+      Tags:
+        - Key: Name
+          Value: e16-sessions-redis
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: user-sessions
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: e16-session-handler-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+  SessionHandlerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: e16-session-handler
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue aws-agent-test-private-subnet-a
+          - !ImportValue aws-agent-test-private-subnet-b
+      Environment:
+        Variables:
+          REDIS_HOST: !GetAtt RedisCluster.RedisEndpoint.Address
+          REDIS_PORT: '6379'
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import socket
+
+          def handler(event, context):
+              host = os.environ['REDIS_HOST']
+              port = int(os.environ['REDIS_PORT'])
+              try:
+                  sock = socket.create_connection((host, port), timeout=5)
+                  sock.sendall(b"PING\r\n")
+                  response = sock.recv(1024)
+                  sock.close()
+                  return {'statusCode': 200, 'body': json.dumps({'redis': 'connected'})}
+              except Exception as e:
+                  return {'statusCode': 500, 'body': json.dumps({'error': str(e)})}
+      Tags:
+        - Key: Name
+          Value: e16-session-handler
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: user-sessions
+
+Outputs:
+  RedisClusterId:
+    Description: ElastiCache Redis Cluster ID
+    Value: !Ref RedisCluster
+  RedisEndpoint:
+    Description: Redis endpoint address
+    Value: !GetAtt RedisCluster.RedisEndpoint.Address
+  LambdaFunctionName:
+    Description: Lambda Function Name
+    Value: !Ref SessionHandlerFunction
+  LambdaSecurityGroup:
+    Description: Lambda Security Group ID
+    Value: !Ref LambdaSecurityGroup
+  RedisSecurityGroup:
+    Description: Redis Security Group ID
+    Value: !Ref RedisSecurityGroup
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

@@ -1,0 +1,4 @@
+table:
+  name: compliance_severity_type
+  schema: public
+is_enum: true

@@ -1,0 +1,6 @@
+user_prompt: Delete an IAM policy.
+expected_output:
+- aws iam delete-policy --policy-arn <policy-arn>
+tags:
+- command
+- aws

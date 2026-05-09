@@ -1,0 +1,7 @@
+user_prompt: Show me a list of all persistent volume claims in the 'storage' namespace.
+expected_output:
+- kubectl get persistentvolumeclaims -n storage
+- kubectl get pvc -n storage
+tags:
+- command
+- kubernetes

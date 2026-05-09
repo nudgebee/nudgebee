@@ -1,0 +1,30 @@
+user_prompt:
+  - "generate me a graph of api-server"
+  - "Show me api-server memory usage over the last 24 hours"
+  - "Graph api-server memory consumption trends for the past week"
+  - "Display hourly memory usage pattern for api-server over the last 3 days"
+  - "Graph api-server memory utilization over time"
+  - "Display api-server memory usage progression over the last week"
+  - "Show me how api-server memory usage changed during the last day"
+  - "Graph api-server memory consumption over time"
+  - "Display api-server memory usage timeline"
+  - "Show me api-server memory usage trends over the last 7 days"
+  - "Can you show me a memory graph of the api-server pod?"
+  - "Show me memory metrics for api-server"
+  - "Display api-server pod memory usage graph"
+  - "What's the memory utilization of the api-server deployment?"
+  - "Generate a memory graph for api-server pods"
+  - "Show memory charts for api-server"
+expected_output: |
+  Output must contain 1 or more embeds in the following format
+    <<{"type": "datadogql", "tool_name": "query_datadog_metrics", "random_key": "iD8G"}>>
+
+  random_key may be different than the above example so long as its a random looking key, but all other parameters (type and tool_name) must be as described
+
+  Output must NOT tell the user it doesn't have access to metrics or that they should use another tool
+tags:
+  - medium
+  - metrics
+
+skip: true
+skip_reason: "Requires Datadog (DATADOG_API_KEY, DATADOG_APP_KEY)"

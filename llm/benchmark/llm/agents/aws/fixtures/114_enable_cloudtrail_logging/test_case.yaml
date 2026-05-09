@@ -1,0 +1,6 @@
+user_prompt: Enable CloudTrail logging.
+expected_output:
+- aws cloudtrail create-trail
+tags:
+- command
+- aws

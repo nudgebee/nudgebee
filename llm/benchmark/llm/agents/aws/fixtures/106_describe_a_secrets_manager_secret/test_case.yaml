@@ -1,0 +1,6 @@
+user_prompt: Describe a Secrets Manager secret.
+expected_output:
+- aws secretsmanager describe-secret --secret-id <secret-id>
+tags:
+- command
+- aws

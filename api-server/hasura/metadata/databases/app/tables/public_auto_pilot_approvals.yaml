@@ -1,0 +1,19 @@
+table:
+  name: auto_pilot_approvals
+  schema: public
+object_relationships:
+- name: auto_pilot_approval_policy
+  using:
+    foreign_key_constraint_on: policy_id
+- name: auto_pilot_approval_status
+  using:
+    foreign_key_constraint_on: status
+- name: cloud_account
+  using:
+    foreign_key_constraint_on: account_id
+- name: tenant
+  using:
+    foreign_key_constraint_on: tenant_id
+- name: user_reviwer_id
+  using:
+    foreign_key_constraint_on: reviewer_id
