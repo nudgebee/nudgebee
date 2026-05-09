@@ -54,7 +54,7 @@ dependencies = [
     "beautifulsoup4==4.13.4",
     "unstructured==0.18.18",
     "pymupdf==1.27.2.2",
-    "jq==1.10.0",
+    "jq==1.11.0",
 
     # --- External integrations ---
     "atlassian-python-api==4.0.7",
