@@ -24,7 +24,7 @@
     "@next/bundle-analyzer": "^14.2.5",
     "@node-saml/passport-saml": "^5.1.0",
     "@opentelemetry/auto-instrumentations-node": "^0.72.0",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.214.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.217.0",
     "@opentelemetry/instrumentation-fetch": "^0.215.0",
     "@opentelemetry/resources": "^2.1.0",
     "@opentelemetry/sdk-node": "^0.214.0",
