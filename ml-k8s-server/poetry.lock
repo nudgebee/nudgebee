@@ -1671,14 +1671,14 @@ files = [
 
 [[package]]
 name = "keras"
-version = "3.13.2"
+version = "3.14.1"
 description = "Multi-backend Keras"
 optional = false
 python-versions = ">=3.11"
 groups = ["main"]
 files = [
-    {file = "keras-3.13.2-py3-none-any.whl", hash = "sha256:14b2afc0f9c636cc295d28efc36aae42fc52e7b892c950eec33f3befe4d22fb5"},
-    {file = "keras-3.13.2.tar.gz", hash = "sha256:62f0123488ac87c929c988617e14f293f7bc993811837d08bb37eff77adc85a9"},
+    {file = "keras-3.14.1-py3-none-any.whl", hash = "sha256:ebd2c14d2af3c9de18083604d408483996407fc7d2f9ebd1d565961f96608c29"},
+    {file = "keras-3.14.1.tar.gz", hash = "sha256:ef479173102ad29db89b53c232efdc3fb5ad57c28bc27ead59f3e78a1eecd05b"},
 ]
 
 [package.dependencies]
