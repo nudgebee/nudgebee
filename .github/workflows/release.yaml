@@ -87,21 +87,23 @@ jobs:
           - { image: relay-server,            context: collector-server/k8s-collector/relay-server }
           - { image: workflow-server,         context: runbook-server }
     steps:
-      - uses: actions/checkout@v4
-
-      # Reclaim ~30 GB on ubuntu-latest by dropping pre-installed
-      # toolchains (haskell/dotnet/android/etc) we don't use. Required
-      # for the conda-based Python ML images which exhaust the default
-      # ~14 GB free space during multi-stage COPY of /opt/conda.
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@v1.3.1
+      # Repartition the runner to give Docker ~70 GB of root disk by
+      # reclaiming the unused /mnt partition and dropping pre-installed
+      # toolchains we don't use. Required for the conda-based Python ML
+      # images which exhaust the default ~14 GB during multi-stage COPY
+      # of /opt/conda.
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@v10
         with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          swap-storage: false
+          root-reserve-mb: 4096
+          swap-size-mb: 1024
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+
+      - uses: actions/checkout@v4
 
       - uses: docker/setup-qemu-action@v3
 
@@ -129,8 +131,11 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
             org.opencontainers.image.title=${{ matrix.image }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          # Registry-backed cache keeps cache layers in GHCR instead of
+          # on the runner disk. Cache image lives at <image>:buildcache;
+          # safe to prune separately from release tags.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:buildcache,mode=max
 
   package-chart:
     needs: [prepare, build-images]
