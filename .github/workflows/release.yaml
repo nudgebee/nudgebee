@@ -75,11 +75,11 @@ jobs:
           - { image: hasura-migrations,       context: api-server/hasura }
           - { image: app,                     context: app }
           - { image: ticket-server,           context: ticket-server }
-          - { image: llm-server,              context: llm/llm-server }
-          - { image: rag-server,              context: llm/rag-server }
+          - { image: llm-server,              context: llm/llm-server,                            platforms: linux/amd64 }
+          - { image: rag-server,              context: llm/rag-server,                            platforms: linux/amd64 }
           - { image: code-analysis,           context: llm/code-analysis }
-          - { image: benchmark-server,        context: llm/benchmark }
-          - { image: ml-k8s-server,           context: ml-k8s-server }
+          - { image: benchmark-server,        context: llm/benchmark,                             platforms: linux/amd64 }
+          - { image: ml-k8s-server,           context: ml-k8s-server,                             platforms: linux/amd64 }
           - { image: notifications,           context: notifications-server }
           - { image: k8s-collector,           context: collector-server/k8s-collector/app }
           - { image: cloud-collector-server,  context: collector-server/cloud-collector }
@@ -88,6 +88,20 @@ jobs:
           - { image: workflow-server,         context: runbook-server }
     steps:
       - uses: actions/checkout@v4
+
+      # Reclaim ~30 GB on ubuntu-latest by dropping pre-installed
+      # toolchains (haskell/dotnet/android/etc) we don't use. Required
+      # for the conda-based Python ML images which exhaust the default
+      # ~14 GB free space during multi-stage COPY of /opt/conda.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: false
 
       - uses: docker/setup-qemu-action@v3
 
@@ -104,7 +118,7 @@ jobs:
         with:
           context: ${{ matrix.context }}
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platforms || 'linux/amd64,linux/arm64' }}
           tags: |
             ${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:${{ needs.prepare.outputs.version }}
             ${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.sha_short }}

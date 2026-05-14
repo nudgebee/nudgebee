@@ -77,8 +77,9 @@ temp_keys/
 coverage.out
 coverage.html
 
-# Go modules
-go.sum
+# Note: go.sum MUST be committed for reproducible builds and Docker
+# builds (the multi-stage Dockerfile COPYs go.sum before `go mod
+# download`). Do NOT add it back to .gitignore.
 
 # Local testing
 test_repos/
