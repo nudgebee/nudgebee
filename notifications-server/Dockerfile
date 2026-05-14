@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 FROM registry.nudgebee.com/nudgebee-python:3.12-20250919-140344 AS python-base
 RUN apk update && \
     apk upgrade --no-cache && \
@@ -9,7 +10,9 @@ WORKDIR /usr/src/app
 COPY poetry.lock pyproject.toml ./
 
 # Install dependencies (excluding dev dependencies)
-RUN uv pip install --system --requirements pyproject.toml
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/pip \
+    uv pip install --system --requirements pyproject.toml
 
 # Copy application source code
 COPY notifications_server/*.py notifications_server/

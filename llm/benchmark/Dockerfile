@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 FROM debian:trixie-slim AS python-base
 LABEL org.nudgebee.image.authors="dev@nudgebee.com"
 
@@ -42,12 +43,15 @@ ENV PATH=/opt/conda/envs/myenv/bin:$PATH
 WORKDIR /app
 
 # Install uv (single fast binary)
-RUN pip install --no-cache-dir uv
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install uv
 
 COPY uv.lock pyproject.toml ./
 
 # Install dependencies
-RUN uv pip install -e . --system
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/pip \
+    uv pip install -e . --system
 
 
 # `production` image used for runtime

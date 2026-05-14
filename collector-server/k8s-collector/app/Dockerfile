@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # Use the custom base image that has all base dependencies preinstalled
 FROM registry.nudgebee.com/nudgebee-python:3.12-20250919-140344 AS python-base
 
@@ -12,7 +13,9 @@ WORKDIR /opt/pysetup
 COPY poetry.lock pyproject.toml ./
 
 # Install dependencies in a virtual environment
-RUN python -m venv /opt/pysetup/.venv && \
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/pip \
+    python -m venv /opt/pysetup/.venv && \
     uv pip install --requirements pyproject.toml
 
 # Stage 2: production
