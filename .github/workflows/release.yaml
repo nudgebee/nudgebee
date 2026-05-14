@@ -1,0 +1,302 @@
+name: Release
+
+# Triggered when a `v*` tag is pushed (e.g. `v0.99.1`). For each release:
+#   1. Build every first-party service image and push to
+#      ghcr.io/<repo>/<service> with four tags:
+#         :<version>           e.g. 0.99.1
+#         :<version>-<sha7>    e.g. 0.99.1-720431d
+#         :sha-<sha7>          e.g. sha-720431d
+#         :latest
+#   2. Bump every first-party subchart's version/appVersion and pin its
+#      values.yaml image refs to the just-published GHCR images.
+#   3. Package each first-party subchart and push it individually to
+#      oci://ghcr.io/<org>/charts (org-level path, not repo-namespaced).
+#   4. Package the umbrella `nudgebee` chart — which via `helm dep update`
+#      bundles every file:// subchart — and push it to the same path.
+#   5. Attach all chart tarballs to a GitHub Release with usage snippets.
+#
+# Manual runs are supported via `workflow_dispatch` with an explicit version.
+#
+# Note on visibility: new GHCR packages default to *private*. After the
+# first run, flip each package to public in Settings → Packages (one-time).
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version without leading v (e.g. 1.2.3)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      namespace: ${{ steps.v.outputs.namespace }}
+      org: ${{ steps.v.outputs.org }}
+      sha_short: ${{ steps.v.outputs.sha_short }}
+    steps:
+      - id: v
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            v="${{ inputs.version }}"
+          else
+            v="${GITHUB_REF_NAME#v}"
+          fi
+          ns="$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          org="${ns%%/*}"
+          sha_short="${GITHUB_SHA:0:7}"
+          echo "version=$v"             >> "$GITHUB_OUTPUT"
+          echo "namespace=$ns"          >> "$GITHUB_OUTPUT"
+          echo "org=$org"               >> "$GITHUB_OUTPUT"
+          echo "sha_short=$sha_short"   >> "$GITHUB_OUTPUT"
+          echo "Releasing version=$v (sha=$sha_short) — images to ghcr.io/$ns, charts to ghcr.io/$org/charts"
+
+  build-images:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: services-server,         context: api-server/services }
+          - { image: services-server-sidecar, context: api-server/services/sidecar }
+          - { image: hasura-migrations,       context: api-server/hasura }
+          - { image: app,                     context: app }
+          - { image: ticket-server,           context: ticket-server }
+          - { image: llm-server,              context: llm/llm-server }
+          - { image: rag-server,              context: llm/rag-server }
+          - { image: code-analysis,           context: llm/code-analysis }
+          - { image: benchmark-server,        context: llm/benchmark }
+          - { image: ml-k8s-server,           context: ml-k8s-server }
+          - { image: notifications,           context: notifications-server }
+          - { image: k8s-collector,           context: collector-server/k8s-collector/app }
+          - { image: cloud-collector-server,  context: collector-server/cloud-collector }
+          - { image: otel-collector-server,   context: collector-server/otel-collector }
+          - { image: relay-server,            context: collector-server/k8s-collector/relay-server }
+          - { image: workflow-server,         context: runbook-server }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.image }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:${{ needs.prepare.outputs.version }}
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.sha_short }}
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:sha-${{ needs.prepare.outputs.sha_short }}
+            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.title=${{ matrix.image }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  package-chart:
+    needs: [prepare, build-images]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      NS: ${{ needs.prepare.outputs.namespace }}
+      ORG: ${{ needs.prepare.outputs.org }}
+      SOURCE_URL: https://github.com/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump chart versions and pin image refs to GHCR
+        run: |
+          set -euo pipefail
+
+          # chart_dir : image_name (first-party only — third-party charts
+          # like `hasura` keep their vendored version)
+          mapping=(
+            "services-server:services-server"
+            "hasura-migrations:hasura-migrations"
+            "app:app"
+            "ticket-server:ticket-server"
+            "llm-server:llm-server"
+            "rag-server:rag-server"
+            "benchmark-server:benchmark-server"
+            "ml-k8s-server:ml-k8s-server"
+            "notifications:notifications"
+            "k8s-collector:k8s-collector"
+            "cloud-collector-server:cloud-collector-server"
+            "otel-collector-server:otel-collector-server"
+            "relay-server:relay-server"
+            "workflow-server:workflow-server"
+          )
+
+          for entry in "${mapping[@]}"; do
+            chart="${entry%%:*}"
+            image="${entry##*:}"
+            dir="deploy/kubernetes/${chart}"
+            [ -f "${dir}/Chart.yaml" ] || { echo "skip ${chart}: no Chart.yaml"; continue; }
+
+            VERSION="$VERSION" SOURCE_URL="$SOURCE_URL" yq -i '
+              .version = strenv(VERSION) |
+              .appVersion = strenv(VERSION) |
+              .annotations["org.opencontainers.image.source"] = strenv(SOURCE_URL)
+            ' "${dir}/Chart.yaml"
+
+            if [ -f "${dir}/values.yaml" ]; then
+              REPO="${REGISTRY}/${NS}/${image}" VERSION="$VERSION" yq -i '
+                .image.repository = strenv(REPO) |
+                .image.tag = strenv(VERSION)
+              ' "${dir}/values.yaml"
+            fi
+
+            echo "bumped ${chart} -> ${VERSION}, image=${REGISTRY}/${NS}/${image}:${VERSION}"
+          done
+
+          # Bump umbrella chart itself, then update only first-party
+          # file:// dependency versions (keep hasura/temporal/bitnami pinned).
+          VERSION="$VERSION" SOURCE_URL="$SOURCE_URL" yq -i '
+            .version = strenv(VERSION) |
+            .appVersion = strenv(VERSION) |
+            .annotations["org.opencontainers.image.source"] = strenv(SOURCE_URL)
+          ' deploy/kubernetes/nudgebee/Chart.yaml
+
+          first_party=(
+            services-server hasura-migrations app ticket-server
+            llm-server rag-server benchmark-server ml-k8s-server
+            notifications k8s-collector cloud-collector-server
+            otel-collector-server relay-server workflow-server
+          )
+          for name in "${first_party[@]}"; do
+            NAME="$name" VERSION="$VERSION" yq -i '
+              (.dependencies[]
+                | select(.name == strenv(NAME))
+                | select(.repository // "" | test("^file://"))
+              ).version = strenv(VERSION)
+            ' deploy/kubernetes/nudgebee/Chart.yaml
+          done
+
+          # Keep top-level VERSION file in sync for traceability.
+          echo "${VERSION}" > VERSION
+
+      - name: Package first-party subcharts
+        run: |
+          set -euo pipefail
+          mkdir -p dist/subcharts
+          subcharts=(
+            services-server hasura-migrations app ticket-server
+            llm-server rag-server benchmark-server ml-k8s-server
+            notifications k8s-collector cloud-collector-server
+            otel-collector-server relay-server workflow-server
+          )
+          for c in "${subcharts[@]}"; do
+            [ -f "deploy/kubernetes/${c}/Chart.yaml" ] || continue
+            helm package "deploy/kubernetes/${c}" -d dist/subcharts/
+          done
+          ls -la dist/subcharts/
+
+      - name: Package umbrella chart (bundles subcharts via file:// deps)
+        run: |
+          mkdir -p dist
+          helm dependency update deploy/kubernetes/nudgebee
+          helm package deploy/kubernetes/nudgebee -d dist/
+          ls -la dist/
+
+      - name: Push subcharts to GHCR (oci://ghcr.io/<org>/charts)
+        run: |
+          set -euo pipefail
+          for tgz in dist/subcharts/*.tgz; do
+            echo "Pushing $tgz"
+            helm push "$tgz" "oci://${REGISTRY}/${ORG}/charts"
+          done
+
+      - name: Push umbrella chart to GHCR
+        run: |
+          helm push "dist/nudgebee-${VERSION}.tgz" \
+            "oci://${REGISTRY}/${ORG}/charts"
+
+      - name: Collect all chart tarballs for release
+        run: |
+          cp dist/subcharts/*.tgz dist/ 2>/dev/null || true
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: helm-charts
+          path: dist/*.tgz
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tgz
+          generate_release_notes: true
+          body: |
+            ## Container images
+
+            All images are published to `ghcr.io/${{ needs.prepare.outputs.namespace }}/<service>` with the following tags:
+
+            - `:${{ env.VERSION }}` — release version
+            - `:${{ env.VERSION }}-${{ needs.prepare.outputs.sha_short }}` — version + commit
+            - `:sha-${{ needs.prepare.outputs.sha_short }}` — commit only
+            - `:latest`
+
+            Pull example:
+            ```
+            docker pull ghcr.io/${{ needs.prepare.outputs.namespace }}/services-server:${{ env.VERSION }}
+            ```
+
+            Commit: `${{ github.sha }}`
+
+            ## Helm chart
+
+            The umbrella `nudgebee` chart bundles every first-party subchart and is published to `oci://ghcr.io/${{ env.ORG }}/charts`. Each subchart is also pushed individually to the same path.
+
+            ```
+            helm install nudgebee \
+              oci://${{ env.REGISTRY }}/${{ env.ORG }}/charts/nudgebee \
+              --version ${{ env.VERSION }}
+            ```
+
+            Pull a specific subchart:
+            ```
+            helm pull oci://${{ env.REGISTRY }}/${{ env.ORG }}/charts/services-server \
+              --version ${{ env.VERSION }}
+            ```
