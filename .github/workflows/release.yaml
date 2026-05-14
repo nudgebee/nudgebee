@@ -87,21 +87,42 @@ jobs:
           - { image: relay-server,            context: collector-server/k8s-collector/relay-server }
           - { image: workflow-server,         context: runbook-server }
     steps:
-      # Repartition the runner to give Docker ~70 GB of root disk by
-      # reclaiming the unused /mnt partition and dropping pre-installed
-      # toolchains we don't use. Required for the conda-based Python ML
-      # images which exhaust the default ~14 GB during multi-stage COPY
-      # of /opt/conda.
-      - name: Maximize build space
-        uses: easimon/maximize-build-space@v10
-        with:
-          root-reserve-mb: 4096
-          swap-size-mb: 1024
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-docker-images: 'true'
+      # Reclaim disk for Docker. The default ubuntu-latest runner has
+      # only ~14 GB free on / (where /var/lib/docker lives) but ~80 GB
+      # free on /mnt. Steps:
+      #   1. Remove unused pre-installed toolchains (~30 GB).
+      #   2. Move Docker's data-root to /mnt so layer extraction has
+      #      room — without this, `docker pull` of large base images
+      #      fails with "no space left on device" even though /mnt
+      #      is mostly empty.
+      # NOTE: this step must run before any Docker action (buildx,
+      # qemu) because those start containers that pin /var/lib/docker
+      # in place.
+      - name: Reclaim disk space
+        run: |
+          set -euo pipefail
+          echo "=== Before ==="
+          df -h / /mnt || true
+
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost \
+            "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo apt-get clean
+          sudo docker image prune --all --force || true
+
+          sudo systemctl stop docker
+          sudo mkdir -p /mnt/docker /etc/docker
+          echo '{"data-root":"/mnt/docker"}' | sudo tee /etc/docker/daemon.json
+          sudo rm -rf /var/lib/docker
+          sudo systemctl start docker
+
+          echo "=== After ==="
+          df -h / /mnt
+          sudo docker info | grep -i "docker root dir" || true
 
       - uses: actions/checkout@v4
 
