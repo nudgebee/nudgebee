@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 FROM golang:1.26-alpine AS builder
 
 WORKDIR /app
@@ -9,18 +10,26 @@ RUN apk add --no-cache git make ca-certificates openssh-client
 COPY go.mod go.sum ./
 
 # Download dependencies
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
 
 # Copy source code
 COPY . .
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -o code-analysis-agent ./cmd/main.go
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -o code-analysis-agent ./cmd/main.go
 # Build the shim
-RUN CGO_ENABLED=0 GOOS=linux go build -o shim ./cmd/shim/main.go
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -o shim ./cmd/shim/main.go
 
 # Install golangci-lint in builder where we have the right Go version
-RUN CGO_ENABLED=0 GOOS=linux GOBIN=/usr/local/bin \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux GOBIN=/usr/local/bin \
     go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.9.0
 
 # Final stage
