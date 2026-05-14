@@ -25,7 +25,12 @@ jobs:
       - name: Install Build Essentials
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential postgresql-server-dev-all libsodium-dev
+          # postgresql-server-dev-all is a metapackage that pulls in
+          # `postgresql-common (= 257build1.1)` from Ubuntu repos, which
+          # conflicts with `postgresql-common (= 290.pgdg24.04+1)` already
+          # installed from the pgdg PPA on the runner image. Pinning to
+          # a specific server-dev version avoids the dependency clash.
+          sudo apt-get install -y --no-install-recommends build-essential postgresql-server-dev-16 libsodium-dev
 
       - name: Install Poetry
         uses: snok/install-poetry@v1
