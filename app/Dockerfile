@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 FROM node:25-alpine AS base
 
 # Install dependencies only when needed
@@ -8,7 +9,8 @@ WORKDIR /app
 
 # Install dependencies based on the preferred package manager
 COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* ./
-RUN npm ci --legacy-peer-deps
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --legacy-peer-deps
 
 
 # Rebuild the source code only when needed
@@ -31,7 +33,8 @@ COPY . .
 # Uncomment the following line in case you want to disable telemetry during the build.
 # ENV NEXT_TELEMETRY_DISABLED 1
 
-RUN npm run build --legacy-peer-deps
+RUN --mount=type=cache,target=/app/.next/cache \
+    npm run build --legacy-peer-deps
 
 # Production image, copy all the files and run next
 FROM base AS runner
