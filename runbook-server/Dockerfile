@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # --- Build Stage ---
 # Use the official Go image to build the application
 FROM golang:1.26-alpine AS builder
@@ -7,14 +8,18 @@ WORKDIR /app
 
 # Copy the go.mod and go.sum files to download dependencies
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
 
 # Copy the rest of the application source code
 COPY . .
 
 # Build the application. CGO_ENABLED=0 is important for static linking.
 # -o /server builds the binary and places it at the root.
-RUN CGO_ENABLED=0 GOOS=linux go build -o /server ./cmd
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -o /server ./cmd
 
 # --- PowerShell Stage ---
 # Copy pwsh binary from Microsoft's official image (avoids curl download timeouts in CI)

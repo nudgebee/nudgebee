@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 FROM registry.nudgebee.com/nudgebee-ml-base:3.12-20250926-063300 AS uv-base
 LABEL org.nudgebee.image.authors="dev@nudgebee.com"
 
@@ -9,8 +10,13 @@ WORKDIR /app
 
 COPY uv.lock pyproject.toml ./
 
-# Install dependencies using uv (with poetry.lock compatibility)
-RUN set -e; \
+# Install dependencies using uv (with poetry.lock compatibility).
+# Cache mounts persist /root/.cache/{uv,pip} across builds via
+# BuildKit; the previous explicit `rm -rf` of those dirs is removed
+# because the cache mount itself keeps them out of the image layer.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=cache,target=/root/.cache/pip \
+    set -e; \
     (conda run -n myenv pip uninstall -y importlib-metadata || true); \
     success=0; \
     arch=$(uname -m); \
@@ -24,8 +30,7 @@ RUN set -e; \
         fi; \
     done; \
     [ "$success" -eq 1 ] || exit 1; \
-    conda clean --yes --all; \
-    rm -rf /root/.cache/pip /root/.cache/uv
+    conda clean --yes --all
 
 
 # `production` image used for runtime

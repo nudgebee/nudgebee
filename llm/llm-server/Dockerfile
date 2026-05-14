@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # Dockerfile (for your Go application)
 # Build this after building your base image: docker build -t your-app-image .
 
@@ -14,10 +15,14 @@ ENV CGO_ENABLED=0
 
 WORKDIR /app
 COPY go.mod go.sum ./
-RUN go mod download -x
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download -x
 
 COPY ./ ./
-RUN go build -o /app/services cmd/*.go
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go build -o /app/services cmd/*.go
 RUN chmod +x /app/services
 
 # --- Final Stage ---

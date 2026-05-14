@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 FROM golang:1.26-alpine AS build-stage
 
 WORKDIR /app
@@ -7,13 +8,17 @@ RUN apk add --no-cache git
 
 # Copy only go mod files first (better caching)
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
 
 # Copy application source
 COPY . .
 
 # Build binary
-RUN CGO_ENABLED=0 \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 \
     GOOS=linux \
     go build -o /app/cloud-collector-server cmd/*.go
 

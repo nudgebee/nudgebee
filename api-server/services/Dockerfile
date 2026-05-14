@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 FROM golang:1.26-alpine AS build-stage
 
 # Set destination for COPY
@@ -5,14 +6,20 @@ WORKDIR /app
 
 # Download Go modules
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
 
 COPY ./ ./
 
 # Build
-RUN CGO_ENABLED=0 GOOS=linux go build  -o /app/services cmd/*.go
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build  -o /app/services cmd/*.go
 RUN chmod +x /app/services
-RUN go install github.com/google/pprof@latest
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go install github.com/google/pprof@latest
 EXPOSE 8000
 CMD ["/app/services"]
 

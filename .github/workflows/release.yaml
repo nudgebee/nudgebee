@@ -75,11 +75,11 @@ jobs:
           - { image: hasura-migrations,       context: api-server/hasura }
           - { image: app,                     context: app }
           - { image: ticket-server,           context: ticket-server }
-          - { image: llm-server,              context: llm/llm-server }
-          - { image: rag-server,              context: llm/rag-server }
+          - { image: llm-server,              context: llm/llm-server,                            platforms: linux/amd64 }
+          - { image: rag-server,              context: llm/rag-server,                            platforms: linux/amd64 }
           - { image: code-analysis,           context: llm/code-analysis }
-          - { image: benchmark-server,        context: llm/benchmark }
-          - { image: ml-k8s-server,           context: ml-k8s-server }
+          - { image: benchmark-server,        context: llm/benchmark,                             platforms: linux/amd64 }
+          - { image: ml-k8s-server,           context: ml-k8s-server,                             platforms: linux/amd64 }
           - { image: notifications,           context: notifications-server }
           - { image: k8s-collector,           context: collector-server/k8s-collector/app }
           - { image: cloud-collector-server,  context: collector-server/cloud-collector }
@@ -87,6 +87,22 @@ jobs:
           - { image: relay-server,            context: collector-server/k8s-collector/relay-server }
           - { image: workflow-server,         context: runbook-server }
     steps:
+      # Repartition the runner to give Docker ~70 GB of root disk by
+      # reclaiming the unused /mnt partition and dropping pre-installed
+      # toolchains we don't use. Required for the conda-based Python ML
+      # images which exhaust the default ~14 GB during multi-stage COPY
+      # of /opt/conda.
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@v10
+        with:
+          root-reserve-mb: 4096
+          swap-size-mb: 1024
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+
       - uses: actions/checkout@v4
 
       - uses: docker/setup-qemu-action@v3
@@ -104,7 +120,7 @@ jobs:
         with:
           context: ${{ matrix.context }}
           push: true
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platforms || 'linux/amd64,linux/arm64' }}
           tags: |
             ${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:${{ needs.prepare.outputs.version }}
             ${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.sha_short }}
@@ -115,8 +131,11 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
             org.opencontainers.image.title=${{ matrix.image }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          # Registry-backed cache keeps cache layers in GHCR instead of
+          # on the runner disk. Cache image lives at <image>:buildcache;
+          # safe to prune separately from release tags.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:buildcache,mode=max
 
   package-chart:
     needs: [prepare, build-images]
