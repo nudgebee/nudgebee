@@ -1,19 +1,26 @@
 name: Release
 
 # Triggered when a `v*` tag is pushed (e.g. `v0.99.1`). For each release:
-#   1. Build every first-party service image and push to
-#      ghcr.io/<repo>/<service> with four tags:
+#   1. Build every first-party service image on a *native* runner for
+#      each supported platform (no QEMU emulation). amd64 builds use
+#      ubuntu-latest, arm64 builds use ubuntu-24.04-arm. ML-base-derived
+#      images (CUDA/conda) build amd64 only.
+#      Per-platform images are pushed to:
+#         ghcr.io/<repo>/<service>:<version>-amd64
+#         ghcr.io/<repo>/<service>:<version>-arm64
+#   2. merge-manifests combines per-arch images into a multi-arch
+#      manifest and applies the canonical tags:
 #         :<version>           e.g. 0.99.1
 #         :<version>-<sha7>    e.g. 0.99.1-720431d
 #         :sha-<sha7>          e.g. sha-720431d
 #         :latest
-#   2. Bump every first-party subchart's version/appVersion and pin its
+#   3. Bump every first-party subchart's version/appVersion and pin its
 #      values.yaml image refs to the just-published GHCR images.
-#   3. Package each first-party subchart and push it individually to
+#   4. Package each first-party subchart and push it individually to
 #      oci://ghcr.io/<org>/charts (org-level path, not repo-namespaced).
-#   4. Package the umbrella `nudgebee` chart — which via `helm dep update`
+#   5. Package the umbrella `nudgebee` chart — which via `helm dep update`
 #      bundles every file:// subchart — and push it to the same path.
-#   5. Attach all chart tarballs to a GitHub Release with usage snippets.
+#   6. Attach all chart tarballs to a GitHub Release with usage snippets.
 #
 # Manual runs are supported via `workflow_dispatch` with an explicit version.
 #
@@ -63,41 +70,52 @@ jobs:
           echo "sha_short=$sha_short"   >> "$GITHUB_OUTPUT"
           echo "Releasing version=$v (sha=$sha_short) — images to ghcr.io/$ns, charts to ghcr.io/$org/charts"
 
+  # One cell = one (image, platform) pair, built on its native runner.
+  # No QEMU emulation. amd64 cells run on ubuntu-latest, arm64 cells run
+  # on ubuntu-24.04-arm. ML-base-derived images (CUDA/conda) have no
+  # arm64 cell.
   build-images:
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { image: services-server,         context: api-server/services }
-          - { image: services-server-sidecar, context: api-server/services/sidecar }
-          - { image: hasura-migrations,       context: api-server/hasura }
-          - { image: app,                     context: app }
-          - { image: ticket-server,           context: ticket-server }
-          - { image: llm-server,              context: llm/llm-server,                            platforms: linux/amd64 }
-          - { image: rag-server,              context: llm/rag-server,                            platforms: linux/amd64 }
-          - { image: code-analysis,           context: llm/code-analysis }
-          - { image: benchmark-server,        context: llm/benchmark,                             platforms: linux/amd64 }
-          - { image: ml-k8s-server,           context: ml-k8s-server,                             platforms: linux/amd64 }
-          - { image: notifications,           context: notifications-server }
-          - { image: k8s-collector,           context: collector-server/k8s-collector/app }
-          - { image: cloud-collector-server,  context: collector-server/cloud-collector }
-          - { image: otel-collector-server,   context: collector-server/otel-collector }
-          - { image: relay-server,            context: collector-server/k8s-collector/relay-server }
-          - { image: workflow-server,         context: runbook-server }
+          # ---------- dual-arch images ----------
+          - { image: services-server,         context: api-server/services,                              platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: services-server,         context: api-server/services,                              platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: services-server-sidecar, context: api-server/services/sidecar,                      platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: services-server-sidecar, context: api-server/services/sidecar,                      platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: hasura-migrations,       context: api-server/hasura,                                platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: hasura-migrations,       context: api-server/hasura,                                platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: app,                     context: app,                                              platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: app,                     context: app,                                              platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: ticket-server,           context: ticket-server,                                    platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: ticket-server,           context: ticket-server,                                    platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: code-analysis,           context: llm/code-analysis,                                platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: code-analysis,           context: llm/code-analysis,                                platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: notifications,           context: notifications-server,                             platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: notifications,           context: notifications-server,                             platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: k8s-collector,           context: collector-server/k8s-collector/app,               platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: k8s-collector,           context: collector-server/k8s-collector/app,               platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: cloud-collector-server,  context: collector-server/cloud-collector,                 platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: cloud-collector-server,  context: collector-server/cloud-collector,                 platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: otel-collector-server,   context: collector-server/otel-collector,                  platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: otel-collector-server,   context: collector-server/otel-collector,                  platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: relay-server,            context: collector-server/k8s-collector/relay-server,      platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: relay-server,            context: collector-server/k8s-collector/relay-server,      platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: workflow-server,         context: runbook-server,                                   platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: workflow-server,         context: runbook-server,                                   platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          # ---------- amd64-only (ML-base-derived: CUDA/conda) ----------
+          - { image: llm-server,              context: llm/llm-server,                                   platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: rag-server,              context: llm/rag-server,                                   platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: benchmark-server,        context: llm/benchmark,                                    platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: ml-k8s-server,           context: ml-k8s-server,                                    platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
     steps:
-      # Reclaim disk for Docker. The default ubuntu-latest runner has
-      # only ~14 GB free on / (where /var/lib/docker lives) but ~80 GB
-      # free on /mnt. Steps:
-      #   1. Remove unused pre-installed toolchains (~30 GB).
-      #   2. Move Docker's data-root to /mnt so layer extraction has
-      #      room — without this, `docker pull` of large base images
-      #      fails with "no space left on device" even though /mnt
-      #      is mostly empty.
-      # NOTE: this step must run before any Docker action (buildx,
-      # qemu) because those start containers that pin /var/lib/docker
-      # in place.
+      # Move Docker's data-root to /mnt (~80 GB free) so large image
+      # layer extraction doesn't OOM on the small / partition (~14 GB).
+      # Must run before docker/setup-* steps because those start
+      # containers that pin /var/lib/docker.
       - name: Reclaim disk space
         run: |
           set -euo pipefail
@@ -126,8 +144,6 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - uses: docker/setup-qemu-action@v3
-
       - uses: docker/setup-buildx-action@v3
 
       - uses: docker/login-action@v3
@@ -136,30 +152,93 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push ${{ matrix.image }}
+      - name: Build and push ${{ matrix.image }} (${{ matrix.arch }})
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
           push: true
-          platforms: ${{ matrix.platforms || 'linux/amd64,linux/arm64' }}
-          tags: |
-            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:${{ needs.prepare.outputs.version }}
-            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.sha_short }}
-            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:sha-${{ needs.prepare.outputs.sha_short }}
-            ${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:latest
+          platforms: ${{ matrix.platform }}
+          tags: ${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:${{ needs.prepare.outputs.version }}-${{ matrix.arch }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
             org.opencontainers.image.title=${{ matrix.image }}
-          # Registry-backed cache keeps cache layers in GHCR instead of
-          # on the runner disk. Cache image lives at <image>:buildcache;
-          # safe to prune separately from release tags.
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:buildcache,mode=max
+          # Per-arch cache scope so amd64 and arm64 don't trample each
+          # other. Cache image lives at <image>:buildcache-<arch>.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ matrix.image }}:buildcache-${{ matrix.arch }},mode=max
+
+  # Stitch per-arch images into a single multi-arch manifest and apply
+  # the canonical tags (:<version>, :<version>-<sha>, :sha-<sha>,
+  # :latest). For amd64-only images the merge produces a single-platform
+  # manifest list pointing at the amd64 image — same shape, one entry.
+  merge-manifests:
+    needs: [prepare, build-images]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: services-server,         archs: "amd64 arm64" }
+          - { image: services-server-sidecar, archs: "amd64 arm64" }
+          - { image: hasura-migrations,       archs: "amd64 arm64" }
+          - { image: app,                     archs: "amd64 arm64" }
+          - { image: ticket-server,           archs: "amd64 arm64" }
+          - { image: code-analysis,           archs: "amd64 arm64" }
+          - { image: notifications,           archs: "amd64 arm64" }
+          - { image: k8s-collector,           archs: "amd64 arm64" }
+          - { image: cloud-collector-server,  archs: "amd64 arm64" }
+          - { image: otel-collector-server,   archs: "amd64 arm64" }
+          - { image: relay-server,            archs: "amd64 arm64" }
+          - { image: workflow-server,         archs: "amd64 arm64" }
+          - { image: llm-server,              archs: "amd64" }
+          - { image: rag-server,              archs: "amd64" }
+          - { image: benchmark-server,        archs: "amd64" }
+          - { image: ml-k8s-server,           archs: "amd64" }
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      SHA_SHORT: ${{ needs.prepare.outputs.sha_short }}
+      NS: ${{ needs.prepare.outputs.namespace }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest for ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          REPO="${REGISTRY}/${NS}/${{ matrix.image }}"
+
+          # Collect per-arch source refs.
+          SOURCES=()
+          for arch in ${{ matrix.archs }}; do
+            SOURCES+=("${REPO}:${VERSION}-${arch}")
+          done
+
+          echo "Merging into ${REPO}:${VERSION} from: ${SOURCES[*]}"
+          # `index:` prefix puts the annotation on the OCI manifest list
+          # itself (not the per-arch image configs). GHCR reads these to
+          # link the multi-arch package back to this repo.
+          docker buildx imagetools create \
+            -t "${REPO}:${VERSION}" \
+            -t "${REPO}:${VERSION}-${SHA_SHORT}" \
+            -t "${REPO}:sha-${SHA_SHORT}" \
+            -t "${REPO}:latest" \
+            --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --annotation "index:org.opencontainers.image.revision=${{ github.sha }}" \
+            --annotation "index:org.opencontainers.image.version=${VERSION}" \
+            --annotation "index:org.opencontainers.image.title=${{ matrix.image }}" \
+            "${SOURCES[@]}"
+
+          docker buildx imagetools inspect "${REPO}:${VERSION}" | head -20
 
   package-chart:
-    needs: [prepare, build-images]
+    needs: [prepare, merge-manifests]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
@@ -313,7 +392,7 @@ jobs:
 
             All images are published to `ghcr.io/${{ needs.prepare.outputs.namespace }}/<service>` with the following tags:
 
-            - `:${{ env.VERSION }}` — release version
+            - `:${{ env.VERSION }}` — release version (multi-arch manifest)
             - `:${{ env.VERSION }}-${{ needs.prepare.outputs.sha_short }}` — version + commit
             - `:sha-${{ needs.prepare.outputs.sha_short }}` — commit only
             - `:latest`
