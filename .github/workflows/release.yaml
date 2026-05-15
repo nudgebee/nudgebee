@@ -235,7 +235,7 @@ jobs:
             --annotation "index:org.opencontainers.image.title=${{ matrix.image }}" \
             "${SOURCES[@]}"
 
-          docker buildx imagetools inspect "${REPO}:${VERSION}" | head -20
+          docker buildx imagetools inspect "${REPO}:${VERSION}" || true
 
   package-chart:
     needs: [prepare, merge-manifests]
