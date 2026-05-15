@@ -221,11 +221,18 @@ jobs:
           done
 
           echo "Merging into ${REPO}:${VERSION} from: ${SOURCES[*]}"
+          # `index:` prefix puts the annotation on the OCI manifest list
+          # itself (not the per-arch image configs). GHCR reads these to
+          # link the multi-arch package back to this repo.
           docker buildx imagetools create \
             -t "${REPO}:${VERSION}" \
             -t "${REPO}:${VERSION}-${SHA_SHORT}" \
             -t "${REPO}:sha-${SHA_SHORT}" \
             -t "${REPO}:latest" \
+            --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --annotation "index:org.opencontainers.image.revision=${{ github.sha }}" \
+            --annotation "index:org.opencontainers.image.version=${VERSION}" \
+            --annotation "index:org.opencontainers.image.title=${{ matrix.image }}" \
             "${SOURCES[@]}"
 
           docker buildx imagetools inspect "${REPO}:${VERSION}" | head -20
