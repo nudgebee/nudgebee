@@ -61,8 +61,14 @@ jobs:
           else
             v="${GITHUB_REF_NAME#v}"
           fi
-          ns="$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
-          org="${ns%%/*}"
+          # Publish images at ghcr.io/<owner>/<service>, not
+          # ghcr.io/<owner>/<repo>/<service>. Using github.repository
+          # would duplicate the owner (e.g. nudgebee/nudgebee/...) on
+          # repos whose name matches the owner; using
+          # github.repository_owner keeps the path flat and matches
+          # the Helm chart convention (oci://ghcr.io/<owner>/charts).
+          ns="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          org="$ns"
           sha_short="${GITHUB_SHA:0:7}"
           echo "version=$v"             >> "$GITHUB_OUTPUT"
           echo "namespace=$ns"          >> "$GITHUB_OUTPUT"
