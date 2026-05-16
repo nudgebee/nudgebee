@@ -87,11 +87,10 @@ export async function isLicensedDeployment(): Promise<boolean> {
  * Synchronous, cheap check used by UI / signup gating to decide whether the deployment
  * is single-tenant ("on-prem") and self-signup should be disabled.
  *
- * Returns true when either:
- *   - ON_PREM_MODE=true is set (OSS single-tenant deployment), or
- *   - a commercial NUDGEBEE_LICENSE env var is present (validation happens lazily elsewhere).
+ * Returns true when a commercial NUDGEBEE_LICENSE env var is present (validation
+ * happens lazily elsewhere). OSS deployments that want signup locked down should
+ * configure an auth provider or block /signup at the ingress.
  */
 export function isOnPremMode(): boolean {
-  if (process.env.ON_PREM_MODE === 'true') return true;
   return Boolean(process.env.NUDGEBEE_LICENSE);
 }
