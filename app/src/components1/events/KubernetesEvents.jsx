@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import PropTypes from 'prop-types';
-import { Box, FormControlLabel } from '@mui/material';
+import { Box, FormControlLabel, Button } from '@mui/material';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import CustomSwitch from '@common/CustomSwitch';
 
 // Components
@@ -45,7 +46,29 @@ import SafeIcon from '@components1/common/SafeIcon';
 import CustomTooltip from '@components1/common/CustomTooltip';
 import { getTriageStatusTooltip } from '@api1/triage';
 import useKubernetesEventFilters from '@hooks/useKubernetesEventFilters';
+import { readPersistedFilters, writePersistedFilters, clearPersistedFilters } from '@hooks/usePersistedFilters';
 import WorkflowIcon from '@assets/WorkflowIcon';
+
+// localStorage key for the Troubleshoot Events tab. Bump the suffix when the
+// shape of persisted filter values changes so old entries are ignored.
+const TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY = 'troubleshoot:events:filters:v1';
+
+// Known shortcut durations from CustomDateTimeRangePicker, kept in sync so we can
+// rehydrate a relative time selection ("Current Week", "Last 24 Hours", ...) by
+// recomputing from `now` instead of restoring stale absolute timestamps.
+const KNOWN_SHORTCUT_DURATIONS_MS = new Set([
+  5 * 60 * 1000,
+  10 * 60 * 1000,
+  15 * 60 * 1000,
+  30 * 60 * 1000,
+  60 * 60 * 1000,
+  3 * 60 * 60 * 1000,
+  6 * 60 * 60 * 1000,
+  12 * 60 * 60 * 1000,
+  24 * 60 * 60 * 1000,
+  7 * 24 * 60 * 60 * 1000,
+]);
+const CURRENT_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 const DEFAULT_TABLE_COLUMNS = [
   {
@@ -195,6 +218,15 @@ const KubernetesEventsTable = ({
 }) => {
   const router = useRouter();
 
+  // Persist filter selections only on the Troubleshoot Events tab. Sidebar nav
+  // strips query params (layout/index.jsx forces /troubleshoot#all-events), so
+  // localStorage is what survives a "leave + come back" round-trip. All other
+  // call sites (PodsDetails, KubernetesTable2 expand, SLO configs, threshold
+  // evidence) keep the legacy URL-only behavior.
+  const persistKey = isTroubleshootPage ? TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY : null;
+  // Read once on mount; precedence is URL query > localStorage > component default.
+  const persisted = useMemo(() => readPersistedFilters(persistKey), [persistKey]);
+
   const showEllipsis = true;
   const statusFilter = [
     { value: 'FIRING', label: 'Open' },
@@ -225,6 +257,26 @@ const KubernetesEventsTable = ({
     } else if (defaultQuery?.startTime && defaultQuery?.endTime) {
       return { startDate: defaultQuery.startTime, endDate: defaultQuery.endTime };
     }
+    // Persisted relative shortcut → recompute from now to avoid serving stale
+    // absolute timestamps. Custom (non-shortcut) absolute ranges are only
+    // restored if the saved end date is still in the past 30 days; older
+    // saved ranges fall through to the per-page default.
+    const persistedShortcut = persisted?.shortcutClickTime;
+    if (typeof persistedShortcut === 'number' && KNOWN_SHORTCUT_DURATIONS_MS.has(persistedShortcut)) {
+      const now = Date.now();
+      return { startDate: now - persistedShortcut, endDate: now, shortcutClickTime: persistedShortcut };
+    }
+    if (
+      typeof persisted?.startDate === 'number' &&
+      typeof persisted?.endDate === 'number' &&
+      Date.now() - persisted.endDate < 30 * 24 * 60 * 60 * 1000
+    ) {
+      return { startDate: persisted.startDate, endDate: persisted.endDate };
+    }
+    if (isTroubleshootPage) {
+      const now = Date.now();
+      return { startDate: now - CURRENT_WEEK_MS, endDate: now, shortcutClickTime: CURRENT_WEEK_MS };
+    }
     return { startDate: getLast24Hrs().getTime(), endDate: new Date().getTime() };
   };
 
@@ -241,6 +293,9 @@ const KubernetesEventsTable = ({
           .filter((e) => getValidParam(e))
           .map((e) => ({ value: e }));
       }
+    }
+    if (selectedKeys.length === 0 && Array.isArray(persisted?.aggregationKey)) {
+      selectedKeys = persisted.aggregationKey.filter((v) => v != null && v !== '').map((v) => ({ value: v }));
     }
     return selectedKeys;
   };
@@ -315,31 +370,44 @@ const KubernetesEventsTable = ({
   const [currentPage, setCurrentPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(() => recordsPerPage ?? apiUser.getUserPreferencesTablePageSize());
 
-  // Selections
+  // Selections — precedence: explicit prop / defaultQuery > URL query > persisted > built-in default
   const [selectedAccountId, setSelectedAccountId] = useState(() => {
     const raw = accountId || router.query.accountId;
-    return raw ? String(raw).split(',').filter(Boolean) : [];
+    if (raw) return String(raw).split(',').filter(Boolean);
+    if (Array.isArray(persisted?.accountId) && persisted.accountId.length > 0) return persisted.accountId;
+    return [];
   });
   const [selectedNamespace, setSelectedNamespace] = useState(
-    () => defaultQuery?.namespace ?? getValidParam(router?.query?.namespace) ?? getValidParam(router?.query?.eventNamespace)
+    () => defaultQuery?.namespace ?? getValidParam(router?.query?.namespace) ?? getValidParam(router?.query?.eventNamespace) ?? persisted?.namespace
   );
   const [selectedWorkload, setSelectedWorkload] = useState(
-    () => defaultQuery?.workloadName ?? defaultQuery?.subjectName ?? getValidParam(router?.query?.eventSubjectName || router?.query?.subject_name, '')
+    () =>
+      defaultQuery?.workloadName ??
+      defaultQuery?.subjectName ??
+      getValidParam(router?.query?.eventSubjectName || router?.query?.subject_name, '') ??
+      persisted?.workload ??
+      ''
   );
-  const [selectedSubjectType, setSelectedSubjectType] = useState(() => getValidParam(router.query.eventSubjectType));
+  const [selectedSubjectType, setSelectedSubjectType] = useState(() => getValidParam(router.query.eventSubjectType) ?? persisted?.subjectType);
   const [selectedAggregationKey, setSelectedAggregationKey] = useState(() => getInitialAggregationKey());
-  const [selectedPriority, setSelectedPriority] = useState(() => defaultQuery?.eventPriority ?? getValidParam(router.query.eventPriority));
+  const [selectedPriority, setSelectedPriority] = useState(
+    () => defaultQuery?.eventPriority ?? getValidParam(router.query.eventPriority) ?? persisted?.priority
+  );
   const [selectedDateRange, setSelectedDateRange] = useState(() => getInitialTime());
   const [selectedStatus, setSelectedStatus] = useState(
-    () => defaultQuery?.eventStatus ?? getValidParam(router.query.eventStatus || router.query.status)
+    () =>
+      defaultQuery?.eventStatus ??
+      getValidParam(router.query.eventStatus || router.query.status) ??
+      persisted?.status ??
+      (isTroubleshootPage ? 'FIRING' : undefined)
   );
   const [selectedSource, setSelectedSource] = useState([]);
-  const [selectedServiceName, setSelectedServiceName] = useState('');
-  const [selectedEventName, setSelectedEventName] = useState('');
+  const [selectedServiceName, setSelectedServiceName] = useState(() => persisted?.serviceName ?? '');
+  const [selectedEventName, setSelectedEventName] = useState(() => persisted?.eventName ?? '');
   const [searchByLabel, setSearchByLabel] = useState('');
   const [selectedNbStatus, setSelectedNbStatus] = useState([]);
-  const [selectedSortBy, setSelectedSortBy] = useState(() => getValidParam(router.query.sortBy) || 'created_at');
-  const [selectedIssueType, setSelectedIssueType] = useState(() => getValidParam(router.query.issueType) || 'all');
+  const [selectedSortBy, setSelectedSortBy] = useState(() => getValidParam(router.query.sortBy) || persisted?.sortBy || 'created_at');
+  const [selectedIssueType, setSelectedIssueType] = useState(() => getValidParam(router.query.issueType) || persisted?.issueType || 'all');
 
   // UI Toggles & Popups
   const [isTicketCreateFormOpen, setIsTicketCreateFormOpen] = useState(false);
@@ -382,14 +450,28 @@ const KubernetesEventsTable = ({
   // onSourceFilterChange → applyFiltersOnRouter updates the query → useEffect would fire again
   // even though state is already correct. After initialization, the handler owns the state.
   useEffect(() => {
-    setSelectedSource(syncFilterFromQuery(sourceFilter, router?.query?.source, (f) => f.value));
+    const fromQuery = syncFilterFromQuery(sourceFilter, router?.query?.source, (f) => f.value);
+    if (fromQuery.length > 0) {
+      setSelectedSource(fromQuery);
+      return;
+    }
+    if (Array.isArray(persisted?.source) && persisted.source.length > 0) {
+      setSelectedSource(syncFilterFromQuery(sourceFilter, persisted.source.join(','), (f) => f.value));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceFilter]);
 
   // NB_STATUS_FILTER is a stable module-level constant so this runs once on mount,
   // reading the router query at that point to initialize. Same pattern as selectedSource.
   useEffect(() => {
-    setSelectedNbStatus(syncFilterFromQuery(NB_STATUS_FILTER, router?.query?.nbStatus, (f) => f.value));
+    const fromQuery = syncFilterFromQuery(NB_STATUS_FILTER, router?.query?.nbStatus, (f) => f.value);
+    if (fromQuery.length > 0) {
+      setSelectedNbStatus(fromQuery);
+      return;
+    }
+    if (Array.isArray(persisted?.nbStatus) && persisted.nbStatus.length > 0) {
+      setSelectedNbStatus(syncFilterFromQuery(NB_STATUS_FILTER, persisted.nbStatus.join(','), (f) => f.value));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -445,6 +527,7 @@ const KubernetesEventsTable = ({
     setSelectedAccountId(ids);
     setCurrentPage(0);
     applyFiltersOnRouter(router, { accountId: ids.join(',') });
+    writePersistedFilters(persistKey, { accountId: ids });
   };
 
   const onNamespaceFilterChange = (e, _p) => {
@@ -453,18 +536,21 @@ const KubernetesEventsTable = ({
     // Note: Workload filtering is handled automatically by the hook based on selectedNamespace
     setCurrentPage(0);
     applyFiltersOnRouter(router, { eventNamespace: e?.target?.value, eventSubjectName: '' });
+    writePersistedFilters(persistKey, { namespace: e?.target?.value, workload: '' });
   };
 
   const onWorkloadFilterChange = (e) => {
     setSelectedWorkload(e?.target.value);
     setCurrentPage(0);
     applyFiltersOnRouter(router, { eventSubjectName: e?.target?.value });
+    writePersistedFilters(persistKey, { workload: e?.target?.value });
   };
 
   const onTypeFilterChange = (e, _p) => {
     setSelectedSubjectType(e?.target?.value);
     setCurrentPage(0);
     applyFiltersOnRouter(router, { eventSubjectType: e?.target?.value });
+    writePersistedFilters(persistKey, { subjectType: e?.target?.value });
   };
 
   const onAggregationKeyFilterChange = (_e, _p) => {
@@ -475,18 +561,21 @@ const KubernetesEventsTable = ({
     }
     setCurrentPage(0);
     applyFiltersOnRouter(router, { eventAggregationKey: _p?.map((v) => v.value) });
+    writePersistedFilters(persistKey, { aggregationKey: _p?.map((v) => v.value) ?? [] });
   };
 
   const onPriorityFilterChange = (e, _p) => {
     setSelectedPriority(e?.target?.value);
     setCurrentPage(0);
     applyFiltersOnRouter(router, { eventPriority: e?.target?.value });
+    writePersistedFilters(persistKey, { priority: e?.target?.value });
   };
 
   const onStatusFilterChange = (e, _p) => {
     setSelectedStatus(e?.target?.value);
     setCurrentPage(0);
     applyFiltersOnRouter(router, { eventStatus: e?.target?.value });
+    writePersistedFilters(persistKey, { status: e?.target?.value });
   };
 
   const onSourceFilterChange = (e, _p) => {
@@ -494,6 +583,7 @@ const KubernetesEventsTable = ({
     setSelectedSource(value);
     setCurrentPage(0);
     applyFiltersOnRouter(router, { source: value.map((s) => s.value).join(',') });
+    writePersistedFilters(persistKey, { source: value.map((s) => s.value) });
   };
 
   const onNbStatusFilterChange = (e, _p) => {
@@ -501,22 +591,26 @@ const KubernetesEventsTable = ({
     setSelectedNbStatus(value);
     setCurrentPage(0);
     applyFiltersOnRouter(router, { nbStatus: value.map((v) => v.value).join(',') });
+    writePersistedFilters(persistKey, { nbStatus: value.map((v) => v.value) });
   };
 
   const onSortByChange = (e, _p) => {
     setSelectedSortBy(e?.target?.value);
     setCurrentPage(0);
     applyFiltersOnRouter(router, { sortBy: e?.target?.value });
+    writePersistedFilters(persistKey, { sortBy: e?.target?.value });
   };
 
   const onServiceNamesFilterChange = (e) => {
     setSelectedServiceName(e?.target?.value);
     setCurrentPage(0);
+    writePersistedFilters(persistKey, { serviceName: e?.target?.value });
   };
 
   const onEventNamesFilterChange = (e) => {
     setSelectedEventName(e?.target?.value || '');
     setCurrentPage(0);
+    writePersistedFilters(persistKey, { eventName: e?.target?.value || '' });
   };
 
   // --- Ticket & Menu Handlers ---
@@ -605,12 +699,21 @@ const KubernetesEventsTable = ({
 
   const handleDateRangeChange = (passedSelectedDateTime) => {
     setCurrentPage(0);
-    setSelectedDateRange({
+    const next = {
       startDate: passedSelectedDateTime.startTime,
       endDate: passedSelectedDateTime.endTime,
-      shortcutClickTime: passedSelectedDateTime.shortcutClickTime,
-    });
+      shortcutClickTime: passedSelectedDateTime.shortcutClickTime ?? 0,
+    };
+    setSelectedDateRange(next);
     applyFiltersOnRouter(router, { start_time: passedSelectedDateTime.startTime, end_time: passedSelectedDateTime.endTime });
+    // Persist the shortcut duration when known so we can rehydrate as a relative
+    // range. For a custom range (shortcutClickTime = 0) persist the absolute
+    // bounds; getInitialTime() ignores them once they're > 30 days old.
+    writePersistedFilters(persistKey, {
+      shortcutClickTime: next.shortcutClickTime,
+      startDate: next.startDate,
+      endDate: next.endDate,
+    });
   };
 
   const onSearchLabelFilter = (e) => {
@@ -625,6 +728,44 @@ const KubernetesEventsTable = ({
   const handleClearFilters = () => {
     setSearchByLabel('');
     setCurrentPage(0);
+  };
+
+  const handleResetPersistedFilters = () => {
+    clearPersistedFilters(persistKey);
+    setSelectedNamespace(undefined);
+    setSelectedWorkload('');
+    setSelectedSubjectType(undefined);
+    setSelectedAggregationKey([]);
+    setSelectedPriority(undefined);
+    setSelectedStatus(undefined);
+    setSelectedSource([]);
+    setSelectedNbStatus([]);
+    setSelectedSortBy('created_at');
+    setSelectedIssueType('all');
+    setSelectedServiceName('');
+    setSelectedEventName('');
+    setSearchByLabel('');
+    const now = Date.now();
+    setSelectedDateRange({ startDate: now - CURRENT_WEEK_MS, endDate: now, shortcutClickTime: CURRENT_WEEK_MS });
+    setCurrentPage(0);
+    // Strip filter-related query params from the URL so the reset is also visible
+    // on shared/bookmarked links. Keep accountId since it's a context selector.
+    applyFiltersOnRouter(router, {
+      eventNamespace: '',
+      eventSubjectName: '',
+      eventSubjectType: '',
+      eventAggregationKey: '',
+      aggregation_key: '',
+      eventPriority: '',
+      eventStatus: '',
+      status: '',
+      source: '',
+      nbStatus: '',
+      sortBy: '',
+      issueType: '',
+      start_time: '',
+      end_time: '',
+    });
   };
 
   // --- Data Fetching ---
@@ -1254,6 +1395,7 @@ const KubernetesEventsTable = ({
                     setSelectedIssueType(e.target.value);
                     setCurrentPage(0);
                     applyFiltersOnRouter(router, { issueType: e.target.value === 'all' ? '' : e.target.value });
+                    writePersistedFilters(persistKey, { issueType: e.target.value === 'all' ? '' : e.target.value });
                   },
                   label: 'Issue Type',
                   value: selectedIssueType,
@@ -1290,6 +1432,21 @@ const KubernetesEventsTable = ({
             label='Show Trend'
             key='showTrend'
           />,
+          ...(persistKey
+            ? [
+                <Button
+                  key='resetFilters'
+                  data-testid='reset-filters-btn'
+                  size='small'
+                  variant='text'
+                  startIcon={<RefreshIcon sx={{ fontSize: '16px' }} />}
+                  onClick={handleResetPersistedFilters}
+                  sx={{ fontSize: '13px', textTransform: 'none', minWidth: 'auto', padding: '2px 8px' }}
+                >
+                  Reset filters
+                </Button>,
+              ]
+            : []),
         ]}
         onRefresh={{
           enabled: true,
