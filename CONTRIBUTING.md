@@ -5,7 +5,32 @@ explains how to file issues, propose changes, and get a pull request
 merged.
 
 By contributing, you agree that your contributions will be licensed
-under the Apache License, Version 2.0 (see [LICENSE](./LICENSE)).
+under the Apache License, Version 2.0 (see [LICENSE](./LICENSE)), and
+that you have signed the Nudgebee Contributor License Agreement (see
+the next section).
+
+## Contributor License Agreement (CLA)
+
+Before your first pull request can be merged, you must sign the
+**[Nudgebee Contributor License Agreement](./CLA.md)**. The CLA
+confirms that you own the rights to your contribution and grants
+Nudgebee, Inc. the necessary copyright and patent licenses to
+incorporate it into the project.
+
+Signing is a one-time, one-click step:
+
+1. Open your pull request as usual.
+2. The **CLA-assistant** bot will comment with a sign-in link if you
+   haven't signed yet.
+3. Click the link, review the CLA, and accept. The bot will re-check
+   your PR automatically and mark the CLA status check as passed.
+4. All your future contributions to this repository are covered by
+   that same signature.
+
+If you are contributing on behalf of an employer or other legal
+entity, please make sure you are authorized to sign on their behalf
+before accepting (see [CLA.md](./CLA.md) §8). For corporate signers
+who prefer a paper / wet signature, email **legal@nudgebee.com**.
 
 ## Code of Conduct
 
