@@ -249,14 +249,27 @@ changes, no other-branch contamination.
 ```bash
 # Drift check: before applying the overlay, compare the just-extracted
 # snapshot (working tree) against the OSS version we're about to
-# restore (HEAD). Group-A files (pure OSS-only) always diff; that's
-# informational. Any non-empty diff for a Group-B path means upstream
-# edited a file we're about to override — review before proceeding,
-# or back-port the OSS change so the file falls out of the overlay.
-# Group B is currently empty, so this check is informational only on
-# the current iteration; keep the line so future Group-B additions
-# automatically benefit from the check.
+# restore (HEAD). Group-A files (pure OSS-only — don't exist upstream)
+# always diff; that's informational. Any non-empty diff for a Group-B
+# path (exists upstream but OSS-modified) means upstream edited a file
+# we're about to override — review before proceeding, or back-port the
+# OSS change so the file falls out of the overlay.
+#
+# Group A (OSS-only):
+#   CLA.md, OSS_DROP.md, SECURITY.md,
+#   .github/dependabot.yml,
+#   .github/ISSUE_TEMPLATE/BUG-REPORT.yml,
+#   .github/ISSUE_TEMPLATE/FEATURE-REQUEST.yml,
+#   .github/pull_request_template.md,
+#   .github/workflows/release.yaml
+#
+# Group B (exists upstream, OSS-modified):
+#   CONTRIBUTING.md — has a "Contributor License Agreement" section
+#     pointing at CLA.md. Cannot be back-ported because enterprise has
+#     no CLA flow. Review the diff before overlay-restoring.
 git diff --stat HEAD -- \
+  CLA.md \
+  CONTRIBUTING.md \
   OSS_DROP.md \
   SECURITY.md \
   .github/dependabot.yml \
@@ -269,6 +282,8 @@ git diff --stat HEAD -- \
 # still points at the previous iteration's commit until we amend, so
 # we can checkout these files from it.
 git checkout HEAD -- \
+  CLA.md \
+  CONTRIBUTING.md \
   OSS_DROP.md \
   SECURITY.md \
   .github/dependabot.yml \
@@ -401,3 +416,30 @@ no force needed.)
 If a later iteration needs to *preserve* contributions made in
 `nudgebee-oss` itself (e.g. an external contributor's fix), that work
 should be reapplied on top of the new snapshot, not merged with it.
+
+## Pre-launch checklist
+
+Things deferred during the dry-run that must be done before / at the
+moment the repo flips public:
+
+- [ ] **Install the cla-assistant GitHub App** on `nudgebee/nudgebee`
+      (<https://github.com/apps/cla-assistant>). The CLA text and the
+      `CONTRIBUTING.md` flow are already in place; the bot just needs
+      to be wired. cla-assistant.io's free tier requires a public repo,
+      which is why this is deferred. Steps once public:
+      1. Install the app on the repo.
+      2. On <https://cla-assistant.io>, configure with **CLA source =
+         repo**, path `CLA.md` on `main`.
+      3. Allowlist bot accounts (`dependabot[bot]`,
+         `cla-assistant[bot]`, any internal bots).
+      4. Add `license/cla` to required status checks in branch
+         protection on `main`.
+- [ ] **Replace `Nudgebee, Inc.` placeholder** in `CLA.md` with the
+      final legal entity name (counsel review).
+- [ ] **Remove `OSS_DROP.md`** from the repo (this file is dry-run
+      scaffolding only).
+- [ ] **Re-enable Dependabot** by removing the
+      `open-pull-requests-limit: 0` lines from `.github/dependabot.yml`.
+- [ ] **Turn branch protection back on** (currently relaxed to allow
+      drop-iteration force-pushes — see project memo
+      `project_dryrun_force_push_ok`).
