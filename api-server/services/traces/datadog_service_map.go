@@ -645,8 +645,8 @@ func BuildServiceMapFromGraphData(graphData *APMGraphData, cloudAccountID, tenan
 	applications := make([]ServiceApplication, 0, len(entityByID))
 
 	// Pre-index edges by source/target for O(1) lookup instead of scanning all edges per entity
-	edgesBySource := make(map[string][]EdgeInfo, len(serviceEdges))
-	edgesByTarget := make(map[string][]EdgeInfo, len(serviceEdges))
+	edgesBySource := make(map[string][]EdgeInfo, len(entityByID))
+	edgesByTarget := make(map[string][]EdgeInfo, len(entityByID))
 	for _, edgeInfo := range serviceEdges {
 		edgesBySource[edgeInfo.SourceID] = append(edgesBySource[edgeInfo.SourceID], edgeInfo)
 		edgesByTarget[edgeInfo.TargetID] = append(edgesByTarget[edgeInfo.TargetID], edgeInfo)
