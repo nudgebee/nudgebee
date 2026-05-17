@@ -644,6 +644,14 @@ func BuildServiceMapFromGraphData(graphData *APMGraphData, cloudAccountID, tenan
 	// Build applications from entities (use entity ID as unique identifier)
 	applications := make([]ServiceApplication, 0, len(entityByID))
 
+	// Pre-index edges by source/target for O(1) lookup instead of scanning all edges per entity
+	edgesBySource := make(map[string][]EdgeInfo, len(serviceEdges))
+	edgesByTarget := make(map[string][]EdgeInfo, len(serviceEdges))
+	for _, edgeInfo := range serviceEdges {
+		edgesBySource[edgeInfo.SourceID] = append(edgesBySource[edgeInfo.SourceID], edgeInfo)
+		edgesByTarget[edgeInfo.TargetID] = append(edgesByTarget[edgeInfo.TargetID], edgeInfo)
+	}
+
 	// Build applications for each entity
 	for entityID, entity := range entityByID {
 		// Skip entity types (we only want actual entities)
@@ -651,17 +659,8 @@ func BuildServiceMapFromGraphData(graphData *APMGraphData, cloudAccountID, tenan
 			continue
 		}
 
-		// Find all outgoing edges for this entity
-		outgoingEdges := make([]EdgeInfo, 0)
-		incomingEdges := make([]EdgeInfo, 0)
-		for _, edgeInfo := range serviceEdges {
-			if edgeInfo.SourceID == entityID {
-				outgoingEdges = append(outgoingEdges, edgeInfo)
-			}
-			if edgeInfo.TargetID == entityID {
-				incomingEdges = append(incomingEdges, edgeInfo)
-			}
-		}
+		outgoingEdges := edgesBySource[entityID]
+		incomingEdges := edgesByTarget[entityID]
 
 		apps := buildServiceApplicationFromGraphData(
 			entityID,
