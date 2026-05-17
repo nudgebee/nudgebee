@@ -801,7 +801,7 @@ func (a *PRFollowupAgent) gatherCIFailureLogs(_ context.Context, repoInfo *gitpr
 		if logOut == "" {
 			fmt.Fprintf(&sb, "(No log output available)\n\n")
 		} else {
-			fmt.Fprintf(&sb, "```\n%s\n```\n\n", truncateIfNeeded(logOut, 3000))
+			fmt.Fprintf(&sb, "```\n%s\n```\n\n", tailLines(logOut, 100))
 		}
 	}
 
@@ -926,6 +926,16 @@ func truncateIfNeeded(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "\n... [truncated]"
+}
+
+// tailLines returns the last n lines of s, preserving the original behavior
+// of `| tail -n` without shell execution.
+func tailLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) <= n {
+		return s
+	}
+	return strings.Join(lines[len(lines)-n:], "\n")
 }
 
 // buildSummaryComment creates a branded, bullet-point summary of what the followup did.
