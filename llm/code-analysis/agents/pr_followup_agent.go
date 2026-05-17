@@ -488,13 +488,13 @@ func (a *PRFollowupAgent) fetchPRMetaSnapshot(repoInfo *gitprovider.RepoInfo, pr
 
 // gatherPRDetails fetches PR/MR description and metadata
 func (a *PRFollowupAgent) gatherPRDetails(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string) string {
-	var cmd string
+	var out string
+	var err error
 	if a.provider == gitprovider.GitProviderGitLab {
-		cmd = fmt.Sprintf("glab mr view %s --repo %s", prNumber, repoInfo.FullPath)
+		out, err = a.runCommandInDir("glab", "mr", "view", prNumber, "--repo", repoInfo.FullPath)
 	} else {
-		cmd = fmt.Sprintf("gh pr view %s --repo %s --json title,body,state,reviews,statusCheckRollup", prNumber, repoInfo.FullPath)
+		out, err = a.runCommandInDir("gh", "pr", "view", prNumber, "--repo", repoInfo.FullPath, "--json", "title,body,state,reviews,statusCheckRollup")
 	}
-	out, err := a.runCommandInDir("sh", "-c", cmd)
 	if err != nil {
 		a.logger.Log(common.EventStepFailure, "Failed to gather PR details", map[string]any{"error": err.Error()})
 		return ""
@@ -505,14 +505,14 @@ func (a *PRFollowupAgent) gatherPRDetails(_ context.Context, repoInfo *gitprovid
 // gatherInlineComments fetches review comments and returns unaddressed ones.
 // Returns structured comments for reply tracking and formatted text for the LLM prompt.
 func (a *PRFollowupAgent) gatherInlineComments(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string) ([]reviewComment, string) {
-	var cmd string
+	var out string
+	var err error
 	if a.provider == gitprovider.GitProviderGitLab {
 		encodedPath := url.PathEscape(repoInfo.FullPath)
-		cmd = fmt.Sprintf("glab api projects/%s/merge_requests/%s/notes", encodedPath, prNumber)
+		out, err = a.runCommandInDir("glab", "api", fmt.Sprintf("projects/%s/merge_requests/%s/notes", encodedPath, prNumber))
 	} else {
-		cmd = fmt.Sprintf("gh api repos/%s/pulls/%s/comments", repoInfo.FullPath, prNumber)
+		out, err = a.runCommandInDir("gh", "api", fmt.Sprintf("repos/%s/pulls/%s/comments", repoInfo.FullPath, prNumber))
 	}
-	out, err := a.runCommandInDir("sh", "-c", cmd)
 	if err != nil {
 		a.logger.Log(common.EventStepFailure, "Failed to gather inline comments", map[string]any{"error": err.Error()})
 		return nil, ""
@@ -604,8 +604,7 @@ func (a *PRFollowupAgent) gatherIssueComments(_ context.Context, repoInfo *gitpr
 		return nil, ""
 	}
 
-	cmd := fmt.Sprintf("gh api repos/%s/issues/%s/comments", repoInfo.FullPath, prNumber)
-	out, err := a.runCommandInDir("sh", "-c", cmd)
+	out, err := a.runCommandInDir("gh", "api", fmt.Sprintf("repos/%s/issues/%s/comments", repoInfo.FullPath, prNumber))
 	if err != nil {
 		a.logger.Log(common.EventStepFailure, "Failed to gather issue comments", map[string]any{"error": err.Error()})
 		return nil, ""
@@ -659,8 +658,7 @@ func (a *PRFollowupAgent) gatherReviewBodyComments(_ context.Context, repoInfo *
 		return nil, ""
 	}
 
-	cmd := fmt.Sprintf("gh api repos/%s/pulls/%s/reviews", repoInfo.FullPath, prNumber)
-	out, err := a.runCommandInDir("sh", "-c", cmd)
+	out, err := a.runCommandInDir("gh", "api", fmt.Sprintf("repos/%s/pulls/%s/reviews", repoInfo.FullPath, prNumber))
 	if err != nil {
 		a.logger.Log(common.EventStepFailure, "Failed to gather reviews", map[string]any{"error": err.Error()})
 		return nil, ""
@@ -719,14 +717,14 @@ func (a *PRFollowupAgent) gatherReviewBodyComments(_ context.Context, repoInfo *
 
 // gatherDiff fetches the PR/MR diff
 func (a *PRFollowupAgent) gatherDiff(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string) string {
-	var cmd string
+	var out string
+	var err error
 	if a.provider == gitprovider.GitProviderGitLab {
 		encodedPath := url.PathEscape(repoInfo.FullPath)
-		cmd = fmt.Sprintf("glab api projects/%s/merge_requests/%s/changes", encodedPath, prNumber)
+		out, err = a.runCommandInDir("glab", "api", fmt.Sprintf("projects/%s/merge_requests/%s/changes", encodedPath, prNumber))
 	} else {
-		cmd = fmt.Sprintf("gh pr diff %s --repo %s", prNumber, repoInfo.FullPath)
+		out, err = a.runCommandInDir("gh", "pr", "diff", prNumber, "--repo", repoInfo.FullPath)
 	}
-	out, err := a.runCommandInDir("sh", "-c", cmd)
 	if err != nil {
 		a.logger.Log(common.EventStepFailure, "Failed to gather diff", map[string]any{"error": err.Error()})
 		return ""
@@ -738,8 +736,7 @@ func (a *PRFollowupAgent) gatherDiff(_ context.Context, repoInfo *gitprovider.Re
 func (a *PRFollowupAgent) gatherCIFailureLogs(_ context.Context, repoInfo *gitprovider.RepoInfo, prNumber string, branch string) string {
 	if a.provider == gitprovider.GitProviderGitLab {
 		encodedPath := url.PathEscape(repoInfo.FullPath)
-		cmd := fmt.Sprintf("glab api projects/%s/merge_requests/%s/pipelines", encodedPath, prNumber)
-		out, err := a.runCommandInDir("sh", "-c", cmd)
+		out, err := a.runCommandInDir("glab", "api", fmt.Sprintf("projects/%s/merge_requests/%s/pipelines", encodedPath, prNumber))
 		if err != nil {
 			a.logger.Log(common.EventStepFailure, "Failed to gather GitLab CI logs", map[string]any{"error": err.Error()})
 			return ""
@@ -758,8 +755,7 @@ func (a *PRFollowupAgent) gatherCIFailureLogs(_ context.Context, repoInfo *gitpr
 	var sb strings.Builder
 
 	// Step 1: List failed check runs with their names
-	checkCmd := fmt.Sprintf("gh api repos/%s/commits/%s/check-runs --jq '.check_runs[] | select(.conclusion==\"failure\") | .name'", repoInfo.FullPath, ref)
-	checkNames, err := a.runCommandInDir("sh", "-c", checkCmd)
+	checkNames, err := a.runCommandInDir("gh", "api", fmt.Sprintf("repos/%s/commits/%s/check-runs", repoInfo.FullPath, ref), "--jq", `.check_runs[] | select(.conclusion=="failure") | .name`)
 	if err != nil {
 		a.logger.Log(common.EventStepFailure, "Failed to list failed checks", map[string]any{"error": err.Error()})
 		return ""
@@ -773,9 +769,7 @@ func (a *PRFollowupAgent) gatherCIFailureLogs(_ context.Context, repoInfo *gitpr
 	fmt.Fprintf(&sb, "### Failed Checks\n%s\n\n", failedChecks)
 
 	// Step 2: Get failed workflow run logs (GitHub Actions specific)
-	// gh run list gives us run IDs for the branch, then gh run view --log-failed gives actual errors
-	runListCmd := fmt.Sprintf("gh run list --branch %s --status failure --limit 5 --json databaseId,name,conclusion --repo %s", branch, repoInfo.FullPath)
-	runListOut, err := a.runCommandInDir("sh", "-c", runListCmd)
+	runListOut, err := a.runCommandInDir("gh", "run", "list", "--branch", branch, "--status", "failure", "--limit", "5", "--json", "databaseId,name,conclusion", "--repo", repoInfo.FullPath)
 	if err != nil {
 		a.logger.Log(common.EventStepFailure, "Failed to list failed runs", map[string]any{"error": err.Error()})
 		return sb.String() // Return check names at minimum
@@ -798,8 +792,7 @@ func (a *PRFollowupAgent) gatherCIFailureLogs(_ context.Context, repoInfo *gitpr
 		run := runs[i]
 		fmt.Fprintf(&sb, "### Workflow: %s (Run #%d)\n", run.Name, run.DatabaseID)
 
-		logCmd := fmt.Sprintf("gh run view %d --log-failed --repo %s 2>&1 | tail -100", run.DatabaseID, repoInfo.FullPath)
-		logOut, err := a.runCommandInDir("sh", "-c", logCmd)
+		logOut, err := a.runCommandInDir("gh", "run", "view", strconv.FormatInt(run.DatabaseID, 10), "--log-failed", "--repo", repoInfo.FullPath)
 		if err != nil {
 			fmt.Fprintf(&sb, "(Failed to fetch logs: %s)\n\n", err.Error())
 			continue
