@@ -16,6 +16,7 @@ func Execute(body ActionExecuteBody) (map[string]any, error) {
 		NoSinks: true,
 		Cache:   false,
 	}
+	relayRequest.TenantID = body.TenantID
 	relayRequest.Body.Origin = "llm-server"
 
 	data := make(map[string]any)
