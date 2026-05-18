@@ -40,7 +40,17 @@ func (c *appConfig) GetFloat64(key string, defaultValue float64) float64 {
 
 var Config appConfig
 
-const SERVICE_NAME = "llm-server"
+// SERVICE_NAME is the worker_type used in the leader-election table (nb_workers).
+// Defaults to "llm-server" so production behavior is unchanged. Local developers
+// can override via LLM_SERVER_SERVICE_NAME=llm-server-<dev> to opt out of the
+// shared election pool — each dev's local llm-server then has its own pool of
+// one, always wins the leader lease, and runs the watch dispatcher reliably.
+var SERVICE_NAME = func() string {
+	if v := os.Getenv("LLM_SERVER_SERVICE_NAME"); v != "" {
+		return v
+	}
+	return "llm-server"
+}()
 
 type appConfig struct {
 	Port string `mapstructure:"port"`
@@ -554,6 +564,36 @@ type appConfig struct {
 	// complexity tier replaces the flat baseline in a later phase.
 	ProductivityManualBaselineMinutes int     `mapstructure:"llm_productivity_manual_baseline_minutes"`
 	ProductivityEngineerHourlyRateUsd float64 `mapstructure:"llm_productivity_engineer_hourly_rate_usd"`
+
+	// Watch (background-poll-and-notify) feature.
+	// When enabled, agents can register a "watch" via the watch_resource tool;
+	// a leader-elected dispatcher polls each watch's source on a fixed cadence,
+	// evaluates a predicate, and notifies the user's conversation on termination.
+	WatchEnabled               bool `mapstructure:"llm_server_watch_enabled"`
+	WatchDispatcherIntervalSec int  `mapstructure:"llm_server_watch_dispatcher_interval_sec"`
+	WatchWorkerCount           int  `mapstructure:"llm_server_watch_worker_count"`
+	WatchWorkerQueueSize       int  `mapstructure:"llm_server_watch_worker_queue_size"`
+	WatchMinIntervalSec        int  `mapstructure:"llm_server_watch_min_interval_sec"`
+	WatchMaxDurationSec        int  `mapstructure:"llm_server_watch_max_duration_sec"`
+	WatchMaxPerTenant          int  `mapstructure:"llm_server_watch_max_per_tenant"`
+	WatchMaxFailures           int  `mapstructure:"llm_server_watch_max_failures"`
+	WatchPrimingPollTimeoutSec int  `mapstructure:"llm_server_watch_priming_poll_timeout_sec"`
+	WatchSubmitTimeoutSec      int  `mapstructure:"llm_server_watch_submit_timeout_sec"`
+	WatchPollTimeoutSec        int  `mapstructure:"llm_server_watch_poll_timeout_sec"`
+	WatchSummarizerTimeoutSec  int  `mapstructure:"llm_server_watch_summarizer_timeout_sec"`
+	WatchDispatchBatchSize     int  `mapstructure:"llm_server_watch_dispatch_batch_size"`
+	// WatchSqlSourceEnabled gates the sql watch source kind separately from
+	// the overall feature flag. The sql source executes agent-authored
+	// SELECTs against the metastore in a READ ONLY tx — the predicate stays
+	// safe but the query has no per-tenant row filter (a SELECT on a
+	// shared table will see all tenants). Default false until that path
+	// runs under a tenant-scoped role / RLS.
+	WatchSqlSourceEnabled bool `mapstructure:"llm_server_watch_sql_source_enabled"`
+	// WatchBypassLeaderElection skips the leader-elected scheduler and runs
+	// the dispatcher tick in a plain goroutine on every replica. Intended
+	// for local demos where a shared dev DB has cluster pods holding the
+	// lease. Never set this in a multi-replica production deployment.
+	WatchBypassLeaderElection bool `mapstructure:"llm_server_watch_bypass_leader_election"`
 }
 
 func (a appConfig) SetString(key string, value string) {
@@ -922,6 +962,41 @@ func init() {
 
 	viper.SetDefault("llm_productivity_manual_baseline_minutes", 25)
 	viper.SetDefault("llm_productivity_engineer_hourly_rate_usd", 5.0)
+
+	// Watch (background-poll-and-notify) defaults. Disabled by default — opt in via env.
+	viper.SetDefault("llm_server_watch_enabled", false)
+	viper.SetDefault("llm_server_watch_dispatcher_interval_sec", 10)
+	viper.SetDefault("llm_server_watch_worker_count", 10)
+	viper.SetDefault("llm_server_watch_worker_queue_size", 50)
+	viper.SetDefault("llm_server_watch_min_interval_sec", 30)
+	// Default cap is 1h, lowered from 86400 (24h) to shrink the blast
+	// radius of the static-admin context the watch poll runs under: an
+	// off-boarded user / disabled account would otherwise keep driving
+	// admin-scoped tool calls for a full day before the watch expires.
+	// Ops can raise per-environment via LLM_SERVER_WATCH_MAX_DURATION_SEC
+	// once the per-poll re-validation hook lands. Real watches today cap
+	// at 600s (rollouts) / 1800s (jobs) / 3600s (stack ops) per the
+	// shared async-completion prompt, so this is a generous ceiling.
+	viper.SetDefault("llm_server_watch_max_duration_sec", 3600)
+	viper.SetDefault("llm_server_watch_max_per_tenant", 20)
+	viper.SetDefault("llm_server_watch_max_failures", 3)
+	viper.SetDefault("llm_server_watch_priming_poll_timeout_sec", 5)
+	viper.SetDefault("llm_server_watch_submit_timeout_sec", 5)
+	// Lowered from 60s — 60 was the LLM-judge worst case, not the typical
+	// case. A bounded worker pool of 10 was being pinned for the full 60s
+	// by a handful of slow kubectl / github / llm_judge polls, so other
+	// tenants' watches got cascade-starved. Slow predicates needing more
+	// budget should raise this per-tenant via env override rather than
+	// inflict the worst case on everyone.
+	viper.SetDefault("llm_server_watch_poll_timeout_sec", 15)
+	// Bounds the terminal-state LLM summarizer. The summarize call runs
+	// after MarkTerminal commits, so it is OK for it to fail (responder
+	// falls back to the raw predicate summary); the timeout is here only
+	// to prevent a stuck Gemini/Bedrock call from pinning a watch worker.
+	viper.SetDefault("llm_server_watch_summarizer_timeout_sec", 30)
+	viper.SetDefault("llm_server_watch_dispatch_batch_size", 100)
+	viper.SetDefault("llm_server_watch_sql_source_enabled", false)
+	viper.SetDefault("llm_server_watch_bypass_leader_election", false)
 
 	viper.SetDefault("llm_server_scratchpad_summarization_enabled", true)
 	viper.SetDefault("llm_server_scratchpad_max_observation_chars", 65536)

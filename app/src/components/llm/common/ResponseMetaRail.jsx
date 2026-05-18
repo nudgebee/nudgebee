@@ -69,6 +69,7 @@ const COUNT_LABELS = {
   tasks: ['task', 'tasks'],
   contexts: ['context', 'contexts'],
   memories: ['memory', 'memories'],
+  watches: ['watch', 'watches'],
 };
 
 const countItem = (key, tone, count, onClick) => {
@@ -189,6 +190,14 @@ const buildItems = (props) => {
   if (filterItem) {
     items.push(filterItem);
   }
+  if (props.watchCount > 0 && props.onOpenWatches) {
+    // 'success' tone (green family) — visually separate from tasks/contexts/
+    // memories so the user clocks "this is a different category" at a glance.
+    // Watches imply forward-motion ("agent is still working"), which green
+    // carries well. MUST be a valid ChipTone (see Chip.tsx) — a raw hue like
+    // 'green' is not a tone and crashes TONE_PALETTE lookup.
+    items.push(countItem('watches', 'success', props.watchCount, props.onOpenWatches));
+  }
   if (props.duration) {
     // `boundary: true` swaps the trailing separator from `·` to `|` — visually distinguishes
     // "how long it took" from "when it happened".
@@ -221,9 +230,11 @@ const ResponseMetaRail = ({
   taskCount = 0,
   contextCount = 0,
   memoryCount = 0,
+  watchCount = 0,
   onOpenTasks,
   onOpenContexts,
   onOpenMemories,
+  onOpenWatches,
   messageTokenData,
   onTokenUsageHover,
   isFetchingTokenData,
@@ -236,9 +247,11 @@ const ResponseMetaRail = ({
     taskCount,
     contextCount,
     memoryCount,
+    watchCount,
     onOpenTasks,
     onOpenContexts,
     onOpenMemories,
+    onOpenWatches,
     messageTokenData,
     onTokenUsageHover,
     isFetchingTokenData,
@@ -281,9 +294,11 @@ ResponseMetaRail.propTypes = {
   taskCount: PropTypes.number,
   contextCount: PropTypes.number,
   memoryCount: PropTypes.number,
+  watchCount: PropTypes.number,
   onOpenTasks: PropTypes.func,
   onOpenContexts: PropTypes.func,
   onOpenMemories: PropTypes.func,
+  onOpenWatches: PropTypes.func,
   messageTokenData: PropTypes.any,
   onTokenUsageHover: PropTypes.func,
   isFetchingTokenData: PropTypes.bool,

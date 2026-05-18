@@ -11653,6 +11653,72 @@ type WebhookSubjectMappingsSyncOutput {
   synced_count: Int!
 }
 
+# ---------------------------------------------------------------------------
+# Watch tasks — UI for the background-watch feature.
+#
+# Action-shape mirror of the previous raw llm_watch_tasks table queries so
+# the watches drawer works under RPC_BYPASS_HASURA=true (the bypass router
+# only routes registered actions, not arbitrary table queries). The React
+# component reads the same field set either way.
+# ---------------------------------------------------------------------------
+
+type Query {
+  ai_list_watches_by_conversation(request: AILlmWatchListRequest!): AILlmWatchListResponse
+}
+
+type Mutation {
+  ai_cancel_watch(request: AILlmWatchCancelRequest!): AILlmWatchCancelResponse
+}
+
+input AILlmWatchListRequest {
+  conversation_id: String!
+}
+
+input AILlmWatchCancelRequest {
+  watch_id: String!
+}
+
+type AILlmWatchListResponse {
+  data: AILlmWatchListData
+  err: Json
+}
+
+type AILlmWatchListData {
+  watches: [AILlmWatchRow!]!
+}
+
+type AILlmWatchRow {
+  id: String!
+  status: String!
+  source_kind: String!
+  predicate_kind: String!
+  predicate_expr: String!
+  predicate_negate: Boolean!
+  poll_interval_sec: Int!
+  max_duration_sec: Int!
+  poll_count: Int!
+  failure_count: Int!
+  next_poll_at: String!
+  last_poll_at: String
+  last_poll_result: String
+  final_result: String
+  error: String
+  expires_at: String!
+  created_at: String!
+  updated_at: String!
+}
+
+type AILlmWatchCancelResponse {
+  data: AILlmWatchCancelData
+  err: Json
+}
+
+type AILlmWatchCancelData {
+  affected_rows: Int!
+  watch_id: String
+  status: String
+}
+
 scalar Datetime
 
 scalar Json

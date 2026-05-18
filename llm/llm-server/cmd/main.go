@@ -200,6 +200,13 @@ func main() {
 	// Periodically delete never-used and stale long-term memories.
 	go core.StartMemoryTTLCleanup(syncCtx)
 
+	// Wire the watch package against the LLM + security stack and register
+	// the leader-elected dispatcher. No-op when LLM_SERVER_WATCH_ENABLED=false.
+	if err := core.BootstrapWatch(); err != nil {
+		slog.Error("main: failed to bootstrap watch", "error", err)
+	}
+
+
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {

@@ -143,6 +143,26 @@ actions:
       - role: account_admin_readonly
       - role: account_admin
     comment: Get budget status for an account
+  - name: ai_list_watches_by_conversation
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/watches/list-by-conversation'
+      forward_client_headers: true
+    permissions:
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+      - role: account_admin
+      - role: account_admin_readonly
+    comment: List background watches owned by a conversation. Server enforces tenant scoping.
+  - name: ai_cancel_watch
+    definition:
+      kind: "synchronous"
+      handler: '{{LLM_SERVER_URL}}/v1/watches/cancel'
+      forward_client_headers: true
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: Cancel a non-terminal background watch. Server enforces tenant scoping and non-terminal-only transitions.
   - name: ai_list_budget_config
     definition:
       kind: "synchronous"

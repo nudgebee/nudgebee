@@ -1579,6 +1579,19 @@ const KubernetesLLMResponseGenerator = ({
                 // when the sheet is rendered so we don't have two interactive entry points for
                 // the same question.
                 followupReadOnlyKey: showFollowupSheet ? activeFollowupKey : null,
+                // When a background watch transitions to a terminal state, the
+                // responder appends a markdown "Watch update" block to the parent
+                // message's `response` column on the server. The chip poller in
+                // MessageStream detects that transition and invokes this callback
+                // so we pull the fresh message bodies — without it, the block
+                // is in the DB but the UI keeps showing the pre-terminal copy
+                // until a hard refresh. fetchConversation is the same call used
+                // for initial chat load; it's idempotent.
+                onWatchTerminal: () => {
+                  if (selectedSessionId || selectedConversationId) {
+                    fetchConversation(selectedSessionId, selectedConversationId, 'selected', false);
+                  }
+                },
               }}
             />
 

@@ -92,6 +92,7 @@ func (l *K8sDebugAgent2) GetSystemPrompt(ctx *security.RequestContext, query cor
 	tmplData := map[string]any{
 		"remediation_enabled":   config.Config.RemediationAgentEnabled,
 		"shell_tool_enabled":    config.Config.LlmServerShellToolEnabled,
+		"watch_enabled":         config.Config.WatchEnabled,
 		"data_protection_rules": prompts_repo.GetPrompt(prompts_repo.PromptSharedDataProtectionRules),
 		"code_analysis_rules":   prompts_repo.GetPrompt(prompts_repo.PromptSharedCodeAnalysisRules),
 		"time_handling_rules":   prompts_repo.GetPrompt(prompts_repo.PromptSharedTimeHandlingRules),

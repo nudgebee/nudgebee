@@ -799,6 +799,9 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 					ctx.GetMeter(),
 				)
 				cleanupCmd := fmt.Sprintf("rm -rf /tmp/code-analysis-%s-*", agentRequest.SessionId)
+				// SessionId is passed as the conversation_id arg: the workspace
+				// pod rejects empty conversation_id (validates non-empty + safe
+				// path charset) and would silently no-op the cleanup otherwise.
 				if _, cleanupErr := wm.ExecuteCommand(cleanupCtx, agentRequest.AccountId, agentRequest.SessionId, cleanupCmd, nil); cleanupErr != nil {
 					logger.Warn("code: workspace cleanup failed", "error", cleanupErr)
 				}

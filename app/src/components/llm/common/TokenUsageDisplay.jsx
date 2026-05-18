@@ -1069,14 +1069,19 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
 
             {/* Table Rows */}
             {validAgents.map((agent, idx) => {
-              // Use agent_name if available, otherwise use shortened agent_id
+              // Use agent_name if available, otherwise use shortened agent_id.
+              // agent_id can be null/undefined for synthetic agents emitted by
+              // the watch terminal-block summarizer (no row in llm_conversation_agent),
+              // so guard it before calling .length / .substring — otherwise the
+              // whole token-usage table crashes the message render.
               const hasAgentName = agent.agent_name && agent.agent_name.trim().length > 0;
+              const agentIdStr = agent.agent_id ? String(agent.agent_id) : '';
               const displayName = hasAgentName
                 ? agent.agent_name
-                : agent.agent_id.length > 20
-                ? agent.agent_id.substring(0, 8) + '...'
-                : agent.agent_id;
-              const tooltipText = hasAgentName ? `${agent.agent_name} (${agent.agent_id})` : agent.agent_id;
+                : agentIdStr.length > 20
+                ? agentIdStr.substring(0, 8) + '...'
+                : agentIdStr || '(unknown)';
+              const tooltipText = hasAgentName ? `${agent.agent_name} (${agentIdStr})` : agentIdStr || '(unknown agent)';
 
               return (
                 <React.Fragment key={idx}>

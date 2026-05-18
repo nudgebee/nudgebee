@@ -40,6 +40,9 @@ func ConfigureRoutes(r *gin.Engine, tracer trace.Tracer, meter metric.Meter) {
 	handleSyncConversationStatusApi(r)
 	handleRagApis(r, tracer, meter)
 	handleBudgetStatusApi(r, tracer, meter)
+	if config.Config.WatchEnabled {
+		handleWatchesApi(r, tracer, meter)
+	}
 	handleConversationApis(r, tracer, meter)
 	handleKnowledgebaseApis(r, tracer, meter)
 	handleMemoryApis(r, tracer, meter)

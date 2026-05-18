@@ -3,8 +3,10 @@ package core
 import (
 	"fmt"
 	"log/slog"
+	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 	"regexp"
 	"slices"
@@ -12,6 +14,39 @@ import (
 
 	"github.com/samber/lo"
 )
+
+// watchToolNames lists the four watch tools that get globally injected into
+// every agent's tool list when WatchEnabled is on. Kept as a package-level var
+// so the inject and strip blocks below stay in sync.
+var watchToolNames = []string{
+	tools.ToolWatchResource,
+	tools.ToolWatchStatus,
+	tools.ToolWatchCancel,
+	tools.ToolWatchList,
+}
+
+// WatchAsyncCompletionRulesPrompt returns the shared async-completion
+// rule body for injection into a planner's system prompt — or the empty
+// string when the watch feature flag is off. Centralising the gate here
+// keeps planner_react_2 / planner_react_3 / planner_rewoo_2 from each
+// having to know about config.Config.WatchEnabled; they just call this
+// helper at template-var fill time and pay zero prompt-tokens when the
+// feature is disabled.
+func WatchAsyncCompletionRulesPrompt() string {
+	if !config.Config.WatchEnabled {
+		return ""
+	}
+	return prompts_repo.GetPrompt(prompts_repo.PromptSharedAsyncCompletionRules)
+}
+
+func isWatchToolName(name string) bool {
+	for _, w := range watchToolNames {
+		if strings.EqualFold(name, w) {
+			return true
+		}
+	}
+	return false
+}
 
 // DefaultToolsOptOut lets an agent decline the planner's automatic default-tool injection
 // (shell_execute, load_skills). Implement and return true for agents whose tool list is
@@ -34,9 +69,12 @@ type DefaultToolsOptOut interface {
 // `disabled_tools` historically does NOT block default injection (a documented quirk preserved here).
 // `allowed_tools` is a stricter, opt-in scope set by callers (e.g. runbook investigation tasks)
 // and therefore overrides default injection too.
-func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt string, tools []toolcore.NBTool, capabilities toolcore.AgentCapabilities) []toolcore.NBTool {
+// `toolList` parameter is intentionally not named `tools` to avoid shadowing
+// the `nudgebee/llm/tools` package import (used by `watchToolNames` at the
+// top of this file). Same convention applied to sibling Has* helpers.
+func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt string, toolList []toolcore.NBTool, capabilities toolcore.AgentCapabilities) []toolcore.NBTool {
 	// 1. Initial filtering based on capabilities (e.g. disabled_tools, allowed_tools)
-	tools = FilterTools(tools, capabilities)
+	toolList = FilterTools(toolList, capabilities)
 
 	skipInjection := false
 	if agent != nil {
@@ -48,38 +86,62 @@ func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt st
 	// 2. Inject or Remove shell_execute based on global config
 	if config.Config.LlmServerShellToolEnabled {
 		if !skipInjection {
-			found := lo.ContainsBy(tools, func(t toolcore.NBTool) bool {
+			found := lo.ContainsBy(toolList, func(t toolcore.NBTool) bool {
 				return strings.EqualFold(t.Name(), toolcore.ToolExecuteShellCommand)
 			})
 			if !found {
 				if t, ok := toolcore.GetNBTool(accountId, toolcore.ToolExecuteShellCommand); ok {
-					tools = append(tools, t)
+					toolList = append(toolList, t)
 				}
 			}
 		}
 	} else {
 		// If explicitly disabled globally, ensure it's removed even if an agent tried to include it
-		tools = lo.Filter(tools, func(t toolcore.NBTool, _ int) bool {
+		toolList = lo.Filter(toolList, func(t toolcore.NBTool, _ int) bool {
 			return !strings.EqualFold(t.Name(), toolcore.ToolExecuteShellCommand)
 		})
 	}
 
-	// 3. Inject load_skills tool if the agent has KB mappings (indicated by skill-lists in the prompt)
+	// 3. Inject watch tools globally when enabled. Mirrors the shell_execute pattern: any
+	// agent that takes async write actions (rollouts, jobs, helm/argocd/cert-manager,
+	// cloud-provider stack ops, github workflows, etc.) gets the same uniform watch
+	// capability, so we don't have to wire it per-agent. Same opt-out semantics as shell.
+	if config.Config.WatchEnabled {
+		if !skipInjection {
+			for _, watchToolName := range watchToolNames {
+				already := lo.ContainsBy(toolList, func(t toolcore.NBTool) bool {
+					return strings.EqualFold(t.Name(), watchToolName)
+				})
+				if already {
+					continue
+				}
+				if t, ok := toolcore.GetNBTool(accountId, watchToolName); ok {
+					toolList = append(toolList, t)
+				}
+			}
+		}
+	} else {
+		toolList = lo.Filter(toolList, func(t toolcore.NBTool, _ int) bool {
+			return !isWatchToolName(t.Name())
+		})
+	}
+
+	// 4. Inject load_skills tool if the agent has KB mappings (indicated by skill-lists in the prompt)
 	if !skipInjection && strings.Contains(agentPrompt, "<skill-lists>") {
-		found := lo.ContainsBy(tools, func(t toolcore.NBTool) bool {
+		found := lo.ContainsBy(toolList, func(t toolcore.NBTool) bool {
 			return t.Name() == "load_skills"
 		})
 		if !found {
 			if t, ok := toolcore.GetNBTool(accountId, "load_skills"); ok {
-				tools = append(tools, t)
+				toolList = append(toolList, t)
 			}
 		}
 	}
 
-	// 4. If callers passed an explicit allow-list, enforce it on the injected defaults too.
+	// 5. If callers passed an explicit allow-list, enforce it on the injected defaults too.
 	if capabilities.HasAllowedTools() {
-		tools = FilterTools(tools, capabilities)
-		if len(tools) == 0 {
+		toolList = FilterTools(toolList, capabilities)
+		if len(toolList) == 0 {
 			// A pinned allow-list that produced zero tools is almost certainly a misconfiguration —
 			// e.g. the allow-listed tools belong to a different agent than the one auto-selected
 			// by the router. Surface a clear breadcrumb so support can diagnose without a traceback.
@@ -89,13 +151,13 @@ func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt st
 		}
 	}
 
-	return tools
+	return toolList
 }
 
 // HasShellTool checks if shell_execute is in the agent's final tool list.
 // Used to set shell_tool_enabled per-agent instead of globally.
-func HasShellTool(tools []toolcore.NBTool) bool {
-	for _, t := range tools {
+func HasShellTool(toolList []toolcore.NBTool) bool {
+	for _, t := range toolList {
 		if t.Name() == toolcore.ToolExecuteShellCommand {
 			return true
 		}
@@ -104,8 +166,8 @@ func HasShellTool(tools []toolcore.NBTool) bool {
 }
 
 // HasDelegateAgentTool returns true if the delegate_agent tool is present in the tool list.
-func HasDelegateAgentTool(tools []toolcore.NBTool) bool {
-	for _, t := range tools {
+func HasDelegateAgentTool(toolList []toolcore.NBTool) bool {
+	for _, t := range toolList {
 		if strings.EqualFold(t.Name(), "delegate_agent") {
 			return true
 		}

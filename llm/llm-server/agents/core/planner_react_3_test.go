@@ -29,7 +29,7 @@ func renderReact3Base(t *testing.T, notebookEnabled, hypothesisModeEnabled bool)
 		"delegate_agent_enabled", "notebook_enabled", "hypothesis_mode_enabled",
 		"conversation_context_enabled", "context_management_rules", "time_handling_rules",
 		"data_protection_rules", "code_analysis_rules", "security_rules",
-		"memory_consumption_rules",
+		"memory_consumption_rules", "async_completion_rules",
 	}
 	tmpl := prompts.NewPromptTemplate(base, vars)
 	out, err := tmpl.Format(map[string]any{
@@ -47,6 +47,7 @@ func renderReact3Base(t *testing.T, notebookEnabled, hypothesisModeEnabled bool)
 		"code_analysis_rules":          "",
 		"security_rules":               "",
 		"memory_consumption_rules":     "",
+		"async_completion_rules":       "",
 	})
 	assert.NoError(t, err, "react_3 base prompt must render without template errors")
 	return out

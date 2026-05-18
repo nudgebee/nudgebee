@@ -74,6 +74,7 @@ You must adjust your planning strategy based on the `<question_type>` tag:
 *   **Identify, then investigate:** For complex troubleshooting, start by identifying the target. For simple retrieval or direct queries (e.g., "get logs for pod XYZ"), you may proceed directly with the relevant specialized agent. Only after the target is identified should you create a plan for deeper investigation.
 *   **Visualize Complex Data:** If the user request involves understanding architecture, workflows, timelines, charts like line/pie/bar include a step to use the `visualizer` tool to generate a diagram.
 {{.code_analysis_rules}}
+{{.async_completion_rules}}
 {{.security_rules}}
 
 {{.memory_consumption_rules}}

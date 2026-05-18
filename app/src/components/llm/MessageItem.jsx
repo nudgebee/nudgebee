@@ -185,9 +185,11 @@ const MessageItem = ({
         taskCount={responseMeta.taskCount}
         contextCount={responseMeta.contextCount}
         memoryCount={responseMeta.memoryCount}
+        watchCount={responseMeta.watchCount}
         onOpenTasks={responseMeta.onOpenTasks}
         onOpenContexts={responseMeta.onOpenContexts}
         onOpenMemories={responseMeta.onOpenMemories}
+        onOpenWatches={responseMeta.onOpenWatches}
         messageTokenData={responseMeta.messageTokenData}
         onTokenUsageHover={responseMeta.onTokenUsageHover}
         isFetchingTokenData={responseMeta.isFetchingTokenData}
@@ -602,9 +604,11 @@ MessageItem.propTypes = {
     taskCount: PropTypes.number,
     contextCount: PropTypes.number,
     memoryCount: PropTypes.number,
+    watchCount: PropTypes.number,
     onOpenTasks: PropTypes.func,
     onOpenContexts: PropTypes.func,
     onOpenMemories: PropTypes.func,
+    onOpenWatches: PropTypes.func,
     messageTokenData: PropTypes.any,
     onTokenUsageHover: PropTypes.func,
     isFetchingTokenData: PropTypes.bool,

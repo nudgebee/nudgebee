@@ -137,6 +137,13 @@ var sharedCodeAnalysisRules string
 //go:embed shared_security_rules.txt
 var sharedSecurityRules string
 
+//go:embed shared_async_completion_rules.txt
+var sharedAsyncCompletionRules string
+
+//go:embed watch_completion_summary.txt
+var watchCompletionSummary string
+
+
 // toolRemediationGenerate is the system prompt for the remediation_generate tool.
 // It instructs the LLM to produce a structured remediation plan (root cause, impact,
 // proposed actions, verification steps) without executing anything — the user must approve first.
@@ -221,6 +228,8 @@ const PromptSharedTimeHandlingRules = "shared_time_handling_rules"
 const PromptSharedDataProtectionRules = "shared_data_protection_rules"
 const PromptSharedCodeAnalysisRules = "shared_code_analysis_rules"
 const PromptSharedSecurityRules = "shared_security_rules"
+const PromptSharedAsyncCompletionRules = "shared_async_completion_rules"
+const PromptWatchCompletionSummary = "watch_completion_summary"
 
 // PromptToolRemediationGenerate is the system prompt embedded in tool_remediation_generate.txt.
 // Loaded by RemediationGenerateTool.Call() to avoid hardcoding prompts in Go source.
@@ -329,6 +338,10 @@ func GetPrompt(module string, args ...any) string {
 		data = sharedCodeAnalysisRules
 	case PromptSharedSecurityRules:
 		data = sharedSecurityRules
+	case PromptSharedAsyncCompletionRules:
+		data = sharedAsyncCompletionRules
+	case PromptWatchCompletionSummary:
+		data = watchCompletionSummary
 	case PromptToolRemediationGenerate:
 		data = toolRemediationGenerate
 	case PromptScratchpadSummarizer:
