@@ -1,0 +1,6 @@
+# Sentinel Security Journal
+
+## 2026-05-18 - Shell injection via database query interpolation in tool commands
+**Vulnerability:** All database tool commands (PostgreSQL, MySQL, MSSQL, ClickHouse, SSH) interpolated user-controlled query strings directly into shell command strings using double-quote wrapping (`fmt.Sprintf(..."%s"..., query)`). This allowed shell metacharacter injection — a query like `SELECT 1"; malicious_command; echo "` would break out of the double quotes and execute arbitrary commands on the workspace pod.
+**Learning:** The codebase already had `common.ShellEscape()` (single-quote wrapping) and used it for the `database` parameter, but the `query` parameter — which is the primary user-controlled input — was not escaped. The `sqlValidateReadOnly()` function provided SQL-level protection but not shell-level protection. Defense in depth was incomplete: SQL validation prevented write queries but didn't address the shell execution boundary.
+**Prevention:** Any time a user-controlled string is interpolated into a shell command, it MUST go through `common.ShellEscape()`. Grep for `fmt.Sprintf` patterns containing `"%s"` that construct shell commands — these are the most dangerous pattern.

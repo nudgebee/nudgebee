@@ -582,7 +582,7 @@ func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query 
 	explainQuery := false
 	switch module {
 	case RelayJobSSH:
-		query = fmt.Sprintf(`mkdir -p ~/.ssh && echo "$SSH_KEY" > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa && ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR $SSH_USER@$SSH_HOST "%s"`, query)
+		query = fmt.Sprintf(`mkdir -p ~/.ssh && echo "$SSH_KEY" > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa && ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR $SSH_USER@$SSH_HOST %s`, common.ShellEscape(query))
 	case RelayJobPostgres:
 		pgFlags := ""
 		if dbName, ok := configs["database"]; ok {
@@ -593,12 +593,13 @@ func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query 
 
 		if !strings.HasPrefix(query, "psql") {
 			if (strings.HasPrefix(strings.ToLower(strings.TrimSpace(query)), "explain ")) || (strings.HasPrefix(strings.ToLower(strings.TrimSpace(query)), "explain analyze")) {
-				query = fmt.Sprintf(`psql %s -c "%s"`, pgFlags, query)
+				query = fmt.Sprintf(`psql %s -c %s`, pgFlags, common.ShellEscape(query))
 				explainQuery = true
 			} else {
 				query = strings.TrimSpace(query)
 				query = strings.TrimSuffix(query, ";")
-				query = fmt.Sprintf(`psql %s -c "\copy (%s) TO stdout WITH CSV HEADER"`, pgFlags, query)
+				copyCmd := fmt.Sprintf(`\copy (%s) TO stdout WITH CSV HEADER`, query)
+				query = fmt.Sprintf(`psql %s -c %s`, pgFlags, common.ShellEscape(copyCmd))
 			}
 		} else {
 			query = strings.Replace(query, "psql", "psql "+pgFlags, 1)
@@ -613,12 +614,12 @@ func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query 
 
 		if !raw {
 			if (strings.HasPrefix(strings.ToLower(strings.TrimSpace(query)), "explain ")) || (strings.HasPrefix(strings.ToLower(strings.TrimSpace(query)), "explain analyze")) {
-				query = fmt.Sprintf(`mariadb %s -e "%s"`, mysqlFlags, query)
+				query = fmt.Sprintf(`mariadb %s -e %s`, mysqlFlags, common.ShellEscape(query))
 				explainQuery = true
 			} else {
 				query = strings.TrimSpace(query)
 				query = strings.TrimSuffix(query, ";")
-				query = fmt.Sprintf(`mariadb %s -e "%s"`, mysqlFlags, query)
+				query = fmt.Sprintf(`mariadb %s -e %s`, mysqlFlags, common.ShellEscape(query))
 			}
 		} else {
 			if strings.Contains(query, "mysql") {
@@ -639,7 +640,7 @@ func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query 
 		if !raw {
 			query = strings.TrimSpace(query)
 			query = strings.TrimSuffix(query, ";")
-			query = fmt.Sprintf(`sqlcmd %s -Q "%s" -s "	" -W`, mssqlFlags, query)
+			query = fmt.Sprintf(`sqlcmd %s -Q %s -s "	" -W`, mssqlFlags, common.ShellEscape(query))
 		} else {
 			query = strings.Replace(query, "sqlcmd", "sqlcmd "+mssqlFlags, 1)
 		}
@@ -742,8 +743,8 @@ func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query 
 		if !raw {
 			query = strings.TrimSpace(query)
 			query = strings.TrimSuffix(query, ";")
-			query = fmt.Sprintf(`clickhouse client %s --query "%s" --format CSVWithNames --send_logs_level=none --progress=0`,
-				chFlags, query)
+			query = fmt.Sprintf(`clickhouse client %s --query %s --format CSVWithNames --send_logs_level=none --progress=0`,
+				chFlags, common.ShellEscape(query))
 		} else {
 			// For raw mode, try to inject flags if clickhouse client is present
 			if strings.Contains(query, "clickhouse client") {

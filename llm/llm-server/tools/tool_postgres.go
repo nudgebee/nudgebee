@@ -126,12 +126,13 @@ func (m PostgresExecuteTool) Call(nbRequestContext core.NbToolContext, input cor
 
 		explainQuery := false
 		if (strings.HasPrefix(strings.ToLower(strings.TrimSpace(query)), "explain ")) || (strings.HasPrefix(strings.ToLower(strings.TrimSpace(query)), "explain analyze")) {
-			query = fmt.Sprintf(`psql %s -c "%s"`, pgFlags, query)
+			query = fmt.Sprintf(`psql %s -c %s`, pgFlags, common.ShellEscape(query))
 			explainQuery = true
 		} else {
 			query = strings.TrimSpace(query)
 			query = strings.TrimSuffix(query, ";")
-			query = fmt.Sprintf(`psql %s -c "\copy (%s) TO stdout WITH CSV HEADER"`, pgFlags, query)
+			copyCmd := fmt.Sprintf(`\copy (%s) TO stdout WITH CSV HEADER`, query)
+			query = fmt.Sprintf(`psql %s -c %s`, pgFlags, common.ShellEscape(copyCmd))
 		}
 
 		response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, query, map[string]string{
