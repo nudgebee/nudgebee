@@ -738,7 +738,7 @@ func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query 
 		}
 
 		chFlags := fmt.Sprintf(`--host $%s --port %s --user $%s --password $%s --database %s %s`,
-			chHost, chPort, chUserKeyInSecret, chPasswordKeyInSecret, chDatabase, secureFlag)
+			chHost, chPort, chUserKeyInSecret, chPasswordKeyInSecret, common.ShellEscape(chDatabase), secureFlag)
 
 		if !raw {
 			query = strings.TrimSpace(query)
