@@ -16,6 +16,9 @@ import (
 	md "github.com/JohannesKaufmann/html-to-markdown/v2"
 )
 
+// Hoisted from fetchEKSReleaseNotes — avoids recompiling on every call.
+var htmlH2Regex = regexp.MustCompile(`(?is)<h2[^>]*>`)
+
 //go:embed template.json
 var templateData []byte
 
@@ -336,11 +339,7 @@ func fetchEKSReleaseNotes(ctx *security.RequestContext, targetVersion string) (s
 			return "", nil
 		}
 
-		endRe, err := regexp.Compile(`(?is)<h2[^>]*>`)
-		if err != nil {
-			return "", fmt.Errorf("failed to compile end regex: %w", err)
-		}
-		endLoc := endRe.FindStringIndex(section)
+		endLoc := htmlH2Regex.FindStringIndex(section)
 		if len(endLoc) > 0 && endLoc[0] <= len(section) {
 			section = section[:endLoc[0]]
 		}

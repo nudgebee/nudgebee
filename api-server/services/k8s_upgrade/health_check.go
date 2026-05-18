@@ -16,6 +16,12 @@ import (
 	"time"
 )
 
+// Hoisted from functions — regexp.MustCompile costs ~1-5µs + heap allocs per call.
+var (
+	k8sNamespaceRegex  = regexp.MustCompile(`^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$`)
+	whitespaceRunRegex = regexp.MustCompile(`\s+`)
+)
+
 func performNodeHealthCheck(accountID string) ([]NodeHealth, error) {
 	items, err := getKubernetesResources(accountID, "nodes", nil, true)
 	if err != nil {
@@ -316,10 +322,9 @@ func getKubernetesResources(accountID, resourceType string, namespaces []string,
 	}
 
 	// kubectl --namespace only accepts a single namespace, so fetch per-namespace and merge
-	nsRegex := regexp.MustCompile(`^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$`)
 	var allItems []any
 	for _, ns := range namespaces {
-		if !nsRegex.MatchString(ns) {
+		if !k8sNamespaceRegex.MatchString(ns) {
 			continue // skip invalid namespace names to prevent command injection
 		}
 		command := fmt.Sprintf("kubectl get %s --namespace=%s -o json", resourceType, ns)
@@ -1697,8 +1702,7 @@ func splitConstraints(constraint string) []string {
 	constraint = strings.TrimSpace(constraint)
 
 	// Use regex to split on whitespace between constraints
-	re := regexp.MustCompile(`\s+`)
-	tokens := re.Split(constraint, -1)
+	tokens := whitespaceRunRegex.Split(constraint, -1)
 
 	// Recombine: an operator token followed by a version token should be one part
 	var parts []string

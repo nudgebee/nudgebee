@@ -7,6 +7,13 @@ import (
 	"strings"
 )
 
+// Hoisted from ExtractJSONFromLLMResponse — called per LLM response, so compiling once saves ~3-15µs + allocs per call.
+var llmJSONPatterns = []*regexp.Regexp{
+	regexp.MustCompile("```json\\s*\\n?({.*?})\\s*\\n?```"),
+	regexp.MustCompile("```\\s*\\n?({.*?})\\s*\\n?```"),
+	regexp.MustCompile("(?s)({.*})"),
+}
+
 // ExtractJSONFromLLMResponse attempts to extract valid JSON from LLM response
 // Handles responses that might contain explanatory text before/after JSON
 func ExtractJSONFromLLMResponse(response string, logger *Logger) (map[string]any, error) {
@@ -16,22 +23,12 @@ func ExtractJSONFromLLMResponse(response string, logger *Logger) (map[string]any
 		return result, nil
 	}
 
-	// Try to find JSON within the response using regex
-	patterns := []string{
-		// JSON object that might be wrapped in backticks or code blocks
-		"```json\\s*\\n?({.*?})\\s*\\n?```",
-		"```\\s*\\n?({.*?})\\s*\\n?```",
-		// JSON object that starts and ends with braces, allowing for multiline
-		"(?s)({.*})",
-	}
-
-	for _, pattern := range patterns {
-		re := regexp.MustCompile(pattern)
+	for _, re := range llmJSONPatterns {
 		matches := re.FindStringSubmatch(response)
 		if len(matches) > 1 {
 			if err := json.Unmarshal([]byte(matches[1]), &result); err == nil {
 				if logger != nil {
-					logger.Log(EventStepComplete, "Successfully extracted JSON using regex pattern", map[string]any{"pattern": pattern})
+					logger.Log(EventStepComplete, "Successfully extracted JSON using regex pattern", map[string]any{"pattern": re.String()})
 				}
 				return result, nil
 			}

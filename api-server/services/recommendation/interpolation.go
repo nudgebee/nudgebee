@@ -7,6 +7,9 @@ import (
 
 var templateVarRegex = regexp.MustCompile(`\{\{(\w+(?:\.\w+)*)\}\}`)
 
+// Hoisted from BuildVariableMap — regexp.MustCompile costs ~1-5µs + heap allocs per call.
+var resourceGroupRegex = regexp.MustCompile(`(?i)/resourceGroups/([^/]+)/`)
+
 // InterpolateMitigationsJson interpolates template variables in a Json array of mitigations.
 func InterpolateMitigationsJson(mitigations models.Json, vars map[string]string) models.Json {
 	if !mitigations.IsArray() {
@@ -42,8 +45,7 @@ func BuildVariableMap(recommendationData map[string]any, resourceId string, reso
 		vars["resource_region"] = resourceRegion
 	}
 	if resourceId != "" {
-		rgRegex := regexp.MustCompile(`(?i)/resourceGroups/([^/]+)/`)
-		if m := rgRegex.FindStringSubmatch(resourceId); len(m) > 1 {
+		if m := resourceGroupRegex.FindStringSubmatch(resourceId); len(m) > 1 {
 			vars["resource_group"] = m[1]
 		}
 	}
