@@ -164,6 +164,42 @@ func TestHandleExecute(t *testing.T) {
 			wantStatus:    http.StatusOK,
 			wantCmdStatus: "failed",
 		},
+		{
+			name: "Pipe to Absolute Path Shell",
+			req: ExecutionRequest{
+				Command:        `echo "test" | /bin/sh`,
+				ConversationID: "test-bypass-abs-pipe",
+			},
+			wantStatus:    http.StatusOK,
+			wantCmdStatus: "failed",
+		},
+		{
+			name: "Pipe to Absolute Path Bash",
+			req: ExecutionRequest{
+				Command:        `echo "test" | /usr/bin/bash`,
+				ConversationID: "test-bypass-abs-pipe-bash",
+			},
+			wantStatus:    http.StatusOK,
+			wantCmdStatus: "failed",
+		},
+		{
+			name: "Direct Shell Invocation with -c",
+			req: ExecutionRequest{
+				Command:        `bash -c "echo hello"`,
+				ConversationID: "test-bypass-shell-c",
+			},
+			wantStatus:    http.StatusOK,
+			wantCmdStatus: "failed",
+		},
+		{
+			name: "Absolute Path Shell Invocation with -c",
+			req: ExecutionRequest{
+				Command:        `/bin/bash -c "echo hello"`,
+				ConversationID: "test-bypass-abs-shell-c",
+			},
+			wantStatus:    http.StatusOK,
+			wantCmdStatus: "failed",
+		},
 	}
 
 	for _, tt := range tests {

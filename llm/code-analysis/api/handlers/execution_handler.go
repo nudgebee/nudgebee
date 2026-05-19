@@ -64,6 +64,8 @@ func (lw *LimitedWriter) Write(p []byte) (n int, err error) {
 var (
 	// Ensure conversation IDs are safe to use as directory names.
 	safePathRe = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
+	// Matches shell interpreters invoked with -c, including via absolute paths.
+	shellCRe = regexp.MustCompile(`(?:^|\s|/)(sh|bash|zsh|dash)\s+-c(?:\s|$)`)
 )
 
 type ExecutionHandler struct {
@@ -271,12 +273,22 @@ func (h *ExecutionHandler) validateCommand(command, workDir string) error {
 
 // detectBypassPatterns checks for shell tricks used to evade command validation.
 func detectBypassPatterns(cmdLower string) error {
-	// 1. Piping through shell interpreters (e.g. echo "cm0g..." | base64 -d | sh)
-	shellInterpreters := []string{"| sh", "| bash", "| zsh", "| dash", "|sh", "|bash", "|zsh", "|dash"}
-	for _, s := range shellInterpreters {
-		if strings.Contains(cmdLower, s) {
-			return fmt.Errorf("piping to shell interpreter is blocked")
+	// 1. Piping through shell interpreters, including via absolute paths (e.g. | /bin/sh)
+	shellNames := map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true, "csh": true}
+	segments := strings.Split(cmdLower, "|")
+	for i := 1; i < len(segments); i++ {
+		segFields := strings.Fields(strings.TrimSpace(segments[i]))
+		if len(segFields) > 0 {
+			baseName := filepath.Base(segFields[0])
+			if shellNames[baseName] {
+				return fmt.Errorf("piping to shell interpreter is blocked")
+			}
 		}
+	}
+
+	// 1b. Block direct shell invocation with -c flag (e.g. bash -c "encoded payload")
+	if shellCRe.MatchString(cmdLower) {
+		return fmt.Errorf("direct shell invocation with -c is blocked")
 	}
 
 	// 2. Hex/octal escape sequences ($'\x72\x6d' → rm)
