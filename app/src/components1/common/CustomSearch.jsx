@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { FormControl, TextField, InputAdornment, IconButton } from '@mui/material';
 import { searchSvg } from '@assets';
 import PropTypes from 'prop-types';
@@ -19,9 +19,32 @@ const CustomSearch = ({
   id,
   onClear,
   disabled = false,
+  debounceMs = 300,
 }) => {
   const [searchText, setSearchText] = useState(value ?? '');
   const [shouldTriggerFilter, setShouldTriggerFilter] = useState(false);
+  const debounceTimerRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
+  }, []);
+
+  const debouncedOnChange = useCallback(
+    (newValue) => {
+      if (!onChange) return;
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+      if (debounceMs <= 0) {
+        onChange(newValue);
+        return;
+      }
+      debounceTimerRef.current = setTimeout(() => {
+        onChange(newValue);
+      }, debounceMs);
+    },
+    [onChange, debounceMs]
+  );
 
   useEffect(() => {
     if (shouldTriggerFilter && searchText === '' && onEnterPress) {
@@ -33,9 +56,7 @@ const CustomSearch = ({
   const handleChange = (event) => {
     const newValue = event.target.value;
     setSearchText(newValue);
-    if (onChange) {
-      onChange(newValue);
-    }
+    debouncedOnChange(newValue);
   };
 
   const handleKeyDown = (event) => {
@@ -45,6 +66,7 @@ const CustomSearch = ({
   };
 
   const handleClear = () => {
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
     setShouldTriggerFilter(true);
     setSearchText('');
     if (onChange) {
@@ -177,6 +199,7 @@ CustomSearch.propTypes = {
   id: PropTypes.string,
   onClear: PropTypes.func,
   disabled: PropTypes.bool,
+  debounceMs: PropTypes.number,
 };
 
 export default CustomSearch;
