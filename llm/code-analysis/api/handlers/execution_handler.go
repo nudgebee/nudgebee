@@ -65,7 +65,7 @@ var (
 	// Ensure conversation IDs are safe to use as directory names.
 	safePathRe = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
 	// Matches shell interpreters invoked with -c, including via absolute paths.
-	shellCRe = regexp.MustCompile(`(?:^|\s|/)(sh|bash|zsh|dash)\s+-c(?:\s|$)`)
+	shellCRe = regexp.MustCompile(`(?:^|\s|/)(sh|bash|zsh|dash|ksh|csh)(\s+-\w+)*\s+-\w*c(?:\s|$)`)
 )
 
 type ExecutionHandler struct {
@@ -279,7 +279,7 @@ func detectBypassPatterns(cmdLower string) error {
 	for i := 1; i < len(segments); i++ {
 		segFields := strings.Fields(strings.TrimSpace(segments[i]))
 		if len(segFields) > 0 {
-			baseName := filepath.Base(segFields[0])
+			baseName := filepath.Base(strings.Trim(segFields[0], "() {};&"))
 			if shellNames[baseName] {
 				return fmt.Errorf("piping to shell interpreter is blocked")
 			}

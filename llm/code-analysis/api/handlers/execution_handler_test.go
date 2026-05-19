@@ -200,6 +200,24 @@ func TestHandleExecute(t *testing.T) {
 			wantStatus:    http.StatusOK,
 			wantCmdStatus: "failed",
 		},
+		{
+			name: "Shell Invocation with Combined Flags",
+			req: ExecutionRequest{
+				Command:        `bash -ic "echo hello"`,
+				ConversationID: "test-bypass-shell-ic",
+			},
+			wantStatus:    http.StatusOK,
+			wantCmdStatus: "failed",
+		},
+		{
+			name: "Pipe to Subshell Grouped Command",
+			req: ExecutionRequest{
+				Command:        `echo payload | (sh)`,
+				ConversationID: "test-bypass-subshell-pipe",
+			},
+			wantStatus:    http.StatusOK,
+			wantCmdStatus: "failed",
+		},
 	}
 
 	for _, tt := range tests {
