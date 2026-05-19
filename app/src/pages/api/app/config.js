@@ -1,7 +1,7 @@
 import loadBrandingFile from '@lib/loadBrandingFile';
 
 export default function handler(req, res) {
-  // Load branding from file if TENANT_BRANDING_FILE is set (e.g. "branding/rackspace/theme.json")
+  // Load branding from file if TENANT_BRANDING_FILE is set (e.g. "branding/acme/theme.json")
   const brandingFile = loadBrandingFile();
 
   // Parse optional theme config from env vars (override file if both set)
