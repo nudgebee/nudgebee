@@ -25,25 +25,31 @@ const CustomSearch = ({
   const [shouldTriggerFilter, setShouldTriggerFilter] = useState(false);
   const debounceTimerRef = useRef(null);
 
-  useEffect(() => {
-    return () => {
-      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
-    };
+  const flushDebouncedOnChange = useCallback(() => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
   }, []);
+
+  useEffect(() => {
+    return () => flushDebouncedOnChange();
+  }, [flushDebouncedOnChange]);
 
   const debouncedOnChange = useCallback(
     (newValue) => {
       if (!onChange) return;
-      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+      flushDebouncedOnChange();
       if (debounceMs <= 0) {
         onChange(newValue);
         return;
       }
       debounceTimerRef.current = setTimeout(() => {
         onChange(newValue);
+        debounceTimerRef.current = null;
       }, debounceMs);
     },
-    [onChange, debounceMs]
+    [onChange, debounceMs, flushDebouncedOnChange]
   );
 
   useEffect(() => {
@@ -60,13 +66,19 @@ const CustomSearch = ({
   };
 
   const handleKeyDown = (event) => {
-    if (event.key === 'Enter' && onEnterPress) {
-      onEnterPress();
+    if (event.key === 'Enter') {
+      if (debounceTimerRef.current && onChange) {
+        flushDebouncedOnChange();
+        onChange(searchText);
+      }
+      if (onEnterPress) {
+        onEnterPress();
+      }
     }
   };
 
   const handleClear = () => {
-    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    flushDebouncedOnChange();
     setShouldTriggerFilter(true);
     setSearchText('');
     if (onChange) {
