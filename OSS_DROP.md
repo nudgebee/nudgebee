@@ -448,6 +448,38 @@ done
 grep -rn 'NB-' .claude .gemini 2>/dev/null || echo "(NB-xxxx scrub clean)"
 ```
 
+### 4.5. Verify the snapshot builds (sanity check)
+
+Block 3 (boundary check) proves no surviving file *imports* an `/ee/`
+path, but it can't catch orphaned references or type errors that
+surface only when the EE tree is gone. The cheapest way to be sure is
+to compile the post-strip tree. Each command must exit 0 — a non-zero
+exit means the snapshot won't build, so investigate before squashing.
+
+```bash
+# Go — every module that had (or could have had) EE entanglement.
+( cd api-server/services                          && go mod download && go build ./... && go vet ./... )
+( cd ticket-server                                && go build ./... )
+( cd collector-server/cloud-collector             && go build ./... )
+( cd collector-server/k8s-collector/relay-server  && go build ./... )
+( cd llm/llm-server                               && go build ./... )
+( cd llm/code-analysis                            && go build ./... )
+
+# TypeScript — `tsc --noEmit` catches @ee/* leftovers and missing modules.
+# Requires app/node_modules; install if absent.
+( cd app && [ -d node_modules ] || npm ci --legacy-peer-deps --no-audit --no-fund )
+( cd app && npx tsc --noEmit )
+```
+
+This is the local equivalent of the EE-side
+`scripts/build-oss-snapshot.sh --verify` step (which we stripped in
+Block 4). Iter-4 ran all eight commands cleanly; future iterations
+should as well unless EE introduces a new orphaned reference.
+
+For a deeper check (catches webpack/turbo issues `tsc` misses), also
+run `cd app && npm run build`. Skip unless you suspect a runtime-side
+problem — it takes ~3–5 minutes and is rarely needed.
+
 ### 5. Update this file
 
 Update the `Source commit`, `Drop date`, and `Iteration` fields above.
@@ -457,15 +489,43 @@ listing files newly added or removed in the source between iterations
 
 ### 6. Squash into a single commit
 
+The OSS repo accumulates additive commits between drops (CLA tweaks,
+runbook updates, README work, entity-name swaps, etc.), so HEAD is
+usually NOT the previous drop commit. Default path is to write a fresh
+parentless commit with `git commit-tree` and re-point `main` at it:
+
+```bash
+SRC_SHA="<full sha from step 1>"
+SRC_SHORT="<short sha>"
+
+git add -A
+TREE_SHA=$(git write-tree)
+NEW_SHA=$(git commit-tree "$TREE_SHA" \
+  -m "Initial OSS drop from nudgebee@${SRC_SHORT}" \
+  -m "Snapshot of nudgebee/nudgebee-enterprise main at ${SRC_SHA}." \
+  -m "See OSS_DROP.md for the cleanup applied on top.")
+git update-ref refs/heads/main "$NEW_SHA"
+git log --oneline -1   # sanity-check the new HEAD
+```
+
+The parentless commit cleanly discards all intermediate work — §4's
+overlay step has already restored the OSS-only files we want to keep,
+so nothing is lost. The previous main is still reachable on
+`origin/main` until §7 replaces it.
+
+**Fallback — `--amend` when HEAD is the previous drop**
+
+If you've just done a drop and not pushed anything else on top, you
+can amend in place. In practice this is rare — between every drop
+we've ended up making a few overlay/runbook tweaks first, so
+commit-tree has been the consistent path.
+
 ```bash
 git add -A
 git commit --amend -m "Initial OSS drop from nudgebee@${SRC_SHORT}" \
   -m "Snapshot of nudgebee/nudgebee-enterprise main at ${SRC_SHA}." \
   -m "See OSS_DROP.md for the cleanup applied on top."
 ```
-
-For the very first drop in a fresh repo, use `git commit` (no `--amend`)
-and any historical iteration to manually set the message body.
 
 ### 7. Force-push when ready
 
