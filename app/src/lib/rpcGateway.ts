@@ -95,9 +95,26 @@ export function buildSessionVariables(jwt: JWT): Record<string, string> {
   const tenantId = ((jwt.tenant as { id?: string } | undefined)?.id as string) || '';
   const userId = (jwt.id || jwt.sub) as string;
   // Default role priority matches the existing graphql.ts super-admin path.
-  const rolePriority = ['tenant_admin', 'account_admin', 'account_admin_readonly', 'k8s_namespace_admin', 'k8s_namespace_admin_readonly'];
+  const rolePriority = [
+    'super_admin',
+    'tenant_admin',
+    'account_admin',
+    'account_admin_readonly',
+    'k8s_namespace_admin',
+    'k8s_namespace_admin_readonly',
+  ];
   const defaultRole = rolePriority.find((r) => userRoles.includes(r)) || userRoles[0] || 'tenant_admin_readonly';
   const allowedRoles = elevateRoles(userRoles, jwt as unknown as Record<string, unknown>);
+  // Promote super-admin sessions into allowed-roles so the api-server's
+  // pg-array extraction (services/api/actions.go) sees the token and
+  // elevates the security context. Idempotent against elevateRoles, which
+  // EE may already use to add the same tokens.
+  if (jwt.isSuperAdmin && !allowedRoles.includes('super_admin')) {
+    allowedRoles.push('super_admin');
+  }
+  if (jwt.isSuperAdminReadonly && !allowedRoles.includes('super_admin_readonly')) {
+    allowedRoles.push('super_admin_readonly');
+  }
   return {
     'x-hasura-role': defaultRole,
     'x-hasura-allowed-roles': pgArray(allowedRoles),
