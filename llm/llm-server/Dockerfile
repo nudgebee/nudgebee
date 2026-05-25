@@ -2,6 +2,11 @@
 # Dockerfile (for your Go application)
 # Build this after building your base image: docker build -t your-app-image .
 
+# Runtime base. OSS installs use the public GHCR mirror of our internal
+# llm-server base image (Ubuntu noble + Playwright preinstalled). EE
+# deploys override RUNTIME_BASE to their internal registry via --build-arg.
+ARG RUNTIME_BASE=ghcr.io/nudgebee/nudgebee-llm-server-base:ubuntu-noble-20260430
+
 # --- Build Stage ---
 FROM golang:1.26 AS build-stage
 
@@ -26,10 +31,6 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 RUN chmod +x /app/services
 
 # --- Final Stage ---
-# Runtime base. OSS installs use the public GHCR mirror of our internal
-# llm-server base image (Ubuntu noble + Playwright preinstalled). EE
-# deploys override RUNTIME_BASE to their internal registry via --build-arg.
-ARG RUNTIME_BASE=ghcr.io/nudgebee/nudgebee-llm-server-base:ubuntu-noble-20260430
 FROM ${RUNTIME_BASE}
 
 WORKDIR /app
