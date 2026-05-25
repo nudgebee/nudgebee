@@ -1,0 +1,6 @@
+user_prompt: Deregister an ECS task definition.
+expected_output:
+- aws ecs deregister-task-definition --task-definition <task-definition-name>
+tags:
+- command
+- aws

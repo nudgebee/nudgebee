@@ -1,0 +1,6 @@
+user_prompt: Find logs containing "database error" from user-service in the last hour
+expected_output: '{"where": {"service.name": {"_eq": "user-service"}, "body": {"_ilike": "%database error%"}}, "time_range": "1h"}'
+tags:
+  - command
+  - body-search
+  - signoz

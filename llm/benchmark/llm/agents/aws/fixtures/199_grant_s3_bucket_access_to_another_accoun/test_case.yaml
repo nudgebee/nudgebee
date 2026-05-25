@@ -1,0 +1,6 @@
+user_prompt: Grant S3 bucket access to another account.
+expected_output:
+- aws s3api put-bucket-policy
+tags:
+- command
+- aws

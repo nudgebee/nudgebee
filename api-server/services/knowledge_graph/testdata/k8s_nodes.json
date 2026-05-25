@@ -1,0 +1,156 @@
+[
+  {
+    "tenant_id": "test-tenant-1",
+    "cloud_account_id": "test-account-k8s-1",
+    "name": "k8s-node-1",
+    "is_active": true,
+    "node_creation_time": "2024-12-01T10:30:00Z",
+    "conditions": "Ready",
+    "node_type": "worker",
+    "node_flavor": "t3.xlarge",
+    "node_region": "us-east-1",
+    "node_zone": "us-east-1a",
+    "memory_capacity": 16384,
+    "cpu_capacity": 4,
+    "memory_allocatable": 15360,
+    "cpu_allocatable": 3.5,
+    "meta": {
+      "node_info": {
+        "architecture": "amd64",
+        "bootID": "abc123-boot",
+        "containerRuntimeVersion": "containerd://1.6.24",
+        "kernelVersion": "5.10.192-183.736.amzn2.x86_64",
+        "kubeProxyVersion": "v1.27.7-eks-4f4795d",
+        "kubeletVersion": "v1.27.7-eks-4f4795d",
+        "machineID": "ec2abc123def456",
+        "operatingSystem": "linux",
+        "osImage": "Amazon Linux 2",
+        "systemUUID": "ec2-uuid-1",
+        "labels": {
+          "beta.kubernetes.io/arch": "amd64",
+          "beta.kubernetes.io/instance-type": "t3.xlarge",
+          "beta.kubernetes.io/os": "linux",
+          "eks.amazonaws.com/nodegroup": "standard-workers",
+          "node-role.kubernetes.io/worker": "true",
+          "topology.kubernetes.io/region": "us-east-1",
+          "topology.kubernetes.io/zone": "us-east-1a",
+          "node.kubernetes.io/instance-type": "t3.xlarge"
+        }
+      },
+      "pods": "api-pod-1,postgres-0,monitoring-agent-xyz,kube-proxy-abc",
+      "taints": "",
+      "capacity": {
+        "cpu": "4",
+        "ephemeral-storage": "83873772Ki",
+        "memory": "16384Mi",
+        "pods": "58"
+      },
+      "allocatable": {
+        "cpu": "3500m",
+        "ephemeral-storage": "76224326324",
+        "memory": "15360Mi",
+        "pods": "58"
+      },
+      "conditions": [
+        {
+          "type": "Ready",
+          "status": "True",
+          "lastHeartbeatTime": "2024-12-24T10:00:00Z",
+          "lastTransitionTime": "2024-12-01T10:35:00Z",
+          "reason": "KubeletReady",
+          "message": "kubelet is posting ready status"
+        },
+        {
+          "type": "MemoryPressure",
+          "status": "False"
+        },
+        {
+          "type": "DiskPressure",
+          "status": "False"
+        },
+        {
+          "type": "PIDPressure",
+          "status": "False"
+        },
+        {
+          "type": "NetworkUnavailable",
+          "status": "False"
+        }
+      ]
+    },
+    "cluster_name": "my-eks-cluster"
+  },
+  {
+    "tenant_id": "test-tenant-1",
+    "cloud_account_id": "test-account-k8s-1",
+    "name": "k8s-node-2",
+    "is_active": true,
+    "node_creation_time": "2024-12-01T10:30:00Z",
+    "conditions": "Ready",
+    "node_type": "worker",
+    "node_flavor": "t3.xlarge",
+    "node_region": "us-east-1",
+    "node_zone": "us-east-1b",
+    "memory_capacity": 16384,
+    "cpu_capacity": 4,
+    "memory_allocatable": 15360,
+    "cpu_allocatable": 3.5,
+    "meta": {
+      "node_info": {
+        "architecture": "amd64",
+        "bootID": "def456-boot",
+        "containerRuntimeVersion": "containerd://1.6.24",
+        "kernelVersion": "5.10.192-183.736.amzn2.x86_64",
+        "kubeProxyVersion": "v1.27.7-eks-4f4795d",
+        "kubeletVersion": "v1.27.7-eks-4f4795d",
+        "machineID": "ec2def456ghi789",
+        "operatingSystem": "linux",
+        "osImage": "Amazon Linux 2",
+        "systemUUID": "ec2-uuid-2",
+        "labels": {
+          "beta.kubernetes.io/arch": "amd64",
+          "beta.kubernetes.io/instance-type": "t3.xlarge",
+          "beta.kubernetes.io/os": "linux",
+          "eks.amazonaws.com/nodegroup": "standard-workers",
+          "node-role.kubernetes.io/worker": "true",
+          "topology.kubernetes.io/region": "us-east-1",
+          "topology.kubernetes.io/zone": "us-east-1b",
+          "node.kubernetes.io/instance-type": "t3.xlarge"
+        }
+      },
+      "pods": "api-pod-2,monitoring-agent-abc,kube-proxy-def",
+      "taints": "",
+      "capacity": {
+        "cpu": "4",
+        "ephemeral-storage": "83873772Ki",
+        "memory": "16384Mi",
+        "pods": "58"
+      },
+      "allocatable": {
+        "cpu": "3500m",
+        "ephemeral-storage": "76224326324",
+        "memory": "15360Mi",
+        "pods": "58"
+      },
+      "conditions": [
+        {
+          "type": "Ready",
+          "status": "True",
+          "lastHeartbeatTime": "2024-12-24T10:00:00Z",
+          "lastTransitionTime": "2024-12-01T10:35:00Z",
+          "reason": "KubeletReady",
+          "message": "kubelet is posting ready status"
+        },
+        {
+          "type": "MemoryPressure",
+          "status": "False"
+        },
+        {
+          "type": "DiskPressure",
+          "status": "False"
+        }
+      ]
+    },
+    "cluster_name": "my-eks-cluster"
+  }
+]

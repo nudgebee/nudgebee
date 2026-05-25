@@ -1,0 +1,61 @@
+# GCP GKE Cloud Monitoring Alert Policy Recommendations
+# Based on Google Cloud best practices for Kubernetes monitoring
+service_name: "Kubernetes Engine"
+
+templates:
+  - name: "gcp_gke_node_cpu_utilization_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "High node CPU utilization can lead to pod evictions and degraded cluster performance"
+    configuration:
+      namespace: "kubernetes.io"
+      metric_name: "NodeCPUUtilization"
+      metric_type_filter: "kubernetes.io/node/cpu/allocatable_utilization"
+      resource_type: "k8s_node"
+      statistic: "ALIGN_MEAN"
+      period: 300
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MEAN"
+    threshold_rules:
+      default: 0.80  # 80%
+
+  - name: "gcp_gke_node_memory_utilization_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "High node memory utilization can cause pod evictions and out-of-memory kills"
+    configuration:
+      namespace: "kubernetes.io"
+      metric_name: "NodeMemoryUtilization"
+      metric_type_filter: "kubernetes.io/node/memory/allocatable_utilization"
+      resource_type: "k8s_node"
+      statistic: "ALIGN_MEAN"
+      period: 300
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MEAN"
+    threshold_rules:
+      default: 0.85  # 85%
+
+  - name: "gcp_gke_pod_restart_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Frequent pod restarts indicate application crashes or liveness probe failures"
+    configuration:
+      namespace: "kubernetes.io"
+      metric_name: "PodRestarts"
+      metric_type_filter: "kubernetes.io/container/restart_count"
+      resource_type: "k8s_container"
+      statistic: "ALIGN_DELTA"
+      period: 300
+      evaluation_periods: 1
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_SUM"
+    threshold_rules:
+      default: 3.0  # 3 restarts in 5 minutes

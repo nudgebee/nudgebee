@@ -1,0 +1,2 @@
+DELETE FROM feature_flag WHERE feature_id = 'ACCOUNT_ONBOARD_AWS';
+DELETE FROM feature WHERE value = 'ACCOUNT_ONBOARD_AWS';

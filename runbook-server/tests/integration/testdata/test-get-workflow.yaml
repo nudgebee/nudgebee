@@ -1,0 +1,9 @@
+name: test-get-workflow
+definition:
+  triggers:
+    - type: manual
+  tasks:
+    - id: task1
+      type: scripting.run_script
+      params:
+        script: "echo 'Hello from get test'"

@@ -1,0 +1,8 @@
+user_prompt: List recommendations with 'High' severity in namespaces starting with
+  'kube-'.
+expected_output:
+- SELECT namespace, name, rule_name from recommendation_view WHERE severity = 'High'
+  AND namespace LIKE 'kube-%';
+tags:
+- command
+- recommendations

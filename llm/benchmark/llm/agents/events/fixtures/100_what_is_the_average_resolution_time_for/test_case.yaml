@@ -1,0 +1,7 @@
+user_prompt: What is the average resolution time for closed 'ServiceDown' events?
+expected_output:
+- SELECT AVG(ends_at - starts_at) AS average_resolution_time FROM events WHERE aggregation_key
+  = 'ServiceDown' AND status = 'CLOSED' AND ends_at IS NOT NULL;
+tags:
+- command
+- events

@@ -1,0 +1,8 @@
+user_prompt: How do I reformat logs (using LogQL) to show only timestamp and message
+  for parser app?
+expected_output:
+- '{app="parser"} | json | line_format "{{.ts}} - {{.message}}"'
+- '{job="fluentd"} | logfmt | line_format "time={{.time}} level={{.level}} msg={{.msg}}"'
+tags:
+- command
+- datadog

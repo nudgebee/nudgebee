@@ -1,0 +1,25 @@
+agent: k8s_debug
+expected_output:
+- The productcatalogservice is failing when querying specific products, returning 500 errors due to the productCatalogFailure
+  feature flag being enabled. This causes the frontend to display errors when users try to browse the product catalog.
+expected_root_cause:
+  affected_service: productcatalogservice
+  issue_type: service_failure
+  symptoms:
+  - 500 internal server errors
+  - product listing page not loading
+  - frontend errors when accessing catalog
+  telemetry_signals:
+    logs: ERROR logs in productcatalogservice pod showing failures
+    metrics: http_server_duration metric showing high error rates with status_code=500
+    traces: failed traces in GetProducts operation with error spans
+feature_flag: productCatalogFailure
+flag_variant: 'on'
+scenario_id: product_catalog_failure
+tags:
+- rca
+- kubernetes
+type: rca
+user_prompt: Users are reporting they cannot browse products on the website. Investigate issues with the product-catalog deployment
+  in nudgebee-demo namespace.
+wait_time_seconds: 60

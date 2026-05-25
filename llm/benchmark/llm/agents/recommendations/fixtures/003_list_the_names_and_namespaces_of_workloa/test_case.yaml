@@ -1,0 +1,8 @@
+user_prompt: List the names and namespaces of workloads with 'RightSizing' recommendations
+  updated in the last 30 days.
+expected_output:
+- SELECT name, namespace, updated_at from recommendation_view WHERE category = 'RightSizing'
+  AND updated_at >= NOW() - INTERVAL '30 days';
+tags:
+- command
+- recommendations

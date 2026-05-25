@@ -1,0 +1,6 @@
+user_prompt: View EC2 instance console output.
+expected_output:
+- aws ec2 get-console-output --instance-id <instance-id>
+tags:
+- command
+- aws

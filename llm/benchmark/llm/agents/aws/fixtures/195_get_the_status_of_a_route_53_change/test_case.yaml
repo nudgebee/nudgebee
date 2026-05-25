@@ -1,0 +1,6 @@
+user_prompt: Get the status of a Route 53 change.
+expected_output:
+- aws route53 get-change --id <change-id>
+tags:
+- command
+- aws

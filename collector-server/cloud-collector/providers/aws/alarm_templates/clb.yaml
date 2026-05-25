@@ -1,0 +1,58 @@
+# CLB (Classic Load Balancer) CloudWatch Alarm Recommendations
+# Based on AWS best practices for Classic ELB monitoring
+service_name: "clb"
+
+templates:
+  - name: "aws_clb_unhealthy_host_count_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Monitors number of unhealthy instances behind Classic Load Balancer"
+    configuration:
+      namespace: "AWS/ELB"
+      metric_name: "UnHealthyHostCount"
+      statistic: "Average"
+      period: 60
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 0.0  # Any unhealthy host is a problem
+
+  - name: "aws_clb_latency_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "Monitors request latency through Classic Load Balancer"
+    configuration:
+      namespace: "AWS/ELB"
+      metric_name: "Latency"
+      statistic: "Average"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 1.0  # 1 second latency
+
+  - name: "aws_clb_backend_connection_errors_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Monitors connection errors to backend instances"
+    configuration:
+      namespace: "AWS/ELB"
+      metric_name: "BackendConnectionErrors"
+      statistic: "Sum"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 3
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 10.0  # More than 10 connection errors per minute

@@ -1,0 +1,1 @@
+INSERT INTO "public"."feature"("description", "value") VALUES (E'LLM Based Chat', E'LLM_BASED_CHAT') ON CONFLICT DO NOTHING;

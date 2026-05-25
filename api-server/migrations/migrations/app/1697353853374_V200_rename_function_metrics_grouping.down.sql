@@ -1,0 +1,3 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- ALTER FUNCTION cloud_resource_metrics_cloud_resourses_cloud_accounts_grouping RENAME TO metrics_groupings;

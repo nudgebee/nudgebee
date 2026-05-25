@@ -1,0 +1,1021 @@
+body {
+  margin: 0;
+  font-family: 'Roboto', sans-serif !important;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+.input-labels {
+  font-size: 12px !important;
+  color: #374151;
+  margin: 0px 30px 0px 0px !important;
+}
+.poppins-font {
+  font-family: 'Poppins', sans-serif !important;
+}
+.custom-dropdown {
+  & .MuiOutlinedInput-root {
+    height: 32px;
+    padding: 6px 14px;
+  }
+
+  & .MuiOutlinedInput-root:hover {
+    label {
+      color: red !important;
+    }
+    & input {
+      color: #374151;
+    }
+
+    & > fieldset {
+      border: '0.5px solid';
+      border-color: #3b82f6;
+    }
+  }
+}
+.custom-dropdown-with-border {
+  & .MuiOutlinedInput-notchedOutline {
+    border: inherit;
+  }
+  & .MuiOutlinedInput-root {
+    & > fieldset {
+      border: 0.5px solid;
+      border-color: #d0d0d0;
+    }
+  }
+}
+
+.custom-accordion {
+  &.MuiAccordion-root {
+    box-shadow: none !important;
+    margin: 0px !important;
+  }
+  &::before {
+    background-color: transparent !important;
+  }
+  & .Mui-expanded {
+    margin: 0px;
+  }
+  & .MuiAccordionDetails-root {
+    padding: 0px !important;
+  }
+  & .MuiAccordionSummary-root {
+    min-height: auto;
+  }
+  & .MuiAccordionSummary-root.Mui-expanded {
+    min-height: auto;
+  }
+  & .MuiAccordionSummary-content {
+    align-items: center;
+  }
+  & .MuiAccordionSummary-content.Mui-expanded {
+    margin: 10px 0px;
+  }
+}
+.custom-dropdown-icon {
+  height: 1.1em;
+  width: 1em;
+}
+
+.option-dropdown-list {
+  width: '100%';
+  &.MuiList-root {
+    padding-bottom: 0px;
+  }
+  & .MuiCheckbox-root {
+    padding-right: 5px;
+  }
+  & .MuiListItemIcon-root {
+    min-width: auto;
+  }
+  & .MuiListItemButton-root {
+    padding: 0px 5px !important;
+  }
+  & .MuiCheckbox-indeterminate {
+    color: #3b82f6 !important;
+  }
+}
+.dropdown-checkbox {
+  color: gray;
+  &.Mui-checked {
+    color: #3b82f6 !important;
+  }
+}
+
+.dropdown-icon {
+  height: 18px;
+  width: 18px;
+  opacity: 60%;
+  transition: transform 0.3s ease;
+}
+
+.dropdown-icon:hover {
+  transform: rotate(180deg);
+}
+
+.option-dropdown-list-with-overflow {
+  width: 100%;
+  height: 100px;
+  overflow-y: auto;
+  word-break: break-all;
+  & .MuiListItemIcon-root {
+    min-width: auto;
+  }
+  & .MuiCheckbox-root {
+    padding-right: 5px !important;
+  }
+  & .MuiListItemButton-root {
+    padding: 5px !important;
+  }
+  &::-webkit-scrollbar {
+    width: 4px !important;
+  }
+  &::-webkit-scrollbar-thumb {
+    background-color: #ebebeb;
+  }
+  &::-webkit-scrollbar-track {
+    background-color: transparent;
+  }
+}
+.boxlayout-upper-heading {
+  font-size: 13px;
+  color: white;
+  background-color: #5567a6;
+  padding: 4px 19px 4px 19px;
+  border-radius: 0px 6px 0px 0px;
+}
+.filter-container {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  & .MuiAutocomplete-hasPopupIcon {
+    width: 200px !important;
+  }
+  & .MuiOutlinedInput-notchedOutline {
+    border-color: #3b82f6;
+  }
+  & .MuiOutlinedInput-root {
+    height: 32px;
+    padding: 6px 14px;
+  }
+
+  & .MuiOutlinedInput-root:hover {
+    label {
+      color: red !important;
+    }
+    & input {
+      color: #374151;
+    }
+
+    & > fieldset {
+      border: 0.5px solid;
+      border-color: #3b82f6;
+    }
+  }
+}
+
+.filter-container-with-border {
+  & .MuiOutlinedInput-notchedOutline {
+    border: inherit;
+  }
+  & .MuiOutlinedInput-root {
+    & > fieldset {
+      border: 0.5px solid #d0d0d0;
+    }
+  }
+
+  & .MuiOutlinedInput-root:hover {
+    label {
+      color: red !important;
+    }
+    & input {
+      color: #374151;
+    }
+
+    & > fieldset {
+      border: 0.5px solid;
+      border-color: #3b82f6;
+    }
+  }
+}
+.toggle-buttons-group {
+  min-height: 0;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto auto auto auto;
+  grid-gap: 4px;
+  & button {
+    padding: 4px 14px;
+    min-height: 0;
+    min-width: 0;
+    line-height: 14px;
+    text-transform: none;
+    height: 30px;
+    font-size: 14;
+    color: #374151;
+    background: #eff6ff;
+    font-weight: 400;
+    border-color: #60a5fa;
+    border-width: 0.4;
+    border-radius: 4px;
+    &:hover {
+      border-width: 0.4;
+    }
+    &.Mui-selected {
+      background: #3b82f6;
+      color: #fff;
+      font-weight: 600;
+      border-color: #60a5fa;
+    }
+    &.Mui-selected:hover {
+      background: #fff;
+      color: #3b82f6;
+      font-weight: 400;
+    }
+    &.MuiToggleButtonGroup-grouped {
+      border: 0.4px solid #60a5fa;
+      border-radius: 4px;
+    }
+  }
+}
+
+.toggle-group-buttons {
+  min-height: 0;
+  min-width: 0;
+  & button {
+    padding: 4px 14px;
+    min-height: 0;
+    min-width: 0;
+    line-height: 14px;
+    text-transform: none;
+    height: 30px;
+    font-size: 14px;
+    color: #374151;
+    background: #fff;
+    font-weight: 500;
+    border-color: #7a88a4;
+    border-width: 0.4;
+    &:hover {
+      border-color: #7a88a4;
+      border-width: 0.4;
+    }
+    &.Mui-selected {
+      background: #3b82f6;
+      color: #fff;
+      font-weight: 600;
+    }
+  }
+}
+
+.toggle-group-buttons .MuiToggleButton-root {
+  margin-right: 1px;
+}
+
+.toggle-group-buttons .MuiToggleButton-root:last-child {
+  margin-right: 0;
+}
+
+.css-uosk9i-MuiAutocomplete-root .MuiOutlinedInput-root {
+  padding: 4px !important;
+}
+.css-uosk9i-MuiAutocomplete-root .MuiOutlinedInput-root.MuiInputBase-sizeSmall:hover {
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+.css-1lx4pj1 .css-1wg613-MuiFormControl-root-MuiTextField-root:hover {
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+}
+.css-6hp17o-MuiList-root-MuiMenu-list {
+  padding: 0px !important;
+  border: 1px solid #bfdbfe;
+  box-shadow: 0px 4px 10px 0px #89899340;
+  border-radius: 4px;
+}
+#help-menu li {
+  padding: 14px 16px;
+  border-bottom: 1px solid #ebebeb;
+}
+
+/* Poppins Font */
+
+@font-face {
+  font-family: 'Poppins';
+  src: url('../assets/fonts/Poppins/Poppins-Light.ttf');
+  font-weight: 300;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Poppins';
+  src: url('../assets/fonts/Poppins/Poppins-Regular.ttf');
+  font-weight: 400;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Poppins';
+  src: url('../assets/fonts/Poppins/Poppins-Medium.ttf');
+  font-weight: 500;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Poppins';
+  src: url('../assets/fonts/Poppins/Poppins-SemiBold.ttf');
+  font-weight: 600;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Poppins';
+  src: url('../assets/fonts/Poppins/Poppins-Bold.ttf');
+  font-weight: 700;
+  font-style: normal;
+}
+
+/* Roboto Font */
+@font-face {
+  font-family: 'Roboto';
+  src: url('../assets/fonts/Roboto/Roboto-Thin.ttf');
+  font-weight: 100;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Roboto';
+  src: url('../assets/fonts/Roboto/Roboto-Light.ttf');
+  font-weight: 300;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Roboto';
+  src: url('../assets/fonts/Roboto/Roboto-Regular.ttf');
+  font-weight: 400;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Roboto';
+  src: url('../assets/fonts/Roboto/Roboto-Medium.ttf');
+  font-weight: 500;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Roboto';
+  src: url('../assets/fonts/Roboto/Roboto-Bold.ttf');
+  font-weight: 700;
+  font-style: normal;
+}
+
+@font-face {
+  font-family: 'Roboto';
+  src: url('../assets/fonts/Roboto/Roboto-Black.ttf');
+  font-weight: 900;
+  font-style: normal;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New', monospace;
+}
+
+.swiper {
+  width: 100%;
+  height: 100%;
+}
+
+.swiper-slide {
+  background-position: center;
+  background-size: cover;
+}
+
+/* .swiper-slide img {
+  display: block;
+  width: 410px;
+  height: 400px;
+  margin: auto;
+} */
+
+.link {
+  text-decoration: none;
+}
+
+::selection {
+  background: #021a6f36;
+}
+::-webkit-scrollbar {
+  width: 10px;
+}
+::-webkit-scrollbar:horizontal {
+  height: 10px;
+}
+
+/* Track */
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 8px;
+}
+
+/* Handle */
+::-webkit-scrollbar-thumb {
+  background: #d3d3d3;
+  border-radius: 10px;
+}
+
+/* Handle on hover */
+::-webkit-scrollbar-thumb:hover {
+  background: #c7c7c7;
+}
+a {
+  color: #0000ee;
+}
+@keyframes flapWings {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(20deg);
+  }
+}
+
+@keyframes fly {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(80vw);
+  }
+}
+
+#honeybee {
+  animation: flapWings 0.5s infinite alternate, fly 5s linear infinite;
+  transform-origin: center;
+}
+
+.dot-pulse {
+  position: relative;
+  left: -9999px;
+  width: 10px;
+  height: 10px;
+  border-radius: 5px;
+  background-color: #facf39;
+  color: #facf39;
+  box-shadow: 9999px 0 0 -5px;
+  animation: dot-pulse 1.5s infinite linear;
+  animation-delay: 0.25s;
+}
+.dot-pulse::before,
+.dot-pulse::after {
+  content: '';
+  display: inline-block;
+  position: absolute;
+  top: 0;
+  width: 10px;
+  height: 10px;
+  border-radius: 5px;
+  background-color: #facf39;
+  color: #facf39;
+}
+.dot-pulse::before {
+  box-shadow: 9984px 0 0 -5px;
+  animation: dot-pulse-before 1.5s infinite linear;
+  animation-delay: 0s;
+}
+.dot-pulse::after {
+  box-shadow: 10014px 0 0 -5px;
+  animation: dot-pulse-after 1.5s infinite linear;
+  animation-delay: 0.5s;
+}
+
+@keyframes dot-pulse-before {
+  0% {
+    box-shadow: 9984px 0 0 -5px;
+  }
+  30% {
+    box-shadow: 9984px 0 0 2px;
+  }
+  60%,
+  100% {
+    box-shadow: 9984px 0 0 -5px;
+  }
+}
+@keyframes dot-pulse {
+  0% {
+    box-shadow: 9999px 0 0 -5px;
+  }
+  30% {
+    box-shadow: 9999px 0 0 2px;
+  }
+  60%,
+  100% {
+    box-shadow: 9999px 0 0 -5px;
+  }
+}
+@keyframes dot-pulse-after {
+  0% {
+    box-shadow: 10014px 0 0 -5px;
+  }
+  30% {
+    box-shadow: 10014px 0 0 2px;
+  }
+  60%,
+  100% {
+    box-shadow: 10014px 0 0 -5px;
+  }
+}
+.gg-arrow-long-right {
+  box-sizing: border-box;
+  position: relative;
+  display: block;
+  transform: scale(var(--ggs, 1));
+  border-top: 2px solid transparent;
+  border-bottom: 2px solid transparent;
+  box-shadow: inset 0 0 0 2px;
+  width: 24px;
+  height: 6px;
+}
+
+.gg-arrow-long-right::after {
+  content: '';
+  display: block;
+  box-sizing: border-box;
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-top: 2px solid;
+  border-right: 2px solid;
+  transform: rotate(45deg);
+  right: 0;
+  bottom: -2px;
+}
+.gg-arrow-dotted-long-right {
+  box-sizing: border-box;
+  position: relative;
+  display: block;
+  transform: scale(var(--ggs, 1));
+  border-top: 2px dotted;
+  border-bottom: 2px dotted;
+  box-shadow: inset 0 0 0 2px;
+  width: 24px;
+  height: 6px;
+}
+
+.gg-arrow-dotted-long-right::after {
+  content: '';
+  display: block;
+  box-sizing: border-box;
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-top: 2px dotted;
+  border-right: 2px dotted;
+  transform: rotate(45deg);
+  right: 0;
+  bottom: -2px;
+}
+.gg-red-arrow-dotted-long-right {
+  box-sizing: border-box;
+  position: relative;
+  display: block;
+  transform: scale(var(--ggs, 1));
+  border-top: 2px dotted red;
+  border-bottom: 2px dotted red;
+  box-shadow: inset 0 0 0 2px;
+  width: 24px;
+  height: 6px;
+}
+
+.gg-red-arrow-dotted-long-right::after {
+  content: '';
+  display: block;
+  box-sizing: border-box;
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  border-top: 2px dotted red;
+  border-right: 2px dotted red;
+  transform: rotate(45deg);
+  right: 0;
+  bottom: -2px;
+}
+
+.rcorners1 {
+  border-radius: 5px;
+  background: #74a8fb;
+  padding: 10px;
+  width: 15px;
+  height: 2px;
+}
+
+.rcorners2 {
+  border-radius: 5px;
+  background: #2bdca2;
+  padding: 10px;
+  width: 15px;
+  height: 2px;
+}
+
+.react-flow__handle {
+  opacity: 0;
+}
+
+.sm-node-label1 {
+  color: rgb(16, 24, 40);
+  margin: 0px;
+  word-break: break-word;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+  text-decoration: none;
+  display: inline-block;
+  max-width: 160px;
+}
+
+.sm-node-label2 {
+  color: rgb(16, 24, 40);
+  margin: 0px;
+  word-break: break-word;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  text-decoration: none;
+  display: inline-block;
+  max-width: 160px;
+}
+
+@keyframes shimmer {
+  from {
+    background-position: var(--percentage) 0;
+  }
+  to {
+    background-position: calc(var(--percentage) * -1) 0;
+  }
+}
+
+.shimmer {
+  --percentage: 200%;
+  --width: auto;
+  animation: shimmer 2s linear infinite;
+  background: #f0f0f0 linear-gradient(to right, transparent 0%, rgba(0, 0, 0, 0.1) 25%, transparent 50%);
+  background-size: var(--percentage) 100%;
+  height: 80vh;
+  width: var(--width);
+  font-size: 3rem;
+  padding: 10px;
+  margin-top: 10px;
+  border-radius: 8px;
+}
+
+.chart-container .Charts {
+  margin-bottom: 50px;
+}
+
+.chart-container > :not(:last-child) {
+  margin-bottom: 50px; /* Adjust the value to the desired spacing */
+}
+
+.custom-button-icon .MuiButton-icon {
+  display: flex;
+}
+
+.custom-button-icon .MuiButton-icon img {
+  padding-top: 4px;
+}
+
+.custom-button-icon .MuiButton-icon::after {
+  content: '';
+  border-right: 1px solid #d0d0d0;
+  padding-left: 10px;
+  height: 25px;
+}
+
+.node-trends-charts-container {
+  display: flex;
+  justify-content: space-around;
+  flex-wrap: wrap; /* Allows the charts to wrap to the next line if necessary */
+}
+
+.chart-wrapper {
+  margin: 10px;
+  width: 300px;
+  height: 300px;
+  padding: 10px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  border: 1px solid rgb(208, 208, 208);
+  background: rgb(246, 250, 255);
+}
+
+.cancel-button-text {
+  font-family: 'Roboto', sans-serif !important;
+  font-size: 14px !important;
+  font-weight: 500 !important;
+}
+
+.submit-button-text {
+  font-family: 'Roboto', sans-serif !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+}
+
+.notes {
+  color: #9f9f9f;
+  font-size: 12px;
+  margin-top: 6px;
+  margin-bottom: 6px;
+  border: 0.5px solid #d0d0d0;
+  background-color: #f8f8f8;
+  padding: 10px;
+  border-radius: 6px;
+}
+
+.terminal {
+  background-color: #1e1e1e;
+  color: #00ff00;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  border-radius: 5px;
+  border: 1px solid #333;
+  width: 100%;
+  height: 400px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+
+.terminal input {
+  background: none;
+  border: none;
+  color: #00ff00;
+  outline: none;
+  caret-color: #00ff00;
+}
+
+.terminal .xterm {
+  height: 100%;
+  width: 100%;
+}
+
+.xterm .xterm-cursor {
+  color: #00ff00 !important;
+}
+
+.animated-box {
+  animation: slide-up 0.9s cubic-bezier(0.215, 0.61, 0.355, 1) both;
+}
+
+@keyframes slide-up {
+  0% {
+    opacity: 0;
+    filter: blur(8px);
+    transform: translateY(140px) rotate(2deg) scale(1.05);
+  }
+  85% {
+    filter: blur(0px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) rotate(0deg) scale(1);
+  }
+}
+
+.no-logs {
+  margin: 2rem auto;
+  padding: 1.5rem;
+  max-width: 500px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background-color: #fff; /* white background */
+  text-align: center;
+  font-family: Arial, sans-serif;
+  color: #333;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08); /* subtle shadow */
+}
+
+.no-logs h3 {
+  margin-bottom: 0.5rem;
+  font-size: 1.25rem;
+  color: #d32f2f; /* red headline */
+}
+
+.no-logs p {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #666;
+}
+
+.service-node {
+  display: flex;
+  align-items: center;
+  padding: 10px;
+  border-radius: 8px;
+  background: #fff;
+  min-width: 250px;
+  max-width: 300px;
+  gap: 12px;
+  transition: all 0.2s ease;
+  border: 1px solid #e0e0e0;
+  /* Hardware acceleration for smoother transforms */
+  transform: translateZ(0);
+  will-change: transform, opacity;
+}
+
+/* --- Knowledge Graph: CSS-driven hover highlighting (avoids O(n) React re-renders) --- */
+
+/* When any node is hovered, dim ALL nodes and edges globally */
+.kg-hover-active .react-flow__node {
+  opacity: 0.25;
+  transition: opacity 0.15s ease;
+}
+.kg-hover-active .react-flow__edge {
+  opacity: 0.08;
+  transition: opacity 0.15s ease;
+}
+
+/* Then un-dim the hovered node + its neighbors */
+.kg-hover-active .react-flow__node.kg-node-highlighted {
+  opacity: 1;
+}
+.kg-hover-active .react-flow__node.kg-node-highlighted .service-node {
+  box-shadow: 0 0 10px rgba(33, 150, 243, 0.5);
+  border-color: #2196f3 !important;
+  z-index: 10;
+}
+
+/* Un-dim connected edges and style them */
+.kg-hover-active .react-flow__edge.kg-edge-highlighted {
+  opacity: 1;
+}
+.kg-hover-active .react-flow__edge.kg-edge-highlighted path {
+  stroke: #2196f3;
+  stroke-width: 2.5;
+}
+
+/* --- KG: Click-to-pin highlight (persists after mouse moves away) --- */
+.kg-pin-active .react-flow__node {
+  opacity: 0.15;
+  transition: opacity 0.15s ease;
+}
+.kg-pin-active .react-flow__edge {
+  opacity: 0.05;
+  transition: opacity 0.15s ease;
+}
+.kg-pin-active .react-flow__node.kg-node-pin-highlighted {
+  opacity: 1;
+}
+.kg-pin-active .react-flow__node.kg-node-pin-highlighted .service-node {
+  box-shadow: 0 0 12px rgba(33, 150, 243, 0.55);
+  border-color: #2196f3 !important;
+  z-index: 10;
+}
+.kg-pin-active .react-flow__edge.kg-edge-pin-highlighted {
+  opacity: 1;
+}
+.kg-pin-active .react-flow__edge.kg-edge-pin-highlighted path {
+  stroke: #2196f3;
+  stroke-width: 2.5;
+}
+/* Hover temporarily overrides pin: shows hover neighborhood, hides pin neighborhood */
+.kg-hover-active.kg-pin-active .react-flow__node {
+  opacity: 0.25;
+}
+.kg-hover-active.kg-pin-active .react-flow__edge {
+  opacity: 0.08;
+}
+.kg-hover-active.kg-pin-active .react-flow__node.kg-node-pin-highlighted {
+  opacity: 0.25;
+}
+.kg-hover-active.kg-pin-active .react-flow__edge.kg-edge-pin-highlighted {
+  opacity: 0.08;
+}
+
+/* --- KG: Node search spotlight --- */
+/* No dimming — green highlight alone makes matches stand out */
+.react-flow__node.kg-node-search-match {
+  z-index: 100 !important;
+}
+.react-flow__node.kg-node-search-match .service-node {
+  border-color: #10b981 !important;
+  border-width: 2.5px !important;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.25), 0 0 16px rgba(16, 185, 129, 0.55);
+  background-color: #f0fdf4 !important;
+}
+.react-flow__node.kg-node-search-match .node-title {
+  color: #065f46;
+}
+/* Zoomed-out dot view: make matched dots larger, bright green, with a pulsing ring */
+.react-flow__node.kg-node-search-match .simple-dot-node {
+  width: 18px !important;
+  height: 18px !important;
+  background-color: #10b981 !important;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.35), 0 0 10px rgba(16, 185, 129, 0.6);
+  animation: kg-search-pulse 1.4s ease-in-out infinite;
+}
+@keyframes kg-search-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.35), 0 0 10px rgba(16, 185, 129, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(16, 185, 129, 0.15), 0 0 18px rgba(16, 185, 129, 0.4);
+  }
+}
+
+.node-content {
+  flex-grow: 1;
+  overflow: hidden;
+}
+
+.node-title {
+  font-size: 14px;
+  font-weight: bold;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: 'Roboto', 'Helvetica', 'Arial', sans-serif;
+}
+
+.node-sub {
+  font-size: 11px;
+  color: #666;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: 'Roboto', 'Helvetica', 'Arial', sans-serif;
+}
+
+.info-btn {
+  padding: 4px;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  color: #757575;
+}
+.info-btn:hover {
+  color: #2196f3;
+}
+
+/* --- Knowledge Graph: LOD wrapper — both views rendered, toggled via class --- */
+.service-node-wrapper {
+  position: relative;
+}
+.service-node-wrapper > .simple-dot-node,
+.service-node-wrapper > .service-node {
+  transition: opacity 0.1s ease;
+}
+.service-node-wrapper.lod-dot > .service-node {
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+.service-node-wrapper.lod-dot > .simple-dot-node {
+  opacity: 1;
+}
+.service-node-wrapper.lod-full > .simple-dot-node {
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+.service-node-wrapper.lod-full > .service-node {
+  opacity: 1;
+}
+
+/* --- Knowledge Graph: Simplified dot node for zoomed-out LOD --- */
+.simple-dot-node {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  position: relative;
+  cursor: pointer;
+}
+.simple-dot-label {
+  position: absolute;
+  left: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 9px;
+  white-space: nowrap;
+  color: #555;
+  pointer-events: none;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

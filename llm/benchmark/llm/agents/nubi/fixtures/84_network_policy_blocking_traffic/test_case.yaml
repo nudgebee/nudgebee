@@ -1,0 +1,26 @@
+user_prompt: "Why is the frontend getting timeouts connecting to backend in namespace-84?"
+
+# REQUIRES a CNI that enforces NetworkPolicy (Calico, Cilium, or similar).
+# On clusters with non-enforcing CNI (kindnet, flannel without policy plugin)
+# the test will silently pass because traffic is never actually blocked,
+# making the agent answer "no problem found" — which contradicts the expected
+# output. The before_test soft-checks for an enforcing CNI and warns loudly
+# if one isn't detected, so a debugging operator can recognize the false
+# negative quickly.
+expected_output: "Frontend getting timeouts because NetworkPolicy on backend only allows ingress from pods with tier backend label not frontend"
+
+tags:
+  - kubernetes
+  - network
+  - hard
+  - holmesgpt-parity
+
+before_test: |
+  if ! kubectl get pods -A 2>/dev/null | grep -qE "calico-node|calico-kube-controllers|cilium-operator|cilium-agent"; then
+    echo "WARNING: No NetworkPolicy-enforcing CNI detected (Calico/Cilium). Test reliability is reduced — traffic may not actually be blocked." >&2
+  fi
+  kubectl apply -f ./manifest.yaml
+  sleep 30
+
+after_test: |
+  kubectl delete -f ./manifest.yaml --ignore-not-found

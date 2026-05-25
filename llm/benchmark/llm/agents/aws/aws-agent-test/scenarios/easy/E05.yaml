@@ -1,0 +1,159 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E05: ALB Returns 502 Bad Gateway.
+  User complaint: "Load balancer returns 502, the app seems fine when I check directly."
+  Root cause: Health check path is /health but app serves /healthz.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = ALB health check uses /health, app serves /healthz.
+      Fixed = ALB health check uses /healthz matching app.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for catalog ALB
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: e05-catalog-alb-sg
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for catalog app instances
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: e05-catalog-instance-sg
+
+  # EC2 instance running a simple Python HTTP server with /healthz endpoint
+  AppInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      SubnetId: !ImportValue aws-agent-test-public-subnet-a
+      SecurityGroupIds:
+        - !Ref InstanceSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          cat > /home/ec2-user/app.py << 'PYEOF'
+          from http.server import HTTPServer, BaseHTTPRequestHandler
+          import json
+
+          class Handler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  if self.path == '/healthz':
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps({"status": "healthy"}).encode())
+                  elif self.path == '/api/catalog':
+                      self.send_response(200)
+                      self.send_header('Content-Type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps({"items": [{"id": 1, "name": "Widget"}]}).encode())
+                  else:
+                      self.send_response(404)
+                      self.send_header('Content-Type', 'application/json')
+                      self.end_headers()
+                      self.wfile.write(json.dumps({"error": "not found"}).encode())
+
+              def log_message(self, format, *args):
+                  pass
+
+          HTTPServer(('0.0.0.0', 8080), Handler).serve_forever()
+          PYEOF
+          nohup python3 /home/ec2-user/app.py &
+      Tags:
+        - Key: Name
+          Value: e05-catalog-app-01
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: catalog
+        - Key: Application
+          Value: product-catalog
+
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: e05-catalog-alb
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !ImportValue aws-agent-test-public-subnet-a
+        - !ImportValue aws-agent-test-public-subnet-b
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: e05-catalog-alb
+        - Key: Environment
+          Value: production
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: e05-catalog-tg
+      Port: 8080
+      Protocol: HTTP
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      TargetType: instance
+      # THE BUG: health check path is /health but app serves /healthz
+      HealthCheckPath: !If [IsFixed, '/healthz', '/health']
+      Matcher:
+        HttpCode: '200'
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      Targets:
+        - Id: !Ref AppInstance
+          Port: 8080
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+Outputs:
+  ALBDnsName:
+    Description: ALB DNS Name
+    Value: !GetAtt ALB.DNSName
+  TargetGroupArn:
+    Description: Target Group ARN
+    Value: !Ref TargetGroup
+  InstanceId:
+    Description: App Instance ID
+    Value: !Ref AppInstance
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

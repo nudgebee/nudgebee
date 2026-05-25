@@ -1,0 +1,15 @@
+user_prompt: ETL functions in the Function App in resource group 'azure-agent-test-E07'
+  are being killed mid-execution after exactly 1 minute, even though they need up
+  to 5 minutes to process large datasets. What configuration is causing this?
+expected_output:
+- 'The Function App has the app setting AzureFunctionsJobHost__functionTimeout=00:01:00
+  which overrides the default timeout and kills functions after 1 minute. Fix: Change
+  AzureFunctionsJobHost__functionTimeout to ''00:10:00'' (or remove it to use the
+  default 5-minute Consumption plan timeout).'
+agent: azure_debug
+scenario: E07
+type: rca
+tags:
+- rca
+- easy
+- azure

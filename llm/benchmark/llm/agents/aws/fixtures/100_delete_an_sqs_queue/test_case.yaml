@@ -1,0 +1,6 @@
+user_prompt: Delete an SQS queue.
+expected_output:
+- aws sqs delete-queue --queue-url <queue-url>
+tags:
+- command
+- aws

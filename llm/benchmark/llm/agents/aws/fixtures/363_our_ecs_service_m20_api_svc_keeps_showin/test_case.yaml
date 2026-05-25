@@ -1,0 +1,23 @@
+user_prompt: Our ECS service 'm20-api-svc' on cluster 'm20-api-cluster' keeps showing
+  0 healthy targets behind ALB 'm20-api-alb'. Containers start fine and logs show the
+  app is running on port 8080, but ALB returns 502. Tasks keep getting drained and
+  replaced in a loop. What's wrong?
+expected_output:
+- The root cause is a health check path mismatch between the ALB target group and the
+  application. The ALB target group 'm20-api-tg' has its health check path configured
+  as '/health', but the application container only responds with HTTP 200 on the path
+  '/healthz'. When the ALB sends health check requests to '/health', the application
+  returns 404 (not found), which doesn't match the expected 200 response code. The ALB
+  marks all targets as unhealthy after the unhealthy threshold is reached, causing ECS
+  to drain and replace tasks in a continuous loop. The application itself is running
+  correctly — the issue is purely the health check configuration. The fix is to update
+  the target group health check path from '/health' to '/healthz' to match the actual
+  endpoint the application serves.
+tags:
+- rca
+- aws
+- ecs
+- alb
+- health-check
+type: rca
+agent: aws_debug

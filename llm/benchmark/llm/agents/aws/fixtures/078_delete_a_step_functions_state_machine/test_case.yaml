@@ -1,0 +1,6 @@
+user_prompt: Delete a Step Functions state machine.
+expected_output:
+- aws stepfunctions delete-state-machine --state-machine-arn <state-machine-arn>
+tags:
+- command
+- aws

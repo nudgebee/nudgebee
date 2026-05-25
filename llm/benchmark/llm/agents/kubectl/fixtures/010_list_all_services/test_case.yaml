@@ -1,0 +1,7 @@
+user_prompt: List all services.
+expected_output:
+- kubectl get services
+- kubectl get svc
+tags:
+- command
+- kubernetes

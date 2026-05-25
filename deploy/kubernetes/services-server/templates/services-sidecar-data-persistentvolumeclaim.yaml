@@ -1,0 +1,12 @@
+{{- if .Values.allowSideCar }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "services-server.fullname" . }}-pprof-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 500Mi
+{{- end }}

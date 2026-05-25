@@ -1,0 +1,6 @@
+user_prompt: Show me the current context I'm using.
+expected_output:
+- kubectl config current-context
+tags:
+- command
+- kubernetes

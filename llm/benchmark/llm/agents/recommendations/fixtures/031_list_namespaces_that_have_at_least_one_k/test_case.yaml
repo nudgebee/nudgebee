@@ -1,0 +1,6 @@
+user_prompt: List namespaces that have at least one 'K8sVersionUpgrade' recommendation.
+expected_output:
+- SELECT DISTINCT namespace from recommendation_view WHERE category = 'K8sVersionUpgrade';
+tags:
+- command
+- recommendations

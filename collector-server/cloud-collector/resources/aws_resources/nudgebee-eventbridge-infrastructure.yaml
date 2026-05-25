@@ -1,0 +1,109 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Nudgebee SQS Infrastructure - SQS Queues for Real-Time AWS Resource Events from Customer Accounts'
+
+Parameters:
+  SQSQueueName:
+    Type: String
+    Description: 'Name of the SQS queue for EventBridge events'
+    Default: 'nudgebee-eventbridge-queue'
+    AllowedPattern: '^[a-zA-Z0-9_-]{1,80}$'
+    ConstraintDescription: 'Queue name must be 1-80 characters and contain only alphanumeric characters, hyphens, and underscores'
+
+  SQSDLQName:
+    Type: String
+    Description: 'Name of the SQS dead letter queue for EventBridge events'
+    Default: 'nudgebee-eventbridge-dlq'
+    AllowedPattern: '^[a-zA-Z0-9_-]{1,80}$'
+    ConstraintDescription: 'Queue name must be 1-80 characters and contain only alphanumeric characters, hyphens, and underscores'
+
+  SQSMessageRetentionPeriod:
+    Type: Number
+    Description: 'Message retention period in seconds (default: 14 days)'
+    Default: 1209600
+    MinValue: 60
+    MaxValue: 1209600
+
+  SQSVisibilityTimeout:
+    Type: Number
+    Description: 'Visibility timeout in seconds (should be > collector processing time)'
+    Default: 300
+    MinValue: 0
+    MaxValue: 43200
+
+Resources:
+  # Dead Letter Queue for failed messages
+  EventBridgeDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Ref SQSDLQName
+      MessageRetentionPeriod: 1209600  # 14 days
+      Tags:
+        - Key: Service
+          Value: Nudgebee
+        - Key: Component
+          Value: SQS
+        - Key: Purpose
+          Value: Dead letter queue for EventBridge events
+
+  # SQS Queue for receiving events from EventBridge
+  EventBridgeQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Ref SQSQueueName
+      MessageRetentionPeriod: !Ref SQSMessageRetentionPeriod
+      VisibilityTimeout: !Ref SQSVisibilityTimeout
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt EventBridgeDeadLetterQueue.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Service
+          Value: Nudgebee
+        - Key: Component
+          Value: SQS
+        - Key: Purpose
+          Value: EventBridge event queue
+
+  # SQS Queue Policy - Allow EventBridge from customer accounts to send messages
+  EventBridgeQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref EventBridgeQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # Allow cross-account customer EventBridge rules to send to SQS
+          - Sid: AllowCrossAccountEventBridgeSendMessage
+            Effect: Allow
+            Principal: '*'
+            Action:
+              - sqs:SendMessage
+            Resource: !GetAtt EventBridgeQueue.Arn
+            Condition:
+              ArnLike:
+                aws:SourceArn: 'arn:aws:events:*:*:rule/*'
+
+Outputs:
+  SQSQueueUrl:
+    Description: 'URL of the SQS queue for collector to consume'
+    Value: !Ref EventBridgeQueue
+    Export:
+      Name: !Sub '${AWS::StackName}-SQSQueueUrl'
+
+  SQSQueueArn:
+    Description: 'ARN of the SQS queue (use this in customer EventBridge rule targets)'
+    Value: !GetAtt EventBridgeQueue.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-SQSQueueArn'
+
+  DLQUrl:
+    Description: 'URL of the dead letter queue'
+    Value: !Ref EventBridgeDeadLetterQueue
+    Export:
+      Name: !Sub '${AWS::StackName}-DLQUrl'
+
+  DLQArn:
+    Description: 'ARN of the dead letter queue'
+    Value: !GetAtt EventBridgeDeadLetterQueue.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-DLQArn'

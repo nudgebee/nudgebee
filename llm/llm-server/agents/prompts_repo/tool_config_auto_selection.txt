@@ -1,0 +1,21 @@
+%s
+User's input: "%s"
+
+Available configurations for %s:
+%s%s
+%s
+Instructions:
+- The user's input may be a question, error log, stack trace, or pasted error message, sometimes along with investigation context
+- Extract environment information from ANY of these sources:
+  * Environment keywords: "dev", "development", "test", "testing", "prod", "production", "staging", "stage", "qa", "uat", "demo", "preprod"
+  * Hostnames/URLs: e.g., "postgres-prod-us-east-1.rds.amazonaws.com" this indicates "prod"
+  * Database names: e.g., "production_app", "dev_database" this indicates environment
+  * File paths: e.g., "/var/log/production/app.log" this indicates "production"
+  * Connection strings: e.g., "jdbc:postgresql://staging-db:5432" this indicates "staging"
+  * Service names: e.g., "api-dev", "worker-prod" this indicates environment
+  * Any other contextual clues in error messages or logs
+%s- Match the extracted environment to the configuration tags (environment, region, purpose)
+- If you can confidently identify the configuration, respond with ONLY the exact configuration name.
+- If multiple configurations could match or you're uncertain, respond with "UNCERTAIN"
+
+Response (only the config name or "UNCERTAIN"):

@@ -1,0 +1,80 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "M07: App Service has STORAGE_CONTAINER=reports-archive but actual container is 'reports'. Blob reads fail with 404 ContainerNotFound. User complaint: report download API returns 404 for all reports. Requires checking both app settings and actual storage containers to find name mismatch."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "appName": "[concat('m07app', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "storageName": "[concat('m07sa', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "actualContainer": "reports",
+    "containerName": "[if(equals(parameters('scenarioMode'), 'Fixed'), 'reports', 'reports-archive')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('storageName')]",
+      "location": "[resourceGroup().location]",
+      "sku": { "name": "Standard_LRS" },
+      "kind": "StorageV2",
+      "tags": { "Environment": "production", "Purpose": "report-storage", "Scenario": "M07" }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-01-01",
+      "name": "[concat(variables('storageName'), '/default/', variables('actualContainer'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ],
+      "properties": { "publicAccess": "None" }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('appName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "app",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ],
+      "tags": {
+        "Name": "m07-reports-api",
+        "Environment": "production",
+        "Team": "reporting",
+        "Scenario": "M07",
+        "ScenarioMode": "[parameters('scenarioMode')]"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "siteConfig": {
+          "appSettings": [
+            { "name": "STORAGE_ACCOUNT_NAME", "value": "[variables('storageName')]" },
+            { "name": "STORAGE_CONTAINER", "value": "[variables('containerName')]" },
+            { "name": "REPORT_FORMAT", "value": "pdf" },
+            { "name": "APP_ENV", "value": "production" }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "AppServiceName": { "type": "string", "value": "[variables('appName')]" },
+    "StorageAccountName": { "type": "string", "value": "[variables('storageName')]" },
+    "ActualContainer": { "type": "string", "value": "[variables('actualContainer')]" },
+    "ConfiguredContainer": { "type": "string", "value": "[variables('containerName')]" },
+    "BugNote": { "type": "string", "value": "STORAGE_CONTAINER='reports-archive' but actual container is 'reports' - blob reads return 404" },
+    "ScenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

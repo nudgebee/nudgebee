@@ -1,0 +1,9 @@
+user_prompt: "Why is my Digital ocean droplet not working fine"
+expected_output:
+  - The answer should indicate the agent doesn't have access to Digital Ocean tools or integration
+  - The answer should NOT imply that a Digital Ocean integration already exists
+evaluation:
+  correctness: 0
+tags:
+  - medium
+  - transparency

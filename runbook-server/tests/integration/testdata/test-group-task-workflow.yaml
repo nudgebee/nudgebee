@@ -1,0 +1,19 @@
+name: test-group-task-workflow
+definition:
+  triggers:
+    - type: manual
+  tasks:
+  - id: my-group
+    type: core.group
+    params:
+      tasks:
+        - id: task1-in-group
+          type: core.print
+          params:
+            message: "This is the first task in the group"
+        - id: task2-in-group
+          type: core.print
+          params:
+            message: "This is the second task in the group"
+          depends_on:
+            - task1-in-group

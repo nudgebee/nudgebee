@@ -1,0 +1,26 @@
+agent: k8s_debug
+expected_output:
+- The adservice is experiencing artificially high CPU load due to the adHighCpu feature flag. This CPU-intensive workload
+  is slowing down ad delivery and potentially impacting other services running on the same node.
+expected_root_cause:
+  affected_service: adservice
+  issue_type: high_cpu_usage
+  symptoms:
+  - high CPU utilization
+  - slow ad response times
+  - service performance degradation
+  - potential resource starvation for other services
+  telemetry_signals:
+    logs: CPU usage warnings in adservice logs
+    metrics: CPU utilization metrics showing spikes to near 100%, increased response latency
+    traces: slow traces in ad service operations due to CPU contention
+feature_flag: adHighCpu
+flag_variant: 'on'
+scenario_id: ad_service_high_cpu
+tags:
+- rca
+- kubernetes
+type: rca
+user_prompt: The ad service is consuming excessive CPU and impacting overall system performance. Investigate the ad deployment
+  in nudgebee-demo namespace.
+wait_time_seconds: 60

@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "disable_existing_loggers": false,
+  "formatters": {
+    "json_formatter": {
+      "format": "{\"time\": \"%(asctime)s\", \"level\": \"%(levelname)s\",\"filename\": \"%(filename)s\", \"lineno\":\"%(lineno)d\" ,\"message\": %(message)s}",
+      "class": "pythonjsonlogger.json.JsonFormatter"
+    }
+  },
+  "handlers": {
+    "console": {
+      "class": "logging.StreamHandler",
+      "level": "INFO",
+      "formatter": "json_formatter",
+      "stream": "ext://sys.stdout"
+    }
+  },
+  "loggers": {
+    "": {
+      "handlers": [
+        "console"
+      ],
+      "level": "INFO",
+      "propagate": true
+    },
+    "werkzeug": {
+      "handlers": [
+        "console"
+      ],
+      "level": "INFO",
+      "propagate": false
+    },
+    "amqp.abstract_channel": {
+      "handlers": [],
+      "level": "ERROR",
+      "propagate": false
+    }
+  }
+}

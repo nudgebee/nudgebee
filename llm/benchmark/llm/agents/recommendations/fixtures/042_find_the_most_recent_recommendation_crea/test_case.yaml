@@ -1,0 +1,8 @@
+user_prompt: Find the most recent recommendation created for the 'K8sSpotRecommendation'
+  category.
+expected_output:
+- SELECT namespace, name, recommendation, created_at from recommendation_view WHERE
+  category = 'K8sSpotRecommendation' ORDER BY created_at DESC LIMIT 1;
+tags:
+- command
+- recommendations

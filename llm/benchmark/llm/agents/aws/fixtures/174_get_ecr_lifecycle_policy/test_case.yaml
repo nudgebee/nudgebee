@@ -1,0 +1,6 @@
+user_prompt: Get ECR lifecycle policy.
+expected_output:
+- aws ecr get-lifecycle-policy --repository-name <repository-name>
+tags:
+- command
+- aws

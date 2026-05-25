@@ -1,0 +1,6 @@
+user_prompt: What services are logging right now?
+expected_output: '{"where": {}, "time_range": "1h", "limit": 100}'
+tags:
+  - command
+  - discovery
+  - signoz

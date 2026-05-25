@@ -1,0 +1,94 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H01: Lambda function fails with "Handler 'index.handelr' missing on module 'index'".
+  User complaint: "Lambda invocations all fail. I just deployed a code update."
+  Root cause: Handler configuration has a typo ('handelr' instead of 'handler').
+  The agent must examine Lambda config, parse the runtime error, and identify
+  the handler name mismatch — not just "Lambda is broken" but the specific config error.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Handler set to 'index.handelr' (typo), invocations fail.
+      Fixed = Handler set to 'index.handler' (correct).
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  DataPipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h01-data-pipeline-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  # THE BUG: 'index.handelr' typo in Broken mode — Lambda runtime cannot find handler
+  DataPipelineFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h01-data-pipeline
+      Runtime: python3.12
+      # Broken: 'index.handelr' — typo in handler name
+      # Fixed:  'index.handler' — correct
+      Handler: !If [IsFixed, 'index.handler', 'index.handelr']
+      Role: !GetAtt DataPipelineRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          import json
+          import datetime
+
+          def handler(event, context):
+              """Process incoming data pipeline events."""
+              records = event.get('records', [])
+              processed = []
+              for record in records:
+                  processed.append({
+                      'id': record.get('id'),
+                      'status': 'processed',
+                      'timestamp': datetime.datetime.utcnow().isoformat()
+                  })
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({
+                      'processed': len(processed),
+                      'results': processed
+                  })
+              }
+      Tags:
+        - Key: Name
+          Value: h01-data-pipeline
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: data-engineering
+        - Key: Application
+          Value: etl-pipeline
+
+Outputs:
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref DataPipelineFunction
+  FunctionArn:
+    Description: Lambda Function ARN
+    Value: !GetAtt DataPipelineFunction.Arn
+  Handler:
+    Description: Configured handler (has typo in Broken mode)
+    Value: !If [IsFixed, 'index.handler', 'index.handelr']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

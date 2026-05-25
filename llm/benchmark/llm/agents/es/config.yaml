@@ -1,0 +1,6 @@
+# Elasticsearch agent benchmark configuration
+agent: elastic_search_query
+tool_names:
+  - elastic_search_execute
+config_types:
+  - elasticsearch

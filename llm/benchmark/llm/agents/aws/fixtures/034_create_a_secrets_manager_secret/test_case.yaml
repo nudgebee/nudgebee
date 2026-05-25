@@ -1,0 +1,6 @@
+user_prompt: Create a Secrets Manager secret.
+expected_output:
+- aws secretsmanager create-secret --name <secret-name> --secret-string <secret-value>
+tags:
+- command
+- aws

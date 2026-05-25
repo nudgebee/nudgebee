@@ -1,0 +1,9 @@
+user_prompt: what is the promql query for memory usage percentage on node-3?
+expected_output:
+- (node_memory_MemTotal_bytes{instance="node-3"} - node_memory_MemAvailable_bytes{instance="node-3"})
+  / node_memory_MemTotal_bytes{instance="node-3"} * 100
+- (node_resources_memory_usage_bytes{node="node-3"} / node_resources_memory_total_bytes{node="node-3"})
+  * 100
+tags:
+- command
+- promql

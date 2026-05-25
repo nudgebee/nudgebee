@@ -1,0 +1,15 @@
+agent: aws_debug
+expected_output:
+- The root cause is that the Lambda execution role 'e11-order-writer-role' is missing the dynamodb:PutItem permission. The
+  inline policy 'dynamodb-access' only grants dynamodb:GetItem and dynamodb:Query on the 'e11-orders' table. The Lambda function
+  code calls table.put_item() to write orders, which requires dynamodb:PutItem. Since this permission is not in the policy,
+  writes fail with AccessDeniedException while reads succeed. The fix is to add dynamodb:PutItem to the inline policy for
+  the table's ARN.
+scenario: E11
+tags:
+- command
+- aws
+- easy
+type: rca
+user_prompt: Our Lambda function 'e11-order-writer' in us-east-1 fails with AccessDeniedException when writing orders to DynamoDB
+  table 'e11-orders'. Reading from the table works fine — only writes fail. Can you investigate what permission is missing?

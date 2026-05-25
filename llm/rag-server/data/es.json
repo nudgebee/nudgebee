@@ -1,0 +1,2608 @@
+[
+    {
+        "question": "Search for common kubelet errors related to container startup, pod syncing, and image pull back off",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(failed to start container|Error syncing pod|Error: ImagePullBackOff)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for generic errors, failures, and timeouts in kube-proxy logs",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": ".*error.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "term": {
+                                "component.keyword": {
+                                    "case_insensitive": true,
+                                    "value": "kube-proxy"
+                                }
+                            }
+                        },
+                        {
+                            "bool": {
+                                "should": [
+                                    {
+                                        "regexp": {
+                                            "msg": {
+                                                "case_insensitive": true,
+                                                "value": ".*failed.*"
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "regexp": {
+                                            "log.keyword": {
+                                                "case_insensitive": true,
+                                                "value": "timeout"
+                                            }
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for kernel-related bugs, warnings, and oops messages reported by node-problem-detector",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "error.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "term": {
+                                "component.keyword": {
+                                    "case_insensitive": true,
+                                    "value": "node-problem-detector"
+                                }
+                            }
+                        },
+                        {
+                            "bool": {
+                                "should": [
+                                    {
+                                        "regexp": {
+                                            "msg": {
+                                                "case_insensitive": true,
+                                                "value": ".*kernel bug.*"
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "regexp": {
+                                            "msg": {
+                                                "case_insensitive": true,
+                                                "value": ".*warning.*"
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "regexp": {
+                                            "msg": {
+                                                "case_insensitive": true,
+                                                "value": ".*Oops.*"
+                                            }
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for critical errors like panics, stack traces, and segmentation faults in a specific container",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.container_name.keyword": {
+                                    "value": "my-app",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(panic|stack trace|segmentation fault)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for generic errors, exceptions, and failures in the standard error output of any container",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(error|exception|fail)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for logs in the 'production' namespace indicating pods killed due to Out of Memory or exit code 137",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "case_insensitive": true,
+                                    "value": "production"
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(OOMKilled|Exit Code: 137)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for logs related to pods stuck in a restart loop due to container failures",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "Back-off restarting failed container",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for common web server errors (404, connection resets) in logs from the 'my-web-server' app",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "case_insensitive": true,
+                                    "value": "my-web-server.*"
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(404 Not Found|connection reset by peer)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for database-related errors (deadlocks, query failures, connection issues) in logs from the 'database' app",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "case_insensitive": true,
+                                    "value": "database.*"
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(deadlock|query failed|connection error)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for message queue errors (connection failures, message delivery issues) in logs from the 'message-queue' app",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "case_insensitive": true,
+                                    "value": "message-queue.*"
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(unable to connect|message delivery failed)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for ingress-nginx-controller errors related to upstream timeouts or unavailable upstreams",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.job.name.keyword": {
+                                    "case_insensitive": true,
+                                    "value": "ingress-nginx-controller"
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(upstream timed out|no live upstreams)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for DNS resolution errors (SERVFAIL, NXDOMAIN) in kube-dns logs",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.job.name.keyword": {
+                                    "case_insensitive": true,
+                                    "value": "kube-dns"
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(SERVFAIL|NXDOMAIN)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for generic errors, dropped packets, and invalid configurations in Calico logs",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.job.name.keyword": {
+                                    "case_insensitive": true,
+                                    "value": "calico-node"
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(error|dropped|invalid)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for authentication and authorization errors in Kubernetes API server logs",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.job.name.keyword": {
+                                    "case_insensitive": true,
+                                    "value": "kube-apiserver"
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(forbidden|unauthorized|authentication failed)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for authorization failures and RBAC access denied errors in kube-controller-manager logs",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.job.name.keyword": {
+                                    "case_insensitive": true,
+                                    "value": "kube-controller-manager"
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(failed to authorize|rbac: access denied)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Logs from a specific namespace namespace1",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "case_insensitive": true,
+                                    "value": "namespace1"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Logs from a specific container in a pod",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "case_insensitive": true,
+                                    "value": "default"
+                                }
+                            }
+                        },
+                        {
+                            "term": {
+                                "kubernetes.pod_name.keyword": {
+                                    "case_insensitive": true,
+                                    "keyword": "my-pod"
+                                }
+                            }
+                        },
+                        {
+                            "term": {
+                                "kubernetes.container_name.keyword": {
+                                    "case_insensitive": true,
+                                    "value": "my-container"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Logs containing a specific keyword",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "error.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Logs with a specific log level",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "error.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Logs from all pods in a namespace",
+        "elastic_search_query": {
+            "query": {
+                "bool":{
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "case_insensitive": true,
+                                    "value": "default"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Logs from a specific node",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "case_insensitive": true,
+                                    "value": "default"
+                                }
+                            }
+                        },
+                        {
+                            "term": {
+                                "kubernetes.node_name": {
+                                    "case_insensitive": true,
+                                    "value": "my-node"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Logs within a specific time range",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "range": {
+                                "@timestamp": {
+                                    "gte": "2024-09-01T00:00:00Z",
+                                    "lte": "2024-09-01T01:00:00Z"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Logs containing a specific label",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "label_name": {
+                                    "case_insensitive": true,
+                                    "value": "my-label"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Combine multiple conditions",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "bool": {
+                                "must": [
+                                    {
+                                        "regexp": {
+                                            "msg": {
+                                                "value": "error.*",
+                                                "case_insensitive": true
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "regexp": {
+                                            "msg": {
+                                                "value": "error.*",
+                                                "case_insensitive": true
+                                            }
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Count occurrences of a specific error",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "error.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            },
+            "aggs": {
+                "error_count": {
+                    "date_histogram": {
+                        "field": "@timestamp",
+                        "interval": "1h"
+                    }
+                }
+            }
+        }
+    },
+    {
+        "question": "Monitor logs for a specific Kubernetes deployment",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "case_insensitive": true,
+                                "kubernetes.namespace_name.keyword": "default"
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "case_insensitive": true,
+                                    "value": "my-deployment.*"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Filter logs by HTTP status code",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": ".*status=500.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Logs from all namespaces",
+        "elastic_search_query": {
+            "query": {
+                "match_all": {}
+            }
+        }
+    },
+    {
+        "question": "Filter logs by request method",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "GET",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Logs with regex filtering",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(error|fail)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Filter logs by pod label",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "case_insensitive": true,
+                                    "value": "my-app.*"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Logs for a Kubernetes job",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.job.name": {
+                                    "case_insensitive": true,
+                                    "value": "my-job"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Filter logs by HTTP path",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": ".*/api/v1/resource.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Logs for a specific Kubernetes cronjob",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.cronjob.name": {
+                                    "case_insensitive": true,
+                                    "value": "my-cronjob"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Filter logs by multiple labels",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.labels.*": {
+                                    "case_insensitive": true,
+                                    "value": "value1"
+                                }
+                            }
+                        },
+                        {
+                            "term": {
+                                "kubernetes.labels.*": {
+                                    "case_insensitive": true,
+                                    "value": "value2"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Logs for a specific time interval with keyword filtering",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "range": {
+                                "@timestamp": {
+                                    "gte": "2024-09-01T00:00:00Z",
+                                    "lte": "2024-09-01T01:00:00Z"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Logs excluding specific messages",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "bool": {
+                                "must_not": {
+                                    "regexp": {
+                                        "msg": {
+                                            "value": ".*info.*",
+                                            "case_insensitive": true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Logs filtered by pod phase",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.pod.status.phase": {
+                                    "case_insensitive": true,
+                                    "value": "Running"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Monitor logs for a specific Kubernetes service",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.annotations.service_name": {
+                                    "case_insensitive": true,
+                                    "value": "my-service"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Logs with a combination of labels and keyword",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "case_insensitive": true,
+                                    "value": "my-app.*"
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "kubernetes.labels.app.keyword": {
+                                    "case_insensitive": true,
+                                    "value": ".*db connection error.*"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for pod eviction warnings due to disk pressure or memory pressure in a specific node",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.host.keyword": {
+                                    "value": "node-1.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(DiskPressure|MemoryPressure)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for authentication or authorization errors in the kube-apiserver component logs",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "component.keyword": {
+                                    "value": "kube-apiserver",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(authentication error|authorization error)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for logs with failed liveness or readiness probes in all namespaces",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(Liveness probe failed|Readiness probe failed)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Find logs for pods restarted more than 3 times in the development namespace",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "value": "development",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "range": {
+                                "kubernetes.pod_restart_count": {
+                                    "gt": 3
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for logs where pods were killed due to CPU throttling in the staging namespace",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "value": "staging",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "CPU throttling",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for DNS resolution errors in kube-dns logs across all clusters",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "component.keyword": {
+                                    "value": "kube-dns",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(DNS resolution error|NXDOMAIN|SERVFAIL)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Find logs where persistent volume claims failed to bind in the production namespace",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "value": "production",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(PVC binding error|failed to bind persistent volume)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for warnings about deprecated API usage in any logs",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "deprecated API",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for logs of pod terminations caused by node preemption events",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "Preempting pod",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Find logs reporting service load balancer creation failures",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "LoadBalancer creation failed",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for pod crashes due to container runtime errors in the 'production' namespace",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "value": "production",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(container runtime error|crash)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for failed PVC provisioning due to insufficient storage in the 'storage-class-gold'",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "storageclass.keyword": {
+                                    "value": "storage-class-gold",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "Insufficient storage",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for unauthorized access attempts in kube-apiserver logs",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "component.keyword": {
+                                    "value": "kube-apiserver",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "Unauthorized",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for events where nodes reported NotReady status",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "Node status: NotReady",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for excessive resource usage warnings in the 'testing' namespace",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "value": "testing",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(CPU limit exceeded|Memory usage high)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for network policy violations in the 'networking' namespace",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "value": "networking",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "NetworkPolicy violation",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for warnings about failed service account creation in kube-controller-manager logs",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "component.keyword": {
+                                    "value": "kube-controller-manager",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "Failed to create service account",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for pod terminations caused by resource quotas being exceeded",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "ResourceQuota exceeded",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for logs indicating problems with ingress controllers in the 'web' namespace",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "value": "web",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(Ingress not found|Failed to configure ingress)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for logs indicating errors with cluster autoscaling operations",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(Failed to scale|Scaling operation error)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Fetch error logs for pod 'p1' in the namespace 'nm2'",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "p1",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "value": "nm2",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": ".*error.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Fetch logs for the application 'app3' with errors in the last 2 days",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "app3.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": ".*error.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "range": {
+                                "@timestamp": {
+                                    "gte": "now-2d/d",
+                                    "lte": "now"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Retrieve warning logs for application 'app3'",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "app3.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": ".*warning.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Get error logs from all pods in namespace 'default' within the last 6 hours",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "value": "default",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": ".*error.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "range": {
+                                "@timestamp": {
+                                    "gte": "now-6h/h",
+                                    "lte": "now"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Retrieve logs for application 'web-app' showing database connection errors",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "web-app.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(database connection failed|unable to connect to database)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for critical logs related to memory leaks in application 'backend-service'",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "backend-service.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(memory leak|out of memory)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Get logs for the pod 'frontend-pod' in the last 24 hours containing timeout errors",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "frontend-pod",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(timeout|request timed out)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "range": {
+                                "@timestamp": {
+                                    "gte": "now-1d/d",
+                                    "lte": "now"
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Retrieve warning logs from all pods in the 'staging' namespace",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "value": "staging",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": ".*warning.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Find logs for pod 'cache-pod' with Redis errors",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "cache-pod",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(Redis error|Redis connection failed)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for logs reporting HTTP 500 errors for the application 'api-service'",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "api-service.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": ".*HTTP 500.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Find logs for application 'web-app' showing database connection failures",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "web-app.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(database connection failed|unable to connect to database)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for SQL syntax errors in the logs of application 'backend-service'",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "backend-service.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(syntax error at|SQL error|Invalid SQL statement)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Fetch logs for the 'db-manager' service reporting transaction rollback errors",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "service.keyword": {
+                                    "value": "db-manager",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(transaction rollback|transaction aborted)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Retrieve logs showing database timeout errors for the application 'analytics-service'",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "analytics-service.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(timeout waiting for database|query timeout)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for database deadlock errors in the logs of application 'order-service'",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "order-service.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(deadlock detected|transaction deadlock)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Find logs reporting primary key constraint violations in the 'user-db' service",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "service.keyword": {
+                                    "value": "user-db",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(primary key constraint failed|duplicate entry)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Retrieve logs where database replication errors are reported for 'replica-db'",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "service.keyword": {
+                                    "value": "replica-db",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(replication error|replica out of sync)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Get logs for the 'payment-app' reporting database authentication failures",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "payment-app.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(authentication failed|invalid database credentials)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for logs indicating database schema migration failures",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(schema migration failed|error applying migration)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Find logs for the application 'inventory-service' reporting database disk space issues",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "inventory-service.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(disk space full|database out of disk space)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Retrieve logs showing network timeout errors for the application 'web-service'",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "web-service.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(network timeout|connection timed out)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for logs reporting DNS resolution failures in the 'frontend-app' service",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "frontend-app.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(DNS resolution failed|NXDOMAIN|SERVFAIL)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Find logs for application 'api-gateway' reporting load balancer connection errors",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "api-gateway.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(load balancer connection failed|503 Service Unavailable)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Retrieve logs indicating IP address conflicts in the 'network-agent' component",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "component.keyword": {
+                                    "value": "network-agent",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(IP address conflict|Duplicate IP detected)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Fetch logs for application 'data-service' reporting packet loss errors",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "data-service.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(packet loss|network packet dropped)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for network connectivity issues reported by the 'network-monitor' component",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "component.keyword": {
+                                    "value": "network-monitor",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(connection refused|unable to reach host|connection reset)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Find logs where SSL handshake failures are reported for the 'secure-api' application",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "secure-api.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(SSL handshake failed|TLS error|certificate verification failed)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Retrieve logs reporting high latency in the 'payment-service' application",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "payment-service.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(high latency|slow response|latency exceeded threshold)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Fetch logs showing firewall rule violations in the 'security-service' component",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "component.keyword": {
+                                    "value": "security-service",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(firewall rule blocked|unauthorized port access|access denied by firewall)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for logs indicating port binding failures in the 'proxy-service' application",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "proxy-service.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(port binding failed|unable to bind port)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Find logs in the 'network' namespace reporting connectivity issues.",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "value": "network",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(connection refused|unable to reach host|connection reset)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for network connectivity errors in pod 'network-pod-1'.",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "network-pod-1",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(connection timeout|connection reset by peer|network unreachable)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Find logs for the application 'nginx' reporting DNS resolution issues.",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "nginx.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(DNS resolution error|NXDOMAIN|SERVFAIL)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for logs from pods managed by 'helm' reporting network failures.",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "helm.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(connection refused|connection reset|host unreachable)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Get logs from the container 'proxy-container' with connectivity errors.",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.container_name.keyword": {
+                                    "value": "proxy-container",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(network timeout|connection dropped|connection reset by peer)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Find warning logs in the 'backend' namespace about network latencies.",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "value": "backend",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "term": {
+                                "levelname.keyword": {
+                                    "value": "warning",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(high latency|packet loss|latency warning)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Search for network failures logged by pods in the 'staging' namespace.",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "value": "staging",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(connection refused|connection dropped|network unreachable)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Retrieve logs for pods in the 'production' namespace reporting packet drops.",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "value": "production",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(packet drop|dropped packets|packet loss)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Find logs for pods with the job name 'network-check' showing connectivity problems.",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "term": {
+                                "kubernetes.labels.batch_kubernetes_io/job-name.keyword": {
+                                    "value": "network-check",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(connection refused|connection reset|host unreachable)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Get logs about failed network requests in the application instance 'frontend-1'.",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "frontend-1.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(network request failed|connection timeout|service unavailable)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    },
+    {
+        "question": "Can you show me recent error logs of abc in nudgebee namespace",
+        "elastic_search_query": {
+            "query": {
+                "bool": {
+                    "filter": [
+                        {
+                            "term": {
+                                "kubernetes.namespace_name.keyword": {
+                                    "value": "nudgebee",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "kubernetes.pod_name.keyword": {
+                                    "value": "abc.*",
+                                    "case_insensitive": true
+                                }
+                            }
+                        },
+                        {
+                            "regexp": {
+                                "msg": {
+                                    "value": "(error|exception)",
+                                    "case_insensitive": true
+                                }
+                            }
+                        }
+                    ]
+                }
+            },
+            "sort": [
+                {
+                    "@timestamp": {
+                        "order": "desc"
+                    }
+                }
+            ]
+        }
+    }
+]

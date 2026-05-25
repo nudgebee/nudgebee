@@ -1,0 +1,8 @@
+user_prompt: Find all events that do NOT have the aggregation key 'KubePodNotReady'
+  or 'KubeNodeNotReady'.
+expected_output:
+- SELECT id, title, aggregation_key FROM events WHERE aggregation_key NOT IN ('KubePodNotReady',
+  'KubeNodeNotReady');
+tags:
+- command
+- events

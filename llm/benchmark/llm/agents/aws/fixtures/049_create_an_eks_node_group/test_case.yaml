@@ -1,0 +1,7 @@
+user_prompt: Create an EKS node group.
+expected_output:
+- aws eks create-nodegroup --cluster-name <cluster-name> --nodegroup-name <nodegroup-name>
+  --node-role <node-role-arn> --subnets <subnet-ids>
+tags:
+- command
+- aws

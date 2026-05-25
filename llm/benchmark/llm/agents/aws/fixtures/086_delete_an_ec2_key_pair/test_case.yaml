@@ -1,0 +1,6 @@
+user_prompt: Delete an EC2 key pair.
+expected_output:
+- aws ec2 delete-key-pair --key-name <key-name>
+tags:
+- command
+- aws

@@ -1,0 +1,6 @@
+user_prompt: List targets for a CloudWatch Events rule.
+expected_output:
+- aws events list-targets-by-rule --rule <rule-name>
+tags:
+- command
+- aws

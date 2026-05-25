@@ -1,0 +1,7 @@
+user_prompt: List recommendations that were closed within the last month.
+expected_output:
+- SELECT namespace, name, category, updated_at from recommendation_view WHERE status
+  = 'Closed' AND updated_at >= NOW() - INTERVAL '1 month';
+tags:
+- command
+- recommendations

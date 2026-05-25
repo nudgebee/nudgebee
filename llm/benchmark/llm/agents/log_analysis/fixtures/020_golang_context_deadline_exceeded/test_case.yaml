@@ -1,0 +1,18 @@
+user_prompt: |
+  2026-04-06T08:30:12.345Z INFO  [relay-server] Handling kubectl exec request for pod demo/frontend-6f9dc974d6-blzck
+  2026-04-06T08:30:12.346Z INFO  [relay-server] Executing command: kubectl logs frontend-6f9dc974d6-blzck -n demo --tail=500
+  2026-04-06T08:30:42.347Z ERROR [relay-server] context deadline exceeded after 30s
+  2026-04-06T08:30:42.348Z ERROR [relay-server] {"time":"2026-04-06T08:30:42.348Z","level":"ERROR","msg":"relay: command execution timeout","pod":"frontend-6f9dc974d6-blzck","namespace":"demo","timeout":"30s","error":"context deadline exceeded"}
+  2026-04-06T08:30:42.349Z WARN  [relay-server] Kubernetes API server response time: 28.5s (threshold: 5s)
+  2026-04-06T08:30:42.350Z WARN  [relay-server] kube-apiserver latency spike detected: p99=25.3s, p50=8.2s (normal p99<2s)
+  2026-04-06T08:30:42.351Z ERROR [relay-server] Returning timeout error to upstream caller (llm-server)
+  2026-04-06T08:30:43.123Z WARN  [relay-server] 12 pending requests in queue, 8 experiencing timeouts
+  namespace: nudgebee, pod: relay-server-7cb6cb5cbd-pdwp4, container: relay-server
+expected_output:
+  - The relay-server in the nudgebee namespace is experiencing command execution timeouts when running kubectl commands. A kubectl logs request for the frontend pod in the demo namespace timed out after 30 seconds. The Kubernetes API server response time spiked to 28.5 seconds (p99=25.3s vs normal <2s), and 8 out of 12 pending requests are timing out. The root cause is a kube-apiserver latency spike causing the relay-server's 30-second context deadline to be exceeded. Suggested actions include checking the kube-apiserver pod health and resource usage, looking for expensive API requests or webhook latency issues, checking etcd health and disk I/O, and potentially increasing the relay-server timeout temporarily until the API server stabilizes.
+tags:
+  - timeout
+  - apiserver
+  - relay
+  - nudgebee
+type: log_analysis

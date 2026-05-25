@@ -1,0 +1,17 @@
+# Originally HolmesGPT's mocked-time test: it set mocked_date to verify the
+# agent reported the injected time. Our nubi runner doesn't honor mocked_date,
+# so we test the simpler capability — the agent must report the actual
+# current date and time in UTC. The judge LLM verifies the response is a
+# plausible current-time answer rather than matching a hardcoded value.
+user_prompt: "What day and time is it right now (in UTC)?"
+
+expected_output:
+  - The response must include the current date and time in UTC.
+  - Acceptable formats include 'YYYY-MM-DD HH:MM UTC', 'Month DDth, YYYY HH:MM UTC', or RFC3339 timestamps.
+  - The reported date must be within a reasonable window of when the test ran (today's date in UTC, give or take one day for timezone wrap).
+  - The agent must not refuse to answer or claim it cannot determine the time.
+
+tags:
+  - datetime
+  - easy
+  - holmesgpt-parity

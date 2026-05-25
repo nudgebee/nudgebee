@@ -1,0 +1,10 @@
+user_prompt: What is the SQL query for the details of event ID 'evt-a1b2c3d4'?
+expected_output:
+- SELECT id, title, description, starts_at, updated_at, ends_at, status, priority,
+  source, aggregation_key, finding_type, subject_type, subject_name, subject_namespace,
+  subject_node, fingerprint, evidences, cloud_account_id   FROM events   WHERE id
+  = 'evt-a1b2c3d4';
+- SELECT * FROM events   WHERE id = 'evt-a1b2c3d4';
+tags:
+- command
+- events

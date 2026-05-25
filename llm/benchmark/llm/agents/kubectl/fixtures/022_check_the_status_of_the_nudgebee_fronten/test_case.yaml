@@ -1,0 +1,6 @@
+user_prompt: Check the status of the nudgebee-frontend deployment rollout.
+expected_output:
+- kubectl rollout status deployment/<deployment-name>
+tags:
+- command
+- kubernetes

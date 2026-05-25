@@ -1,0 +1,26 @@
+user_prompt: Our Lambda 'm19-product-cache' has intermittent timeouts when connecting
+  to ElastiCache Redis 'm19-catalog-redis'. About 50% of invocations succeed instantly,
+  the other 50% timeout after 3 seconds. There's no pattern — the same request sometimes
+  works and sometimes doesn't. The Lambda is deployed in a VPC with subnets in both
+  AZs. Can you investigate?
+expected_output:
+- The root cause is a security group CIDR mismatch combined with the ElastiCache Redis
+  cluster being deployed in a single Availability Zone. The Redis cluster 'm19-catalog-redis'
+  is in AZ-a only, and its security group allows inbound traffic on port 6379 only from
+  CIDR 10.0.11.0/24 (the private subnet in AZ-a). However, the Lambda function
+  'm19-product-cache' is configured with subnets in both AZ-a and AZ-b. When Lambda
+  executes in the AZ-a subnet (10.0.11.0/24), the connection succeeds because the source
+  IP matches the allowed CIDR. When Lambda executes in the AZ-b subnet (10.0.12.0/24),
+  the connection is blocked by the security group because 10.0.12.0/24 is not in the
+  allowed CIDR range. This causes the ~50% intermittent failure pattern. The fix is to
+  update the Redis security group to allow the full VPC CIDR (10.0.0.0/16) or add
+  the AZ-b subnet CIDR (10.0.12.0/24) as an additional allowed source.
+tags:
+- rca
+- aws
+- elasticache
+- lambda
+- security-group
+- networking
+type: rca
+agent: aws_debug

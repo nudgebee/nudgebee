@@ -1,0 +1,16 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is that the EC2 instance ''e13-api-server-01'' has no public IP address. Despite being in a public subnet
+  with an internet gateway route and correct security group rules, the instance was launched without a public IP (AssociatePublicIpAddress=false)
+  and has no Elastic IP attached. Without a public IP, the instance has no internet-routable address and cannot be reached
+  from the internet. Check: aws ec2 describe-instances --instance-ids <id> and look at PublicIpAddress (it will be empty/null).
+  The fix is to either allocate and associate an Elastic IP or relaunch the instance with a public IP enabled.'
+scenario: E13
+tags:
+- command
+- aws
+- easy
+type: rca
+user_prompt: Our EC2 instance 'e13-api-server-01' in us-east-1 is in a public subnet with an internet gateway route, but we
+  can't reach it from the internet. The security group allows HTTP (80), HTTPS (443), and SSH (22) from 0.0.0.0/0. The instance
+  is running. What's wrong?

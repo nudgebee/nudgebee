@@ -1,0 +1,4 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- DELETE FROM feature_flag WHERE feature_id = 'ACCOUNT_ONBOARD_AWS';
+-- DELETE FROM feature WHERE value = 'ACCOUNT_ONBOARD_AWS';

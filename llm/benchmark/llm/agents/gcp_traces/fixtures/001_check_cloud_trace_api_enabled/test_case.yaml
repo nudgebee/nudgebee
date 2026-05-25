@@ -1,0 +1,8 @@
+user_prompt: Is the Cloud Trace API enabled in project 'nudgebee-dev'?
+expected_output:
+  - gcloud services list --enabled --filter="config.name:cloudtrace.googleapis.com" --project=nudgebee-dev
+  - gcloud services list --enabled --filter="name:cloudtrace.googleapis.com" --project=nudgebee-dev --format=table
+tags:
+  - command
+  - trace
+  - gcp

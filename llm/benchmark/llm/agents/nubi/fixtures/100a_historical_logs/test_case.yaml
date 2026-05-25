@@ -1,0 +1,28 @@
+# Originally HolmesGPT pushed backdated logs (Aug 2, 2025) into a per-test Loki
+# and verified Holmes could query them. On nubi the agent connects to cluster
+# Loki, not per-test, so those backdated logs were unreachable and the per-test
+# Loki was dead infra (~5 min wasted setup per run, plus a flake source on
+# log-ingestion timeouts). Test is now scoped to the fallback path: cluster
+# Loki has no Aug 2025 data for app-100a, so the agent must honestly report
+# "no data found" and explain what it queried — which is what the original
+# expected_output already accepts as the alternate valid answer.
+
+user_prompt: "The payment-api pod in namespace app-100a had issues on August 2, 2025 around 13:45 UTC. What happened?"
+
+expected_output:
+  - "The agent must clearly state that no data is available for August 2, 2025 in namespace app-100a — historical telemetry has aged out or was never ingested."
+  - "The agent must list at least two distinct data sources it actually queried (e.g., logs, Kubernetes events, metrics, deployment status, Loki). Naming any subset of these data-source categories is acceptable; do not require the literal token 'metrics' or 'Loki' specifically."
+  - "The agent must not refuse to investigate or fabricate findings."
+
+tags:
+  - logs
+  - kubernetes
+  - medium
+  - holmesgpt-parity
+
+before_test: |
+  kubectl create namespace app-100a || true
+  kubectl label namespace app-100a benchmark=true --overwrite || true
+
+after_test: |
+  kubectl delete namespace app-100a --ignore-not-found

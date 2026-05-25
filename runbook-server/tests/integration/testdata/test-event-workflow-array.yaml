@@ -1,0 +1,17 @@
+name: test-event-workflow-array
+definition:
+  version: v1
+  triggers:
+    - type: event
+      params:
+        event_type:
+          - "alert.fired"
+          - "incident.opened"
+        filter: "{{ event.source == 'integration-test-array' }}"
+  tasks:
+    - id: print-event
+      type: core.print
+      params:
+        message: "Received event: {{ Inputs.event.event_type }} from {{ Inputs.event.source }}"
+  output:
+    final_message: "{{ Tasks['print-event'].output.data }}"

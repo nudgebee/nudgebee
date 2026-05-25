@@ -1,0 +1,59 @@
+user_prompt: "Show me the HTTP 500 errors from the checkout-api service in namespace log-default-03 for the last 15 minutes."
+description: |
+  Loki happy path. The logs_default agent must (1) call query_generator to produce a
+  structured query filtering for status=500 on app=checkout-api, (2) call logs_execute
+  against the Loki provider, and (3) summarise the 500s (payment-gateway-timeout).
+expected_output: |
+  The response identifies HTTP 500 errors on /checkout originating from the checkout-api
+  service, cites the error message payment-gateway-timeout, and notes multiple affected
+  users. It must reference logs retrieved from Loki (provider path), not kubectl.
+setup_timeout: 360
+before_test: |
+  set -e
+  kubectl create namespace log-default-03 || true
+  kubectl label namespace log-default-03 benchmark=true --overwrite || true
+
+  # Loki + Promtail ConfigMap + app (with Promtail sidecar)
+  kubectl apply -f ../../../nubi/shared/loki.yaml -n log-default-03
+  kubectl apply -f promtail-config.yaml -n log-default-03
+  kubectl wait --for=condition=ready pod -l app=loki -n log-default-03 --timeout=120s
+  kubectl apply -f manifest.yaml -n log-default-03
+  kubectl wait --for=condition=ready pod -l app=checkout-api -n log-default-03 --timeout=120s
+
+  # Wait for logs to land in Loki
+  START=$(date +%s)
+  while [ $(($(date +%s) - START)) -lt 120 ]; do
+    HITS=$(kubectl exec -n log-default-03 deployment/loki -- wget -q -O- \
+      'http://localhost:3100/loki/api/v1/query_range?query={namespace="log-default-03"}&limit=1' \
+      2>/dev/null | grep -o '"values"' | wc -l)
+    [ "$HITS" -gt "0" ] && echo "Logs in Loki" && break
+    sleep 2
+  done
+
+  # Port-forward Loki to localhost:3100 so the LLM server (running on the host)
+  # can reach it via the globally-configured Loki toolset URL.
+  pkill -f "kubectl port-forward.*svc/loki" 2>/dev/null || true
+  sleep 1
+  nohup kubectl port-forward -n log-default-03 svc/loki 3100:3100 \
+    >/tmp/pf-log-default-03.log 2>&1 &
+  echo $! > /tmp/pf-log-default-03.pid
+  # Wait for the port-forward to be reachable
+  for i in {1..30}; do
+    if curl -s http://localhost:3100/ready | grep -q ready; then
+      echo "Loki reachable on localhost:3100"
+      break
+    fi
+    sleep 1
+  done
+after_test: |
+  if [ -f /tmp/pf-log-default-03.pid ]; then
+    kill $(cat /tmp/pf-log-default-03.pid) 2>/dev/null || true
+    rm -f /tmp/pf-log-default-03.pid
+  fi
+  pkill -f "kubectl port-forward.*log-default-03" 2>/dev/null || true
+  kubectl delete namespace log-default-03 --wait=false || true
+tags:
+  - medium
+  - kubernetes
+  - loki
+  - provider-path

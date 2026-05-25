@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to list events related to cluster version updates?
+expected_output:
+- SELECT id, title, starts_at, status, priority, subject_name, description, source   FROM
+  events   WHERE aggregation_key = 'UpdateClusterVersion';
+- SELECT * FROM events   WHERE aggregation_key = 'UpdateClusterVersion';
+tags:
+- command
+- events

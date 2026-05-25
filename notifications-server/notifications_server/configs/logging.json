@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "disable_existing_loggers": false,
+  "formatters": {
+    "json_formatter": {
+      "format": "{\"time\": \"%(asctime)s\", \"level\": \"%(levelname)s\",\"filename\": \"%(filename)s\", \"lineno\":\"%(lineno)d\" ,\"message\": %(message)s}",
+      "class": "pythonjsonlogger.json.JsonFormatter"
+    }
+  },
+  "handlers": {
+    "console": {
+      "class": "logging.StreamHandler",
+      "level": "INFO",
+      "formatter": "json_formatter",
+      "stream": "ext://sys.stdout"
+    }
+  },
+  "loggers": {
+    "": {
+      "handlers": [
+        "console"
+      ],
+      "level": "INFO",
+      "propagate": true
+    },
+    "oauth2client": {
+      "handlers": [
+        "console"
+      ],
+      "level": "WARNING",
+      "propagate": false
+    },
+    "googleapiclient": {
+      "handlers": [
+        "console"
+      ],
+      "level": "WARNING",
+      "propagate": false
+    },
+    "uvicorn": {
+      "handlers": [
+        "console"
+      ],
+      "level": "INFO",
+      "propagate": false
+    },
+    "uvicorn.error": {
+      "handlers": [
+        "console"
+      ],
+      "level": "ERROR",
+      "propagate": true
+    },
+    "uvicorn.access": {
+      "handlers": [
+        "console"
+      ],
+      "level": "INFO",
+      "propagate": false
+    },
+    "werkzeug": {
+      "handlers": [
+        "console"
+      ],
+      "level": "INFO",
+      "propagate": false
+    }
+  }
+}

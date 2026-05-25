@@ -1,0 +1,6 @@
+user_prompt: Delete a security group.
+expected_output:
+- aws ec2 delete-security-group --group-id <security-group-id>
+tags:
+- command
+- aws

@@ -1,0 +1,8 @@
+user_prompt: what is the promql query for how many persistent volume claims are bound
+  in the staging namespace?
+expected_output:
+- count(kube_persistentvolumeclaim_status_phase{namespace="staging", phase="Bound"})
+- sum(kube_persistentvolume_claim_ref{claim_namespace="staging"})
+tags:
+- command
+- promql

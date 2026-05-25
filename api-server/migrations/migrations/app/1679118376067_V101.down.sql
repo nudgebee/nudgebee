@@ -1,0 +1,17 @@
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- CREATE
+-- OR REPLACE VIEW "public"."cloud_services_aggregate" AS
+-- select cr.tenant as tenant,
+--     cr.region as region,
+--     cr.account as account,
+--     cr.service_name as service_name,
+--     count(*) as resource_count,
+--     s.date as spend_date,
+--     sum(s.amount) as spend_amount,
+--     sum(r.estimated_savings) as resource_estimated_saving
+-- from cloud_resourses as cr
+-- left join spends as s  on s.cloud_resource_id = cr.id
+-- left join recommendation r on cr.id = resource_id
+-- group by cr.tenant, cr.region, cr.account, cr.service_name, s.date;

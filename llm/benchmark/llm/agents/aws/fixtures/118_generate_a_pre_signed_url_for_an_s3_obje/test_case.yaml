@@ -1,0 +1,6 @@
+user_prompt: Generate a pre-signed URL for an S3 object.
+expected_output:
+- aws s3 presign s3://<bucket-name>/<object-key>
+tags:
+- command
+- aws

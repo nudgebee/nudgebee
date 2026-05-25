@@ -1,0 +1,6 @@
+user_prompt: List Lambda functions.
+expected_output:
+- aws lambda list-functions
+tags:
+- command
+- aws

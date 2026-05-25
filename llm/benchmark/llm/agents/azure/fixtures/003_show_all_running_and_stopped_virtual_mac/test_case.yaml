@@ -1,0 +1,7 @@
+user_prompt: Show all running and stopped virtual machines.
+expected_output:
+- az vm list --show-details --output table
+type: command
+tags:
+- command
+- azure

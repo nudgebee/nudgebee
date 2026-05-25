@@ -1,0 +1,10 @@
+name: test-timeout-workflow
+definition:
+  triggers:
+    - type: manual
+  tasks:
+    - id: timeout-task
+      type: scripting.run_script
+      timeout: "1s"
+      params:
+        script: "sleep 3"

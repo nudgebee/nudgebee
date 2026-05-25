@@ -1,0 +1,4 @@
+
+CREATE TABLE "public"."knowledge_graph_tenant_filters" ("id" uuid NOT NULL, "tenant_id" uuid NOT NULL, "filter_name" text NOT NULL, "account_ids" jsonb NOT NULL DEFAULT jsonb_build_array(), "sources" jsonb NOT NULL DEFAULT jsonb_build_array(), "flow_sources" jsonb NOT NULL DEFAULT jsonb_build_array(), "filters" jsonb NOT NULL, "is_default" boolean NOT NULL, "enabled" boolean NOT NULL, "created_at" timestamptz NOT NULL DEFAULT now(), PRIMARY KEY ("id") , FOREIGN KEY ("tenant_id") REFERENCES "public"."tenant"("id") ON UPDATE restrict ON DELETE restrict, UNIQUE ("id"), UNIQUE ("tenant_id", "filter_name"));COMMENT ON TABLE "public"."knowledge_graph_tenant_filters" IS E'Stores knowledge graph filter configurations per tenant. Each tenant can have multiple named filter configurations.';
+
+alter table "public"."knowledge_graph_tenant_filters" alter column "id" set default gen_random_uuid();

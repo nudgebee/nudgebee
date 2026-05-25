@@ -1,0 +1,15 @@
+user_prompt: The reporting API App Service 'm07appcve46lqs' in resource group 'azure-agent-test-M07'
+  returns 404 for all report download requests. The reports were uploaded to storage
+  yesterday. What is wrong?
+expected_output:
+- 'The App Service has STORAGE_CONTAINER set to ''reports-archive'', but the actual
+  blob container in storage account ''m07sacve46lqs'' is named ''reports''. The mismatch
+  causes all blob read operations to return 404 ContainerNotFound. Fix: Update STORAGE_CONTAINER
+  to ''reports'' to match the actual container name.'
+agent: azure_debug
+scenario: M07
+type: rca
+tags:
+- rca
+- medium
+- azure

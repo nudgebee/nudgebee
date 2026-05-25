@@ -1,0 +1,85 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "E09: Azure Monitor metric alert Http5xx threshold=9999 - never fires in practice. User complaint: On-call team never receives error-rate alerts even during outages. Alert rule exists but threshold is unreachably high. Uses shared App Service Plan from bootstrap."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "appName": "[concat('e09app', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "http5xxThreshold": "[if(equals(parameters('scenarioMode'), 'Fixed'), 10, 9999)]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('appName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "app",
+      "tags": {
+        "Name": "e09-commerce-api",
+        "Environment": "production",
+        "Scenario": "E09"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]"
+      }
+    },
+    {
+      "type": "Microsoft.Insights/metricAlerts",
+      "apiVersion": "2018-03-01",
+      "name": "e09-http-error-alert",
+      "location": "global",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', variables('appName'))]"
+      ],
+      "tags": {
+        "Environment": "production",
+        "Scenario": "E09",
+        "ScenarioMode": "[parameters('scenarioMode')]"
+      },
+      "properties": {
+        "description": "Alert when App Service 5xx error count exceeds threshold",
+        "severity": 2,
+        "enabled": true,
+        "scopes": [
+          "[resourceId('Microsoft.Web/sites', variables('appName'))]"
+        ],
+        "evaluationFrequency": "PT1M",
+        "windowSize": "PT5M",
+        "criteria": {
+          "odata.type": "Microsoft.Azure.Monitor.MultipleResourceMultipleMetricCriteria",
+          "allOf": [
+            {
+              "name": "HighErrorRateCriterion",
+              "metricName": "Http5xx",
+              "metricNamespace": "Microsoft.Web/sites",
+              "operator": "GreaterThan",
+              "threshold": "[variables('http5xxThreshold')]",
+              "timeAggregation": "Total",
+              "criterionType": "StaticThresholdCriterion"
+            }
+          ]
+        },
+        "actions": []
+      }
+    }
+  ],
+  "outputs": {
+    "AppServiceName": { "type": "string", "value": "[variables('appName')]" },
+    "AlertName": { "type": "string", "value": "e09-http-error-alert" },
+    "Http5xxThreshold": { "type": "int", "value": "[variables('http5xxThreshold')]" },
+    "BugNote": { "type": "string", "value": "Alert 'e09-http-error-alert' has Http5xx threshold=9999 - never fires even during outages" },
+    "ScenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

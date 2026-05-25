@@ -1,0 +1,6 @@
+user_prompt: Find logs containing "connection timeout"
+expected_output: '{"where": {"body": {"_ilike": "%connection timeout%"}}}'
+tags:
+  - command
+  - keyword-search
+  - signoz

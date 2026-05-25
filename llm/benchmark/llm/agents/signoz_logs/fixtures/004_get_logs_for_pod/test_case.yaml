@@ -1,0 +1,6 @@
+user_prompt: Get logs from pod api-server-abc123
+expected_output: '{"where": {"pod_name": {"_ilike": "%api-server-abc123%"}}}'
+tags:
+  - command
+  - pod
+  - signoz

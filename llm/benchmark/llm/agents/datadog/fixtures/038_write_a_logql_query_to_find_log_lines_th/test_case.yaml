@@ -1,0 +1,8 @@
+user_prompt: Write a LogQL query to find log lines that are unusually long (>1000
+  characters) for the importer app?
+expected_output:
+- '{app="importer"} |~ ".{1000,}"'
+- '{job="kubernetes-logs"} |= "import" |~ ".{1000,}"'
+tags:
+- command
+- datadog

@@ -1,0 +1,40 @@
+{
+  "name": "pw",
+  "version": "1.0.0",
+  "description": "Playwright E2E Tests with Slack Notification",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "test": "npx playwright test",
+    "test:ui": "npx playwright test --ui",
+    "test:slack": "(npx playwright test || echo Tests Failed) && node notifications/slack-notify.js",
+    "test:slack:headed": "(npx playwright test --headed || echo Tests Failed) && node notifications/slack-notify.js",
+    "report": "npx playwright show-report",
+    "test:dev": "cross-env E2E_ENVIRONMENT=dev npx playwright test --project=chromium",
+    "test:dev:ui": "cross-env E2E_ENVIRONMENT=dev npx playwright test --project=chromium --ui",
+    "test:dev:headed": "cross-env E2E_ENVIRONMENT=dev npx playwright test --project=chromium --headed",
+    "test:test": "cross-env E2E_ENVIRONMENT=test npx playwright test --project=chromium",
+    "test:test:ui": "cross-env E2E_ENVIRONMENT=test npx playwright test --project=chromium --ui",
+    "test:test:headed": "cross-env E2E_ENVIRONMENT=test npx playwright test --project=chromium --headed"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@types/node": "^25.9.0",
+    "cross-env": "^7.0.3",
+    "dotenv": "^16.6.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.3"
+  },
+  "overrides": {
+    "follow-redirects": "^1.16.0"
+  },
+  "dependencies": {
+    "@axe-core/playwright": "^4.11.3",
+    "axios": "^1.16.1",
+    "googleapis": "^171.4.0",
+    "node-fetch": "^3.3.2"
+  }
+}

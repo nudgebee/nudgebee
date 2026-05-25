@@ -1,0 +1,9 @@
+user_prompt: List all rule names that have only ever produced 'Low' or 'Info' severity
+  recommendations.
+expected_output:
+- SELECT rule_name FROM recommendation_view GROUP BY rule_name HAVING MAX(CASE WHEN
+  severity = 'Critical' THEN 4 WHEN severity = 'High' THEN 3 WHEN severity = 'Medium'
+  THEN 2 ELSE 1 END) <= 1;
+tags:
+- command
+- recommendations

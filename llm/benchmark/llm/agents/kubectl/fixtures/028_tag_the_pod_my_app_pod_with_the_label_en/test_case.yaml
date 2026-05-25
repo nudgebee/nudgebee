@@ -1,0 +1,6 @@
+user_prompt: Tag the pod 'my-app-pod' with the label 'env=production'.
+expected_output:
+- kubectl label pod my-app-pod env=production
+tags:
+- command
+- kubernetes

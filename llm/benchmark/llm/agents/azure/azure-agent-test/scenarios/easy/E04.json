@@ -1,0 +1,56 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "E04: App Service DB_PORT=3306 but backend PostgreSQL uses port 5432. User complaint: Application cannot connect to database - connection refused on port 3306. Uses shared App Service Plan from bootstrap."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "appName": "[concat('e04api', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "dbPort": "[if(equals(parameters('scenarioMode'), 'Fixed'), '5432', '3306')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('appName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "app",
+      "tags": {
+        "Name": "e04-product-api",
+        "Environment": "production",
+        "Team": "products",
+        "Scenario": "E04",
+        "ScenarioMode": "[parameters('scenarioMode')]"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "siteConfig": {
+          "appSettings": [
+            { "name": "DB_HOST", "value": "e04-postgres.postgres.database.azure.com" },
+            { "name": "DB_PORT", "value": "[variables('dbPort')]" },
+            { "name": "DB_NAME", "value": "products" },
+            { "name": "DB_USER", "value": "pgadmin@e04-postgres" },
+            { "name": "DB_ENGINE", "value": "postgresql" }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "AppServiceName": { "type": "string", "value": "[variables('appName')]" },
+    "DbPort": { "type": "string", "value": "[variables('dbPort')]" },
+    "BugNote": { "type": "string", "value": "App Service DB_PORT=3306 (MySQL) but PostgreSQL backend listens on 5432" },
+    "ScenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

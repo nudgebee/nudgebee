@@ -1,0 +1,10 @@
+user_prompt: What is the CPU utilization of my Elasticsearch cluster?
+expected_output:
+  - "avg:aws.es.cpuutilization{*}"
+  - "avg:aws.es.cpuutilization{*} by {domain_name}"
+  - "max:aws.es.cpuutilization{*} by {domain_name}"
+tags:
+  - command
+  - aws
+  - elasticsearch
+  - cpu

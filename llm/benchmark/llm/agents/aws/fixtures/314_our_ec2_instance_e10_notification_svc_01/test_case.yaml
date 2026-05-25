@@ -1,0 +1,15 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is that the DB_HOST environment variable in the instance UserData is set to an empty string. The notification
+  service startup script requires DB_HOST to be set to a valid database endpoint. When DB_HOST is empty, the script logs ''FATAL:
+  DB_HOST is not set. Cannot start notification service.'' and exits with code 1. All other environment variables (DB_PORT,
+  DB_NAME, DB_USER) are set correctly. The fix is to update the UserData or launch template to set DB_HOST to the actual RDS
+  endpoint.'
+scenario: E10
+tags:
+- command
+- aws
+- easy
+type: rca
+user_prompt: Our EC2 instance 'e10-notification-svc-01' in us-east-1 is running but the notification service keeps crashing
+  on startup. The instance itself is healthy. Can you check what's going wrong with the application?

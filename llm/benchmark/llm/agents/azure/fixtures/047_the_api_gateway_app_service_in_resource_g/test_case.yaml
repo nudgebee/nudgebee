@@ -1,0 +1,20 @@
+user_prompt: The API gateway App Service in resource group 'azure-agent-test-H03' has
+  multiple problems. Users report intermittent 503 errors, the first request after
+  idle periods takes 20+ seconds, and the team cannot see most requests in Application
+  Insights. What is going on?
+expected_output:
+- 'Three misconfigurations found: (1) APPINSIGHTS_SAMPLING_PERCENTAGE is set to 5,
+  meaning 95% of telemetry is discarded — this is why most requests are invisible
+  in Application Insights. (2) The healthCheckPath is set to ''/api/health'' which
+  returns 404, causing Azure to mark instances as unhealthy and restart them — this
+  causes the intermittent 503 errors. (3) alwaysOn is set to false, so the app goes
+  idle after inactivity and cold-starts on the next request — this causes the 20+
+  second delays. Fix: Set APPINSIGHTS_SAMPLING_PERCENTAGE to 100, remove or fix the
+  healthCheckPath, and enable alwaysOn.'
+agent: azure_debug
+scenario: H03
+type: rca
+tags:
+- rca
+- hard
+- azure

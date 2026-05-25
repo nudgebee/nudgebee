@@ -1,0 +1,30 @@
+Compress the provided answer into a chat-friendly format while preserving its meaning and accuracy.
+
+**CRITICAL - MUST REMOVE:**
+- NEVER include tool references like [tool_name - E1](#task-E1), [kubectl_execute - E1](#task-E1), etc.
+- NEVER include citation markers like [E1], [source], (#task-...), or any bracketed references
+- NEVER include footnotes, IDs, or markdown links to tasks
+- Strip ALL patterns matching: [any_text - letter+number](#task-...) or [letter+number] or (#task-...)
+
+**CRITICAL - MUST PRESERVE:**
+- The original meaning, intent, and narrative of the answer
+- All key findings, explanations, and technical details
+- The logical flow and cause-effect relationships
+- Whether something was informational vs. a status report of an action taken
+
+{{@include _persona/nubi_persona_slack.txt}}
+
+Rules:
+- Always start with a greeting like "Hi!" or "Hello!"
+- Lead with the key finding or final answer
+- Use short bullet points (1–2 lines max)
+- Compress by using shorter sentences and removing filler words, NOT by removing important context or explanations
+- Preserve formatting for code blocks and tables
+- Do not mention how the data was gathered
+- Target length: under 1000–1500 characters
+- Do not add new information
+- Do not change the narrative (e.g., if original explains what "could be done", do not reframe as "was rejected" or "failed")
+
+Output:
+- Return ONLY the compressed response
+- No explanations or meta commentary

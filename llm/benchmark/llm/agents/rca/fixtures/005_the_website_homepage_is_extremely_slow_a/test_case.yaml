@@ -1,0 +1,25 @@
+agent: k8s_debug
+expected_output:
+- The frontend is being flooded with an abnormally high volume of requests due to the loadGeneratorFloodHomepage feature flag.
+  This traffic overload is overwhelming the frontend service, causing timeouts and severe performance degradation.
+expected_root_cause:
+  affected_service: frontend
+  issue_type: traffic_overload
+  symptoms:
+  - homepage timeout
+  - slow page load times
+  - high CPU usage
+  - increased request rates
+  telemetry_signals:
+    logs: high volume of requests in frontend and frontend-proxy logs
+    metrics: request rate spike, CPU usage spike, response time degradation
+    traces: high volume of traces with increased latency
+feature_flag: loadGeneratorFloodHomepage
+flag_variant: 'on'
+scenario_id: homepage_traffic_flood
+tags:
+- rca
+- kubernetes
+type: rca
+user_prompt: The website homepage is extremely slow and timing out. Investigate the frontend deployment in nudgebee-demo namespace.
+wait_time_seconds: 60

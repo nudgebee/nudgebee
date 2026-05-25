@@ -1,0 +1,11 @@
+name: test-workflow-output
+definition:
+  triggers:
+    - type: manual
+  tasks:
+    - id: produce-output-task
+      type: core.print
+      params:
+        message: "This is the expected output"
+  output:
+    final_message: "{{ Tasks['produce-output-task'].output.data }}"

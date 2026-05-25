@@ -1,0 +1,192 @@
+rules:
+  # Compute Engine Instance State Changes
+  - name: "GCP Compute Instance State Change"
+    triggers:
+      - source: "GCP_PubSub"
+        alert_name: "compute.googleapis.com"
+        event_filters:
+          - template: "{{ contains .Type \"compute.instances\" }}"
+            description: "Match compute instance events"
+    event_template:
+      title: "Instance {{ .Data.instance_name }} state changed"
+      description: "Compute Engine instance {{ .Data.instance_name }} changed state"
+      severity: "INFO"
+      status: "FIRING"
+      resource_id: "{{ extractResourceName .Subject }}"
+      resource_type: "instance"
+      resource_service_name: "compute"
+      resource_region: "{{ extractRegion .Subject }}"
+    actions:
+      - name: "get_instance_details"
+        type: "gcp_get_resource"
+        params:
+          service_name: "compute"
+          resource_id: "{{ extractResourceName .Subject }}"
+
+  # Cloud SQL Instance State Changes
+  - name: "GCP Cloud SQL Instance State Change"
+    triggers:
+      - source: "GCP_PubSub"
+        alert_name: "cloudsql.googleapis.com"
+        event_filters:
+          - template: "{{ contains .Type \"cloudsql.instances\" }}"
+            description: "Match Cloud SQL instance events"
+    event_template:
+      title: "Cloud SQL {{ .Data.instance_name }} state changed"
+      description: "Cloud SQL instance {{ .Data.instance_name }} changed state"
+      severity: "WARNING"
+      status: "FIRING"
+      resource_id: "{{ extractResourceName .Subject }}"
+      resource_type: "database"
+      resource_service_name: "cloudsql"
+      resource_region: "{{ extractRegion .Subject }}"
+    actions:
+      - name: "get_sql_metrics"
+        type: "gcp_get_metric"
+        params:
+          service_name: "cloudsql"
+          metric_name: "cloudsql.googleapis.com/database/cpu/utilization"
+          resource_id: "{{ extractResourceName .Subject }}"
+
+  # Cloud Monitoring Alert Fired
+  - name: "GCP Monitoring Alert Fired"
+    triggers:
+      - source: "GCP_PubSub"
+        alert_name: "monitoring.googleapis.com"
+        event_filters:
+          - template: "{{ eq .Type \"google.cloud.monitoring.alert.v1.alertFired\" }}"
+            description: "Match alert fired events"
+    event_template:
+      title: "Alert: {{ .Data.incident.policy_name }}"
+      description: "Monitoring alert {{ .Data.incident.policy_name }} has fired"
+      severity: "HIGH"
+      status: "FIRING"
+      resource_id: "{{ .Data.incident.resource.resource_id }}"
+      resource_type: "{{ .Data.incident.resource.type }}"
+      resource_service_name: "monitoring"
+      resource_region: "{{ .Data.incident.resource.region }}"
+
+  # Cloud Monitoring Alert Resolved
+  - name: "GCP Monitoring Alert Resolved"
+    triggers:
+      - source: "GCP_PubSub"
+        alert_name: "monitoring.googleapis.com"
+        event_filters:
+          - template: "{{ eq .Type \"google.cloud.monitoring.alert.v1.alertClosed\" }}"
+            description: "Match alert closed events"
+    event_template:
+      title: "Alert Resolved: {{ .Data.incident.policy_name }}"
+      description: "Monitoring alert {{ .Data.incident.policy_name }} has been resolved"
+      severity: "INFO"
+      status: "RESOLVED"
+      resource_id: "{{ .Data.incident.resource.resource_id }}"
+      resource_type: "{{ .Data.incident.resource.type }}"
+      resource_service_name: "monitoring"
+      resource_region: "{{ .Data.incident.resource.region }}"
+
+  # Cloud Run Service Deployment
+  - name: "GCP Cloud Run Service Deployed"
+    triggers:
+      - source: "GCP_PubSub"
+        alert_name: "run.googleapis.com"
+        event_filters:
+          - template: "{{ contains .Type \"run.services\" }}"
+            description: "Match Cloud Run service events"
+    event_template:
+      title: "Cloud Run {{ .Data.service_name }} deployed"
+      description: "Cloud Run service {{ .Data.service_name }} was deployed"
+      severity: "INFO"
+      status: "FIRING"
+      resource_id: "{{ extractResourceName .Subject }}"
+      resource_type: "service"
+      resource_service_name: "cloudrun"
+      resource_region: "{{ extractRegion .Subject }}"
+    actions:
+      - name: "get_service_logs"
+        type: "gcp_get_logs"
+        params:
+          filter: 'resource.type="cloud_run_revision" AND resource.labels.service_name="{{ extractResourceName .Subject }}"'
+
+  # GKE Cluster Events
+  - name: "GCP GKE Cluster Event"
+    triggers:
+      - source: "GCP_PubSub"
+        alert_name: "container.googleapis.com"
+        event_filters:
+          - template: "{{ contains .Type \"container.clusters\" }}"
+            description: "Match GKE cluster events"
+    event_template:
+      title: "GKE Cluster {{ .Data.cluster_name }} event"
+      description: "GKE cluster {{ .Data.cluster_name }} event occurred"
+      severity: "WARNING"
+      status: "FIRING"
+      resource_id: "{{ extractResourceName .Subject }}"
+      resource_type: "cluster"
+      resource_service_name: "gke"
+      resource_region: "{{ extractRegion .Subject }}"
+
+  # Storage Bucket Events
+  - name: "GCP Storage Bucket Event"
+    triggers:
+      - source: "GCP_PubSub"
+        alert_name: "storage.googleapis.com"
+        event_filters:
+          - template: "{{ contains .Type \"storage.buckets\" }}"
+            description: "Match storage bucket events"
+    event_template:
+      title: "Storage bucket {{ .Data.bucket_name }} event"
+      description: "Cloud Storage bucket {{ .Data.bucket_name }} event occurred"
+      severity: "INFO"
+      status: "FIRING"
+      resource_id: "{{ extractResourceName .Subject }}"
+      resource_type: "bucket"
+      resource_service_name: "storage"
+      resource_region: "{{ default \"global\" (extractRegion .Subject) }}"
+
+  # Load Balancer Events
+  - name: "GCP Load Balancer Event"
+    triggers:
+      - source: "GCP_PubSub"
+        alert_name: "loadbalancing.googleapis.com"
+        event_filters:
+          - template: "{{ contains .Type \"loadbalancing\" }}"
+            description: "Match load balancer events"
+    event_template:
+      title: "Load Balancer {{ .Data.lb_name }} event"
+      description: "Load Balancer {{ .Data.lb_name }} event occurred"
+      severity: "WARNING"
+      status: "FIRING"
+      resource_id: "{{ extractResourceName .Subject }}"
+      resource_type: "loadbalancer"
+      resource_service_name: "loadbalancing"
+      resource_region: "{{ extractRegion .Subject }}"
+    actions:
+      - name: "get_lb_metrics"
+        type: "gcp_get_metric"
+        params:
+          service_name: "loadbalancing"
+          metric_name: "loadbalancing.googleapis.com/https/request_count"
+          resource_id: "{{ extractResourceName .Subject }}"
+
+  # Cloud Functions Events
+  - name: "GCP Cloud Function Event"
+    triggers:
+      - source: "GCP_PubSub"
+        alert_name: "cloudfunctions.googleapis.com"
+        event_filters:
+          - template: "{{ contains .Type \"cloudfunctions\" }}"
+            description: "Match Cloud Functions events"
+    event_template:
+      title: "Cloud Function {{ .Data.function_name }} event"
+      description: "Cloud Function {{ .Data.function_name }} event occurred"
+      severity: "INFO"
+      status: "FIRING"
+      resource_id: "{{ extractResourceName .Subject }}"
+      resource_type: "function"
+      resource_service_name: "cloudfunctions"
+      resource_region: "{{ extractRegion .Subject }}"
+    actions:
+      - name: "get_function_logs"
+        type: "gcp_get_logs"
+        params:
+          filter: 'resource.type="cloud_function" AND resource.labels.function_name="{{ extractResourceName .Subject }}"'

@@ -1,0 +1,159 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M04: ECS Service stuck running old task definition revision.
+  User complaint: "Deployed new Docker image but ECS keeps running the old version."
+  Root cause: A new task definition revision exists but ECS service still references the old one.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = ECS service pinned to revision 1, revision 2 (new image) exists but unused.
+      Fixed = ECS service updated to use revision 2.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: m04-search-cluster
+      Tags:
+        - Key: Name
+          Value: m04-search-cluster
+        - Key: Environment
+          Value: production
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m04-search-task-exec-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for search service ECS tasks
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: m04-search-svc-sg
+
+  # Revision 1 - old image (v1.2.3)
+  TaskDefinitionV1:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: m04-search-service
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: search-api
+          Image: public.ecr.aws/nginx/nginx:1.24
+          PortMappings:
+            - ContainerPort: 80
+              Protocol: tcp
+          Environment:
+            - Name: APP_VERSION
+              Value: v1.2.3
+            - Name: IMAGE_TAG
+              Value: '1.24'
+      Tags:
+        - Key: Name
+          Value: m04-search-service-v1
+        - Key: Version
+          Value: v1.2.3
+
+  # Revision 2 - new image (v1.3.0) - exists but service doesn't use it in Broken mode
+  TaskDefinitionV2:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: m04-search-service
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: search-api
+          Image: public.ecr.aws/nginx/nginx:1.25
+          PortMappings:
+            - ContainerPort: 80
+              Protocol: tcp
+          Environment:
+            - Name: APP_VERSION
+              Value: v1.3.0
+            - Name: IMAGE_TAG
+              Value: '1.25'
+      Tags:
+        - Key: Name
+          Value: m04-search-service-v2
+        - Key: Version
+          Value: v1.3.0
+
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - TaskDefinitionV1
+      - TaskDefinitionV2
+    Properties:
+      ServiceName: m04-search-svc
+      Cluster: !Ref ECSCluster
+      # Broken = pinned to V1, Fixed = uses V2
+      TaskDefinition: !If [IsFixed, !Ref TaskDefinitionV2, !Ref TaskDefinitionV1]
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !ImportValue aws-agent-test-public-subnet-a
+            - !ImportValue aws-agent-test-public-subnet-b
+          SecurityGroups:
+            - !Ref SecurityGroup
+      Tags:
+        - Key: Name
+          Value: m04-search-svc
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: search
+
+Outputs:
+  ClusterName:
+    Description: ECS Cluster Name
+    Value: !Ref ECSCluster
+  ServiceName:
+    Description: ECS Service Name
+    Value: !GetAtt ECSService.Name
+  TaskDefV1Arn:
+    Description: Task Definition V1 ARN (old - v1.2.3)
+    Value: !Ref TaskDefinitionV1
+  TaskDefV2Arn:
+    Description: Task Definition V2 ARN (new - v1.3.0)
+    Value: !Ref TaskDefinitionV2
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

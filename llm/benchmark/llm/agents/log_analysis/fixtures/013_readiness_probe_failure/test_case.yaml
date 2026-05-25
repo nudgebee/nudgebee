@@ -1,0 +1,18 @@
+user_prompt: |
+  2026-04-06T04:00:12.345Z WARN  [kubelet] Readiness probe failed: HTTP probe failed with statuscode: 503
+  2026-04-06T04:00:12.346Z INFO  [kubelet] Container services-server not ready, removing from endpoints
+  2026-04-06T04:00:15.678Z INFO  [services-server] {"time":"2026-04-06T04:00:15.678Z","level":"ERROR","msg":"health check failed: database ping timeout after 5s","db_host":"postgres.nudgebee.svc","db_port":"5432"}
+  2026-04-06T04:00:15.679Z INFO  [services-server] {"time":"2026-04-06T04:00:15.679Z","level":"WARN","msg":"health endpoint returning 503: downstream dependency unhealthy","dependency":"postgres"}
+  2026-04-06T04:00:22.345Z WARN  [kubelet] Readiness probe failed: HTTP probe failed with statuscode: 503
+  2026-04-06T04:00:32.345Z WARN  [kubelet] Readiness probe failed: HTTP probe failed with statuscode: 503
+  2026-04-06T04:00:42.345Z WARN  [kubelet] Readiness probe failed: HTTP probe failed with statuscode: 503
+  2026-04-06T04:00:42.346Z WARN  [kubelet] Pod services-server-7dbb7f76c9-7b78p is not ready (4 consecutive failures, threshold: 3)
+  namespace: nudgebee, pod: services-server-7dbb7f76c9-7b78p, container: services-server
+expected_output:
+  - The services-server pod in the nudgebee namespace is failing its readiness probe with HTTP 503 status codes and has been removed from endpoints. The health check is failing because the PostgreSQL database at postgres.nudgebee.svc:5432 is not responding within the 5-second timeout. After 4 consecutive probe failures (threshold is 3), the pod is marked not ready. The root cause is that the downstream PostgreSQL dependency is unhealthy, causing the services-server's health endpoint to return 503. Suggested actions include checking the postgres pod and service status in the nudgebee namespace, verifying PostgreSQL connectivity and resource usage, and checking if there are connection exhaustion issues on the database side.
+tags:
+  - readiness-probe
+  - health-check
+  - database
+  - nudgebee
+type: log_analysis

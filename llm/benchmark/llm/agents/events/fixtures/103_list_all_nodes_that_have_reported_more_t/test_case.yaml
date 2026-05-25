@@ -1,0 +1,9 @@
+user_prompt: List all nodes that have reported more than 5 HIGH priority events in
+  the last 24 hours.
+expected_output:
+- SELECT subject_node, COUNT(*) AS high_priority_events FROM events WHERE priority
+  = 'HIGH' AND starts_at >= NOW() - INTERVAL '24 hours' GROUP BY subject_node HAVING
+  COUNT(*) > 5;
+tags:
+- command
+- events

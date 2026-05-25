@@ -1,0 +1,17 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is a region misconfiguration in the Lambda ''h04-notification-service''. The environment variable SNS_REGION
+  is set to ''us-west-2'', but the SNS topic ''h04-user-notifications'' exists in us-east-1. The Lambda code creates the boto3
+  SNS client using the wrong region: boto3.client(''sns'', region_name=''us-west-2''). When it tries to publish to a topic
+  ARN containing us-east-1, the client uses the us-west-2 endpoint which cannot find the topic. Check: aws lambda get-function-configuration
+  --function-name h04-notification-service and look at SNS_REGION env var. The fix is to update SNS_REGION to us-east-1: aws
+  lambda update-function-configuration --function-name h04-notification-service --environment Variables={SNS_TOPIC_ARN=<arn>,SNS_REGION=us-east-1}.'
+scenario: H04
+tags:
+- command
+- aws
+- hard
+type: rca
+user_prompt: Our notification service Lambda 'h04-notification-service' fails to publish to SNS topic 'h04-user-notifications'.
+  The Lambda gets AccessDenied or endpoint errors. The Lambda's IAM role has sns:Publish permission on the topic ARN. This
+  Lambda was copied from our us-west-2 dev environment to us-east-1 production. What's the issue?

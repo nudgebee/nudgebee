@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to list all firing events that haven't ended yet?
+expected_output:
+- SELECT id, title, starts_at, priority, subject_name   FROM events   WHERE status
+  = 'FIRING' AND ends_at IS NULL;
+- SELECT * FROM events   WHERE status = 'FIRING' AND ends_at IS NULL;
+tags:
+- command
+- events

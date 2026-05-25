@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 225" preserveAspectRatio="xMidYMid meet">
+
+  <!-- Document body -->
+  <path d="M16 14 L132 14 L160 42 L160 192 Q160 202 150 202 L26 202 Q16 202 16 192 Z" fill="#7dd8f8"/>
+
+  <!-- Folded corner fill (blue) -->
+  <path d="M132 14 L160 42 L132 42 Z" fill="#1e90e0"/>
+
+  <!-- Document outline -->
+  <path d="M16 14 L132 14 L160 42 L160 192 Q160 202 150 202 L26 202 Q16 202 16 192 Z" fill="none" stroke="#2d2664" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- Fold crease line -->
+  <path d="M132 14 L132 42 L160 42" fill="none" stroke="#2d2664" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- Chart area background -->
+  <rect x="28" y="58" width="122" height="90" rx="5" ry="5" fill="#b8ecfc" opacity="0.6"/>
+
+  <!-- Bar chart bars -->
+  <!-- Bar 1 -->
+  <rect x="40" y="110" width="20" height="32" rx="3" ry="3" fill="#1e90e0" stroke="#2d2664" stroke-width="3"/>
+  <!-- Bar 2 -->
+  <rect x="68" y="90" width="20" height="52" rx="3" ry="3" fill="#2d2664" stroke="#2d2664" stroke-width="3"/>
+  <!-- Bar 3 -->
+  <rect x="96" y="100" width="20" height="42" rx="3" ry="3" fill="#1e90e0" stroke="#2d2664" stroke-width="3"/>
+  <!-- Bar 4 -->
+  <rect x="124" y="75" width="20" height="67" rx="3" ry="3" fill="#2d2664" stroke="#2d2664" stroke-width="3"/>
+
+  <!-- X axis line -->
+  <line x1="28" y1="148" x2="150" y2="148" stroke="#2d2664" stroke-width="4" stroke-linecap="round"/>
+  <!-- Y axis line -->
+  <line x1="28" y1="58" x2="28" y2="148" stroke="#2d2664" stroke-width="4" stroke-linecap="round"/>
+
+  <!-- Trend line over bars -->
+  <polyline points="50,112 78,88 106,100 134,73" fill="none" stroke="#ff6b6b" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="0"/>
+
+  <!-- Trend dots -->
+  <circle cx="50"  cy="112" r="4" fill="#ff6b6b" stroke="#fff" stroke-width="2"/>
+  <circle cx="78"  cy="88"  r="4" fill="#ff6b6b" stroke="#fff" stroke-width="2"/>
+  <circle cx="106" cy="100" r="4" fill="#ff6b6b" stroke="#fff" stroke-width="2"/>
+  <circle cx="134" cy="73"  r="4" fill="#ff6b6b" stroke="#fff" stroke-width="2"/>
+
+  <!-- METRICS label background -->
+  <rect x="5" y="156" width="148" height="52" rx="9" ry="9" fill="#FFE566"/>
+
+  <!-- METRICS label border -->
+  <rect x="5" y="156" width="148" height="52" rx="9" ry="9" fill="none" stroke="#2d2664" stroke-width="5.5"/>
+
+  <!-- METRICS text -->
+  <text x="79" y="193" font-family="Arial Black, Arial, sans-serif" font-weight="900" font-size="22" fill="#2d2664" text-anchor="middle" dominant-baseline="auto">METRICS</text>
+
+</svg>

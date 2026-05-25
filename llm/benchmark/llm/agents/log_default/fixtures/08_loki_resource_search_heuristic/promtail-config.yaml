@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config
+data:
+  promtail-config.yaml: |
+    server:
+      http_listen_port: 9080
+    positions:
+      filename: /tmp/positions.yaml
+    clients:
+      - url: http://loki:3100/loki/api/v1/push
+    scrape_configs:
+      - job_name: ns-log-default-08
+        static_configs:
+          - targets: [localhost]
+            labels:
+              namespace: log-default-08
+              app: notification-dispatcher
+              __path__: /var/log/app/*.log

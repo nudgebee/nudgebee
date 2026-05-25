@@ -1,0 +1,17 @@
+user_prompt: Our ops team cannot SSH to bastion host 'h07-bastion-01' in us-east-1
+  as of this morning. The instance is running. The security group 'h07-bastion-sg'
+  shows an SSH rule for port 22. Nothing was intentionally changed by the ops team.
+  Who changed the security group and what happened?
+expected_output:
+- 'The root cause is that the SSH security group rule on ''h07-bastion-sg'' was changed
+  from 0.0.0.0/0 (all IPs) to 10.0.0.0/8 (internal only). The ops team connects from
+  external IPs not in the 10.0.0.0/8 range. Check CloudTrail for RevokeSecurityGroupIngress
+  events: aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=RevokeSecurityGroupIngress
+  --start-time <morning timestamp>. The CloudTrail event will show who made the change
+  (IAM user/role), what group was modified (h07-bastion-sg), and what rule was removed
+  (0.0.0.0/0 port 22). The current SSH rule only allows internal 10.0.0.0/8 access.
+  The fix is to either restore the 0.0.0.0/0 rule or add the ops team''s IP range
+  to the security group.'
+tags:
+- command
+- aws

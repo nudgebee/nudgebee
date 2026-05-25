@@ -1,0 +1,16 @@
+user_prompt: |
+  2026-04-06T02:30:10.123Z WARN  [kubelet] Failed to pull image "123456789012.dkr.ecr.us-east-1.amazonaws.com/nudgebee-app:2026-04-06T02-25-00_abc123": rpc error: code = Unknown desc = failed to pull and unpack image: failed to resolve reference: pulling from host 123456789012.dkr.ecr.us-east-1.amazonaws.com failed with status code [manifests 2026-04-06T02-25-00_abc123]: 401 Unauthorized
+  2026-04-06T02:30:10.124Z WARN  [kubelet] Error: ErrImagePull
+  2026-04-06T02:30:25.456Z WARN  [kubelet] Back-off pulling image "123456789012.dkr.ecr.us-east-1.amazonaws.com/nudgebee-app:2026-04-06T02-25-00_abc123"
+  2026-04-06T02:30:25.457Z WARN  [kubelet] Error: ImagePullBackOff
+  2026-04-06T02:31:10.789Z WARN  [kubelet] Failed to pull image: 401 Unauthorized - ECR token may have expired
+  2026-04-06T02:31:10.790Z INFO  [kubelet] Normal: Container image "123456789012.dkr.ecr.us-east-1.amazonaws.com/nudgebee-app:2026-04-06T02-25-00_abc123" not present on machine
+  namespace: nudgebee, pod: app-dev-77b6649954-xyz12, container: app-dev
+expected_output:
+  - The app-dev pod in the nudgebee namespace is stuck in ImagePullBackOff because the kubelet cannot pull the container image from the AWS ECR registry. The image tag 2026-04-06T02-25-00_abc123 at 123456789012.dkr.ecr.us-east-1.amazonaws.com/nudgebee-app returned a 401 Unauthorized error. The root cause is that the ECR authentication token has expired. ECR tokens are valid for 12 hours and need periodic refresh. Suggested actions include checking the ECR credential helper or image pull secret configuration, verifying the ecr-proxy-server is refreshing tokens correctly, and ensuring the ServiceAccount has a valid imagePullSecret attached.
+tags:
+  - image-pull
+  - ecr
+  - authentication
+  - nudgebee
+type: log_analysis

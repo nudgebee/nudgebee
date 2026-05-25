@@ -1,0 +1,8 @@
+user_prompt: what is the promql query for which deployment is using highest memory?
+expected_output:
+- sum(container_memory_usage_bytes{container!="POD"} by (namespace, pod)) by (sum)
+- topk(1, sum by (deployment) (container_memory_usage_bytes{container!="POD"}))
+- topk(1, sum by (namespace, pod) (container_memory_max_usage_bytes))
+tags:
+- command
+- promql

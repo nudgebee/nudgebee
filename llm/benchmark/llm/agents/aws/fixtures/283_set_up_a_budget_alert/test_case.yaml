@@ -1,0 +1,6 @@
+user_prompt: Set up a budget alert.
+expected_output:
+- aws budgets create-budget
+tags:
+- command
+- aws

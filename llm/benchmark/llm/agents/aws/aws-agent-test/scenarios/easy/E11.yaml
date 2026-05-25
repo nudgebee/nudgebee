@@ -1,0 +1,120 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E11: Lambda DynamoDB AccessDenied — missing PutItem permission.
+  User complaint: "Lambda 'e11-order-writer' fails with AccessDeniedException when
+  writing orders to DynamoDB table 'e11-orders'. Reading from the table works fine."
+  Root cause: IAM role only grants dynamodb:GetItem and dynamodb:Query, but
+  the Lambda calls dynamodb:PutItem which is not in the policy.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = IAM role missing dynamodb:PutItem permission.
+      Fixed = IAM role includes dynamodb:PutItem.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: e11-orders
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: orderId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: orderId
+          KeyType: HASH
+      Tags:
+        - Key: Name
+          Value: e11-orders
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: order-service
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: e11-order-writer-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: dynamodb-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - !If [IsFixed, 'dynamodb:PutItem', !Ref 'AWS::NoValue']
+                Resource: !GetAtt OrdersTable.Arn
+
+  OrderWriterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: e11-order-writer
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      Environment:
+        Variables:
+          TABLE_NAME: e11-orders
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          from datetime import datetime
+
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table(os.environ['TABLE_NAME'])
+
+          def handler(event, context):
+              order = {
+                  'orderId': event.get('orderId', 'test-001'),
+                  'customer': event.get('customer', 'John Doe'),
+                  'amount': event.get('amount', 99.99),
+                  'timestamp': datetime.utcnow().isoformat()
+              }
+              # This call requires dynamodb:PutItem permission
+              table.put_item(Item=order)
+              return {'statusCode': 200, 'body': json.dumps({'order': order})}
+      Tags:
+        - Key: Name
+          Value: e11-order-writer
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: order-service
+
+Outputs:
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref OrderWriterFunction
+  TableName:
+    Description: DynamoDB Table Name
+    Value: !Ref OrdersTable
+  RoleName:
+    Description: Lambda Execution Role
+    Value: !Ref LambdaRole
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

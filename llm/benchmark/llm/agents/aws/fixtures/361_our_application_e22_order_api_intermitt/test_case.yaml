@@ -1,0 +1,24 @@
+user_prompt: Our application 'e22-order-api' intermittently loses database connectivity
+  to Aurora cluster 'e22-orders-db'. The connection works fine, then suddenly drops
+  after a failover event, then works again after we restart the Lambda. This started
+  happening after an Aurora failover. Can you investigate?
+expected_output:
+- The root cause is that the Lambda function's DB_HOST environment variable points to
+  the Aurora instance endpoint (e22-orders-db-instance-1) instead of the cluster
+  endpoint. The instance endpoint resolves to the specific DB instance's IP address.
+  During a failover, Aurora promotes a different instance to be the writer, but the
+  instance endpoint still points to the original instance which is now a reader (or
+  may be temporarily unavailable). The cluster endpoint, on the other hand, automatically
+  follows the current writer instance during failover. The fix is to update the Lambda's
+  DB_HOST environment variable to use the Aurora cluster endpoint instead of the
+  instance endpoint. The cluster endpoint format is typically
+  'e22-orders-db.cluster-xxxxx.region.rds.amazonaws.com'.
+tags:
+- rca
+- aws
+- aurora
+- rds
+- failover
+- endpoint
+type: rca
+agent: aws_debug

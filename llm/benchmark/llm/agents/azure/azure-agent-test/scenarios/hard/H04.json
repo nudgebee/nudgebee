@@ -1,0 +1,117 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "H04: App Service has two independent root causes: (1) Managed Identity lacks Key Vault Secrets User role, so secret reads fail with 403, AND (2) DB_HOST points to a non-existent SQL server name. Even if KV access is fixed, the DB connection would still fail. Agent must find BOTH issues."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    },
+    "sqlAdminPassword": {
+      "type": "secureString",
+      "defaultValue": "[concat('P', uniqueString(resourceGroup().id), '!1a')]"
+    }
+  },
+  "variables": {
+    "appName": "[concat('h04app', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "kvName": "[concat('h04kv', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "sqlServerName": "[concat('h04sql', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "brokenDbHost": "h04sql-old-decommissioned.database.windows.net",
+    "fixedDbHost": "[concat(variables('sqlServerName'), '.database.windows.net')]",
+    "dbHost": "[if(equals(parameters('scenarioMode'), 'Fixed'), variables('fixedDbHost'), variables('brokenDbHost'))]",
+    "kvSecretsUserRoleId": "4633458b-17de-408a-b874-0445c86b69e0"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.KeyVault/vaults",
+      "apiVersion": "2023-02-01",
+      "name": "[variables('kvName')]",
+      "location": "[resourceGroup().location]",
+      "tags": { "Environment": "production", "Team": "security", "Scenario": "H04" },
+      "properties": {
+        "tenantId": "[subscription().tenantId]",
+        "sku": { "family": "A", "name": "standard" },
+        "enableRbacAuthorization": true,
+        "accessPolicies": []
+      }
+    },
+    {
+      "type": "Microsoft.Sql/servers",
+      "apiVersion": "2022-05-01-preview",
+      "name": "[variables('sqlServerName')]",
+      "location": "[resourceGroup().location]",
+      "tags": { "Environment": "production", "Team": "data", "Scenario": "H04" },
+      "properties": {
+        "administratorLogin": "sqladmin",
+        "administratorLoginPassword": "[parameters('sqlAdminPassword')]",
+        "version": "12.0"
+      }
+    },
+    {
+      "type": "Microsoft.Sql/servers/databases",
+      "apiVersion": "2022-05-01-preview",
+      "name": "[concat(variables('sqlServerName'), '/userdb')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ],
+      "sku": { "name": "Basic", "tier": "Basic" },
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('appName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "app",
+      "identity": { "type": "SystemAssigned" },
+      "dependsOn": [
+        "[resourceId('Microsoft.KeyVault/vaults', variables('kvName'))]",
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ],
+      "tags": { "Environment": "production", "Team": "backend", "ScenarioMode": "[parameters('scenarioMode')]" },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "siteConfig": {
+          "appSettings": [
+            { "name": "KEY_VAULT_URI", "value": "[reference(resourceId('Microsoft.KeyVault/vaults', variables('kvName'))).vaultUri]" },
+            { "name": "DB_HOST", "value": "[variables('dbHost')]" },
+            { "name": "DB_NAME", "value": "userdb" },
+            { "name": "DB_PORT", "value": "1433" }
+          ]
+        }
+      }
+    },
+    {
+      "condition": "[equals(parameters('scenarioMode'), 'Fixed')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(resourceGroup().id, variables('appName'), variables('kvSecretsUserRoleId'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', variables('appName'))]",
+        "[resourceId('Microsoft.KeyVault/vaults', variables('kvName'))]"
+      ],
+      "scope": "[concat('Microsoft.KeyVault/vaults/', variables('kvName'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('kvSecretsUserRoleId'))]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', variables('appName')), '2022-03-01', 'Full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      }
+    }
+  ],
+  "outputs": {
+    "appServiceName": { "type": "string", "value": "[variables('appName')]" },
+    "keyVaultName": { "type": "string", "value": "[variables('kvName')]" },
+    "sqlServerName": { "type": "string", "value": "[variables('sqlServerName')]" },
+    "configuredDbHost": { "type": "string", "value": "[variables('dbHost')]" },
+    "bugNote": { "type": "string", "value": "Two bugs: (1) App managed identity has no RBAC role on Key Vault, (2) DB_HOST points to non-existent 'h04sql-old-decommissioned' instead of actual SQL server" },
+    "scenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

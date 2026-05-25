@@ -1,0 +1,7 @@
+user_prompt: Add the description 'This is the main web server' as a note to the 'my-app-deployment'.
+expected_output:
+- kubectl annotate deployment my-app-deployment description='This is the main web
+  server'
+tags:
+- command
+- kubernetes

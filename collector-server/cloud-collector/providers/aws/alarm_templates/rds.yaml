@@ -1,0 +1,186 @@
+# RDS CloudWatch Alarm Recommendations
+# Based on AWS best practices for RDS monitoring
+service_name: "rds"
+
+templates:
+  - name: "aws_rds_cpu_utilization_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "High CPU utilization on RDS can impact query performance and application responsiveness"
+    configuration:
+      namespace: "AWS/RDS"
+      metric_name: "CPUUtilization"
+      statistic: "Average"
+      period: 300
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 75.0
+      by_instance_class:
+        # Burstable instances - alert earlier
+        db.t2: 65.0
+        db.t3: 65.0
+        db.t4g: 65.0
+        # Optimized classes - can run higher
+        db.r5: 80.0
+        db.r6: 80.0
+        db.r6g: 80.0
+        db.r7: 80.0
+        db.m5: 75.0
+        db.m6: 75.0
+        db.m6g: 75.0
+        db.m7: 75.0
+
+  - name: "aws_rds_freeable_memory_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Low freeable memory can cause swapping and severe performance degradation"
+    configuration:
+      namespace: "AWS/RDS"
+      metric_name: "FreeableMemory"
+      statistic: "Average"
+      period: 300
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "LessThanThreshold"
+      treat_missing_data: "breaching"
+    threshold_rules:
+      default_percentage: 0.15  # Alert when < 15% free
+      minimum_bytes: 536870912   # Minimum 512 MB free
+
+  - name: "aws_rds_free_storage_space_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Running out of storage space can cause database outages and data loss"
+    configuration:
+      namespace: "AWS/RDS"
+      metric_name: "FreeStorageSpace"
+      statistic: "Average"
+      period: 300
+      evaluation_periods: 1
+      datapoints_to_alarm: 1
+      comparison_operator: "LessThanThreshold"
+      treat_missing_data: "breaching"
+    threshold_rules:
+      default_percentage: 0.15   # Alert when < 15% free
+      minimum_bytes: 5368709120   # Minimum 5 GB free
+
+  - name: "aws_rds_disk_queue_depth_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "High disk queue depth indicates I/O bottleneck affecting database performance"
+    configuration:
+      namespace: "AWS/RDS"
+      metric_name: "DiskQueueDepth"
+      statistic: "Average"
+      period: 300
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 10.0
+      by_storage_type:
+        gp2: 10.0
+        gp3: 15.0
+        io1: 20.0
+        io2: 25.0
+
+  - name: "aws_rds_read_latency_alarm_missing"
+    alarm_type: "LATENCY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "High read latency impacts query performance and user experience"
+    configuration:
+      namespace: "AWS/RDS"
+      metric_name: "ReadLatency"
+      statistic: "Average"
+      period: 300
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 0.020  # 20ms
+      by_storage_type:
+        gp2: 0.020  # 20ms
+        gp3: 0.015  # 15ms
+        io1: 0.010  # 10ms
+        io2: 0.008  # 8ms
+
+  - name: "aws_rds_write_latency_alarm_missing"
+    alarm_type: "LATENCY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "High write latency can cause transaction delays and application timeouts"
+    configuration:
+      namespace: "AWS/RDS"
+      metric_name: "WriteLatency"
+      statistic: "Average"
+      period: 300
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 0.020  # 20ms
+      by_storage_type:
+        gp2: 0.020  # 20ms
+        gp3: 0.015  # 15ms
+        io1: 0.010  # 10ms
+        io2: 0.008  # 8ms
+
+  - name: "aws_rds_replica_lag_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "CONDITIONAL"  # Only applicable to read replicas
+    category: "Configuration"
+    severity: "Medium"
+    description: "High replication lag can cause stale data reads and failover issues"
+    configuration:
+      namespace: "AWS/RDS"
+      metric_name: "ReplicaLag"
+      statistic: "Average"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 3
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 30.0  # 30 seconds
+    conditions:
+      # Only recommend this alarm for RDS read replicas
+      - field: "Meta.ReadReplicaSourceDBInstanceIdentifier"
+        operator: "exists"
+        logic: "AND"
+      - field: "Meta.ReadReplicaSourceDBInstanceIdentifier"
+        operator: "not_empty"
+
+  - name: "aws_rds_database_connections_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "High connection count may indicate connection pool issues or approaching max_connections limit"
+    configuration:
+      namespace: "AWS/RDS"
+      metric_name: "DatabaseConnections"
+      statistic: "Average"
+      period: 300
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default_percentage: 0.80  # 80% of max_connections

@@ -1,0 +1,6 @@
+user_prompt: Create an IAM policy.
+expected_output:
+- aws iam create-policy --policy-name <policy-name> --policy-document <policy-document>
+tags:
+- command
+- aws

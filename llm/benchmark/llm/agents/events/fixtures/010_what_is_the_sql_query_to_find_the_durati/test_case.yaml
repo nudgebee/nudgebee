@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to find the duration of the event with fingerprint
+  'fp-x7y8z9'?
+expected_output:
+- SELECT id, starts_at, ends_at, status, (ends_at - starts_at) AS duration FROM events   WHERE
+  fingerprint = 'fp-x7y8z9';
+tags:
+- command
+- events

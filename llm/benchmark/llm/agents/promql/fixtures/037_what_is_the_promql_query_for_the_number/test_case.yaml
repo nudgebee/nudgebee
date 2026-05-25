@@ -1,0 +1,8 @@
+user_prompt: what is the promql query for the number of available replicas for the
+  'web-frontend' deployment?
+expected_output:
+- kube_deployment_status_replicas_available{deployment="web-frontend"}
+- sum(kube_deployment_status_replicas_available{deployment="web-frontend"})
+tags:
+- command
+- promql

@@ -1,0 +1,6 @@
+user_prompt: Get details of a CloudWatch metric.
+expected_output:
+- aws cloudwatch get-metric-data
+tags:
+- command
+- aws

@@ -1,0 +1,6 @@
+user_prompt: Delete an AppSync API.
+expected_output:
+- aws appsync delete-graphql-api --api-id <api-id>
+tags:
+- command
+- aws

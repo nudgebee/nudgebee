@@ -1,0 +1,6 @@
+user_prompt: Get logs from the worker container in pod api-server-abc123 in staging namespace
+expected_output: '{"where": {"container_name": {"_ilike": "%worker%"}, "pod_name": {"_ilike": "%api-server-abc123%"}, "service.namespace": {"_ilike": "%staging%"}}}'
+tags:
+  - complex
+  - multi-field
+  - signoz

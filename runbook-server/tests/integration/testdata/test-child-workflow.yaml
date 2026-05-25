@@ -1,0 +1,14 @@
+name: test-child-workflow
+definition:
+  triggers:
+    - type: manual
+  inputs:
+    - id: message
+      type: string
+  tasks:
+    - id: echo_task
+      type: core.print
+      params:
+        message: "{{ Inputs.message }}"
+  output:
+    result: "{{ Tasks.echo_task.output.data }}"

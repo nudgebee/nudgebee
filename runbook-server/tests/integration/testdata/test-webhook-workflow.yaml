@@ -1,0 +1,14 @@
+name: test-webhook-workflow
+definition:
+  triggers:
+    - type: webhook
+      params:
+        integration_name: test-hook
+  inputs:
+    - id: webhook_payload
+      type: string
+  tasks:
+    - id: echo-payload
+      type: core.print
+      params:
+        message: "Received payload: {{ Inputs.webhook_payload }}"

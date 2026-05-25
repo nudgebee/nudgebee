@@ -1,0 +1,18 @@
+user_prompt: "Give me a quick spend summary."
+expected_output:
+  - |
+    The response must follow the SPEND OVERVIEW format from the agent's
+    output spec: lead with one headline sentence stating total monthly
+    spend in dollars and percentage change vs the prior period, then a
+    table with columns Service/Account, Current, Previous, Change, with
+    trend indicators ((stable) for <5% change, NEW for absent prior
+    period, GONE for terminated). Close with available savings from
+    recommendations and a suggested drill-down area. Every dollar figure
+    must cite [spend_summary] or [recommendations]. The lead must NOT
+    describe the methodology (e.g. "I queried spend_summary and found...")
+    — it must be the headline result.
+tags:
+  - format
+  - overview
+  - easy
+  - finops

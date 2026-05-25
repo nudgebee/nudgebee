@@ -1,0 +1,160 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Nudgebee Org Registration Infrastructure - SNS Topic + SQS Queue for AWS Organization member account auto-registration via CloudFormation Custom Resources'
+
+Parameters:
+  SNSTopicName:
+    Type: String
+    Description: 'Name of the SNS topic for org registration callbacks'
+    Default: 'nudgebee-org-registration'
+    AllowedPattern: '^[a-zA-Z0-9_-]{1,256}$'
+    ConstraintDescription: 'Topic name must be 1-256 characters and contain only alphanumeric characters, hyphens, and underscores'
+
+  SQSQueueName:
+    Type: String
+    Description: 'Name of the SQS queue for org registration events'
+    Default: 'nudgebee-org-registration-queue'
+    AllowedPattern: '^[a-zA-Z0-9_-]{1,80}$'
+    ConstraintDescription: 'Queue name must be 1-80 characters and contain only alphanumeric characters, hyphens, and underscores'
+
+  SQSDLQName:
+    Type: String
+    Description: 'Name of the SQS dead letter queue for failed registration events'
+    Default: 'nudgebee-org-registration-dlq'
+    AllowedPattern: '^[a-zA-Z0-9_-]{1,80}$'
+    ConstraintDescription: 'Queue name must be 1-80 characters and contain only alphanumeric characters, hyphens, and underscores'
+
+  SQSMessageRetentionPeriod:
+    Type: Number
+    Description: 'Message retention period in seconds (default: 14 days)'
+    Default: 1209600
+    MinValue: 60
+    MaxValue: 1209600
+
+  SQSVisibilityTimeout:
+    Type: Number
+    Description: 'Visibility timeout in seconds (should be > collector processing time)'
+    Default: 300
+    MinValue: 0
+    MaxValue: 43200
+
+Resources:
+  # SNS Topic for CloudFormation Custom Resource callbacks
+  # Customer CF templates use this as ServiceToken in Custom::NudgebeeRegistration
+  OrgRegistrationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Ref SNSTopicName
+      Tags:
+        - Key: Service
+          Value: Nudgebee
+        - Key: Component
+          Value: SNS
+        - Key: Purpose
+          Value: Org registration Custom Resource callbacks
+
+  # SNS Topic Policy - Allow CloudFormation from any account to publish
+  # Authentication is via the verification token in the message body, not SNS policy restrictions
+  OrgRegistrationTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref OrgRegistrationTopic
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFormationPublish
+            Effect: Allow
+            Principal: '*'
+            Action: sns:Publish
+            Resource: !Ref OrgRegistrationTopic
+
+  # Dead Letter Queue for failed registration messages
+  OrgRegistrationDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Ref SQSDLQName
+      MessageRetentionPeriod: 1209600  # 14 days
+      Tags:
+        - Key: Service
+          Value: Nudgebee
+        - Key: Component
+          Value: SQS
+        - Key: Purpose
+          Value: Dead letter queue for org registration events
+
+  # SQS Queue for receiving org registration events from SNS
+  OrgRegistrationQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Ref SQSQueueName
+      MessageRetentionPeriod: !Ref SQSMessageRetentionPeriod
+      VisibilityTimeout: !Ref SQSVisibilityTimeout
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OrgRegistrationDeadLetterQueue.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Service
+          Value: Nudgebee
+        - Key: Component
+          Value: SQS
+        - Key: Purpose
+          Value: Org registration event queue
+
+  # SQS Queue Policy - Allow SNS topic to send messages to the queue
+  OrgRegistrationQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref OrgRegistrationQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowSNSSendMessage
+            Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt OrgRegistrationQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref OrgRegistrationTopic
+
+  # SNS Subscription - Deliver messages from SNS topic to SQS queue
+  OrgRegistrationSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref OrgRegistrationTopic
+      Protocol: sqs
+      Endpoint: !GetAtt OrgRegistrationQueue.Arn
+      RawMessageDelivery: false  # Keep SNS envelope so consumer can parse SNS wrapper
+
+Outputs:
+  SNSTopicArn:
+    Description: 'ARN of the SNS topic (use as NudgebeePingbackArn in org member template)'
+    Value: !Ref OrgRegistrationTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-SNSTopicArn'
+
+  SQSQueueUrl:
+    Description: 'URL of the SQS queue (set as cloud_collector_org_registration_sqs config)'
+    Value: !Ref OrgRegistrationQueue
+    Export:
+      Name: !Sub '${AWS::StackName}-SQSQueueUrl'
+
+  SQSQueueArn:
+    Description: 'ARN of the SQS queue'
+    Value: !GetAtt OrgRegistrationQueue.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-SQSQueueArn'
+
+  DLQUrl:
+    Description: 'URL of the dead letter queue'
+    Value: !Ref OrgRegistrationDeadLetterQueue
+    Export:
+      Name: !Sub '${AWS::StackName}-DLQUrl'
+
+  DLQArn:
+    Description: 'ARN of the dead letter queue'
+    Value: !GetAtt OrgRegistrationDeadLetterQueue.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-DLQArn'

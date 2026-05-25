@@ -1,0 +1,1 @@
+CREATE INDEX IF NOT EXISTS tenant_status_category_rule_name ON public.recommendation USING btree (tenant_id, status, category, rule_name);

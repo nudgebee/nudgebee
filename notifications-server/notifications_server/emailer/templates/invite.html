@@ -1,0 +1,182 @@
+{% extends "_base.html" %}
+<!--
+=======================================================================
+  INVITE EMAIL TEMPLATE — Parameter Reference
+=======================================================================
+
+  BRANDING
+  branding.name, branding.primary_color, branding.support_email
+
+  IMAGES
+  images.logo_url
+
+  TEXTS
+  texts.organization.name, texts.copyright, texts.address
+
+  LINKS
+  links.login_button, links.base_url, links.branding_url
+
+=======================================================================
+-->
+
+{% block title %}Welcome to {{ _brand_name }}{% endblock %}
+
+{% block content %}
+  {%- set _org_name  = texts.organization.name | default("NudgeBee", true) -%}
+  {%- set _login_url = links.login_button      | default("#", true) -%}
+
+  <!-- Inbox preview text (hidden) -->
+  <div style="display:none; max-height:0; overflow:hidden; mso-hide:all; font-size:1px; color:#F0F2F5; line-height:1px;">
+    You're in the hive. Your {{ _brand_name }} account is live — here's how to get going in about 5 minutes.
+  </div>
+
+  <!-- SUBJECT -->
+  <h1 class="subject-h" style="font-family:'DM Serif Display',Georgia,serif; font-size:26px; color:#0D1B2A; line-height:1.25; margin:0 0 28px; letter-spacing:-0.3px; font-weight:400;">
+    Welcome to {{ _brand_name }}, really glad you're here
+  </h1>
+
+  <!-- OPENING COPY -->
+  <p style="font-family:'DM Sans',Arial,sans-serif; font-size:15.5px; color:#3D3D3D; line-height:1.85; font-weight:300; margin:0 0 18px;">
+    Hi there,
+  </p>
+
+  <p style="font-family:'DM Sans',Arial,sans-serif; font-size:15.5px; color:#3D3D3D; line-height:1.85; font-weight:300; margin:0 0 18px;">
+    Your <strong style="color:#0D1B2A; font-weight:600;">{{ _org_name }}</strong> account is all set. Welcome to the hive — you're officially one of us now.
+  </p>
+
+  <p style="font-family:'DM Sans',Arial,sans-serif; font-size:15.5px; color:#3D3D3D; line-height:1.85; font-weight:300; margin:0 0 18px;">
+    {{ _brand_name }} is built for SRE, CloudOps, and FinOps folks — the people who get paged at 2am, spend an hour grepping logs, fix the thing, and then have to write an RCA by morning. We built four AI agents to take the worst parts of that job off your plate: incident response, cloud cost optimisation, day-2 operations, and Kubernetes. They sit on top of what you already have — no big migration, no ripping anything out.
+  </p>
+
+  <p style="font-family:'DM Sans',Arial,sans-serif; font-size:15.5px; color:#3D3D3D; line-height:1.85; font-weight:300; margin:0 0 18px;">
+    We promise the onboarding won't sting. Here's the fastest way to get something running on day one — you don't have to do all of these now, just start wherever makes sense:
+  </p>
+
+  <!-- DIVIDER -->
+  <div style="border-top:1px solid #F0F0F0; margin:6px 0 22px;"></div>
+
+  <!-- Step 1 -->
+  <div style="border-bottom:1px solid #F5F5F5; padding:12px 0 13px;">
+    <a href="{{ _base_url }}/user-management#integrations"
+      style="font-family:'DM Sans',Arial,sans-serif; font-size:15px; font-weight:500; color:#0D1B2A; text-decoration:none; display:block; line-height:1.4;">
+      1. Connect your cloud account &nbsp;&rarr;
+    </a>
+    <span style="font-family:'DM Sans',Arial,sans-serif; font-size:12.5px; color:#999999; font-weight:300; display:block; margin-top:3px; line-height:1.55;">
+      AWS, Azure, GCP, on-prem Kubernetes, EKS, AKS, GKE... wherever your infrastructure actually lives
+    </span>
+  </div>
+
+  <!-- Step 2 -->
+  <div style="border-bottom:1px solid #F5F5F5; padding:12px 0 13px;">
+    <a href="{{ _base_url }}/user-management#integrations"
+      style="font-family:'DM Sans',Arial,sans-serif; font-size:15px; font-weight:500; color:#0D1B2A; text-decoration:none; display:block; line-height:1.4;">
+      2. Connect Slack or Microsoft Teams &nbsp;&rarr;
+    </a>
+    <span style="font-family:'DM Sans',Arial,sans-serif; font-size:12.5px; color:#999999; font-weight:300; display:block; margin-top:3px; line-height:1.55;">
+      Alerts, AI summaries, incident threads — wherever your team already hangs out (Google Chat, email, etc.)
+    </span>
+  </div>
+
+  <!-- Step 3 -->
+  <div style="border-bottom:1px solid #F5F5F5; padding:12px 0 13px;">
+    <a href="{{ _base_url }}/user-management#integrations"
+      style="font-family:'DM Sans',Arial,sans-serif; font-size:15px; font-weight:500; color:#0D1B2A; text-decoration:none; display:block; line-height:1.4;">
+      3. Plug in your monitoring and observability stack &nbsp;&rarr;
+    </a>
+    <span style="font-family:'DM Sans',Arial,sans-serif; font-size:12.5px; color:#999999; font-weight:300; display:block; margin-top:3px; line-height:1.55;">
+      Prometheus, Datadog, Grafana, Loki, Splunk, VictoriaMetrics, OpenTelemetry, CloudWatch, etc.
+    </span>
+  </div>
+
+  <!-- Step 4 -->
+  <div style="padding:12px 0 13px;">
+    <a href="{{ _base_url }}/user-management#integrations"
+      style="font-family:'DM Sans',Arial,sans-serif; font-size:15px; font-weight:500; color:#0D1B2A; text-decoration:none; display:block; line-height:1.4;">
+      4. Bring your own LLM or API key &nbsp;&rarr;
+    </a>
+    <span style="font-family:'DM Sans',Arial,sans-serif; font-size:12.5px; color:#999999; font-weight:300; display:block; margin-top:3px; line-height:1.55;">
+      OpenAI, Anthropic, Gemini, AWS Bedrock, Ollama, your own self-hosted model, etc. — your call entirely
+    </span>
+  </div>
+
+  <!-- Setup footnote -->
+  <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:#999999; font-weight:300; font-style:italic; margin:4px 0 0; line-height:1.65;">
+    Honestly, just step 1 is enough to get started — the AI-SRE agent will run a first scan straight away and you'll have something useful within the first session.
+  </p>
+
+  <!-- DIVIDER -->
+  <div style="border-top:1px solid #F0F0F0; margin:26px 0;"></div>
+
+  <!-- MAIN CTA -->
+  <p style="font-family:'DM Sans',Arial,sans-serif; font-size:15px; color:#888888; font-weight:300; margin:0 0 10px; line-height:1.6;">
+    When you're ready —
+  </p>
+
+  <p style="margin:0 0 10px;">
+    <a href="{{ _login_url }}" class="cta-main"
+      style="font-family:'DM Serif Display',Georgia,serif; font-size:22px; color:#0D1B2A; font-weight:400; text-decoration:underline; text-decoration-color:#F5A623; text-underline-offset:4px; letter-spacing:-0.3px; line-height:1.3;">
+      &rarr; Go to your {{ _brand_name }} account
+    </a>
+  </p>
+
+  <p style="margin:0;">
+    <a href="{{ _branding_url }}/resources/blog"
+      style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:#999999; font-weight:300; text-decoration:none;">
+      or browse the docs first if that's more your speed &nbsp;&rarr;
+    </a>
+  </p>
+
+  <!-- DIVIDER -->
+  <div style="border-top:1px solid #F0F0F0; margin:28px 0;"></div>
+
+  <!-- CLOSING COPY -->
+  <p style="font-family:'DM Sans',Arial,sans-serif; font-size:15.5px; color:#3D3D3D; line-height:1.85; font-weight:300; margin:0 0 18px;">
+    And if anything comes up — a question, something not working, or just feedback — please do reply to this email or write to us at
+    <a href="mailto:{{ _support_email }}"
+      style="color:#F5A623; text-decoration:none; font-weight:500; border-bottom:1px solid rgba(245,166,35,0.4);">{{ _support_email }}</a>.
+    We're a small team. No ticket system, no bot — just us, reading everything.
+  </p>
+
+  <p style="font-family:'DM Sans',Arial,sans-serif; font-size:15.5px; color:#3D3D3D; line-height:1.85; font-weight:300; margin:0;">
+    Welcome aboard. Glad to have you here.
+  </p>
+
+  {% if links.calendly_url %}
+  <!-- DIVIDER before PS -->
+  <div style="border-top:1px solid #F0F0F0; margin:28px 0 0;"></div>
+
+  <!-- P.S. — WALKTHROUGH -->
+  <div style="background-color:#FAFAFA; border:1px solid #F0F0F0; border-radius:4px; margin-top:24px; padding:20px 22px;">
+
+    <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; font-weight:600; color:#999999; letter-spacing:0.5px; text-transform:uppercase; margin:0 0 10px;">
+      P.S.
+    </p>
+
+    <p style="font-family:'DM Sans',Arial,sans-serif; font-size:14.5px; color:#666666; line-height:1.8; font-weight:300; margin:0 0 14px;">
+      If you'd like someone to walk you through the setup — we do short, no-agenda 30-min sessions. Just you and one of our engineers on a screen share. No slides, no sales pitch. We'll connect your first integration together, get an agent running, and you can ask anything along the way.
+    </p>
+
+    <a href="{{ links.calendly_url }}"
+      style="font-family:'DM Sans',Arial,sans-serif; font-size:14.5px; font-weight:500; color:#0D1B2A; text-decoration:underline; text-decoration-color:#F5A623; text-underline-offset:3px;">
+      Pick a time that works for you &nbsp;&rarr;
+    </a>
+
+    <p style="font-family:'DM Sans',Arial,sans-serif; font-size:12px; color:#999999; font-weight:300; font-style:italic; margin:7px 0 0; line-height:1.5;">
+      Slots usually open within 24 hrs — no prep needed on your end at all
+    </p>
+
+  </div>
+  {% endif %}
+{% endblock %}
+
+{% block card_footer %}
+  <!-- SIGNATURE -->
+  <div style="border-top:1px solid #F0F0F0; margin-top:28px; padding-top:22px;">
+    <p style="font-family:'DM Serif Display',Georgia,serif; font-size:18px; color:#0D1B2A; font-weight:400; letter-spacing:-0.2px; margin:0 0 4px;">
+      — The {{ _brand_name }} Team
+    </p>
+    <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:#999999; font-weight:300; margin:0; line-height:1.6;">
+      {{ _branding_url }} &nbsp;&middot;&nbsp; {{ _support_email }}
+    </p>
+  </div>
+{% endblock %}

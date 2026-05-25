@@ -1,0 +1,51 @@
+
+                    __           __            
+   ____  __  ______/ /___ ____  / /_  ___  ___ 
+  / __ \/ / / / __  / __ `/ _ \/ __ \/ _ \/ _ \
+ / / / / /_/ / /_/ / /_/ /  __/ /_/ /  __/  __/
+/_/ /_/\__,_/\__,_/\__, /\___/_.___/\___/\___/ 
+                  /____/                       
+============================================================================
+
+Thank you for installing {{ .Chart.Name | title }} {{ .Chart.AppVersion }}
+
+Visit the web UI at: {{ .Values.nudgebee_secret.BASE_URL}}
+
+{{- if contains "localhost" .Values.nudgebee_secret.BASE_URL }}
+{{- $port := regexFind "[0-9]+$" .Values.nudgebee_secret.BASE_URL }}
+To access locally, run:
+kubectl port-forward svc/app -n {{ .Release.Namespace }} {{ $port }}:80
+{{- end }}
+
+{{- if .Values.nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED }}
+To retrieve the password from the secret, run the following command:
+kubectl get secret nudgebee -n {{ .Release.Namespace }} -o jsonpath='{.data.NEXTAUTH_DUMMY_CREDS_PASSWORD}' | base64 --decode
+{{- end }}
+
+{{- $existing := lookup "v1" "Secret" .Release.Namespace "nudgebee" }}
+{{- if $existing }}
+{{- $existingKey := "" }}
+{{- if and $existing.data (index $existing.data "NUDGEBEE_ENCRYPTION_KEY") }}
+{{- $existingKey = index $existing.data "NUDGEBEE_ENCRYPTION_KEY" | b64dec }}
+{{- end }}
+{{- $configuredKey := .Values.nudgebee_secret.NUDGEBEE_ENCRYPTION_KEY }}
+{{- if and $existingKey $configuredKey (ne $existingKey $configuredKey) }}
+
+⚠️  WARNING: NUDGEBEE_ENCRYPTION_KEY CHANGED ⚠️
+============================================================================
+This upgrade is replacing your existing NUDGEBEE_ENCRYPTION_KEY with a
+DIFFERENT value. Any data encrypted with the old key (integration
+credentials, OAuth tokens, etc.) will be UNREADABLE after this upgrade.
+
+If this was unintentional, abort with:
+   helm rollback {{ .Release.Name }}
+
+To recover the old key from the current cluster Secret:
+   kubectl get secret nudgebee -n {{ .Release.Namespace }} \
+     -o jsonpath='{.data.NUDGEBEE_ENCRYPTION_KEY}' | base64 --decode
+
+Then re-run helm upgrade with --set nudgebee_secret.NUDGEBEE_ENCRYPTION_KEY=<old-value>.
+============================================================================
+{{- end }}
+{{- end }}
+============================================================================s

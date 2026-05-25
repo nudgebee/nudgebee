@@ -1,0 +1,1194 @@
+[
+  {
+    "name": "trace_service_to_k8s_workload",
+    "enabled": true,
+    "source_type": "trace",
+    "target_type": "k8s",
+    "source_node_type": "Service",
+    "target_node_type": "Workload",
+    "matching_rules": [
+      {
+        "source_property": "service_name",
+        "target_property": "labels.app",
+        "match_type": "exact",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "RUNS_ON",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_workload_to_aws_rds",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "aws",
+    "source_node_type": "Workload",
+    "target_node_type": "Database",
+    "matching_rules": [
+      {
+        "source_property": "labels.db_endpoint",
+        "target_property": "dns_name",
+        "match_type": "contains",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "CALLS",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_workload_to_aws_elasticache",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "aws",
+    "source_node_type": "Workload",
+    "target_node_type": "Cache",
+    "matching_rules": [
+      {
+        "source_property": "labels.redis_endpoint",
+        "target_property": "dns_name",
+        "match_type": "contains",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "CALLS",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_workload_to_aws_sqs",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "aws",
+    "source_node_type": "Workload",
+    "target_node_type": "MessageQueue",
+    "matching_rules": [
+      {
+        "source_property": "labels.queue_name",
+        "target_property": "name",
+        "match_type": "exact",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "PUBLISHES_TO",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_workload_to_aws_dynamodb",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "aws",
+    "source_node_type": "Workload",
+    "target_node_type": "Database",
+    "matching_rules": [
+      {
+        "source_property": "labels.dynamodb_table",
+        "target_property": "name",
+        "match_type": "exact",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "CALLS",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_workload_to_aws_s3",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "aws",
+    "source_node_type": "Workload",
+    "target_node_type": "Storage",
+    "matching_rules": [
+      {
+        "source_property": "labels.s3_bucket",
+        "target_property": "name",
+        "match_type": "exact",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "CALLS",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_pod_to_k8s_node",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "k8s",
+    "source_node_type": "Pod",
+    "target_node_type": "Node",
+    "matching_rules": [
+      {
+        "source_property": "node_name",
+        "target_property": "name",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "RUNS_ON",
+    "bidirectional": false,
+    "cross_account": false
+  },
+  {
+    "name": "k8s_workload_to_aws_loadbalancer",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "aws",
+    "source_node_type": "Workload",
+    "target_node_type": "LoadBalancer",
+    "matching_rules": [
+      {
+        "source_property": "labels.load_balancer",
+        "target_property": "dns_name",
+        "match_type": "contains",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "ROUTES_THROUGH",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_service_loadbalancer_to_aws_loadbalancer",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "aws",
+    "source_node_type": "K8sService",
+    "target_node_type": "LoadBalancer",
+    "matching_rules": [
+      {
+        "source_property": "load_balancer_hostname",
+        "target_property": "dns_name",
+        "match_type": "exact",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "ROUTES_THROUGH",
+    "bidirectional": true,
+    "cross_account": true
+  },
+  {
+    "name": "trace_service_to_aws_rds",
+    "enabled": true,
+    "source_type": "trace",
+    "target_type": "aws",
+    "source_node_type": "Service",
+    "target_node_type": "Database",
+    "matching_rules": [
+      {
+        "source_property": "db_instance",
+        "target_property": "name",
+        "match_type": "exact",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "CALLS",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_cluster_to_eks_cluster",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "aws",
+    "source_node_type": "Cluster",
+    "target_node_type": "ManagedCluster",
+    "matching_rules": [
+      {
+        "source_property": "k8s_provider_cluster_name",
+        "target_property": "name",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "RUNS_ON",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_cluster_to_eks_cluster_by_name",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "aws",
+    "source_node_type": "Cluster",
+    "target_node_type": "ManagedCluster",
+    "matching_rules": [
+      {
+        "source_property": "name",
+        "target_property": "name",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "RUNS_ON",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_node_to_ec2_instance_by_name",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "aws",
+    "source_node_type": "Node",
+    "target_node_type": "ComputeInstance",
+    "matching_rules": [
+      {
+        "source_property": "name",
+        "target_property": "name",
+        "match_type": "contains",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "RUNS_ON",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_node_to_ec2_instance_by_provider_id",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "aws",
+    "source_node_type": "Node",
+    "target_node_type": "ComputeInstance",
+    "matching_rules": [
+      {
+        "source_property": "labels.node.kubernetes.io/instance-id",
+        "target_property": "name",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "RUNS_ON",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_node_to_ec2_instance_by_spec_provider_id",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "aws",
+    "source_node_type": "Node",
+    "target_node_type": "ComputeInstance",
+    "matching_rules": [
+      {
+        "source_property": "providerID",
+        "target_property": "resource_id",
+        "match_type": "contains",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "RUNS_ON",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_node_to_ec2_instance_by_private_dns",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "aws",
+    "source_node_type": "Node",
+    "target_node_type": "ComputeInstance",
+    "matching_rules": [
+      {
+        "source_property": "name",
+        "target_property": "private_dns_name",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "RUNS_ON",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_workload_to_secrets_manager",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "aws",
+    "source_node_type": "Workload",
+    "target_node_type": "SecretVault",
+    "matching_rules": [
+      {
+        "source_property": "labels.secret_arn",
+        "target_property": "arn",
+        "match_type": "contains",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "CALLS",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "aws_lambda_to_dynamodb",
+    "enabled": true,
+    "source_type": "aws",
+    "target_type": "aws",
+    "source_node_type": "ServerlessFunction",
+    "target_node_type": "Database",
+    "matching_rules": [
+      {
+        "source_property": "dynamodb_table_name",
+        "target_property": "name",
+        "match_type": "exact",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "CALLS",
+    "bidirectional": false,
+    "cross_account": false
+  },
+  {
+    "name": "aws_lambda_to_sqs",
+    "enabled": true,
+    "source_type": "aws",
+    "target_type": "aws",
+    "source_node_type": "ServerlessFunction",
+    "target_node_type": "MessageQueue",
+    "matching_rules": [
+      {
+        "source_property": "queue_url",
+        "target_property": "queue_url",
+        "match_type": "exact",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "PUBLISHES_TO",
+    "bidirectional": false,
+    "cross_account": false
+  },
+  {
+    "name": "cloudfront_to_loadbalancer",
+    "enabled": true,
+    "source_type": "aws",
+    "target_type": "aws",
+    "source_node_type": "CDN",
+    "target_node_type": "LoadBalancer",
+    "matching_rules": [
+      {
+        "source_property": "origin_domains",
+        "target_property": "dns_name",
+        "match_type": "contains",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "ROUTES_TO",
+    "bidirectional": false,
+    "cross_account": false
+  },
+  {
+    "name": "route53_to_loadbalancer",
+    "enabled": true,
+    "source_type": "aws",
+    "target_type": "aws",
+    "source_node_type": "DNSZone",
+    "target_node_type": "LoadBalancer",
+    "matching_rules": [
+      {
+        "source_property": "alias_target_dns",
+        "target_property": "dns_name",
+        "match_type": "contains",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "RESOLVES_TO",
+    "bidirectional": false,
+    "cross_account": false
+  },
+  {
+    "name": "ecr_repository_to_workload_by_uri",
+    "enabled": true,
+    "target_type": "aws",
+    "source_type": "k8s",
+    "source_node_type": "Workload",
+    "target_node_type": "ContainerRegistry",
+    "matching_rules": [
+      {
+        "source_property": "container_images",
+        "target_property": "repository_uri",
+        "match_type": "contains",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "PULLS_FROM",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "ecr_repository_to_workload_by_name",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "aws",
+    "source_node_type": "Workload",
+    "target_node_type": "ContainerRegistry",
+    "matching_rules": [
+      {
+        "source_property": "container_images",
+        "target_property": "repository_name",
+        "match_type": "contains",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "PULLS_FROM",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "trace_service_to_aws_cache",
+    "enabled": true,
+    "source_type": "trace",
+    "target_type": "aws",
+    "source_node_type": "Service",
+    "target_node_type": "Cache",
+    "matching_rules": [
+      {
+        "source_property": "cache_endpoint",
+        "target_property": "dns_name",
+        "match_type": "contains",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "CALLS",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "trace_service_to_aws_messagequeue",
+    "enabled": true,
+    "source_type": "trace",
+    "target_type": "aws",
+    "source_node_type": "Service",
+    "target_node_type": "MessageQueue",
+    "matching_rules": [
+      {
+        "source_property": "queue_name",
+        "target_property": "name",
+        "match_type": "exact",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "PUBLISHES_TO",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "aws_sns_to_sqs",
+    "enabled": false,
+    "comment": "This relationship is built programmatically in BuildEdges via fetchAllSNSSubscriptions",
+    "source_type": "aws",
+    "target_type": "aws",
+    "source_node_type": "Topic",
+    "target_node_type": "MessageQueue",
+    "matching_rules": [
+      {
+        "source_property": "topic_arn",
+        "target_property": "arn",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "PUBLISHES_TO",
+    "bidirectional": false,
+    "cross_account": false
+  },
+  {
+    "name": "aws_sns_to_lambda",
+    "enabled": false,
+    "comment": "This relationship is built programmatically in BuildEdges via fetchAllSNSSubscriptions",
+    "source_type": "aws",
+    "target_type": "aws",
+    "source_node_type": "Topic",
+    "target_node_type": "ServerlessFunction",
+    "matching_rules": [
+      {
+        "source_property": "topic_arn",
+        "target_property": "arn",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "PUBLISHES_TO",
+    "bidirectional": false,
+    "cross_account": false
+  },
+  {
+    "name": "aws_sqs_to_dlq",
+    "enabled": true,
+    "source_type": "aws",
+    "target_type": "aws",
+    "source_node_type": "MessageQueue",
+    "target_node_type": "MessageQueue",
+    "matching_rules": [
+      {
+        "source_property": "dead_letter_target_arn",
+        "target_property": "arn",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "ROUTES_TO",
+    "bidirectional": false,
+    "cross_account": false
+  },
+  {
+    "name": "aws_lambda_event_source_to_sqs",
+    "enabled": true,
+    "source_type": "aws",
+    "target_type": "aws",
+    "source_node_type": "MessageQueue",
+    "target_node_type": "ServerlessFunction",
+    "matching_rules": [
+      {
+        "source_property": "arn",
+        "target_property": "event_source_arns",
+        "match_type": "contains",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "PUBLISHES_TO",
+    "bidirectional": false,
+    "cross_account": false
+  },
+  {
+    "name": "aws_lambda_to_sns",
+    "enabled": true,
+    "source_type": "aws",
+    "target_type": "aws",
+    "source_node_type": "ServerlessFunction",
+    "target_node_type": "Topic",
+    "matching_rules": [
+      {
+        "source_property": "sns_topic_arn",
+        "target_property": "arn",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "PUBLISHES_TO",
+    "bidirectional": false,
+    "cross_account": false
+  },
+  {
+    "name": "aws_lambda_to_sqs_by_arn",
+    "enabled": true,
+    "source_type": "aws",
+    "target_type": "aws",
+    "source_node_type": "ServerlessFunction",
+    "target_node_type": "MessageQueue",
+    "matching_rules": [
+      {
+        "source_property": "environment_variables",
+        "target_property": "arn",
+        "match_type": "contains",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "PUBLISHES_TO",
+    "bidirectional": false,
+    "cross_account": false
+  },
+  {
+    "name": "aws_s3_to_sns",
+    "enabled": true,
+    "source_type": "aws",
+    "target_type": "aws",
+    "source_node_type": "Storage",
+    "target_node_type": "Topic",
+    "matching_rules": [
+      {
+        "source_property": "notification_topic_arns",
+        "target_property": "arn",
+        "match_type": "contains",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "PUBLISHES_TO",
+    "bidirectional": false,
+    "cross_account": false
+  },
+  {
+    "name": "aws_s3_to_sqs",
+    "enabled": true,
+    "source_type": "aws",
+    "target_type": "aws",
+    "source_node_type": "Storage",
+    "target_node_type": "MessageQueue",
+    "matching_rules": [
+      {
+        "source_property": "notification_queue_arns",
+        "target_property": "arn",
+        "match_type": "contains",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "PUBLISHES_TO",
+    "bidirectional": false,
+    "cross_account": false
+  },
+  {
+    "name": "aws_s3_to_lambda",
+    "enabled": true,
+    "source_type": "aws",
+    "target_type": "aws",
+    "source_node_type": "Storage",
+    "target_node_type": "ServerlessFunction",
+    "matching_rules": [
+      {
+        "source_property": "notification_lambda_arns",
+        "target_property": "arn",
+        "match_type": "contains",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "PUBLISHES_TO",
+    "bidirectional": false,
+    "cross_account": false
+  },
+  {
+    "name": "k8s_pv_to_aws_ebs_volume",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "aws",
+    "source_node_type": "PersistentVolume",
+    "target_node_type": "Storage",
+    "matching_rules": [
+      {
+        "source_property": "aws_ebs.volume_id",
+        "target_property": "resource_id",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "PROVIDES_STORAGE",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "aws_loadbalancer_to_k8s_nodeport_service",
+    "enabled": true,
+    "source_type": "aws",
+    "target_type": "k8s",
+    "source_node_type": "LoadBalancer",
+    "target_node_type": "K8sService",
+    "matching_rules": [
+      {
+        "source_property": "target_node_ports",
+        "target_property": "node_ports",
+        "match_type": "contains",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "ROUTES_TO",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "aws_backendpool_to_k8s_nodeport_service",
+    "enabled": false,
+    "source_type": "aws",
+    "target_type": "k8s",
+    "source_node_type": "BackendPool",
+    "target_node_type": "K8sService",
+    "matching_rules": [
+      {
+        "source_property": "target_node_ports",
+        "target_property": "node_ports",
+        "match_type": "contains",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "ROUTES_TO",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "aws_loadbalancer_to_k8s_service_by_tag",
+    "enabled": true,
+    "source_type": "aws",
+    "target_type": "k8s",
+    "source_node_type": "LoadBalancer",
+    "target_node_type": "K8sService",
+    "matching_rules": [
+      {
+        "source_property": "k8s_service_name",
+        "target_property": "name",
+        "match_type": "exact",
+        "case_sensitive": true
+      },
+      {
+        "source_property": "k8s_service_namespace",
+        "target_property": "namespace",
+        "match_type": "exact",
+        "case_sensitive": true
+      },
+      {
+        "source_property": "k8s_cluster_name",
+        "target_property": "cluster",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "ROUTES_TO",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_cluster_to_gke_cluster_by_name",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "gcp",
+    "source_node_type": "Cluster",
+    "target_node_type": "ManagedCluster",
+    "matching_rules": [
+      {
+        "source_property": "name",
+        "target_property": "name",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "RUNS_ON",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_cluster_to_gke_cluster",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "gcp",
+    "source_node_type": "Cluster",
+    "target_node_type": "ManagedCluster",
+    "matching_rules": [
+      {
+        "source_property": "k8s_provider_cluster_name",
+        "target_property": "name",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "RUNS_ON",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_cluster_to_gke_cluster_by_endpoint",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "gcp",
+    "source_node_type": "Cluster",
+    "target_node_type": "ManagedCluster",
+    "matching_rules": [
+      {
+        "source_property": "endpoint",
+        "target_property": "dns_name",
+        "match_type": "exact",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "RUNS_ON",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_node_to_gce_instance_by_provider_id",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "gcp",
+    "source_node_type": "Node",
+    "target_node_type": "ComputeInstance",
+    "matching_rules": [
+      {
+        "source_property": "providerID",
+        "target_property": "name",
+        "match_type": "contains",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "RUNS_ON",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_node_to_gce_instance_by_name",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "gcp",
+    "source_node_type": "Node",
+    "target_node_type": "ComputeInstance",
+    "matching_rules": [
+      {
+        "source_property": "name",
+        "target_property": "name",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "RUNS_ON",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_node_to_gce_instance_by_private_ip",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "gcp",
+    "source_node_type": "Node",
+    "target_node_type": "ComputeInstance",
+    "matching_rules": [
+      {
+        "source_property": "labels.node.kubernetes.io/instance-ip",
+        "target_property": "private_ip",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "RUNS_ON",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_workload_to_cloudsql_by_connection_name",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "gcp",
+    "source_node_type": "Workload",
+    "target_node_type": "Database",
+    "matching_rules": [
+      {
+        "source_property": "labels.cloudsql_connection_name",
+        "target_property": "dns_name",
+        "match_type": "contains",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "CALLS",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_workload_to_cloudsql_by_instance",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "gcp",
+    "source_node_type": "Workload",
+    "target_node_type": "Database",
+    "matching_rules": [
+      {
+        "source_property": "labels.cloudsql_instance",
+        "target_property": "name",
+        "match_type": "exact",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "CALLS",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_workload_to_cloudsql_by_db_endpoint",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "gcp",
+    "source_node_type": "Workload",
+    "target_node_type": "Database",
+    "matching_rules": [
+      {
+        "source_property": "labels.db_endpoint",
+        "target_property": "private_ip",
+        "match_type": "contains",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "CALLS",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_workload_to_gcs_bucket",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "gcp",
+    "source_node_type": "Workload",
+    "target_node_type": "Storage",
+    "matching_rules": [
+      {
+        "source_property": "labels.gcs_bucket",
+        "target_property": "name",
+        "match_type": "exact",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "CALLS",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_workload_to_bigquery_dataset",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "gcp",
+    "source_node_type": "Workload",
+    "target_node_type": "Database",
+    "matching_rules": [
+      {
+        "source_property": "labels.bigquery_dataset",
+        "target_property": "name",
+        "match_type": "contains",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "CALLS",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_pv_to_gce_persistent_disk",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "gcp",
+    "source_node_type": "PersistentVolume",
+    "target_node_type": "Storage",
+    "matching_rules": [
+      {
+        "source_property": "gce_persistent_disk.pd_name",
+        "target_property": "resource_id",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "PROVIDES_STORAGE",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_workload_to_gcr_by_uri",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "gcp",
+    "source_node_type": "Workload",
+    "target_node_type": "ContainerRegistry",
+    "matching_rules": [
+      {
+        "source_property": "container_images",
+        "target_property": "repository_uri",
+        "match_type": "contains",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "PULLS_FROM",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_service_loadbalancer_to_gcp_loadbalancer",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "gcp",
+    "source_node_type": "K8sService",
+    "target_node_type": "LoadBalancer",
+    "matching_rules": [
+      {
+        "source_property": "load_balancer_ip",
+        "target_property": "ip_address",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "ROUTES_THROUGH",
+    "bidirectional": true,
+    "cross_account": true
+  },
+  {
+    "name": "trace_service_to_cloudsql",
+    "enabled": true,
+    "source_type": "trace",
+    "target_type": "gcp",
+    "source_node_type": "Service",
+    "target_node_type": "Database",
+    "matching_rules": [
+      {
+        "source_property": "db_instance",
+        "target_property": "name",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "CALLS",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "trace_service_to_cloudsql_by_connection_name",
+    "enabled": true,
+    "source_type": "trace",
+    "target_type": "gcp",
+    "source_node_type": "Service",
+    "target_node_type": "Database",
+    "matching_rules": [
+      {
+        "source_property": "db_connection_name",
+        "target_property": "dns_name",
+        "match_type": "contains",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "CALLS",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_cluster_to_aks_cluster",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "azure",
+    "source_node_type": "Cluster",
+    "target_node_type": "ManagedCluster",
+    "matching_rules": [
+      {
+        "source_property": "k8s_provider_cluster_name",
+        "target_property": "name",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "RUNS_ON",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_cluster_to_aks_cluster_by_name",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "azure",
+    "source_node_type": "Cluster",
+    "target_node_type": "ManagedCluster",
+    "matching_rules": [
+      {
+        "source_property": "name",
+        "target_property": "name",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "RUNS_ON",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_cluster_to_aks_cluster_by_endpoint",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "azure",
+    "source_node_type": "Cluster",
+    "target_node_type": "ManagedCluster",
+    "matching_rules": [
+      {
+        "source_property": "endpoint",
+        "target_property": "dns_name",
+        "match_type": "exact",
+        "case_sensitive": false
+      }
+    ],
+    "relationship_type": "RUNS_ON",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "k8s_service_loadbalancer_to_azure_loadbalancer",
+    "enabled": true,
+    "source_type": "k8s",
+    "target_type": "azure",
+    "source_node_type": "K8sService",
+    "target_node_type": "LoadBalancer",
+    "matching_rules": [
+      {
+        "source_property": "load_balancer_ip",
+        "target_property": "ip_address",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "ROUTES_THROUGH",
+    "bidirectional": true,
+    "cross_account": true
+  },
+  {
+    "name": "azure_app_gateway_to_k8s_service",
+    "enabled": true,
+    "source_type": "azure",
+    "target_type": "k8s",
+    "source_node_type": "LoadBalancer",
+    "target_node_type": "K8sService",
+    "matching_rules": [
+      {
+        "source_property": "backend_addresses",
+        "target_property": "cluster_ip",
+        "match_type": "contains",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "ROUTES_TO",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "azure_front_door_to_loadbalancer",
+    "enabled": true,
+    "source_type": "azure",
+    "target_type": "azure",
+    "source_node_type": "CDN",
+    "target_node_type": "LoadBalancer",
+    "matching_rules": [
+      {
+        "source_property": "backend_addresses",
+        "target_property": "ip_address",
+        "match_type": "contains",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "ROUTES_TO",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "gcp_dns_to_loadbalancer",
+    "enabled": true,
+    "source_type": "gcp",
+    "target_type": "gcp",
+    "source_node_type": "DNSZone",
+    "target_node_type": "LoadBalancer",
+    "matching_rules": [
+      {
+        "source_property": "a_record_ips",
+        "target_property": "ip_address",
+        "match_type": "contains",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "RESOLVES_TO",
+    "bidirectional": false,
+    "cross_account": true
+  },
+  {
+    "name": "gcp_cdn_to_loadbalancer",
+    "enabled": true,
+    "source_type": "gcp",
+    "target_type": "gcp",
+    "source_node_type": "CDN",
+    "target_node_type": "LoadBalancer",
+    "matching_rules": [
+      {
+        "source_property": "origin_backend_service_name",
+        "target_property": "backend_service",
+        "match_type": "exact",
+        "case_sensitive": true
+      }
+    ],
+    "relationship_type": "ROUTES_TO",
+    "bidirectional": false,
+    "cross_account": true
+  }
+]

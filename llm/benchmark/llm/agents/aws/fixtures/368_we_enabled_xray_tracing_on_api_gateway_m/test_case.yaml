@@ -1,0 +1,26 @@
+user_prompt: We enabled X-Ray tracing on API Gateway 'm25-api' but traces show gaps.
+  API Gateway segments appear in the X-Ray service map, but Lambda 'm25-backend'
+  segments are completely missing. We can't debug where the latency is coming from
+  in our backend. The Lambda has TracingConfig Mode set to Active. Why are Lambda
+  traces missing?
+expected_output:
+- The root cause is that the Lambda function's IAM execution role is missing the
+  AWSXRayDaemonWriteAccess managed policy. Although the Lambda function has
+  TracingConfig.Mode set to Active (which tells the Lambda service to enable X-Ray
+  tracing), the function's execution role does not have permissions to write trace
+  segments to X-Ray (xray:PutTraceSegments, xray:PutTelemetryRecords). When Lambda
+  tries to send trace data to the X-Ray daemon, the write operations silently fail
+  due to insufficient permissions. Lambda does not raise an error or fail the
+  invocation — it simply drops the trace data. This results in API Gateway traces
+  showing the request but Lambda segments being missing from the trace, creating
+  gaps in the distributed trace. The fix is to attach the AWSXRayDaemonWriteAccess
+  managed IAM policy to the Lambda function's execution role.
+tags:
+- rca
+- aws
+- xray
+- api-gateway
+- lambda
+- iam
+type: rca
+agent: aws_debug

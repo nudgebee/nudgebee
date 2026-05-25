@@ -1,0 +1,8 @@
+user_prompt: what is the promql query for memory usage by namespace
+expected_output:
+- sum by (namespace) (container_memory_usage_bytes)
+- sum by (namespace) (container_memory_working_set_bytes)
+- sum by (namespace) (container_memory_max_usage_bytes)
+tags:
+- command
+- promql

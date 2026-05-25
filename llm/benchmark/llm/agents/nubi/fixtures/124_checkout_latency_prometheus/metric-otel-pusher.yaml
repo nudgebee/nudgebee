@@ -1,0 +1,121 @@
+# Synthetic OTLP push of `http_request_duration_seconds` histogram showing
+# that coupon=promotions requests are systematically slower than coupon=none
+# requests. The original fixture deployed a real Python checkout app + k6
+# load to produce these metrics, but those scrape-based metrics never made
+# it to the agent's OTel-pipeline-fed catalog. This synthetic push delivers
+# the same observable shape via the path the agent's catalog actually reads.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-pusher-script
+data:
+  push.sh: |
+    #!/bin/sh
+    set -eu
+    : "${OTLP_HTTP_ENDPOINT:?must be set}"
+
+    while true; do
+      NOW_NS=$(date +%s)000000000
+      cat > /tmp/payload.json <<EOF
+    {
+      "resourceMetrics": [{
+        "resource": {
+          "attributes": [
+            {"key": "service.name", "value": {"stringValue": "checkout"}},
+            {"key": "service.namespace", "value": {"stringValue": "app-124"}},
+            {"key": "service.version", "value": {"stringValue": "1.0.0"}},
+            {"key": "k8s.namespace.name", "value": {"stringValue": "app-124"}},
+            {"key": "k8s.pod.name", "value": {"stringValue": "${HOSTNAME}"}},
+            {"key": "telemetry.sdk.language", "value": {"stringValue": "shell"}},
+            {"key": "telemetry.sdk.name", "value": {"stringValue": "otlp-curl"}}
+          ]
+        },
+        "scopeMetrics": [{
+          "scope": {"name": "checkout"},
+          "metrics": [{
+            "name": "http_request_duration_seconds",
+            "description": "HTTP request latency by path and coupon",
+            "unit": "s",
+            "histogram": {
+              "aggregationTemporality": 2,
+              "dataPoints": [
+                {
+                  "startTimeUnixNano": "${NOW_NS}",
+                  "timeUnixNano": "${NOW_NS}",
+                  "count": "1000",
+                  "sum": 89.5,
+                  "bucketCounts": ["800", "150", "40", "9", "1", "0"],
+                  "explicitBounds": [0.1, 0.25, 0.5, 1.0, 2.0],
+                  "attributes": [
+                    {"key": "path", "value": {"stringValue": "/checkout"}},
+                    {"key": "coupon", "value": {"stringValue": "none"}}
+                  ]
+                },
+                {
+                  "startTimeUnixNano": "${NOW_NS}",
+                  "timeUnixNano": "${NOW_NS}",
+                  "count": "100",
+                  "sum": 105.0,
+                  "bucketCounts": ["5", "10", "15", "30", "30", "10"],
+                  "explicitBounds": [0.1, 0.25, 0.5, 1.0, 2.0],
+                  "attributes": [
+                    {"key": "path", "value": {"stringValue": "/checkout"}},
+                    {"key": "coupon", "value": {"stringValue": "promotions"}}
+                  ]
+                }
+              ]
+            }
+          }]
+        }]
+      }]
+    }
+    EOF
+      curl -sS -o /dev/null -w "%{http_code}" -X POST \
+        -H "Content-Type: application/json" \
+        --data-binary @/tmp/payload.json \
+        "${OTLP_HTTP_ENDPOINT}/v1/metrics" || true
+      echo " — pushed at $(date -u +%H:%M:%S)"
+      sleep 10
+    done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metric-otel-pusher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metric-otel-pusher
+  template:
+    metadata:
+      labels:
+        app: metric-otel-pusher
+    spec:
+      containers:
+      - name: pusher
+        image: curlimages/curl:8.10.1
+        command: ["sh", "/script/push.sh"]
+        env:
+        - name: OTLP_HTTP_ENDPOINT
+          value: "http://otel-deployment-collector-collector.otel.svc.cluster.local:4318"
+        - name: HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        volumeMounts:
+        - name: script
+          mountPath: /script
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "16Mi"
+          limits:
+            cpu: "100m"
+            memory: "64Mi"
+      volumes:
+      - name: script
+        configMap:
+          name: otel-pusher-script
+          defaultMode: 0755

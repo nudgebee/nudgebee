@@ -1,0 +1,6 @@
+user_prompt: Get details of a CodeBuild build.
+expected_output:
+- aws codebuild batch-get-builds --ids <build-id>
+tags:
+- command
+- aws

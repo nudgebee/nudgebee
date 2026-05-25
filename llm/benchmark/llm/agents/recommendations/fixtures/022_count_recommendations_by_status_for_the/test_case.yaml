@@ -1,0 +1,7 @@
+user_prompt: Count recommendations by status for the 'production' namespace.
+expected_output:
+- SELECT status, COUNT(*) AS count from recommendation_view WHERE namespace = 'production'
+  GROUP BY status;
+tags:
+- command
+- recommendations

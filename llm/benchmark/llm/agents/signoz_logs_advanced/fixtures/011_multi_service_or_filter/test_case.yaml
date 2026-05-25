@@ -1,0 +1,6 @@
+user_prompt: Get error logs from payment-service or order-service
+expected_output: '{"where": {"severity_text": {"_eq": "ERROR"}}, "_or": [{"service.name": {"_ilike": "%payment-service%"}}, {"service.name": {"_ilike": "%order-service%"}}]}'
+tags:
+  - complex
+  - multi-service
+  - signoz

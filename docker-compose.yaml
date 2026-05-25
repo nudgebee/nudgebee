@@ -1,0 +1,281 @@
+version: '3.8'
+
+networks:
+  nudgebee:
+
+volumes:
+  pg_data:
+  rabbitmq_data:
+  redis_data:
+  qdrant_data:
+
+services:
+  # ---------- Infra ----------
+  postgres:
+    image: postgres:16
+    networks: [nudgebee]
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: nudgebee
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d nudgebee"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    networks: [nudgebee]
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+
+  redis:
+    image: redis:7-alpine
+    networks: [nudgebee]
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  qdrant:
+    image: qdrant/qdrant:v1.16.0
+    networks: [nudgebee]
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  temporal:
+    image: temporalio/auto-setup:1.29.1
+    networks: [nudgebee]
+    restart: unless-stopped
+    ports:
+      - "7233:7233"
+    depends_on:
+      - postgres
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_SEEDS: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PWD: postgrespassword
+      DBNAME: temporal
+      VISIBILITY_DBNAME: temporal_visibility
+
+  temporal-ui:
+    image: temporalio/ui:2.44.0
+    networks: [nudgebee]
+    restart: unless-stopped
+    ports:
+      - "8233:8080"
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:3000
+
+  # ---------- Migrations (one-shot) ----------
+  # Runs by default alongside infra: `docker compose up -d` brings up
+  # pg/redis/rabbit/qdrant/temporal AND applies migrations. Idempotent —
+  # re-running against an up-to-date DB is a no-op (golang-migrate tracker).
+  # ClickHouse step auto-skips (no CLICKHOUSE_ENABLED). MIGRATE_SKIP_PLAYBOOK=1
+  # because local infra-only flows have no services-server to receive the
+  # playbook-load curl; the cron registers itself on first services-server boot.
+  migrations:
+    build: ./api-server/migrations
+    networks: [nudgebee]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+    environment:
+      APP_DATABASE_URL: postgres://postgres:postgrespassword@postgres:5432/nudgebee?sslmode=disable
+      RABBIT_MQ_HOST: rabbitmq
+      RABBIT_MQ_USERNAME: guest
+      RABBIT_MQ_PASSWORD: guest
+      MIGRATE_SKIP_PLAYBOOK: "1"
+
+  # ---------- Go services ----------
+  # Each service uses dual mode: docker compose up tries the published
+  # ghcr.io image first; falls back to local build from `build.context`
+  # if the image isn't pullable (or you've never pushed). To force a
+  # local rebuild during development:
+  #   docker compose build <service>
+  # Then docker compose up will pick up the locally-built image instead.
+  api-server-services:
+    profiles: [full]
+    platform: linux/amd64
+    image: ghcr.io/nudgebee/services-server:edge
+    build:
+      context: ./api-server/services
+    networks: [nudgebee]
+    ports:
+      - "8000:8000"
+    env_file: ./api-server/services/.env
+    depends_on:
+      - postgres
+      - rabbitmq
+      - redis
+
+  ticket-server:
+    profiles: [full]
+    platform: linux/amd64
+    image: ghcr.io/nudgebee/ticket-server:edge
+    build:
+      context: ./ticket-server
+    networks: [nudgebee]
+    ports:
+      - "8001:8000"
+    depends_on:
+      - postgres
+      - rabbitmq
+
+  cloud-collector:
+    profiles: [full]
+    platform: linux/amd64
+    image: ghcr.io/nudgebee/cloud-collector-server:edge
+    build:
+      context: ./collector-server/cloud-collector
+    networks: [nudgebee]
+    ports:
+      - "8002:8000"
+    depends_on:
+      - rabbitmq
+
+  relay-server:
+    profiles: [full]
+    platform: linux/amd64
+    image: ghcr.io/nudgebee/relay-server:edge
+    build:
+      context: ./collector-server/k8s-collector/relay-server
+    networks: [nudgebee]
+    ports:
+      - "8004:8080"
+    depends_on:
+      - rabbitmq
+
+  llm-server:
+    profiles: [full]
+    platform: linux/amd64
+    image: ghcr.io/nudgebee/llm-server:edge
+    build:
+      context: ./llm/llm-server
+    networks: [nudgebee]
+    ports:
+      - "8005:8000"
+    depends_on:
+      - postgres
+      - qdrant
+
+  # TODO: code-analysis is intentionally NOT a long-running compose service.
+  # System tracks per-account code-analysis instances and the design is for
+  # llm-server to launch one dynamically per account on demand. This block
+  # only exists as a placeholder for the time when that wiring lands.
+  # code-analysis:
+  #   image: code-analysis   # build locally — no published image
+  #   networks: [nudgebee]
+  #   ports:
+  #     - "8006:8080"
+
+  workflow-server:
+    profiles: [full]
+    platform: linux/amd64
+    image: ghcr.io/nudgebee/workflow-server:edge
+    build:
+      context: ./runbook-server
+    networks: [nudgebee]
+    ports:
+      - "8007:8000"
+    environment:
+      TEMPORAL_GRPC_ENDPOINT: temporal:7233
+    depends_on:
+      - postgres
+      - rabbitmq
+      - temporal
+
+  # ---------- Python services ----------
+  k8s-collector-app:
+    profiles: [full]
+    platform: linux/amd64
+    image: ghcr.io/nudgebee/k8s-collector:edge
+    build:
+      context: ./collector-server/k8s-collector/app
+    networks: [nudgebee]
+    ports:
+      - "5000:5000"
+    depends_on:
+      - rabbitmq
+
+  rag-server:
+    profiles: [full]
+    platform: linux/amd64
+    image: ghcr.io/nudgebee/rag-server:edge
+    build:
+      context: ./llm/rag-server
+    networks: [nudgebee]
+    ports:
+      - "9998:9999"
+    depends_on:
+      - qdrant
+      - postgres
+
+  ml-k8s-server:
+    profiles: [full]
+    platform: linux/amd64
+    image: ghcr.io/nudgebee/ml-k8s-server:edge
+    build:
+      context: ./ml-k8s-server
+    networks: [nudgebee]
+    ports:
+      - "9999:9999"
+      - "8081:8081"
+    depends_on:
+      - postgres
+
+  notifications-server:
+    profiles: [full]
+    platform: linux/amd64
+    image: ghcr.io/nudgebee/notifications:edge
+    build:
+      context: ./notifications-server
+    networks: [nudgebee]
+    ports:
+      - "8090:8080"
+    depends_on:
+      - postgres
+      - rabbitmq
+
+  # ---------- Frontend ----------
+  app:
+    profiles: [full]
+    platform: linux/amd64
+    image: ghcr.io/nudgebee/app:edge
+    build:
+      context: ./app
+    networks: [nudgebee]
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api-server-services
+    env_file:
+      - ./app/.env
+    environment:
+      SERVICE_API_SERVER_URL: http://api-server-services:8000
+      LLM_SERVER_URL: http://llm-server:8000

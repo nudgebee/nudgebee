@@ -1,0 +1,180 @@
+Identify RootCause of the event with id %s
+
+## Event Details
+Event Definition (if applicable): %s
+Event Title: %s
+Event Description: %s
+Event Labels (if applicable): %s
+Event Time: %s
+Event Source/Component: %s
+
+### Preliminary Event Summary
+%s
+(CRITICAL: This is a preliminary summary. You MUST NOT simply repeat this. Perform your own analysis and generate a fresh summary in the final response.)
+
+---
+
+## DATA AVAILABILITY GUIDANCE
+First, assess the amount of meaningful event data available:
+- **STEP 1 - Validate Relevance**: Check if evidence matches the event context
+  - Compare event title/definition with provided logs, metrics, traces
+  - Verify timestamps align (evidence should be within ±30 minutes of event time)
+  - Check components/services match between event and evidence
+  - If evidence is unrelated: Flag this immediately in "Available Information" section
+- **STEP 2 - Assess Data Quality**: Only if evidence is relevant
+  - If event data is minimal (missing description, labels, or contains generic placeholder values):
+    - Provide a brief, focused analysis only on available facts
+    - Clearly state that limited data prevents detailed analysis
+    - Keep sections very short (1-3 sentences maximum)
+    - Explicitly skip sections that cannot be meaningfully addressed
+    - Focus on what additional information is needed
+  - If event data is substantial:
+    - Provide a standard comprehensive analysis
+    - Include detailed technical explanations and recommendations
+
+## Analysis Instructions
+
+### 1. Investigation Process
+**CRITICAL: Validate data relevance before analysis:**
+- First, carefully read the Event Title and Event Definition to understand what the event is about
+- Cross-check that the provided logs, metrics, traces, and evidence actually relate to this specific event
+- If the evidence appears unrelated or generic (e.g., unrelated log messages, metrics from different timeframes, or data that doesn't match the event context):
+  - DO NOT force-fit unrelated data into your analysis
+  - State explicitly: "Provided evidence does not directly relate to the event described"
+  - Focus only on data that is temporally and contextually relevant to the event
+
+Gather all available event data and any related information needed for a comprehensive analysis. Use available tools to collect information but DO NOT mention the tools or steps in your final response.
+
+### 2. Event Classification
+- Determine event type: Error, Warning, Informational, Critical, System, Security, User Action, etc.
+- Identify affected services, components, or subsystems
+- Assess initial severity level based on provided information
+- Note if this appears to be part of a larger incident
+
+### 3. Root Cause Analysis
+- Apply systematic troubleshooting methodologies
+- Consider contributing factors across system components
+- Distinguish between immediate trigger and underlying conditions
+- Assess whether the issue is systemic or isolated
+- **If multiple potential root causes exist**: Rank them by likelihood (High/Medium/Low probability) and provide supporting evidence for each hypothesis
+- **If root cause cannot be determined**: Clearly state "Root cause cannot be determined with available information" and list what additional data is needed
+
+### 4. Impact Evaluation
+- Determine scope of impact on users, systems, and business processes
+- Assess duration and intensity of impact
+- Identify cascading effects to other systems or processes
+- Evaluate potential for recurrence if not addressed
+
+
+## CRITICAL RESPONSE INSTRUCTIONS
+1. START YOUR RESPONSE DIRECTLY with the Information Availability Statement section header.
+2. DO NOT include any greeting, introduction, or casual phrases like "Alright", "Let's", "Here's", etc.
+3. DO NOT use first-person language or address the user directly.
+4. Use only a formal, technical tone throughout the entire analysis.
+5. CRITICAL: DO NOT simply repeat the "Preliminary Event Summary". You must generate a fresh "Summary" based on your own analysis of all available evidence.
+6. VALIDATION CHECKS before finalizing response:
+   - Does the provided evidence actually relate to the event title and definition? (Check timestamps, components, error types)
+   - Does the root cause directly explain the symptoms described in the event?
+   - Are severity and impact assessments consistent with each other?
+   - Are recommendations actionable with specific commands/actions (not vague like "investigate further")?
+   - Have you avoided speculation when data is insufficient?
+   - Are all technical terms either explained or industry-standard?
+   - If multiple root causes listed, are they ranked by probability?
+   - Have you avoided using unrelated or generic data just to fill sections?
+
+## RESPONSE FORMAT GUIDELINES
+
+1. Your response must ONLY contain the structured analysis result. DO NOT include:
+   - Any introductory phrases, greetings, or casual language
+   - References to your analysis process
+   - Mentions of tools used to gather information
+   - Planning steps (like E1, E2)
+   - Commentary on your own reasoning
+   - Any "I would" or "I should" statements
+   - Any "here is" or similar introductory phrases
+
+2. Write in a strict technical, professional tone with a clear structure following the format below.
+
+3. CRITICAL: Match analysis depth to available data:
+   - For events with minimal data: Keep total response under 15 sentences
+   - For events with substantial data: Provide comprehensive analysis
+   - Never speculate extensively when data is limited
+   - Use phrases like "Cannot be determined with available information" rather than making assumptions
+   - If evidence is unrelated to the event: Explicitly state this and do not use unrelated data in your analysis
+   
+4. Include appropriate technical emojis to enhance readability:
+   - Only use technical/computing related emojis (🔍 🖥️ 📊 📈 🔄 ⚠️ 🛑 ✅ 🔧 ⚙️ 🗄️ 📡 🌐 🔐 etc.)
+   - Do not use emotional emojis (😊 😢 😡 etc.)
+   - Do not overuse emojis - maximum one per section/subsection
+   - Only use emojis that add meaning (e.g., ⚠️ for warnings, 🔍 for investigation)
+   - Place emojis after markdown formatting symbols in headers (e.g., # 🔍 Analysis, ### 📊 Data)
+
+## Final Response Format
+
+### 🔍 Available Information
+[1-2 sentences only: State what information is available and what key information is missing]
+[IMPORTANT: If provided evidence is unrelated to the event, state: "Provided evidence does not match the event context (Event: [title], Evidence: [what was provided instead])"]
+
+### ⚠️ Summary
+Severity: [Critical/High/Medium/Low]
+Status: [Resolved/Ongoing/Intermittent]
+[2-3 sentences summarizing the event, its impact, and root cause if known]
+
+### 📊 Event Details
+- Type: [Error/Warning/Informational/Critical/System/Security/User Action]
+- Affected Components: [List components]
+- Time: [Event time]
+- Symptoms: [Main observable symptoms]
+- Triggers: [What triggered the event]
+
+### 🔎 Root Cause
+- Primary Cause: [Clear statement of the root cause or "Cannot be determined with available information"]
+- Contributing Factors: [List factors if known or "Insufficient data"]
+- Confidence Level: [High/Medium/Low]
+[For minimal data events: limit to 1-2 sentences or state "Insufficient data for meaningful root cause analysis"]
+
+**If multiple potential root causes exist, list them as:**
+1. **[Hypothesis 1]** (Probability: High/Medium/Low)
+   - Evidence: [Supporting data]
+2. **[Hypothesis 2]** (Probability: High/Medium/Low)
+   - Evidence: [Supporting data]
+
+**If root cause cannot be determined:**
+- State clearly: "Root cause cannot be determined with available information"
+- List specific missing data needed (e.g., "Requires: pod logs from 14:00-14:30 UTC, memory metrics, recent deployment history")
+
+### 📈 Impact
+- Technical Impact: [Brief description or "Cannot be determined"]
+- Business Impact: [Brief description or "Cannot be determined"]
+- Duration: [Duration or "Ongoing" or "Unknown"]
+- Scope: [Number of affected systems/users or "Unknown scope"]
+[For minimal data events: limit to 1-2 sentences or state "Insufficient data for meaningful impact assessment"]
+
+### 🔧 Resolution
+- Immediate Actions (0-5 minutes): [Specific commands/actions: rollback, restart, scale up, disable feature flag, or "Monitor the situation"]
+- Short-term Plan (hours-days): [Specific fixes: patch, config change, temporary workaround, or "Collect additional data"]
+- Long-term Plan (weeks+): [Strategic changes: architecture improvements, capacity planning, monitoring enhancements, or "Develop monitoring strategy"]
+[For minimal data events: focus on data collection rather than speculative fixes]
+[For Security events: Immediate actions should include isolation, access review, and security team notification]
+
+### 📋 Next Steps
+
+**For minimal data events (this should be the most detailed section):**
+- **Required Data**: List 3-5 specific data points needed with exact sources
+  - Example: "Pod memory metrics for last 24 hours from Prometheus"
+  - Example: "Application logs with ERROR level from 14:00-15:00 UTC"
+- **Data Collection Commands**: Provide exact queries/commands
+  - Example: "kubectl logs pod-name --since=1h --tail=100"
+  - Example: "kubectl describe pod pod-name"
+- **Prioritization**: Mark which data is CRITICAL vs nice-to-have for root cause determination
+
+**For substantial data events:**
+- **Prevention**: Specific changes to avoid recurrence (e.g., "Increase memory limit to 4GiB", "Add circuit breaker with 3s timeout")
+- **Monitoring**: Exact alerts to catch similar issues earlier (e.g., "Alert when memory >80% for 5min", "Alert on 5xx rate >1%")
+- **Documentation**: Update runbooks with findings, add this pattern to troubleshooting guides
+- **Follow-up**: Schedule post-mortem review if severity is High or Critical
+
+**For Security events:**
+- **Immediate Investigation**: Access logs review, user activity audit, network traffic analysis
+- **Security Team**: Escalate to security team with incident details
+- **Compliance**: Document for compliance/audit trail if required

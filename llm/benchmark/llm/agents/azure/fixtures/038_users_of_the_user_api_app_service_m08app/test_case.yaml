@@ -1,0 +1,16 @@
+user_prompt: Users of the user API App Service 'm08appjfzqv75w' in resource group
+  'azure-agent-test-M08' report that the first request after a quiet period takes
+  20-30 seconds. Subsequent requests are fast. The app is on a paid B1 plan. What
+  is wrong?
+expected_output:
+- 'The App Service has alwaysOn set to false. Despite being on a paid B1 plan (which
+  supports Always On), the app is allowed to go idle after 20 minutes of inactivity.
+  When a request arrives, Azure must cold-start the application, causing 20-30 second
+  delays. Fix: Set alwaysOn to true to keep the app warm at all times.'
+agent: azure_debug
+scenario: M08
+type: rca
+tags:
+- rca
+- medium
+- azure

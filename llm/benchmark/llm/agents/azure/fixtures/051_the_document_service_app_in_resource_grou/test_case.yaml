@@ -1,0 +1,19 @@
+user_prompt: The document service App Service in resource group 'azure-agent-test-P02'
+  cannot access its Storage Account. The app has VNet integration and the storage is
+  configured for private endpoint access. A Private DNS zone for blob storage exists
+  and is linked to the VNet. The storage account has firewall enabled with defaultAction
+  Deny. What is preventing access?
+expected_output:
+- 'The Private DNS zone ''privatelink.blob.core.windows.net'' is linked to the VNet
+  but has no A record for the storage account. Without the DNS record, the storage
+  account hostname resolves to its public IP address instead of the private endpoint
+  IP. Since the storage firewall has defaultAction=Deny and no IP/VNet rules, the
+  request from the public IP is blocked. Fix: Create an A record in the Private DNS
+  zone mapping the storage account name to the private endpoint''s private IP address.'
+agent: azure_debug
+scenario: P02
+type: rca
+tags:
+- rca
+- hard
+- azure

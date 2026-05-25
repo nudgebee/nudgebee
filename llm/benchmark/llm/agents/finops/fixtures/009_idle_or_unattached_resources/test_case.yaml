@@ -1,0 +1,17 @@
+user_prompt: "Find idle or unattached cloud resources we can clean up."
+expected_output:
+  - |
+    The agent should call recommendations filtered to abandoned-resource
+    categories (unattached EBS volumes, idle load balancers, unused elastic
+    IPs, etc.) and rank them by estimated_saving. The response should list
+    each resource with its identifier, account, monthly cost, and the
+    cleanup action. Total recoverable spend should be summarized in dollars.
+    For high-confidence items the agent may suggest immediate cleanup; for
+    others it should recommend verification via cloud_resource_search_execute
+    or delegate_agent before action. Cite [recommendations] and any
+    verification source.
+tags:
+  - optimization
+  - cleanup
+  - medium
+  - finops

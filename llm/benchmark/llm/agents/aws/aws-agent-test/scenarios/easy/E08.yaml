@@ -1,0 +1,98 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E08: EC2 app fails because EBS data volume is not attached.
+  User complaint: "App crashes saying /data directory not found. Instance is running fine."
+  Root cause: EBS volume exists but is not attached to the instance.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = EBS volume created but NOT attached to instance.
+      Fixed = EBS volume attached to instance.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for analytics ETL server
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !ImportValue aws-agent-test-vpc-cidr
+      Tags:
+        - Key: Name
+          Value: e08-analytics-sg
+
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      SubnetId: !ImportValue aws-agent-test-private-subnet-a
+      SecurityGroupIds:
+        - !Ref SecurityGroup
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          # App expects data volume mounted at /data
+          # If volume isn't attached, this directory won't exist
+          if [ ! -d /data ]; then
+            echo "ERROR: /data directory not found. Data volume may not be attached." >> /var/log/app-startup.log
+            echo "App startup failed - missing data volume" >> /var/log/app-startup.log
+          else
+            echo "Data volume found at /data. Starting ETL pipeline." >> /var/log/app-startup.log
+          fi
+      Tags:
+        - Key: Name
+          Value: e08-etl-worker-01
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: data-engineering
+        - Key: Application
+          Value: analytics-etl
+
+  # Data volume - exists but only attached in Fixed mode
+  DataVolume:
+    Type: AWS::EC2::Volume
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Size: 20
+      VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: e08-etl-data-volume
+        - Key: Environment
+          Value: production
+        - Key: Purpose
+          Value: ETL data storage
+
+  # Only attach in Fixed mode
+  VolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Condition: IsFixed
+    Properties:
+      Device: /dev/xvdf
+      InstanceId: !Ref EC2Instance
+      VolumeId: !Ref DataVolume
+
+Outputs:
+  InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref EC2Instance
+  VolumeId:
+    Description: EBS Volume ID
+    Value: !Ref DataVolume
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

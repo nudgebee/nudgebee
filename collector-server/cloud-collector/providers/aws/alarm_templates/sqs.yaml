@@ -1,0 +1,40 @@
+# SQS CloudWatch Alarm Recommendations
+# Converted from IDR CLI alarm templates
+service_name: "sqs"
+
+templates:
+  - name: "aws_sqs_approximate_number_of_messages_visible_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Monitors the number of visible messages in the SQS queue that are awaiting processing"
+    configuration:
+      namespace: "AWS/SQS"
+      metric_name: "ApproximateNumberOfMessagesVisible"
+      statistic: "Average"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 1000.0
+
+  - name: "aws_sqs_approximate_age_of_oldest_message_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Measures the duration that the oldest message has been in the queue without being processed"
+    configuration:
+      namespace: "AWS/SQS"
+      metric_name: "ApproximateAgeOfOldestMessage"
+      statistic: "Maximum"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "breaching"
+    threshold_rules:
+      default: 900.0  # 15 minutes in seconds

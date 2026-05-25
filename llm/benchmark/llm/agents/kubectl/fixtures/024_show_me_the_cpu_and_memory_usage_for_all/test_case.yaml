@@ -1,0 +1,6 @@
+user_prompt: Show me the CPU and memory usage for all my nodes.
+expected_output:
+- kubectl top node
+tags:
+- command
+- kubernetes

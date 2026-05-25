@@ -1,0 +1,49 @@
+info:
+  title: Nudgebee GCP Cloud Monitoring Integration
+  author: Nudgebee
+  description: Creates Pub/Sub infrastructure for Cloud Monitoring alert integration
+  version: 1.0.0
+
+imports:
+  - path: nudgebee-gcp-template.jinja
+
+required:
+  - nudgebeeAccountToken
+  - nudgebeeProjectId
+  - topicName
+
+properties:
+  nudgebeeAccountToken:
+    type: string
+    description: Unique Nudgebee account token for secure event routing and account identification
+    pattern: ^[a-zA-Z0-9-_]+$
+
+  nudgebeeProjectId:
+    type: string
+    description: Nudgebee's GCP project ID where events are aggregated
+    default: nudgebee-prod
+    pattern: ^[a-z][-a-z0-9]{4,28}[a-z0-9]$
+
+  topicName:
+    type: string
+    description: Name of the Pub/Sub topic to create in customer's project
+    default: nudgebee-cloud-monitoring-alerts
+    pattern: ^[a-zA-Z][-_a-zA-Z0-9]{2,254}$
+
+  nudgebeeSubscriptionName:
+    type: string
+    description: Name of the subscription in Nudgebee's project (Nudgebee creates this)
+    default: nudgebee-customer-alerts
+    pattern: ^[a-zA-Z][-_a-zA-Z0-9]{2,254}$
+
+outputs:
+  properties:
+    topicName:
+      type: string
+      description: Full resource name of the created Pub/Sub topic
+    notificationChannelId:
+      type: string
+      description: Cloud Monitoring notification channel ID
+    notificationChannelName:
+      type: string
+      description: Cloud Monitoring notification channel display name

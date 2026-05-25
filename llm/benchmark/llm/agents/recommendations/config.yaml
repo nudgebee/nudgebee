@@ -1,0 +1,4 @@
+# Recommendations agent benchmark configuration
+agent: recommendations
+tool_names:
+  - recommendation_execute

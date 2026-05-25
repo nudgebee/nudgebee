@@ -1,0 +1,6 @@
+user_prompt: Delete an image from ECR.
+expected_output:
+- aws ecr batch-delete-image --repository-name <repository-name> --image-ids imageDigest=<image-digest>
+tags:
+- command
+- aws

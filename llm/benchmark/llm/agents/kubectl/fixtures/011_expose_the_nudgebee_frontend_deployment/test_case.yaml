@@ -1,0 +1,6 @@
+user_prompt: Expose the nudgebee-frontend deployment as a service.
+expected_output:
+- kubectl expose deployment <deployment-name> --type=NodePort --port=80
+tags:
+- command
+- kubernetes

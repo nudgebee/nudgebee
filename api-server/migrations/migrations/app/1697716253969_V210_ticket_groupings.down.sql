@@ -1,0 +1,117 @@
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- CREATE OR REPLACE FUNCTION public.ticket_groupings(group_by text[] DEFAULT '{}'::text[], "where" json DEFAULT NULL::json, hasura_session json DEFAULT '{}'::json)
+--  RETURNS SETOF ticket_groupings_type
+--  LANGUAGE sql STABLE
+-- AS $function$
+-- SELECT
+--      (CASE WHEN 'tenant_id' = ANY(group_by) THEN t.tenant ELSE null end ) AS tenant_id,
+--      (CASE WHEN 'config_name' = ANY(group_by) THEN jc.name ELSE NULL END) AS config_name,
+--      (CASE WHEN 'config_id' = ANY(group_by) THEN jc.id ELSE NULL END) AS config_id,
+--      (CASE WHEN 'ticket_type' = ANY(group_by) THEN t.ticket_type ELSE NULL END) AS ticket_type,
+--      (CASE WHEN 'reference_id' = ANY(group_by) THEN t.reference_id ELSE NULL END) AS reference_id,
+--      (CASE WHEN 'status' = ANY(group_by) THEN t.status ELSE NULL END) AS status,
+--      (CASE WHEN 'assignee' = ANY(group_by) THEN t.assignee ELSE NULL END) AS assignee,
+--      (CASE WHEN 'created_by' = ANY(group_by) THEN t.created_by ELSE NULL END) AS created_by,
+--      (CASE WHEN 'severity' = ANY(group_by) THEN t.severity ELSE NULL END) AS severity,
+--      (CASE WHEN 'created_at' = ANY(group_by) THEN t.created_at::date ELSE NULL END) AS created_at,
+--      COUNT(t.*) AS count
+-- FROM tickets t
+-- LEFT JOIN jira_configurations jc ON t.configuration_id = jc.id
+-- WHERE
+--     ("hasura_session" ->> 'x-hasura-user-tenant-id' IS NULL OR ( t.tenant = ("hasura_session" ->> 'x-hasura-user-tenant-id') :: uuid))
+--     AND ("where" #>> '{config_name,_eq}' IS null OR (jc.name = ("where" #>> '{config_name,_eq}')))
+--     AND ("where" #>> '{config_id,_eq}' IS null OR (jc.id = ("where" #>> '{config_id,_eq}')::uuid))
+--     AND ("where" #>> '{ticket_type,_eq}' IS null OR (t.ticket_type = ("where" #>> '{ticket_type,_eq}')))
+--     AND ("where" #>> '{reference_id,_eq}' IS null OR (t.reference_id = ("where" #>> '{reference_id,_eq}')::uuid))
+--     AND ("where" #>> '{status,_eq}' IS null OR (t.status = ("where" #>> '{status,_eq}')))
+--     AND ("where" #>> '{assignee,_eq}' IS null OR (t.assignee = ("where" #>> '{assignee,_eq}')))
+--     AND ("where" #>> '{created_by,_eq}' IS null OR (t.created_by = ("where" #>> '{created_by,_eq}')::uuid))
+--     AND ("where" #>> '{severity,_eq}' IS null OR (t.severity = ("where" #>> '{severity,_eq}')))
+--     AND ("where" #>> '{created_at,_eq}' IS null OR (t.created_at::date = ("where" #>> '{created_at,_eq}')::date))
+--     AND ("where" #>> '{created_at,_gt}' IS null OR (t.created_at::date > ("where" #>> '{created_at,_gt}')::date))
+--     AND ("where" #>> '{created_at,_lt}' IS null OR (t.created_at::date < ("where" #>> '{created_at,_lt}')::date))
+--     AND ("where" #>> '{created_at,_ge}' IS null OR (t.created_at::date >= ("where" #>> '{created_at,_ge}')::date))
+--     AND ("where" #>> '{created_at,_le}' IS null OR (t.created_at::date <= ("where" #>> '{created_at,_le}')::date))
+-- GROUP BY
+--     (CASE WHEN 'tenant_id' = ANY(group_by) THEN t.tenant END),
+--     (CASE WHEN 'config_name' = ANY(group_by) THEN jc.name END),
+--     (CASE WHEN 'config_id' = ANY(group_by) THEN jc.id END),
+--     (CASE WHEN 'ticket_type' = ANY(group_by) THEN t.ticket_type END),
+--     (CASE WHEN 'reference_id' = ANY(group_by) THEN t.reference_id END),
+--     (CASE WHEN 'status' = ANY(group_by) THEN t.status END),
+--     (CASE WHEN 'assignee' = ANY(group_by) THEN t.assignee END),
+--     (CASE WHEN 'created_by' = ANY(group_by) THEN t.created_by END),
+--     (CASE WHEN 'severity' = ANY(group_by) THEN t.severity END),
+--     (CASE WHEN 'created_at' = ANY(group_by) THEN t.created_at::date END)
+-- $function$;
+
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- CREATE OR REPLACE FUNCTION public.ticket_groupings(group_by text[] DEFAULT '{}'::text[], "where" json DEFAULT NULL::json, hasura_session json DEFAULT '{}'::json)
+--  RETURNS SETOF ticket_groupings_type
+--  LANGUAGE sql
+-- AS $function$
+-- SELECT
+--      (CASE WHEN 'tenant_id' = ANY(group_by) THEN t.tenant ELSE null end ) AS tenant_id,
+--      (CASE WHEN 'config_name' = ANY(group_by) THEN jc.name ELSE NULL END) AS config_name,
+--      (CASE WHEN 'config_id' = ANY(group_by) THEN jc.id ELSE NULL END) AS config_id,
+--      (CASE WHEN 'ticket_type' = ANY(group_by) THEN t.ticket_type ELSE NULL END) AS ticket_type,
+--      (CASE WHEN 'reference_id' = ANY(group_by) THEN t.reference_id ELSE NULL END) AS reference_id,
+--      (CASE WHEN 'status' = ANY(group_by) THEN t.status ELSE NULL END) AS status,
+--      (CASE WHEN 'assignee' = ANY(group_by) THEN t.assignee ELSE NULL END) AS assignee,
+--      (CASE WHEN 'created_by' = ANY(group_by) THEN t.created_by ELSE NULL END) AS created_by,
+--      (CASE WHEN 'severity' = ANY(group_by) THEN t.severity ELSE NULL END) AS severity,
+--      (CASE WHEN 'created_at' = ANY(group_by) THEN t.created_at::date ELSE NULL END) AS created_at,
+--      COUNT(t.*) AS count
+-- FROM tickets t
+-- LEFT JOIN jira_configurations jc ON t.configuration_id = jc.id
+-- WHERE
+--     ("hasura_session" ->> 'x-hasura-user-tenant-id' IS NULL OR ( t.tenant = ("hasura_session" ->> 'x-hasura-user-tenant-id') :: uuid))
+--     AND ("where" #>> '{config_name,_eq}' IS null OR (jc.name = ("where" #>> '{config_name,_eq}')))
+--     AND ("where" #>> '{config_id,_eq}' IS null OR (jc.id = ("where" #>> '{config_id,_eq}')::uuid))
+--     AND ("where" #>> '{ticket_type,_eq}' IS null OR (t.ticket_type = ("where" #>> '{ticket_type,_eq}')))
+--     AND ("where" #>> '{reference_id,_eq}' IS null OR (t.reference_id = ("where" #>> '{reference_id,_eq}')::uuid))
+--     AND ("where" #>> '{status,_eq}' IS null OR (t.status = ("where" #>> '{status,_eq}')))
+--     AND ("where" #>> '{assignee,_eq}' IS null OR (t.assignee = ("where" #>> '{assignee,_eq}')))
+--     AND ("where" #>> '{created_by,_eq}' IS null OR (t.created_by = ("where" #>> '{created_by,_eq}')::uuid))
+--     AND ("where" #>> '{severity,_eq}' IS null OR (t.severity = ("where" #>> '{severity,_eq}')))
+--     AND ("where" #>> '{created_at,_eq}' IS null OR (t.created_at::date = ("where" #>> '{created_at,_eq}')::date))
+--     AND ("where" #>> '{created_at,_gt}' IS null OR (t.created_at::date > ("where" #>> '{created_at,_gt}')::date))
+--     AND ("where" #>> '{created_at,_lt}' IS null OR (t.created_at::date < ("where" #>> '{created_at,_lt}')::date))
+--     AND ("where" #>> '{created_at,_ge}' IS null OR (t.created_at::date >= ("where" #>> '{created_at,_ge}')::date))
+--     AND ("where" #>> '{created_at,_le}' IS null OR (t.created_at::date <= ("where" #>> '{created_at,_le}')::date))
+-- GROUP BY
+--     (CASE WHEN 'tenant_id' = ANY(group_by) THEN t.tenant END),
+--     (CASE WHEN 'config_name' = ANY(group_by) THEN jc.name END),
+--     (CASE WHEN 'config_id' = ANY(group_by) THEN jc.id END),
+--     (CASE WHEN 'ticket_type' = ANY(group_by) THEN t.ticket_type END),
+--     (CASE WHEN 'reference_id' = ANY(group_by) THEN t.reference_id END),
+--     (CASE WHEN 'status' = ANY(group_by) THEN t.status END),
+--     (CASE WHEN 'assignee' = ANY(group_by) THEN t.assignee END),
+--     (CASE WHEN 'created_by' = ANY(group_by) THEN t.created_by END),
+--     (CASE WHEN 'severity' = ANY(group_by) THEN t.severity END),
+--     (CASE WHEN 'created_at' = ANY(group_by) THEN t.created_at::date END)
+-- $function$;
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- CREATE OR REPLACE VIEW "public"."ticket_groupings_type" AS
+-- SELECT
+-- 	t.tenant AS tenant_id,
+-- 	jc.name AS config_name,
+-- 	jc.id AS config_id,
+-- 	t.ticket_type AS ticket_type,
+-- 	t.reference_id AS reference_id,
+-- 	t.status AS status,
+-- 	t.assignee AS assignee,
+-- 	t.created_by as created_by,
+-- 	t.severity AS severity,
+-- 	t.created_at::date AS created_at,
+-- 	count(*) AS count
+-- FROM tickets t
+-- LEFT JOIN jira_configurations jc ON t.configuration_id = jc.id
+-- WHERE false
+-- GROUP BY t.tenant, jc.name, jc.id, t.ticket_type, t.reference_id, t.status, t.assignee, t.created_by, t.severity, t.created_at::date;

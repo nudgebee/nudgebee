@@ -1,0 +1,7 @@
+user_prompt: What is the average time to close 'Security' recommendations?
+expected_output:
+- SELECT AVG(updated_at - created_at) AS avg_resolution_time FROM recommendation_view
+  WHERE category = 'Security' AND status = 'Closed';
+tags:
+- command
+- recommendations

@@ -1,0 +1,86 @@
+imports: []
+
+properties:
+  nudgebeeAccountToken:
+    type: string
+    description: Nudgebee external ID token for account identification
+
+resources:
+# 1. Create Pub/Sub topic for cloud events in customer project
+- name: nudgebee-cloud-events-topic
+  type: gcp-types/pubsub-v1:projects.topics
+  properties:
+    topic: projects/$(ref.$.project)/topics/nudgebee-cloud-events
+
+# 2. Create Pull subscription for Nudgebee collector to consume
+- name: nudgebee-cloud-events-subscription
+  type: gcp-types/pubsub-v1:projects.subscriptions
+  properties:
+    subscription: projects/$(ref.$.project)/subscriptions/nudgebee-cloud-events-sub
+    topic: $(ref.nudgebee-cloud-events-topic.name)
+    ackDeadlineSeconds: 600
+    retryPolicy:
+      minimumBackoff: 10s
+      maximumBackoff: 600s
+    expirationPolicy:
+      ttl: 2592000s
+
+# 3. Create Cloud Logging sink for audit logs
+- name: nudgebee-audit-log-sink
+  type: logging.v2.sink
+  properties:
+    sink: nudgebee-audit-logs
+    destination: pubsub.googleapis.com/$(ref.nudgebee-cloud-events-topic.name)
+    filter: |
+      (resource.type="gce_instance" OR resource.type="gce_disk" OR resource.type="gke_cluster"
+      OR resource.type="cloud_sql_database" OR resource.type="storage_bucket"
+      OR resource.type="bigquery_dataset" OR resource.type="cloud_function"
+      OR resource.type="cloud_run_revision")
+      AND (protoPayload.methodName:"compute.instances.insert"
+      OR protoPayload.methodName:"compute.instances.delete"
+      OR protoPayload.methodName:"compute.disks.insert"
+      OR protoPayload.methodName:"compute.disks.delete"
+      OR protoPayload.methodName:"container.clusters.create"
+      OR protoPayload.methodName:"container.clusters.delete"
+      OR protoPayload.methodName:"storage.buckets.create"
+      OR protoPayload.methodName:"storage.buckets.delete")
+    includeChildren: false
+
+# 4. Create service account for Nudgebee collector to pull events
+- name: nudgebee-collector-service-account
+  type: iam.v1.serviceAccount
+  properties:
+    accountId: nudgebee-collector
+    displayName: Nudgebee Collector Service Account
+    description: Service account used by Nudgebee to pull Pub/Sub events
+    projectId: $(ref.$.project)
+
+# 5. Grant Pub/Sub subscriber role to Nudgebee collector service account
+- name: subscription-subscriber-iam-binding
+  type: gcp-types/pubsub-v1:virtual.projects.subscriptions.iamMemberBinding
+  properties:
+    resource: $(ref.nudgebee-cloud-events-subscription.name)
+    role: roles/pubsub.subscriber
+    member: serviceAccount:$(ref.nudgebee-collector-service-account.email)
+
+# 6. Grant Pub/Sub publisher role to Cloud Logging on the topic
+- name: topic-publisher-iam-binding
+  type: gcp-types/pubsub-v1:virtual.projects.topics.iamMemberBinding
+  properties:
+    resource: $(ref.nudgebee-cloud-events-topic.name)
+    role: roles/pubsub.publisher
+    member: serviceAccount:cloud-logs@system.gserviceaccount.com
+
+outputs:
+- name: projectId
+  value: $(ref.$.project)
+- name: topicName
+  value: $(ref.nudgebee-cloud-events-topic.name)
+- name: subscriptionName
+  value: $(ref.nudgebee-cloud-events-subscription.name)
+- name: serviceAccountEmail
+  value: $(ref.nudgebee-collector-service-account.email)
+- name: nudgebeeAccountToken
+  value: $(properties.nudgebeeAccountToken)
+- name: subscriptionPath
+  value: projects/$(ref.$.project)/subscriptions/nudgebee-cloud-events-sub

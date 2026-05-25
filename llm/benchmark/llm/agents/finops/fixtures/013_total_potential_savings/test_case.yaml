@@ -1,0 +1,15 @@
+user_prompt: "What is the total potential monthly savings across all open recommendations?"
+expected_output:
+  - |
+    The agent should call recommendations and sum estimated_saving for items
+    with status='Open' only — Archive/Closed recommendations are excluded
+    because they were already handled. The response must contain a single
+    headline dollar figure for total potential monthly savings, optionally
+    broken down by category. If the total exceeds current monthly cloud
+    spend, the agent must flag this as suspicious and verify the numbers.
+    Cite [recommendations].
+tags:
+  - optimization
+  - savings
+  - easy
+  - finops

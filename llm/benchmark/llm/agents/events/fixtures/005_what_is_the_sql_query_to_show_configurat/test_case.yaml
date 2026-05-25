@@ -1,0 +1,9 @@
+user_prompt: What is the SQL query to show configuration changes related to 'deployments'?
+expected_output:
+- SELECT id, title, starts_at, subject_name, subject_namespace   FROM events   WHERE
+  finding_type = 'configuration_change'     AND subject_type = 'deployment';
+- SELECT * FROM events   WHERE finding_type = 'configuration_change'     AND subject_type
+  = 'deployment';
+tags:
+- command
+- events

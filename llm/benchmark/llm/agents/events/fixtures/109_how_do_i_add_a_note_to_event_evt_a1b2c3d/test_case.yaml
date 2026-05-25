@@ -1,0 +1,8 @@
+user_prompt: How do I add a note to event 'evt-a1b2c3d4' saying 'Investigated by ops
+  team'?
+expected_output:
+- UPDATE events SET description = CONCAT(description, ' - Investigated by ops team')
+  WHERE id = 'evt-a1b2c3d4';
+tags:
+- command
+- events

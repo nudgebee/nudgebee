@@ -1,0 +1,8 @@
+user_prompt: Find 'Security' recommendations with rule name 'image_scan' that are
+  not 'Closed'.
+expected_output:
+- SELECT namespace, name, severity, status from recommendation_view WHERE category
+  = 'Security' AND rule_name = 'image_scan' AND status != 'Closed';
+tags:
+- command
+- recommendations

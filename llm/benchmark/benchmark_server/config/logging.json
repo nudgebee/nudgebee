@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "disable_existing_loggers": false,
+  "filters": {
+    "no_access_logs": {
+      "()": "benchmark_server.config._UvicornAccessFilter"
+    }
+  },
+  "formatters": {
+    "json_formatter": {
+      "format": "%(asctime)s %(levelname)s %(filename)s %(lineno)d %(message)s",
+      "class": "benchmark_server.config.CleanJsonFormatter"
+    }
+  },
+  "handlers": {
+    "console": {
+      "class": "logging.StreamHandler",
+      "level": "INFO",
+      "formatter": "json_formatter",
+      "filters": ["no_access_logs"],
+      "stream": "ext://sys.stdout"
+    }
+  },
+  "loggers": {
+    "": {
+      "handlers": ["console"],
+      "level": "INFO",
+      "propagate": true
+    },
+    "uvicorn": {
+      "handlers": ["console"],
+      "level": "INFO",
+      "propagate": false
+    },
+    "uvicorn.error": {
+      "handlers": ["console"],
+      "level": "INFO",
+      "propagate": false
+    },
+    "uvicorn.access": {
+      "handlers": ["console"],
+      "level": "WARNING",
+      "propagate": false
+    }
+  }
+}

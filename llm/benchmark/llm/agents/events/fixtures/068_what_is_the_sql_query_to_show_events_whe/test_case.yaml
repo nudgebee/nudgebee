@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to show events where S3 bucket policies were modified?
+expected_output:
+- SELECT id, title, starts_at, priority, subject_name, description, source   FROM
+  events   WHERE aggregation_key = 'PutBucketPolicy';
+- SELECT * FROM events   WHERE aggregation_key = 'PutBucketPolicy';
+tags:
+- command
+- events

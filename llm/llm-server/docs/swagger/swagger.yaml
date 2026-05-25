@@ -1,0 +1,39 @@
+basePath: /
+definitions:
+  api.HealthResponse:
+    properties:
+      status:
+        example: ok
+        type: string
+    type: object
+info:
+  contact: {}
+  description: 'LLM orchestration service — manages conversations, agents, tools,
+    RAG, knowledgebases, memory, and workspace operations for Nudgebee. Docs are auto-merged:
+    handlers with godoc annotations get rich entries; everything else is stubbed from
+    the gin route table.'
+  title: Nudgebee LLM Server API
+  version: "1.0"
+paths:
+  /health:
+    get:
+      description: Returns 200 OK when the llm-server process is up. Does not verify
+        Postgres/RabbitMQ/LLM provider.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.HealthResponse'
+      summary: Liveness probe
+      tags:
+      - system
+securityDefinitions:
+  ActionToken:
+    description: Internal service-to-service auth token. Default header name (configurable
+      via `llm_server_token_header`); value is the `llm_server_token` config value.
+    in: header
+    name: X-ACTION-TOKEN
+    type: apiKey
+swagger: "2.0"

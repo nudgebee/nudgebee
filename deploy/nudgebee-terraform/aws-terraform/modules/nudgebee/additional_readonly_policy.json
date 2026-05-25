@@ -1,0 +1,22 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "a4b:List*",
+        "acm:List*",
+        "acm:Describe*",
+        "cloudwatch:Get*",
+        "cloudwatch:Describe*",
+        "ec2:Describe*",
+        "s3:List*",
+        "s3:Get*",
+        "lambda:List*",
+        "eks:Describe*",
+        "rds:Describe*"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

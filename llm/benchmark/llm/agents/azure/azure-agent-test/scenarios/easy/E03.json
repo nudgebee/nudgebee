@@ -1,0 +1,81 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "E03: Azure SQL Server missing firewall rule. User complaint: Application cannot connect to SQL database, getting connection timeout. Root cause: SQL Server has no firewall rule allowing inbound connections. NOTE: Deploy to eastus2 - SQL provisioning restricted in eastus."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    },
+    "sqlAdminPassword": {
+      "type": "securestring",
+      "defaultValue": "E03Bench@2024!"
+    }
+  },
+  "variables": {
+    "sqlServerName": "[concat('e03sql', substring(uniqueString(resourceGroup().id), 0, 8))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Sql/servers",
+      "apiVersion": "2022-05-01-preview",
+      "name": "[variables('sqlServerName')]",
+      "location": "[resourceGroup().location]",
+      "tags": {
+        "Environment": "production",
+        "Team": "data",
+        "Scenario": "E03",
+        "ScenarioMode": "[parameters('scenarioMode')]"
+      },
+      "properties": {
+        "administratorLogin": "sqladmin",
+        "administratorLoginPassword": "[parameters('sqlAdminPassword')]",
+        "version": "12.0",
+        "minimalTlsVersion": "1.2"
+      }
+    },
+    {
+      "type": "Microsoft.Sql/servers/databases",
+      "apiVersion": "2022-05-01-preview",
+      "name": "[concat(variables('sqlServerName'), '/e03-app-database')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ],
+      "sku": { "name": "Basic", "tier": "Basic" },
+      "properties": {
+        "collation": "SQL_Latin1_General_CP1_CI_AS",
+        "maxSizeBytes": 2147483648
+      }
+    },
+    {
+      "condition": "[equals(parameters('scenarioMode'), 'Fixed')]",
+      "type": "Microsoft.Sql/servers/firewallRules",
+      "apiVersion": "2022-05-01-preview",
+      "name": "[concat(variables('sqlServerName'), '/allow-all-ips')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ],
+      "properties": {
+        "startIpAddress": "0.0.0.0",
+        "endIpAddress": "255.255.255.255"
+      }
+    }
+  ],
+  "outputs": {
+    "SqlServerName": { "type": "string", "value": "[variables('sqlServerName')]" },
+    "SqlServerFqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Sql/servers', variables('sqlServerName'))).fullyQualifiedDomainName]"
+    },
+    "BugNote": { "type": "string", "value": "SQL Server has no firewall rule - all connection attempts blocked by Azure firewall" },
+    "ScenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

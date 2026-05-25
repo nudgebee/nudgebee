@@ -1,0 +1,95 @@
+{
+  "data": {
+    "data": {
+      "recommendation_groupings_v2": {
+        "rows": [
+          {
+            "category": "RightSizing",
+            "count": 12,
+            "rule_name": "pv_rightsize"
+          },
+          {
+            "category": "Configuration",
+            "count": 1,
+            "rule_name": "serviceaccounts_misconfigurations"
+          },
+          {
+            "category": "Configuration",
+            "count": 1,
+            "rule_name": "services_misconfigurations"
+          },
+          {
+            "category": "Configuration",
+            "count": 1,
+            "rule_name": "clusterroles_misconfigurations"
+          },
+          {
+            "category": "InfraUpgrade",
+            "count": 15,
+            "rule_name": "helm_chart_upgrade"
+          },
+          {
+            "category": "Configuration",
+            "count": 1,
+            "rule_name": "namespaces_misconfigurations"
+          },
+          {
+            "category": "K8sSpotRecommendation",
+            "count": 107,
+            "rule_name": "Spot instance recommendation"
+          },
+          {
+            "category": "RightSizing",
+            "count": 3,
+            "rule_name": "replica_right_sizing"
+          },
+          {
+            "category": "RightSizing",
+            "count": 65,
+            "rule_name": "pod_right_sizing"
+          },
+          {
+            "category": "Configuration",
+            "count": 11,
+            "rule_name": "certificate_expiry"
+          },
+          {
+            "category": "Configuration",
+            "count": 1,
+            "rule_name": "configmaps_misconfigurations"
+          },
+          {
+            "category": "InfraUpgrade",
+            "count": 30,
+            "rule_name": "k8s_api_deprecated"
+          },
+          {
+            "category": "Security",
+            "count": 1645,
+            "rule_name": "image_scan"
+          },
+          {
+            "category": "Configuration",
+            "count": 88,
+            "rule_name": "misconfigurations"
+          },
+          {
+            "category": "Security",
+            "count": 351,
+            "rule_name": "k8s-cis-1.23"
+          },
+          {
+            "category": "RightSizing",
+            "count": 3,
+            "rule_name": "unused_pvc"
+          },
+          {
+            "category": "InfraUpgrade",
+            "count": 7,
+            "rule_name": "k8s_helm_compatibility"
+          }
+        ]
+      }
+    }
+  }
+}

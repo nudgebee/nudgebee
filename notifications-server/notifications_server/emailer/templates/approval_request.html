@@ -1,0 +1,124 @@
+{% extends "_base.html" %}
+
+{% block title %}Action required — {{ _brand_name }}{% endblock %}
+
+{% block content %}
+  <!-- TITLE -->
+  <h1 class="subject-h" style="margin:0 0 20px; font-family:'DM Serif Display',Georgia,serif; font-size:30px; line-height:1.25; font-weight:400; color:#1a1a1a; letter-spacing:-0.3px;">
+    Action required
+  </h1>
+
+  <!-- INTRO -->
+  <p style="margin:0 0 20px; font-family:'DM Sans',Arial,sans-serif; font-size:15px; line-height:1.65; color:#333333;">
+    Hi,
+  </p>
+  <p style="margin:0 0 24px; font-family:'DM Sans',Arial,sans-serif; font-size:15px; line-height:1.65; color:#333333;">
+    {% if workflow_name %}
+      The automation <strong style="color:#1a1a1a;">&ldquo;{{ workflow_name }}&rdquo;</strong> is paused and needs your decision before it can continue.
+    {% else %}
+      An automation is paused and needs your decision before it can continue.
+    {% endif %}
+  </p>
+
+  <!-- MESSAGE QUOTE BLOCK -->
+  {% if message %}
+  <table style="border-collapse:collapse; border-spacing:0; border:0; width:100%; margin:0 0 28px;">
+    <tr style="height:0; font-size:0; line-height:0;"><th style="padding:0; height:0; font-size:0; line-height:0; overflow:hidden;" scope="col">&nbsp;</th></tr>
+    <tr>
+      <td style="padding:16px 20px; background-color:#FFFBEA; border-left:3px solid {{ _primary_color }}; border-radius:2px;">
+        <p style="margin:0 0 6px; font-family:'DM Sans',Arial,sans-serif; font-size:12px; font-weight:500; letter-spacing:0.3px; color:#8a6d00; text-transform:uppercase;">
+          Message from the automation
+        </p>
+        <p style="margin:0; font-family:'DM Sans',Arial,sans-serif; font-size:14.5px; line-height:1.6; color:#333333;">
+          {{ message }}
+        </p>
+      </td>
+    </tr>
+  </table>
+  {% endif %}
+
+  <!-- CONTEXT META TABLE -->
+  {% if run_id or triggered_at or requested_by %}
+  <table style="border-collapse:collapse; border-spacing:0; border:0; width:100%; margin:0 0 32px; font-family:'DM Sans',Arial,sans-serif; font-size:13.5px; color:#333333;">
+    <tr style="height:0; font-size:0; line-height:0;">
+      <th style="padding:0; height:0; font-size:0; line-height:0; overflow:hidden;" scope="col">&nbsp;</th>
+      <th style="padding:0; height:0; font-size:0; line-height:0; overflow:hidden;" scope="col">&nbsp;</th>
+    </tr>
+    {% if run_id %}
+    <tr>
+      <td style="padding:6px 12px 6px 0; color:#777777; width:120px; vertical-align:top;">Run ID</td>
+      <td style="padding:6px 0; font-family:'Menlo','Monaco',monospace; font-size:12.5px; color:#1a1a1a;">{{ run_id }}</td>
+    </tr>
+    {% endif %}
+    {% if triggered_at %}
+    <tr>
+      <td style="padding:6px 12px 6px 0; color:#777777; vertical-align:top;">Triggered</td>
+      <td style="padding:6px 0; color:#1a1a1a;">{{ triggered_at }}</td>
+    </tr>
+    {% endif %}
+    {% if requested_by %}
+    <tr>
+      <td style="padding:6px 12px 6px 0; color:#777777; vertical-align:top;">Requested by</td>
+      <td style="padding:6px 0; color:#1a1a1a;">{{ requested_by }}</td>
+    </tr>
+    {% endif %}
+  </table>
+  {% endif %}
+
+  <!-- CTA BUTTONS — one per approval option; first is primary -->
+  <table class="cta-row" style="border-collapse:separate; border-spacing:0; border:0; margin:0 0 24px;">
+    <tr style="height:0; font-size:0; line-height:0;">
+      {% for action in actions %}
+        <th style="padding:0; height:0; font-size:0; line-height:0; overflow:hidden;" scope="col">&nbsp;</th>
+      {% endfor %}
+    </tr>
+    <tr>
+      {% for action in actions %}
+        <td style="padding-right:10px;">
+          {% if action.primary %}
+            <a href="{{ action.url }}" target="_blank" rel="noopener noreferrer"
+              style="display:inline-block; padding:13px 24px; background-color:{{ _primary_color }}; color:#1a1a1a; font-family:'DM Sans',Arial,sans-serif; font-size:14.5px; font-weight:600; text-decoration:none; border-radius:4px; border:1px solid #e8bd1f;">
+              {{ action.label }}
+            </a>
+          {% else %}
+            <a href="{{ action.url }}" target="_blank" rel="noopener noreferrer"
+              style="display:inline-block; padding:13px 24px; background-color:#FFFFFF; color:#555555; font-family:'DM Sans',Arial,sans-serif; font-size:14.5px; font-weight:600; text-decoration:none; border-radius:4px; border:1px solid #d0d0d0;">
+              {{ action.label }}
+            </a>
+          {% endif %}
+        </td>
+      {% endfor %}
+    </tr>
+  </table>
+
+  <!-- FINE PRINT -->
+  <p style="margin:0 0 10px; font-family:'DM Sans',Arial,sans-serif; font-size:12.5px; line-height:1.65; color:#777777;">
+    Clicking a button records your decision immediately.
+    {% if recipient_email %}
+      This link is unique to <span style="color:#333333;">{{ recipient_email }}</span> and can only be used once.
+    {% else %}
+      This link can only be used once.
+    {% endif %}
+  </p>
+  <p style="margin:0 0 28px; font-family:'DM Sans',Arial,sans-serif; font-size:12.5px; line-height:1.65; color:#777777;">
+    Not expecting this? You can safely ignore this email &mdash; the automation will time out on its own.
+  </p>
+{% endblock %}
+
+{% block card_footer %}
+  <div style="border-top:1px solid #F0F0F0; margin-top:22px; padding-top:18px;">
+    <p style="margin:0 0 4px; font-family:'DM Sans',Arial,sans-serif; font-size:13.5px; color:#333333;">
+      &mdash; The {{ _brand_name }} team
+    </p>
+    <p style="margin:0; font-family:'DM Sans',Arial,sans-serif; font-size:12.5px; color:#888888;">
+      Questions? <a href="mailto:{{ _support_email }}" style="color:#888888;">{{ _support_email }}</a>
+    </p>
+  </div>
+{% endblock %}
+
+{% block extra_styles %}
+  @media only screen and (max-width:600px) {
+    .cta-row td { display:block !important; width:100% !important; padding:6px 0 !important; }
+    .cta-row td a { display:block !important; width:100% !important; box-sizing:border-box; text-align:center; }
+  }
+{% endblock %}

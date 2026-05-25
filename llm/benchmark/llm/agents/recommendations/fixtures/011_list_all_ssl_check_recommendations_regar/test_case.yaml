@@ -1,0 +1,9 @@
+user_prompt: List all SSL Check recommendations, regardless of status, ordered by
+  severity.
+expected_output:
+- SELECT namespace, name, recommendation, severity, status from recommendation_view
+  WHERE category = 'SSLCheck' ORDER BY CASE severity WHEN 'Critical' THEN 1 WHEN 'High'
+  THEN 2 WHEN 'Medium' THEN 3 WHEN 'Low' THEN 4 WHEN 'Info' THEN 5 ELSE 6 END;
+tags:
+- command
+- recommendations

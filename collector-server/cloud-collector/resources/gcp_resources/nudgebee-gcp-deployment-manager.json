@@ -1,0 +1,90 @@
+{
+    "resources": [
+        {
+            "name": "nudgebee-storage-bucket",
+            "type": "gcp-types/storage-v1:buckets",
+            "properties": {
+                "name": "$(ref.BucketName)",
+                "location": "US",
+                "storageClass": "STANDARD",
+                "iamConfiguration": {
+                    "uniformBucketLevelAccess": {
+                        "enabled": true
+                    }
+                }
+            }
+        },
+        {
+            "name": "nudgebee-service-account",
+            "type": "gcp-types/iam-v1:projects.serviceAccounts",
+            "properties": {
+                "accountId": "nudgebee-sa-$(ref.NudgebeeID)",
+                "displayName": "Nudgebee Integration Service Account"
+            }
+        },
+        {
+            "name": "assign-iam-role",
+            "type": "gcp-types/cloudresourcemanager-v1:virtual.projects.iamMemberBinding",
+            "properties": {
+                "resource": "$(project.id)",
+                "role": "$(ref.NudgebeeIamRole)",
+                "member": "serviceAccount:$(ref.nudgebee-service-account.email)"
+            }
+        },
+        {
+            "name": "bucket-access-binding",
+            "type": "gcp-types/storage-v1:virtual.buckets.iamMemberBinding",
+            "properties": {
+                "bucket": "$(ref.BucketName)",
+                "role": "roles/storage.objectAdmin",
+                "member": "serviceAccount:$(ref.nudgebee-service-account.email)"
+            }
+        }
+    ],
+    "outputs": [
+        {
+            "name": "bucketName",
+            "value": "$(ref.BucketName)"
+        },
+        {
+            "name": "serviceAccountEmail",
+            "value": "$(ref.nudgebee-service-account.email)"
+        },
+        {
+            "name": "nudgebeeDomain",
+            "value": "$(ref.NudgebeeDomain)"
+        }
+    ],
+    "parameters": [
+        {
+            "name": "NudgebeeID",
+            "type": "string",
+            "description": "Unique tenant or instance ID for Nudgebee."
+        },
+        {
+            "name": "NudgebeeDomain",
+            "type": "string",
+            "description": "Base URL for the Nudgebee platform."
+        },
+        {
+            "name": "NudgebeeIamRole",
+            "type": "string",
+            "description": "IAM role to assign to the Nudgebee integration."
+        },
+        {
+            "name": "BucketName",
+            "type": "string",
+            "description": "Name for the GCP storage bucket."
+        },
+        {
+            "name": "NudgebeeUserId",
+            "type": "string",
+            "description": "Internal Nudgebee user ID who initiated onboarding."
+        },
+        {
+            "name": "NudgebeeAccountName",
+            "type": "string",
+            "description": "Account name used during onboarding."
+        }
+    ]
+}

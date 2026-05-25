@@ -1,0 +1,4441 @@
+{
+  "PodErrors": {
+    "pod_oom_killer_enricher": {
+      "list_k8_issues_data": {
+        "data": {
+          "events_aggregate": {
+            "aggregate": {
+              "count": 10
+            }
+          },
+          "events": [
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "oom-kill-cronjob-28515000-6q9lg",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-20T03:07:45.491688",
+              "title": "Pod oom-kill-cronjob-28515000-6q9lg in namespace nudgebee OOMKilled results",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "FIRING",
+              "aggregation_key": "pod_oom_killer_enricher",
+              "priority": "HIGH",
+              "id": "52c4e53d-47d2-4e76-8a05-dfa8c83447c1",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "oom-kill-cronjob-28515060-vbfhp",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-20T03:07:42.682418",
+              "title": "Pod oom-kill-cronjob-28515060-vbfhp in namespace nudgebee OOMKilled results",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "FIRING",
+              "aggregation_key": "pod_oom_killer_enricher",
+              "priority": "HIGH",
+              "id": "d2cc87c3-e8e7-468e-a726-e7ebb5743613",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "oom-kill-cronjob-28514940-pqzp4",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-20T02:07:46.685799",
+              "title": "Pod oom-kill-cronjob-28514940-pqzp4 in namespace nudgebee OOMKilled results",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "pod_oom_killer_enricher",
+              "priority": "HIGH",
+              "id": "5d4d9155-13ef-4b50-a890-4b0aaf780e81",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "oom-kill-cronjob-28515000-6q9lg",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-20T02:07:43.082443",
+              "title": "Pod oom-kill-cronjob-28515000-6q9lg in namespace nudgebee OOMKilled results",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "pod_oom_killer_enricher",
+              "priority": "HIGH",
+              "id": "54935ea7-2b5a-49df-abe2-f97b57820bd7",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "oom-kill-cronjob-28514880-9zwkt",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-20T01:07:47.180581",
+              "title": "Pod oom-kill-cronjob-28514880-9zwkt in namespace nudgebee OOMKilled results",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "pod_oom_killer_enricher",
+              "priority": "HIGH",
+              "id": "2924b346-331d-44f2-ada3-f251653c7ba9",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "oom-kill-cronjob-28514940-pqzp4",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-20T01:07:43.779589",
+              "title": "Pod oom-kill-cronjob-28514940-pqzp4 in namespace nudgebee OOMKilled results",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "pod_oom_killer_enricher",
+              "priority": "HIGH",
+              "id": "fccac874-fdf6-42fa-8ba7-56b58b429d10",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "oom-kill-cronjob-28514820-58cl2",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-20T00:07:47.286339",
+              "title": "Pod oom-kill-cronjob-28514820-58cl2 in namespace nudgebee OOMKilled results",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "pod_oom_killer_enricher",
+              "priority": "HIGH",
+              "id": "d972739b-93f5-472c-a834-94f9c16e1a82",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "oom-kill-cronjob-28514880-9zwkt",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-20T00:07:45.333736",
+              "title": "Pod oom-kill-cronjob-28514880-9zwkt in namespace nudgebee OOMKilled results",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "pod_oom_killer_enricher",
+              "priority": "HIGH",
+              "id": "c27c25c1-6c40-493f-b891-fbfca5a3c7dd",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "oom-kill-cronjob-28514760-2n2tf",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-19T23:07:47.582705",
+              "title": "Pod oom-kill-cronjob-28514760-2n2tf in namespace nudgebee OOMKilled results",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "pod_oom_killer_enricher",
+              "priority": "HIGH",
+              "id": "0488c902-4c2f-454d-84e2-1e38081af1d0",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "oom-kill-cronjob-28514820-58cl2",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-19T23:07:44.929188",
+              "title": "Pod oom-kill-cronjob-28514820-58cl2 in namespace nudgebee OOMKilled results",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "pod_oom_killer_enricher",
+              "priority": "HIGH",
+              "id": "57d2cc58-01d0-4bed-baf6-f0494a295c39",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            }
+          ]
+        }
+      },
+      "k8s_event_groupings": {
+        "data": {
+          "event_groupings": [
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-19T00:00:00",
+              "event_count": 1
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-20T00:00:00",
+              "event_count": 2
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-21T00:00:00",
+              "event_count": 1
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-23T00:00:00",
+              "event_count": 1
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-24T00:00:00",
+              "event_count": 1
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-25T00:00:00",
+              "event_count": 5
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-26T00:00:00",
+              "event_count": 4
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-28T00:00:00",
+              "event_count": 1
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-29T00:00:00",
+              "event_count": 1
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-01T00:00:00",
+              "event_count": 7
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-03T00:00:00",
+              "event_count": 15
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-04T00:00:00",
+              "event_count": 5
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-05T00:00:00",
+              "event_count": 5
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-06T00:00:00",
+              "event_count": 3
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-09T00:00:00",
+              "event_count": 4
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-13T00:00:00",
+              "event_count": 1
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-14T00:00:00",
+              "event_count": 1
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-15T00:00:00",
+              "event_count": 5
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-16T00:00:00",
+              "event_count": 3
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-18T00:00:00",
+              "event_count": 4
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-19T00:00:00",
+              "event_count": 17
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-20T00:00:00",
+              "event_count": 8
+            }
+          ]
+        }
+      }
+    },
+    "image_pull_backoff_reporter": {
+      "list_k8_issues_data": {
+        "data": {
+          "events_aggregate": {
+            "aggregate": {
+              "count": 10
+            }
+          },
+          "events": [
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "krr-job30b6d117-ccc3-43ec-ac7e-918ce59f543f-1710849299-01324zcb",
+              "subject_namespace": "testenv52",
+              "starts_at": "2024-03-19T11:58:28.288491",
+              "title": "Failed to pull at least one image in pod krr-job30b6d117-ccc3-43ec-ac7e-918ce59f543f-1710849299-01324zcb in namespace testenv52",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "image_pull_backoff_reporter",
+              "priority": "HIGH",
+              "id": "ffbe4b92-81a6-41c7-a792-6cd32e2dbea9",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "nudgebee-agent-runner-7fc978c9cf-psw5l",
+              "subject_namespace": "nudgebee-agent",
+              "starts_at": "2024-03-19T06:10:24.352148",
+              "title": "Failed to pull at least one image in pod nudgebee-agent-runner-7fc978c9cf-psw5l in namespace nudgebee-agent",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "image_pull_backoff_reporter",
+              "priority": "HIGH",
+              "id": "7de35852-6194-4918-ab3c-52fd7b36abe8",
+              "cloud_resource_id": "25cf93b0-bbfa-53f7-a1e5-3d714a212bcc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "popeye-job-1710766147-5059352-pgl58",
+              "subject_namespace": "testenv52",
+              "starts_at": "2024-03-18T12:52:23.290116",
+              "title": "Failed to pull at least one image in pod popeye-job-1710766147-5059352-pgl58 in namespace testenv52",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "image_pull_backoff_reporter",
+              "priority": "HIGH",
+              "id": "27cc2e42-5ade-4b9e-a151-5cc11145f116",
+              "cloud_resource_id": "f39780ab-7550-589b-9f41-f88f0d423f9b",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "popeye-job-1710762899-00135-8246q",
+              "subject_namespace": "nudgebee-agent",
+              "starts_at": "2024-03-18T11:58:17.726758",
+              "title": "Failed to pull at least one image in pod popeye-job-1710762899-00135-8246q in namespace nudgebee-agent",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "image_pull_backoff_reporter",
+              "priority": "HIGH",
+              "id": "1405ca29-ec4e-4ca8-aaf1-1d31adf4181e",
+              "cloud_resource_id": "d2b83c1e-9c43-5cf1-909a-a34aa7e074a6",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "popeye-job-1710758024-618308-rqdbp",
+              "subject_namespace": "nudgebee-agent",
+              "starts_at": "2024-03-18T10:35:46.587332",
+              "title": "Failed to pull at least one image in pod popeye-job-1710758024-618308-rqdbp in namespace nudgebee-agent",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "image_pull_backoff_reporter",
+              "priority": "HIGH",
+              "id": "da9bd071-23db-4e5f-86b1-7d9c99010e86",
+              "cloud_resource_id": "9b754637-a954-57d0-906d-c1abe3f90b30",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "nudgebee-agent-runner-6cd9fb5d4b-62r8d",
+              "subject_namespace": "nudgebee-agent",
+              "starts_at": "2024-03-15T10:02:47.993862",
+              "title": "Failed to pull at least one image in pod nudgebee-agent-runner-6cd9fb5d4b-62r8d in namespace nudgebee-agent",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "image_pull_backoff_reporter",
+              "priority": "HIGH",
+              "id": "31307bfd-b9cd-4da2-95f5-42644db8c6cf",
+              "cloud_resource_id": "25cf93b0-bbfa-53f7-a1e5-3d714a212bcc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "nudgebee-agent-runner-5d9678475c-dfgsv",
+              "subject_namespace": "nudgebee-agent",
+              "starts_at": "2024-03-15T09:58:03.899322",
+              "title": "Failed to pull at least one image in pod nudgebee-agent-runner-5d9678475c-dfgsv in namespace nudgebee-agent",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "image_pull_backoff_reporter",
+              "priority": "HIGH",
+              "id": "c17bbb31-2103-412d-a894-6e288b51a00f",
+              "cloud_resource_id": "25cf93b0-bbfa-53f7-a1e5-3d714a212bcc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "nudgebee-agent-sj2bv",
+              "subject_namespace": "nudgebee-agent",
+              "starts_at": "2024-03-15T09:56:25.579053",
+              "title": "Failed to pull at least one image in pod nudgebee-agent-sj2bv in namespace nudgebee-agent",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "image_pull_backoff_reporter",
+              "priority": "HIGH",
+              "id": "1f618c62-da99-42bb-a58d-4f4035ed5e6e",
+              "cloud_resource_id": "25cf93b0-bbfa-53f7-a1e5-3d714a212bcc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "popeye-job-1710486409-401414-dkk55",
+              "subject_namespace": "nudgebee-agent",
+              "starts_at": "2024-03-15T07:10:13.450742",
+              "title": "Failed to pull at least one image in pod popeye-job-1710486409-401414-dkk55 in namespace nudgebee-agent",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "image_pull_backoff_reporter",
+              "priority": "HIGH",
+              "id": "337c3614-d6cd-48c5-bba4-41c5c76023c5",
+              "cloud_resource_id": "36a9808c-09c1-5b8a-8bf1-d2ba88bd3a27",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "popeye-job-1710483905-324343-wrxd6",
+              "subject_namespace": "nudgebee-agent",
+              "starts_at": "2024-03-15T06:28:32.352573",
+              "title": "Failed to pull at least one image in pod popeye-job-1710483905-324343-wrxd6 in namespace nudgebee-agent",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "image_pull_backoff_reporter",
+              "priority": "HIGH",
+              "id": "19109193-179b-4cb7-b6f5-d4f8f0d2442c",
+              "cloud_resource_id": "e32fc930-86cb-5058-bd03-483a46c6a87a",
+              "labels": "{}"
+            }
+          ]
+        }
+      },
+      "k8s_event_groupings": {
+        "data": {
+          "event_groupings": [
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-19T00:00:00",
+              "event_count": 1
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-29T00:00:00",
+              "event_count": 2
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-01T00:00:00",
+              "event_count": 1
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-05T00:00:00",
+              "event_count": 4
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-08T00:00:00",
+              "event_count": 7
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-09T00:00:00",
+              "event_count": 7
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-10T00:00:00",
+              "event_count": 6
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-11T00:00:00",
+              "event_count": 7
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-12T00:00:00",
+              "event_count": 9
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-13T00:00:00",
+              "event_count": 6
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-15T00:00:00",
+              "event_count": 6
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-18T00:00:00",
+              "event_count": 3
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-19T00:00:00",
+              "event_count": 2
+            }
+          ]
+        }
+      }
+    },
+    "KubePodCrashLooping": {
+      "list_k8_issues_data": {
+        "data": {
+          "events_aggregate": {
+            "aggregate": {
+              "count": 10
+            }
+          },
+          "events": [
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "nudgebee-agent-qp8j2",
+              "subject_namespace": "nudgebee-agent",
+              "starts_at": "2024-03-19T09:29:13.103",
+              "title": "Pod is crash looping.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubePodCrashLooping",
+              "priority": "HIGH",
+              "id": "2743b1db-e3dd-4f6a-a9d5-9f4630330463",
+              "cloud_resource_id": "25cf93b0-bbfa-53f7-a1e5-3d714a212bcc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "nudgebee-agent-fxbnv",
+              "subject_namespace": "nudgebee-agent",
+              "starts_at": "2024-03-19T05:26:43.103",
+              "title": "Pod is crash looping.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubePodCrashLooping",
+              "priority": "HIGH",
+              "id": "99dbefbd-6e20-4d4c-8402-8ea0988e85c9",
+              "cloud_resource_id": "25cf93b0-bbfa-53f7-a1e5-3d714a212bcc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "nudgebee-agent-sjctr",
+              "subject_namespace": "nudgebee-agent",
+              "starts_at": "2024-03-19T05:11:43.103",
+              "title": "Pod is crash looping.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubePodCrashLooping",
+              "priority": "HIGH",
+              "id": "c984419c-0132-4506-a77c-b7b2a03edf31",
+              "cloud_resource_id": "25cf93b0-bbfa-53f7-a1e5-3d714a212bcc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "prodenv51-opencost-85bcf89c-fmwbx",
+              "subject_namespace": "prodenv51",
+              "starts_at": "2024-03-14T12:59:13.103",
+              "title": "Pod is crash looping.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubePodCrashLooping",
+              "priority": "HIGH",
+              "id": "daaf094c-8d7f-44dc-8953-0b10f5301243",
+              "cloud_resource_id": "31de40b9-ec0b-5756-89cb-c79bc1e3dd2b",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "prodenv51-opencost-85bcf89c-fmwbx",
+              "subject_namespace": "prodenv51",
+              "starts_at": "2024-03-14T12:59:13.103",
+              "title": "Pod is crash looping.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubePodCrashLooping",
+              "priority": "HIGH",
+              "id": "c2f7b11e-55d9-48e7-b94b-1f243b40e139",
+              "cloud_resource_id": "31de40b9-ec0b-5756-89cb-c79bc1e3dd2b",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "prodenv51-opencost-85bcf89c-fmwbx",
+              "subject_namespace": "prodenv51",
+              "starts_at": "2024-03-14T12:59:13.103",
+              "title": "Pod is crash looping.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubePodCrashLooping",
+              "priority": "HIGH",
+              "id": "3c0c018a-f5f0-48f4-b3d6-5815bc8df35c",
+              "cloud_resource_id": "31de40b9-ec0b-5756-89cb-c79bc1e3dd2b",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "prodenv51-opencost-85bcf89c-fmwbx",
+              "subject_namespace": "prodenv51",
+              "starts_at": "2024-03-14T12:59:13.103",
+              "title": "Pod is crash looping.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubePodCrashLooping",
+              "priority": "HIGH",
+              "id": "4a3695fd-6a67-408b-9300-b2bac3fa725a",
+              "cloud_resource_id": "31de40b9-ec0b-5756-89cb-c79bc1e3dd2b",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "ticket-server-845b9cfdb9-5hht6",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-13T11:16:13.103",
+              "title": "Pod is crash looping.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubePodCrashLooping",
+              "priority": "LOW",
+              "id": "1c6d08d3-3e65-4c4d-a911-194829ab8e3b",
+              "cloud_resource_id": "dd36a824-3db6-5b80-a61f-10ac5445e57a",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "auto-pilot-server-74db6785cc-5gb7n",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-13T10:18:13.103",
+              "title": "Pod is crash looping.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubePodCrashLooping",
+              "priority": "LOW",
+              "id": "b8852f3c-8ff2-4cf1-bd4e-311850f4226b",
+              "cloud_resource_id": "6c9b349d-0dc9-5137-abf8-fbd802e247aa",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "auto-pilot-worker-7c5d5486b-sjkn5",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-13T10:18:13.103",
+              "title": "Pod is crash looping.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubePodCrashLooping",
+              "priority": "LOW",
+              "id": "fadbff3e-8432-41f3-84df-50dae2bebde0",
+              "cloud_resource_id": "44cc2169-37d7-54f8-abc8-ec4d59412de9",
+              "labels": "{}"
+            }
+          ]
+        }
+      },
+      "k8s_event_groupings": {
+        "data": {
+          "event_groupings": [
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-19T00:00:00",
+              "event_count": 7
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-01T00:00:00",
+              "event_count": 2
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-03T00:00:00",
+              "event_count": 6
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-04T00:00:00",
+              "event_count": 6
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-05T00:00:00",
+              "event_count": 12
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-06T00:00:00",
+              "event_count": 1
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-07T00:00:00",
+              "event_count": 2
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-08T00:00:00",
+              "event_count": 4
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-09T00:00:00",
+              "event_count": 6
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-10T00:00:00",
+              "event_count": 6
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-11T00:00:00",
+              "event_count": 3
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-12T00:00:00",
+              "event_count": 12
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-13T00:00:00",
+              "event_count": 14
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-14T00:00:00",
+              "event_count": 3
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-15T00:00:00",
+              "event_count": 1
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-19T00:00:00",
+              "event_count": 3
+            }
+          ]
+        }
+      }
+    },
+    "KubeDeploymentReplicasMismatch": {
+      "list_k8_issues_data": {
+        "data": {
+          "events_aggregate": {
+            "aggregate": {
+              "count": 10
+            }
+          },
+          "events": [
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "deployment",
+              "subject_name": "k8s-collector",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-18T05:07:43.103",
+              "title": "[RESOLVED] Deployment has not matched the expected number of replicas.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubeDeploymentReplicasMismatch",
+              "priority": "HIGH",
+              "id": "000ac2f1-d06f-4b50-ace1-495ac0d38f1b",
+              "cloud_resource_id": "886d9547-4b64-5bae-8555-17549af5c0b2",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "deployment",
+              "subject_name": "webapp",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-17T06:29:43.103",
+              "title": "[RESOLVED] Deployment has not matched the expected number of replicas.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubeDeploymentReplicasMismatch",
+              "priority": "HIGH",
+              "id": "e77c513a-1cbb-481f-955d-f9c8e97ec454",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "deployment",
+              "subject_name": "nudgebee-agent-runner",
+              "subject_namespace": "nudgebee-agent",
+              "starts_at": "2024-03-17T06:29:43.103",
+              "title": "[RESOLVED] Deployment has not matched the expected number of replicas.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubeDeploymentReplicasMismatch",
+              "priority": "HIGH",
+              "id": "c16f93ff-0cb1-413c-951e-85e77749a08f",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "deployment",
+              "subject_name": "webapp",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-17T06:29:43.103",
+              "title": "Deployment has not matched the expected number of replicas.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubeDeploymentReplicasMismatch",
+              "priority": "HIGH",
+              "id": "b5fc8617-a1f5-4feb-84a9-db6e9237f547",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "deployment",
+              "subject_name": "ml-k8s-server",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-17T06:29:43.103",
+              "title": "Deployment has not matched the expected number of replicas.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubeDeploymentReplicasMismatch",
+              "priority": "HIGH",
+              "id": "0da3a4d8-e404-4bff-aa46-c34978215d8e",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "deployment",
+              "subject_name": "ml-k8s-server",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-17T06:29:43.103",
+              "title": "[RESOLVED] Deployment has not matched the expected number of replicas.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubeDeploymentReplicasMismatch",
+              "priority": "HIGH",
+              "id": "291d6043-85c1-4718-a062-08293e1c71e9",
+              "cloud_resource_id": "9c320970-e1ce-5aac-acde-84d4c5a3b3a0",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "deployment",
+              "subject_name": "nudgebee-agent-runner",
+              "subject_namespace": "nudgebee-agent",
+              "starts_at": "2024-03-17T06:29:43.103",
+              "title": "Deployment has not matched the expected number of replicas.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubeDeploymentReplicasMismatch",
+              "priority": "HIGH",
+              "id": "ab0d050f-349f-4600-b054-1b5b224d8192",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "deployment",
+              "subject_name": "karpenter",
+              "subject_namespace": "karpenter",
+              "starts_at": "2024-03-17T05:41:43.103",
+              "title": "Deployment has not matched the expected number of replicas.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubeDeploymentReplicasMismatch",
+              "priority": "HIGH",
+              "id": "af0ad887-4b59-450c-9eea-29eec15644c4",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "deployment",
+              "subject_name": "prodenv51-opencost",
+              "subject_namespace": "prodenv51",
+              "starts_at": "2024-03-14T12:45:43.103",
+              "title": "Deployment has not matched the expected number of replicas.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubeDeploymentReplicasMismatch",
+              "priority": "HIGH",
+              "id": "601085f4-01f1-4eea-b3c2-fc30f3f70368",
+              "cloud_resource_id": "31de40b9-ec0b-5756-89cb-c79bc1e3dd2b",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "deployment",
+              "subject_name": "prodenv51-opencost",
+              "subject_namespace": "prodenv51",
+              "starts_at": "2024-03-14T12:45:43.103",
+              "title": "Deployment has not matched the expected number of replicas.",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "KubeDeploymentReplicasMismatch",
+              "priority": "HIGH",
+              "id": "80868751-9f90-4733-8715-43daec9e8cb9",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            }
+          ]
+        }
+      },
+      "k8s_event_groupings": {
+        "data": {
+          "event_groupings": [
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-19T00:00:00",
+              "event_count": 6
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-22T00:00:00",
+              "event_count": 1
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-03T00:00:00",
+              "event_count": 1
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-04T00:00:00",
+              "event_count": 1
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-05T00:00:00",
+              "event_count": 7
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-06T00:00:00",
+              "event_count": 1
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-08T00:00:00",
+              "event_count": 3
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-09T00:00:00",
+              "event_count": 6
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-10T00:00:00",
+              "event_count": 6
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-11T00:00:00",
+              "event_count": 5
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-13T00:00:00",
+              "event_count": 1
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-14T00:00:00",
+              "event_count": 3
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-15T00:00:00",
+              "event_count": 1
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-17T00:00:00",
+              "event_count": 7
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-18T00:00:00",
+              "event_count": 1
+            }
+          ]
+        }
+      }
+    },
+    "AllPodEvents": {
+      "list_k8_issues_data": {
+        "data": {
+          "events_aggregate": {
+            "aggregate": {
+              "count": 10
+            }
+          },
+          "events": [
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "ml-k8s-server-67d6744468-swzdj",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-20T03:15:16.958387",
+              "title": "Unhealthy Warning for Pod nudgebee/ml-k8s-server-67d6744468-swzdj",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "Kubernetes Warning Event",
+              "priority": "DEBUG",
+              "id": "cef553fa-0b6d-48ab-9216-db4e53525811",
+              "cloud_resource_id": "9c320970-e1ce-5aac-acde-84d4c5a3b3a0",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "oom-kill-cronjob-28515060-vbfhp",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-20T03:10:03.344",
+              "title": "High memory usage detected in pod oom-kill-cronjob-28515060-vbfhp (nudgebee) - memory-eater",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "PodMemoryReachingLimit",
+              "priority": "HIGH",
+              "id": "d48cfca7-6be3-4afa-80a2-fdd4685c38f6",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "oom-kill-cronjob-28515000-6q9lg",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-20T03:07:45.491688",
+              "title": "Pod oom-kill-cronjob-28515000-6q9lg in namespace nudgebee OOMKilled results",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "pod_oom_killer_enricher",
+              "priority": "HIGH",
+              "id": "52c4e53d-47d2-4e76-8a05-dfa8c83447c1",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "oom-kill-cronjob-28515060-vbfhp",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-20T03:07:42.682418",
+              "title": "Pod oom-kill-cronjob-28515060-vbfhp in namespace nudgebee OOMKilled results",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "pod_oom_killer_enricher",
+              "priority": "HIGH",
+              "id": "d2cc87c3-e8e7-468e-a726-e7ebb5743613",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "auto-pilot-worker-7d78849644-tz66b",
+              "subject_namespace": "nudgebee-test",
+              "starts_at": "2024-03-20T03:00:33.344",
+              "title": "High error and critical log messages /k8s/nudgebee-test/auto-pilot-worker-7d78849644-tz66b/auto-pilot-worker",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "HighErrorCriticalLogs",
+              "priority": "HIGH",
+              "id": "82ee5f6f-a2a5-46c8-b9f2-9b22f8c9c8ad",
+              "cloud_resource_id": "demo",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "clickhouse-zookeeper-0",
+              "subject_namespace": "clickhouse",
+              "starts_at": "2024-03-20T02:27:35.382403",
+              "title": "Unhealthy Warning for Pod clickhouse/clickhouse-zookeeper-0",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "Kubernetes Warning Event",
+              "priority": "DEBUG",
+              "id": "d7bf6388-3bbc-44ed-bc5a-47fa9be368a6",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "auto-pilot-worker-7d78849644-tz66b",
+              "subject_namespace": "nudgebee-test",
+              "starts_at": "2024-03-20T02:25:33.344",
+              "title": "High error and critical log messages /k8s/nudgebee-test/auto-pilot-worker-7d78849644-tz66b/auto-pilot-worker",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "HighErrorCriticalLogs",
+              "priority": "HIGH",
+              "id": "442f94db-af9a-43eb-884b-f2327b88a9d7",
+              "cloud_resource_id": "demo",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "ml-k8s-server-67d6744468-smlmp",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-20T02:15:16.949939",
+              "title": "Unhealthy Warning for Pod nudgebee/ml-k8s-server-67d6744468-smlmp",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "Kubernetes Warning Event",
+              "priority": "DEBUG",
+              "id": "55f4d049-275c-4942-9bd7-7f8bb59b5116",
+              "cloud_resource_id": "9c320970-e1ce-5aac-acde-84d4c5a3b3a0",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "rabbitmq-0",
+              "subject_namespace": "rabbit-test",
+              "starts_at": "2024-03-20T02:11:33.344",
+              "title": "High error and critical log messages /k8s/rabbit-test/rabbitmq-0/rabbitmq",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "HighErrorCriticalLogs",
+              "priority": "HIGH",
+              "id": "d1fe217c-18ac-44fd-aa69-311b75e5c74f",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "oom-kill-cronjob-28515000-6q9lg",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-20T02:10:33.344",
+              "title": "High memory usage detected in pod oom-kill-cronjob-28515000-6q9lg (nudgebee) - memory-eater",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "PodMemoryReachingLimit",
+              "priority": "HIGH",
+              "id": "90364788-82b8-4b40-8bab-32550551114a",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            }
+          ]
+        }
+      },
+      "k8s_event_groupings": {
+        "data": {
+          "event_groupings": [
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-19T00:00:00",
+              "event_count": 178
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-20T00:00:00",
+              "event_count": 154
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-21T00:00:00",
+              "event_count": 469
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-22T00:00:00",
+              "event_count": 452
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-23T00:00:00",
+              "event_count": 469
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-24T00:00:00",
+              "event_count": 667
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-25T00:00:00",
+              "event_count": 893
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-26T00:00:00",
+              "event_count": 1180
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-27T00:00:00",
+              "event_count": 568
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-28T00:00:00",
+              "event_count": 629
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-29T00:00:00",
+              "event_count": 1002
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-01T00:00:00",
+              "event_count": 510
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-03T00:00:00",
+              "event_count": 1765
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-04T00:00:00",
+              "event_count": 1405
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-05T00:00:00",
+              "event_count": 1320
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-06T00:00:00",
+              "event_count": 841
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-07T00:00:00",
+              "event_count": 632
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-08T00:00:00",
+              "event_count": 471
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-09T00:00:00",
+              "event_count": 533
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-10T00:00:00",
+              "event_count": 506
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-11T00:00:00",
+              "event_count": 759
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-12T00:00:00",
+              "event_count": 689
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-13T00:00:00",
+              "event_count": 968
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-14T00:00:00",
+              "event_count": 1365
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-15T00:00:00",
+              "event_count": 1970
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-16T00:00:00",
+              "event_count": 1513
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-17T00:00:00",
+              "event_count": 1065
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-18T00:00:00",
+              "event_count": 928
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-19T00:00:00",
+              "event_count": 901
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-20T00:00:00",
+              "event_count": 149
+            }
+          ]
+        }
+      }
+    },
+    "PodMemoryReachingLimit": {
+      "list_k8_issues_data": {
+        "data": {
+          "events_aggregate": {
+            "aggregate": {
+              "count": 10
+            }
+          },
+          "events": [
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": "pod",
+              "subject_name": "ml-k8s-server-7d7fcf8fbc-cphwq",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-04-04T07:25:30",
+              "title": "High memory usage detected in pod ml-k8s-server-7d7fcf8fbc-cphwq (nudgebee) - ml-k8s-server",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "FIRING",
+              "aggregation_key": "PodMemoryReachingLimit",
+              "priority": "HIGH",
+              "id": "421004c4-3568-4bca-accd-4102ac544c29",
+              "cloud_resource_id": "9c320970-e1ce-5aac-acde-84d4c5a3b3a0",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": "pod",
+              "subject_name": "vmsingle-victoria-victoria-metrics-k8s-stack-fd7c7c7c7-ccnb9",
+              "subject_namespace": "victoria",
+              "starts_at": "2024-04-04T07:20:45",
+              "title": "High memory usage detected in pod vmsingle-victoria-victoria-metrics-k8s-stack-fd7c7c7c7-ccnb9 (victoria) - vmsingle",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "FIRING",
+              "aggregation_key": "PodMemoryReachingLimit",
+              "priority": "HIGH",
+              "id": "7a707143-7c02-461e-ad52-070f146e5484",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": "pod",
+              "subject_name": "sonarqube-postgresql-0",
+              "subject_namespace": "sonarqube",
+              "starts_at": "2024-04-04T06:34:15",
+              "title": "High memory usage detected in pod sonarqube-postgresql-0 (sonarqube) - sonarqube-postgresql",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "PodMemoryReachingLimit",
+              "priority": "HIGH",
+              "id": "db872f62-8b94-42c4-8402-836ecc537aaa",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": "pod",
+              "subject_name": "sonarqube-postgresql-0",
+              "subject_namespace": "sonarqube",
+              "starts_at": "2024-04-04T06:25:15",
+              "title": "High memory usage detected in pod sonarqube-postgresql-0 (sonarqube) - sonarqube-postgresql",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "PodMemoryReachingLimit",
+              "priority": "HIGH",
+              "id": "0e2668e5-650f-4034-a4a6-22f8b7a663f0",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": "pod",
+              "subject_name": "clickhouse-shard0-0",
+              "subject_namespace": "clickhouse",
+              "starts_at": "2024-04-04T06:19:45",
+              "title": "High memory usage detected in pod clickhouse-shard0-0 (clickhouse) - clickhouse",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "PodMemoryReachingLimit",
+              "priority": "HIGH",
+              "id": "e10d095b-2c5c-456c-8ecc-990ba3d052b7",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": "pod",
+              "subject_name": "clickhouse-shard0-0",
+              "subject_namespace": "clickhouse",
+              "starts_at": "2024-04-04T06:19:45",
+              "title": "High memory usage detected in pod clickhouse-shard0-0 (clickhouse) - clickhouse",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "PodMemoryReachingLimit",
+              "priority": "HIGH",
+              "id": "72cf8eb4-6cb0-4c02-b200-3119a37c345a",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": "pod",
+              "subject_name": "clickhouse-shard0-0",
+              "subject_namespace": "clickhouse",
+              "starts_at": "2024-04-04T06:19:45",
+              "title": "High memory usage detected in pod clickhouse-shard0-0 (clickhouse) - clickhouse",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "PodMemoryReachingLimit",
+              "priority": "HIGH",
+              "id": "de57f541-9a58-4245-bc9f-fc9a2ef03dc6",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": "pod",
+              "subject_name": "clickhouse-shard0-0",
+              "subject_namespace": "clickhouse",
+              "starts_at": "2024-04-04T06:19:45",
+              "title": "High memory usage detected in pod clickhouse-shard0-0 (clickhouse) - clickhouse",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "FIRING",
+              "aggregation_key": "PodMemoryReachingLimit",
+              "priority": "HIGH",
+              "id": "881da851-e518-402f-9ced-deae228c5062",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": "pod",
+              "subject_name": "clickhouse-shard0-0",
+              "subject_namespace": "clickhouse",
+              "starts_at": "2024-04-04T06:19:45",
+              "title": "High memory usage detected in pod clickhouse-shard0-0 (clickhouse) - clickhouse",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "PodMemoryReachingLimit",
+              "priority": "HIGH",
+              "id": "01d5b957-a50f-469c-b402-9ea4432ae360",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": "pod",
+              "subject_name": "clickhouse-shard0-0",
+              "subject_namespace": "clickhouse",
+              "starts_at": "2024-04-04T06:19:45",
+              "title": "High memory usage detected in pod clickhouse-shard0-0 (clickhouse) - clickhouse",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "PodMemoryReachingLimit",
+              "priority": "HIGH",
+              "id": "ba03f344-1a19-4719-8dfa-592115f4130a",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            }
+          ]
+        }
+      }
+    },
+    "KubernetesWarningEvent": {
+      "list_k8_issues_data": {
+        "data": {
+          "events_aggregate": {
+            "aggregate": {
+              "count": 10
+            }
+          },
+          "events": [
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": "pod",
+              "subject_name": "krr-job5614d6c7-37a0-4e8d-9d94-ccd9057344bb-1712215914-0765dnbx",
+              "subject_namespace": "testenv54",
+              "starts_at": "2024-04-04T07:31:55.40316",
+              "title": "Failed Warning for Pod testenv54/krr-job5614d6c7-37a0-4e8d-9d94-ccd9057344bb-1712215914-0765dnbx",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "Kubernetes Warning Event",
+              "priority": "DEBUG",
+              "id": "3bd48b9e-0cf3-4d9f-8928-784b6f89f980",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": "pod",
+              "subject_name": "krr-job03c1df9f-bc85-41e9-b19a-04f39581e52c-1712215689-424kzc7p",
+              "subject_namespace": "testenv54",
+              "starts_at": "2024-04-04T07:28:10.139099",
+              "title": "Failed Warning for Pod testenv54/krr-job03c1df9f-bc85-41e9-b19a-04f39581e52c-1712215689-424kzc7p",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "Kubernetes Warning Event",
+              "priority": "DEBUG",
+              "id": "ca7aea77-4ed9-441f-b7d4-3b92fbdd0a4a",
+              "cloud_resource_id": "d8176496-f2f0-5a94-a3d0-4c538b29966c",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": "pod",
+              "subject_name": "popeye-job-1712215689-052862-dx6mg",
+              "subject_namespace": "testenv54",
+              "starts_at": "2024-04-04T07:28:09.738796",
+              "title": "Failed Warning for Pod testenv54/popeye-job-1712215689-052862-dx6mg",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "Kubernetes Warning Event",
+              "priority": "DEBUG",
+              "id": "39786c62-7400-4341-acd5-f123fd5ef2a8",
+              "cloud_resource_id": "38b597a3-7e78-5cb5-8604-3aff9582869b",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": "pod",
+              "subject_name": "ticket-server-dcd5d7d7-fjggc",
+              "subject_namespace": "nudgebee-test",
+              "starts_at": "2024-04-04T07:25:54.86381",
+              "title": "Unhealthy Warning for Pod nudgebee-test/ticket-server-dcd5d7d7-fjggc",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "Kubernetes Warning Event",
+              "priority": "DEBUG",
+              "id": "35f1ee7d-9792-4349-86ad-1749b93a033d",
+              "cloud_resource_id": "55e263bc-f571-5812-bb9c-c8c1bffb591b",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": "node",
+              "subject_name": "ip-172-31-29-210.ec2.internal",
+              "subject_namespace": null,
+              "starts_at": "2024-04-04T07:25:46.791298",
+              "title": "FailedDraining Warning for Node None/ip-172-31-29-210.ec2.internal",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "Kubernetes Warning Event",
+              "priority": "DEBUG",
+              "id": "68312c61-d95e-4142-9e97-9e7277625a5e",
+              "cloud_resource_id": "f607a4e4-ce7f-56f9-a3a9-368e7e60465a",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": "node",
+              "subject_name": "ip-172-31-17-18.ec2.internal",
+              "subject_namespace": null,
+              "starts_at": "2024-04-04T07:24:53.384011",
+              "title": "InvalidDiskCapacity Warning for Node None/ip-172-31-17-18.ec2.internal",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "Kubernetes Warning Event",
+              "priority": "DEBUG",
+              "id": "d8ec1d8d-1f30-40e9-a029-5861ce6cc054",
+              "cloud_resource_id": null,
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": "pod",
+              "subject_name": "promtail-4f772",
+              "subject_namespace": "grafana",
+              "starts_at": "2024-04-04T07:24:33.130161",
+              "title": "Unhealthy Warning for Pod grafana/promtail-4f772",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "Kubernetes Warning Event",
+              "priority": "DEBUG",
+              "id": "32f638df-f044-4879-887a-69ab977cc315",
+              "cloud_resource_id": "e2dd7663-5f0d-5eb7-8039-82460f20ebac",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": "pod",
+              "subject_name": "services-server-7b5dbbb47-zwsgt",
+              "subject_namespace": "nudgebee-test",
+              "starts_at": "2024-04-04T07:24:30.680239",
+              "title": "Unhealthy Warning for Pod nudgebee-test/services-server-7b5dbbb47-zwsgt",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "Kubernetes Warning Event",
+              "priority": "DEBUG",
+              "id": "778994e7-7341-4b0a-a2b7-9784d46035fb",
+              "cloud_resource_id": "6af3e9d2-acb2-57b3-a931-5c9d2e94dccc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": null,
+              "subject_name": "services-server",
+              "subject_namespace": "nudgebee-test",
+              "starts_at": "2024-04-04T07:24:29.675304",
+              "title": "FailedToUpdateEndpoint Warning for Endpoints nudgebee-test/services-server",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "Kubernetes Warning Event",
+              "priority": "DEBUG",
+              "id": "bf71b39b-13dd-4656-9b1e-168dcf2611c2",
+              "cloud_resource_id": null,
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+              "subject_type": null,
+              "subject_name": "testenv53-runner",
+              "subject_namespace": "testenv53",
+              "starts_at": "2024-04-04T07:24:29.380498",
+              "title": "FailedToUpdateEndpoint Warning for Endpoints testenv53/testenv53-runner",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "Kubernetes Warning Event",
+              "priority": "DEBUG",
+              "id": "842a3789-db6d-4fd2-bcf6-f01cfddb7a66",
+              "cloud_resource_id": null,
+              "labels": "{}"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "NodeErrors": {
+    "list_k8_issues_data": {
+      "data": {
+        "events_aggregate": {
+          "aggregate": {
+            "count": 10
+          }
+        },
+        "events": [
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "node",
+            "subject_name": "ip-172-31-82-142.ec2.internal",
+            "subject_namespace": "default",
+            "starts_at": "2024-03-19T22:13:33.344",
+            "title": "High API Failure for /apis/apps/v1/deployments?limit=1",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "ApplicationAPIFailures",
+            "priority": "HIGH",
+            "id": "591a1eca-32e7-4cdc-a432-f160a1318a70",
+            "cloud_resource_id": "22e9166c-4910-52c1-9a6c-e55acf2fee9f",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "node",
+            "subject_name": "ip-172-31-82-142.ec2.internal",
+            "subject_namespace": "default",
+            "starts_at": "2024-03-19T22:13:33.344",
+            "title": "High API Failure for /apis/apps/v1/deployments?limit=1",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "ApplicationAPIFailures",
+            "priority": "HIGH",
+            "id": "d2fcd6ff-9fb3-4f60-a327-baf4eb9d6ad6",
+            "cloud_resource_id": "22e9166c-4910-52c1-9a6c-e55acf2fee9f",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "node",
+            "subject_name": "ip-172-31-88-182.ec2.internal",
+            "subject_namespace": null,
+            "starts_at": "2024-03-19T18:32:27.275684",
+            "title": "FailedDraining Warning for Node None/ip-172-31-88-182.ec2.internal",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "Kubernetes Warning Event",
+            "priority": "DEBUG",
+            "id": "f162f6c1-bc9d-4768-8cf8-3ed6f7dd588e",
+            "cloud_resource_id": "c97c0d3c-578f-5fac-ad08-7f6138860a6a",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "node",
+            "subject_name": "ip-172-31-88-182.ec2.internal",
+            "subject_namespace": null,
+            "starts_at": "2024-03-19T18:31:53.284197",
+            "title": "InvalidDiskCapacity Warning for Node None/ip-172-31-88-182.ec2.internal",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "Kubernetes Warning Event",
+            "priority": "DEBUG",
+            "id": "9f1c4fff-fe4a-4cde-a37e-072677ddadc2",
+            "cloud_resource_id": "c97c0d3c-578f-5fac-ad08-7f6138860a6a",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "node",
+            "subject_name": "ip-172-31-83-182.ec2.internal",
+            "subject_namespace": null,
+            "starts_at": "2024-03-19T18:28:50.186199",
+            "title": "FailedDraining Warning for Node None/ip-172-31-83-182.ec2.internal",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "Kubernetes Warning Event",
+            "priority": "DEBUG",
+            "id": "fd263ddb-b9dd-4e5e-9f7b-995caf406ed6",
+            "cloud_resource_id": "188bf157-d9ce-5cca-b481-4769b07d8e82",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "node",
+            "subject_name": "ip-172-31-83-182.ec2.internal",
+            "subject_namespace": null,
+            "starts_at": "2024-03-19T18:23:57.85541",
+            "title": "InvalidDiskCapacity Warning for Node None/ip-172-31-83-182.ec2.internal",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "Kubernetes Warning Event",
+            "priority": "DEBUG",
+            "id": "1ed31823-78a6-4781-99c5-b61a6c4bc46f",
+            "cloud_resource_id": "188bf157-d9ce-5cca-b481-4769b07d8e82",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "node",
+            "subject_name": "ip-172-31-86-195.ec2.internal",
+            "subject_namespace": null,
+            "starts_at": "2024-03-19T18:22:01.668663",
+            "title": "FailedDraining Warning for Node None/ip-172-31-86-195.ec2.internal",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "Kubernetes Warning Event",
+            "priority": "DEBUG",
+            "id": "f6bdffda-6fe5-43f1-a821-a6dd534fe4e3",
+            "cloud_resource_id": "8814bc0c-1a51-59d6-9fa1-17d4c096e515",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "node",
+            "subject_name": "ip-172-31-86-195.ec2.internal",
+            "subject_namespace": null,
+            "starts_at": "2024-03-19T18:21:27.923192",
+            "title": "InvalidDiskCapacity Warning for Node None/ip-172-31-86-195.ec2.internal",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "Kubernetes Warning Event",
+            "priority": "DEBUG",
+            "id": "775d0343-80fd-4001-9d53-53076293db14",
+            "cloud_resource_id": "8814bc0c-1a51-59d6-9fa1-17d4c096e515",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "node",
+            "subject_name": "ip-172-31-93-118.ec2.internal",
+            "subject_namespace": null,
+            "starts_at": "2024-03-19T18:18:05.475335",
+            "title": "FailedDraining Warning for Node None/ip-172-31-93-118.ec2.internal",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "Kubernetes Warning Event",
+            "priority": "DEBUG",
+            "id": "a2ce948a-db0e-48b5-a567-543dc819f7e0",
+            "cloud_resource_id": "cc9d9e74-730c-55ef-94dc-dc562384b4a1",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "node",
+            "subject_name": "ip-172-31-93-118.ec2.internal",
+            "subject_namespace": null,
+            "starts_at": "2024-03-19T18:17:25.995534",
+            "title": "InvalidDiskCapacity Warning for Node None/ip-172-31-93-118.ec2.internal",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "Kubernetes Warning Event",
+            "priority": "DEBUG",
+            "id": "6698bcc5-ea67-47a8-8955-a631256f9824",
+            "cloud_resource_id": "cc9d9e74-730c-55ef-94dc-dc562384b4a1",
+            "labels": "{}"
+          }
+        ]
+      }
+    },
+    "k8s_event_groupings": {
+      "data": {
+        "event_groupings": [
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-19T00:00:00",
+            "event_count": 633
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-20T00:00:00",
+            "event_count": 912
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-21T00:00:00",
+            "event_count": 306
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-22T00:00:00",
+            "event_count": 115
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-23T00:00:00",
+            "event_count": 74
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-24T00:00:00",
+            "event_count": 18
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-25T00:00:00",
+            "event_count": 56
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-26T00:00:00",
+            "event_count": 99
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-27T00:00:00",
+            "event_count": 139
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-28T00:00:00",
+            "event_count": 262
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-29T00:00:00",
+            "event_count": 88
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-01T00:00:00",
+            "event_count": 12
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-03T00:00:00",
+            "event_count": 227
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-04T00:00:00",
+            "event_count": 172
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-05T00:00:00",
+            "event_count": 151
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-06T00:00:00",
+            "event_count": 85
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-07T00:00:00",
+            "event_count": 44
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-08T00:00:00",
+            "event_count": 41
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-09T00:00:00",
+            "event_count": 48
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-10T00:00:00",
+            "event_count": 38
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-11T00:00:00",
+            "event_count": 54
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-12T00:00:00",
+            "event_count": 60
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-13T00:00:00",
+            "event_count": 127
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-14T00:00:00",
+            "event_count": 505
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-15T00:00:00",
+            "event_count": 1452
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-16T00:00:00",
+            "event_count": 911
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-17T00:00:00",
+            "event_count": 492
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-18T00:00:00",
+            "event_count": 191
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-19T00:00:00",
+            "event_count": 109
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-20T00:00:00",
+            "event_count": 6
+          }
+        ]
+      }
+    }
+  },
+  "ApplicationErrors": {
+    "ApiErrors": {
+      "data": {
+        "events_aggregate": {
+          "aggregate": {
+            "count": 10
+          }
+        },
+        "events": [
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "ticket-server-775df65d89-n89rf",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-27T07:19:30",
+            "title": "[RESOLVED] High API Failure for /tickets/rpc/create-ticket",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "ApplicationAPIFailures",
+            "priority": "HIGH",
+            "id": "f4e0ed6a-6e4f-4218-ba4c-6e3670991e85",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "app-test-5cc5fc6f89-548r2",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-27T07:16:15",
+            "title": "High API Failure for /api/graphql",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "ApplicationAPIFailures",
+            "priority": "HIGH",
+            "id": "3abe0a55-7075-4d4b-9e34-a07d074ef1c3",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "app-test-5cc5fc6f89-548r2",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-27T07:16:15",
+            "title": "High API Failure for /",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "ApplicationAPIFailures",
+            "priority": "HIGH",
+            "id": "7f61d4e6-ae93-48c0-b4af-450678b29f3a",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "relay-server-575f5f4457-st8d5",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-27T07:16:15",
+            "title": "High API Failure for /request",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "ApplicationAPIFailures",
+            "priority": "HIGH",
+            "id": "4d3d7a31-c455-4e40-8ada-4b9047f35436",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "node",
+            "subject_name": "ip-172-31-82-142.ec2.internal",
+            "subject_namespace": "default",
+            "starts_at": "2024-03-27T06:19:00",
+            "title": "High API Failure for /autopilot/sync",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "ApplicationAPIFailures",
+            "priority": "HIGH",
+            "id": "40395553-d740-41da-8664-b7f80ececa9d",
+            "cloud_resource_id": "22e9166c-4910-52c1-9a6c-e55acf2fee9f",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-server-5756775ddd-pm6sl",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-27T06:19:00",
+            "title": "High API Failure for /autopilot/sync",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "ApplicationAPIFailures",
+            "priority": "HIGH",
+            "id": "b8ecec8a-1d1c-49ed-8da1-540466ee5393",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-server-5756775ddd-pm6sl",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-27T06:19:00",
+            "title": "High API Failure for /autopilot/sync",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "ApplicationAPIFailures",
+            "priority": "HIGH",
+            "id": "6d190564-d475-4182-b31e-71a47ad4bb12",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "node",
+            "subject_name": "ip-172-31-82-142.ec2.internal",
+            "subject_namespace": "default",
+            "starts_at": "2024-03-27T06:19:00",
+            "title": "High API Failure for /autopilot/sync",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "ApplicationAPIFailures",
+            "priority": "HIGH",
+            "id": "d90002f9-84e7-4eff-ad03-5aee8050c9ed",
+            "cloud_resource_id": "22e9166c-4910-52c1-9a6c-e55acf2fee9f",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-server-5756775ddd-pm6sl",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-27T06:19:00",
+            "title": "High API Failure for /autopilot/sync",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "ApplicationAPIFailures",
+            "priority": "HIGH",
+            "id": "9ef7fa78-93d4-4409-8dce-697ca55b497e",
+            "cloud_resource_id": "4385d173-4a31-5d0d-9119-639ab94c1c50",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "node",
+            "subject_name": "ip-172-31-82-142.ec2.internal",
+            "subject_namespace": "default",
+            "starts_at": "2024-03-27T06:19:00",
+            "title": "High API Failure for /autopilot/sync",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "ApplicationAPIFailures",
+            "priority": "HIGH",
+            "id": "bc8b3a31-af97-4f97-8354-086e2a118a8c",
+            "cloud_resource_id": "22e9166c-4910-52c1-9a6c-e55acf2fee9f",
+            "labels": "{}"
+          }
+        ]
+      }
+    },
+    "LogErrors": {
+      "data": {
+        "events_aggregate": {
+          "aggregate": {
+            "count": 10
+          }
+        },
+        "events": [
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-server-7c85d9bbf8-rljqp",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-27T07:27:00",
+            "title": "High error and critical log messages /k8s/nudgebee-test/auto-pilot-server-7c85d9bbf8-rljqp/auto-pilot-server",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "FIRING",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "4713ddae-0fee-499d-b8b4-1d8ad9c235b1",
+            "cloud_resource_id": "4385d173-4a31-5d0d-9119-639ab94c1c50",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-85c995fb5-htzt8",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-27T07:26:30",
+            "title": "High error and critical log messages /k8s/nudgebee-test/webapp-85c995fb5-htzt8/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "86477cc7-5026-498b-a0e0-dbae8eb0dee4",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-85c995fb5-htzt8",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-27T07:26:30",
+            "title": "High error and critical log messages /k8s/nudgebee-test/webapp-85c995fb5-htzt8/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "FIRING",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "d192ff45-a1b0-464a-8b7f-a412682bf78f",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-5c499cf4d9-4jcm7",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-27T07:21:45",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-5c499cf4d9-4jcm7/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "FIRING",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "d8edff90-d814-41a9-ae4e-4f5d0c9d95ef",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-5c499cf4d9-4jcm7",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-27T07:21:45",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-5c499cf4d9-4jcm7/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "43e1498e-1b13-4b36-919c-96ca424ed0d3",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-5c499cf4d9-4jcm7",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-27T07:21:30",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-5c499cf4d9-4jcm7/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "FIRING",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "68436704-accd-480f-a098-efe772fb055d",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-5c499cf4d9-4jcm7",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-27T07:21:30",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-5c499cf4d9-4jcm7/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "8616cc49-e99c-4889-8057-230039100785",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "postgres-postgresql-0",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-27T07:19:30",
+            "title": "[RESOLVED] High error and critical log messages /k8s/nudgebee-test/postgres-postgresql-0/postgresql",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "e6f4f619-aa45-403f-a6ec-a80767c7899a",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "postgres-postgresql-0",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-27T07:11:45",
+            "title": "High error and critical log messages /k8s/nudgebee-test/postgres-postgresql-0/postgresql",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "057d2436-8822-49da-a930-50c35f9550dc",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "postgres-postgresql-0",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-27T07:11:45",
+            "title": "High error and critical log messages /k8s/nudgebee-test/postgres-postgresql-0/postgresql",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "1a73d317-eceb-437f-8a0d-50fd0699b94a",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          }
+        ]
+      }
+    },
+    "AllErrors": {
+      "k8s_event_groupings": {
+        "data": {
+          "event_groupings": [
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-19T00:00:00",
+              "event_count": 569
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-20T00:00:00",
+              "event_count": 728
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-21T00:00:00",
+              "event_count": 528
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-22T00:00:00",
+              "event_count": 341
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-23T00:00:00",
+              "event_count": 368
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-24T00:00:00",
+              "event_count": 484
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-25T00:00:00",
+              "event_count": 652
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-26T00:00:00",
+              "event_count": 792
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-27T00:00:00",
+              "event_count": 388
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-28T00:00:00",
+              "event_count": 544
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-02-29T00:00:00",
+              "event_count": 738
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-01T00:00:00",
+              "event_count": 361
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-03T00:00:00",
+              "event_count": 1095
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-04T00:00:00",
+              "event_count": 1108
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-05T00:00:00",
+              "event_count": 985
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-06T00:00:00",
+              "event_count": 628
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-07T00:00:00",
+              "event_count": 461
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-08T00:00:00",
+              "event_count": 314
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-09T00:00:00",
+              "event_count": 345
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-10T00:00:00",
+              "event_count": 362
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-11T00:00:00",
+              "event_count": 515
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-12T00:00:00",
+              "event_count": 420
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-13T00:00:00",
+              "event_count": 596
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-14T00:00:00",
+              "event_count": 947
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-15T00:00:00",
+              "event_count": 1238
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-16T00:00:00",
+              "event_count": 1284
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-17T00:00:00",
+              "event_count": 1335
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-18T00:00:00",
+              "event_count": 830
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-19T00:00:00",
+              "event_count": 675
+            },
+            {
+              "tenant_id": "demo",
+              "account_id": "demo",
+              "created_at": "2024-03-20T00:00:00",
+              "event_count": 112
+            }
+          ]
+        }
+      },
+      "list_k8_issues_data": {
+        "data": {
+          "events_aggregate": {
+            "aggregate": {
+              "count": 19717
+            }
+          },
+          "events": [
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "auto-pilot-worker-7d78849644-tz66b",
+              "subject_namespace": "nudgebee-test",
+              "starts_at": "2024-03-20T03:00:33.344",
+              "title": "High error and critical log messages /k8s/nudgebee-test/auto-pilot-worker-7d78849644-tz66b/auto-pilot-worker",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "HighErrorCriticalLogs",
+              "priority": "HIGH",
+              "id": "82ee5f6f-a2a5-46c8-b9f2-9b22f8c9c8ad",
+              "cloud_resource_id": "demo",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "auto-pilot-worker-7d78849644-tz66b",
+              "subject_namespace": "nudgebee-test",
+              "starts_at": "2024-03-20T02:25:33.344",
+              "title": "High error and critical log messages /k8s/nudgebee-test/auto-pilot-worker-7d78849644-tz66b/auto-pilot-worker",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "HighErrorCriticalLogs",
+              "priority": "HIGH",
+              "id": "442f94db-af9a-43eb-884b-f2327b88a9d7",
+              "cloud_resource_id": "demo",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "rabbitmq-0",
+              "subject_namespace": "rabbit-test",
+              "starts_at": "2024-03-20T02:11:33.344",
+              "title": "High error and critical log messages /k8s/rabbit-test/rabbitmq-0/rabbitmq",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "HighErrorCriticalLogs",
+              "priority": "HIGH",
+              "id": "d1fe217c-18ac-44fd-aa69-311b75e5c74f",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "auto-pilot-worker-7f5c66564b-rssvb",
+              "subject_namespace": "nudgebee",
+              "starts_at": "2024-03-20T02:06:33.344",
+              "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-7f5c66564b-rssvb/auto-pilot-worker",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "HighErrorCriticalLogs",
+              "priority": "HIGH",
+              "id": "535e3e29-d557-4a00-861b-2e26a696f894",
+              "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "auto-pilot-worker-7d78849644-tz66b",
+              "subject_namespace": "nudgebee-test",
+              "starts_at": "2024-03-20T02:06:03.344",
+              "title": "High error and critical log messages /k8s/nudgebee-test/auto-pilot-worker-7d78849644-tz66b/auto-pilot-worker",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "HighErrorCriticalLogs",
+              "priority": "HIGH",
+              "id": "a72dfa9e-cdf3-4fe3-b956-abfc34a674b9",
+              "cloud_resource_id": "demo",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "ticket-server-847b796879-5bd5r",
+              "subject_namespace": "nudgebee-test",
+              "starts_at": "2024-03-20T02:05:33.344",
+              "title": "High error and critical log messages /k8s/nudgebee-test/ticket-server-847b796879-5bd5r/ticket-server",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "HighErrorCriticalLogs",
+              "priority": "HIGH",
+              "id": "e5d95398-93f0-41d6-bea8-f72365d4145a",
+              "cloud_resource_id": "55e263bc-f571-5812-bb9c-c8c1bffb591b",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "auto-pilot-worker-7d78849644-tz66b",
+              "subject_namespace": "nudgebee-test",
+              "starts_at": "2024-03-20T01:55:33.344",
+              "title": "High error and critical log messages /k8s/nudgebee-test/auto-pilot-worker-7d78849644-tz66b/auto-pilot-worker",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "HighErrorCriticalLogs",
+              "priority": "HIGH",
+              "id": "daf57f98-e0f4-4773-a156-7b8602b3c3c7",
+              "cloud_resource_id": "demo",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "auto-pilot-worker-7d78849644-tz66b",
+              "subject_namespace": "nudgebee-test",
+              "starts_at": "2024-03-20T01:55:33.344",
+              "title": "High error and critical log messages /k8s/nudgebee-test/auto-pilot-worker-7d78849644-tz66b/auto-pilot-worker",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "HighErrorCriticalLogs",
+              "priority": "HIGH",
+              "id": "bd512c8e-49f0-472a-ab68-b3154d313302",
+              "cloud_resource_id": "demo",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "auto-pilot-worker-7d78849644-tz66b",
+              "subject_namespace": "nudgebee-test",
+              "starts_at": "2024-03-20T01:50:33.344",
+              "title": "High error and critical log messages /k8s/nudgebee-test/auto-pilot-worker-7d78849644-tz66b/auto-pilot-worker",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "HighErrorCriticalLogs",
+              "priority": "HIGH",
+              "id": "897a030c-c070-4234-ba95-ba7dd96a1f0e",
+              "cloud_resource_id": "demo",
+              "labels": "{}"
+            },
+            {
+              "cloud_account_id": "demo",
+              "subject_type": "pod",
+              "subject_name": "auto-pilot-worker-7d78849644-tz66b",
+              "subject_namespace": "nudgebee-test",
+              "starts_at": "2024-03-20T01:50:33.344",
+              "title": "High error and critical log messages /k8s/nudgebee-test/auto-pilot-worker-7d78849644-tz66b/auto-pilot-worker",
+              "finding_type": "issue",
+              "cluster": "nudgebee-dev",
+              "status": "CLOSED",
+              "aggregation_key": "HighErrorCriticalLogs",
+              "priority": "HIGH",
+              "id": "76acfd76-dbbe-45df-99f4-e6f09cd78b75",
+              "cloud_resource_id": "demo",
+              "labels": "{}"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "AllEvents": {
+    "list_k8_issues_data": {
+      "data": {
+        "events_aggregate": {
+          "aggregate": {
+            "count": 33961
+          }
+        },
+        "events": [
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "job",
+            "subject_name": "oom-kill-cronjob-28515060",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-20T03:23:13.103",
+            "title": "Job failed to complete.",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "KubeJobFailed",
+            "priority": "LOW",
+            "id": "818a9998-84d0-4c5d-95b1-4e4806353f20",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "pod",
+            "subject_name": "ml-k8s-server-67d6744468-swzdj",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-20T03:15:16.958387",
+            "title": "Unhealthy Warning for Pod nudgebee/ml-k8s-server-67d6744468-swzdj",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "Kubernetes Warning Event",
+            "priority": "DEBUG",
+            "id": "cef553fa-0b6d-48ab-9216-db4e53525811",
+            "cloud_resource_id": "9c320970-e1ce-5aac-acde-84d4c5a3b3a0",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "pod",
+            "subject_name": "oom-kill-cronjob-28515060-vbfhp",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-20T03:10:03.344",
+            "title": "High memory usage detected in pod oom-kill-cronjob-28515060-vbfhp (nudgebee) - memory-eater",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "PodMemoryReachingLimit",
+            "priority": "HIGH",
+            "id": "d48cfca7-6be3-4afa-80a2-fdd4685c38f6",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "job",
+            "subject_name": "oom-kill-cronjob-28515060",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-20T03:07:45.93459",
+            "title": "Job Failed",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "job_failure",
+            "priority": "HIGH",
+            "id": "e2aa44cb-1591-4614-a22f-01d590100f08",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "job",
+            "subject_name": "oom-kill-cronjob-28515060",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-20T03:07:45.632698",
+            "title": "BackoffLimitExceeded Warning for Job nudgebee/oom-kill-cronjob-28515060",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "Kubernetes Warning Event",
+            "priority": "DEBUG",
+            "id": "0d8ec432-2287-43af-a626-1b6aaa544d98",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "pod",
+            "subject_name": "oom-kill-cronjob-28515000-6q9lg",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-20T03:07:45.491688",
+            "title": "Pod oom-kill-cronjob-28515000-6q9lg in namespace nudgebee OOMKilled results",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "pod_oom_killer_enricher",
+            "priority": "HIGH",
+            "id": "52c4e53d-47d2-4e76-8a05-dfa8c83447c1",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "pod",
+            "subject_name": "oom-kill-cronjob-28515060-vbfhp",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-20T03:07:42.682418",
+            "title": "Pod oom-kill-cronjob-28515060-vbfhp in namespace nudgebee OOMKilled results",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "pod_oom_killer_enricher",
+            "priority": "HIGH",
+            "id": "d2cc87c3-e8e7-468e-a726-e7ebb5743613",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-7d78849644-tz66b",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-20T03:00:33.344",
+            "title": "High error and critical log messages /k8s/nudgebee-test/auto-pilot-worker-7d78849644-tz66b/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "82ee5f6f-a2a5-46c8-b9f2-9b22f8c9c8ad",
+            "cloud_resource_id": "demo",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "pod",
+            "subject_name": "clickhouse-zookeeper-0",
+            "subject_namespace": "clickhouse",
+            "starts_at": "2024-03-20T02:27:35.382403",
+            "title": "Unhealthy Warning for Pod clickhouse/clickhouse-zookeeper-0",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "Kubernetes Warning Event",
+            "priority": "DEBUG",
+            "id": "d7bf6388-3bbc-44ed-bc5a-47fa9be368a6",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "demo",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-7d78849644-tz66b",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-20T02:25:33.344",
+            "title": "High error and critical log messages /k8s/nudgebee-test/auto-pilot-worker-7d78849644-tz66b/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "442f94db-af9a-43eb-884b-f2327b88a9d7",
+            "cloud_resource_id": "demo",
+            "labels": "{}"
+          }
+        ]
+      }
+    },
+    "k8s_event_groupings": {
+      "data": {
+        "event_groupings": [
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-19T00:00:00",
+            "event_count": 836
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-20T00:00:00",
+            "event_count": 1113
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-21T00:00:00",
+            "event_count": 825
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-22T00:00:00",
+            "event_count": 621
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-23T00:00:00",
+            "event_count": 562
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-24T00:00:00",
+            "event_count": 731
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-25T00:00:00",
+            "event_count": 1008
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-26T00:00:00",
+            "event_count": 1402
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-27T00:00:00",
+            "event_count": 764
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-28T00:00:00",
+            "event_count": 946
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-02-29T00:00:00",
+            "event_count": 1161
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-01T00:00:00",
+            "event_count": 536
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-03T00:00:00",
+            "event_count": 2151
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-04T00:00:00",
+            "event_count": 1651
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-05T00:00:00",
+            "event_count": 1550
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-06T00:00:00",
+            "event_count": 969
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-07T00:00:00",
+            "event_count": 728
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-08T00:00:00",
+            "event_count": 545
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-09T00:00:00",
+            "event_count": 621
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-10T00:00:00",
+            "event_count": 575
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-11T00:00:00",
+            "event_count": 875
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-12T00:00:00",
+            "event_count": 837
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-13T00:00:00",
+            "event_count": 1151
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-14T00:00:00",
+            "event_count": 1912
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-15T00:00:00",
+            "event_count": 3471
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-16T00:00:00",
+            "event_count": 2439
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-17T00:00:00",
+            "event_count": 1585
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-18T00:00:00",
+            "event_count": 1163
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-19T00:00:00",
+            "event_count": 1094
+          },
+          {
+            "tenant_id": "demo",
+            "account_id": "demo",
+            "created_at": "2024-03-20T00:00:00",
+            "event_count": 171
+          }
+        ]
+      }
+    }
+  },
+  "ApplicationLevelErrors": {
+    "notifications-7b465bc6f7-s5zht": {
+      "data": {
+        "events_aggregate": {
+          "aggregate": {
+            "count": 292
+          }
+        },
+        "events": [
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-7b465bc6f7-s5zht",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-28T16:22:30",
+            "title": "High error and critical log messages /k8s/nudgebee-test/notifications-7b465bc6f7-s5zht/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "495b2714-ff53-4a33-93f8-086bffb1cbc1",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-7b465bc6f7-s5zht",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-28T16:22:30",
+            "title": "High error and critical log messages /k8s/nudgebee-test/notifications-7b465bc6f7-s5zht/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "dd6e67ad-39f6-40fa-840c-eabaecd80680",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-7b465bc6f7-s5zht",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-28T16:22:30",
+            "title": "High error and critical log messages /k8s/nudgebee-test/notifications-7b465bc6f7-s5zht/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "64ac557a-c437-4184-8ee7-59d6fa2c98af",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-7b465bc6f7-s5zht",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-28T16:22:30",
+            "title": "High error and critical log messages /k8s/nudgebee-test/notifications-7b465bc6f7-s5zht/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "cac17bfe-d166-4f63-a97e-ffdd6b203641",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-7b465bc6f7-s5zht",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-28T16:22:30",
+            "title": "High error and critical log messages /k8s/nudgebee-test/notifications-7b465bc6f7-s5zht/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "374c8188-ed70-47f6-be0a-766748965b9d",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-7b465bc6f7-s5zht",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-28T16:22:30",
+            "title": "High error and critical log messages /k8s/nudgebee-test/notifications-7b465bc6f7-s5zht/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "a34630c0-e6c5-4baf-a4d0-7f4458d5b0f5",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-7b465bc6f7-s5zht",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-28T16:22:30",
+            "title": "High error and critical log messages /k8s/nudgebee-test/notifications-7b465bc6f7-s5zht/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "f3f8891c-6f77-4cd1-8c83-73411e56aed6",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-7b465bc6f7-s5zht",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-28T16:22:30",
+            "title": "High error and critical log messages /k8s/nudgebee-test/notifications-7b465bc6f7-s5zht/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "4023b830-e1c9-4c18-b8a4-ddbaa3d59bab",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-7b465bc6f7-s5zht",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-28T16:22:30",
+            "title": "High error and critical log messages /k8s/nudgebee-test/notifications-7b465bc6f7-s5zht/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "26d3817e-c454-419d-b9a0-1d920d4bff4d",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-7b465bc6f7-s5zht",
+            "subject_namespace": "nudgebee-test",
+            "starts_at": "2024-03-28T16:22:30",
+            "title": "High error and critical log messages /k8s/nudgebee-test/notifications-7b465bc6f7-s5zht/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "3b620e12-97dd-464f-b270-0e03b1142f41",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          }
+        ]
+      }
+    },
+    "notifications-6bcd9698d6-fzv4f": {
+      "data": {
+        "events_aggregate": {
+          "aggregate": {
+            "count": 88
+          }
+        },
+        "events": [
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-6bcd9698d6-fzv4f",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:27:45",
+            "title": "High error and critical log messages /k8s/nudgebee/notifications-6bcd9698d6-fzv4f/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "af6ff2e7-1b8e-4712-a943-b375cb6ab7b3",
+            "cloud_resource_id": "3b63f040-a042-5ce1-8bb1-9919a8aac1d6",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-6bcd9698d6-fzv4f",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:27:45",
+            "title": "High error and critical log messages /k8s/nudgebee/notifications-6bcd9698d6-fzv4f/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "0269dbd3-e7a4-4ded-a8e0-4c204685052f",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-6bcd9698d6-fzv4f",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:27:45",
+            "title": "High error and critical log messages /k8s/nudgebee/notifications-6bcd9698d6-fzv4f/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "5dbb232c-6359-45ee-9014-2059f7d7fdd8",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-6bcd9698d6-fzv4f",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:27:45",
+            "title": "High error and critical log messages /k8s/nudgebee/notifications-6bcd9698d6-fzv4f/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "f267cc18-a93c-401b-a410-77bd129f9133",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-6bcd9698d6-fzv4f",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:27:45",
+            "title": "High error and critical log messages /k8s/nudgebee/notifications-6bcd9698d6-fzv4f/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "84218098-1844-4313-a808-3b90c254633f",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-6bcd9698d6-fzv4f",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:27:45",
+            "title": "High error and critical log messages /k8s/nudgebee/notifications-6bcd9698d6-fzv4f/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "615ce959-d4e5-4028-957c-f3997d0572a3",
+            "cloud_resource_id": "3b63f040-a042-5ce1-8bb1-9919a8aac1d6",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-6bcd9698d6-fzv4f",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:27:45",
+            "title": "High error and critical log messages /k8s/nudgebee/notifications-6bcd9698d6-fzv4f/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "c25cdccf-57f8-449c-a3a0-c79771b2242e",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-6bcd9698d6-fzv4f",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:27:45",
+            "title": "High error and critical log messages /k8s/nudgebee/notifications-6bcd9698d6-fzv4f/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "d58d0eb3-4e8d-47ba-baa4-563cbc9d839d",
+            "cloud_resource_id": "3b63f040-a042-5ce1-8bb1-9919a8aac1d6",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-6bcd9698d6-fzv4f",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:27:45",
+            "title": "High error and critical log messages /k8s/nudgebee/notifications-6bcd9698d6-fzv4f/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "5ea1f833-f1c7-4de9-a8be-7e8e4ce289e6",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-6bcd9698d6-fzv4f",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:27:45",
+            "title": "High error and critical log messages /k8s/nudgebee/notifications-6bcd9698d6-fzv4f/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "c6067433-5a04-4094-9625-140b5598c37d",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          }
+        ]
+      }
+    },
+    "auto-pilot-worker-6c7f696dcd-2jsl4": {
+      "data": {
+        "events_aggregate": {
+          "aggregate": {
+            "count": 107
+          }
+        },
+        "events": [
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-6c7f696dcd-2jsl4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T11:05:15",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-6c7f696dcd-2jsl4/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "3d0da835-9579-4a68-826c-52f86b83e406",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-6c7f696dcd-2jsl4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:56:00",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-6c7f696dcd-2jsl4/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "a4457eb1-aa9b-4100-baac-3a9dd5b53828",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-6c7f696dcd-2jsl4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:35:30",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-6c7f696dcd-2jsl4/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "eaed75f7-e55c-4104-8c39-e3ccf538169b",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-6c7f696dcd-2jsl4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:35:30",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-6c7f696dcd-2jsl4/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "9cad0a6d-638e-4e4e-9757-f61a0e9f9d78",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-6c7f696dcd-2jsl4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:27:45",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-6c7f696dcd-2jsl4/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "1ec08088-08a5-477e-b99c-4e659fe0d73a",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-6c7f696dcd-2jsl4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:27:45",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-6c7f696dcd-2jsl4/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "50749ebe-83c8-4852-945b-ba8302ea145e",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-6c7f696dcd-2jsl4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:27:45",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-6c7f696dcd-2jsl4/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "8ca7a288-d8f3-495e-8903-327b4ef906d4",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-6c7f696dcd-2jsl4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:16:00",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-6c7f696dcd-2jsl4/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "5812ff38-39b9-4d25-bb28-975b9a6f802c",
+            "cloud_resource_id": "44cc2169-37d7-54f8-abc8-ec4d59412de9",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-6c7f696dcd-2jsl4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:06:00",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-6c7f696dcd-2jsl4/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "3a28897f-ca18-41d4-87da-47841cfdc69d",
+            "cloud_resource_id": "44cc2169-37d7-54f8-abc8-ec4d59412de9",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-6c7f696dcd-2jsl4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:06:00",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-6c7f696dcd-2jsl4/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "0ce1b2e7-f85f-4f77-891b-1fdaa948cdaf",
+            "cloud_resource_id": "44cc2169-37d7-54f8-abc8-ec4d59412de9",
+            "labels": "{}"
+          }
+        ]
+      }
+    },
+    "webapp-c59f5bf8c-p9n2h": {
+      "data": {
+        "events_aggregate": {
+          "aggregate": {
+            "count": 50
+          }
+        },
+        "events": [
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-p9n2h",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:45:15",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-p9n2h/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "3631f33e-04f8-40d4-85ec-d1f17f733fb3",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-p9n2h",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:45:15",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-p9n2h/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "398b10eb-0324-47e3-a4c8-d0be2ee7c422",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-p9n2h",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:29:45",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-p9n2h/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "0b80795a-b631-47b6-ad16-402651d12607",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-p9n2h",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:29:45",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-p9n2h/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "e6154164-d37a-4e8f-b04e-5faa94bd19ea",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-p9n2h",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:29:45",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-p9n2h/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "9db1e187-a742-49a3-a4ef-ccd1f420b240",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-p9n2h",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:29:45",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-p9n2h/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "f219d299-a06f-4af5-b61c-94be5c53c3f1",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-p9n2h",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:29:45",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-p9n2h/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "6ed7123a-aebe-431f-8082-6b36215bf817",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-p9n2h",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:29:45",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-p9n2h/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "6118da56-5c61-41bf-8a98-ebf95eae1acf",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-p9n2h",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:29:45",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-p9n2h/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "d9605e1c-4c60-411c-a711-4bc23c156da9",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-p9n2h",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:29:45",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-p9n2h/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "7bced8ac-252f-4b96-8bf2-f656a727e306",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          }
+        ]
+      }
+    },
+    "auto-pilot-worker-7f85c49979-vlp9g": {
+      "data": {
+        "events_aggregate": {
+          "aggregate": {
+            "count": 92
+          }
+        },
+        "events": [
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-7f85c49979-vlp9g",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T16:35:15",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-7f85c49979-vlp9g/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "669d53a0-49fb-4763-bf16-7a612e236a81",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-7f85c49979-vlp9g",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T16:35:15",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-7f85c49979-vlp9g/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "ddf38fcd-1eaa-490a-a367-7ae749ff65fb",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-7f85c49979-vlp9g",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T16:35:15",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-7f85c49979-vlp9g/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "0c453484-b51d-424c-b97d-1cf5c484b40d",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-7f85c49979-vlp9g",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T16:22:15",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-7f85c49979-vlp9g/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "f41521d9-b8d5-419c-99b9-8f3927eee1cb",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-7f85c49979-vlp9g",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T16:22:15",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-7f85c49979-vlp9g/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "25559c6a-3ebb-4eb1-93d7-890e0eb04478",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-7f85c49979-vlp9g",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T16:22:15",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-7f85c49979-vlp9g/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "61167704-75c5-4629-bede-d400b782292b",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-7f85c49979-vlp9g",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T16:22:15",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-7f85c49979-vlp9g/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "dee18355-8863-4137-8c8f-47ef9bfa2c36",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-7f85c49979-vlp9g",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T16:22:15",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-7f85c49979-vlp9g/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "81068476-a39c-4d5b-a1c7-3daf5336817d",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-7f85c49979-vlp9g",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T16:22:15",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-7f85c49979-vlp9g/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "617c1f55-1a4a-4a4f-b07b-ac5fe8efed2b",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "auto-pilot-worker-7f85c49979-vlp9g",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T16:22:15",
+            "title": "High error and critical log messages /k8s/nudgebee/auto-pilot-worker-7f85c49979-vlp9g/auto-pilot-worker",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "8bb868f8-bb6e-451c-8534-218d18f03c3d",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          }
+        ]
+      }
+    },
+    "notifications-785b9868d-g64n4": {
+      "data": {
+        "events_aggregate": {
+          "aggregate": {
+            "count": 92
+          }
+        },
+        "events": [
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-785b9868d-g64n4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T19:34:55.355047",
+            "title": "Unhealthy Warning for Pod nudgebee/notifications-785b9868d-g64n4",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "Kubernetes Warning Event",
+            "priority": "DEBUG",
+            "id": "6f1bb74a-b5f8-4f77-8331-15f3c50af2c4",
+            "cloud_resource_id": "3b63f040-a042-5ce1-8bb1-9919a8aac1d6",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-785b9868d-g64n4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T19:27:15",
+            "title": "High error and critical log messages /k8s/nudgebee/notifications-785b9868d-g64n4/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "43097cbd-f475-4465-bed1-d7cf30302d4f",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-785b9868d-g64n4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T19:17:15",
+            "title": "High error and critical log messages /k8s/nudgebee/notifications-785b9868d-g64n4/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "14a71b53-e842-4139-8252-9b15f6a84473",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-785b9868d-g64n4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T18:47:15",
+            "title": "High error and critical log messages /k8s/nudgebee/notifications-785b9868d-g64n4/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "a56a8309-399b-46dc-a475-aa216f4da776",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-785b9868d-g64n4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T18:47:15",
+            "title": "High error and critical log messages /k8s/nudgebee/notifications-785b9868d-g64n4/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "11d3920b-936f-4a5c-a08e-1454cea2fdfc",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-785b9868d-g64n4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T18:47:15",
+            "title": "High error and critical log messages /k8s/nudgebee/notifications-785b9868d-g64n4/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "55ffaa54-769a-4c10-aec6-c89f0a4bd900",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-785b9868d-g64n4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T18:47:15",
+            "title": "High error and critical log messages /k8s/nudgebee/notifications-785b9868d-g64n4/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "29b6d541-1bd7-4f64-8886-56306bdaa0c2",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-785b9868d-g64n4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T18:47:15",
+            "title": "High error and critical log messages /k8s/nudgebee/notifications-785b9868d-g64n4/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "abf86536-d2c1-4e7f-b5d9-41ebae6f96f0",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-785b9868d-g64n4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T18:47:15",
+            "title": "High error and critical log messages /k8s/nudgebee/notifications-785b9868d-g64n4/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "32a697c9-71d8-41e8-85d3-dcf109836fd6",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "notifications-785b9868d-g64n4",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T18:27:15",
+            "title": "High error and critical log messages /k8s/nudgebee/notifications-785b9868d-g64n4/notifications",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "24f14e36-1797-4d95-b919-a7d2fa8c26c9",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          }
+        ]
+      }
+    },
+    "webapp-c59f5bf8c-8pbwm": {
+      "data": {
+        "events_aggregate": {
+          "aggregate": {
+            "count": 12
+          }
+        },
+        "events": [
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-8pbwm",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:07:15",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-8pbwm/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "a864cf56-f31a-4070-b78a-8b12cc195eb9",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-8pbwm",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:07:15",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-8pbwm/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "aa700b23-2622-42ac-9f18-435377b34c25",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-8pbwm",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:07:15",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-8pbwm/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "ca81acef-6f18-4d7e-af6c-d0b533ad47aa",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-8pbwm",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:07:15",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-8pbwm/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "658aca51-f5be-49d0-b977-dd174376961f",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-8pbwm",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:07:15",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-8pbwm/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "2977b1be-e05c-4ff1-a8cb-7133bfd2f6a1",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-8pbwm",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T10:07:15",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-8pbwm/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "b9963b2b-a39f-4237-a38d-4477b3d6c7ae",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-8pbwm",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T09:38:45",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-8pbwm/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "59bab1f3-8aa7-4e6a-ba7a-ce73e0cc2785",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-8pbwm",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T09:38:45",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-8pbwm/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "599601a6-e657-4190-9a44-bf1b0d107186",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-8pbwm",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T09:38:45",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-8pbwm/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "cca9df1a-e64b-488d-83e2-ff87bd7500a3",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          },
+          {
+            "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
+            "subject_type": "pod",
+            "subject_name": "webapp-c59f5bf8c-8pbwm",
+            "subject_namespace": "nudgebee",
+            "starts_at": "2024-03-28T09:38:30",
+            "title": "High error and critical log messages /k8s/nudgebee/webapp-c59f5bf8c-8pbwm/webapp",
+            "finding_type": "issue",
+            "cluster": "nudgebee-dev",
+            "status": "CLOSED",
+            "aggregation_key": "HighErrorCriticalLogs",
+            "priority": "HIGH",
+            "id": "dc9c11b8-a4ed-477c-ba00-8e1e5f875596",
+            "cloud_resource_id": "d05261e8-757d-5d76-a2dc-d2edd7e4f4bc",
+            "labels": "{}"
+          }
+        ]
+      }
+    }
+  }
+}

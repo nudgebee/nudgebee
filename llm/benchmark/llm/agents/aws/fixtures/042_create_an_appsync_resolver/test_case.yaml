@@ -1,0 +1,7 @@
+user_prompt: Create an AppSync resolver.
+expected_output:
+- aws appsync create-resolver --api-id <api-id> --type-name <type-name> --field-name
+  <field-name> --data-source-name <data-source-name>
+tags:
+- command
+- aws

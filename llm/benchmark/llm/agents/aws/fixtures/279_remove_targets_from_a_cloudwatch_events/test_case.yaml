@@ -1,0 +1,6 @@
+user_prompt: Remove targets from a CloudWatch Events rule.
+expected_output:
+- aws events remove-targets --rule <rule-name> --ids <target-ids>
+tags:
+- command
+- aws

@@ -1,0 +1,82 @@
+
+CREATE OR REPLACE FUNCTION public.search_auto_playbook(playbook_account_id text, playbook_status text DEFAULT NULL::text, playbook_name text DEFAULT NULL::text, type_filter text DEFAULT NULL::text, name_filter text DEFAULT NULL::text, limit_val integer DEFAULT 10, offset_val integer DEFAULT 0, sort_by text DEFAULT 'created_at'::text, sort_order text DEFAULT 'desc'::text, hasura_session json DEFAULT '{}'::json)
+ RETURNS SETOF auto_playbook
+ LANGUAGE sql
+ STABLE
+AS $function$
+    SELECT *
+    FROM auto_playbook ap
+    WHERE
+        (
+            "hasura_session" ->> 'x-hasura-user-tenant-id' IS NULL
+            OR ap."tenant_id" = ("hasura_session" ->> 'x-hasura-user-tenant-id')::uuid
+        )
+        AND
+        (ap.account_id = playbook_account_id :: uuid) AND
+        (playbook_status IS NULL OR status = playbook_status) AND
+        (playbook_name IS NULL OR name ILIKE '%' || playbook_name || '%') AND
+        (
+    type_filter IS NULL 
+    OR 
+    (
+        (trigger->'event'->>'type' = type_filter) 
+        OR 
+        (type_filter = 'schedule' AND trigger->>'schedule' IS NOT NULL)
+    )
+)
+        AND
+        (name_filter IS NULL OR EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(resource_filter) AS rf
+            WHERE rf->>'name' = name_filter
+        )) 
+        ORDER BY 
+        (case when sort_by = 'created_at' and sort_order = 'asc' then ap.created_at end)  asc,
+        (case when sort_by = 'created_at' and sort_order = 'desc' then ap.created_at end)  desc,
+        (case when sort_by = 'last_executed_time' and sort_order = 'asc' then ap.last_executed_time end)  asc,
+        (case when sort_by = 'last_executed_time' and sort_order = 'desc' then ap.last_executed_time end)  desc,
+        (case when sort_by = 'name' and sort_order = 'asc' then ap.name end)  asc,
+        (case when sort_by = 'name' and sort_order = 'desc' then ap.name end)  desc
+        LIMIT limit_val OFFSET offset_val;
+$function$;
+
+CREATE OR REPLACE FUNCTION public.search_auto_playbook(playbook_account_id text, playbook_status text DEFAULT NULL::text, playbook_name text DEFAULT NULL::text, type_filter text DEFAULT NULL::text, name_filter text DEFAULT NULL::text, limit_val integer DEFAULT 10, offset_val integer DEFAULT 0, sort_by text DEFAULT 'created_at'::text, sort_order text DEFAULT 'desc'::text, hasura_session json DEFAULT '{}'::json)
+ RETURNS SETOF auto_playbook
+ LANGUAGE sql
+ STABLE
+AS $function$
+    SELECT *
+    FROM auto_playbook ap
+    WHERE
+        (
+            "hasura_session" ->> 'x-hasura-user-tenant-id' IS NULL
+            OR ap."tenant_id" = ("hasura_session" ->> 'x-hasura-user-tenant-id')::uuid
+        )
+        AND
+        (ap.account_id = playbook_account_id :: uuid) AND
+        (playbook_status IS NULL OR status = playbook_status) AND
+        (playbook_name IS NULL OR name ILIKE '%' || playbook_name || '%') AND
+        (
+    type_filter IS NULL 
+    OR 
+    (
+        (trigger->'event'->>'type' = type_filter) 
+        OR 
+        (type_filter = 'schedule' AND trigger->>'schedule' IS NOT NULL)
+    )
+)
+        AND
+        (name_filter IS NULL OR EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(resource_filter) AS rf
+            WHERE rf->>'name' = name_filter
+        )) 
+        ORDER BY 
+        (case when sort_by = 'created_at' and sort_order = 'asc' then ap.created_at end)  asc,
+        (case when sort_by = 'created_at' and sort_order = 'desc' then ap.created_at end)  desc,
+        (case when sort_by = 'last_executed_time' and sort_order = 'asc' then ap.last_executed_time end)  asc,
+        (case when sort_by = 'last_executed_time' and sort_order = 'desc' then ap.last_executed_time end)  desc,
+        (case when sort_by = 'name' and sort_order = 'asc' then ap.name end)  asc,
+        (case when sort_by = 'name' and sort_order = 'desc' then ap.name end)  desc
+        LIMIT limit_val OFFSET offset_val;
+$function$;

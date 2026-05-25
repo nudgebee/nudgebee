@@ -1,0 +1,7 @@
+apiVersion: v2
+name: migrations
+keywords:
+  - migrations
+type: application
+version: "0.1"
+appVersion: "V0.1"

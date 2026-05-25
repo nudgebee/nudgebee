@@ -1,0 +1,19 @@
+name: test-matrix-output-workflow
+definition:
+  triggers:
+    - type: manual
+  tasks:
+    - id: transform_task
+      type: data.transform
+      params:
+        expression: "['apple', 'banana', 'cherry']"
+        inputType: json
+        input: "{}"
+    - id: matrix-task
+      type: core.print
+      matrix:
+        fruit: "{{ Tasks.transform_task.output.data }}"
+      depends_on:
+        - transform_task
+      params:
+        message: "Expanded: {{ Matrix.fruit }}"

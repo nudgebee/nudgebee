@@ -1,0 +1,7 @@
+user_prompt: Create a CodeBuild project.
+expected_output:
+- aws codebuild create-project --name <project-name> --source <source-config> --artifacts
+  <artifacts-config> --environment <environment-config> --service-role <service-role-arn>
+tags:
+- command
+- aws

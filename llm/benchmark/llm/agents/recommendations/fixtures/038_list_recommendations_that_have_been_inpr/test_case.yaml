@@ -1,0 +1,7 @@
+user_prompt: List recommendations that have been 'InProgress' for more than 7 days.
+expected_output:
+- SELECT namespace, name, category, updated_at from recommendation_view WHERE status
+  = 'InProgress' AND updated_at < NOW() - INTERVAL '7 days';
+tags:
+- command
+- recommendations

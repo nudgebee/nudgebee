@@ -1,0 +1,7 @@
+user_prompt: Find the maximum estimated saving among all 'RightSizing' recommendations.
+expected_output:
+- SELECT MAX(estimated_saving) AS max_rightsizing_saving from recommendation_view
+  WHERE category = 'RightSizing';
+tags:
+- command
+- recommendations

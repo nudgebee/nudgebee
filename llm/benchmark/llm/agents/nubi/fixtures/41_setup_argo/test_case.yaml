@@ -1,0 +1,6 @@
+user_prompt: "How can I give you access to argo applications?"
+expected_output: |
+  The answer should explain how to configure ArgoCD integration, including providing the ArgoCD server URL and authentication token
+tags:
+  - easy
+  - transparency

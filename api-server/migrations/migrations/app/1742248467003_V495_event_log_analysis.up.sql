@@ -1,0 +1,10 @@
+alter table public.event_log_analysis 
+drop constraint if exists event_log_analysis_fingerprint_aggregationkey_accountid;
+
+ALTER TABLE public.event_log_analysis
+DROP CONSTRAINT if exists event_log_analysis_event_fingerprint_cloud_account_id_event_agg;
+
+ALTER TABLE public.event_log_analysis 
+	ADD CONSTRAINT event_log_analysis_event_fingerprint_cloud_account_id_event_agg 
+	UNIQUE (event_fingerprint, cloud_account_id, event_aggregation_key, analysis_type);
+

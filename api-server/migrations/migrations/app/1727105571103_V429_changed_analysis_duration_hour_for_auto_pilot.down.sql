@@ -1,0 +1,8 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- UPDATE
+--     auto_pilot
+-- SET
+--     rule = jsonb_set(rule, '{analysis_duration_hour}', '168' :: jsonb)
+-- WHERE
+--     category = 'continuous_rightsize';

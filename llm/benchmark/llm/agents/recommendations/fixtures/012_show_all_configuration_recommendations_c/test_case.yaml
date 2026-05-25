@@ -1,0 +1,8 @@
+user_prompt: Show all 'Configuration' recommendations created since the beginning
+  of the year.
+expected_output:
+- SELECT namespace, name, recommendation, created_at from recommendation_view WHERE
+  category = 'Configuration' AND created_at >= date_trunc('year', NOW());
+tags:
+- command
+- recommendations

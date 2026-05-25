@@ -1,0 +1,7 @@
+user_prompt: Get error logs for payment-service
+expected_output: '{"where": {"service.name": {"_eq": "payment-service"}, "severity_text": {"_eq": "ERROR"}}}'
+tags:
+  - command
+  - error-logs
+  - signoz
+

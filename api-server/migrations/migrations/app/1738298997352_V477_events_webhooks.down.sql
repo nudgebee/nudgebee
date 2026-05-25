@@ -1,0 +1,1 @@
+drop table if exists event_incoming_webhooks;

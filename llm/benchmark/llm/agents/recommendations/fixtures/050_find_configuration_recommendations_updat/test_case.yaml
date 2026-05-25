@@ -1,0 +1,9 @@
+user_prompt: Find 'Configuration' recommendations updated in the last week with 'High'
+  or 'Critical' severity.
+expected_output:
+- SELECT namespace, name, rule_name, severity, updated_at from recommendation_view
+  WHERE category = 'Configuration' AND severity IN ('High', 'Critical') AND updated_at
+  >= NOW() - INTERVAL '7 days';
+tags:
+- command
+- recommendations

@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_k8s_pods_active_account_namespace;

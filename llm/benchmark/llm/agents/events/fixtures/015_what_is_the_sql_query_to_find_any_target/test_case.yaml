@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to find any 'Target Unreachable' alerts?
+expected_output:
+- SELECT id, title, description, starts_at, status, priority, subject_name, subject_namespace   FROM
+  events   WHERE aggregation_key = 'TargetDown';
+- SELECT * FROM events   WHERE aggregation_key = 'TargetDown';
+tags:
+- command
+- events

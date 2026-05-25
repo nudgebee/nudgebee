@@ -1,0 +1,134 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E19: SSM Parameter Store path mismatch (case sensitivity).
+  User complaint: "Our Lambda function 'e19-config-loader' fails at startup with
+  'ParameterNotFound' when trying to read configuration from SSM Parameter Store.
+  The parameter definitely exists — I can see it in the console."
+  Root cause: Lambda reads from '/prod/App/database-url' but the parameter is stored
+  at '/prod/app/database-url' (lowercase 'app'). SSM paths are case-sensitive.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Lambda reads '/prod/App/database-url' but param is '/prod/app/database-url'.
+      Fixed = Lambda reads '/prod/app/database-url' matching the actual param path.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  DatabaseUrlParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /prod/app/database-url
+      Type: String
+      Value: postgresql://db.internal:5432/orders
+      Description: Database connection URL for order service
+      Tags:
+        Environment: production
+        Application: order-service
+
+  ApiKeyParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: /prod/app/api-key
+      Type: String
+      Value: sk-prod-abc123def456
+      Description: External API key for payment provider
+      Tags:
+        Environment: production
+        Application: order-service
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: e19-config-loader-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ssm-read
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/app/*'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/prod/App/*'
+
+  # THE BUG: SSM_PATH uses '/prod/App/' (capital A) but param is at '/prod/app/' (lowercase)
+  ConfigLoaderFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: e19-config-loader
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Environment:
+        Variables:
+          SSM_PATH: !If [IsFixed, '/prod/app/', '/prod/App/']
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+
+          ssm = boto3.client('ssm')
+
+          def handler(event, context):
+              path = os.environ['SSM_PATH']
+              try:
+                  db_url = ssm.get_parameter(
+                      Name=f"{path}database-url"
+                  )['Parameter']['Value']
+                  api_key = ssm.get_parameter(
+                      Name=f"{path}api-key"
+                  )['Parameter']['Value']
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({'db_connected': True, 'api_configured': True})
+                  }
+              except ssm.exceptions.ParameterNotFound as e:
+                  print(f"ParameterNotFound: {e}")
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({'error': f'Config not found at {path}'})
+                  }
+      Tags:
+        - Key: Name
+          Value: e19-config-loader
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: order-service
+
+Outputs:
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref ConfigLoaderFunction
+  SSMPath:
+    Description: SSM path used by Lambda (has case mismatch in Broken mode)
+    Value: !If [IsFixed, '/prod/app/', '/prod/App/']
+  ActualParameterPath:
+    Description: Actual SSM parameter path
+    Value: /prod/app/database-url
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

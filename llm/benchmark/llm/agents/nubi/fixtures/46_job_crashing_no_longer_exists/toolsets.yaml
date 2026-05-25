@@ -1,0 +1,10 @@
+toolsets:
+  kubernetes/core:
+    enabled: true
+  kubernetes/logs:
+    enabled: false  # Job is deleted, kubectl logs won't work
+  grafana/loki:
+    enabled: true
+    config:
+      url: http://localhost:3146
+      api_key: ""

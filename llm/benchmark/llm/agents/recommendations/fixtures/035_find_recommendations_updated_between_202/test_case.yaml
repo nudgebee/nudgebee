@@ -1,0 +1,7 @@
+user_prompt: Find recommendations updated between '2024-05-01' and '2024-05-31'.
+expected_output:
+- SELECT namespace, name, category, updated_at from recommendation_view WHERE updated_at
+  >= '2024-05-01' AND updated_at < '2024-06-01';
+tags:
+- command
+- recommendations

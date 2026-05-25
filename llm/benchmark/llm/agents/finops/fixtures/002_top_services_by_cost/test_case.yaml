@@ -1,0 +1,16 @@
+user_prompt: "Which services are driving the most cost?"
+expected_output:
+  - |
+    The answer should call spend_summary with group_by=service and present a
+    ranked table of the top services with their current spend in dollars,
+    previous period spend, and percentage change. Each row should include a
+    trend indicator: (stable) for <5% change, NEW for services absent in the
+    previous period, GONE for terminated services. The headline should name
+    the top one or two services driving cost with dollar figures. Cite
+    [spend_summary] for every figure.
+tags:
+  - spend
+  - overview
+  - service
+  - easy
+  - finops

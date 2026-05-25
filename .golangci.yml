@@ -1,0 +1,12 @@
+version: "2"
+
+# This config is intentionally minimal — it ONLY enables formatting checks.
+# Module-level `make lint` calls `golangci-lint run`, which walks up the
+# directory tree and picks this up. Existing per-module linter behavior
+# (default linter set) is preserved; we just add a formatter check that
+# fails the run if any Go file is not gofmt-clean.
+#
+# Fix locally with: gofmt -w <module-dir>  (or  golangci-lint fmt)
+formatters:
+  enable:
+    - gofmt

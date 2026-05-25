@@ -1,0 +1,18 @@
+user_prompt: The data pipeline Function App in resource group 'azure-agent-test-H02'
+  is failing to trigger on new blobs in the storage container. The blob trigger is
+  configured but no functions are executing. What is wrong?
+expected_output:
+- 'Two issues found: (1) The AzureWebJobsStorage connection string references a non-existent
+  storage account name instead of the actual storage account. The Function App cannot
+  read the blob trigger lease. (2) The actual storage account has networkAcls defaultAction=Deny
+  with no IP rules or VNet rules, blocking all access including from the Function App.
+  Fix: Update AzureWebJobsStorage to use the correct storage account connection string,
+  and either change the storage networkAcls defaultAction to Allow or add the Function
+  App''s outbound IPs to the firewall rules.'
+agent: azure_debug
+scenario: H02
+type: rca
+tags:
+- rca
+- hard
+- azure

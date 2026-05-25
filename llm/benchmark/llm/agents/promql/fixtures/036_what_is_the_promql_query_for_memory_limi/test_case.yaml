@@ -1,0 +1,9 @@
+user_prompt: what is the promql query for memory limit usage for the 'data-processor'
+  container in the 'analytics' namespace?
+expected_output:
+- kube_pod_container_resource_limits_memory_bytes{container="data-processor", namespace="analytics"}
+- sum(kube_pod_container_resource_limits_memory_bytes{container="data-processor",
+  namespace="analytics"})
+tags:
+- command
+- promql

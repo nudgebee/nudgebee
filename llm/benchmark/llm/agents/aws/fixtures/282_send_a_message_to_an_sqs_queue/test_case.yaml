@@ -1,0 +1,6 @@
+user_prompt: Send a message to an SQS queue.
+expected_output:
+- aws sqs send-message --queue-url <queue-url> --message-body <message-body>
+tags:
+- command
+- aws

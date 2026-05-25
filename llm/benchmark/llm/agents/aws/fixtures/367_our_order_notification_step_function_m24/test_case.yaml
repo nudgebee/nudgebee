@@ -1,0 +1,26 @@
+user_prompt: Our order notification workflow in Step Function 'm24-order-notify' sends
+  notifications via SNS topic 'm24-notifications' to SQS queue 'm24-email-queue'.
+  Lambda consumer 'm24-email-sender' gets JSON parse errors when processing messages.
+  SNS shows messages delivered, SQS shows messages received, but Lambda fails trying
+  to read 'customerEmail' from the message body. What's wrong?
+expected_output:
+- The root cause is that the SNS subscription to the SQS queue has RawMessageDelivery
+  set to false (the default). When RawMessageDelivery is false, SNS wraps the original
+  message in an SNS envelope JSON structure containing fields like Type, MessageId,
+  TopicArn, and Message (where the original payload is a JSON-encoded string within
+  the Message field). The Lambda consumer expects the SQS message body to contain the
+  direct JSON payload with 'customerEmail' and 'orderId' fields, but instead receives
+  the SNS wrapper. Since the wrapper doesn't have a 'customerEmail' field at the top
+  level, the Lambda raises a ValueError. The original payload is buried inside the
+  'Message' field as a double-encoded JSON string. The fix is to set RawMessageDelivery
+  to true on the SNS-to-SQS subscription, which causes SNS to deliver the original
+  message payload directly without wrapping.
+tags:
+- rca
+- aws
+- step-functions
+- sns
+- sqs
+- raw-message-delivery
+type: rca
+agent: aws_debug

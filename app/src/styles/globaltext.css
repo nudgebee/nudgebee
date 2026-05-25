@@ -1,0 +1,943 @@
+/* Google Fonts Import */
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600&family=Roboto:wght@300;400;500;600;700&family=Roboto+Mono:wght@400;500&display=swap');
+
+/* ========================================
+   NUDGEBEE TYPOGRAPHY UTILITY CLASSES
+   Generated from codebase analysis
+
+   Naming Convention: nb-text-[category]-[variant]
+
+   Categories:
+   - body: Body text variants
+   - h1, h2, h3: Heading variants
+   - subtext: Secondary/helper text
+   - table: Table-specific text
+   - label: Labels and key-value pairs
+   - metric: Dashboard metrics and KPIs
+   - status: Status and alert indicators
+   - code: Code and technical text
+   - timestamp: Time-related text
+   - nav: Navigation text
+   - tooltip: Tooltips and hints
+   - chart: Chart labels and legends
+   - badge: Badges and tags
+   - empty: Empty and error states
+   ======================================== */
+
+/* ========================================
+   CSS VARIABLES (Design Tokens)
+   ======================================== */
+:root {
+  /* Font Families */
+  --nb-font-primary: 'Roboto', sans-serif;
+  --nb-font-secondary: 'Poppins', sans-serif;
+  --nb-font-mono: 'Roboto Mono', 'Consolas', monospace;
+
+  /* Primary Text Colors */
+  --nb-text-primary: #3b82f6;
+  --nb-text-secondary: #374151;
+  --nb-text-tertiary: #737373;
+  --nb-text-muted: #9f9f9f;
+  --nb-text-disabled: #b9b9b9;
+  --nb-text-white: #ffffff;
+  --nb-text-black: #000000;
+  --nb-text-title: #22304b;
+  --nb-text-dark: #313131;
+
+  /* Semantic Colors */
+  --nb-text-success: #16a34a;
+  --nb-text-error: #dc2626;
+  --nb-text-warning: #eab308;
+  --nb-text-info: #3b82f6;
+  --nb-text-critical: #ef4444;
+  --nb-text-currency: #22c55e;
+
+  /* Observability Colors */
+  --nb-text-cpu-limit: #ef4444;
+  --nb-text-cpu-recommendation: #16a34a;
+  --nb-text-cpu-requested: #3b82f6;
+  --nb-text-cpu-usage: #ffa500;
+  --nb-text-memory-limit: #ef4444;
+  --nb-text-memory-recommendation: #16a34a;
+  --nb-text-memory-requested: #3b82f6;
+  --nb-text-memory-usage: #ffa500;
+
+  /* Font Sizes */
+  --nb-text-xs: 10px;
+  --nb-text-sm: 11px;
+  --nb-text-base: 12px;
+  --nb-text-md: 13px;
+  --nb-text-lg: 14px;
+  --nb-text-xl: 16px;
+  --nb-text-2xl: 18px;
+  --nb-text-3xl: 20px;
+  --nb-text-4xl: 24px;
+  --nb-text-5xl: 28px;
+  --nb-text-6xl: 34px;
+
+  /* Font Weights */
+  --nb-font-light: 300;
+  --nb-font-normal: 400;
+  --nb-font-medium: 500;
+  --nb-font-semibold: 600;
+  --nb-font-bold: 700;
+
+  /* Line Heights */
+  --nb-leading-tight: 1.2;
+  --nb-leading-snug: 1.3;
+  --nb-leading-normal: 1.4;
+  --nb-leading-relaxed: 1.5;
+  --nb-leading-loose: 1.6;
+}
+
+/* ========================================
+   BODY TEXT
+   Primary content text variants
+   ======================================== */
+
+/* Primary Body - 13px (Most common for content) */
+.nb-text-body-primary {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-md);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-secondary);
+}
+
+/* Compact Body - 12px (Dense UI areas) */
+.nb-text-body-compact {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-secondary);
+}
+
+/* Large Body - 14px (Emphasized content) */
+.nb-text-body-large {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-lg);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-secondary);
+}
+
+/* XLarge Body - 16px (Prominent content) */
+.nb-text-body-xlarge {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-xl);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-relaxed);
+  color: var(--nb-text-secondary);
+}
+
+/* ========================================
+   HEADING 1 - Page Level Headers
+   20px primary, variants for different contexts
+   ======================================== */
+
+/* Page Header - 20px semibold */
+.nb-text-h1-page {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-3xl);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-tight);
+  color: var(--nb-text-secondary);
+  margin: 0;
+}
+
+/* Page Header Alt - 20px bold, title color */
+.nb-text-h1-page-alt {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-3xl);
+  font-weight: var(--nb-font-bold);
+  line-height: var(--nb-leading-tight);
+  color: var(--nb-text-title);
+  margin: 0;
+}
+
+/* Page Sub-header - 18px */
+.nb-text-h1-sub {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-2xl);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-snug);
+  color: var(--nb-text-tertiary);
+  margin: 0;
+}
+
+/* ========================================
+   HEADING 2 - Section Level Headers
+   16px for section divisions
+   ======================================== */
+
+/* Section Header - 16px semibold */
+.nb-text-h2-section {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-xl);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-snug);
+  color: var(--nb-text-secondary);
+  margin: 0;
+}
+
+/* Section Header Alt - 16px bold */
+.nb-text-h2-section-alt {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-xl);
+  font-weight: var(--nb-font-bold);
+  line-height: var(--nb-leading-snug);
+  color: var(--nb-text-title);
+  margin: 0;
+}
+
+/* Section Sub-header - 14px semibold */
+.nb-text-h2-sub {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-lg);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-snug);
+  color: var(--nb-text-tertiary);
+  margin: 0;
+}
+
+/* ========================================
+   HEADING 3 - Widget/Card Headers
+   14px for compact headers
+   ======================================== */
+
+/* Widget Header - 14px semibold */
+.nb-text-h3-widget {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-lg);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-secondary);
+  margin: 0;
+}
+
+/* Widget Header Alt - 14px bold */
+.nb-text-h3-widget-alt {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-lg);
+  font-weight: var(--nb-font-bold);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-title);
+  margin: 0;
+}
+
+/* Widget Sub-header - 12px semibold */
+.nb-text-h3-sub {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-tertiary);
+  margin: 0;
+}
+
+/* ========================================
+   SUBTEXT - Helper & Secondary Text
+   Small text for captions, hints, metadata
+   ======================================== */
+
+/* Primary Subtext - 12px */
+.nb-text-subtext-primary {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-tertiary);
+}
+
+/* Secondary Subtext - 11px */
+.nb-text-subtext-secondary {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-sm);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-muted);
+}
+
+/* Tertiary Subtext - 10px (micro text) */
+.nb-text-subtext-tertiary {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-xs);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-disabled);
+}
+
+/* ========================================
+   TABLE TEXT
+   Specialized text for data tables
+   ======================================== */
+
+/* Table Header - 12px semibold */
+.nb-text-table-header {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-tertiary);
+  text-transform: none;
+}
+
+/* Table Header Uppercase */
+.nb-text-table-header-caps {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-sm);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Table Row Primary - 13px */
+.nb-text-table-row-primary {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-md);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-secondary);
+}
+
+/* Table Row Secondary - 14px */
+.nb-text-table-row-secondary {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-lg);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-secondary);
+}
+
+/* Table Subtext - 12px muted */
+.nb-text-table-subtext {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-muted);
+}
+
+/* ========================================
+   LABELS - Form Labels & Key-Value Pairs
+   ======================================== */
+
+/* Label Key - 12px medium */
+.nb-text-label-key {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-medium);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-tertiary);
+}
+
+/* Label Key Secondary - 11px */
+.nb-text-label-key-secondary {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-sm);
+  font-weight: var(--nb-font-medium);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-muted);
+}
+
+/* Label Value - 13px */
+.nb-text-label-value {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-md);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-secondary);
+}
+
+/* Label Value Emphasized - 13px medium */
+.nb-text-label-value-emphasis {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-md);
+  font-weight: var(--nb-font-medium);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-secondary);
+}
+
+/* ========================================
+   METRICS & NUMBERS
+   Dashboard KPIs, counters, percentages
+   ======================================== */
+
+/* Metric Value - Large display number */
+.nb-text-metric-value {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-4xl);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-tight);
+  color: var(--nb-text-secondary);
+}
+
+/* Metric Value Small - Compact metrics */
+.nb-text-metric-value-sm {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-lg);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-tight);
+  color: var(--nb-text-secondary);
+}
+
+/* Metric Value Large - Hero metrics */
+.nb-text-metric-value-lg {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-5xl);
+  font-weight: var(--nb-font-bold);
+  line-height: var(--nb-leading-tight);
+  color: var(--nb-text-secondary);
+}
+
+/* Metric Label - Description for metrics */
+.nb-text-metric-label {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-tertiary);
+}
+
+/* Metric Unit - Units like ms, %, req/s */
+.nb-text-metric-unit {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-muted);
+}
+
+/* Metric Delta - Change indicators +/-% */
+.nb-text-metric-delta {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-medium);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-secondary);
+}
+
+/* Metric Currency - Dollar amounts */
+.nb-text-metric-currency {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-lg);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-tight);
+  color: var(--nb-text-currency);
+}
+
+/* Metric Currency Large */
+.nb-text-metric-currency-lg {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-4xl);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-tight);
+  color: var(--nb-text-currency);
+}
+
+/* ========================================
+   STATUS & ALERTS
+   Severity indicators, health status
+   ======================================== */
+
+/* Status Critical - Red alert */
+.nb-text-status-critical {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-critical);
+}
+
+/* Status Warning - Yellow warning */
+.nb-text-status-warning {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-warning);
+}
+
+/* Status Healthy - Green OK */
+.nb-text-status-healthy {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-success);
+}
+
+/* Status Info - Blue informational */
+.nb-text-status-info {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-info);
+}
+
+/* Status Unknown - Gray unknown */
+.nb-text-status-unknown {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-muted);
+}
+
+/* ========================================
+   CODE & TECHNICAL
+   Log viewers, trace details, code snippets
+   ======================================== */
+
+/* Code Inline - Inline code snippets */
+.nb-text-code-inline {
+  font-family: var(--nb-font-mono);
+  font-size: var(--nb-text-md);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-dark);
+  background-color: #f5f5f5;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* Code Block - Multi-line code */
+.nb-text-code-block {
+  font-family: var(--nb-font-mono);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-relaxed);
+  color: var(--nb-text-secondary);
+}
+
+/* Log Entry - Log viewer lines */
+.nb-text-log-entry {
+  font-family: var(--nb-font-mono);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-secondary);
+}
+
+/* Trace ID - Distributed trace identifiers */
+.nb-text-trace-id {
+  font-family: var(--nb-font-mono);
+  font-size: var(--nb-text-sm);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-primary);
+}
+
+/* Span Name - Trace span names */
+.nb-text-span-name {
+  font-family: var(--nb-font-mono);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-medium);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-secondary);
+}
+
+/* Query Text - Database/API queries */
+.nb-text-query {
+  font-family: var(--nb-font-mono);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-relaxed);
+  color: var(--nb-text-secondary);
+}
+
+/* ========================================
+   TIMESTAMPS
+   Event times, relative times, log timestamps
+   ======================================== */
+
+/* Timestamp Primary - Full timestamp */
+.nb-text-timestamp-primary {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-disabled);
+}
+
+/* Timestamp Relative - "5 mins ago" style */
+.nb-text-timestamp-relative {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-muted);
+}
+
+/* Timestamp Compact - HH:MM:SS.mmm */
+.nb-text-timestamp-compact {
+  font-family: var(--nb-font-mono);
+  font-size: var(--nb-text-sm);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-muted);
+}
+
+/* ========================================
+   NAVIGATION
+   Sidebar, tabs, breadcrumbs
+   ======================================== */
+
+/* Nav Primary - Main navigation items */
+.nb-text-nav-primary {
+  font-family: var(--nb-font-secondary);
+  font-size: var(--nb-text-lg);
+  font-weight: var(--nb-font-medium);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-secondary);
+}
+
+/* Nav Secondary - Sub-navigation items */
+.nb-text-nav-secondary {
+  font-family: var(--nb-font-secondary);
+  font-size: var(--nb-text-md);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-tertiary);
+}
+
+/* Breadcrumb - Path navigation */
+.nb-text-breadcrumb {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-tertiary);
+}
+
+/* Tab Label - Tab navigation */
+.nb-text-tab-label {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-lg);
+  font-weight: var(--nb-font-medium);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-tertiary);
+}
+
+/* Tab Label Active */
+.nb-text-tab-label-active {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-lg);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-secondary);
+}
+
+/* ========================================
+   TOOLTIPS & HINTS
+   Hover info, help text, empty states
+   ======================================== */
+
+/* Tooltip - Hover information */
+.nb-text-tooltip {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-snug);
+  color: var(--nb-text-white);
+}
+
+/* Tooltip Large */
+.nb-text-tooltip-lg {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-lg);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-white);
+}
+
+/* Hint - Helper text */
+.nb-text-hint {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-muted);
+  font-style: italic;
+}
+
+/* Placeholder - Input placeholders */
+.nb-text-placeholder {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-lg);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-disabled);
+}
+
+/* ========================================
+   CHARTS & LEGENDS
+   Graph labels, legends, annotations
+   ======================================== */
+
+/* Chart Title */
+.nb-text-chart-title {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-xl);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-snug);
+  color: var(--nb-text-secondary);
+}
+
+/* Chart Axis Label */
+.nb-text-chart-axis {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-sm);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-tertiary);
+}
+
+/* Chart Legend */
+.nb-text-chart-legend {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-medium);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-secondary);
+}
+
+/* Chart Annotation */
+.nb-text-chart-annotation {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-xs);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-muted);
+}
+
+/* Chart Data Label */
+.nb-text-chart-data {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-sm);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-tight);
+  color: var(--nb-text-secondary);
+}
+
+/* ========================================
+   BADGES & TAGS
+   Service tags, environment labels, versions
+   ======================================== */
+
+/* Badge - Status badges */
+.nb-text-badge {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-sm);
+  font-weight: var(--nb-font-medium);
+  line-height: var(--nb-leading-tight);
+  color: var(--nb-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+/* Tag - Service/env tags */
+.nb-text-tag {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-base);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-normal);
+  color: var(--nb-text-secondary);
+}
+
+/* Chip - Compact labels */
+.nb-text-chip {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-sm);
+  font-weight: var(--nb-font-medium);
+  line-height: var(--nb-leading-tight);
+  color: var(--nb-text-tertiary);
+}
+
+/* ========================================
+   EMPTY & ERROR STATES
+   No data states, error handling
+   ======================================== */
+
+/* Empty Title - "No data" headings */
+.nb-text-empty-title {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-xl);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-snug);
+  color: var(--nb-text-tertiary);
+}
+
+/* Empty Description - Explanatory text */
+.nb-text-empty-description {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-lg);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-relaxed);
+  color: var(--nb-text-muted);
+}
+
+/* Error Title - Error headings */
+.nb-text-error-title {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-xl);
+  font-weight: var(--nb-font-semibold);
+  line-height: var(--nb-leading-snug);
+  color: var(--nb-text-error);
+}
+
+/* Error Message - Error descriptions */
+.nb-text-error-message {
+  font-family: var(--nb-font-primary);
+  font-size: var(--nb-text-lg);
+  font-weight: var(--nb-font-normal);
+  line-height: var(--nb-leading-relaxed);
+  color: var(--nb-text-error);
+}
+
+/* ========================================
+   COLOR MODIFIER CLASSES
+   Apply as additional classes to change color
+   ======================================== */
+
+/* Default - Included by base class, optional override */
+.nb-text-color-default {
+  color: var(--nb-text-secondary);
+}
+
+/* Muted - Secondary, less important */
+.nb-text-color-muted {
+  color: var(--nb-text-muted);
+}
+
+/* Accent - Highlighted, linked text */
+.nb-text-color-accent {
+  color: var(--nb-text-primary);
+}
+
+/* Positive - Improvements, success */
+.nb-text-color-positive {
+  color: var(--nb-text-success);
+}
+
+/* Negative - Declines, errors */
+.nb-text-color-negative {
+  color: var(--nb-text-error);
+}
+
+/* Warning - Caution states */
+.nb-text-color-warning {
+  color: var(--nb-text-warning);
+}
+
+/* Info - Informational */
+.nb-text-color-info {
+  color: var(--nb-text-info);
+}
+
+/* White - On dark backgrounds */
+.nb-text-color-white {
+  color: var(--nb-text-white);
+}
+
+/* Title - Dark title color */
+.nb-text-color-title {
+  color: var(--nb-text-title);
+}
+
+/* Currency - Green money color */
+.nb-text-color-currency {
+  color: var(--nb-text-currency);
+}
+
+/* ========================================
+   WEIGHT MODIFIER CLASSES
+   Override default font weight
+   ======================================== */
+
+.nb-text-weight-light {
+  font-weight: var(--nb-font-light);
+}
+
+.nb-text-weight-normal {
+  font-weight: var(--nb-font-normal);
+}
+
+.nb-text-weight-medium {
+  font-weight: var(--nb-font-medium);
+}
+
+.nb-text-weight-semibold {
+  font-weight: var(--nb-font-semibold);
+}
+
+.nb-text-weight-bold {
+  font-weight: var(--nb-font-bold);
+}
+
+/* ========================================
+   ALIGNMENT MODIFIER CLASSES
+   ======================================== */
+
+.nb-text-align-left {
+  text-align: left;
+}
+
+.nb-text-align-center {
+  text-align: center;
+}
+
+.nb-text-align-right {
+  text-align: right;
+}
+
+/* ========================================
+   UTILITY CLASSES
+   Additional text utilities
+   ======================================== */
+
+/* Truncate with ellipsis */
+.nb-text-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* No wrap */
+.nb-text-nowrap {
+  white-space: nowrap;
+}
+
+/* Uppercase transform */
+.nb-text-uppercase {
+  text-transform: uppercase;
+}
+
+/* Capitalize */
+.nb-text-capitalize {
+  text-transform: capitalize;
+}
+
+/* Lowercase */
+.nb-text-lowercase {
+  text-transform: lowercase;
+}
+
+/* Underline */
+.nb-text-underline {
+  text-decoration: underline;
+}
+
+/* Line through */
+.nb-text-line-through {
+  text-decoration: line-through;
+}
+
+/* No decoration */
+.nb-text-no-decoration {
+  text-decoration: none;
+}

@@ -1,0 +1,10 @@
+user_prompt: what is the promql query for network transmit rate on eth0 for node-4?
+expected_output:
+- rate(node_network_transmit_bytes_total{instance="node-4", device="eth0"}[5m])
+- sum by (instance) (rate(node_network_transmit_bytes_total{device="eth0"}[5m]))
+- 'rate(node_network_transmit_packets_total{device="eth0", instance="node-4"}[5m])
+
+  '
+tags:
+- command
+- promql

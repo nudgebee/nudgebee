@@ -1,0 +1,7 @@
+user_prompt: Create a CodeDeploy deployment.
+expected_output:
+- aws codedeploy create-deployment --application-name <application-name> --deployment-group-name
+  <deployment-group-name> --revision <revision-location>
+tags:
+- command
+- aws

@@ -1,0 +1,7 @@
+user_prompt: Extend Lambda timeout.
+expected_output:
+- aws lambda update-function-configuration --function-name <function-name> --timeout
+  <new-timeout>
+tags:
+- command
+- aws

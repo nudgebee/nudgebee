@@ -1,0 +1,98 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "H05: App Service processes Service Bus messages but: (1) SERVICE_BUS_CONNECTION_STRING references wrong namespace (old-namespace vs actual), AND (2) the Azure Monitor action group sends alerts to decommissioned email. Messages pile up unprocessed, but the on-call team never gets notified because alerts go to a dead mailbox. Agent must find BOTH the processing failure and the alerting gap."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "appName": "[concat('h05app', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "sbNamespace": "[concat('h05sb', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "brokenSbConn": "Endpoint=sb://h05sb-old-namespace.servicebus.windows.net/;SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=fakekey123",
+    "fixedSbConn": "[listKeys(resourceId('Microsoft.ServiceBus/namespaces/authorizationRules', variables('sbNamespace'), 'RootManageSharedAccessKey'), '2022-10-01-preview').primaryConnectionString]",
+    "sbConnStr": "[if(equals(parameters('scenarioMode'), 'Fixed'), variables('fixedSbConn'), variables('brokenSbConn'))]",
+    "brokenEmail": "oncall@old-company-domain.com",
+    "fixedEmail": "oncall@company.com",
+    "alertEmail": "[if(equals(parameters('scenarioMode'), 'Fixed'), variables('fixedEmail'), variables('brokenEmail'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ServiceBus/namespaces",
+      "apiVersion": "2022-10-01-preview",
+      "name": "[variables('sbNamespace')]",
+      "location": "[resourceGroup().location]",
+      "sku": { "name": "Basic", "tier": "Basic" },
+      "tags": { "Environment": "production", "Team": "messaging", "Scenario": "H05" }
+    },
+    {
+      "type": "Microsoft.ServiceBus/namespaces/queues",
+      "apiVersion": "2022-10-01-preview",
+      "name": "[concat(variables('sbNamespace'), '/payment-events')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ServiceBus/namespaces', variables('sbNamespace'))]"
+      ],
+      "properties": {
+        "lockDuration": "PT1M",
+        "maxSizeInMegabytes": 1024,
+        "defaultMessageTimeToLive": "P7D"
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('appName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "app",
+      "dependsOn": [
+        "[resourceId('Microsoft.ServiceBus/namespaces', variables('sbNamespace'))]"
+      ],
+      "tags": { "Environment": "production", "Team": "payments", "ScenarioMode": "[parameters('scenarioMode')]" },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "siteConfig": {
+          "appSettings": [
+            { "name": "SERVICE_BUS_CONNECTION_STRING", "value": "[variables('sbConnStr')]" },
+            { "name": "SERVICE_BUS_QUEUE", "value": "payment-events" },
+            { "name": "PROCESSOR_THREADS", "value": "4" }
+          ]
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Insights/actionGroups",
+      "apiVersion": "2023-01-01",
+      "name": "h05-payment-oncall",
+      "location": "global",
+      "tags": { "Environment": "production", "Team": "oncall", "Scenario": "H05" },
+      "properties": {
+        "groupShortName": "h05oncall",
+        "enabled": true,
+        "emailReceivers": [
+          {
+            "name": "PaymentOncall",
+            "emailAddress": "[variables('alertEmail')]",
+            "useCommonAlertSchema": true
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "appServiceName": { "type": "string", "value": "[variables('appName')]" },
+    "serviceBusNamespace": { "type": "string", "value": "[variables('sbNamespace')]" },
+    "actionGroupName": { "type": "string", "value": "h05-payment-oncall" },
+    "configuredEmail": { "type": "string", "value": "[variables('alertEmail')]" },
+    "bugNote": { "type": "string", "value": "Two bugs: (1) SERVICE_BUS_CONNECTION_STRING points to 'h05sb-old-namespace' (decommissioned), (2) action group email is 'oncall@old-company-domain.com' (dead mailbox)" },
+    "scenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

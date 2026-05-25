@@ -1,0 +1,105 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- UPDATE
+--     runbook_action
+-- SET
+--     attributes = jsonb_set(
+--         attributes :: jsonb,
+--         '{doc_link}',
+--         '"{{doc_url}}/help/docs/features/Autopilot/Actions/create_ticket/"'
+--     )
+-- WHERE
+--     created_by is null
+--     and account_type = 'K8s'
+--     and internal_identifier = 'ticket_create';
+--
+-- UPDATE
+--     runbook_action
+-- SET
+--     attributes = jsonb_set(
+--         attributes :: jsonb,
+--         '{doc_link}',
+--         '"{{doc_url}}/help/docs/features/Autopilot/Actions/delete_pod_gracefully/"'
+--     )
+-- WHERE
+--     created_by is null
+--     and account_type = 'K8s'
+--     and internal_identifier = 'pod_delete';
+--
+-- UPDATE
+--     runbook_action
+-- SET
+--     attributes = jsonb_set(
+--         attributes :: jsonb,
+--         '{doc_link}',
+--         '"{{doc_url}}/help/docs/features/Autopilot/Actions/execute_bash/"'
+--     )
+-- WHERE
+--     created_by is null
+--     and account_type = 'K8s'
+--     and internal_identifier = 'k8s_bash';
+--
+-- UPDATE
+--     runbook_action
+-- SET
+--     attributes = jsonb_set(
+--         attributes :: jsonb,
+--         '{doc_link}',
+--         '"{{doc_url}}/help/docs/features/Autopilot/Actions/execute_custom_image/"'
+--     )
+-- WHERE
+--     created_by is null
+--     and account_type = 'K8s'
+--     and internal_identifier = 'custom_image_execute';
+--
+-- UPDATE
+--     runbook_action
+-- SET
+--     attributes = jsonb_set(
+--         attributes :: jsonb,
+--         '{doc_link}',
+--         '"{{doc_url}}/help/docs/features/Autopilot/Actions/horizontal_rightsize/"'
+--     )
+-- WHERE
+--     created_by is null
+--     and account_type = 'K8s'
+--     and internal_identifier = 'horizontal_rightsize';
+--
+-- UPDATE
+--     runbook_action
+-- SET
+--     attributes = jsonb_set(
+--         attributes :: jsonb,
+--         '{doc_link}',
+--         '"{{doc_url}}/help/docs/features/Autopilot/Actions/vertical_rightsize/"'
+--     )
+-- WHERE
+--     created_by is null
+--     and account_type = 'K8s'
+--     and internal_identifier = 'vertical_rightsize';
+--
+-- UPDATE
+--     runbook_action
+-- SET
+--     attributes = jsonb_set(
+--         attributes :: jsonb,
+--         '{doc_link}',
+--         '"{{doc_url}}/help/docs/features/Autopilot/Actions/workload_restart/"'
+--     )
+-- WHERE
+--     created_by is null
+--     and account_type = 'K8s'
+--     and internal_identifier = 'workload_restart';
+--
+-- UPDATE
+--     runbook_action
+-- SET
+--     attributes = jsonb_set(
+--         attributes :: jsonb,
+--         '{doc_link}',
+--         '"{{doc_url}}/help/docs/features/Autopilot/Actions/workload_scalar/"'
+--     )
+-- WHERE
+--     created_by is null
+--     and account_type = 'K8s'
+--     and internal_identifier = 'workload_scalar';

@@ -1,0 +1,4 @@
+# Kubectl log agent benchmark configuration
+agent: kubectl_log
+tool_names:
+  - kubectl_log_execute
