@@ -1,0 +1,6 @@
+user_prompt: Delete a Systems Manager Parameter Store parameter.
+expected_output:
+- aws ssm delete-parameter --name <parameter-name>
+tags:
+- command
+- aws

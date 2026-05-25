@@ -1,0 +1,198 @@
+::-ms-reveal {
+  display: none;
+}
+
+/* Hide Chatwoot bubble icon — chat is opened only via "Chat with us" menu */
+.woot-widget-bubble,
+.woot--bubble-holder {
+  display: none !important;
+}
+body {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  font-family: 'Roboto', sans-serif !important;
+  font-weight: 500;
+}
+
+.link {
+  font-weight: 500;
+  color: #1b73f9;
+  text-decoration: none;
+}
+
+.text-black-link {
+  font-weight: 500;
+  color: #000522;
+  text-decoration: none;
+}
+
+.text-breducrum-link {
+  font-weight: 400;
+  color: #99a4af;
+  text-decoration: none;
+}
+
+.text-breducrum-link:hover {
+  text-decoration: underline;
+}
+
+.buttonLink {
+  text-decoration: none;
+}
+
+#password-strength-meter {
+  transition: all 1s linear;
+}
+
+.progress-bar {
+  float: left;
+  width: 0;
+  height: 100%;
+  font-size: 12px;
+  line-height: 20px;
+  color: #fff;
+  text-align: center;
+  background-color: #d9534f;
+  -webkit-box-shadow: inset 0 -1px 0 rgb(0 0 0 / 15%);
+  box-shadow: inset 0 -1px 0 rgb(0 0 0 / 15%);
+  -webkit-transition: width 0.6s ease;
+  -o-transition: width 0.6s ease;
+  transition: width 0.6s ease;
+  border-radius: 10px;
+}
+
+.progress {
+  height: 10px;
+  border: 1px solid #ccc;
+  border-top: 0;
+  border-radius: 10px;
+  border-top-right-radius: 0;
+  border-top-left-radius: 0;
+  box-shadow: none;
+  background: white;
+}
+
+.progress-bar-danger {
+  background-color: #d9534f;
+}
+
+.progress-bar-weak {
+  background-color: #f0ad4e;
+}
+
+.progress-bar-warning {
+  background-color: #f0d84e;
+}
+
+.progress-bar-info {
+  background-color: #5bc0de;
+}
+
+.progress-bar-success {
+  background-color: #5cb85c;
+}
+
+.login-sso::before {
+  content: '';
+  border: 1px solid #d5deed;
+  position: absolute;
+  right: 0;
+  left: 0;
+  top: 11px;
+  z-index: -1;
+}
+
+.login-sso {
+  position: relative;
+}
+
+.nested-link {
+  font-size: 16px;
+  font-weight: 400;
+  color: #99a4af !important;
+  text-decoration: none !important;
+  cursor: pointer;
+}
+
+.back-link {
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 400;
+  color: #000522 !important;
+  text-decoration: none !important;
+}
+
+.menu-items {
+  background-color: 'green';
+  color: #687d95;
+}
+.rdrInRange {
+  background: #fcb43c !important;
+  opacity: 0.6;
+}
+
+.rdrStartEdge {
+  background-color: #fcb43c !important;
+  opacity: 0.6;
+  border-top-left-radius: 50px !important;
+  border-bottom-left-radius: 50px !important;
+}
+
+.rdrEndEdge {
+  background: #fcb43c !important;
+  opacity: 0.6;
+  border-top-right-radius: 50px !important;
+  border-bottom-right-radius: 50px !important;
+}
+
+.rdrDay {
+  height: 3.2rem !important;
+}
+
+span.rdrStartEdge + span {
+  background: #fcb43c !important;
+  border-radius: 50px !important;
+}
+
+span.rdrEndEdge + span {
+  background: #fcb43c !important;
+  border-radius: 50px !important;
+}
+
+.rdrDayToday .rdrDayNumber span:after {
+  position: unset !important;
+}
+.box-shadow-1 {
+  box-shadow: 0px 0px 15px #e3e3e3;
+}
+.custom-datePicker {
+  border-radius: 0.75rem;
+  left: 0px;
+  top: 4rem;
+  position: absolute;
+  z-index: 10;
+}
+
+/* Custom thin scrollbar styling */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #d0d0d0 transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #d0d0d0;
+  border-radius: 100px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #9f9f9f;
+}

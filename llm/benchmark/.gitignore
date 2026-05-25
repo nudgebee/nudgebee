@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+
+# terminal-bench trial outputs (regenerated on every run)
+runs/
+
+# benchmark eval reports (regenerated on every run; persisted in DB)
+**/report/*.json

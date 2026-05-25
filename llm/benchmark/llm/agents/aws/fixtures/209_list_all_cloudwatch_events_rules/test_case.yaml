@@ -1,0 +1,6 @@
+user_prompt: List all CloudWatch Events rules.
+expected_output:
+- aws events list-rules
+tags:
+- command
+- aws

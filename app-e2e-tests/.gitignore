@@ -1,0 +1,36 @@
+# --- Dependencies & Logs ---
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# --- Playwright Reports & Artifacts ---
+/test-results/
+/playwright-report/
+/blob-report/
+test-results/
+screenshots/
+# Playwright internal cache folders
+/playwright/.cache/
+/playwright/.auth/
+
+# --- Authentication & Session Storage (NEW & IMPORTANT) ---
+auth.json
+storageState.json
+user.json
+
+# --- Environment & Secrets ---
+.env
+.env.local
+.env.*
+users.ts
+
+# --- OS & IDE Settings ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+.pytest_cache/
+
+# --- QA Sheet Sync ---
+credentials/
+qa-sheet-setup-guide.html

@@ -1,0 +1,6 @@
+user_prompt: Get logs from the nudgebee-api-5f7b8c9d-2clx5 pod.
+expected_output:
+- kubectl logs <pod-name>
+tags:
+- command
+- kubernetes

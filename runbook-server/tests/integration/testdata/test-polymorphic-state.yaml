@@ -1,0 +1,17 @@
+id: test-polymorphic-state
+name: Test Polymorphic State
+definition:
+  version: v1
+  triggers:
+    - type: manual
+  tasks:
+    - id: set_polymorphic_state
+      type: core.print
+      params:
+        message: "data_to_store"
+      set_state:
+        my_polymorphic_key:
+          value: "{{ Self.output.data | trim }}"
+          ttl: "10m"
+        another_polymorphic_key:
+          value: "static_data"

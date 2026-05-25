@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to show events related to 'statefulset' subjects?
+expected_output:
+- SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM
+  events   WHERE subject_type = 'statefulset';
+- SELECT * FROM events   WHERE subject_type = 'statefulset';
+tags:
+- command
+- events

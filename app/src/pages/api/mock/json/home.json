@@ -1,0 +1,124 @@
+{
+  "GetCloudAccount": {
+    "cloud_provider": "K8s",
+    "account_type": "kubernetes",
+    "id": "demo",
+    "account_name": "Demo",
+    "status": "active",
+    "agents": [
+      {
+        "last_connected_at": "2024-03-19T17:20:18.125758",
+        "status": "CONNECTED",
+        "version": "0.0.33",
+        "connection_status": {
+          "relayConnection": true,
+          "prometheusConnection": true,
+          "alertManagerConnection": true,
+          "prometheusRetentionTime": "10d"
+        }
+      }
+    ]
+  },
+  "GetTroubleShootSummary": {
+    "data": {
+      "node_events": {
+        "aggregate": {
+          "count": 10
+        }
+      },
+      "pod_events": {
+        "aggregate": {
+          "count": 10
+        }
+      },
+      "app_events": {
+        "aggregate": {
+          "count": 10
+        }
+      }
+    }
+  },
+  "GetRecommendationSummary": {
+    "data": {
+      "recommendation_groupings": [
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "recommendation_category": "RightSizing",
+          "recommendation_rule_name": "pod_right_sizing",
+          "recommendation_count": 10
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "recommendation_category": "RightSizing",
+          "recommendation_rule_name": "abandoned_resource",
+          "recommendation_count": 1
+        },
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "recommendation_category": "RightSizing",
+          "recommendation_rule_name": "replica_right_sizing",
+          "recommendation_count": 10
+        }
+      ],
+      "pod_recommendation_groupings": [],
+      "pvc_recommendation_groupings": [
+        {
+          "tenant_id": "demo",
+          "account_id": "demo",
+          "recommendation_category": "RightSizing",
+          "recommendation_rule_name": "pv_rightsize",
+          "recommendation_count": 10
+        }
+      ]
+    }
+  },
+  "GetAutoPilotSummary": {
+    "data": {
+      "auto_pilot_aggregate": {
+        "aggregate": {
+          "count": 5
+        }
+      }
+    }
+  },
+  "GetAutoPlaybookSummary": {
+    "data": {
+      "auto_playbook_aggregate": {
+        "aggregate": {
+          "count": 5
+        }
+      }
+    }
+  },
+  "GetInsights": {
+    "data": {
+      "list_insights": {
+        "data": [
+          {
+            "source": "Metric",
+            "title": "Low Cluster Utilization, 74% memory is not utilized"
+          },
+          {
+            "source": "Recommendation",
+            "title": "1 workload seems to be abandoned with no load"
+          },
+          {
+            "source": "Event",
+            "title": "2 failures with OOMKilled and Hi-Restarts"
+          },
+          {
+            "source": "Metric",
+            "title": "Low Cluster Utilization, 98% cpu is not utilized"
+          },
+          {
+            "source": "Recommendation",
+            "title": "45 workload can be right sized"
+          }
+        ]
+      }
+    }
+  }
+}

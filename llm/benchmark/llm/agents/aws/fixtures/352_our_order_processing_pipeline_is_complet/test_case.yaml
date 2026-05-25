@@ -1,0 +1,20 @@
+user_prompt: Our order processing pipeline is completely backed up. SQS queue 'h15-orders'
+  in us-east-1 has a massive backlog. Lambda 'h15-order-writer' shows high error rates.
+  DynamoDB table 'h15-orders-table' seems to be rejecting writes. The DLQ 'h15-orders-dlq'
+  is growing fast. Everything was fine until we had a traffic spike. Can you trace
+  what's causing this cascade?
+expected_output:
+- 'The root cause is a cascading failure triggered by undersized DynamoDB provisioned
+  capacity. The DynamoDB table ''h15-orders-table'' has only 5 WCU (Write Capacity
+  Units), which can handle at most 5 writes per second. When traffic exceeds this,
+  DynamoDB returns ProvisionedThroughputExceededException. This triggers a cascade:
+  (1) DynamoDB throttles writes → (2) Lambda ''h15-order-writer'' throws errors →
+  (3) SQS retries message delivery → (4) More Lambda invocations create more throttled
+  writes → (5) After maxReceiveCount (5), messages go to DLQ. Check: (1) aws dynamodb
+  describe-table --table-name h15-orders-table to see BillingMode=PROVISIONED with
+  5 WCU, (2) aws sqs get-queue-attributes for queue backlog, (3) aws lambda get-function-configuration
+  for batch size. The fix is to switch DynamoDB to PAY_PER_REQUEST (on-demand) mode
+  or significantly increase provisioned WCU.'
+tags:
+- command
+- aws

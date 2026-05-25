@@ -1,0 +1,80 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "E07: Function App AzureFunctionsJobHost__functionTimeout=00:01:00. User complaint: ETL functions processing large datasets are killed after 1 minute mid-execution. Uses own Y1 consumption plan (no shared plan needed for Function Apps)."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "funcAppName": "[concat('e07func', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "funcStorageName": "[concat('e07st', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "functionTimeout": "[if(equals(parameters('scenarioMode'), 'Fixed'), '00:10:00', '00:01:00')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('funcStorageName')]",
+      "location": "[resourceGroup().location]",
+      "sku": { "name": "Standard_LRS" },
+      "kind": "StorageV2",
+      "tags": { "Environment": "production", "Purpose": "function-runtime" }
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2022-03-01",
+      "name": "e07-etl-plan",
+      "location": "[resourceGroup().location]",
+      "sku": { "name": "Y1", "tier": "Dynamic" },
+      "kind": "functionapp",
+      "tags": { "Environment": "production", "Scenario": "E07" },
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('funcAppName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "functionapp",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', 'e07-etl-plan')]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('funcStorageName'))]"
+      ],
+      "tags": {
+        "Name": "e07-etl-processor",
+        "Environment": "production",
+        "Team": "data-engineering",
+        "ScenarioMode": "[parameters('scenarioMode')]"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', 'e07-etl-plan')]",
+        "siteConfig": {
+          "appSettings": [
+            { "name": "AzureWebJobsStorage", "value": "[concat('DefaultEndpointsProtocol=https;AccountName=', variables('funcStorageName'), ';AccountKey=', listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('funcStorageName')), '2023-01-01').keys[0].value)]" },
+            { "name": "FUNCTIONS_EXTENSION_VERSION", "value": "~4" },
+            { "name": "FUNCTIONS_WORKER_RUNTIME", "value": "python" },
+            { "name": "AzureFunctionsJobHost__functionTimeout", "value": "[variables('functionTimeout')]" },
+            { "name": "BATCH_SIZE", "value": "1000" },
+            { "name": "SOURCE_CONTAINER", "value": "raw-data" }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "FunctionAppName": { "type": "string", "value": "[variables('funcAppName')]" },
+    "FunctionTimeout": { "type": "string", "value": "[variables('functionTimeout')]" },
+    "BugNote": { "type": "string", "value": "AzureFunctionsJobHost__functionTimeout=00:01:00 kills long-running ETL jobs prematurely" },
+    "ScenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

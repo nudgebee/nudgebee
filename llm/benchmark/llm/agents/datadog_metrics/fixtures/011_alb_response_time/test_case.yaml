@@ -1,0 +1,10 @@
+user_prompt: What is the average response time for my load balancers?
+expected_output:
+  - "avg:aws.applicationelb.target_response_time.average{*} by {loadbalancer}"
+  - "avg:aws.applicationelb.target_response_time.average{*}"
+  - "max:aws.applicationelb.target_response_time.maximum{*} by {loadbalancer}"
+tags:
+  - command
+  - aws
+  - alb
+  - latency

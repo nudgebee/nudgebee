@@ -1,0 +1,356 @@
+{
+  "traceV2": {
+    "data": {
+      "traces_v2": {
+        "rows": [
+          {
+            "workload_namespace": "node",
+            "workload_name": "ip-172-31-90-37.ec2.internal",
+            "timestamp": "2024-07-02 08:13:56.166423+00:00",
+            "status_code": "STATUS_CODE_UNSET",
+            "span_name": "GET",
+            "resource": "http://172.31.82.103:8000/health",
+            "duration_ns": 257591,
+            "destination_workload_name": "cloud-collector-server",
+            "destination_workload_namespace": "nudgebee",
+            "destination_name": "cloud-collector-server-6fd969fdb6-lg4h5",
+            "headers": "{\"Accept\":[\"*/*\"],\"Connection\":[\"close\"],\"Host\":[\"172.31.82.103:8000\"],\"User-Agent\":[\"kube-probe/1.27+\"]}",
+            "http_status_code": "200",
+            "request_payload": "",
+            "http_response": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IGFwcGxpY2F0aW9uL2pzb247IGNoYXJzZXQ9dXRmLTgNClgtUmVxdWVzdC1JZDogMDc2NmI1YzktODg3Mi00NGM4LTk0Y2ItZWY4NWYzOGMwODU5DQpEYXRlOiBUdWUsIDAyIEp1bCAyMDI0IDA4OjEzOjU2IEdNVA0KQ29udGVudC1MZW5ndGg6IDE1DQpDb25uZWN0aW9uOiBjbG9zZQ0KDQp7InN0YXR1cyI6Im9rIn0="
+          },
+          {
+            "workload_namespace": "node",
+            "workload_name": "ip-172-31-90-37.ec2.internal",
+            "timestamp": "2024-07-02 08:13:56.166207+00:00",
+            "status_code": "STATUS_CODE_UNSET",
+            "span_name": "GET",
+            "resource": "http://172.31.82.103:8000/health",
+            "duration_ns": 858404,
+            "destination_workload_name": "cloud-collector-server",
+            "destination_workload_namespace": "nudgebee",
+            "destination_name": "cloud-collector-server-6fd969fdb6-lg4h5",
+            "headers": "{\"Accept\":[\"*/*\"],\"Connection\":[\"close\"],\"Host\":[\"172.31.82.103:8000\"],\"User-Agent\":[\"kube-probe/1.27+\"]}",
+            "http_status_code": "200",
+            "request_payload": "",
+            "http_response": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IGFwcGxpY2F0aW9uL2pzb247IGNoYXJzZXQ9dXRmLTgNClgtUmVxdWVzdC1JZDogODMwNzNjYWUtY2EzMC00ZjdmLTg1ZTgtY2Q1OWYxMzNlMzVmDQpEYXRlOiBUdWUsIDAyIEp1bCAyMDI0IDA4OjEzOjU2IEdNVA0KQ29udGVudC1MZW5ndGg6IDE1DQpDb25uZWN0aW9uOiBjbG9zZQ0KDQp7InN0YXR1cyI6Im9rIn0="
+          },
+          {
+            "workload_namespace": "node",
+            "workload_name": "ip-172-31-90-37.ec2.internal",
+            "timestamp": "2024-07-02 08:13:56.113557+00:00",
+            "status_code": "STATUS_CODE_UNSET",
+            "span_name": "GET",
+            "resource": "http://172.31.83.34:9003/healthz",
+            "duration_ns": 312627,
+            "destination_workload_name": "iteration-prod-66-opencost",
+            "destination_workload_namespace": "iteration-prod-66",
+            "destination_name": "iteration-prod-66-opencost-77c5cff67f-d7cp4",
+            "headers": "{\"Accept\":[\"*/*\"],\"Connection\":[\"close\"],\"Host\":[\"172.31.83.34:9003\"],\"User-Agent\":[\"kube-probe/1.27+\"]}",
+            "http_status_code": "200",
+            "request_payload": "",
+            "http_response": "SFRUUC8xLjEgMjAwIE9LDQpWYXJ5OiBPcmlnaW4NCkRhdGU6IFR1ZSwgMDIgSnVsIDIwMjQgMDg6MTM6NTYgR01UDQpDb250ZW50LUxlbmd0aDogMA0KQ29ubmVjdGlvbjogY2xvc2UNCg0K"
+          },
+          {
+            "workload_namespace": "node",
+            "workload_name": "ip-172-31-90-37.ec2.internal",
+            "timestamp": "2024-07-02 08:13:56.113480+00:00",
+            "status_code": "STATUS_CODE_UNSET",
+            "span_name": "GET",
+            "resource": "http://172.31.83.34:9003/healthz",
+            "duration_ns": 174470,
+            "destination_workload_name": "iteration-prod-66-opencost",
+            "destination_workload_namespace": "iteration-prod-66",
+            "destination_name": "iteration-prod-66-opencost-77c5cff67f-d7cp4",
+            "headers": "{\"Accept\":[\"*/*\"],\"Connection\":[\"close\"],\"Host\":[\"172.31.83.34:9003\"],\"User-Agent\":[\"kube-probe/1.27+\"]}",
+            "http_status_code": "200",
+            "request_payload": "",
+            "http_response": "SFRUUC8xLjEgMjAwIE9LDQpWYXJ5OiBPcmlnaW4NCkRhdGU6IFR1ZSwgMDIgSnVsIDIwMjQgMDg6MTM6NTYgR01UDQpDb250ZW50LUxlbmd0aDogMA0KQ29ubmVjdGlvbjogY2xvc2UNCg0K"
+          },
+          {
+            "workload_namespace": "node",
+            "workload_name": "ip-172-31-90-37.ec2.internal",
+            "timestamp": "2024-07-02 08:13:55.893763+00:00",
+            "status_code": "STATUS_CODE_UNSET",
+            "span_name": "GET",
+            "resource": "http://172.31.90.37:9100/",
+            "duration_ns": 122907,
+            "destination_workload_name": "ip-172-31-90-37.ec2.internal",
+            "destination_workload_namespace": "node",
+            "destination_name": "eck-stack-eck-beats-beat-filebeat-7jqvk",
+            "headers": "{\"Accept\":[\"*/*\"],\"Connection\":[\"close\"],\"Host\":[\"172.31.90.37:9100\"],\"User-Agent\":[\"kube-probe/1.27+\"]}",
+            "http_status_code": "200",
+            "request_payload": "",
+            "http_response": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IHRleHQvaHRtbDsgY2hhcnNldD1VVEYtOA0KRGF0ZTogVHVlLCAwMiBKdTogdGV4dC9wbGFpbg0KQWNjZXB0LVJhbmdlczogbm9uZQ0KTGFzdC1Nb2RpZmllZDogVHVlLCAwMiBKdWwgMjAyNCAwNzoxODo1OCBHTVQNCkNvbnRlbnQtTGVuZ3RoOiAyMA0KRGF0ZTogVHVlLCAwMiBKdWwgMjAyNCAwODoxMzo1NSBHTVQNClNlcnZlcjogRUMyd3MNCkNvbm5lY3Rpb246IGNsb3NlDQoNCnNnLTBhZjI1NzQzNTY4Y2I5ZTZhYTc0NzMwOGI2ODZlZjY0NzFiZDgzNzcwODViY2U5ZjIxMGJhZWYxNWNlMmE5YmI2YzVkOGNjZDc3M2RjMAE4w4OWlvyGiO8XQkAKFmlvLmt1YmVybmV0ZXMucG9kLm5hbWUSJm9wZW50ZWxlbWV0cnktb3BlcmF0b3ItZmM2NDc3NWM5LWZzMnd6QjMKG2lvLmt1YmVybmV0ZXMucG9kLm5hbWVzcGFjZRIUb3RlbC1vcGVyYXRvci1zeXN0ZW1CPQoVaW8ua3ViZXJuZXRlcy5wb2QudWlkEiQ3OTc3ZTU5My0xZmEyLTQwN2ItYTYxZi1lNDhiMDYyODkyOWJCLwocaW8ua3ViZXJuZXRlcy5jb250YWluZXIubmFtZRIPa3ViZS1yYmFjLXByb3h5SigKHGlvLmt1YmVybmV0ZXMuY29udGFpbmVyLmhhc2gSCDI0N2ZhNDE1SikKJGlvLmt1YmVybmV0ZXMuY29udGFpbmVyLnJlc3RhcnRDb3VudBIBMEpGCi5pby5rdWJlcm5ldGVzLmNvbnRhaW5lci50ZXJtaW5hdGlvbk1lc3NhZ2VQYXRoEhQvZGV2L3Rlcm1pbmF0aW9uLWxvZ0o4CjBpby5rdWJlcm5ldGVzLmNvbnRhaW5lci50ZXJtaW5hdGlvbk1lc3NhZ2VQb2xpY3kSBEZpbGVKLgooaW8ua3ViZXJuZXRlcy5wb2QudGVybWluYXRpb25HcmFjZVBlcmlvZBICMTBKWQodaW8ua3ViZXJuZXRlcy5jb250YWluZXIucG9ydHMSOFt7Im5hbWUiOiJodHRwcyIsImNvbnRhaW5lclBvcnQiOjg0NDMsInByb3RvY29sIjoiVENQIn1dCu0GCkAxM2NmZjM2YjlkZWQ0ZWNlNjQ0YjViYWExZDU0NTJiYmQ1OWRlMGVjNmJlNDU3ZWNkYmMxMTU3ZGQ4NzZhZWIyEkAzNDFkZGM0NmRlYjYzYjlkNDljNWRhMDYzZWM3MDJlNzhhNWVhNGU2MTg1NGM0OTYzZmNmYWI2NzUxMTEwYWExGhEKD3NlcnZpY2VzLXNlcnZlciJJCkdzaGEyNTY6OTc1OGI5MDg="
+          },
+          {
+            "workload_namespace": "node",
+            "workload_name": "ip-172-31-90-37.ec2.internal",
+            "timestamp": "2024-07-02 08:13:54.075588+00:00",
+            "status_code": "STATUS_CODE_UNSET",
+            "span_name": "GET",
+            "resource": "http://172.31.94.97:9876/",
+            "duration_ns": 307619,
+            "destination_workload_name": "castai-agent",
+            "destination_workload_namespace": "castai-agent",
+            "destination_name": "castai-agent-7bf5c6f54f-xdkmp",
+            "headers": "{\"Accept\":[\"*/*\"],\"Connection\":[\"close\"],\"Host\":[\"172.31.94.97:9876\"],\"User-Agent\":[\"kube-probe/1.27+\"]}",
+            "http_status_code": "200",
+            "request_payload": "",
+            "http_response": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IHRleHQvcGxhaW47IGNoYXJzZXQ9dXRmLTgNClgtQ29udGVudC1UeXBlLU9wdGlvbnM6IG5vc25pZmYNCkRhdGU6IFR1ZSwgMDIgSnVsIDIwMjQgMDg6MTM6NTQgR01UDQpDb250ZW50LUxlbmd0aDogMg0KQ29ubmVjdGlvbjogY2xvc2UNCg0Kb2s="
+          },
+          {
+            "workload_namespace": "node",
+            "workload_name": "ip-172-31-90-37.ec2.internal",
+            "timestamp": "2024-07-02 08:13:54.075494+00:00",
+            "status_code": "STATUS_CODE_UNSET",
+            "span_name": "GET",
+            "resource": "http://172.31.94.97:9876/",
+            "duration_ns": 226788,
+            "destination_workload_name": "castai-agent",
+            "destination_workload_namespace": "castai-agent",
+            "destination_name": "castai-agent-7bf5c6f54f-xdkmp",
+            "headers": "{\"Accept\":[\"*/*\"],\"Connection\":[\"close\"],\"Host\":[\"172.31.94.97:9876\"],\"User-Agent\":[\"kube-probe/1.27+\"]}",
+            "http_status_code": "200",
+            "request_payload": "",
+            "http_response": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IHRleHQvcGxhaW47IGNoYXJzZXQ9dXRmLTgNClgtQ29udGVudC1UeXBlLU9wdGlvbnM6IG5vc25pZmYNCkRhdGU6IFR1ZSwgMDIgSnVsIDIwMjQgMDg6MTM6NTQgR01UDQpDb250ZW50LUxlbmd0aDogMg0KQ29ubmVjdGlvbjogY2xvc2UNCg0Kb2s="
+          },
+          {
+            "workload_namespace": "nudgebee",
+            "workload_name": "webapp",
+            "timestamp": "2024-07-02 08:13:53.903077+00:00",
+            "status_code": "STATUS_CODE_UNSET",
+            "span_name": "query",
+            "resource": "EXECUTE 2 /* unknown */",
+            "duration_ns": 771930,
+            "destination_workload_name": "ip-172-31-45-91.ec2.internal.",
+            "destination_workload_namespace": "external",
+            "destination_name": "ip-172-31-45-91.ec2.internal.",
+            "headers": "",
+            "http_status_code": "",
+            "request_payload": "",
+            "http_response": ""
+          },
+          {
+            "workload_namespace": "nudgebee",
+            "workload_name": "k8s-collector",
+            "timestamp": "2024-07-02 08:13:53.783865+00:00",
+            "status_code": "STATUS_CODE_UNSET",
+            "span_name": "POST",
+            "resource": "http://clickhouse.clickhouse.svc.cluster.local:8123/",
+            "duration_ns": 3883844,
+            "destination_workload_name": "clickhouse",
+            "destination_workload_namespace": "clickhouse",
+            "destination_name": "clickhouse-shard0-0",
+            "headers": "{\"Accept-Encoding\":[\"identity\"],\"Authorization\":[\"******************************\"],\"Content-Encoding\":[\"lz4\"],\"Content-Type\":[\"application/octet-stream\"],\"Host\":[\"clickhouse.clickhouse.svc.cluster.local:8123\"],\"Transfer-Encoding\":[\"chunked\"],\"User-Agent\":[\"clickhouse-connect/0.6.23 (lv:py/3.12.4; os:linux)\"]}",
+            "http_status_code": "200",
+            "request_payload": "",
+            "http_response": "SFRUUC8xLjEgMjAwIE9LDQpEYXRlOiBUdWUsIDAyIEp1bCAyMDI0IDA4OjEzOjUzIEdNVA0KQ29ubmVjdGlvbjogS2VlcC1BbGl2ZQ0KQ29udGVudC1UeXBlOiB0ZXh0L3BsYWluOyBjaGFyc2V0PVVURi04DQpYLUNsaWNrSG91c2UtU2VydmVyLURpc3BsYXktTmFtZTogY2xpY2tob3VzZS1zaGFyZDAtMC5jbGlja2hvdXNlLWhlYWRsZXNzLmNsaWNraG91c2Uuc3ZjLmNsdXN0ZXIubG9jYWwNClRyYW5zZmVyLUVuY29kaW5nOiBjaHVua2VkDQpYLUNsaWNrSG91c2UtUXVlcnktSWQ6IDNmYmE5NzkzLWY5MzAtNDI3NC1iNzU3LTA0ZmM1ZjgyNjRjNw0KWC1DbGlja0hvdXNlLVRpbWV6b25lOiBFdGMvVVRDDQpLZWVwLUFsaXZlOiB0aW1lb3V0PTEwDQo="
+          },
+          {
+            "workload_namespace": "nudgebee",
+            "workload_name": "k8s-collector",
+            "timestamp": "2024-07-02 08:13:53.777761+00:00",
+            "status_code": "STATUS_CODE_UNSET",
+            "span_name": "POST",
+            "resource": "http://clickhouse.clickhouse.svc.cluster.local:8123/",
+            "duration_ns": 4679944,
+            "destination_workload_name": "clickhouse",
+            "destination_workload_namespace": "clickhouse",
+            "destination_name": "clickhouse-shard0-0",
+            "headers": "{\"Accept-Encoding\":[\"lz4,zstd,gzip,deflate\"],\"Authorization\":[\"******************************\"],\"Content-Length\":[\"45\"],\"Content-Type\":[\"text/plain; charset=utf-8\"],\"Host\":[\"clickhouse.clickhouse.svc.cluster.local:8123\"],\"User-Agent\":[\"clickhouse-connect/0.6.23 (lv:py/3.12.4; os:linux)\"]}",
+            "http_status_code": "200",
+            "request_payload": "",
+            "http_response": "SFRUUC8xLjEgMjAwIE9LDQpEYXRlOiBUdWUsIDAyIEp1bCAyMDI0IDA4OjEzOjUzIEdNVA0KQ29ubmVjdGlvbjogS2VlcC1BbGl2ZQ0KQ29udGVudC1UeXBlOiBhcHBsaWNhdGlvbi9vY3RldC1zdHJlYW0NClgtQ2xpY2tIb3VzZS1TZXJ2ZXItRGlzcGxheS1OYW1lOiBjbGlja2hvdXNlLXNoYXJkMC0wLmNsaWNraG91c2UtaGVhZGxlc3MuY2xpY2tob3VzZS5zdmMuY2x1c3Rlci5sb2NhbA0KVHJhbnNmZXItRW5jb2Rpbmc6IGNodW5rZWQNClgtQ2xpY2tIb3VzZS1RdWVyeS1JZDogNmRhZDllYjQtNTk2ZC00YzNhLTg0YzctMjg5YWRlODY5NmZjDQpYLUNsaWNrSG91c2UtRm9ybWF0OiBOYXRpdmUNClgtQ2xpY2tIb3VzZS1UaW1lem9uZTogRXRjL1VUQw0KS2VlcC1BbGl2ZTogdGltZW91dD0xMA0KQ29udGVudC1FbmNvZGluZzogenN0ZA0KWC1DbGlja0hvdXNlLVN1bW1hcnk6IA=="
+          }
+        ]
+      },
+      "traces_groupings_v2": {
+        "rows": [
+          {
+            "count": 56509
+          }
+        ]
+      }
+    }
+  },
+  "traceGroupV2": {
+    "data": {
+      "traces_groupings_v2_aggregate": {
+        "rows": [
+          {
+            "count": 579
+          }
+        ]
+      },
+      "traces_groupings": {
+        "rows": [
+          {
+            "count": null,
+            "error_count": 63,
+            "workload_name": "sonarqube-sonarqube",
+            "workload_namespace": "sonarqube",
+            "destination_workload_name": "sonarqube-sonarqube",
+            "destination_workload_namespace": "sonarqube",
+            "destination_workload_zone": null,
+            "resource": "http://172.31.19.97:9000/api/system/liveness",
+            "http_status_code": "204",
+            "p99_latency": 15855871.16,
+            "p95_latency": 14135361.700000001,
+            "status_code": null,
+            "span_name": "GET"
+          },
+          {
+            "count": null,
+            "error_count": 38,
+            "workload_name": "nudgebee-prod-agent-runner",
+            "workload_namespace": "nudgebee-agent-prod",
+            "destination_workload_name": "nudgebee-agent-clickhouse",
+            "destination_workload_namespace": "nudgebee-agent",
+            "destination_workload_zone": null,
+            "resource": "http://nudgebee-agent-clickhouse.nudgebee-agent:8123/",
+            "http_status_code": "403",
+            "p99_latency": 5155607.600000002,
+            "p95_latency": 4028370.349999999,
+            "status_code": null,
+            "span_name": "POST"
+          },
+          {
+            "count": null,
+            "error_count": 28,
+            "workload_name": "webapp",
+            "workload_namespace": "nudgebee",
+            "destination_workload_name": "services-server",
+            "destination_workload_namespace": "nudgebee",
+            "destination_workload_zone": null,
+            "resource": "http://services-server:8000/rpc/query",
+            "http_status_code": "500",
+            "p99_latency": 143183807.88,
+            "p95_latency": 135047416.55,
+            "status_code": null,
+            "span_name": "POST"
+          },
+          {
+            "count": null,
+            "error_count": 12,
+            "workload_name": "ingress-nginx-controller",
+            "workload_namespace": "ingress-nginx",
+            "destination_workload_name": "app-dev",
+            "destination_workload_namespace": "nudgebee",
+            "destination_workload_zone": null,
+            "resource": "http://app.nudgebee.com/api/v1/series",
+            "http_status_code": "404",
+            "p99_latency": 6537748.210000001,
+            "p95_latency": 6110513.049999999,
+            "status_code": null,
+            "span_name": "POST"
+          },
+          {
+            "count": null,
+            "error_count": 12,
+            "workload_name": "localhost",
+            "workload_namespace": "external",
+            "destination_workload_name": "",
+            "destination_workload_namespace": "external",
+            "destination_workload_zone": null,
+            "resource": "http://127.0.0.1:8080/request",
+            "http_status_code": "400",
+            "p99_latency": 3003530110.54,
+            "p95_latency": 3003350860.7,
+            "status_code": null,
+            "span_name": "POST"
+          },
+          {
+            "count": null,
+            "error_count": 5,
+            "workload_name": "webapp",
+            "workload_namespace": "nudgebee",
+            "destination_workload_name": "services-server",
+            "destination_workload_namespace": "nudgebee",
+            "destination_workload_zone": null,
+            "resource": "http://services-server:800ction: keep-alive/rpc/query",
+            "http_status_code": "500",
+            "p99_latency": 4942439.56,
+            "p95_latency": 4336457.799999999,
+            "status_code": null,
+            "span_name": "POST"
+          },
+          {
+            "count": null,
+            "error_count": 3,
+            "workload_name": "webapp",
+            "workload_namespace": "nudgebee",
+            "destination_workload_name": "auto-pilot-server",
+            "destination_workload_namespace": "nudgebee",
+            "destination_workload_zone": null,
+            "resource": "http://auto-pilot-server:9988/autopilot/recommendation",
+            "http_status_code": "500",
+            "p99_latency": 21700291.080000002,
+            "p95_latency": 21636443.400000002,
+            "status_code": null,
+            "span_name": "POST"
+          },
+          {
+            "count": null,
+            "error_count": 3,
+            "workload_name": "webapp",
+            "workload_namespace": "nudgebee-test",
+            "destination_workload_name": "auto-pilot-server",
+            "destination_workload_namespace": "nudgebee-test",
+            "destination_workload_zone": null,
+            "resource": "http://auto-pilot-server:9988/autoplaybook",
+            "http_status_code": "400",
+            "p99_latency": 495166540.74,
+            "p95_latency": 486109055.7,
+            "status_code": null,
+            "span_name": "POST"
+          },
+          {
+            "count": null,
+            "error_count": 2,
+            "workload_name": "localhost",
+            "workload_namespace": "external",
+            "destination_workload_name": "",
+            "destination_workload_namespace": "external",
+            "destination_workload_zone": null,
+            "resource": "http://localhost:9000/api/alm_settings/get_binding",
+            "http_status_code": "404",
+            "p99_latency": 18342187.87,
+            "p95_latency": 17972915.35,
+            "status_code": null,
+            "span_name": "GET"
+          },
+          {
+            "count": null,
+            "error_count": 2,
+            "workload_name": "webapp",
+            "workload_namespace": "nudgebee",
+            "destination_workload_name": "auto-pilot-server",
+            "destination_workload_namespace": "nudgebee",
+            "destination_workload_zone": null,
+            "resource": "http://auto-pilot-server:9988/autoplaybook",
+            "http_status_code": "400",
+            "p99_latency": 87474478.79,
+            "p95_latency": 84701741.94999999,
+            "status_code": null,
+            "span_name": "POST"
+          }
+        ]
+      }
+    }
+  },
+  "traceGroupZones": {
+    "data": {
+      "traces_groupings_v2_aggregate": {
+        "rows": [
+          {
+            "count": 0
+          }
+        ]
+      },
+      "traces_groupings": {
+        "rows": []
+      }
+    }
+  }
+}

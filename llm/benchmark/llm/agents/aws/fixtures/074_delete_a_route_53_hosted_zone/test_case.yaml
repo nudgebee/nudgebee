@@ -1,0 +1,6 @@
+user_prompt: Delete a Route 53 hosted zone.
+expected_output:
+- aws route53 delete-hosted-zone --id <hosted-zone-id>
+tags:
+- command
+- aws

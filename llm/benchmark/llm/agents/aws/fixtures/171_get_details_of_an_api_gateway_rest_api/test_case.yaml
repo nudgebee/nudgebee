@@ -1,0 +1,6 @@
+user_prompt: Get details of an API Gateway REST API.
+expected_output:
+- aws apigateway get-rest-api --rest-api-id <api-id>
+tags:
+- command
+- aws

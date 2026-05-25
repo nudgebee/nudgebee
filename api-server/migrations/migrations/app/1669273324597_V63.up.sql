@@ -1,0 +1,21 @@
+
+CREATE
+OR REPLACE VIEW "public"."spends_account_monthly_aggregate" AS
+SELECT
+  spends.tenant,
+  spends.cloud_account,
+  date_part('year' :: text, spends.date) AS date_year,
+  date_part('month' :: text, spends.date) AS date_month,
+  sum(spends.amount) AS sum
+FROM
+  spends
+GROUP BY
+  spends.tenant,
+  spends.cloud_account,
+  (date_part('year' :: text, spends.date)),
+  (date_part('month' :: text, spends.date))
+ORDER BY
+  spends.tenant,
+  spends.cloud_account,
+  (date_part('year' :: text, spends.date)),
+  (date_part('month' :: text, spends.date));

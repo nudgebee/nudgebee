@@ -1,0 +1,33 @@
+
+update
+    auto_playbook_executions p
+set
+    updated_at = (
+        select
+            max(scheduled_time)
+        from
+            auto_playbook_task
+        where
+            execution_id = p.id
+    )
+where
+    updated_at is null
+    and status != 'IN_PROGRESS'
+    and status != 'SCHEDULED';
+
+update
+    auto_playbook_executions p
+set
+    updated_at = scheduled_at
+where
+    updated_at is null
+    and status != 'IN_PROGRESS'
+    and status != 'SCHEDULED'
+    and (
+        select
+            count(*)
+        from
+            auto_playbook_task
+        where
+            execution_id = p.id
+    ) = 0;

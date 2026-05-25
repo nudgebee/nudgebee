@@ -1,0 +1,2 @@
+ALTER TABLE nudgebee.events_shard on cluster 'default'  add COLUMN IF NOT EXISTS labels String DEFAULT '';
+ALTER TABLE nudgebee.events on cluster 'default'  add COLUMN IF NOT EXISTS labels String DEFAULT '';

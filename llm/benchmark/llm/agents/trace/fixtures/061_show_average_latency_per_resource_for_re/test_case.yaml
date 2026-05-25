@@ -1,0 +1,9 @@
+user_prompt: Show average latency per resource for requests originating from 'mobile-app'
+  workload in 'production' namespace (last hour).
+expected_output:
+- SELECT resource, avg(duration_ns) as avg_latency, count(*) as count FROM traces_view
+  WHERE workload_name LIKE '%mobile-app%' AND workload_namespace = 'production' AND
+  timestamp >= now() - interval 1 hour GROUP BY resource ORDER BY avg_latency DESC;
+tags:
+- command
+- trace

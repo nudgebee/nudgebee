@@ -1,0 +1,7 @@
+user_prompt: Show the top 5 recommendations with the highest estimated savings.
+expected_output:
+- SELECT namespace, name, category, estimated_saving from recommendation_view WHERE
+  estimated_saving IS NOT NULL ORDER BY estimated_saving DESC LIMIT 5;
+tags:
+- command
+- recommendations

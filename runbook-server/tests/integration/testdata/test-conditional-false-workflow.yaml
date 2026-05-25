@@ -1,0 +1,23 @@
+name: test-conditional-false-workflow
+definition:
+  triggers:
+    - type: manual
+  tasks:
+    - id: shell-task-condition
+      type: core.print
+      params:
+        message: "false"
+    - id: task-if-true
+      type: core.print
+      depends_on:
+        - shell-task-condition
+      if: "{{ Tasks['shell-task-condition'].output.data ==  'true' }}"
+      params:
+        message: "Task if true executed"
+    - id: task-if-false
+      type: core.print
+      depends_on:
+        - shell-task-condition
+      if: "{{ Tasks['shell-task-condition'].output.data == 'false' }}"
+      params:
+        message: "Task if false executed"

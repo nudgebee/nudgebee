@@ -1,0 +1,24 @@
+user_prompt: We publish messages to SNS topic 'e18-order-events' and our SQS queue
+  'e18-fulfillment-queue' is subscribed, but the queue never receives any messages.
+  We can confirm messages are being published successfully to the topic — the
+  NumberOfMessagesPublished metric shows them. The subscription exists and looks
+  correct. Why isn't the queue receiving messages?
+expected_output:
+- The root cause is a mismatch in the SNS subscription filter policy. The subscription
+  has a FilterPolicy that requires the 'eventType' message attribute to match values
+  like 'order.shipped', 'order.delivered', 'order.returned' (using dot notation).
+  However, the publisher sends messages with eventType values using underscore notation
+  like 'order_shipped', 'order_delivered', 'order_returned'. Since the filter policy
+  does an exact string match and 'order.shipped' does not equal 'order_shipped', all
+  messages are silently filtered out and never delivered to the SQS queue. SNS reports
+  successful publish because the message was accepted by the topic, but the subscription
+  filter drops it before delivery. The fix is to update the filter policy to match the
+  actual attribute values sent by the publisher (underscore format).
+tags:
+- rca
+- aws
+- sns
+- sqs
+- filter-policy
+type: rca
+agent: aws_debug

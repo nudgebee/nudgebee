@@ -1,0 +1,9 @@
+user_prompt: Write a query to bulk-close all 'KubePodCrashLooping' events that are
+  older than 3 days and are still firing.
+expected_output:
+- UPDATE events SET status = 'CLOSED', ends_at = NOW(), updated_at = NOW() WHERE aggregation_key
+  = 'KubePodCrashLooping' AND status = 'FIRING' AND starts_at < NOW() - INTERVAL '3
+  days';
+tags:
+- command
+- events

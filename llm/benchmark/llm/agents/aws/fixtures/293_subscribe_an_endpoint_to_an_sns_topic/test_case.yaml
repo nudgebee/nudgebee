@@ -1,0 +1,7 @@
+user_prompt: Subscribe an endpoint to an SNS topic.
+expected_output:
+- aws sns subscribe --topic-arn <topic-arn> --protocol <protocol> --notification-endpoint
+  <endpoint>
+tags:
+- command
+- aws

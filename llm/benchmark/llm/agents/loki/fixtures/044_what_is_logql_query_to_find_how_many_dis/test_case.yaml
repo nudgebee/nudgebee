@@ -1,0 +1,8 @@
+user_prompt: What is LogQL query to find how many distinct IP addresses have accessed
+  the /login endpoint for auth in the last 1 hour?
+expected_output:
+- count(count by (ip) (count_over_time({app="auth"} | logfmt | path="/login" [1h])))
+- count(sum by(ip) (rate({job="nginx"} |~"POST /login" [1h])))
+tags:
+- command
+- loki

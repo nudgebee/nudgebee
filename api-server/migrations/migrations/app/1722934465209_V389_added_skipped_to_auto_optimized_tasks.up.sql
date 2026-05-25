@@ -1,0 +1,10 @@
+update
+    auto_pilot_task
+set
+    status = 'Skipped'
+where
+    reason in (
+        'No vertical rightsize changes triggered based on rules provided',
+        'Skipped as allocated is same as recommended',
+        'Recommended and allocated replica are same no need to change'
+    );

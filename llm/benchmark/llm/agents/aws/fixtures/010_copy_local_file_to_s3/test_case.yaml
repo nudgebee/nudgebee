@@ -1,0 +1,6 @@
+user_prompt: Copy local file to S3.
+expected_output:
+- aws s3 cp localfile s3://bucket/remotefile
+tags:
+- command
+- aws

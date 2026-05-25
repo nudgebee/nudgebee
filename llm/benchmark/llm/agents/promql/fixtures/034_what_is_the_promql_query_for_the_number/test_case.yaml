@@ -1,0 +1,8 @@
+user_prompt: what is the promql query for the number of container restarts in the
+  last hour for the 'backend-app' pod?
+expected_output:
+- increase(kube_pod_container_status_restarts_total{pod="backend-app"}[1h])
+- sum by (pod) (increase(kube_pod_container_status_restarts_total{pod="backend-app"}[1h]))
+tags:
+- command
+- promql

@@ -1,0 +1,7 @@
+user_prompt: Create a new trace sink named 'bq-trace-export' that exports traces to the BigQuery dataset 'trace_data' in project 'nudgebee-dev'.
+expected_output:
+  - gcloud alpha trace sinks create bq-trace-export bigquery.googleapis.com/projects/nudgebee-dev/datasets/trace_data --project=nudgebee-dev
+tags:
+  - command
+  - trace
+  - gcp

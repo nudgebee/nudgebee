@@ -1,0 +1,7 @@
+user_prompt: Remove the trace sink named 'nudgebee_trace' from project 'nudgebee-dev'.
+expected_output:
+  - gcloud alpha trace sinks delete nudgebee_trace --project=nudgebee-dev
+tags:
+  - command
+  - trace
+  - gcp

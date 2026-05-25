@@ -1,0 +1,5 @@
+# Prometheus parent agent benchmark configuration.
+# Targets the orchestration agent (prometheus), not the NL->PromQL sub-agent (promql_query).
+agent: prometheus
+tool_names:
+  - prometheus_execute

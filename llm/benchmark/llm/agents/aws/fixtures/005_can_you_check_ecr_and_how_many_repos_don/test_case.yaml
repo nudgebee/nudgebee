@@ -1,0 +1,7 @@
+user_prompt: Can you check ECR and how many repos dont have secret scanning enabled
+expected_output:
+- aws ecr describe-repositories --output json | jq '.repositories | map(select(.imageScanningConfiguration.scanOnPush
+  == true))'
+tags:
+- command
+- aws

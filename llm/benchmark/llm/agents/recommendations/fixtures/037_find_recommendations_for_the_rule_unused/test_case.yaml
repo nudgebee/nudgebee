@@ -1,0 +1,7 @@
+user_prompt: Find recommendations for the rule 'unused_pvc' in the 'dev' namespace.
+expected_output:
+- SELECT name, recommendation, created_at from recommendation_view WHERE rule_name
+  = 'unused_pvc' AND namespace = 'dev';
+tags:
+- command
+- recommendations

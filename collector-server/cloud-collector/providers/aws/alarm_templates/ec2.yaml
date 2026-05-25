@@ -1,0 +1,108 @@
+# EC2 CloudWatch Alarm Recommendations
+# Based on AWS best practices for EC2 monitoring
+service_name: "ec2"
+
+templates:
+  - name: "aws_ec2_cpu_utilization_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "High CPU utilization can indicate resource constraints or inefficient application code"
+    configuration:
+      namespace: "AWS/EC2"
+      metric_name: "CPUUtilization"
+      statistic: "Average"
+      period: 300
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 80.0
+      by_instance_family:
+        # Burstable instances - alert earlier
+        t2: 70.0
+        t3: 70.0
+        t3a: 70.0
+        t4g: 70.0
+        # Compute-optimized - can handle higher CPU
+        c5: 85.0
+        c5a: 85.0
+        c5n: 85.0
+        c6: 85.0
+        c6g: 85.0
+        c6i: 85.0
+        c7: 85.0
+        c7g: 85.0
+        # General purpose
+        m5: 80.0
+        m5a: 80.0
+        m5n: 80.0
+        m6: 80.0
+        m6g: 80.0
+        m6i: 80.0
+        m7: 80.0
+        # Memory optimized - can run higher CPU
+        r5: 85.0
+        r5a: 85.0
+        r5b: 85.0
+        r5n: 85.0
+        r6: 85.0
+        r6g: 85.0
+        r6i: 85.0
+        r7: 85.0
+
+  - name: "aws_ec2_status_check_instance_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Instance status check failures indicate issues with the instance that require action"
+    configuration:
+      namespace: "AWS/EC2"
+      metric_name: "StatusCheckFailed_Instance"
+      statistic: "Sum"
+      period: 60
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "breaching"
+    threshold_rules:
+      default: 1.0
+
+  - name: "aws_ec2_status_check_system_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "System status check failures indicate AWS infrastructure issues requiring AWS intervention"
+    configuration:
+      namespace: "AWS/EC2"
+      metric_name: "StatusCheckFailed_System"
+      statistic: "Sum"
+      period: 60
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "breaching"
+    threshold_rules:
+      default: 1.0
+
+  - name: "aws_ec2_status_check_ebs_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "EBS volume status check failures indicate attached storage issues"
+    configuration:
+      namespace: "AWS/EC2"
+      metric_name: "StatusCheckFailed_AttachedEBS"
+      statistic: "Sum"
+      period: 60
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "breaching"
+    threshold_rules:
+      default: 1.0

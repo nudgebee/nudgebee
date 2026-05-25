@@ -1,0 +1,168 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H18: GuardDuty finding type filter mismatch in EventBridge rule.
+  User complaint: "GuardDuty detects threats but our automated remediation Lambda
+  'h18-remediation' never fires. We see findings in the GuardDuty console but the
+  EventBridge rule 'h18-threat-response' shows zero invocations. We tested by
+  generating a test finding and nothing happened."
+  Root cause: EventBridge rule pattern filters on detail.type with an exact match
+  for 'Recon:EC2/PortProbeUnprotectedPort' but GuardDuty findings include a version
+  suffix in the type field (e.g., 'Recon:EC2/PortProbeUnprotectedPort'). The actual
+  issue is the event pattern uses detail.type but GuardDuty events use detail.type
+  at a different JSON path. The correct filter should use detail-type (top-level)
+  or prefix matching on detail.type.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = EventBridge rule uses wrong JSON path for GuardDuty finding type.
+      Fixed = EventBridge rule uses correct pattern with prefix matching.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  RemediationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h18-remediation-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ec2-remediation
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:ModifyInstanceAttribute
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:DescribeSecurityGroups
+                  - ec2:CreateSecurityGroup
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - guardduty:GetFindings
+                  - guardduty:ListDetectors
+                Resource: '*'
+
+  RemediationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h18-remediation
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt RemediationRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+
+          ec2 = boto3.client('ec2')
+
+          def handler(event, context):
+              print(f"GuardDuty finding received: {json.dumps(event)}")
+              detail = event.get('detail', {})
+              finding_type = detail.get('type', 'unknown')
+              resource = detail.get('resource', {})
+
+              instance_id = None
+              if 'instanceDetails' in resource:
+                  instance_id = resource['instanceDetails'].get('instanceId')
+
+              print(f"Finding type: {finding_type}, Instance: {instance_id}")
+
+              if instance_id and 'PortProbe' in finding_type:
+                  print(f"Isolating instance {instance_id}")
+                  # In production: modify SG to isolate instance
+
+              return {'statusCode': 200, 'finding': finding_type}
+      Tags:
+        - Key: Name
+          Value: h18-remediation
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: security-automation
+
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref RemediationFunction
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt ThreatResponseRule.Arn
+
+  # THE BUG: Wrong event pattern — uses detail.findingType instead of detail.type
+  # GuardDuty events have the finding type at detail.type, not detail.findingType
+  ThreatResponseRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: h18-threat-response
+      Description: Trigger remediation on GuardDuty findings
+      State: ENABLED
+      EventPattern: !If
+        - IsFixed
+        - source:
+            - aws.guardduty
+          detail-type:
+            - GuardDuty Finding
+          detail:
+            type:
+              - prefix: 'Recon:EC2'
+              - prefix: 'UnauthorizedAccess:EC2'
+        - source:
+            - aws.guardduty
+          detail-type:
+            - GuardDuty Finding
+          detail:
+            findingType:
+              - 'Recon:EC2/PortProbeUnprotectedPort'
+              - 'UnauthorizedAccess:EC2/SSHBruteForce'
+      Targets:
+        - Arn: !GetAtt RemediationFunction.Arn
+          Id: RemediationTarget
+
+  # Enable GuardDuty (if not already)
+  GuardDutyDetector:
+    Type: AWS::GuardDuty::Detector
+    Properties:
+      Enable: true
+      FindingPublishingFrequency: FIFTEEN_MINUTES
+      Tags:
+        - Key: Name
+          Value: h18-detector
+        - Key: Environment
+          Value: production
+
+Outputs:
+  DetectorId:
+    Description: GuardDuty Detector ID
+    Value: !Ref GuardDutyDetector
+  RuleName:
+    Description: EventBridge Rule Name
+    Value: h18-threat-response
+  FunctionName:
+    Description: Remediation Lambda Name
+    Value: !Ref RemediationFunction
+  EventPatternIssue:
+    Description: Event pattern field (wrong in Broken mode)
+    Value: !If
+      - IsFixed
+      - 'detail.type with prefix matching (correct)'
+      - 'detail.findingType with exact match (wrong field name)'
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

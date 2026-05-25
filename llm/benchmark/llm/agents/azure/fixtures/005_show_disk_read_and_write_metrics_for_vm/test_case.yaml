@@ -1,0 +1,9 @@
+user_prompt: Show disk read and write metrics for VM nudgebee-dev.
+expected_output:
+- az monitor metrics list --resource nudgebee-dev --resource-type Microsoft.Compute/virtualMachines
+  --resource-group NUDGEBEE-DEV_GROUP --metric "Disk Read Bytes" "Disk Write Bytes"
+  --output table
+type: command
+tags:
+- command
+- azure

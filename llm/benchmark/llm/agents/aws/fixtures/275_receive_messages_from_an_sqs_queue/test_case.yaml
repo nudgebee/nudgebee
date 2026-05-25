@@ -1,0 +1,6 @@
+user_prompt: Receive messages from an SQS queue.
+expected_output:
+- aws sqs receive-message --queue-url <queue-url>
+tags:
+- command
+- aws

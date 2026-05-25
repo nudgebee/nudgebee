@@ -1,0 +1,6 @@
+user_prompt: Get Compute Optimizer recommendations for EBS volumes.
+expected_output:
+- aws compute-optimizer get-ebs-volume-recommendations
+tags:
+- command
+- aws

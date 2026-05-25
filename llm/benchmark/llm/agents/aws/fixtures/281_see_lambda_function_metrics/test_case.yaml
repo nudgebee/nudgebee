@@ -1,0 +1,6 @@
+user_prompt: See Lambda function metrics.
+expected_output:
+- aws cloudwatch get-metric-statistics
+tags:
+- command
+- aws

@@ -1,0 +1,87 @@
+-- 1. Add pgcrypto if not already present (for digest)
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- Create a temporary table to store the mapping of old to new integration IDs
+CREATE TEMP TABLE dedup_map AS
+WITH config_hashes AS (
+    SELECT
+        icv.integration_id,
+        string_agg(icv.name || icv.value, '' ORDER BY icv.name) AS normalized
+    FROM integration_config_values icv
+    GROUP BY icv.integration_id
+),
+hashes AS (
+    SELECT
+        integration_id,
+        encode(digest(normalized, 'sha256'), 'hex') AS hash
+    FROM config_hashes
+),
+canonical AS (
+    SELECT
+        i.type,
+        h.hash,
+        MIN(i.id::text)::uuid AS canonical_id
+    FROM integrations i
+    JOIN hashes h ON i.id = h.integration_id
+    GROUP BY i.type, h.hash
+)
+SELECT
+    i.id AS old_integration_id,
+    c.canonical_id AS target_integration_id
+FROM integrations i
+JOIN hashes h ON i.id = h.integration_id
+JOIN canonical c ON c.type = i.type AND c.hash = h.hash;
+
+-- 2. Insert deduplicated mappings into integrations_cloud_accounts
+WITH deduped_defaults AS (
+    SELECT
+        dm.target_integration_id,
+        i.account_id,
+        i.tenant_id,
+        bool_or(icv.name = 'default_log_provider' AND icv.value = 'true') AS default_log_provider,
+        bool_or(icv.name = 'default_traces_provider' AND icv.value = 'true') AS default_traces_provider,
+        bool_or(icv.name = 'default_metrics_provider' AND icv.value = 'true') AS default_metrics_provider
+    FROM dedup_map dm
+    JOIN integrations i ON i.id = dm.old_integration_id
+    LEFT JOIN integration_config_values icv ON i.id = icv.integration_id
+    WHERE i.account_id IS NOT NULL
+    GROUP BY dm.target_integration_id, i.account_id, i.tenant_id
+)
+INSERT INTO integrations_cloud_accounts (
+    id,
+    integration_id,
+    cloud_account_id,
+    tenant_id,
+    default_log_provider,
+    default_traces_provider,
+    default_metrics_provider
+)
+SELECT
+    gen_random_uuid(),
+    target_integration_id,
+    account_id,
+    tenant_id,
+    default_log_provider,
+    default_traces_provider,
+    default_metrics_provider
+FROM deduped_defaults
+ON CONFLICT (integration_id, cloud_account_id, tenant_id)
+DO UPDATE SET
+    default_log_provider = EXCLUDED.default_log_provider,
+    default_traces_provider = EXCLUDED.default_traces_provider,
+    default_metrics_provider = EXCLUDED.default_metrics_provider;
+
+-- 3. Delete duplicate config values
+DELETE FROM integration_config_values icv
+USING dedup_map d
+WHERE icv.integration_id = d.old_integration_id
+  AND d.old_integration_id <> d.target_integration_id;
+
+-- 4. Delete duplicate integrations
+DELETE FROM integrations i
+USING dedup_map d
+WHERE i.id = d.old_integration_id
+  AND d.old_integration_id <> d.target_integration_id;
+
+-- Drop the temporary table
+DROP TABLE dedup_map;

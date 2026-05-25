@@ -1,0 +1,10 @@
+user_prompt: Show disk read throughput for EC2 instances
+expected_output:
+  - "avg:aws.ec2.ebsread_bytes{*} by {host}"
+  - "sum:aws.ec2.ebsread_bytes{*} by {host}"
+  - "avg:aws.ebs.volume_read_bytes{*} by {host}"
+tags:
+  - command
+  - aws
+  - ec2
+  - disk

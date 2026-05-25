@@ -1,0 +1,8 @@
+user_prompt: What is the LogQL query to check log volume (count) for the nginx container
+  over 10 minutes?
+expected_output:
+- count_over_time({container="nginx"}[10m])
+- sum(count_over_time({namespace="staging", container="nginx"}[10m]))
+tags:
+- command
+- loki

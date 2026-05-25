@@ -1,0 +1,9 @@
+user_prompt: Get my current AWS cost and usage breakdown by service.
+expected_output:
+- aws ce get-cost-and-usage --time-period Start=<yesterday>,End=<today> --granularity
+  DAILY --metrics BlendedCost --group-by DIMENSION=SERVICE
+- date -v -1d +%Y-%m-%d
+- date +%Y-%m-%d
+tags:
+- command
+- aws

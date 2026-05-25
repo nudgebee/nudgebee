@@ -1,0 +1,186 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E06: S3 Access Denied on Read.
+  User complaint: "I can see the bucket exists but can't read any objects from it."
+  Root cause: Bucket policy has an explicit Deny on s3:GetObject.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Bucket policy explicitly denies s3:GetObject.
+      Fixed = No deny policy, normal access.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+  IsBroken: !Not [!Equals [!Ref ScenarioMode, Fixed]]
+
+Resources:
+  ConfigBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'e06-app-configs-${AWS::AccountId}'
+
+  # Explicit deny policy - blocks GetObject even if IAM allows it
+  ConfigBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: IsBroken
+    Properties:
+      Bucket: !Ref ConfigBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyAllGetObject
+            Effect: Deny
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: !Sub '${ConfigBucket.Arn}/*'
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: e06-config-reader-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: s3-full-read
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - s3:HeadObject
+                Resource:
+                  - !GetAtt ConfigBucket.Arn
+                  - !Sub '${ConfigBucket.Arn}/*'
+
+  ConfigReaderFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: e06-config-reader
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 15
+      MemorySize: 128
+      Environment:
+        Variables:
+          CONFIG_BUCKET: !Ref ConfigBucket
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+
+          def handler(event, context):
+              s3 = boto3.client('s3')
+              bucket = os.environ['CONFIG_BUCKET']
+
+              try:
+                  # Try to list and read config files
+                  response = s3.list_objects_v2(Bucket=bucket, Prefix='config/')
+                  configs = []
+                  for obj in response.get('Contents', []):
+                      data = s3.get_object(Bucket=bucket, Key=obj['Key'])
+                      configs.append(json.loads(data['Body'].read()))
+                  return {'statusCode': 200, 'body': json.dumps({'configs': configs})}
+              except Exception as e:
+                  return {'statusCode': 500, 'body': json.dumps({'error': str(e)})}
+      Tags:
+        - Key: Name
+          Value: e06-config-reader
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: platform
+
+  # Seed a test config object so there's something to read
+  SeedFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: e06-config-seeder
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt SeedRole.Arn
+      Timeout: 15
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import cfnresponse
+
+          def handler(event, context):
+              if event['RequestType'] == 'Delete':
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  return
+              try:
+                  s3 = boto3.client('s3')
+                  bucket = event['ResourceProperties']['Bucket']
+                  s3.put_object(
+                      Bucket=bucket,
+                      Key='config/app-settings.json',
+                      Body=json.dumps({"log_level": "info", "max_retries": 3}),
+                      ContentType='application/json'
+                  )
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+              except Exception as e:
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  SeedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: e06-config-seeder-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: s3-write
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource:
+                  - !Sub '${ConfigBucket.Arn}/*'
+
+  SeedConfig:
+    Type: Custom::SeedConfig
+    DependsOn: ConfigBucket
+    Properties:
+      ServiceToken: !GetAtt SeedFunction.Arn
+      Bucket: !Ref ConfigBucket
+
+Outputs:
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref ConfigReaderFunction
+  BucketName:
+    Description: S3 Bucket Name
+    Value: !Ref ConfigBucket
+  RoleName:
+    Description: Lambda Execution Role
+    Value: !Ref LambdaRole
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

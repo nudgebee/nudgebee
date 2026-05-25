@@ -1,0 +1,15 @@
+user_prompt: We deployed a new version of our search service image (v1.3.0) and registered
+  a new ECS task definition, but the ECS service 'm04-search-svc' in cluster 'm04-search-cluster'
+  in us-east-1 is still running the old image. How is that possible and what's wrong?
+expected_output:
+- 'The root cause is that the ECS service ''m04-search-svc'' was not updated after
+  the new task definition revision was registered. The family ''m04-search-service''
+  has multiple revisions - the new image (v1.3.0) is in one revision, but the service
+  taskDefinition ARN still points to the older revision with image v1.2.3. Registering
+  a new task definition revision does not automatically update running services. The
+  fix is to update the ECS service to use the latest task definition revision: aws
+  ecs update-service --cluster m04-search-cluster --service m04-search-svc --task-definition
+  m04-search-service:LATEST.'
+tags:
+- command
+- aws

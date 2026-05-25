@@ -1,0 +1,15 @@
+user_prompt: The order processing service App Service in resource group 'azure-agent-test-M01'
+  is failing to read messages from the Service Bus queue. All message processing has
+  stopped. What is wrong?
+expected_output:
+- 'The App Service setting SERVICE_BUS_QUEUE is set to ''orders-incomin'' (missing
+  final ''g'') but the actual Service Bus queue is named ''orders-incoming''. The
+  queue name typo causes the SDK to look for a non-existent queue, silently failing
+  to consume messages. Fix: Update SERVICE_BUS_QUEUE to ''orders-incoming''.'
+agent: azure_debug
+scenario: M01
+type: rca
+tags:
+- rca
+- medium
+- azure

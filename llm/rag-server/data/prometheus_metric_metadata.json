@@ -1,0 +1,1253 @@
+[
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "ip_to_fqdn",
+    "type": "gauge",
+    "help": "Mapping IP addresses to FQDNs based on DNS requests initiated by containers",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "fqdn",
+      "instance",
+      "ip",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_net_transmitted_packets_total",
+    "type": "counter",
+    "help": "The total number of packets transmitted",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "interface",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_net_tcp_successful_connects_total",
+    "type": "counter",
+    "help": "Total number of successful TCP connects",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "actual_destination",
+      "actual_destination_workload_kind",
+      "actual_destination_workload_name",
+      "actual_destination_workload_namespace",
+      "container",
+      "container_id",
+      "destination",
+      "destination_workload_kind",
+      "destination_workload_name",
+      "destination_workload_namespace",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "src_workload_kind",
+      "src_workload_name",
+      "src_workload_namespace",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_net_received_packets_total",
+    "type": "counter",
+    "help": "The total number of packets received",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "interface",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_uptime_seconds",
+    "type": "gauge",
+    "help": "Uptime of the node in seconds",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_net_tcp_bytes_sent_total",
+    "type": "counter",
+    "help": "Total number of bytes sent to the peer",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "actual_destination",
+      "actual_destination_workload_kind",
+      "actual_destination_workload_name",
+      "actual_destination_workload_namespace",
+      "container",
+      "container_id",
+      "destination",
+      "destination_workload_kind",
+      "destination_workload_name",
+      "destination_workload_namespace",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "src_workload_kind",
+      "src_workload_name",
+      "src_workload_namespace",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_net_received_bytes_total",
+    "type": "counter",
+    "help": "The total number of bytes received",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "interface",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_resources_disk_read_time_seconds_total",
+    "type": "counter",
+    "help": "The total number of seconds spent reading",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "device",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_resources_disk_delay_seconds_total",
+    "type": "counter",
+    "help": "Total time duration processes of the container have been waiting fot I/Os to complete",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_id",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_resources_disk_reserved_bytes",
+    "type": "gauge",
+    "help": "Reserved capacity of the volume",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_id",
+      "device",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "mount_point",
+      "namespace",
+      "pod",
+      "system_uuid",
+      "volume"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_resources_memory_cache_bytes",
+    "type": "gauge",
+    "help": "Amount of page cache memory allocated by the container",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_id",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_agent_info",
+    "type": "gauge",
+    "help": "",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid",
+      "version"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_resources_cpu_logical_cores",
+    "type": "gauge",
+    "help": "The number of logical CPU cores",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_resources_memory_available_bytes",
+    "type": "gauge",
+    "help": "The total amount of available memory",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_python_thread_lock_wait_time_seconds",
+    "type": "counter",
+    "help": "Time spent waiting acquiring GIL in seconds",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_id",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_net_tcp_active_connections",
+    "type": "gauge",
+    "help": "Number of active outbound connections used by the container",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "actual_destination",
+      "actual_destination_workload_kind",
+      "actual_destination_workload_name",
+      "actual_destination_workload_namespace",
+      "container",
+      "container_id",
+      "destination",
+      "destination_workload_kind",
+      "destination_workload_name",
+      "destination_workload_namespace",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "src_workload_kind",
+      "src_workload_name",
+      "src_workload_namespace",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_resources_disk_reads_total",
+    "type": "counter",
+    "help": "The total number of reads completed successfully",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "device",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_application_type",
+    "type": "gauge",
+    "help": "Type of the application running in the container (e.g. memcached, postgres, mysql)",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "application_type",
+      "container",
+      "container_id",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_resources_disk_used_bytes",
+    "type": "gauge",
+    "help": "Used capacity of the volume",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_id",
+      "device",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "mount_point",
+      "namespace",
+      "pod",
+      "system_uuid",
+      "volume"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_resources_memory_free_bytes",
+    "type": "gauge",
+    "help": "The amount of unassigned memory",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_resources_cpu_usage_seconds_total",
+    "type": "counter",
+    "help": "Total CPU time consumed by the container",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_id",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_restarts_total",
+    "type": "counter",
+    "help": "Number of times the container was restarted",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_id",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_resources_disk_write_time_seconds_total",
+    "type": "counter",
+    "help": "The total number of seconds spent writing",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "device",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_info",
+    "type": "gauge",
+    "help": "Meta information about the container",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_id",
+      "endpoint",
+      "image",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid",
+      "systemd_triggered_by"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_net_tcp_listen_info",
+    "type": "gauge",
+    "help": "Listen address of the container",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_id",
+      "endpoint",
+      "instance",
+      "job",
+      "listen_addr",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_resources_cpu_delay_seconds_total",
+    "type": "counter",
+    "help": "Total time duration processes of the container have been waiting for a CPU (while being runnable)",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_id",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_resources_disk_written_bytes_total",
+    "type": "counter",
+    "help": "The total number of bytes written to the disk",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "device",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_rabbitmq_messages_total",
+    "type": "counter",
+    "help": "Total number of Rabbitmq messages produced or consumed by the container",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "actual_destination",
+      "actual_destination_workload_kind",
+      "actual_destination_workload_name",
+      "actual_destination_workload_namespace",
+      "container",
+      "container_id",
+      "destination",
+      "destination_workload_kind",
+      "destination_workload_name",
+      "destination_workload_namespace",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "method",
+      "namespace",
+      "pod",
+      "src_kind",
+      "src_workload_name",
+      "src_workload_namespace",
+      "status",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_net_tcp_bytes_received_total",
+    "type": "counter",
+    "help": "Total number of bytes received from the peer",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "actual_destination",
+      "actual_destination_workload_kind",
+      "actual_destination_workload_name",
+      "actual_destination_workload_namespace",
+      "container",
+      "container_id",
+      "destination",
+      "destination_workload_kind",
+      "destination_workload_name",
+      "destination_workload_namespace",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "src_workload_kind",
+      "src_workload_name",
+      "src_workload_namespace",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_resources_cpu_usage_seconds_total",
+    "type": "counter",
+    "help": "The amount of CPU time spent in each mode",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "mode",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_resources_memory_cached_bytes",
+    "type": "gauge",
+    "help": "The amount of memory used as page cache",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_postgres_queries_duration_seconds_total",
+    "type": "histogram",
+    "help": "Histogram of the execution time for each outbound Postgres query",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_info",
+    "type": "gauge",
+    "help": "Meta information about the node",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "hostname",
+      "instance",
+      "job",
+      "kernel_version",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_net_transmitted_bytes_total",
+    "type": "counter",
+    "help": "The total number of bytes transmitted",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "interface",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_resources_disk_writes_total",
+    "type": "counter",
+    "help": "The total number of writes completed successfully",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "device",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_resources_cpu_limit_cores",
+    "type": "gauge",
+    "help": "CPU limit of the container",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_id",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_resources_disk_size_bytes",
+    "type": "gauge",
+    "help": "Total capacity of the volume",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_id",
+      "device",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "mount_point",
+      "namespace",
+      "pod",
+      "system_uuid",
+      "volume"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_net_interface_ip",
+    "type": "gauge",
+    "help": "IP address assigned to the interface",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "interface",
+      "ip",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_resources_cpu_throttled_seconds_total",
+    "type": "counter",
+    "help": "Total time duration the container has been throttled",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_id",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_resources_disk_io_time_seconds_total",
+    "type": "counter",
+    "help": "The total number of seconds the disk spent doing I/O",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "device",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_http_requests_duration_seconds_total",
+    "type": "histogram",
+    "help": "Histogram of the response time for each outbound HTTP request",
+    "unit": "",
+    "labels": [    "__name__",
+    "actual_destination",
+    "actual_destination_workload_kind",
+    "actual_destination_workload_name",
+    "actual_destination_workload_namespace",
+    "container",
+    "container_id",
+    "destination",
+    "destination_workload_kind",
+    "destination_workload_name",
+    "destination_workload_namespace",
+    "endpoint",
+    "instance",
+    "job",
+    "le",
+    "machine_id",
+    "method",
+    "namespace",
+    "path",
+    "pod",
+    "src_kind",
+    "src_workload_name",
+    "src_workload_namespace",
+    "system_uuid"]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_log_messages_total",
+    "type": "counter",
+    "help": "Number of messages grouped by the automatically extracted repeated pattern",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_id",
+      "endpoint",
+      "instance",
+      "job",
+      "level",
+      "machine_id",
+      "namespace",
+      "pattern_hash",
+      "pod",
+      "sample",
+      "source",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_net_interface_up",
+    "type": "gauge",
+    "help": "Status of the interface (0:down, 1:up)",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "interface",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_resources_memory_total_bytes",
+    "type": "gauge",
+    "help": "The total amount of physical memory",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_http_requests_total",
+    "type": "counter",
+    "help": "Total number of outbound HTTP requests",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "actual_destination",
+      "actual_destination_workload_kind",
+      "actual_destination_workload_name",
+      "actual_destination_workload_namespace",
+      "container",
+      "container_id",
+      "destination",
+      "destination_workload_kind",
+      "destination_workload_name",
+      "destination_workload_namespace",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "method",
+      "namespace",
+      "path",
+      "pod",
+      "src_kind",
+      "src_workload_name",
+      "src_workload_namespace",
+      "status",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_net_tcp_connection_time_seconds_total",
+    "type": "counter",
+    "help": "Time spent on TCP connections",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "actual_destination",
+      "actual_destination_workload_kind",
+      "actual_destination_workload_name",
+      "actual_destination_workload_namespace",
+      "container",
+      "container_id",
+      "destination",
+      "destination_workload_kind",
+      "destination_workload_name",
+      "destination_workload_namespace",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "src_workload_kind",
+      "src_workload_name",
+      "src_workload_namespace",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_postgres_queries_total",
+    "type": "counter",
+    "help": "Total number of outbound Postgres queries",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "actual_destination",
+      "actual_destination_workload_kind",
+      "actual_destination_workload_name",
+      "actual_destination_workload_namespace",
+      "container",
+      "container_id",
+      "destination",
+      "destination_workload_kind",
+      "destination_workload_name",
+      "destination_workload_namespace",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "src_kind",
+      "src_workload_name",
+      "src_workload_namespace",
+      "status",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_resources_memory_rss_bytes",
+    "type": "gauge",
+    "help": "Amount of physical memory used by the container (doesn't include page cache)",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_id",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_dns_requests_duration_seconds_total",
+    "type": "histogram",
+    "help": "Histogram of the response time for each outbound DNS request",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_dns_requests_total",
+    "type": "counter",
+    "help": "Total number of outbound DNS requests",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_id",
+      "domain",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "request_type",
+      "status",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_resources_memory_limit_bytes",
+    "type": "gauge",
+    "help": "Memory limit of the container",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "container_id",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_cloud_info",
+    "type": "gauge",
+    "help": "Meta information about the cloud instance",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "account_id",
+      "availability_zone",
+      "availability_zone_id",
+      "container",
+      "endpoint",
+      "instance",
+      "instance_id",
+      "instance_life_cycle",
+      "instance_type",
+      "job",
+      "local_ipv4",
+      "machine_id",
+      "namespace",
+      "pod",
+      "provider",
+      "public_ipv4",
+      "region",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "node_resources_disk_read_bytes_total",
+    "type": "counter",
+    "help": "The total number of bytes read from the disk",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "device",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "job": "nudgebee-node-agent"
+    },
+    "metric": "container_net_tcp_failed_connects_total",
+    "type": "counter",
+    "help": "Total number of failed TCP connects",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "actual_destination_workload_kind",
+      "actual_destination_workload_name",
+      "actual_destination_workload_namespace",
+      "container",
+      "container_id",
+      "destination",
+      "destination_workload_kind",
+      "destination_workload_name",
+      "destination_workload_namespace",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "namespace",
+      "pod",
+      "system_uuid"
+    ]
+  }
+]

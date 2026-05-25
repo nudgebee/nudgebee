@@ -1,0 +1,159 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "H01: App Service with VNet integration has NSG on subnet blocking outbound port 1433. App connects to Azure SQL via VNet but NSG denies egress. Requires checking VNet integration, subnet NSG rules, AND DB connectivity. Multi-hop: App Service → VNet Integration → Subnet → NSG → outbound deny."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    },
+    "sqlAdminPassword": {
+      "type": "secureString",
+      "defaultValue": "[concat('P', uniqueString(resourceGroup().id), '!1a')]"
+    }
+  },
+  "variables": {
+    "appName": "[concat('h01app', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "vnetName": "h01-app-vnet",
+    "subnetName": "app-subnet",
+    "nsgName": "h01-app-subnet-nsg",
+    "sqlServerName": "[concat('h01sql', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "brokenNsgRules": [
+      {
+        "name": "DenyOutboundSQL",
+        "properties": {
+          "priority": 100,
+          "protocol": "Tcp",
+          "access": "Deny",
+          "direction": "Outbound",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "*",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "1433"
+        }
+      }
+    ],
+    "fixedNsgRules": [
+      {
+        "name": "AllowOutboundSQL",
+        "properties": {
+          "priority": 100,
+          "protocol": "Tcp",
+          "access": "Allow",
+          "direction": "Outbound",
+          "sourceAddressPrefix": "*",
+          "sourcePortRange": "*",
+          "destinationAddressPrefix": "*",
+          "destinationPortRange": "1433"
+        }
+      }
+    ],
+    "nsgRules": "[if(equals(parameters('scenarioMode'), 'Fixed'), variables('fixedNsgRules'), variables('brokenNsgRules'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2023-04-01",
+      "name": "[variables('nsgName')]",
+      "location": "[resourceGroup().location]",
+      "tags": { "Environment": "production", "Team": "platform", "Scenario": "H01" },
+      "properties": {
+        "securityRules": "[variables('nsgRules')]"
+      }
+    },
+    {
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2023-04-01",
+      "name": "[variables('vnetName')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+      ],
+      "tags": { "Environment": "production", "Team": "platform", "Scenario": "H01" },
+      "properties": {
+        "addressSpace": { "addressPrefixes": ["10.1.0.0/16"] },
+        "subnets": [
+          {
+            "name": "[variables('subnetName')]",
+            "properties": {
+              "addressPrefix": "10.1.1.0/24",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+              },
+              "delegations": [
+                {
+                  "name": "appServiceDelegation",
+                  "properties": {
+                    "serviceName": "Microsoft.Web/serverFarms"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Sql/servers",
+      "apiVersion": "2022-05-01-preview",
+      "name": "[variables('sqlServerName')]",
+      "location": "[resourceGroup().location]",
+      "tags": { "Environment": "production", "Team": "data", "Scenario": "H01" },
+      "properties": {
+        "administratorLogin": "sqladmin",
+        "administratorLoginPassword": "[parameters('sqlAdminPassword')]",
+        "version": "12.0"
+      }
+    },
+    {
+      "type": "Microsoft.Sql/servers/databases",
+      "apiVersion": "2022-05-01-preview",
+      "name": "[concat(variables('sqlServerName'), '/appdb')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ],
+      "sku": { "name": "Basic", "tier": "Basic" },
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('appName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "app",
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ],
+      "tags": { "Environment": "production", "Team": "backend", "ScenarioMode": "[parameters('scenarioMode')]" },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "virtualNetworkSubnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('subnetName'))]",
+        "siteConfig": {
+          "appSettings": [
+            { "name": "DB_HOST", "value": "[concat(variables('sqlServerName'), '.database.windows.net')]" },
+            { "name": "DB_PORT", "value": "1433" },
+            { "name": "DB_NAME", "value": "appdb" }
+          ],
+          "vnetRouteAllEnabled": true
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "appServiceName": { "type": "string", "value": "[variables('appName')]" },
+    "vnetName": { "type": "string", "value": "[variables('vnetName')]" },
+    "nsgName": { "type": "string", "value": "[variables('nsgName')]" },
+    "sqlServerName": { "type": "string", "value": "[variables('sqlServerName')]" },
+    "bugNote": { "type": "string", "value": "NSG h01-app-subnet-nsg has DenyOutboundSQL rule blocking port 1433 on the VNet-integrated subnet" },
+    "scenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

@@ -1,0 +1,25 @@
+agent: k8s_debug
+expected_output:
+- The adservice is triggering manual full garbage collections due to the adManualGc feature flag. These GC pauses cause periodic
+  latency spikes, making ad loading slow and unpredictable for users.
+expected_root_cause:
+  affected_service: adservice
+  issue_type: garbage_collection_pauses
+  symptoms:
+  - periodic latency spikes
+  - slow ad loading
+  - intermittent timeouts
+  - GC pause events
+  telemetry_signals:
+    logs: GC logs showing manual full garbage collection events
+    metrics: GC pause time metrics, increased response time during GC
+    traces: traces showing latency spikes correlating with GC events
+feature_flag: adManualGc
+flag_variant: 'on'
+scenario_id: ad_service_gc
+tags:
+- rca
+- kubernetes
+type: rca
+user_prompt: The ad service is experiencing intermittent latency spikes. Investigate the ad deployment in nudgebee-demo namespace.
+wait_time_seconds: 60

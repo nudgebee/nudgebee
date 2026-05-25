@@ -1,0 +1,9 @@
+.next/
+node_modules/
+dist/
+next-env.d.ts
+coverage/
+# Vendored copies of app/src/lib/{actions.yaml,actions.graphql}
+# — must match the source byte-for-byte; do not reformat.
+src/lib/actions.yaml
+src/lib/actions.graphql

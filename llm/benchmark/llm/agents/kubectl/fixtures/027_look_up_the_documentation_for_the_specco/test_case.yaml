@@ -1,0 +1,7 @@
+user_prompt: Look up the documentation for the 'spec.containers' field in a Pod's
+  YAML.
+expected_output:
+- kubectl explain pod.spec.containers
+tags:
+- command
+- kubernetes

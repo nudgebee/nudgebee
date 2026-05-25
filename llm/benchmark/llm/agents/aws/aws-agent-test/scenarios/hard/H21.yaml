@@ -1,0 +1,216 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H21: API Gateway + SQS + Lambda + DynamoDB — order processing loses orders at peak.
+  User complaint: "During flash sales, our order API drops orders. API returns 200,
+  SQS queue 'h21-orders' receives messages, but some orders never appear in DynamoDB
+  'h21-orders-table'. During the last sale, ~15% of orders were lost. Lambda
+  'h21-order-processor' shows some errors but error rate seems low."
+  Root cause: Multiple compounding issues:
+  1. Lambda ReservedConcurrentExecutions=5 (too low for peak traffic)
+  2. SQS VisibilityTimeout (30s) < Lambda Timeout (300s) — causes reprocessing
+  3. DynamoDB conditional writes prevent duplicates, but SQS message becomes visible
+     again mid-processing, causing another Lambda to pick it up and fail on condition
+  4. After maxReceiveCount=3, messages go to DLQ and are lost
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Low concurrency, mismatched timeouts, low maxReceiveCount.
+      Fixed = Adequate concurrency, matching timeouts, higher retry count.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: h21-orders-table
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: orderId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: orderId
+          KeyType: HASH
+      Tags:
+        - Key: Name
+          Value: h21-orders-table
+        - Key: Environment
+          Value: production
+
+  OrdersDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: h21-orders-dlq
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Name
+          Value: h21-orders-dlq
+
+  # BUG 2: VisibilityTimeout (30s) much less than Lambda Timeout (300s)
+  OrdersQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: h21-orders
+      VisibilityTimeout: !If [IsFixed, 360, 30]
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OrdersDLQ.Arn
+        # BUG 3: Low maxReceiveCount means messages DLQ quickly
+        maxReceiveCount: !If [IsFixed, 10, 3]
+      Tags:
+        - Key: Name
+          Value: h21-orders
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h21-order-processor-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: sqs-dynamodb
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - !GetAtt OrdersQueue.Arn
+                  - !GetAtt OrdersDLQ.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                Resource: !GetAtt OrdersTable.Arn
+
+  # BUG 1: ReservedConcurrentExecutions=5 — too low for peak traffic
+  OrderProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h21-order-processor
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 300
+      MemorySize: 256
+      ReservedConcurrentExecutions: !If [IsFixed, 100, 5]
+      Environment:
+        Variables:
+          TABLE_NAME: h21-orders-table
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+          from datetime import datetime
+          from botocore.exceptions import ClientError
+
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table(os.environ['TABLE_NAME'])
+
+          def handler(event, context):
+              for record in event['Records']:
+                  body = json.loads(record['body'])
+                  order_id = body['orderId']
+                  try:
+                      table.put_item(
+                          Item={
+                              'orderId': order_id,
+                              'customerId': body['customerId'],
+                              'amount': str(body['amount']),
+                              'items': json.dumps(body.get('items', [])),
+                              'status': 'confirmed',
+                              'timestamp': datetime.utcnow().isoformat()
+                          },
+                          ConditionExpression='attribute_not_exists(orderId)'
+                      )
+                      print(f"Order {order_id} saved")
+                  except ClientError as e:
+                      if e.response['Error']['Code'] == 'ConditionalCheckFailedException':
+                          print(f"Order {order_id} already exists (duplicate)")
+                      else:
+                          raise
+              return {'statusCode': 200}
+      Tags:
+        - Key: Name
+          Value: h21-order-processor
+        - Key: Environment
+          Value: production
+
+  EventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt OrdersQueue.Arn
+      FunctionName: !Ref OrderProcessorFunction
+      BatchSize: 10
+      Enabled: true
+
+  # API Gateway that accepts orders
+  OrderApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: h21-order-api
+      Description: Order processing API
+
+  OrderApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h21-api-sqs-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: sqs-send
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt OrdersQueue.Arn
+
+Outputs:
+  ApiName:
+    Description: API Gateway Name
+    Value: h21-order-api
+  QueueUrl:
+    Description: Orders SQS Queue
+    Value: !Ref OrdersQueue
+  DLQUrl:
+    Description: Orders DLQ
+    Value: !Ref OrdersDLQ
+  TableName:
+    Description: DynamoDB Table
+    Value: !Ref OrdersTable
+  FunctionName:
+    Description: Order processor Lambda
+    Value: !Ref OrderProcessorFunction
+  Issues:
+    Description: Issues in Broken mode
+    Value: !If
+      - IsFixed
+      - 'All fixed: concurrency=100, visibility=360s, maxReceive=10'
+      - 'BUG: concurrency=5, visibility=30s<timeout=300s, maxReceive=3'
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

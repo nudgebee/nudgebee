@@ -1,0 +1,14 @@
+user_prompt: "Compare this month's spend to last month."
+expected_output:
+  - |
+    The agent should call spend_summary and present current vs previous
+    period totals in dollars with the absolute change ($), percentage change,
+    and explicit date ranges being compared. A breakdown by top services or
+    accounts should show period-over-period change with trend indicators
+    (stable / NEW / GONE). The headline should be one sentence summarising
+    direction and magnitude. Cite [spend_summary].
+tags:
+  - spend
+  - comparison
+  - easy
+  - finops

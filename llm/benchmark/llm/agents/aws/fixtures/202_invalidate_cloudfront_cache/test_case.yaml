@@ -1,0 +1,6 @@
+user_prompt: Invalidate CloudFront cache.
+expected_output:
+- aws cloudfront create-invalidation --distribution-id <distribution-id> --paths /path/to/invalidate/*
+tags:
+- command
+- aws

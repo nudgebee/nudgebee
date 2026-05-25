@@ -1,0 +1,16 @@
+user_prompt: Show disk IOPS per pod in the nudgebee namespace
+expected_output:
+  - sum by(pod,namespace)(rate(container_fs_reads_total{namespace="nudgebee"}[5m]) + rate(container_fs_writes_total{namespace="nudgebee"}[5m]))
+expected_metrics:
+  - container_fs_reads_total
+  - container_fs_writes_total
+expected_tools:
+  - prometheus_execute
+forbidden_tools:
+  - shell_execute
+  - search_metrics
+expected_max_tool_calls: 4
+tags:
+  - fast_path
+  - cadvisor
+  - disk

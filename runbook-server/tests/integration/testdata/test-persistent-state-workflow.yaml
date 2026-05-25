@@ -1,0 +1,25 @@
+id: test-persistent-state-workflow
+name: Test Persistent State Workflow
+definition:
+  inputs:
+    - id: dynamic_key_suffix
+      description: A suffix for a dynamic state key
+      type: string
+      required: false
+  triggers:
+    - type: manual
+  tasks:
+    - id: increment_counter
+      type: core.print
+      params:
+        message: "{{ (State.counter | default(0))|int + 1 }}"
+      set_state:
+        counter: "{{ Self.output.data | trim }}"
+        ephemeral_data:
+          value: "temporary"
+          ttl: "1h"
+        "my_dynamic_state_{{ Inputs.dynamic_key_suffix | string }}": "value_for_suffix_{{ Inputs.dynamic_key_suffix | string }}"
+  output:
+    current_counter: "{{ State.counter }}"
+    ephemeral_val: "{{ State.ephemeral_data }}"
+    dynamic_state_value: "{{ State['my_dynamic_state_' ~ Inputs.dynamic_key_suffix | string ] }}"

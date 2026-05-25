@@ -1,0 +1,6 @@
+user_prompt: Delete a subnet.
+expected_output:
+- aws ec2 delete-subnet --subnet-id <subnet-id>
+tags:
+- command
+- aws

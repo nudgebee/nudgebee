@@ -1,0 +1,9 @@
+user_prompt: what is the promql query for memory usage by app-dev in nudgebee namespace
+expected_output:
+- container_resources_memory_rss_bytes{namespace=~"(?i)nudgebee",pod=~"(?i)app-dev.*"}
+- container_memory_usage_bytes{namespace=~"(?i)nudgebee",pod=~"(?i)app-dev.*"}
+- sum by (pod) (container_memory_working_set_bytes{namespace="nudgebee", pod=~"app-dev.*",
+  container!=""})
+tags:
+- command
+- promql

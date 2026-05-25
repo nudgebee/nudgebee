@@ -1,0 +1,6 @@
+user_prompt: "Get me logs for the last 30 minutes"
+expected_output: "Asks the user for clarification to narrow the log request — the target resource scope (namespace, workload/deployment, or specific pod) and ideally the cluster/environment. Any reasonable clarifying question about log source or scope is acceptable."
+tags:
+  - transparency
+  - logs
+  - medium

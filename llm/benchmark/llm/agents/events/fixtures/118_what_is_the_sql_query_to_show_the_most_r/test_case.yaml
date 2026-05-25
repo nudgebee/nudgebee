@@ -1,0 +1,9 @@
+user_prompt: What is the SQL query to show the most recent event for each distinct
+  subject type?
+expected_output:
+- SELECT subject_type, id, title, starts_at FROM (SELECT id, title, starts_at, subject_type,
+  ROW_NUMBER() OVER(PARTITION BY subject_type ORDER BY starts_at DESC) as rn FROM
+  events) AS ranked_events WHERE rn = 1;
+tags:
+- command
+- events

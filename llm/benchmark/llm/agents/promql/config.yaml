@@ -1,0 +1,4 @@
+# PromQL agent benchmark configuration
+agent: promql_query
+tool_names:
+  - promql_execute

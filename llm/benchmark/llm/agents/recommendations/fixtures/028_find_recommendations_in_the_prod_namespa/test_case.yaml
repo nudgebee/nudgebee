@@ -1,0 +1,7 @@
+user_prompt: Find recommendations in the 'prod' namespace with 'Critical' severity.
+expected_output:
+- SELECT name, rule_name, recommendation from recommendation_view WHERE namespace
+  = 'prod' AND severity = 'Critical';
+tags:
+- command
+- recommendations

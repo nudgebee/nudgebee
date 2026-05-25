@@ -1,0 +1,16 @@
+name: test-multi-task-workflow
+definition:
+  triggers:
+    - type: manual
+  tasks:
+    - id: shell-task
+      type: core.print
+      params:
+        message: 'https://jsonplaceholder.typicode.com/todos/1'
+    - id: http-task
+      type: integrations.http
+      depends_on:
+        - shell-task
+      params:
+        method: GET
+        url: "{{ Tasks['shell-task'].output.data }}"

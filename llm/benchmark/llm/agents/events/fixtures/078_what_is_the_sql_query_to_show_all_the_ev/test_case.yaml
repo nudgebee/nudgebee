@@ -1,0 +1,9 @@
+user_prompt: What is the SQL query to show all the events where the note contains
+  the word Failed
+expected_output:
+- SELECT id, title, starts_at, status, priority, subject_node  FROM events  WHERE
+  note  LIKE '%Failed%';
+- SELECT * FROM events WHERE note LIKE '%Failed%';
+tags:
+- command
+- events

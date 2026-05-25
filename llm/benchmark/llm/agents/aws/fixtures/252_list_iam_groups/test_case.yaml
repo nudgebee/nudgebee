@@ -1,0 +1,6 @@
+user_prompt: List IAM groups.
+expected_output:
+- aws iam list-groups
+tags:
+- command
+- aws

@@ -1,0 +1,6 @@
+user_prompt: List all API Gateway REST APIs.
+expected_output:
+- aws apigateway get-rest-apis
+tags:
+- command
+- aws

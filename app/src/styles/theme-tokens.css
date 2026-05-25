@@ -1,0 +1,558 @@
+/* ========================================
+   NUDGEBEE DESIGN TOKENS (CSS Custom Properties)
+
+   These variables define the full color system.
+   Override at :root level (or via JS on document.documentElement)
+   to theme the entire UI for a tenant/partner.
+
+   Naming: --nb-{category}-{name}
+   Categories: color, text, bg, border, btn, mui
+   ======================================== */
+
+:root {
+  /* ── Top-level Colors ── */
+  --nb-color-primary: #2563eb;
+  --nb-color-white: #ffffff;
+  --nb-color-black: #000000;
+  --nb-color-secondary-default: #374151;
+  --nb-color-secondary-dark: #9f9f9f;
+  --nb-color-tertiary: #737373;
+  --nb-color-nudgebee-main: #facf39;
+  --nb-color-success: #16a34a;
+  --nb-color-error: #dc2626;
+  --nb-color-error-hover: #b91c1c;
+  --nb-color-error-text: #ff1744;
+  --nb-color-switch-icon-color: #374151;
+  --nb-color-icon-color: #d0d0d0;
+  --nb-color-switch-icon: #dbeafe;
+  --nb-color-cluster-indicator: #4ade80;
+  --nb-color-yellow: #eab308;
+  --nb-color-edit-icon: #fca5a5;
+  --nb-color-highest: #ef4444;
+  --nb-color-high: #ea3d3d;
+  --nb-color-medium: #eab308;
+  --nb-color-low: #3498db;
+  --nb-color-lowest: #22c55e;
+  --nb-color-lowest-light: #bbf7d0;
+  --nb-color-na: #a2a2a2;
+  --nb-color-to-do: #93c5fd;
+  --nb-color-done: #86efac;
+  --nb-color-in-progress: #fde047;
+  --nb-color-open: #c971ff;
+  --nb-color-critical: #c00000;
+  --nb-color-info: #3b82f6;
+  --nb-color-debug: gray;
+  --nb-color-ok: #23d160;
+  --nb-color-firing: #ef5350;
+  --nb-color-purple: purple;
+  --nb-color-dark-primary: #1f61a4;
+
+  /* ── Text Colors ── */
+  /* (nb-text-* vars already defined in globaltext.css for primary/secondary/tertiary/etc.
+     Below are the ADDITIONAL text tokens not yet in globaltext.css) */
+  --nb-text-primary-dark: #3b82f6;
+  --nb-text-grey-dark: #646464;
+  --nb-text-null: #808080;
+  --nb-text-yellow-label: #eab308;
+  --nb-text-orange-label: #ffa500;
+  --nb-text-disabled-input: #a0a0a0;
+  --nb-text-delete: #fca5a5;
+  --nb-text-red: red;
+  --nb-text-checkbox-label: #506386;
+  --nb-text-primary-light: #60a5fa;
+  --nb-text-divider: #ebebeb;
+  --nb-text-last-sync: #b9b9b9;
+  --nb-text-currency-primary-dark: #2f4267;
+  --nb-text-pagination: #294781;
+  --nb-text-line-chart: #5d5fef;
+  --nb-text-availability: #9e9e9e;
+  --nb-text-number-component: #313131;
+  --nb-text-green: green;
+  --nb-text-trace-red: rgba(255, 99, 132, 0.2);
+  --nb-text-trace-blue: rgba(54, 162, 235, 0.2);
+  --nb-text-trace-yellow: rgba(255, 206, 86, 0.2);
+  --nb-text-trace-green: rgba(75, 192, 192, 0.2);
+  --nb-text-trace-purple: rgba(153, 102, 255, 0.2);
+  --nb-text-trace-orange: rgba(255, 159, 64, 0.2);
+  --nb-text-trace-gray: rgba(199, 199, 199, 0.2);
+  --nb-text-trace-cyan: rgba(0, 255, 255, 0.2);
+  --nb-text-trace-magenta: rgba(255, 0, 255, 0.2);
+  --nb-text-trace-teal: rgba(0, 128, 128, 0.2);
+  --nb-text-trace-lime: rgba(191, 255, 0, 0.2);
+  --nb-text-trace-brown: rgba(165, 42, 42, 0.2);
+  --nb-text-trace-pink: rgba(255, 105, 180, 0.2);
+  --nb-text-trace-navy: rgba(0, 0, 128, 0.2);
+  --nb-text-trace-gold: rgba(255, 215, 0, 0.2);
+  --nb-text-trace-olive: rgba(128, 128, 0, 0.2);
+  --nb-text-trace-dark-gray: rgba(100, 100, 100, 0.2);
+  --nb-text-dark-gray: darkgray;
+  --nb-text-bar-chart: #4c7ede;
+  --nb-text-service-map: #f00;
+  --nb-text-ios-slider: #007bff;
+  --nb-text-ios-slider-dark: #0a84ff;
+  --nb-text-service-map-green: #2bdca2;
+  --nb-text-service-map-skyblue: #96c2fd;
+  --nb-text-service-map-blue: blue;
+  --nb-text-low: #aea124;
+  --nb-text-sidebar: #1b2d4a;
+  --nb-text-tertiary-medium: #d0d0d0;
+  --nb-text-ask-nudgebee-welcome: #314e7d;
+  --nb-text-ask-nudgebee-username: #3b71c8;
+  --nb-text-nudgebee-response: #064b8f;
+  --nb-text-nudgebee-suggestion: #4b5563;
+  --nb-text-response-list: #4a5568;
+  --nb-text-search-placeholder: #c2c6cf;
+  --nb-text-purple-label: #7b1fa2;
+  --nb-text-orange-label-dark: #e65100;
+  --nb-text-mid: #687d95;
+  --nb-text-signin-dark: #000522;
+  --nb-text-dark: #2b333a;
+  --nb-text-tertiary-light: #a3a3a3;
+  --nb-text-quaternary: #9ca3af;
+  --nb-text-disabled: #d1d5db;
+  --nb-text-tab-group-label: #5c5c5c;
+  --nb-text-tab-group-arrow: #bdbdbd;
+  --nb-text-warning-text: #92400e;
+  --nb-text-warning-hover: #78350f;
+  --nb-text-debug: gray;
+  --nb-text-info-dark: #1e40af;
+  --nb-text-blue-chip: #1d4ed8;
+  --nb-text-green-chip: #15803d;
+  --nb-text-pastel-pink: #be185d;
+
+  /* ── Background Colors ── */
+  --nb-bg-primary: #2563eb;
+  --nb-bg-secondary: #374151;
+  --nb-bg-tertiary: #737373;
+  --nb-bg-tertiary-medium: #d0d0d0;
+  --nb-bg-tertiary-light: #f3f3f3;
+  --nb-bg-tertiary-lightest: #f3f3f3;
+  --nb-bg-tertiary-lightestest: #f8f8f8;
+  --nb-bg-tertiary-lightestestest: #f9f9f9;
+  --nb-bg-white: #ffffff;
+  --nb-bg-black: #000000;
+  --nb-bg-sidebar: #1b2d4a;
+  --nb-bg-secondary-dark: #9f9f9f;
+  --nb-bg-home: #ffffff;
+  --nb-bg-ask-nudgebee-page: #ffffff;
+  --nb-bg-pages: #fcfcfc;
+  --nb-bg-active-button-color: #d9d9d933;
+  --nb-bg-primary-light: #bfdbfe;
+  --nb-bg-primary-lightest: #eff6ff;
+  --nb-bg-error-light: #fecaca;
+  --nb-bg-transparent: transparent;
+  --nb-bg-table-header: #eef3ff;
+  --nb-bg-null: #f6f3f3;
+  --nb-bg-yellow-label: #fefce8;
+  --nb-bg-critical-red: #e95252;
+  --nb-bg-blue-label: #e6f1ff;
+  --nb-bg-green-label: linear-gradient(95deg, #e5ffed 7.65%, #f0fff4 103.54%);
+  --nb-bg-light-red-label: linear-gradient(95deg, #ffeaea 7.65%, #fff0f0 103.54%);
+  --nb-bg-input: #f0f0f0;
+  --nb-bg-error: #dc2626;
+  --nb-bg-integration-card: #ffffff;
+  --nb-bg-switch-track-dark: #2eca45;
+  --nb-bg-switch-track-light: #65c466;
+  --nb-bg-switch-track-lightest: #20b684;
+  --nb-bg-switch-thumb: #33cf4d;
+  --nb-bg-accordion-summary: #fef2f2;
+  --nb-bg-active-anchor-button: #e6f1ff;
+  --nb-bg-active-tab: #fee2e2;
+  --nb-bg-active-tab-indicator: #f87171;
+  --nb-bg-anchor-active-tab: #dbeafe;
+  --nb-bg-primary-dark: #3b82f6;
+  --nb-bg-tab-indicator: #f87171;
+  --nb-bg-summary-block: #e3ffef;
+  --nb-bg-cost-block: #f8fffa;
+  --nb-bg-total-recommendation: #f3f6fd;
+  --nb-bg-red: red;
+  --nb-bg-recommendation-chart: #f6faff;
+  --nb-bg-toggle: #eff5ff;
+  --nb-bg-ticket-description: #f9f9f9;
+  --nb-bg-button-tab: #edf2fb;
+  --nb-bg-info-graphic: #f3f8ff;
+  --nb-bg-toggle-icon-btn: #ffffff;
+  --nb-bg-toggle-icon-btn-hover: #edf2fb;
+  --nb-bg-code-mirror: #f5f5f5;
+  --nb-bg-react-flow: #eee;
+  --nb-bg-title-underline: rgba(49, 98, 208, 0.4);
+  --nb-bg-medium: #fff1f1;
+  --nb-bg-low: #fffce5;
+  --nb-bg-warning: #f0ac5b;
+  --nb-bg-light-box: #f9fffb;
+  --nb-bg-collapseable-card: #f4f9ff;
+  --nb-bg-conversation-card: #fbfbfb;
+  --nb-bg-selected-conversation: #d3d3d3;
+  --nb-bg-suggestion-card: #f9fafb;
+  --nb-bg-suggestion-card-hover: #f3f4f6;
+  --nb-bg-nubi-question: #f6f6f6;
+  --nb-bg-nubi-hover: #fffcdf;
+  --nb-bg-shimmer-base: #f1f5f9;
+  --nb-bg-shimmer-highlight: #f8fafc;
+  --nb-bg-purple-label: #f3e5f5;
+  --nb-bg-orange-label: #fff3e0;
+  --nb-bg-brand-button: #fed931;
+  --nb-bg-brand-button-hover: #f0cb20;
+  --nb-bg-tab-primary-selected: #414f66;
+  --nb-bg-warning-light: #fffbeb;
+  --nb-bg-warning-button: #fef3c7;
+  --nb-bg-warning-button-hover: #fde68a;
+  --nb-bg-warning-lightest: #fef9c3;
+  --nb-bg-blue-chip: #eff6ff;
+  --nb-bg-green-chip: #f0fdf4;
+  --nb-text-pastel-pink: #be185d;
+  --nb-bg-pastel-pink: #fce7f3;
+
+  /* ── Border Colors ── */
+  --nb-border-primary: #3b82f6;
+  --nb-border-vertical: #ebebeb;
+  --nb-border-primary-light: #bfdbfe;
+  --nb-border-primary-lightest: #60a5fa;
+  --nb-border-tertiary: #bfdbfe;
+  --nb-border-secondary-light: #ebebeb;
+  --nb-border-secondary-lightest: #e0e0e0;
+  --nb-border-quadrant: #3b82f6;
+  --nb-border-error-light: #fecaca;
+  --nb-border-insight-card: #ffdc9c;
+  --nb-border-secondary: #d0d0d0;
+  --nb-border-chip-hover: #999999;
+  --nb-border-success: #4ade80;
+  --nb-border-error: #f83435;
+  --nb-border-error-outline: #d32f2f;
+  --nb-border-primary-dark: rgba(49, 98, 208, 0.3);
+  --nb-border-cpu-limit: #ef4444;
+  --nb-border-cpu-recommendation: #16a34a;
+  --nb-border-cpu-requested: #3b82f6;
+  --nb-border-logo: #facf39;
+  --nb-border-logo-light: #fdecb0;
+  --nb-border-cpu-usage: #ffa500;
+  --nb-border-memory-limit: #ef4444;
+  --nb-border-memory-recommendation: #16a34a;
+  --nb-border-memory-requested: #3b82f6;
+  --nb-border-memory-usage: #ffa500;
+  --nb-border-summary-block: #b9b9b9;
+  --nb-border-ticket-description: #ddd;
+  --nb-border-button-tab: #364193;
+  --nb-border-tertiary-lightest: #f3f3f3;
+  --nb-border-paper-outline: #fca5a5;
+  --nb-border-white: #ffffff;
+  --nb-border-query-autocomplete: #7a88a4;
+  --nb-border-input: #cecece;
+  --nb-border-autocomplete-option: #e0e0e0;
+  --nb-border-value-with-left-border: #16243e;
+  --nb-border-conversation-card: #6a7485;
+  --nb-border-nudgebee-suggestion: #e5e7eb;
+  --nb-border-nudgebee-suggestion-hover: #d1d5db;
+  --nb-border-warning: #f59e0b;
+
+  /* ── Button Colors ── */
+  --nb-btn-primary: #3b82f6;
+  --nb-btn-primary-hover: #2563eb;
+  --nb-btn-primary-text: #ffffff;
+  --nb-btn-primary-disabled: #bfdbfe;
+  --nb-btn-primary-disabled-text: #ffffff;
+  --nb-btn-secondary: #ffffff;
+  --nb-btn-secondary-text: #737373;
+  --nb-btn-secondary-hover: #f8f8f8;
+  --nb-btn-secondary-border: #d7d7d7;
+  --nb-btn-secondary-hover-border: #d0d0d0;
+  --nb-btn-secondary-disabled: #f8f8f8;
+  --nb-btn-secondary-disabled-text: #d0d0d0;
+  --nb-btn-secondary-disabled-border: #ebebeb;
+  --nb-btn-tertiary-border: #60a5fa;
+  --nb-btn-tertiary: #ffffff;
+  --nb-btn-tertiary-text: #3b82f6;
+  --nb-btn-tertiary-hover: #eff6ff;
+  --nb-btn-tertiary-hover-border: #60a5fa;
+  --nb-btn-tertiary-disabled: #ffffff;
+  --nb-btn-tertiary-disabled-text: #93c5fd;
+  --nb-btn-tertiary-disabled-border: #bfdbfe;
+
+  /* ── Shadow ── */
+  --nb-shadow-card: 0px 4px 20px -1px rgba(229, 229, 229, 0.4), 0px 2px 20px 0px rgb(233, 233, 233);
+  --nb-shadow-tab: 0px 4px 10px -1px rgba(229, 229, 229, 0.2), 0px 2px 10px 0px rgb(233, 233, 233);
+  --nb-shadow-soft-gray: 0px 4px 20px 0px rgba(180, 180, 180, 0.12);
+  --nb-shadow-soft-black: 0px 1px 3px 0px rgba(0, 0, 0, 0.1);
+
+  /* ── Status Badge Colors ── */
+  --nb-status-blue-bg: #e3f2fd;
+  --nb-status-blue-text: #1565c0;
+  --nb-status-green-bg: #e8f5e9;
+  --nb-status-green-text: #2e7d32;
+  --nb-status-red-bg: #ffebee;
+  --nb-status-red-text: #c62828;
+
+  /* ── MUI Theme Palette ── */
+  --nb-mui-primary: #27429c;
+  --nb-mui-success: #00c853;
+  --nb-mui-success-contrast: #ffffff;
+  --nb-mui-error: #ff1744;
+  --nb-mui-error-contrast: #ffffff;
+  --nb-mui-radio-unchecked: #93c5fd;
+  --nb-mui-radio-checked: #3b82f6;
+  --nb-mui-form-label: #737373;
+  --nb-mui-form-label-checked: #374151;
+
+  /* ── Font Family ── */
+  --nb-font-primary: 'Roboto', sans-serif;
+  --nb-font-secondary: 'Poppins', sans-serif;
+  --nb-font-mono: 'Roboto Mono', 'Consolas', monospace;
+
+  /* ── Font Weights ── */
+  --nb-font-light: 300;
+  --nb-font-normal: 400;
+  --nb-font-medium: 500;
+  --nb-font-semibold: 600;
+  --nb-font-bold: 700;
+
+  /* ── Line Heights ── */
+  --nb-leading-tight: 1.2;
+  --nb-leading-snug: 1.3;
+  --nb-leading-normal: 1.4;
+  --nb-leading-relaxed: 1.5;
+  --nb-leading-loose: 1.6;
+
+  /* ── Font Sizes ── */
+  --nb-text-xs: 10px;
+  --nb-text-sm: 11px;
+  --nb-text-base: 12px;
+  --nb-text-md: 13px;
+  --nb-text-lg: 14px;
+  --nb-text-xl: 16px;
+  --nb-text-2xl: 18px;
+  --nb-text-3xl: 20px;
+  --nb-text-4xl: 24px;
+  --nb-text-5xl: 28px;
+  --nb-text-6xl: 34px;
+
+  /* ── Primary Text Colors ── */
+  --nb-text-primary: #3b82f6;
+  --nb-text-secondary: #374151;
+  --nb-text-tertiary: #737373;
+  --nb-text-muted: #9f9f9f;
+  --nb-text-white: #ffffff;
+  --nb-text-black: #000000;
+  --nb-text-title: #22304b;
+
+  /* ── Semantic Text Colors ── */
+  --nb-text-success: #16a34a;
+  --nb-text-error: #dc2626;
+  --nb-text-warning: #eab308;
+  --nb-text-info: #3b82f6;
+  --nb-text-critical: #ef4444;
+  --nb-text-currency: #22c55e;
+
+  /* ── Observability Text Colors ── */
+  --nb-text-cpu-limit: #ef4444;
+  --nb-text-cpu-recommendation: #16a34a;
+  --nb-text-cpu-requested: #3b82f6;
+  --nb-text-cpu-usage: #ffa500;
+  --nb-text-memory-limit: #ef4444;
+  --nb-text-memory-recommendation: #16a34a;
+  --nb-text-memory-requested: #3b82f6;
+  --nb-text-memory-usage: #ffa500;
+}
+
+/* ============================================================================
+   DESIGN SYSTEM TOKENS (--ds-*)
+   Source of truth: app/design-system/shared/styles.css
+   Reference:       app/design-system/foundations/tokens.html
+   Convention:      Vercel Geist 100..700 scale (low → high contrast)
+   New code MUST prefer --ds-* over --nb-*. The --nb-* block above stays live
+   until adoption migrates every call site (see COMPONENT_IMPLEMENTATION_PLAN.md).
+   ============================================================================ */
+:root {
+  /* Surfaces */
+  --ds-background-100: #ffffff;
+  --ds-background-200: #fafafa;
+  --ds-background-300: #f5f5f5;
+
+  /* Gray (UI scaffolding) */
+  --ds-gray-100: #f2f2f2;
+  --ds-gray-200: #ebebeb;
+  --ds-gray-300: #e3e3e3;
+  --ds-gray-400: #a8a8a8;
+  --ds-gray-500: #8f8f8f;
+  --ds-gray-600: #6f6f6f;
+  --ds-gray-700: #171717;
+
+  /* Gray alpha (use over images / coloured backgrounds) */
+  --ds-gray-alpha-100: rgba(0, 0, 0, 0.05);
+  --ds-gray-alpha-200: rgba(0, 0, 0, 0.08);
+  --ds-gray-alpha-300: rgba(0, 0, 0, 0.1);
+  --ds-gray-alpha-400: rgba(0, 0, 0, 0.34);
+  --ds-gray-alpha-500: rgba(0, 0, 0, 0.44);
+  --ds-gray-alpha-600: rgba(0, 0, 0, 0.56);
+  --ds-gray-alpha-700: rgba(0, 0, 0, 0.91);
+
+  /* Blue (info, links, neutral interactive) */
+  --ds-blue-100: #f0f7ff;
+  --ds-blue-200: #d6ebff;
+  --ds-blue-300: #adcfff;
+  --ds-blue-400: #5b9eff;
+  --ds-blue-500: #2f7af0;
+  --ds-blue-600: #0c64d6;
+  --ds-blue-700: #0a4ea3;
+
+  /* Red (critical, error, destructive) */
+  --ds-red-100: #fff0f0;
+  --ds-red-200: #ffd6d6;
+  --ds-red-300: #ffadad;
+  --ds-red-400: #ff6b6b;
+  --ds-red-500: #e5484d;
+  --ds-red-600: #c8323a;
+  --ds-red-700: #9a1f25;
+
+  /* Amber (warning, medium severity) */
+  --ds-amber-100: #fff8e0;
+  --ds-amber-200: #ffeaa3;
+  --ds-amber-300: #ffd158;
+  --ds-amber-400: #f5b400;
+  --ds-amber-500: #d99100;
+  --ds-amber-600: #a66a00;
+  --ds-amber-700: #6e4500;
+
+  /* Green (success, healthy, savings) */
+  --ds-green-100: #ebfaee;
+  --ds-green-200: #c7f0d2;
+  --ds-green-300: #8fe0a3;
+  --ds-green-400: #46c168;
+  --ds-green-500: #2ca84c;
+  --ds-green-600: #1f8a3c;
+  --ds-green-700: #135a27;
+
+  /* Teal (secondary positive, low-savings cost callout) */
+  --ds-teal-50: #ecfdfd;
+  --ds-teal-100: #cff1f2;
+  --ds-teal-200: #b8eef0;
+  --ds-teal-300: #79dadc;
+  --ds-teal-400: #2bb8bb;
+  --ds-teal-500: #199a9d;
+  --ds-teal-600: #0f7a7c;
+  --ds-teal-700: #075052;
+
+  /* Purple (categorical only — agents, automations) */
+  --ds-purple-100: #f5f0ff;
+  --ds-purple-200: #e2d3ff;
+  --ds-purple-300: #c2a5ff;
+  --ds-purple-400: #8a5cf6;
+  --ds-purple-500: #6f3fe0;
+  --ds-purple-600: #5527b8;
+  --ds-purple-700: #361679;
+
+  /* Pink (categorical only — never default to pink for status) */
+  --ds-pink-100: #fff0f7;
+  --ds-pink-200: #ffd1e3;
+  --ds-pink-300: #ff9ec4;
+  --ds-pink-400: #ee5697;
+  --ds-pink-500: #d23a7c;
+  --ds-pink-600: #a4225f;
+  --ds-pink-700: #69143b;
+
+  /* ----- Brand colours --------------------------------------------------- */
+  /* Brand navy ("Sidebar Dark") — anchored at #1B2D4A.
+     Primary buttons (rest=600, hover=500, active=700), brand-toned icons
+     (Ask Nubi etc.), secondary/ghost button text + borders, sidebar bg.
+     Never tone destructive / cost-axis surfaces with brand. */
+  --ds-brand-100: #eef1f6;
+  --ds-brand-200: #d5dce7;
+  --ds-brand-300: #a4b0c5;
+  --ds-brand-400: #6b7b9a;
+  --ds-brand-500: #2a3d5a;
+  --ds-brand-600: #1b2d4a;
+  --ds-brand-700: #122035;
+
+  /* Brand yellow ("Nudgebee Yellow") — anchored at #FACF39.
+     Focus rings, brand sigil bg, marketing accents. NOT a status colour
+     — that's amber. NOT an interactive default — too aggressive a draw. */
+  --ds-yellow-100: #fffbea;
+  --ds-yellow-200: #fff3c2;
+  --ds-yellow-300: #fce699;
+  --ds-yellow-400: #fcdb6a;
+  --ds-yellow-500: #facf39;
+  --ds-yellow-600: #e5b81f;
+  --ds-yellow-700: #b58f12;
+
+  /* Type scale — six sizes, weights 400 / 500 / 600 only.
+     One optional display size for hero metric values. Never add another. */
+  --ds-text-caption: 11px;
+  --ds-text-caption-lh: 1.4;
+  --ds-text-small: 12px;
+  --ds-text-small-lh: 1.4;
+  --ds-text-body: 13px;
+  --ds-text-body-lh: 1.45; /* default */
+  --ds-text-body-lg: 14px;
+  --ds-text-body-lg-lh: 1.5;
+  --ds-text-title: 16px;
+  --ds-text-title-lh: 1.3;
+  --ds-text-heading: 20px;
+  --ds-text-heading-lh: 1.25;
+  --ds-text-display: 28px;
+  --ds-text-display-lh: 1.2; /* hero metric only */
+
+  --ds-font-weight-regular: 400;
+  --ds-font-weight-medium: 500;
+  --ds-font-weight-semibold: 600;
+
+  /* Body / default text. Roboto first to match MUI's theme.typography.fontFamily
+     and the legacy components — keeping the app on one default family. */
+  --ds-font-sans: 'Roboto', 'Helvetica', 'Arial', sans-serif;
+  /* Display / heading font — used for labels, section titles, page headings.
+     Body / input values stay in the body default (Roboto via MUI theme). */
+  --ds-font-display: 'Poppins', 'Roboto', -apple-system, sans-serif;
+  --ds-font-mono: 'JetBrains Mono', 'Consolas', 'Monaco', 'Courier New', monospace;
+
+  /* Spacing — 4px base. Scale: 4 8 12 16 24 32 48. No other steps. */
+  --ds-space-1: 4px;
+  --ds-space-2: 8px;
+  --ds-space-3: 12px;
+  --ds-space-4: 16px;
+  --ds-space-5: 24px;
+  --ds-space-6: 32px;
+  --ds-space-7: 48px;
+
+  /* Radius — only five legal values. */
+  --ds-radius-sm: 4px;
+  --ds-radius-md: 6px;
+  --ds-radius-lg: 8px;
+  --ds-radius-xl: 12px;
+  --ds-radius-pill: 999px;
+
+  /* Motion — micro for indicators, panel for drawers / banners.
+     Honour prefers-reduced-motion (see media query below). */
+  --ds-motion-micro: 120ms;
+  --ds-motion-panel: 180ms;
+  --ds-motion-ease: cubic-bezier(0.16, 1, 0.3, 1); /* ease-out */
+
+  /* ── Overlay — popover / menu / dropdown surface + items ──────────────
+     Shared across DropdownMenu, Select, MultiSelect, FilterDropdown,
+     Autocomplete, Popover. The radius (10px) and layered shadow live
+     outside the general --ds-radius-* / --ds-shadow-* scales on purpose:
+     they're overlay-specific chrome, not generic surface tokens.
+     Changing any of these once retones every overlay primitive at once. */
+  --ds-overlay-radius: 10px;
+  --ds-overlay-shadow: 0 4px 6px rgba(0, 0, 0, 0.04), 0 12px 28px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  --ds-overlay-bg: var(--ds-background-100);
+  --ds-overlay-anchor-gap: 7px;
+  --ds-overlay-padding-y: 4px;
+
+  /* Item geometry inside an overlay */
+  --ds-overlay-item-radius: 6px;
+  --ds-overlay-item-margin-x: 5px;
+  --ds-overlay-item-padding-sm: 6px 10px;
+  --ds-overlay-item-padding-md: 8px 10px;
+  --ds-overlay-item-hover-bg: var(--ds-gray-100);
+  --ds-overlay-item-selected-bg: var(--ds-blue-100);
+  --ds-overlay-item-danger-hover-bg: var(--ds-red-100);
+
+  /* Enter animation — keyframes can't be tokenized; duration + easing can */
+  --ds-overlay-enter-duration: 250ms;
+  --ds-overlay-enter-easing: var(--ds-motion-ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --ds-motion-micro: 1ms;
+    --ds-motion-panel: 1ms;
+  }
+}

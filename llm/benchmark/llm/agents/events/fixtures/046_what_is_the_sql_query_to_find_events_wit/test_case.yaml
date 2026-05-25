@@ -1,0 +1,9 @@
+user_prompt: What is the SQL query to find events with aggregation key 'KubeCPUOvercommit'
+  OR 'KubeMemoryOvercommit'?
+expected_output:
+- SELECT id, title, starts_at, status, priority, aggregation_key, subject_node   FROM
+  events   WHERE aggregation_key IN ('KubeCPUOvercommit', 'KubeMemoryOvercommit');
+- SELECT * FROM events   WHERE aggregation_key IN ('KubeCPUOvercommit', 'KubeMemoryOvercommit');
+tags:
+- command
+- events

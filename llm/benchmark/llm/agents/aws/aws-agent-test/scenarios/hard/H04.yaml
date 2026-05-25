@@ -1,0 +1,129 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H04: Lambda has hardcoded wrong AWS region in boto3 client.
+  User complaint: "User notification Lambda works in dev (us-west-2) but fails
+  in production (us-east-1). SNS publish calls get EndpointDisabledException or
+  topic not found errors."
+  Root cause: Lambda code hardcodes region 'us-west-2' when creating SNS client,
+  but the SNS topic exists in us-east-1. Cross-region SNS calls fail because
+  the topic ARN region doesn't match the client region.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Lambda SNS_REGION env var set to 'us-west-2' (wrong region, topic is in us-east-1).
+      Fixed = Lambda SNS_REGION env var set to 'us-east-1' (correct).
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  NotificationsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: h04-user-notifications
+      Tags:
+        - Key: Name
+          Value: h04-user-notifications
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: notifications
+
+  NotificationServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h04-notification-service-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: sns-publish
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref NotificationsTopic
+
+  NotificationServiceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h04-notification-service
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt NotificationServiceRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref NotificationsTopic
+          # THE BUG: In Broken mode, wrong region — SNS topic is in us-east-1
+          # but client will use us-west-2, causing topic-not-found or auth errors
+          SNS_REGION: !If [IsFixed, 'us-east-1', 'us-west-2']
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+
+          TOPIC_ARN = os.environ['SNS_TOPIC_ARN']
+          SNS_REGION = os.environ['SNS_REGION']
+
+          def handler(event, context):
+              user_id = event.get('user_id', 'unknown')
+              message = event.get('message', 'Notification from service')
+              try:
+                  # BUG: hardcoded region in boto3 client call
+                  # When SNS_REGION is wrong, topic ARN is in a different region
+                  sns = boto3.client('sns', region_name=SNS_REGION)
+                  response = sns.publish(
+                      TopicArn=TOPIC_ARN,
+                      Message=json.dumps({'user_id': user_id, 'message': message}),
+                      Subject='User Notification'
+                  )
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({'messageId': response['MessageId']})
+                  }
+              except Exception as e:
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({
+                          'error': str(e),
+                          'sns_region_used': SNS_REGION,
+                          'topic_arn': TOPIC_ARN
+                      })
+                  }
+      Tags:
+        - Key: Name
+          Value: h04-notification-service
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: user-notifications
+
+Outputs:
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref NotificationServiceFunction
+  TopicArn:
+    Description: SNS Topic ARN (in us-east-1)
+    Value: !Ref NotificationsTopic
+  ConfiguredRegion:
+    Description: Region configured in Lambda (wrong in Broken mode)
+    Value: !If [IsFixed, 'us-east-1', 'us-west-2']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

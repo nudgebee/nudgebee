@@ -1,0 +1,15 @@
+user_prompt: The orders service App Service in resource group 'azure-agent-test-E10'
+  crashes on startup with the error 'database host not configured'. The database is
+  healthy and other environment variables are correct. What is wrong?
+expected_output:
+- 'The App Service app setting DB_HOST is set to an empty string. The application
+  requires a valid hostname to build its database connection string, and an empty
+  DB_HOST causes startup failure. Fix: Set DB_HOST to the correct PostgreSQL server
+  FQDN, e.g. ''e10-postgres.postgres.database.azure.com''.'
+agent: azure_debug
+scenario: E10
+type: rca
+tags:
+- rca
+- easy
+- azure

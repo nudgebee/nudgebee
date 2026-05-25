@@ -1,0 +1,19 @@
+user_prompt: Show me all HTTP 500 errors for the Cloud Run service 'nudgebee-booth' in project 'nudgebee-dev' from the last 24 hours.
+expected_output:
+  - >-
+    gcloud logging read
+    'resource.type="cloud_run_revision"
+    resource.labels.service_name="nudgebee-booth"
+    httpRequest.status=500
+    timestamp>="$(date -u -d ''24 hours ago'' +%Y-%m-%dT%H:%M:%SZ)"'
+    --project=nudgebee-dev --limit=50 --format=json
+  - >-
+    gcloud logging read
+    'resource.type="cloud_run_revision"
+    resource.labels.service_name="nudgebee-booth"
+    httpRequest.status=500'
+    --project=nudgebee-dev --freshness=1d --limit=50 --format=json
+tags:
+  - command
+  - trace
+  - gcp

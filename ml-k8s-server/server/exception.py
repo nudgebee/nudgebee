@@ -1,0 +1,2 @@
+class CancelPrediction(Exception):
+    pass

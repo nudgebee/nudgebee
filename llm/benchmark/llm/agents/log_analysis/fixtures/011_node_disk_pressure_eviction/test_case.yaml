@@ -1,0 +1,18 @@
+user_prompt: |
+  2026-04-05T20:15:33.456Z WARN  [kubelet] eviction manager: attempting to reclaim ephemeral-storage
+  2026-04-05T20:15:33.457Z WARN  [kubelet] eviction manager: must evict pod(s) to reclaim ephemeral-storage
+  2026-04-05T20:15:33.458Z INFO  [kubelet] eviction manager: evicting pod demo/load-generator-85847dc5d7-b8hrp (BestEffort)
+  2026-04-05T20:15:33.890Z WARN  [kubelet] node condition DiskPressure: True, reason: KubeletHasDiskPressure
+  2026-04-05T20:15:34.123Z INFO  [kubelet] Pod demo/load-generator-85847dc5d7-b8hrp evicted: The node was low on resource: ephemeral-storage. Threshold quantity: 1Gi, available: 524288Ki
+  2026-04-05T20:15:34.456Z INFO  [kubelet] Container image "ghcr.io/open-telemetry/demo:2.2.0-load-generator" storage: 2.3Gi
+  2026-04-05T20:15:34.789Z WARN  [kubelet] eviction manager: evicting pod sock-shop/catalogue-cd4ff8c9f-npmnm (BestEffort)
+  2026-04-05T20:15:35.012Z INFO  [kubelet] Pod sock-shop/catalogue-cd4ff8c9f-npmnm evicted
+  node: gke-nudgebee-dev-default-pool-abc123-def4
+expected_output:
+  - The Kubernetes node gke-nudgebee-dev-default-pool-abc123-def4 entered DiskPressure condition and the eviction manager started evicting pods to reclaim ephemeral-storage. The available disk space (524288Ki / ~512Mi) fell below the threshold of 1Gi. Pods evicted include load-generator in the demo namespace and catalogue in the sock-shop namespace. The load-generator container image alone uses 2.3Gi of storage. The root cause is that the node's ephemeral storage is exhausted, likely due to large container images, excessive logging, or accumulated temporary files. Suggested actions include increasing the node's disk size, cleaning up unused container images, configuring ephemeral storage limits on pods, and investigating which pods are consuming the most disk space.
+tags:
+  - eviction
+  - disk-pressure
+  - node
+  - kubernetes
+type: log_analysis

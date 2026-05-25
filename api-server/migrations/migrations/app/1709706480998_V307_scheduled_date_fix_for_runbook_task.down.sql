@@ -1,0 +1,11 @@
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- UPDATE
+--     auto_playbook_task
+-- SET
+--     scheduled_time = t2.scheduled_at
+-- FROM
+--     auto_playbook_executions t2
+-- WHERE
+--     execution_id = t2.id;

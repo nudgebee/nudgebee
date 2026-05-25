@@ -1,0 +1,12 @@
+user_prompt: Find all high-priority, firing issues for deployments in the 'production'
+  namespace that started today.
+expected_output:
+- SELECT id, title, starts_at, subject_name FROM events WHERE priority = 'HIGH' AND
+  status = 'FIRING' AND finding_type = 'issue' AND subject_type = 'deployment' AND
+  subject_namespace = 'production' AND starts_at >= CURRENT_DATE;
+- SELECT * FROM events WHERE priority = 'HIGH' AND status = 'FIRING' AND finding_type
+  = 'issue' AND subject_type = 'deployment' AND subject_namespace = 'production' AND
+  starts_at >= CURRENT_DATE;
+tags:
+- command
+- events

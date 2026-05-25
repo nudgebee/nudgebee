@@ -1,0 +1,15 @@
+user_prompt: Our Route 53 health check for our API endpoint shows unhealthy even though
+  the endpoint is up and responding perfectly. We can curl the Lambda Function URL
+  and get 200 OK. The health check has been failing since we set it up. What's wrong
+  with the health check configuration?
+expected_output:
+- 'The root cause is a protocol mismatch in the Route 53 health check configuration.
+  The health check is set to Type=HTTP on port 443, but the target endpoint (Lambda
+  Function URL) only serves HTTPS. When Route 53 sends a plain HTTP request to port
+  443, the TLS-enabled endpoint responds with a TLS handshake which the HTTP client
+  can''t understand, causing the health check to fail. Check: aws route53 get-health-check
+  --health-check-id <id> to see Type=HTTP and Port=443. The fix is to change the health
+  check type to HTTPS: the health check protocol must match the endpoint protocol.'
+tags:
+- command
+- aws

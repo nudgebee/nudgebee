@@ -1,0 +1,18 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is the absence of an S3 VPC Gateway Endpoint. The Lambda ''m14-data-processor'' is in a VPC private subnet.
+  Without an S3 VPC Gateway Endpoint, all S3 API calls route through the NAT Gateway → internet → S3 public endpoint. This
+  path is bandwidth-limited by NAT Gateway (up to 45 Gbps but with per-connection limits) and incurs NAT data processing charges.
+  An S3 VPC Gateway Endpoint routes S3 traffic directly through the AWS backbone network — it''s free, has no bandwidth limits,
+  and significantly faster. Check: aws ec2 describe-vpc-endpoints --filters Name=vpc-id,Values=<vpc-id> to see no S3 endpoint
+  exists. The fix is to create an S3 VPC Gateway Endpoint: aws ec2 create-vpc-endpoint --vpc-id <vpc-id> --service-name com.amazonaws.us-east-1.s3
+  --route-table-ids <route-table-id>.'
+scenario: M14
+tags:
+- command
+- aws
+- medium
+type: rca
+user_prompt: Lambda 'm14-data-processor' in us-east-1 is in a VPC and can reach external APIs fine via NAT Gateway, but S3
+  operations (PutObject, GetObject) are extremely slow or timeout. The Lambda has correct IAM permissions for S3. What's causing
+  S3 specifically to be slow?

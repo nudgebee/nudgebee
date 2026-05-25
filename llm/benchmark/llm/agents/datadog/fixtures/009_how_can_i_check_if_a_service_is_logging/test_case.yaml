@@ -1,0 +1,7 @@
+user_prompt: How can I check if a service is logging in the last hour?
+expected_output:
+- count_over_time({service="payments"}[1h]) > 0
+- sum(count_over_time({job="kubernetes-logs", service="payments"}[1h])) > 0
+tags:
+- command
+- datadog

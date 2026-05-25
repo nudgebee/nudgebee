@@ -1,0 +1,6 @@
+user_prompt: List all secrets.
+expected_output:
+- kubectl get secrets
+tags:
+- command
+- kubernetes

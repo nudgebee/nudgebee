@@ -1,0 +1,7 @@
+user_prompt: How can I fetch logs for production namespace?
+expected_output:
+- '{namespace="production"}'
+- '{job="kubernetes-logs", namespace="production"}'
+tags:
+- command
+- datadog

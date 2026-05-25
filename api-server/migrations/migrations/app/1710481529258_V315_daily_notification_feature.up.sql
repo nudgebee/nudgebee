@@ -1,0 +1,1 @@
+insert into feature(value, description) values ('NOTIFICATION_DAILY_HIGHLIGHT_REPORT', 'Daily Highlight Report') on conflict do nothing

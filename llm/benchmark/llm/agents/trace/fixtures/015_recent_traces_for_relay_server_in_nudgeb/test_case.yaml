@@ -1,0 +1,12 @@
+user_prompt: Recent traces for 'relay-server' in 'nudgebee' namespace with duration
+  longer than 5 seconds.
+expected_output:
+- SELECT * FROM traces_view WHERE workload_name LIKE '%relay-server%' AND workload_namespace
+  = 'nudgebee' AND duration_ns > 5000 ORDER BY timestamp DESC LIMIT 50;
+- SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name,
+  destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE
+  workload_name LIKE '%relay-server%' AND workload_namespace = 'nudgebee' AND duration_ns
+  > 5000 ORDER BY timestamp DESC LIMIT 50;
+tags:
+- command
+- trace

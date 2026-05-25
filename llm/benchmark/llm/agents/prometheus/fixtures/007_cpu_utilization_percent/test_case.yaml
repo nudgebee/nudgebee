@@ -1,0 +1,17 @@
+user_prompt: What is the CPU utilization percentage per pod in namespace nudgebee?
+expected_output:
+  - (sum by(pod,namespace)(rate(container_cpu_usage_seconds_total{namespace="nudgebee"}[5m])) / on(pod,namespace) group_left() kube_pod_container_resource_limits{resource="cpu",namespace="nudgebee"}) * 100
+expected_metrics:
+  - container_cpu_usage_seconds_total
+  - kube_pod_container_resource_limits
+expected_tools:
+  - prometheus_execute
+forbidden_tools:
+  - shell_execute
+  - search_metrics
+expected_max_tool_calls: 4
+tags:
+  - fast_path
+  - cadvisor
+  - cpu
+  - utilization

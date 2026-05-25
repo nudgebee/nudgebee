@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to count how many rows have subject_node NULL and
+  how many total rows exist?
+expected_output:
+- SELECT COUNT(*) FILTER (WHERE subject_node IS NULL) AS null_subject_node, COUNT(*)
+  AS total FROM events;
+tags:
+- command
+- events

@@ -1,0 +1,6 @@
+user_prompt: Find warning or error logs containing "timeout" from user-service
+expected_output: '{"where": {"service.name": {"_ilike": "%user-service%"}, "severity_text": {"_in": ["WARN", "ERROR"]}, "body": {"_ilike": "%timeout%"}}}'
+tags:
+  - complex
+  - severity-body
+  - signoz

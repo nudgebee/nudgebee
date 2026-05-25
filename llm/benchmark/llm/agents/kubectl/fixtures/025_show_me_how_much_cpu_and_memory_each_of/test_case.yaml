@@ -1,0 +1,6 @@
+user_prompt: Show me how much CPU and memory each of my running pods is consuming.
+expected_output:
+- kubectl top pod
+tags:
+- command
+- kubernetes

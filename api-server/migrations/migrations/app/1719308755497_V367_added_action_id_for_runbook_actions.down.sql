@@ -1,0 +1,90 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- DO $$
+-- DECLARE
+--     k8s_bash_id varchar;
+--     aws_rds_instance_start_id varchar;
+--     aws_instance_start_id varchar;
+--     notification_id varchar;
+--     aws_eks_scalar_id varchar;
+--     aws_rds_instance_scalar_id varchar;
+--     aws_instance_scalar_id varchar;
+--     aws_instance_stop_id varchar;
+--     ticket_create_id varchar;
+--     pv_rightsize_id varchar;
+--     pod_delete_id varchar;
+--     custom_image_execute_id varchar;
+--     vertical_rightsize_id varchar;
+--     workload_restart_id varchar;
+--     workload_scalar_id varchar;
+--     aws_rds_instance_stop_id varchar;
+--     horizontal_rightsize_id varchar;
+--
+--     row_record RECORD;  -- Record variable for looping through rows
+--     row_element JSONB;  -- Record variable for looping through rows
+--     updated_tasks JSONB;  -- Variable to store updated tasks
+--
+-- BEGIN
+--     -- Fetch IDs from runbook_action table
+--     SELECT id::varchar INTO k8s_bash_id FROM runbook_action WHERE created_by IS NULL AND internal_identifier = 'k8s_bash';
+--     SELECT id::varchar INTO aws_rds_instance_start_id FROM runbook_action WHERE created_by IS NULL AND internal_identifier = 'aws_rds_instance_start';
+--     SELECT id::varchar INTO aws_instance_start_id FROM runbook_action WHERE created_by IS NULL AND internal_identifier = 'aws_instance_start';
+--     SELECT id::varchar INTO notification_id FROM runbook_action WHERE created_by IS NULL AND internal_identifier = 'notification';
+--     SELECT id::varchar INTO aws_eks_scalar_id FROM runbook_action WHERE created_by IS NULL AND internal_identifier = 'aws_eks_scalar';
+--     SELECT id::varchar INTO aws_rds_instance_scalar_id FROM runbook_action WHERE created_by IS NULL AND internal_identifier = 'aws_rds_instance_scalar';
+--     SELECT id::varchar INTO aws_instance_scalar_id FROM runbook_action WHERE created_by IS NULL AND internal_identifier = 'aws_instance_scalar';
+--     SELECT id::varchar INTO aws_instance_stop_id FROM runbook_action WHERE created_by IS NULL AND internal_identifier = 'aws_instance_stop';
+--     SELECT id::varchar INTO ticket_create_id FROM runbook_action WHERE created_by IS NULL AND internal_identifier = 'ticket_create';
+--     SELECT id::varchar INTO pv_rightsize_id FROM runbook_action WHERE created_by IS NULL AND internal_identifier = 'pv_rightsize';
+--     SELECT id::varchar INTO pod_delete_id FROM runbook_action WHERE created_by IS NULL AND internal_identifier = 'pod_delete';
+--     SELECT id::varchar INTO custom_image_execute_id FROM runbook_action WHERE created_by IS NULL AND internal_identifier = 'custom_image_execute';
+--     SELECT id::varchar INTO vertical_rightsize_id FROM runbook_action WHERE created_by IS NULL AND internal_identifier = 'vertical_rightsize';
+--     SELECT id::varchar INTO workload_restart_id FROM runbook_action WHERE created_by IS NULL AND internal_identifier = 'workload_restart';
+--     SELECT id::varchar INTO workload_scalar_id FROM runbook_action WHERE created_by IS NULL AND internal_identifier = 'workload_scalar';
+--     SELECT id::varchar INTO aws_rds_instance_stop_id FROM runbook_action WHERE created_by IS NULL AND internal_identifier = 'aws_rds_instance_stop';
+--     SELECT id::varchar INTO horizontal_rightsize_id FROM runbook_action WHERE created_by IS NULL AND internal_identifier = 'horizontal_rightsize';
+--
+--     -- Loop through each row in auto_playbook
+--     FOR row_record IN
+--         SELECT id, tasks
+--         FROM auto_playbook
+--     LOOP
+--         -- Initialize an empty array for updated tasks
+--         updated_tasks := '[]'::JSONB;
+--
+--         -- Iterate over each JSON object in tasks array
+--         FOR row_element IN SELECT jsonb_array_elements(row_record.tasks) AS task_element
+--         LOOP
+--             -- Update 'action_id' in each JSON object based on 'type'
+--             RAISE NOTICE 'Updated ekcv ke for Row UUID %: %', row_element, row_element->>'type';
+--             updated_tasks := updated_tasks || jsonb_build_array(
+--                 CASE row_element->>'type'
+--                     WHEN 'aws_rds_instance_start' THEN jsonb_set(row_element, '{config,action_id}', to_jsonb(aws_rds_instance_start_id))
+--                     WHEN 'aws_instance_start' THEN jsonb_set(row_element, '{config,action_id}', to_jsonb(aws_instance_start_id))
+--                     WHEN 'notification' THEN jsonb_set(row_element, '{config,action_id}', to_jsonb(notification_id))
+--                     WHEN 'aws_eks_scalar' THEN jsonb_set(row_element, '{config,action_id}', to_jsonb(aws_eks_scalar_id))
+--                     WHEN 'aws_rds_instance_scalar' THEN jsonb_set(row_element, '{config,action_id}', to_jsonb(aws_rds_instance_scalar_id))
+--                     WHEN 'aws_instance_scalar' THEN jsonb_set(row_element, '{config,action_id}', to_jsonb(aws_instance_scalar_id))
+--                     WHEN 'aws_instance_stop' THEN jsonb_set(row_element, '{config,action_id}', to_jsonb(aws_instance_stop_id))
+--                     WHEN 'ticket_create' THEN jsonb_set(row_element, '{config,action_id}', to_jsonb(ticket_create_id))
+--                     WHEN 'pv_rightsize' THEN jsonb_set(row_element, '{config,action_id}', to_jsonb(pv_rightsize_id))
+--                     WHEN 'pod_delete' THEN jsonb_set(row_element, '{config,action_id}', to_jsonb(pod_delete_id))
+--                     WHEN 'k8s_bash' THEN jsonb_set(row_element, '{config,action_id}', to_jsonb(k8s_bash_id))
+--                     WHEN 'custom_image_execute' THEN jsonb_set(row_element, '{config,action_id}', to_jsonb(custom_image_execute_id))
+--                     WHEN 'vertical_rightsize' THEN jsonb_set(row_element, '{config,action_id}', to_jsonb(vertical_rightsize_id))
+--                     WHEN 'workload_restart' THEN jsonb_set(row_element, '{config,action_id}', to_jsonb(workload_restart_id))
+--                     WHEN 'workload_scalar' THEN jsonb_set(row_element, '{config,action_id}', to_jsonb(workload_scalar_id))
+--                     WHEN 'aws_rds_instance_stop' THEN jsonb_set(row_element, '{config,action_id}', to_jsonb(aws_rds_instance_stop_id))
+--                     WHEN 'horizontal_rightsize' THEN jsonb_set(row_element, '{config,action_id}', to_jsonb(horizontal_rightsize_id))
+--                     ELSE row_element  -- Keep original if no match
+--                 END
+--             );
+--         END LOOP;
+--
+--         -- Optionally, update tasks column in auto_playbook
+--         UPDATE auto_playbook SET tasks = updated_tasks WHERE id = row_record.id;
+--
+--         -- Print for verification (comment out in production)
+--         RAISE NOTICE 'Updated tasks for Row UUID %: %', row_record.id, updated_tasks;
+--     END LOOP;
+-- END $$;

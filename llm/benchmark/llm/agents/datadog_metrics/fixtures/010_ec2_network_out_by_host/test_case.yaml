@@ -1,0 +1,9 @@
+user_prompt: Show outgoing network traffic per EC2 host
+expected_output:
+  - "avg:aws.ec2.network_out{*} by {host}"
+  - "sum:aws.ec2.network_out{*} by {host}"
+tags:
+  - command
+  - aws
+  - ec2
+  - network

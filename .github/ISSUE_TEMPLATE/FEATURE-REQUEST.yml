@@ -1,0 +1,87 @@
+name: "💡 Feature Request"
+description: Suggest a new feature or enhancement.
+title: "💡 [FEATURE] - <title>"
+labels: ["enhancement"]
+body:
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight checklist
+      options:
+        - label: I've searched existing issues for similar requests.
+
+  - type: dropdown
+    id: components
+    attributes:
+      label: Affected component(s)
+      description: Which part of the system would this touch? Pick all that apply.
+      multiple: true
+      options:
+        - app (UI)
+        - api-server
+        - llm-server
+        - ml-k8s-server
+        - notifications-server
+        - ticket-server
+        - runbook-server
+        - collector-server
+        - code-analysis
+        - rag-server
+        - relay-server
+        - services-server
+        - workflow-server
+        - infra / deploy
+        - docs
+        - other / unsure
+    validations:
+      required: false
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One-paragraph summary of the feature.
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Use case / motivation
+      description: What problem does this solve? Concrete examples are great.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you've thought about, or workarounds you tried.
+    validations:
+      required: false
+
+  - type: textarea
+    id: drawbacks
+    attributes:
+      label: Drawbacks
+      description: Trade-offs, costs, or impacts worth flagging.
+      placeholder: Optional — leave blank if none come to mind.
+    validations:
+      required: false
+
+  - type: textarea
+    id: unresolved_question
+    attributes:
+      label: Unresolved questions
+      description: Open questions you don't have an answer to.
+    validations:
+      required: false
+
+  - type: textarea
+    id: reference_issues
+    attributes:
+      label: Related issues or PRs
+      description: Links to related issues, PRs, or external discussions.
+      placeholder: e.g. #123, #456
+    validations:
+      required: false

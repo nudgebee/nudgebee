@@ -1,0 +1,10 @@
+user_prompt: Show me the 5xx error rate for my ALBs
+expected_output:
+  - "sum:aws.applicationelb.httpcode_elb_5xx{*} by {loadbalancer}"
+  - "avg:aws.applicationelb.httpcode_elb_5xx{*} by {loadbalancer}"
+  - "sum:aws.applicationelb.httpcode_elb_5xx{*}"
+tags:
+  - command
+  - aws
+  - alb
+  - errors

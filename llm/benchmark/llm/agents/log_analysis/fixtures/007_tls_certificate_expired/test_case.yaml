@@ -1,0 +1,16 @@
+user_prompt: |
+  2026-04-06T00:01:15.334Z INFO  [otel-collector-server] Starting OTLP receiver on 0.0.0.0:4317
+  2026-04-06T00:01:15.567Z ERROR [otel-collector-server] Failed to start OTLP gRPC receiver
+  2026-04-06T00:01:15.568Z ERROR [otel-collector-server] transport: authentication handshake failed: tls: failed to verify certificate: x509: certificate has expired or is not yet valid: current time 2026-04-06T00:01:15Z is after 2026-04-05T23:59:59Z
+  2026-04-06T00:01:15.569Z ERROR [otel-collector-server] Certificate details: issuer=CN=nudgebee-ca, subject=CN=otel-collector.nudgebee.svc, notAfter=2026-04-05T23:59:59Z
+  2026-04-06T00:01:15.570Z WARN  [otel-collector-server] Falling back to insecure mode is disabled by policy
+  2026-04-06T00:01:15.571Z FATAL [otel-collector-server] Cannot start collector: TLS certificate expired
+  namespace: nudgebee, pod: otel-collector-server-c8b45655f-zh4d8, container: otel-collector-server
+expected_output:
+  - The otel-collector-server in the nudgebee namespace failed to start because its TLS certificate has expired. The certificate for CN=otel-collector.nudgebee.svc issued by CN=nudgebee-ca expired on 2026-04-05T23:59:59Z. The gRPC OTLP receiver on port 4317 cannot complete TLS handshakes, and insecure fallback is disabled by policy. The root cause is that the TLS certificate was not renewed before expiration. Suggested actions include renewing the TLS certificate via cert-manager or the internal CA, checking if cert-manager is configured for automatic renewal, and verifying the Certificate resource's renewBefore setting is adequate.
+tags:
+  - tls
+  - certificate
+  - security
+  - nudgebee
+type: log_analysis

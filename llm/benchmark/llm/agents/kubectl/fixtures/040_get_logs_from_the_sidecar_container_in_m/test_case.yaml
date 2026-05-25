@@ -1,0 +1,7 @@
+user_prompt: Get logs from the 'sidecar' container in my nudgebee-api-pod.
+expected_output:
+- kubectl logs <pod-name> -c sidecar
+- kubectl logs <pod-name> --container sidecar
+tags:
+- command
+- kubernetes

@@ -1,0 +1,6 @@
+user_prompt: Create a Glue table.
+expected_output:
+- aws glue create-table --database-name <database-name> --table-input <table-input>
+tags:
+- command
+- aws

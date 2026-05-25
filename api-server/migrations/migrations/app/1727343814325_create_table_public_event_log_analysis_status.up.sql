@@ -1,0 +1,1 @@
+CREATE TABLE "public"."event_log_analysis_status" ("value" text NOT NULL DEFAULT 'IN_PROGRESS', "description" text, PRIMARY KEY ("value") , UNIQUE ("value"));COMMENT ON TABLE "public"."event_log_analysis_status" IS E'Status table of event log analysis';

@@ -1,0 +1,8 @@
+user_prompt: what is the promql query for the number of pending pods in the 'staging'
+  namespace?
+expected_output:
+- count(kube_pod_status_phase{namespace="staging", phase="Pending"})
+- sum by (namespace) (kube_pod_status_phase{namespace="staging", phase="Pending"})
+tags:
+- command
+- promql

@@ -1,0 +1,8 @@
+user_prompt: Show me Lambda function memory allocation by function name
+expected_output:
+  - "avg:aws.lambda.memorysize{*} by {functionname}"
+  - "max:aws.lambda.memorysize{*} by {functionname}"
+tags:
+  - command
+  - aws
+  - lambda

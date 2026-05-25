@@ -1,0 +1,7 @@
+user_prompt: Create a resource in an API Gateway REST API.
+expected_output:
+- aws apigateway create-resource --rest-api-id <api-id> --parent-id <parent-id> --path-part
+  <path-part>
+tags:
+- command
+- aws

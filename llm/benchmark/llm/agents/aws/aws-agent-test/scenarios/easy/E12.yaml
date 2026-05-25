@@ -1,0 +1,101 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E12: Lambda environment variable pointing to localhost.
+  User complaint: "Lambda 'e12-order-processor' gets connection refused when calling
+  our internal API. The API is running fine on our ALB."
+  Root cause: API_ENDPOINT env var is set to http://localhost:8080 instead of
+  the actual internal ALB endpoint. Likely copy-paste from local dev config.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = API_ENDPOINT points to localhost:8080.
+      Fixed = API_ENDPOINT points to httpbin.org (simulating real endpoint).
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: e12-order-processor-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  OrderProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: e12-order-processor
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      Environment:
+        Variables:
+          API_ENDPOINT: !If
+            - IsFixed
+            - 'https://httpbin.org/post'
+            - 'http://localhost:8080/api/orders'
+          API_TIMEOUT: '5'
+          ENVIRONMENT: production
+      Code:
+        ZipFile: |
+          import json
+          import urllib.request
+          import os
+
+          def handler(event, context):
+              endpoint = os.environ['API_ENDPOINT']
+              timeout = int(os.environ.get('API_TIMEOUT', '5'))
+              try:
+                  data = json.dumps({'order': event}).encode()
+                  req = urllib.request.Request(
+                      endpoint,
+                      data=data,
+                      headers={'Content-Type': 'application/json'},
+                      method='POST'
+                  )
+                  with urllib.request.urlopen(req, timeout=timeout) as resp:
+                      result = json.loads(resp.read())
+                  return {'statusCode': 200, 'body': json.dumps(result)}
+              except Exception as e:
+                  return {
+                      'statusCode': 502,
+                      'body': json.dumps({
+                          'error': str(e),
+                          'endpoint': endpoint,
+                          'type': type(e).__name__
+                      })
+                  }
+      Tags:
+        - Key: Name
+          Value: e12-order-processor
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: order-service
+
+Outputs:
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref OrderProcessorFunction
+  ApiEndpoint:
+    Description: API Endpoint configured
+    Value: !If [IsFixed, 'https://httpbin.org/post', 'http://localhost:8080/api/orders']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

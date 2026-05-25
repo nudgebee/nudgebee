@@ -1,0 +1,13 @@
+global:
+  image:
+    registry: 'ghcr.io/nudgebee'
+  imagePullSecrets: []
+  initImages:
+    postgres: 'ghcr.io/nudgebee/postgres:16.10-alpine'
+    curl: 'ghcr.io/nudgebee/curl:8.10.1'
+
+image:
+  repository: migrations
+  pullPolicy: IfNotPresent
+  tag: 'latest'
+imagePullSecrets: []

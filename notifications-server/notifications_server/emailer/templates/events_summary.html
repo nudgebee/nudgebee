@@ -1,0 +1,267 @@
+{% extends "_base.html" %}
+{% set base_url = base_url %}
+
+{% block title %}Events Summary — {{ _brand_name }}{% endblock %}
+
+{% block content %}
+  {# Define critical aggregator keys mapping #}
+  {% set CRITICAL_KEYS = {
+    "job_failure": "Job Failure",
+    "anomalycpu": "Anomaly CPU",
+    "anomalyerrorrate": "Anomaly Error Rate",
+    "anomalylatency": "Anomaly Latency",
+    "anomalymemory": "Anomaly Memory",
+    "sloavailability": "SLO Availability",
+    "latency": "Latency",
+    "diskrunsoutofspace": "Disk Runs Out Of Space",
+    "diskrunsoutofspacein3days": "Disk Runs Out Of Space In 3 Days",
+    "applicationapifailures": "Application API Failures",
+    "higherrorcriticallogs": "Critical errors detected in Log",
+    "cputhrottlinghigh": "CPU Throttling High Detected",
+    "SLOViolation": "SLO Violation",
+    "Anomaly": "Anomaly",
+    "report_crash_loop": "Crash Loop Detected",
+    "pod_restart": "Pod Restart",
+    "node_not_ready": "Node Not Ready",
+    "deployment_failed": "Deployment Failed",
+    "service_unavailable": "Service Unavailable",
+    "memory_limit_exceeded": "Memory Limit Exceeded",
+    "cpu_limit_exceeded": "CPU Limit Exceeded",
+    "storage_full": "Storage Full",
+    "network_error": "Network Error",
+    "config_error": "Configuration Error",
+    "image_pull_backoff_reporter": "Image Pull BackOff",
+    "pod_oom_killer_enricher": "Pod OOM Killed"
+  } %}
+
+  {# Create a normalized version of CRITICAL_KEYS where keys are lower-case with spaces removed #}
+  {% set NORMALIZED_CRITICAL_KEYS = {} %}
+  {% for key, label in CRITICAL_KEYS.items() %}
+    {% set norm_key = key|replace(" ", "")|lower %}
+    {% set _ = NORMALIZED_CRITICAL_KEYS.update({norm_key: label}) %}
+  {% endfor %}
+
+  {#- Compute totals for AI summary -#}
+  {% set ns = namespace(total_events=0, total_high=0, account_count=0) %}
+  {% for account in accounts.data.accounts %}
+    {% set account_event_rows = event_counts.data.event_groupings.rows | selectattr('account_id','equalto',account.id) | list %}
+    {% if account_event_rows|length > 0 %}
+      {% set ns.account_count = ns.account_count + 1 %}
+      {% set ns.total_events = ns.total_events + (account_event_rows | map(attribute='event_count') | sum) %}
+      {% set ns.total_high = ns.total_high + (account_event_rows | map(attribute='count_priority_high') | sum) %}
+    {% endif %}
+  {% endfor %}
+
+  <!-- AI SUMMARY OPENING -->
+  <h1 class="subject-h" style="font-family:'DM Serif Display',Georgia,serif; font-size:26px; color:#0D1B2A; line-height:1.25; margin:0 0 20px; letter-spacing:-0.3px; font-weight:400;">
+    Events Summary
+  </h1>
+
+  <p style="font-family:'DM Sans',Arial,sans-serif; font-size:15.5px; color:#3D3D3D; line-height:1.85; font-weight:300; margin:0 0 24px;">
+    I detected <strong style="color:#0D1B2A;">{{ ns.total_events }}</strong> events across your clusters in the last 24 hours.
+    {% if ns.total_high > 0 %}
+      <strong style="color:#EF4444;">{{ ns.total_high }}</strong> are high priority — here's what I'd investigate first.
+    {% else %}
+      Nothing high priority — here's the overview.
+    {% endif %}
+  </p>
+
+  <!-- DIVIDER -->
+  <div style="border-top:1px solid #F0F0F0; margin:0 0 20px;"></div>
+
+  {# Loop over each account (cluster) #}
+  {% for account in accounts.data.accounts %}
+  {% set account_event_rows = event_counts.data.event_groupings.rows
+       | selectattr('account_id','equalto',account.id) | list %}
+
+    {% if account_event_rows|length > 0 %}
+
+      {# totals from raw table #}
+      {% set total_events = account_event_rows | map(attribute='event_count')         | sum %}
+      {% set total_high   = account_event_rows | map(attribute='count_priority_high') | sum %}
+      {% set total_medium = account_event_rows | map(attribute='count_priority_medium') | sum %}
+      {% set total_low    = account_event_rows | map(attribute='count_priority_low')  | sum %}
+
+      {# per-aggregation totals (dict) #}
+      {% set agg_tot = {} %}
+      {% for r in account_event_rows %}
+        {% set _ = agg_tot.update({ r.aggregation_key : agg_tot.get(r.aggregation_key,0) + r.event_count }) %}
+      {% endfor %}
+
+      {# summarised rows for subject breakdown #}
+      {% set account_events_summarised = events_summarised.data.event_groupings.rows
+           | selectattr('account_id','equalto',account.id) | list %}
+      {% if account_events_summarised|length == 0 %}
+        {% set account_events_summarised = account_event_rows %}
+      {% endif %}
+
+      <!-- Account heading -->
+      <h2 style="font-family:'DM Serif Display',Georgia,serif; font-size:20px; color:#0D1B2A; font-weight:400; letter-spacing:-0.3px; margin:20px 0 12px;">
+        <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?utm=email" style="color:#0D1B2A; text-decoration:none;">
+          {{ account.account_name }}
+        </a>
+      </h2>
+
+      <!-- Event count summary -->
+      <p style="font-family:'DM Sans',Arial,sans-serif; font-size:14px; color:#3D3D3D; margin:0 0 16px;">
+        <strong>{{ total_events }}</strong> events &nbsp;
+        High: <strong style="color:#EF4444;">{{ total_high }}</strong> &nbsp;
+        Medium: <strong style="color:#F59E0B;">{{ total_medium }}</strong> &nbsp;
+        Low: <strong style="color:#6B7280;">{{ total_low }}</strong>
+      </p>
+
+      {# Group aggregator events #}
+      {% set grouped_events = account_events_summarised | groupby("aggregation_key") %}
+      {% set critical_groups = [] %}
+      {% set other_groups = [] %}
+      {% for group in grouped_events %}
+        {% set agg_key = group.grouper %}
+        {% set rows_for_key = group.list %}
+        {% set normalized_agg_key = agg_key|replace(" ", "")|lower %}
+        {% if normalized_agg_key in NORMALIZED_CRITICAL_KEYS %}
+          {% set _ = critical_groups.append((agg_key, rows_for_key)) %}
+        {% else %}
+          {% set _ = other_groups.append((agg_key, rows_for_key)) %}
+        {% endif %}
+      {% endfor %}
+
+      {% set aggregator_count = critical_groups|length + other_groups|length %}
+      {% if aggregator_count > 0 %}
+
+        <!-- "Investigate these first" banner -->
+        <div style="background-color:#FEF2F2; padding:10px 16px; border-radius:4px; margin:12px 0; font-family:'DM Sans',Arial,sans-serif; font-size:14px; font-weight:600; color:#EF4444;">
+          Investigate these first
+        </div>
+
+        <!-- Render Critical Aggregator Groups -->
+        {% if critical_groups|length > 0 %}
+          {% for agg_key, rows_for_key in critical_groups %}
+            {% set total_agg_events = rows_for_key | map(attribute='event_count') | sum %}
+
+            <p style="font-family:'DM Sans',Arial,sans-serif; font-size:14px; font-weight:600; color:#0D1B2A; margin:8px 0 4px;">
+              {{ NORMALIZED_CRITICAL_KEYS[agg_key|replace(" ", "")|lower] }}
+              <span style="display:inline-block; background-color:#FEF2F2; color:#EF4444; font-weight:500; border-radius:4px; padding:2px 8px; margin-left:8px; font-size:12px;">
+                {{ total_agg_events }}
+              </span>
+            </p>
+
+            {# Consolidate duplicate subjects #}
+            {% set dedup = {} %}
+            {% for row in rows_for_key %}
+              {% set subject = row.get('subject_name', row.aggregation_key) %}
+              {% set time = row.get('max_created_at', row.created_at) %}
+              {% set key = subject ~ '_' ~ time %}
+              {% if dedup[key] is defined %}
+                {% set _ = dedup[key].update({'event_count': dedup[key].event_count + row.event_count}) %}
+              {% else %}
+                {% set _ = dedup.update({
+                  key: {
+                    'subject_name': subject,
+                    'max_created_at': time,
+                    'event_count': row.event_count,
+                    'subject_namespace': row.get('subject_namespace', 'nudgebee'),
+                    'last_seen_formatted': row.get('last_seen_formatted')
+                  }
+                }) %}
+              {% endif %}
+            {% endfor %}
+            {% set consolidated_subjects = [] %}
+            {% for key, val in dedup.items() %}
+              {% set _ = consolidated_subjects.append(val) %}
+            {% endfor %}
+            {% set sorted_subjects = consolidated_subjects | sort(attribute='event_count', reverse=True) %}
+
+            {% for row in sorted_subjects[:3] %}
+            <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13.5px; color:#3D3D3D; line-height:1.6; margin:0 0 4px; padding-left:16px;">
+              <span style="color:#EF4444; margin-right:6px;">&#8226;</span>
+              {{ row.subject_name }} (<span style="color:#EF4444; font-weight:500;">{{ row.event_count }} times</span>)
+              &nbsp;
+              <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?subtab=5&amp;tab=2&amp;accountId={{ account.id }}&amp;eventAggregationKey={{ agg_key|replace(' ', '') }}&amp;eventSubjectName={{ row.subject_name|urlencode }}&amp;utm=email#events/all-events"
+                target="_blank" rel="noopener noreferrer"
+                style="display:inline-block; background-color:#DBEAFE; color:#3B82F6; text-decoration:none; padding:2px 8px; border-radius:4px; font-size:11px; font-weight:500;">
+                Investigate &rarr;
+              </a>
+              <br />
+              <span style="font-size:11px; color:#6B7280;">
+                ns: {{ row.subject_namespace }} | last seen: {{ row.last_seen_formatted or 'N/A' }}
+              </span>
+            </p>
+            {% endfor %}
+
+            <p style="margin:4px 0 12px;">
+              <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?subtab=5&amp;tab=2&amp;accountId={{ account.id }}&amp;eventAggregationKey={{ agg_key }}&amp;utm=email"
+                target="_blank" rel="noopener noreferrer"
+                style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:#3B82F6; text-decoration:none;">
+                show all &rarr;
+              </a>
+            </p>
+
+            {% if not loop.last %}
+            <div style="border-top:1px dashed #E5E7EB; margin:8px 0;"></div>
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+
+        <!-- Render "Other events worth noting" -->
+        {% if other_groups|length > 0 %}
+          {% set other_list = [] %}
+          {% for (o_key, o_rows) in other_groups %}
+            {% set _ = other_list.append((o_key, agg_tot.get(o_key,0))) %}
+          {% endfor %}
+          {% set sorted_others = other_list|sort(attribute=1, reverse=True) %}
+          {% set total_other_count = sorted_others | map(attribute=1) | sum %}
+          {% if total_other_count > 0 %}
+
+          <div style="background-color:#F8F9FA; padding:10px 16px; border-radius:4px; margin:16px 0 12px; font-family:'DM Sans',Arial,sans-serif; font-size:14px; font-weight:600; color:#3D3D3D;">
+            Other events worth noting
+          </div>
+
+          {% for o_key, o_count in sorted_others[:5] %}
+            {% if o_count > 0 %}
+            <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13.5px; color:#3D3D3D; margin:0 0 4px; padding-left:16px;">
+              <span style="color:#6B7280; margin-right:6px;">&#8226;</span>
+              <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?subtab=5&amp;tab=2&amp;accountId={{ account.id }}&amp;eventAggregationKey={{ o_key|replace(' ', '') }}&amp;utm=email"
+                target="_blank" rel="noopener noreferrer"
+                style="color:#0D1B2A; text-decoration:none;">
+                {% set display_name = NORMALIZED_CRITICAL_KEYS.get(o_key|replace(" ", "")|lower, o_key) %}{{ display_name }}
+              </a>
+              <span style="display:inline-block; background-color:#FEF2F2; color:#EF4444; font-weight:500; border-radius:4px; padding:2px 8px; margin-left:8px; font-size:11px;">{{ o_count }}</span>
+            </p>
+            {% endif %}
+          {% endfor %}
+
+          {% if sorted_others|length > 0 %}
+          <p style="margin:8px 0 0;">
+            <a href="{{ base_url }}/kubernetes/details/{{ account.id }}?subtab=5&amp;tab=2&amp;accountId={{ account.id }}#events/all-events&amp;utm=email"
+              target="_blank" rel="noopener noreferrer"
+              style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:#3B82F6; text-decoration:none;">
+              show all &rarr;
+            </a>
+          </p>
+          {% endif %}
+          {% endif %}
+        {% endif %}
+      {% endif %}
+
+      {# Divider after every account block (except the last rendered account) #}
+      {% if not loop.last %}
+      <div style="border-top:2px dotted #D1D5DB; margin:20px 0;"></div>
+      {% endif %}
+    {% endif %}
+  {% endfor %}
+
+  <!-- ACTIONABLE TIP -->
+  <div style="border-top:1px solid #F0F0F0; margin:28px 0 0;"></div>
+  <div style="background-color:#FAFAFA; border:1px solid #F0F0F0; border-radius:4px; margin-top:20px; padding:16px 20px;">
+    <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; font-weight:600; color:#0D1B2A; margin:0 0 6px;">
+      Tip
+    </p>
+    <p style="font-family:'DM Sans',Arial,sans-serif; font-size:14px; color:#6B7280; line-height:1.7; font-weight:300; margin:0 0 10px;">
+      Set up auto-remediation for recurring events. I can restart pods automatically when crash loops are detected.
+    </p>
+    <a href="{{ _base_url }}/workflows?utm=email"
+      style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; font-weight:500; color:#3B82F6; text-decoration:none;">
+      Set up &rarr;
+    </a>
+  </div>
+{% endblock %}

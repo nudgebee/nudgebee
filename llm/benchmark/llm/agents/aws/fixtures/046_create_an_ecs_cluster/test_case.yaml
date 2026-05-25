@@ -1,0 +1,6 @@
+user_prompt: Create an ECS cluster.
+expected_output:
+- aws ecs create-cluster --cluster-name <cluster-name>
+tags:
+- command
+- aws

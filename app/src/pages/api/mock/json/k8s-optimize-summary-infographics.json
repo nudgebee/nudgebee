@@ -1,0 +1,61 @@
+{
+  "data": {
+    "workload_rightsize": {
+      "aggregate": {
+        "count": 54,
+        "sum": {
+          "estimated_savings": 43.99795342097289
+        }
+      }
+    },
+    "replica_rightsize": {
+      "aggregate": {
+        "count": 14,
+        "sum": {
+          "estimated_savings": -0.14544
+        }
+      }
+    },
+    "pv_rightsize": {
+      "aggregate": {
+        "count": 3,
+        "sum": {
+          "estimated_savings": 10
+        }
+      }
+    },
+    "abandoned_resource": {
+      "aggregate": {
+        "count": 1,
+        "sum": {
+          "estimated_savings": 0.07596923076923069
+        }
+      }
+    },
+    "spot_instance": {
+      "aggregate": {
+        "count": 168,
+        "sum": {
+          "estimated_savings": 1.9425759485793304
+        }
+      }
+    },
+    "unused_pvc": {
+      "aggregate": {
+        "count": 19,
+        "sum": {
+          "estimated_savings": 49.80000000000001
+        }
+      }
+    },
+    "spends_aggregate": {
+      "aggregate": {
+        "sum": {
+          "amount": 4480.536739999981
+        }
+      }
+    },
+    "count_recommendations": 6188,
+    "count_optimize_recommendations": 259
+  }
+}

@@ -1,0 +1,9 @@
+user_prompt: What is the LogQL query to return the 5 least frequent error messages
+  for backend in the last 1 hour?
+expected_output:
+- bottomk(5, sum by (msg) (count_over_time({app="backend", level="error"} | json [1h])))
+- bottomk(5, count_over_time({job="api"} |= "error" | regexp `msg="(?P<msg>.*)"` [30m]))
+  by (msg)
+tags:
+- command
+- datadog

@@ -1,0 +1,7 @@
+user_prompt: How do I search logs containing a keyword 'error' for default namespace?
+expected_output:
+- '{job="kubernetes-logs"} |= "error"'
+- '{namespace="default"} |= "error"'
+tags:
+- command
+- datadog

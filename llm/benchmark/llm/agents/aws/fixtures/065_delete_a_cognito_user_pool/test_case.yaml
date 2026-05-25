@@ -1,0 +1,6 @@
+user_prompt: Delete a Cognito user pool.
+expected_output:
+- aws cognito-idp delete-user-pool --user-pool-id <user-pool-id>
+tags:
+- command
+- aws

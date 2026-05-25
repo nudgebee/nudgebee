@@ -1,0 +1,8 @@
+user_prompt: What are the top 5 slowest applications (workloads) in the last hour?
+expected_output:
+- SELECT workload_name, workload_namespace, avg(duration_ns) as avg_duration, count(*)
+  as request_count FROM traces_view WHERE timestamp >= now() - interval 1 hour GROUP
+  BY workload_name, workload_namespace ORDER BY avg_duration DESC LIMIT 5;
+tags:
+- command
+- trace

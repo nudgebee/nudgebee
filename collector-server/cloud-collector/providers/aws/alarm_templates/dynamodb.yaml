@@ -1,0 +1,83 @@
+# DynamoDB CloudWatch Alarm Recommendations
+# Converted from IDR CLI alarm templates
+service_name: "dynamodb"
+
+templates:
+  - name: "aws_dynamodb_read_throttle_events_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Monitors read throttle events to detect capacity issues"
+    configuration:
+      namespace: "AWS/DynamoDB"
+      metric_name: "ReadThrottleEvents"
+      statistic: "Average"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 5.0
+
+  - name: "aws_dynamodb_write_throttle_events_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Monitors write throttle events to detect capacity issues"
+    configuration:
+      namespace: "AWS/DynamoDB"
+      metric_name: "WriteThrottleEvents"
+      statistic: "Average"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 5.0
+
+  - name: "aws_dynamodb_successful_request_latency_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "Monitors successful request latency to detect performance degradation"
+    configuration:
+      namespace: "AWS/DynamoDB"
+      metric_name: "SuccessfulRequestLatency"
+      statistic: "Average"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 100.0
+
+  - name: "aws_dynamodb_replication_latency_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "CONDITIONAL"
+    category: "Configuration"
+    severity: "High"
+    description: "Monitors replication latency for global tables"
+    configuration:
+      namespace: "AWS/DynamoDB"
+      metric_name: "ReplicationLatency"
+      statistic: "Average"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 5
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 1.0
+    conditions:
+      # Only recommend for DynamoDB Global Tables
+      - field: "Meta.GlobalTableVersion"
+        operator: "exists"
+        logic: "OR"
+      - field: "Meta.Replicas"
+        operator: "exists"

@@ -1,0 +1,8 @@
+user_prompt: What is the LogQL query to show logs containing HTTP status codes 401
+  or 403 for the ingress app?
+expected_output:
+- '{app="ingress"} |~ "(401|403)"'
+- '{job="nginx"} | json | status_code > 400 and status_code < 404'
+tags:
+- command
+- datadog

@@ -1,0 +1,15 @@
+user_prompt: Total memory usage of the kube-system namespace
+expected_output:
+  - sum(container_memory_usage_bytes{namespace="kube-system", container!=""})
+expected_metrics:
+  - container_memory_usage_bytes
+expected_tools:
+  - prometheus_execute
+forbidden_tools:
+  - shell_execute
+  - search_metrics
+expected_max_tool_calls: 3
+tags:
+  - fast_path
+  - cadvisor
+  - aggregate

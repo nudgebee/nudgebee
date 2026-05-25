@@ -1,0 +1,2981 @@
+[
+    {
+        "name": "notification_channel_join",
+        "display_name": "Join Notification Channel",
+        "description": "Join communication channels (Slack, Teams, Google Chat) for incident management",
+        "category": "All",
+        "action_name": "notification_channel_join",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Join incident channel",
+                "default": "Join Incident Channel",
+                "display_name": "Title",
+                "required": false
+            },
+            "platform": {
+                "type": "string",
+                "description": "Communication platform to join",
+                "default": "slack",
+                "display_name": "Platform",
+                "required": true,
+                "possible_values": [
+                    "slack",
+                    "ms_teams",
+                    "google_chat"
+                ]
+            },
+            "channel_id": {
+                "type": "string",
+                "description": "Channel ID to Join",
+                "default": "",
+                "display_name": "Channel ID",
+                "required": true
+            },
+            "incident_id": {
+                "type": "string",
+                "description": "Incident UUID",
+                "default": "",
+                "display_name": "Incident ID",
+                "required": true
+            },
+            "team_id": {
+                "type": "string",
+                "description": "Team ID (If not specified, team id from tool integration will be used)",
+                "default": "",
+                "display_name": "Team ID",
+                "required": false
+            },
+            "text": {
+                "type": "string",
+                "description": "Message text to send when joining",
+                "default": "",
+                "display_name": "Message Text",
+                "required": false
+            }
+        },
+        "source": "nudgebee"
+    },
+    {
+        "name": "datadog_monitors_search",
+        "display_name": "Get Datadog Monitor",
+        "description": "Get Datadog monitor details in trigger state",
+        "category": "All",
+        "action_name": "datadog_monitors_search",
+        "params": {
+            "status": {
+                "type": "string",
+                "description": "Monitor status to filter by",
+                "default": "alert",
+                "display_name": "Status",
+                "required": false,
+                "possible_values": [
+                    "alert",
+                    "warn",
+                    "no data"
+                ]
+            },
+            "env": {
+                "type": "string",
+                "description": "Environment tag to filter monitors",
+                "default": "",
+                "display_name": "Environment",
+                "required": false
+            },
+            "service": {
+                "type": "string",
+                "description": "Service tag to filter monitors",
+                "default": "",
+                "display_name": "Service",
+                "required": false
+            },
+            "query": {
+                "type": "string",
+                "description": "Custom query string to filter monitors",
+                "default": "",
+                "display_name": "Query",
+                "required": false
+            },
+            "limit": {
+                "type": "int",
+                "description": "Number of results per page (default: 30, max: 100)",
+                "default": 30,
+                "display_name": "Limit",
+                "required": false
+            },
+            "duration": {
+                "type": "int",
+                "description": "Duration in hours to look back for triggered monitors",
+                "default": 1,
+                "display_name": "Duration Hour",
+                "required": false
+            }
+        },
+        "source": "nudgebee"
+    },
+    {
+        "name": "notification_channel_message",
+        "display_name": "Send Message to Notification Channel",
+        "description": "Send message to communication channels (Slack, Teams, Google Chat) for incident management",
+        "category": "All",
+        "action_name": "notification_channel_message",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the message",
+                "default": "Notify on a channel",
+                "display_name": "Title",
+                "required": false
+            },
+            "platform": {
+                "type": "string",
+                "description": "Communication platform to send message to",
+                "default": "slack",
+                "display_name": "Platform",
+                "required": true,
+                "possible_values": [
+                    "slack",
+                    "ms_teams",
+                    "google_chat"
+                ]
+            },
+            "channel_id": {
+                "type": "string",
+                "description": "Channel ID to send message to",
+                "default": "",
+                "display_name": "Channel ID",
+                "required": true
+            },
+            "incident_id": {
+                "type": "string",
+                "description": "Incident UUID",
+                "default": "",
+                "display_name": "Incident ID",
+                "required": true
+            },
+            "team_id": {
+                "type": "string",
+                "description": "Team/Workspace ID (If not specified, team id from tool integration will be used)",
+                "default": "",
+                "display_name": "Team ID",
+                "required": false
+            },
+            "text": {
+                "type": "string",
+                "description": "Message text to send",
+                "default": "",
+                "display_name": "Message Text",
+                "required": true
+            }
+        },
+        "source": "nudgebee"
+    },
+    {
+        "name": "resource_events_enricher",
+        "display_name": "Resource Events Enricher",
+        "description": "Enriches alert with additional nearby kubernetes events",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Resource Events",
+                "display_name": "Title",
+                "required": false
+            },
+            "max_pods": {
+                "type": "int",
+                "description": "Maximum number of pods to capture events",
+                "default": 1,
+                "display_name": "Max Pods",
+                "required": false
+            },
+            "dependent_pod_mode": {
+                "type": "bool",
+                "description": "Enable dependent pod mode",
+                "default": false,
+                "display_name": "When True, instead of fetching events for the deployment itself, fetch events for pods in the deployment",
+                "required": false
+            },
+            "runbook_name": {
+                "type": "string",
+                "description": "Runbook name",
+                "default": "",
+                "display_name": "Runbook Names",
+                "required": true,
+                "auto_generate_func": "listAutoPlaybook"
+            }
+        }
+    },
+    {
+        "name": "related_pods",
+        "display_name": "Related Pods",
+        "description": "Enriches alert with related pods",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Related Pods",
+                "display_name": "Title",
+                "required": false
+            },
+            "output_format": {
+                "type": "string",
+                "description": "Output format",
+                "default": "table",
+                "display_name": "Output Format",
+                "required": false,
+                "possible_values": [
+                    "table",
+                    "json"
+                ]
+            }
+        }
+    },
+    {
+        "name": "logs_enricher",
+        "display_name": "Logs Enricher",
+        "description": "Enriches pod alert with logs",
+        "category": "Pod",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Pod Logs",
+                "display_name": "Title",
+                "required": false
+            },
+            "container_name": {
+                "type": "string",
+                "description": "Name of the container",
+                "default": "",
+                "display_name": "Container Name",
+                "required": false
+            },
+            "tail_lines": {
+                "type": "int",
+                "description": "Number of lines to tail",
+                "default": 1000,
+                "display_name": "Tail Lines",
+                "required": false
+            },
+            "previous": {
+                "type": "bool",
+                "description": "Fetch logs before the alert",
+                "default": false,
+                "display_name": "Previous",
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "pod_events_enricher",
+        "display_name": "Pod Events Enricher",
+        "description": "Enriches alert with pod events",
+        "category": "Pod",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Pod Events",
+                "display_name": "Title",
+                "required": false
+            },
+            "max_events": {
+                "type": "int",
+                "description": "Maximum number of events to capture",
+                "default": 8,
+                "display_name": "Max Events",
+                "required": false
+            },
+            "included_types": {
+                "type": "list",
+                "description": "list of event types to include",
+                "default": [
+                    "Normal",
+                    "Warning"
+                ],
+                "display_name": "Included Event Types",
+                "possible_values": [
+                    "Normal",
+                    "Warning"
+                ],
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "deployment_events_enricher",
+        "display_name": "Deployment Events Enricher",
+        "description": "Enriches alert with deployment events",
+        "category": "Deployment",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Deployment Events",
+                "display_name": "Title",
+                "required": false
+            },
+            "dependent_pod_mode": {
+                "type": "bool",
+                "description": "Enable dependent pod mode",
+                "default": false,
+                "display_name": "When True, instead of fetching events for the deployment itself, fetch events for pods in the deployment",
+                "required": false
+            },
+            "max_pods": {
+                "type": "int",
+                "description": "Maximum number of pods to capture events",
+                "default": 1,
+                "display_name": "Max Pods",
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "job_events_enricher",
+        "display_name": "Job Events Enricher",
+        "description": "Enriches alert with job events",
+        "category": "Job",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Job Events",
+                "display_name": "Title",
+                "required": false
+            },
+            "max_events": {
+                "type": "int",
+                "description": "Maximum number of events to capture",
+                "default": 8,
+                "display_name": "Max Events",
+                "required": false
+            },
+            "included_types": {
+                "type": "list",
+                "description": "Comma list of event types to include",
+                "default": [
+                    "Normal",
+                    "Warning"
+                ],
+                "display_name": "Included Event Types",
+                "possible_values": [
+                    "Normal",
+                    "Warning"
+                ],
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "job_pod_enricher",
+        "display_name": "Job Pod Enricher",
+        "description": "Enriches alert with job pods",
+        "category": "Job",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Job Pods",
+                "display_name": "Title",
+                "required": false
+            },
+            "events": {
+                "type": "bool",
+                "description": "Include events",
+                "default": true,
+                "display_name": "Events",
+                "required": false
+            },
+            "logs": {
+                "type": "bool",
+                "description": "Include logs",
+                "default": true,
+                "display_name": "Logs",
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "get_resource_yaml",
+        "display_name": "Get Resource YAML",
+        "description": "Enriches alert with resource yaml",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Resource YAML",
+                "display_name": "Title",
+                "required": false
+            },
+            "name": {
+                "type": "string",
+                "description": "Name of the resource",
+                "default": "",
+                "display_name": "Resource Name",
+                "required": true
+            },
+            "namespace": {
+                "type": "string",
+                "description": "Namespace of the resource",
+                "default": "",
+                "display_name": "Resource Namespace",
+                "required": false
+            },
+            "kind": {
+                "type": "string",
+                "description": "Kind of the resource",
+                "default": "",
+                "display_name": "Resource Kind",
+                "required": true,
+                "possible_values": [
+                    "Pod",
+                    "Deployment",
+                    "StatefulSet",
+                    "DaemonSet",
+                    "Job",
+                    "CronJob",
+                    "ReplicaSet",
+                    "Service",
+                    "ConfigMap",
+                    "Secret",
+                    "PersistentVolumeClaim"
+                ]
+            }
+        }
+    },
+    {
+        "name": "node_cpu_enricher",
+        "display_name": "Node CPU Enricher",
+        "description": "Enrich the finding with analysis of the node's CPU usage. Collect information about pods running on this node, their CPU request configuration, their actual cpu usage etc.Provides insightful information regarding node high CPU usage.",
+        "category": "Node",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Node CPU Analysis",
+                "display_name": "Title",
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "node_disk_analyzer",
+        "display_name": "Node Disk Analyzer",
+        "description": "Provides relevant disk information for troubleshooting disk issues. Currently, the following information is provided by default , The total disk space used by pods, and the total disk space used by the node for other purposes, Disk usage of pods, sorted from highest to lowest",
+        "category": "Node",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Node Disk Analysis",
+                "display_name": "Title",
+                "required": false
+            },
+            "show_pods": {
+                "type": "bool",
+                "description": "Show pods",
+                "default": true,
+                "display_name": "Show Pods",
+                "required": false
+            },
+            "show_containers": {
+                "type": "bool",
+                "description": "Show containers",
+                "default": false,
+                "display_name": "Show Containers",
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "node_running_pods_enricher",
+        "display_name": "Node Running Pods Enricher",
+        "description": "Enrich the finding with pods running on this node, along with the 'Ready' status of each pod.",
+        "category": "Node",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Node Running Pods",
+                "display_name": "Title",
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "node_allocatable_resources_enricher",
+        "display_name": "Node Allocatable Resources Enricher",
+        "description": "Enrich the finding with the allocatable resources of the node.",
+        "category": "Node",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Node Allocatable Resources",
+                "display_name": "Title",
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "node_status_enricher",
+        "display_name": "Node Status Enricher",
+        "description": "Enrich the finding with the status of the node.",
+        "category": "Node",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Node Status",
+                "display_name": "Title",
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "report_crash_loop",
+        "display_name": "Report Crash Loop",
+        "description": "Report the pods that are in crash loop",
+        "category": "Pod",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Crash Loop Pods",
+                "display_name": "Title",
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "pod_enricher",
+        "display_name": "Pod Enricher",
+        "description": "Enriches alert with pod information",
+        "category": "Pod",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Pod Information",
+                "display_name": "Title",
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "cpu_overcommited_enricher",
+        "display_name": "CPU Overcommited Enricher",
+        "description": "Enrich the finding with analysis of the CPU overcommitment on the node. Provides insightful information regarding node high CPU usage.",
+        "category": "Node",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "CPU Overcommitment Analysis",
+                "display_name": "Title",
+                "required": false
+            },
+            "default_query_duration": {
+                "type": "int",
+                "description": "Default query duration in seconds",
+                "default": 600,
+                "display_name": "Default Query Duration",
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "memory_overcommited_enricher",
+        "display_name": "Memory Overcommited Enricher",
+        "description": "Enrich the finding with analysis of the memory overcommitment on the node. Provides insightful information regarding node high memory usage.",
+        "category": "Node",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Memory Overcommitment Analysis",
+                "display_name": "Title",
+                "required": false
+            },
+            "default_query_duration": {
+                "type": "int",
+                "description": "Default query duration in seconds",
+                "default": 600,
+                "display_name": "Default Query Duration",
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "cluster_memory_requests_enricher",
+        "display_name": "Cluster Memory Requests Enricher",
+        "description": "Enrich the finding with the memory requests of the cluster.",
+        "category": "Cluster",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Cluster Memory Requests",
+                "display_name": "Title",
+                "required": false
+            },
+            "default_query_duration": {
+                "type": "int",
+                "description": "Default query duration in seconds",
+                "default": 600,
+                "display_name": "Default Query Duration",
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "pod_issue_investigator",
+        "display_name": "Pod Issue Investigator",
+        "description": "Investigate the issue with the pod",
+        "category": "Pod",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Pod Issue Investigation",
+                "display_name": "Title",
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "custom_image_run_enricher",
+        "display_name": "Custom Image Run",
+        "description": "Run script using custom image",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Custom Image Run",
+                "display_name": "Title",
+                "required": false
+            },
+            "image": {
+                "type": "string",
+                "description": "Custom image to run the script",
+                "default": "",
+                "display_name": "Image",
+                "required": true
+            },
+            "secret": {
+                "type": "string",
+                "description": "Secret to use for the custom image",
+                "default": "",
+                "display_name": "Secret",
+                "required": false
+            },
+            "config_map": {
+                "type": "string",
+                "description": "Config map to use for the custom image",
+                "default": "",
+                "display_name": "Config Map",
+                "required": false
+            },
+            "env_variables": {
+                "type": "map",
+                "description": "Environment variables to use for the custom image",
+                "default": {},
+                "display_name": "Environment Variables",
+                "required": false
+            },
+            "args": {
+                "type": "list",
+                "description": "Arguments to pass to the custom image",
+                "default": [],
+                "display_name": "Arguments",
+                "required": false
+            },
+            "image_pull_policy": {
+                "type": "string",
+                "description": "Image pull policy",
+                "default": "IfNotPresent",
+                "display_name": "Image Pull Policy",
+                "required": false,
+                "possible_values": [
+                    "Always",
+                    "IfNotPresent"
+                ]
+            },
+            "service_account": {
+                "type": "string",
+                "description": "Service account to use for the custom image",
+                "default": "",
+                "display_name": "Service Account",
+                "required": false
+            },
+            "command": {
+                "type": "string[]",
+                "description": "Command to run in the custom image",
+                "default": [],
+                "display_name": "Command",
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "kubectl_command_executor",
+        "display_name": "Kubectl Command Executor",
+        "description": "Execute kubectl command",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Kubectl Command Execution",
+                "display_name": "Title",
+                "required": false
+            },
+            "command": {
+                "type": "string",
+                "description": "Kubectl command to execute",
+                "default": "",
+                "display_name": "Command",
+                "required": true
+            }
+        }
+    },
+    {
+        "name": "pod_bash_enricher",
+        "display_name": "Pod Bash Enricher",
+        "description": "Run bash command in the pod",
+        "category": "Pod",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Pod Bash Command Execution",
+                "display_name": "Title",
+                "required": false
+            },
+            "bash_command": {
+                "type": "string",
+                "description": "Bash command to run",
+                "default": "",
+                "display_name": "Command",
+                "required": true
+            }
+        }
+    },
+    {
+        "name": "pg_health_enricher",
+        "display_name": "Postgres Health",
+        "description": "Check PostgreSQL health using predefined queries",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Postgres Health Check",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "secret_name": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "The name of the Kubernetes secret containing database credentials.",
+                "display_name": "Secret Name"
+            },
+            "secret_namespace": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "The Kubernetes namespace where the secret is located.",
+                "display_name": "Secret Namespace"
+            }
+        }
+    },
+    {
+        "name": "pg_run_queries",
+        "display_name": "Postgres Query Runner",
+        "description": "Execute user-defined PostgreSQL queries",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Postgres Query Execution",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "secret_name": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "The name of the Kubernetes secret containing database credentials.",
+                "display_name": "Secret Name"
+            },
+            "secret_namespace": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "The Kubernetes namespace where the secret is located.",
+                "display_name": "Secret Namespace"
+            },
+            "queries": {
+                "type": "string[]",
+                "default": [],
+                "required": true,
+                "description": "A list of SQL queries to execute against the PostgreSQL database.",
+                "display_name": "SQL Queries"
+            }
+        }
+    },
+    {
+        "name": "node_semantic_version_mismatch_enricher",
+        "display_name": "Node Semantic Version Mismatch Analyzer",
+        "description": "Detects and reports if there is a mismatch in the semantic versions of nodes in the cluster.",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Node Semantic Version Mismatch",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            }
+        }
+    },
+    {
+        "name": "prometheus_pvc_event_enricher",
+        "display_name": "Prometheus PVC Event",
+        "description": "Enriches alert with relevant PersistentVolumeClaim (PVC) events from Prometheus.",
+        "category": "PVC",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Prometheus PVC Events",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            }
+        }
+    },
+    {
+        "name": "status_enricher",
+        "display_name": "Kubernetes Resource Status",
+        "description": "Enriches the alert with resource status conditions, optionally showing detailed messages.",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Resource Status Conditions",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "show_details": {
+                "type": "bool",
+                "default": false,
+                "required": false,
+                "description": "Shows the message attached to each condition",
+                "display_name": "Show Details"
+            }
+        }
+    },
+    {
+        "name": "cluster_cpu_requests_enricher",
+        "display_name": "Cluster CPU Requests",
+        "description": "Enriches alert with cluster CPU requests over a specific duration.",
+        "category": "Node",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Cluster CPU Requests",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "default_query_duration": {
+                "type": "int",
+                "default": 600,
+                "required": false,
+                "description": "Prometheus duration query in seconds",
+                "display_name": "Default Query Duration"
+            }
+        }
+    },
+    {
+        "name": "impacted_services_enricher",
+        "display_name": "Impacted Services Analyzer",
+        "description": "Identifies services impacted by a pod event, considering a delay before analysis.",
+        "category": "Pod",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Impacted Services Analysis",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "delay_s": {
+                "type": "int",
+                "default": 30,
+                "required": false,
+                "description": "The amount of seconds to delay before analyzing impacted services",
+                "display_name": "Delay (Seconds)"
+            }
+        }
+    },
+    {
+        "name": "daemonset_status_enricher",
+        "display_name": "DaemonSet Status Analyzer",
+        "description": "Enriches the alert with the status of the DaemonSet, including pod distribution and health.",
+        "category": "DaemonSet",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "DaemonSet Status",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            }
+        }
+    },
+    {
+        "name": "target_down_dns_silencer",
+        "display_name": "DNS Target Down Silencer",
+        "description": "Silences DNS-related target down alerts.",
+        "category": "Node",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "DNS Target Down Silencer",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            }
+        }
+    },
+    {
+        "name": "daemonset_misscheduled_analysis_enricher",
+        "display_name": "DaemonSet Misscheduled Analyzer",
+        "description": "Analyzes misscheduled DaemonSets and provides insights.",
+        "category": "DaemonSet",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "DaemonSet Misscheduled Analysis",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            }
+        }
+    },
+    {
+        "name": "node_pods_capacity_enricher",
+        "display_name": "Node Pod Capacity Analyzer",
+        "description": "Provides analysis of node pod capacity and scheduling constraints.",
+        "category": "Node",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Node Pod Capacity Analysis",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            }
+        }
+    },
+    {
+        "name": "alert_explanation_enricher",
+        "display_name": "Alert Explanation Analyzer",
+        "description": "Provides human-readable explanations and suggested resolutions for Prometheus alerts.",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Alert Explanation",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "alert_explanation": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "A human-readable explanation of when Prometheus fires the alert",
+                "display_name": "Alert Explanation"
+            },
+            "recommended_resolution": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "A recommended resolution for the alert",
+                "display_name": "Recommended Resolution"
+            }
+        }
+    },
+    {
+        "name": "oom_killer_enricher",
+        "display_name": "OOM Killer Analyzer",
+        "description": "Analyzes OOMKills and provides memory metrics for root cause analysis.",
+        "category": "Pod",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "OOM Killer Analysis",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "new_oom_kills_duration_in_sec": {
+                "type": "integer",
+                "default": 1200,
+                "required": true,
+                "description": "Only report OOMKills that occurred in the last X seconds.",
+                "display_name": "New OOMKills Duration"
+            },
+            "metrics_duration_in_secs": {
+                "type": "integer",
+                "default": 1200,
+                "required": true,
+                "description": "Time duration for memory usage metrics to analyze OOMKill reasons.",
+                "display_name": "Metrics Duration"
+            }
+        }
+    },
+    {
+        "name": "alert_graph_enricher_memory",
+        "action_name": "alert_graph_enricher",
+        "display_name": "Alert Resource Graph Analyzer Memory",
+        "description": "Generates resource usage graphs for Prometheus alerts.",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Alert Resource Graph Analyzer Memory",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "item_type": {
+                "type": "string",
+                "default": "Pod",
+                "required": true,
+                "description": "Type of resource for which the graph will be generated (Pod, Node).",
+                "display_name": "Item Type",
+                "possible_values": [
+                    "Pod",
+                    "Node"
+                ]
+            },
+            "graph_duration_minutes": {
+                "type": "integer",
+                "default": 60,
+                "required": true,
+                "description": "Graph duration in minutes.",
+                "display_name": "Graph Duration"
+            },
+            "resource_type": {
+                "type": "string",
+                "default": "Memory",
+                "required": true,
+                "description": "Resource type for graph Memory.",
+                "display_name": "Resource Type",
+                "is_editable": false
+            }
+        }
+    },
+    {
+        "name": "alert_graph_enricher_cpu",
+        "action_name": "alert_graph_enricher",
+        "display_name": "Alert Resource Graph Analyzer CPU",
+        "description": "Generates resource usage graphs for Prometheus alerts.",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Alert Resource Graph Analyzer CPU",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "item_type": {
+                "type": "string",
+                "default": "Pod",
+                "required": true,
+                "description": "Type of resource for which the graph will be generated (Pod, Node).",
+                "display_name": "Item Type",
+                "possible_values": [
+                    "Pod",
+                    "Node"
+                ]
+            },
+            "graph_duration_minutes": {
+                "type": "integer",
+                "default": 60,
+                "required": true,
+                "description": "Graph duration in minutes.",
+                "display_name": "Graph Duration"
+            },
+            "resource_type": {
+                "type": "string",
+                "default": "CPU",
+                "required": true,
+                "description": "Resource type for graph CPU.",
+                "display_name": "Resource Type",
+                "is_editable": false
+            }
+        }
+    },
+    {
+        "name": "alert_graph_enricher_disk",
+        "action_name": "alert_graph_enricher",
+        "display_name": "Alert Resource Graph Analyzer Disk",
+        "description": "Generates resource usage graphs for Prometheus alerts.",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Alert Resource Graph Analyzer Disk",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "item_type": {
+                "type": "string",
+                "default": "Pod",
+                "required": true,
+                "description": "Type of resource for which the graph will be generated (Pod, Node).",
+                "display_name": "Item Type",
+                "possible_values": [
+                    "Pod",
+                    "Node"
+                ]
+            },
+            "graph_duration_minutes": {
+                "type": "integer",
+                "default": 60,
+                "required": true,
+                "description": "Graph duration in minutes.",
+                "display_name": "Graph Duration"
+            },
+            "resource_type": {
+                "type": "string",
+                "default": "Disk",
+                "required": true,
+                "description": "Resource type for graph Disk.",
+                "display_name": "Resource Type",
+                "is_editable": false
+            }
+        }
+    },
+    {
+        "name": "statefulset_replicas_enricher",
+        "display_name": "StatefulSet Replicas",
+        "description": "Enriches alerts with information about StatefulSet replicas.",
+        "category": "StatefulSet",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "StatefulSet Replicas",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            }
+        }
+    },
+    {
+        "name": "job_info_enricher",
+        "display_name": "Job Info",
+        "description": "Provides detailed job execution information.",
+        "category": "Job",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Job Information",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            }
+        }
+    },
+    {
+        "name": "cpu_throttling_analysis_enricher",
+        "display_name": "All",
+        "description": "Analyzes CPU throttling events in pods.",
+        "category": "Performance Analysis",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "CPU Throttling Analysis",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            }
+        }
+    },
+    {
+        "name": "pod_metric_enricher_memory",
+        "action_name": "pod_metric_enricher",
+        "display_name": "Pod Metric Analyzer Memory",
+        "description": "Generates pod-level resource usage graphs with optional limits.",
+        "category": "Pod",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Pod Metric Analyzer Memory",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "display_limits": {
+                "type": "bool",
+                "default": false,
+                "required": false,
+                "description": "Displays pod limits for Memory on the graph if true.",
+                "display_name": "Display Limits"
+            },
+            "resource_type": {
+                "type": "string",
+                "default": "Memory",
+                "required": true,
+                "description": "Resource type for graph Memory.",
+                "display_name": "Resource Type",
+                "is_editable": false
+            },
+            "graph_duration_minutes": {
+                "type": "integer",
+                "default": 60,
+                "required": true,
+                "description": "Graph duration in minutes.",
+                "display_name": "Graph Duration"
+            }
+        }
+    },
+    {
+        "name": "pod_metric_enricher_cpu",
+        "action_name": "pod_metric_enricher",
+        "display_name": "Pod Metric Analyzer CPU",
+        "description": "Generates pod-level resource usage graphs with optional limits.",
+        "category": "Pod",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Pod Metric Analyzer CPU",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "display_limits": {
+                "type": "bool",
+                "default": false,
+                "required": false,
+                "description": "Displays pod limits for CPU on the graph if true.",
+                "display_name": "Display Limits"
+            },
+            "resource_type": {
+                "type": "string",
+                "default": "CPU",
+                "required": true,
+                "description": "Resource type for graph CPU.",
+                "display_name": "Resource Type",
+                "is_editable": false
+            },
+            "graph_duration_minutes": {
+                "type": "integer",
+                "default": 60,
+                "required": true,
+                "description": "Graph duration in minutes.",
+                "display_name": "Graph Duration"
+            }
+        }
+    },
+    {
+        "name": "pod_graph_enricher_memory",
+        "action_name": "pod_graph_enricher",
+        "display_name": "Pod Graph Analyzer Memory",
+        "description": "Generates pod-level resource usage graphs with optional limits.",
+        "category": "Pod",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Pod Graph Analyzer Memory",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "display_limits": {
+                "type": "bool",
+                "default": false,
+                "required": false,
+                "description": "Displays pod limits for Memory on the graph if true.",
+                "display_name": "Display Limits"
+            },
+            "resource_type": {
+                "type": "string",
+                "default": "Memory",
+                "required": true,
+                "description": "Resource type for graph Memory.",
+                "display_name": "Resource Type",
+                "is_editable": false
+            },
+            "graph_duration_minutes": {
+                "type": "integer",
+                "default": 60,
+                "required": true,
+                "description": "Graph duration in minutes.",
+                "display_name": "Graph Duration"
+            }
+        }
+    },
+    {
+        "name": "pod_graph_enricher_cpu",
+        "action_name": "pod_graph_enricher",
+        "display_name": "Pod Graph Analyzer CPU",
+        "description": "Generates pod-level resource usage graphs with optional limits.",
+        "category": "Pod",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Pod Graph Analyzer CPU",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "display_limits": {
+                "type": "bool",
+                "default": false,
+                "required": false,
+                "description": "Displays pod limits for CPU on the graph if true.",
+                "display_name": "Display Limits"
+            },
+            "resource_type": {
+                "type": "string",
+                "default": "CPU",
+                "required": true,
+                "description": "Resource type for graph CPU.",
+                "display_name": "Resource Type",
+                "is_editable": false
+            },
+            "graph_duration_minutes": {
+                "type": "integer",
+                "default": 60,
+                "required": true,
+                "description": "Graph duration in minutes.",
+                "display_name": "Graph Duration"
+            }
+        }
+    },
+    {
+        "name": "pod_node_metrics_enricher_memory",
+        "display_name": "Pod Node Metrics Analyzer Memory",
+        "action_name": "pod_node_metrics_enricher",
+        "description": "Enriches pods with node-level Memory usage metrics.",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Pod Node Metrics Analyzer Memory",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "resource_type": {
+                "type": "string",
+                "default": "Memory",
+                "required": true,
+                "description": "Resource type for graph Memory.",
+                "display_name": "Resource Type",
+                "is_editable": false
+            },
+            "graph_duration_minutes": {
+                "type": "integer",
+                "default": 60,
+                "required": true,
+                "description": "Graph duration in minutes.",
+                "display_name": "Graph Duration"
+            }
+        }
+    },
+    {
+        "name": "api_service_status_enricher",
+        "display_name": "API Service Status",
+        "description": "Enriches alerts with API service status details.",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "API Service Status",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            }
+        }
+    },
+    {
+        "name": "prometheus_rules_enricher",
+        "display_name": "Prometheus Rules Analyzer",
+        "description": "Provides information on Prometheus alerting rules.",
+        "category": "Monitoring Rules",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Prometheus Rules Analysis",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            }
+        }
+    },
+    {
+        "name": "hpa_mismatch_enricher",
+        "display_name": "HPA Mismatch Analyzer",
+        "description": "Analyzes HPA configurations and detects mismatches in scaling policies.",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "HPA Mismatch Analysis",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "check_for_metrics_server": {
+                "type": "bool",
+                "default": true,
+                "required": true,
+                "description": "Checks if metrics-server is available and suggests how to add it.",
+                "display_name": "Check Metrics Server"
+            }
+        }
+    },
+    {
+        "name": "api_failure_enricher",
+        "display_name": "API Failure Analyzer",
+        "description": "Detects API failures and provides related insights.",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "API Failure Analysis",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            }
+        }
+    },
+    {
+        "name": "api_traces_enricher",
+        "display_name": "API Traces Analyzer",
+        "description": "Provides detailed traces of API requests.",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "API Traces Analysis",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "duration": {
+                "type": "integer",
+                "default": 15,
+                "required": false,
+                "description": "Duration of the trace in minutes."
+            }
+        }
+    },
+    {
+        "name": "prometheus_enricher",
+        "display_name": "Prometheus Query Analyzer",
+        "description": "Executes Prometheus Queries.",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Prometheus Query Execution",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "instant": {
+                "type": "bool",
+                "default": false,
+                "required": false,
+                "display_name": "Instant Mode",
+                "description": "Execute Query in Instant Mode"
+            },
+            "promql_query": {
+                "type": "string",
+                "required": false,
+                "display_name": "Prometheus Query",
+                "description": "Single Prometheus Query to execute. Use this OR promql_queries for multiple queries."
+            },
+            "promql_queries": {
+                "type": "object[]",
+                "default": [],
+                "required": false,
+                "description": "Multiple named Prometheus queries to execute. Each query has a key (name) and query (PromQL expression).",
+                "display_name": "Prometheus Queries",
+                "extra_params": {
+                    "key": {
+                        "type": "string",
+                        "default": "",
+                        "required": true,
+                        "description": "Name/key for this query result",
+                        "display_name": "Key"
+                    },
+                    "query": {
+                        "type": "string",
+                        "default": "",
+                        "required": true,
+                        "description": "PromQL query expression",
+                        "display_name": "Query"
+                    }
+                }
+            },
+            "step": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "display_name": "Step",
+                "description": "Query resolution step width (e.g., '15s', '1m', '5m')."
+            },
+            "duration": {
+                "type": "object",
+                "default": {},
+                "required": true,
+                "display_name": "Duration",
+                "description": "Duration in minutes.",
+                "extra_params": {
+                    "duration_minutes": {
+                        "type": "number",
+                        "required": true,
+                        "description": "Duration in minutes for the query execution.",
+                        "display_name": "Duration (Minutes)"
+                    }
+                }
+            }
+        }
+    },
+    {
+        "name": "pod_script_run_enricher",
+        "display_name": "Pod Script Run",
+        "description": "Run script in the pod",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Pod Script Execution",
+                "display_name": "Title",
+                "required": false
+            },
+            "command": {
+                "type": "string",
+                "description": "Command to run in the pod",
+                "default": "",
+                "display_name": "Command",
+                "required": true
+            },
+            "name": {
+                "type": "string",
+                "description": "Container name to run the command",
+                "default": "",
+                "display_name": "Container Name",
+                "required": false
+            },
+            "image": {
+                "type": "string",
+                "description": "Image name to be used to run the command",
+                "default": "",
+                "display_name": "Image Name",
+                "required": false
+            },
+            "secret": {
+                "type": "string",
+                "description": "Secret required used to run the command",
+                "default": "",
+                "display_name": "Secret Name",
+                "required": false
+            },
+            "use_side_car": {
+                "type": "bool",
+                "description": "Run the command as side car container",
+                "default": "",
+                "display_name": "Side Car",
+                "required": false
+            },
+            "ephemeral": {
+                "type": "bool",
+                "description": "Run it as ephemeral pod",
+                "default": false,
+                "display_name": "Ephemeral",
+                "required": false
+            },
+            "pod_name": {
+                "type": "string",
+                "description": "Pod name to run the command",
+                "default": "",
+                "display_name": "Pod Name",
+                "required": false
+            },
+            "namespace": {
+                "type": "string",
+                "description": "Namespace in which pod is running",
+                "default": "",
+                "display_name": "Namespace",
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "pod_profiler",
+        "display_name": "Pod Profiler",
+        "description": "Profile the pod",
+        "category": "Pod",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Pod Profiler",
+                "display_name": "Title",
+                "required": false
+            },
+            "profile_type": {
+                "type": "string",
+                "description": "Profile type",
+                "default": "cpu",
+                "display_name": "Profile Type",
+                "required": true,
+                "possible_values": [
+                    "cpu",
+                    "memory"
+                ]
+            },
+            "duration": {
+                "type": "integer",
+                "description": "Duration of the profile in seconds",
+                "default": 60,
+                "display_name": "Duration",
+                "required": true
+            }
+        }
+    },
+    {
+        "name": "get_kubernetes_resource",
+        "action_name": "get_resource",
+        "display_name": "Get Kubernetes Deployment",
+        "description": "Get Kubernetes Deployment",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Get Kubernetes Deployment",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "resource_type": {
+                "type": "string",
+                "description": "Resource type to get",
+                "default": "deployment",
+                "display_name": "Resource Type",
+                "required": false
+            },
+            "name": {
+                "type": "string[]",
+                "description": "Resource name to get",
+                "default": [],
+                "display_name": "Deployment Name",
+                "required": true
+            },
+            "namespace": {
+                "type": "string[]",
+                "description": "Namespace in which Deployment is running",
+                "default": [],
+                "display_name": "Namespace",
+                "required": false
+            },
+            "all_namespaces": {
+                "type": "bool",
+                "description": "Get resource from all namespaces",
+                "default": false,
+                "display_name": "All Namespaces",
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "get_pod_resource",
+        "action_name": "get_resource",
+        "display_name": "Get Kubernetes Pod",
+        "description": "Get Kubernetes pod",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "default": "Get Kubernetes Pod",
+                "required": false,
+                "description": "Title of the enrichment",
+                "display_name": "Title"
+            },
+            "resource_type": {
+                "type": "string",
+                "description": "Resource type to get",
+                "default": "pod",
+                "display_name": "Resource Type",
+                "required": false
+            },
+            "name": {
+                "type": "string[]",
+                "description": "Resource name to get",
+                "default": [],
+                "display_name": "Resource Name",
+                "required": false
+            },
+            "namespace": {
+                "type": "string[]",
+                "description": "Namespace in which resource is running",
+                "default": [],
+                "display_name": "Namespace",
+                "required": false
+            },
+            "all_namespaces": {
+                "type": "bool",
+                "description": "Get resource from all namespaces",
+                "default": false,
+                "display_name": "All Namespaces",
+                "required": false
+            },
+            "owner": {
+                "type": "string",
+                "description": "Get pods by owner name",
+                "default": "",
+                "display_name": "Owner",
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "text_enricher",
+        "display_name": "Text Enricher",
+        "description": "Enriches the alert with a text message.",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Text Enrichment",
+                "display_name": "Title",
+                "required": false
+            },
+            "text": {
+                "type": "string",
+                "description": "Text to enrich the alert with.",
+                "default": "",
+                "display_name": "Text",
+                "required": true
+            },
+            "severity": {
+                "type": "string",
+                "description": "Severity of the alert.",
+                "default": "Info",
+                "display_name": "Severity",
+                "required": false,
+                "possible_values": [
+                    "Info",
+                    "Critical"
+                ]
+            }
+        }
+    },
+    {
+        "name": "resource_logs_enricher",
+        "display_name": "Pod Logs Enricher",
+        "description": "Enriches the alert with logs from a specific pod.",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Pod Logs Enrichment",
+                "display_name": "Title",
+                "required": false
+            },
+            "pod_name": {
+                "type": "string",
+                "description": "Name of the pod to fetch logs from.",
+                "default": "",
+                "display_name": "Pod Name",
+                "required": true
+            },
+            "namespace": {
+                "type": "string",
+                "description": "Namespace in which the pod is running.",
+                "default": "",
+                "display_name": "Namespace",
+                "required": true
+            },
+            "container_name": {
+                "type": "string",
+                "description": "Name of the container to fetch logs from.",
+                "default": "",
+                "display_name": "Container Name",
+                "required": false
+            },
+            "since_seconds": {
+                "type": "integer",
+                "description": "Fetch logs since this many seconds ago.",
+                "display_name": "Since Seconds",
+                "required": false
+            },
+            "tail_lines": {
+                "type": "integer",
+                "description": "Number of lines to fetch from the end of the logs.",
+                "default": 100,
+                "display_name": "Tail Lines",
+                "required": false
+            }
+        }
+    },
+    {
+        "name": "nudgebee_playbook_trigger_enricher",
+        "display_name": "Nudgebee Runbook Trigger",
+        "description": "Execute Runbook once the alert is triggered.",
+        "category": "All",
+        "params": {
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Runbook Execution",
+                "display_name": "Title",
+                "required": false
+            },
+            "runbook_id": {
+                "type": "string",
+                "description": "Specify Runbook to execute",
+                "default": "",
+                "display_name": "Runbook",
+                "required": true,
+                "auto_generate_func": "listAutoPlaybook"
+            }
+        }
+    },
+    {
+        "name": "nubi_enricher",
+        "display_name": "Trigger LLM on Action",
+        "description": "Trigger LLM based investigation",
+        "category": "All",
+        "params": {
+            "prompt": {
+                "type": "textarea",
+                "description": "Prompt for LLM investigation",
+                "default": "",
+                "display_name": "Prompt",
+                "required": true
+            },
+            "title": {
+                "type": "string",
+                "description": "Title for the LLM investigation",
+                "default": "nubi Analysis",
+                "display_name": "Title",
+                "required": true
+            }
+        },
+        "action_name": "nubi_enricher",
+        "source": "nudgebee"
+    },
+    {
+        "name": "chronosphere_traces_enricher",
+        "display_name": "Query Chronosphere Traces",
+        "description": "Query Chronosphere Traces",
+        "category": "All",
+        "params": {
+            "start_time": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Start time for trace query (RFC3339 format). Defaults to event start time if available.",
+                "display_name": "Start Time"
+            },
+            "end_time": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "End time for trace query (RFC3339 format). Defaults to event end time if available.",
+                "display_name": "End Time"
+            },
+            "query_type": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "display_name": "Query Type",
+                "description": "Type of query to perform",
+                "possible_values": [
+                    "TRACE_IDS",
+                    "SERVICE_OPERATION"
+                ]
+            },
+            "service": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Service to filter on. An empty value doesn't apply any service filter.",
+                "display_name": "Service Name",
+                "show_when": {
+                    "query_type": "SERVICE_OPERATION"
+                }
+            },
+            "trace_ids": {
+                "type": "string",
+                "object_type": "list",
+                "default": "",
+                "required": false,
+                "description": "Trace IDs to search for. Comma separated list of trace IDs.",
+                "display_name": "Trace Ids",
+                "show_when": {
+                    "query_type": "TRACE_IDS"
+                }
+            },
+            "tag_filters": {
+                "type": "object[]",
+                "default": {},
+                "required": true,
+                "description": "Tag filter to apply. An empty value doesn't apply any tag filter.",
+                "display_name": "Tag Filters",
+                "extra_params": {
+                    "key": {
+                        "type": "string",
+                        "default": "",
+                        "required": true,
+                        "description": "The key (or name) of the span tag that is inspected by this filter.",
+                        "display_name": "Key"
+                    },
+                    "numeric_value": {
+                        "type": "object",
+                        "default": {},
+                        "required": false,
+                        "description": "Matcher used to evaluate the span tag value as a numeric value (if the tag with the given key is found and the value type is numerical).",
+                        "display_name": "Numeric Value",
+                        "extra_params": {
+                            "comparison": {
+                                "type": "string",
+                                "default": "EQUAL",
+                                "required": true,
+                                "description": "The comparison operation to be applied to an input against the given filter value.",
+                                "display_name": "Comparison",
+                                "possible_values": [
+                                    "EQUAL",
+                                    "NOT_EQUAL",
+                                    "GREATER_THAN",
+                                    "LESS_THAN",
+                                    "GREATER_THAN_OR_EQUAL",
+                                    "LESS_THAN_OR_EQUAL"
+                                ]
+                            },
+                            "value": {
+                                "type": "string",
+                                "required": true,
+                                "description": "The filter value used in comparison against match candidates.",
+                                "display_name": "Value"
+                            }
+                        }
+                    },
+                    "value": {
+                        "type": "object",
+                        "default": {},
+                        "required": false,
+                        "description": "Matcher used to evaluate the span tag value (if the tag with the given key is found and the value type is a string).",
+                        "display_name": "Value",
+                        "extra_params": {
+                            "in_values": {
+                                "type": "string[]",
+                                "default": [],
+                                "required": true,
+                                "description": "Values the filter tests against when using IN or NOT_IN match type.",
+                                "display_name": "In Values",
+                                "possible_values": []
+                            },
+                            "match": {
+                                "type": "string",
+                                "default": "EXACT",
+                                "required": true,
+                                "description": "If EXACT, compared strings have the exact value of the filter value.",
+                                "display_name": "Match",
+                                "possible_values": [
+                                    "EXACT",
+                                    "REGEX",
+                                    "EXACT_NEGATION",
+                                    "REGEX_NEGATION",
+                                    "IN",
+                                    "NOT_IN"
+                                ]
+                            },
+                            "value": {
+                                "type": "string",
+                                "default": "",
+                                "required": true,
+                                "description": "The value the filter compares to the target trace or span field.",
+                                "display_name": "Value"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    {
+        "name": "signoz_logs_enricher",
+        "display_name": "Query Signoz Logs",
+        "description": "Query Signoz Logs with optional regex label extraction",
+        "category": "All",
+        "params": {
+            "query": {
+                "type": "signoz_log_autocomplete",
+                "default": [],
+                "required": true,
+                "description": "Params for querying Signoz logs"
+            },
+            "duration": {
+                "type": "int",
+                "default": 15,
+                "required": false,
+                "description": "Duration in minutes for which Signoz logs should be collected and analyzed.",
+                "display_name": "Duration"
+            },
+            "regex_extractors": {
+                "type": "object[]",
+                "default": [],
+                "required": false,
+                "description": "Array of regex patterns to extract labels from log entries. Each extractor should have 'pattern' (regex with capture groups) and 'label_name' fields.",
+                "display_name": "Regex Label Extractors",
+                "extra_params": {
+                    "pattern": {
+                        "type": "string",
+                        "default": "",
+                        "required": true,
+                        "description": "Regex pattern with capture groups to extract values from log body",
+                        "display_name": "Pattern"
+                    },
+                    "label_name": {
+                        "type": "string",
+                        "default": "",
+                        "required": true,
+                        "description": "Name of the label to store extracted value",
+                        "display_name": "Label Name"
+                    }
+                }
+            }
+        },
+        "alert_type": "log"
+    },
+    {
+        "name": "traces_dependency_map",
+        "action_name": "traces_dependency_map",
+        "display_name": "Traces Dependency Map",
+        "description": "Generates a service dependency map from traces for a specified service over a defined time range or duration.",
+        "category": "Service",
+        "params": {
+            "service_name": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "Name of the service for which the dependency map is to be generated.",
+                "display_name": "Service Name"
+            },
+            "namespace": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Kubernetes namespace of the service (optional).",
+                "display_name": "Namespace"
+            },
+            "duration": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Duration for trace data collection (e.g., '30m', '1h', '2h30m'). Takes priority over start_time/end_time.",
+                "display_name": "Duration"
+            },
+            "start_time": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Start time for the dependency map data range (RFC3339 format). Used only if duration is not specified.",
+                "display_name": "Start Time"
+            },
+            "end_time": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "End time for the dependency map data range (RFC3339 format). Used only if duration is not specified.",
+                "display_name": "End Time"
+            },
+            "label_filter": {
+                "type": "object[]",
+                "default": [],
+                "required": false,
+                "description": "Label filters to apply to trace queries. Each filter has key, value, and operator fields.",
+                "display_name": "Label Filters",
+                "extra_params": {
+                    "key": {
+                        "type": "string",
+                        "default": "",
+                        "required": true,
+                        "description": "Label key to filter on (e.g., 'http.host', 'service.name')",
+                        "display_name": "Key"
+                    },
+                    "value": {
+                        "type": "string",
+                        "default": "",
+                        "required": true,
+                        "description": "Value to match against",
+                        "display_name": "Value"
+                    },
+                    "operator": {
+                        "type": "string",
+                        "default": "=",
+                        "required": false,
+                        "description": "Comparison operator",
+                        "display_name": "Operator",
+                        "possible_values": [
+                            "=",
+                            "!=",
+                            "LIKE",
+                            "NOT LIKE",
+                            "IN",
+                            "NOT IN"
+                        ]
+                    }
+                }
+            },
+            "exclude_filters": {
+                "type": "object[]",
+                "default": [],
+                "required": false,
+                "description": "Filters to exclude external services matching these criteria. Same structure as label_filter.",
+                "display_name": "Exclude Filters",
+                "extra_params": {
+                    "key": {
+                        "type": "string",
+                        "default": "",
+                        "required": true,
+                        "description": "Label key to filter on",
+                        "display_name": "Key"
+                    },
+                    "value": {
+                        "type": "string",
+                        "default": "",
+                        "required": true,
+                        "description": "Value to match for exclusion",
+                        "display_name": "Value"
+                    },
+                    "operator": {
+                        "type": "string",
+                        "default": "=",
+                        "required": false,
+                        "description": "Comparison operator",
+                        "display_name": "Operator",
+                        "possible_values": [
+                            "=",
+                            "!=",
+                            "LIKE",
+                            "NOT LIKE",
+                            "IN",
+                            "NOT IN"
+                        ]
+                    }
+                }
+            },
+            "upstream_only": {
+                "type": "bool",
+                "default": false,
+                "required": false,
+                "description": "If true, only show upstream services (callers) of the target service.",
+                "display_name": "Upstream Only"
+            }
+        }
+    },
+    {
+        "name": "cloud_resource",
+        "action_name": "cloud_resource",
+        "display_name": "Get Cloud Provider Resource",
+        "description": "Lookup Resources for Cloud Provider Like AWS/GCP/Azure",
+        "category": "Service",
+        "params": {
+            "service_name": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "Cloud Provider Service Name (e.g., EC2, RDS, Lambda)",
+                "display_name": "Service Name"
+            },
+            "resource_type": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "Resource type to lookup",
+                "display_name": "Resource Type"
+            },
+            "region": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "Cloud Provider Region",
+                "display_name": "Region"
+            },
+            "resource_id": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "ResourceId/Arn to check",
+                "display_name": "Resource Id"
+            },
+            "resource_ids": {
+                "type": "string[]",
+                "default": [],
+                "required": false,
+                "description": "List of Resource IDs to check",
+                "display_name": "Resource Ids"
+            },
+            "instance_id": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Instance ID to check",
+                "display_name": "Instance Id"
+            },
+            "instance_ids": {
+                "type": "string[]",
+                "default": [],
+                "required": false,
+                "description": "List of Instance IDs to check",
+                "display_name": "Instance Ids"
+            },
+            "account_id": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Optional AccountId to use for Cloud Account",
+                "display_name": "Nudgebee Account Id"
+            },
+            "title": {
+                "type": "string",
+                "description": "Title of the Action",
+                "default": "Resource Details",
+                "display_name": "Title",
+                "required": false
+            }
+        },
+        "source": "nudgebee"
+    },
+    {
+        "name": "cloud_metrics",
+        "action_name": "cloud_metrics",
+        "display_name": "Get Cloud Provider Metrics",
+        "description": "Lookup Metrics for Cloud Provider Resources",
+        "category": "Service",
+        "params": {
+            "service_name": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "Cloud Provider Service Name (e.g., EC2, RDS, Lambda)",
+                "display_name": "Service Name"
+            },
+            "region": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "Cloud Provider Region",
+                "display_name": "Region"
+            },
+            "metric_namespace": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Metrics Namespace (e.g., AWS/EC2, AWS/RDS)",
+                "display_name": "Metric Namespace"
+            },
+            "metric_name": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Metric Name to query (e.g., CPUUtilization)",
+                "display_name": "Metric Name"
+            },
+            "metric_names": {
+                "type": "string[]",
+                "default": [],
+                "required": false,
+                "description": "List of Metric Names to query",
+                "display_name": "Metric Names"
+            },
+            "resource_id": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Resource ID / ARN to filter metrics",
+                "display_name": "Resource Id"
+            },
+            "resource_ids": {
+                "type": "string[]",
+                "default": [],
+                "required": false,
+                "description": "List of Resource IDs to filter metrics",
+                "display_name": "Resource Ids"
+            },
+            "query": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Metrics Query expression",
+                "display_name": "Metrics Query"
+            },
+            "statistic": {
+                "type": "string",
+                "default": "Average",
+                "required": false,
+                "description": "Statistic to retrieve (e.g., Average, Sum, Maximum, Minimum)",
+                "display_name": "Statistic"
+            },
+            "statistics": {
+                "type": "string[]",
+                "default": [],
+                "required": false,
+                "description": "List of statistics to retrieve",
+                "display_name": "Statistics"
+            },
+            "dimension": {
+                "type": "object",
+                "default": {},
+                "required": false,
+                "description": "Single dimension filter (key-value pair)",
+                "display_name": "Dimension"
+            },
+            "dimensions": {
+                "type": "object[]",
+                "default": [],
+                "required": false,
+                "description": "List of dimension filters",
+                "display_name": "Dimensions"
+            },
+            "step": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Step/period for metric data points (e.g., 60s, 5m)",
+                "display_name": "Step"
+            },
+            "start_time": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Start time (RFC3339 format). Defaults to event start time.",
+                "display_name": "Start Time"
+            },
+            "end_time": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "End time (RFC3339 format). Defaults to event end time.",
+                "display_name": "End Time"
+            },
+            "account_id": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Optional AccountId to use for Cloud Account",
+                "display_name": "Nudgebee Account Id"
+            },
+            "title": {
+                "type": "string",
+                "description": "Title of the Action",
+                "default": "Metrics",
+                "display_name": "Title",
+                "required": false
+            }
+        },
+        "source": "nudgebee"
+    },
+    {
+        "name": "cloud_logs",
+        "action_name": "cloud_logs",
+        "display_name": "Get Logs From Cloud Provider",
+        "description": "Lookup Logs for Cloud Provider Resources",
+        "category": "Service",
+        "params": {
+            "query": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Log Query to execute",
+                "display_name": "Log Query"
+            },
+            "service_name": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Cloud Provider Service Name",
+                "display_name": "Service Name"
+            },
+            "resource_id": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Resource name to check for logs",
+                "display_name": "ResourceId/Arn"
+            },
+            "log_group_name": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Log Group name for the query",
+                "display_name": "Log Group"
+            },
+            "region": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Cloud Provider Region to Use",
+                "display_name": "Region"
+            },
+            "start_time": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Start time for the dependency map data range (RFC3339 format). Used only if duration is not specified.",
+                "display_name": "Start Time"
+            },
+            "end_time": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "End time for the dependency map data range (RFC3339 format). Used only if duration is not specified.",
+                "display_name": "End Time"
+            },
+            "account_id": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Optional AccountId to use for Cloud Account",
+                "display_name": "Nudgebee Account Id"
+            },
+            "title": {
+                "type": "string",
+                "description": "Title of the Action",
+                "default": "Logs",
+                "display_name": "Title",
+                "required": false
+            }
+        },
+        "source": "nudgebee",
+        "alert_type": "log"
+    },
+    {
+        "name": "cloud_service_map",
+        "action_name": "cloud_service_map",
+        "display_name": "Get Service Map For Cloud Resources",
+        "description": "Lookup Service Map Cloud Provider Resources",
+        "category": "Service",
+        "params": {
+            "service_name": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "Cloud Provider Service Name",
+                "display_name": "Service Name"
+            },
+            "resource_id": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Resource name to check for service map",
+                "display_name": "ResourceId/Arn"
+            },
+            "region": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Cloud Provider Region to Use",
+                "display_name": "Region"
+            },
+            "account_id": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Optional AccountId to use for Cloud Account",
+                "display_name": "Nudgebee Account Id"
+            },
+            "title": {
+                "type": "string",
+                "description": "Title of the Action",
+                "default": "Service map",
+                "display_name": "Title",
+                "required": false
+            }
+        },
+        "source": "nudgebee"
+    },
+    {
+        "name": "ssh",
+        "action_name": "ssh",
+        "display_name": "SSH to Servers",
+        "description": "Execute a CLI command Using SSH",
+        "category": "Service",
+        "params": {
+            "command": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "SSH command to execute",
+                "display_name": "SSH Command"
+            },
+            "host_name": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "Host to Use for SSH",
+                "display_name": "Host Name"
+            },
+            "integration_name": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "Integration to use for SSH Details",
+                "display_name": "Integration Name"
+            },
+            "user_name": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "SSH username to use for connection. Overrides the integration default.",
+                "display_name": "Username"
+            },
+            "account_id": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Optional AccountId to use for SSH Command",
+                "display_name": "Nudgebee Account Id"
+            },
+            "title": {
+                "type": "string",
+                "description": "Title of the Action",
+                "default": "SSH",
+                "display_name": "Title",
+                "required": false
+            }
+        },
+        "source": "nudgebee"
+    },
+    {
+        "name": "traces",
+        "display_name": "Traces",
+        "description": "Queries traces of API requests based on configured account",
+        "category": "All",
+        "params": {
+            "query": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "Trace Query",
+                "display_name": "Trace Query"
+            },
+            "query_options": {
+                "type": "object",
+                "default": {},
+                "required": false,
+                "description": "Additional parameters specific to provider for Querying Traces."
+            },
+            "duration": {
+                "type": "number",
+                "default": 15,
+                "required": false,
+                "description": "Duration in minutes for which Query should be executed."
+            },
+            "account_id": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Optional AccountId to use for Traces",
+                "display_name": "Nudgebee Account Id"
+            },
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Traces",
+                "display_name": "Title",
+                "required": false
+            }
+        },
+        "source": "nudgebee"
+    },
+    {
+        "name": "logs",
+        "display_name": "Logs",
+        "description": "Queries logs based on configured account",
+        "category": "All",
+        "params": {
+            "query": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Log Query",
+                "display_name": "Log Query"
+            },
+            "duration": {
+                "type": "number",
+                "default": -1,
+                "required": false,
+                "description": "Duration in minutes for which logs should be collected and analyzed."
+            },
+            "query_options": {
+                "type": "object",
+                "default": {},
+                "required": false,
+                "description": "Additional parameters specific to provider for Querying Logs."
+            },
+            "regex_extractors": {
+                "type": "object[]",
+                "default": [],
+                "required": false,
+                "description": "Array of regex patterns to extract labels from log entries. Each extractor should have 'pattern' (regex with capture groups) and 'label_name' fields.",
+                "display_name": "Regex Label Extractors",
+                "extra_params": {
+                    "pattern": {
+                        "type": "string",
+                        "default": "",
+                        "required": true,
+                        "description": "Regex pattern with capture groups to extract values from log body",
+                        "display_name": "Pattern"
+                    },
+                    "label_name": {
+                        "type": "string",
+                        "default": "",
+                        "required": true,
+                        "description": "Name of the label to store extracted value",
+                        "display_name": "Label Name"
+                    }
+                }
+            },
+            "label_extractors": {
+                "type": "object[]",
+                "default": [],
+                "required": false,
+                "description": "Array of label extractors to extract values from log attributes. Each extractor maps a log attribute to a label.",
+                "display_name": "Label Extractors",
+                "extra_params": {
+                    "label_name": {
+                        "type": "string",
+                        "default": "",
+                        "required": true,
+                        "description": "Name of the label to store extracted value",
+                        "display_name": "Label Name"
+                    },
+                    "placeholder_name": {
+                        "type": "string",
+                        "default": "",
+                        "required": false,
+                        "description": "Optional placeholder name. If not provided, label_name is used.",
+                        "display_name": "Placeholder Name"
+                    }
+                }
+            },
+            "account_id": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Optional AccountId to use for Logs",
+                "display_name": "Nudgebee Account Id"
+            },
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Logs",
+                "display_name": "Title",
+                "required": false
+            }
+        },
+        "source": "nudgebee",
+        "alert_type": "log"
+    },
+    {
+        "name": "metrics",
+        "display_name": "Metrics",
+        "description": "Queries metrics based on configured account",
+        "category": "All",
+        "params": {
+            "query": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "Metrics Query",
+                "display_name": "Metrics Query"
+            },
+            "duration": {
+                "type": "number",
+                "default": 15,
+                "required": false,
+                "description": "Duration in minutes for which metrics should be collected and analyzed."
+            },
+            "query_options": {
+                "type": "object",
+                "default": {},
+                "required": false,
+                "description": "Additional parameters specific to provider for Querying Metrices."
+            },
+            "account_id": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Optional AccountId to use for Metrics",
+                "display_name": "Nudgebee Account Id"
+            },
+            "title": {
+                "type": "string",
+                "description": "Title of the enrichment",
+                "default": "Metrics",
+                "display_name": "Title",
+                "required": false
+            }
+        },
+        "source": "nudgebee"
+    },
+    {
+        "name": "proxy_db_query",
+        "action_name": "proxy_db_query",
+        "display_name": "Database Query (Proxy Agent)",
+        "description": "Execute a SQL query against a database connected via the proxy agent (PostgreSQL, MySQL, MSSQL, ClickHouse, Oracle)",
+        "category": "All",
+        "params": {
+            "datasource_id": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "Integration ID of the database datasource",
+                "display_name": "Datasource ID"
+            },
+            "query": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "SQL query to execute (read-only)",
+                "display_name": "SQL Query"
+            },
+            "database": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Database name to query (overrides datasource default)",
+                "display_name": "Database"
+            },
+            "max_rows": {
+                "type": "int",
+                "default": 1000,
+                "required": false,
+                "description": "Maximum number of rows to return",
+                "display_name": "Max Rows"
+            },
+            "timeout_ms": {
+                "type": "int",
+                "default": 30000,
+                "required": false,
+                "description": "Query timeout in milliseconds",
+                "display_name": "Timeout (ms)"
+            },
+            "title": {
+                "type": "string",
+                "description": "Title of the action",
+                "default": "Database Query",
+                "display_name": "Title",
+                "required": false
+            }
+        },
+        "source": "nudgebee"
+    },
+    {
+        "name": "proxy_http_request",
+        "action_name": "proxy_http_request",
+        "display_name": "HTTP Request (Proxy Agent)",
+        "description": "Make an HTTP request to an internal API connected via the proxy agent (Grafana, Jenkins, health endpoints)",
+        "category": "All",
+        "params": {
+            "datasource_id": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "Integration ID of the HTTP datasource",
+                "display_name": "Datasource ID"
+            },
+            "url": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "URL path to request (relative to datasource base URL)",
+                "display_name": "URL"
+            },
+            "method": {
+                "type": "string",
+                "default": "GET",
+                "required": false,
+                "description": "HTTP method",
+                "display_name": "Method",
+                "possible_values": [
+                    "GET",
+                    "POST",
+                    "PUT",
+                    "PATCH",
+                    "DELETE"
+                ]
+            },
+            "headers": {
+                "type": "object",
+                "default": {},
+                "required": false,
+                "description": "Additional HTTP headers as key-value pairs",
+                "display_name": "Headers"
+            },
+            "body": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Request body (for POST/PUT/PATCH)",
+                "display_name": "Body"
+            },
+            "title": {
+                "type": "string",
+                "description": "Title of the action",
+                "default": "HTTP Request",
+                "display_name": "Title",
+                "required": false
+            }
+        },
+        "source": "nudgebee"
+    },
+    {
+        "name": "proxy_ssh_command",
+        "action_name": "proxy_ssh_command",
+        "display_name": "SSH Command (Proxy Agent)",
+        "description": "Execute a command on a remote server via SSH through the proxy agent",
+        "category": "All",
+        "params": {
+            "datasource_id": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "Integration ID of the SSH datasource",
+                "display_name": "Datasource ID"
+            },
+            "command": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "Shell command to execute on the remote server",
+                "display_name": "Command"
+            },
+            "timeout_ms": {
+                "type": "int",
+                "default": 30000,
+                "required": false,
+                "description": "Command timeout in milliseconds",
+                "display_name": "Timeout (ms)"
+            },
+            "title": {
+                "type": "string",
+                "description": "Title of the action",
+                "default": "SSH Command",
+                "display_name": "Title",
+                "required": false
+            }
+        },
+        "source": "nudgebee"
+    },
+    {
+        "name": "metric_anomaly_enricher",
+        "action_name": "metric_anomaly_enricher",
+        "display_name": "Metric Anomaly Detection",
+        "description": "Detects anomalies in metrics by comparing current values against historical baselines using statistical analysis.",
+        "category": "Service",
+        "params": {
+            "namespace": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "Kubernetes namespace of the workload to analyze.",
+                "display_name": "Namespace"
+            },
+            "deployment": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "Name of the deployment/workload to analyze.",
+                "display_name": "Deployment"
+            },
+            "query": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "PromQL query to fetch the metric for anomaly detection.",
+                "display_name": "PromQL Query"
+            },
+            "analysis_start_time": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "Start time of the analysis window (RFC3339 format). Defaults to event start time.",
+                "display_name": "Analysis Start Time"
+            },
+            "analysis_end_time": {
+                "type": "string",
+                "default": "",
+                "required": false,
+                "description": "End time of the analysis window (RFC3339 format). Defaults to event end time.",
+                "display_name": "Analysis End Time"
+            },
+            "historical_window_hours": {
+                "type": "integer",
+                "default": 168,
+                "required": false,
+                "description": "Number of hours of historical data to use as baseline (default: 168 = 7 days).",
+                "display_name": "Historical Window (Hours)"
+            }
+        },
+        "source": "nudgebee"
+    },
+    {
+        "name": "cloud_cli",
+        "action_name": "cloud_cli",
+        "display_name": "Cloud CLI Command",
+        "description": "Execute an AWS, GCP, or Azure CLI command on a cloud account",
+        "category": "Service",
+        "params": {
+            "account_id": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "Cloud account to execute the command on",
+                "display_name": "Cloud Account"
+            },
+            "command": {
+                "type": "string",
+                "default": "",
+                "required": true,
+                "description": "CLI command to execute (e.g., aws ec2 describe-instances, gcloud compute instances list, az vm list)",
+                "display_name": "CLI Command"
+            },
+            "title": {
+                "type": "string",
+                "default": "Cloud CLI",
+                "required": false,
+                "description": "Title for the evidence card",
+                "display_name": "Title"
+            }
+        },
+        "source": "nudgebee"
+    }
+]

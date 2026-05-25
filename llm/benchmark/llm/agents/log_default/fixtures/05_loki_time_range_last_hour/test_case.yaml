@@ -1,0 +1,43 @@
+user_prompt: "Show me error logs for orders-api in namespace log-default-05 from the last 1 hour."
+description: |
+  Tests time-range extraction. logs_default must route "last 1 hour" into the
+  logs_execute `range` parameter (not inside the where-clause), so the Loki
+  query window shifts correctly.
+expected_output: |
+  The response lists ERROR logs from orders-api citing 'inventory-locked' as the
+  failure reason. It must mention that the query was scoped to the last hour,
+  and the underlying query_generator output should include a range parameter
+  (e.g., "1h") in the tool call, not a hard-coded start/end timestamp.
+setup_timeout: 300
+before_test: |
+  set -e
+  kubectl create namespace log-default-05 || true
+  kubectl label namespace log-default-05 benchmark=true --overwrite || true
+  kubectl apply -f ../../../nubi/shared/loki.yaml -n log-default-05
+  kubectl apply -f promtail-config.yaml -n log-default-05
+  kubectl wait --for=condition=ready pod -l app=loki -n log-default-05 --timeout=120s
+  kubectl apply -f manifest.yaml -n log-default-05
+  kubectl wait --for=condition=ready pod -l app=orders-api -n log-default-05 --timeout=120s
+  sleep 30  # let promtail push some logs
+
+  pkill -f "kubectl port-forward.*svc/loki" 2>/dev/null || true
+  sleep 1
+  nohup kubectl port-forward -n log-default-05 svc/loki 3100:3100 \
+    >/tmp/pf-log-default-05.log 2>&1 &
+  echo $! > /tmp/pf-log-default-05.pid
+  for i in {1..30}; do
+    if curl -s http://localhost:3100/ready | grep -q ready; then break; fi
+    sleep 1
+  done
+after_test: |
+  if [ -f /tmp/pf-log-default-05.pid ]; then
+    kill $(cat /tmp/pf-log-default-05.pid) 2>/dev/null || true
+    rm -f /tmp/pf-log-default-05.pid
+  fi
+  pkill -f "kubectl port-forward.*log-default-05" 2>/dev/null || true
+  kubectl delete namespace log-default-05 --wait=false || true
+tags:
+  - medium
+  - loki
+  - time-range
+  - provider-path

@@ -1,0 +1,15 @@
+user_prompt: "What savings opportunities exist on our largest cloud account?"
+expected_output:
+  - |
+    The agent should first call spend_summary with group_by=cloud_account to
+    identify the largest spending account, then call recommendations scoped
+    to that account_id sorted by estimated_saving descending. The response
+    should name the account, its current monthly spend in dollars, and list
+    the top open recommendations with savings estimates and a risk
+    assessment. Total potential savings for that account should be summed.
+    Cite both [spend_summary] and [recommendations].
+tags:
+  - optimization
+  - account
+  - medium
+  - finops

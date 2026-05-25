@@ -1,0 +1,6 @@
+user_prompt: Create a CloudFront distribution.
+expected_output:
+- aws cloudfront create-distribution --distribution-config <distribution-config>
+tags:
+- command
+- aws

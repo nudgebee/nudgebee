@@ -1,0 +1,4 @@
+This is a sample global context file for automation testing purposes only.
+
+This file is used by QA automation to verify file upload functionality.
+Do not use this file in production environments.

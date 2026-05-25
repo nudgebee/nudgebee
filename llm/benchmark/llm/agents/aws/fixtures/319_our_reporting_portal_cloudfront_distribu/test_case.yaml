@@ -1,0 +1,15 @@
+user_prompt: Our reporting portal CloudFront distribution 'E1KJWRNDDVJ093' is returning
+  504 Gateway Timeout errors to users. The origin Lambda function 'm05-report-api'
+  is working fine when called directly - it returns 200 OK. Why is CloudFront getting
+  504?
+expected_output:
+- The root cause is that the CloudFront distribution origin read timeout (4 seconds)
+  is lower than the Lambda origin's response time (8 seconds). CloudFront's OriginReadTimeout
+  determines how long CloudFront waits for the origin to respond. The Lambda function
+  takes 8 seconds to generate and return the report, but CloudFront times out after
+  4 seconds and returns 504 to the client. The Lambda is healthy - the issue is purely
+  the CloudFront timeout configuration. The fix is to increase the CloudFront origin
+  read timeout to at least 10-30 seconds to accommodate the backend processing time.
+tags:
+- command
+- aws

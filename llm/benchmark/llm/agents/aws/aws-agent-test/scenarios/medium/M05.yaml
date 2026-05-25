@@ -1,0 +1,131 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M05: CloudFront 504 Gateway Timeout.
+  User complaint: "CloudFront returns 504, but origin ALB is healthy and responding."
+  Root cause: CloudFront origin response timeout is 4s (default), backend takes 8-10s.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = CloudFront origin read timeout 4s, Lambda origin takes 8s to respond.
+      Fixed = CloudFront origin read timeout 30s.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m05-report-api-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  SlowApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: m05-report-api
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          import json
+          import time
+
+          def handler(event, context):
+              # Simulate slow report generation (8 seconds)
+              # CloudFront default timeout is 4s, so it will 504 before this returns
+              time.sleep(8)
+              return {
+                  'statusCode': 200,
+                  'headers': {'Content-Type': 'application/json'},
+                  'body': json.dumps({
+                      'report': 'monthly_summary',
+                      'rows': 15000,
+                      'status': 'complete'
+                  })
+              }
+      Tags:
+        - Key: Name
+          Value: m05-report-api
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: reporting-portal
+
+  LambdaFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !Ref SlowApiFunction
+      AuthType: NONE
+
+  LambdaUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SlowApiFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  CloudFrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      Tags:
+        - Key: Name
+          Value: m05-reporting-portal-cdn
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: analytics
+      DistributionConfig:
+        Enabled: true
+        Comment: m05-reporting-portal-cdn
+        DefaultCacheBehavior:
+          TargetOriginId: LambdaOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+        Origins:
+          - Id: LambdaOrigin
+            DomainName: !Select [2, !Split ['/', !GetAtt LambdaFunctionUrl.FunctionUrl]]
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+              # THE BUG: 4s timeout - Lambda takes 8s, so CloudFront gives up first
+              OriginReadTimeout: !If [IsFixed, 30, 4]
+              OriginKeepaliveTimeout: 5
+
+Outputs:
+  DistributionId:
+    Description: CloudFront Distribution ID
+    Value: !Ref CloudFrontDistribution
+  DistributionDomain:
+    Description: CloudFront Distribution Domain
+    Value: !GetAtt CloudFrontDistribution.DomainName
+  LambdaFunctionUrl:
+    Description: Lambda Function URL (origin)
+    Value: !GetAtt LambdaFunctionUrl.FunctionUrl
+  OriginReadTimeout:
+    Description: CloudFront origin read timeout (seconds)
+    Value: !If [IsFixed, '30', '4']
+  LambdaResponseTime:
+    Description: Lambda response time (seconds)
+    Value: '8'
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

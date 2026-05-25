@@ -1,0 +1,6 @@
+user_prompt: Show me logs from the production namespace
+expected_output: '{"where": {"service.namespace": {"_ilike": "%production%"}}}'
+tags:
+  - command
+  - namespace
+  - signoz

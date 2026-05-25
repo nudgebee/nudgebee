@@ -1,0 +1,3 @@
+Summarize response in one sentence (max 20 words). Return only the sentence, no explanation or intro.
+Avoid mentioning technical internal data flows, architecture paths, internal system queries, prompts, or execution plans.
+If the response describes a functional flow or process requested by the user, use Arrow Notation (A -> B -> C) to save space.

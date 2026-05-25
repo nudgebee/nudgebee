@@ -1,0 +1,15 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is an explicit Deny in the S3 bucket policy. The bucket ''e06-app-configs-123456789012'' has a resource-based
+  policy with a statement that explicitly denies s3:GetObject for all principals (Principal: *). Even though the Lambda execution
+  role has an IAM policy allowing s3:GetObject, the explicit Deny in the bucket policy overrides it. In AWS IAM policy evaluation,
+  explicit Deny always takes precedence over any Allow. The fix is to remove or modify the Deny statement in the bucket policy.'
+scenario: E06
+tags:
+- command
+- aws
+- easy
+type: rca
+user_prompt: Our Lambda function 'e06-config-reader' in us-east-1 is getting AccessDenied when reading objects from S3 bucket
+  'e06-app-configs-123456789012'. The IAM role seems to have the right permissions. Can you figure out why it can't read from
+  the bucket?

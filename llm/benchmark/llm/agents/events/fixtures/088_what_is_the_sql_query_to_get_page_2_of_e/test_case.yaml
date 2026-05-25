@@ -1,0 +1,9 @@
+user_prompt: What is the SQL query to get page 2 of events with page size 50 (ordered
+  by starts_at descending)?
+expected_output:
+- SELECT id, title, starts_at, status, priority, subject_node FROM events ORDER BY
+  starts_at DESC LIMIT 50 OFFSET 50;
+- SELECT * FROM events ORDER BY starts_at DESC LIMIT 50 OFFSET 50;
+tags:
+- command
+- events

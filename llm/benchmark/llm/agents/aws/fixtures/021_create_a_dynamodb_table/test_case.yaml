@@ -1,0 +1,6 @@
+user_prompt: Create a DynamoDB table.
+expected_output:
+- aws dynamodb create-table
+tags:
+- command
+- aws

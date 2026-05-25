@@ -1,0 +1,8 @@
+user_prompt: what is the promql query for the number of network packets dropped on
+  node-9's eth0 interface?
+expected_output:
+- rate(node_network_drop_in_total{instance="node-9", device="eth0"}[5m])
+- sum by (instance) (rate(node_network_drop_in_total{device="eth0"}[5m]))
+tags:
+- command
+- promql

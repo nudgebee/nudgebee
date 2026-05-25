@@ -1,0 +1,6 @@
+user_prompt: Create an AppSync API.
+expected_output:
+- aws appsync create-graphql-api --name <api-name> --authentication-type <authentication-type>
+tags:
+- command
+- aws

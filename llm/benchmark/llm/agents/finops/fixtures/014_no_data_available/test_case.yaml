@@ -1,0 +1,15 @@
+user_prompt: "What is our spend on the Snowflake cloud account?"
+expected_output:
+  - |
+    Snowflake is not a supported cloud provider in this environment (only
+    AWS, GCP, Azure, and Kubernetes accounts are tracked). The agent should
+    call spend_summary, find no matching account, and explicitly state that
+    no Snowflake spend data is available rather than fabricating a number.
+    The response must NOT invent dollar figures. The agent should suggest
+    valid alternatives (e.g. "I can show spend for your AWS, GCP, or Azure
+    accounts instead").
+tags:
+  - edge-case
+  - data-unavailable
+  - medium
+  - finops

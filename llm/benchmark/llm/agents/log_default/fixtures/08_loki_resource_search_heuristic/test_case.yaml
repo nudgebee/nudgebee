@@ -1,0 +1,44 @@
+user_prompt: "Show me errors for app notif-disp in namespace log-default-08."
+description: |
+  Tests the resolveResource heuristic at agent_log_default.go:442. The prompt
+  says 'app notif-disp' but the real pod label is app=notification-dispatcher.
+  The regex extractor should pull 'notif-disp' and the resource-search path
+  should map it to the actual workload via its short-name label, so the
+  generated Loki query targets the right app.
+expected_output: |
+  The response surfaces the smtp-relay-refused error from the notification
+  dispatcher. It should demonstrate that 'notif-disp' was resolved to the
+  actual app label (notification-dispatcher or short-name=notif-disp).
+setup_timeout: 300
+before_test: |
+  set -e
+  kubectl create namespace log-default-08 || true
+  kubectl label namespace log-default-08 benchmark=true --overwrite || true
+  kubectl apply -f ../../../nubi/shared/loki.yaml -n log-default-08
+  kubectl apply -f promtail-config.yaml -n log-default-08
+  kubectl wait --for=condition=ready pod -l app=loki -n log-default-08 --timeout=120s
+  kubectl apply -f manifest.yaml -n log-default-08
+  kubectl wait --for=condition=ready pod -l app=notification-dispatcher -n log-default-08 --timeout=120s
+  sleep 20
+
+  pkill -f "kubectl port-forward.*svc/loki" 2>/dev/null || true
+  sleep 1
+  nohup kubectl port-forward -n log-default-08 svc/loki 3100:3100 \
+    >/tmp/pf-log-default-08.log 2>&1 &
+  echo $! > /tmp/pf-log-default-08.pid
+  for i in {1..30}; do
+    if curl -s http://localhost:3100/ready | grep -q ready; then break; fi
+    sleep 1
+  done
+after_test: |
+  if [ -f /tmp/pf-log-default-08.pid ]; then
+    kill $(cat /tmp/pf-log-default-08.pid) 2>/dev/null || true
+    rm -f /tmp/pf-log-default-08.pid
+  fi
+  pkill -f "kubectl port-forward.*log-default-08" 2>/dev/null || true
+  kubectl delete namespace log-default-08 --wait=false || true
+tags:
+  - hard
+  - loki
+  - resource-search
+  - provider-path

@@ -1,0 +1,7 @@
+user_prompt: Create an AppSync data source.
+expected_output:
+- aws appsync create-data-source --api-id <api-id> --name <data-source-name> --type
+  <data-source-type> --dynamodb-config <dynamodb-config>
+tags:
+- command
+- aws

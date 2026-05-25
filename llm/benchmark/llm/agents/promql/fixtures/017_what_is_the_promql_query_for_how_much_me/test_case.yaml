@@ -1,0 +1,8 @@
+user_prompt: what is the promql query for how much memory is free on node-1?
+expected_output:
+- node_memory_MemAvailable_bytes{instance="node-1"}
+- sum by (instance) (node_memory_MemAvailable_bytes{instance="node-1"})
+- node_memory_MemFree_bytes{instance=~".*node.1.*"}
+tags:
+- command
+- promql

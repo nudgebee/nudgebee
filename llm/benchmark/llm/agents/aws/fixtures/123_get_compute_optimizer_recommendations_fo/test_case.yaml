@@ -1,0 +1,6 @@
+user_prompt: Get Compute Optimizer recommendations for Auto Scaling groups.
+expected_output:
+- aws compute-optimizer get-auto-scaling-group-recommendations
+tags:
+- command
+- aws

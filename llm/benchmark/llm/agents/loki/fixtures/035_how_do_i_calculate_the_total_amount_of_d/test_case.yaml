@@ -1,0 +1,8 @@
+user_prompt: How do I calculate the total amount of data transferred by nginx in the
+  last 1 hour?
+expected_output:
+- sum(sum_over_time({job="nginx"} | logfmt | unwrap bytes_sent [1h]))
+- sum(bytes_over_time({job="nginx"} | json | unwrap bytes_transferred [1h]))
+tags:
+- command
+- loki

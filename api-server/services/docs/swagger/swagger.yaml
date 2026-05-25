@@ -1,0 +1,659 @@
+basePath: /
+definitions:
+  api.ActionError:
+    properties:
+      extensions:
+        properties:
+          code:
+            example: bad_request
+            type: string
+        type: object
+      message:
+        example: invalid json
+        type: string
+    type: object
+  api.ErrorMessage:
+    properties:
+      error:
+        example: failed to read request body
+        type: string
+    type: object
+  api.ExportRecommendationsResult:
+    properties:
+      content:
+        example: <base64-encoded payload>
+        type: string
+      filename:
+        example: recommendations-2026-05-07.csv
+        type: string
+      format:
+        example: csv
+        type: string
+      record_count:
+        example: 42
+        type: integer
+    type: object
+  api.HealthResponse:
+    properties:
+      status:
+        example: ok
+        type: string
+    type: object
+  api.SuccessMessage:
+    properties:
+      message:
+        example: success
+        type: string
+    type: object
+  api.WebhookPayload:
+    additionalProperties: true
+    type: object
+info:
+  contact: {}
+  description: Backend API for the Nudgebee platform (Hasura actions, webhooks, integrations,
+    observability).
+  title: Nudgebee Services API
+  version: "1.0"
+paths:
+  /api/webhooks/azure-eventgrid:
+    post:
+      consumes:
+      - application/json
+      description: Handles the Event Grid validation handshake (`SubscriptionValidationEvent`)
+        and forwards `Microsoft.*` events to the cloud-collector.
+      parameters:
+      - description: Event Grid event array
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/api.WebhookPayload'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Validation response or relay-success message
+          schema:
+            $ref: '#/definitions/api.SuccessMessage'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ErrorMessage'
+        "502":
+          description: Relay to cloud-collector failed
+          schema:
+            $ref: '#/definitions/api.ErrorMessage'
+      summary: Azure Event Grid webhook
+      tags:
+      - webhooks
+  /api/webhooks/azure-monitor:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Azure Monitor common-alert-schema payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/api.WebhookPayload'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SuccessMessage'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      summary: Azure Monitor webhook
+      tags:
+      - webhooks
+  /api/webhooks/datadog:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Datadog event payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/api.WebhookPayload'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SuccessMessage'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      summary: Datadog webhook
+      tags:
+      - webhooks
+  /api/webhooks/dynatrace:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Dynatrace problem notification payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/api.WebhookPayload'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SuccessMessage'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      summary: Dynatrace webhook
+      tags:
+      - webhooks
+  /api/webhooks/gcp-monitoring:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: GCP Cloud Monitoring notification payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/api.WebhookPayload'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SuccessMessage'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      summary: GCP Monitoring webhook
+      tags:
+      - webhooks
+  /api/webhooks/grafana:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Grafana unified-alerting payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/api.WebhookPayload'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SuccessMessage'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      summary: Grafana webhook
+      tags:
+      - webhooks
+  /api/webhooks/newrelic:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: New Relic event payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/api.WebhookPayload'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SuccessMessage'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      summary: New Relic webhook
+      tags:
+      - webhooks
+  /api/webhooks/pagerduty:
+    post:
+      consumes:
+      - application/json
+      description: Receives PagerDuty incident events. Validated and queued for async
+        processing.
+      parameters:
+      - description: PagerDuty event payload (provider-defined)
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/api.WebhookPayload'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SuccessMessage'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      summary: PagerDuty webhook
+      tags:
+      - webhooks
+  /api/webhooks/prometheus-alertmanager:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Alertmanager v4 webhook payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/api.WebhookPayload'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SuccessMessage'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      summary: Prometheus Alertmanager webhook
+      tags:
+      - webhooks
+  /api/webhooks/servicenow:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: ServiceNow event payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/api.WebhookPayload'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SuccessMessage'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      summary: ServiceNow webhook
+      tags:
+      - webhooks
+  /api/webhooks/solarwinds:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: SolarWinds event payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/api.WebhookPayload'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SuccessMessage'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      summary: SolarWinds webhook
+      tags:
+      - webhooks
+  /api/webhooks/splunk:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Splunk alert payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/api.WebhookPayload'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SuccessMessage'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      summary: Splunk webhook
+      tags:
+      - webhooks
+  /api/webhooks/workflow:
+    post:
+      consumes:
+      - application/json
+      description: Receives the JSON payload that triggers a Nudgebee workflow integration.
+        Validated against the workflow's webhook schema, then queued.
+      parameters:
+      - description: Workflow trigger payload (matches the workflow integration's
+          declared schema)
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/api.WebhookPayload'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SuccessMessage'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      summary: Inbound workflow trigger webhook
+      tags:
+      - webhooks
+  /api/webhooks/zenduty:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Zenduty event payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/api.WebhookPayload'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SuccessMessage'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      summary: Zenduty webhook
+      tags:
+      - webhooks
+  /health:
+    get:
+      description: Returns 200 OK when the service process is up. Does not verify
+        downstream dependencies.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.HealthResponse'
+      summary: Liveness probe
+      tags:
+      - system
+  /marketplace/aws/send-test-usage:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: marketplace.TestMeteredUsageRequest
+        in: body
+        name: payload
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SuccessMessage'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      security:
+      - ActionToken: []
+      summary: Send a test metered-usage record to AWS
+      tags:
+      - marketplace
+  /marketplace/aws/webhook:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: marketplace.CustomerSubscription
+        in: body
+        name: payload
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      summary: AWS Marketplace subscription webhook
+      tags:
+      - marketplace
+  /marketplace/azure/webhook:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: marketplace.AzurePayload
+        in: body
+        name: payload
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      summary: Azure Marketplace subscription webhook
+      tags:
+      - marketplace
+  /marketplace/billing/charge-buyers:
+    post:
+      description: Triggers SendUsageReportsToMarketplacesForBilling. Internal/admin
+        only.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SuccessMessage'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      security:
+      - ActionToken: []
+      summary: Send marketplace usage reports for billing
+      tags:
+      - marketplace
+  /marketplace/create/tenant-user:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: marketplace.NewCustomerTenantRequest
+        in: body
+        name: payload
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      summary: Create tenant + initial user from a marketplace signup
+      tags:
+      - marketplace
+  /marketplace/subscribe:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: marketplace.CustomerSubscription
+        in: body
+        name: payload
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Created subscription record
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      summary: Add a marketplace customer subscription
+      tags:
+      - marketplace
+  /rpc-cron:
+    post:
+      consumes:
+      - application/json
+      description: Invoked by the runbook-server cron scheduler. Branches on `payload.name`
+        to dispatch the matching cron job (e.g. `finops-score-recompute`). Background
+        work runs detached from the request.
+      parameters:
+      - description: Scheduled-event payload (`{id, name, payload, scheduled_time}`)
+        in: body
+        name: payload
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.SuccessMessage'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      security:
+      - ActionToken: []
+      summary: Scheduled-trigger entry point
+      tags:
+      - rpc
+  /v1/export/recommendations:
+    post:
+      consumes:
+      - application/json
+      description: Hasura action endpoint. Wraps an ExportRecommendationsRequest in
+        the standard Hasura action envelope (`{action, input, session_variables}`).
+      parameters:
+      - description: Hasura action envelope wrapping ExportRecommendationsRequest
+          in `input.request`
+        in: body
+        name: payload
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.ExportRecommendationsResult'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.ActionError'
+      security:
+      - ActionToken: []
+      summary: Export recommendations as CSV/XLSX
+      tags:
+      - export
+securityDefinitions:
+  ActionToken:
+    description: Internal service-to-service auth token. Default header name (configurable
+      via `action_api_server_token_header`); value is the `action_api_server_token`
+      config value.
+    in: header
+    name: X-ACTION-TOKEN
+    type: apiKey
+swagger: "2.0"

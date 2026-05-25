@@ -1,0 +1,10 @@
+# AWS agent benchmark configuration
+agent: aws
+tool_names:
+  - aws_execute
+config_types:
+  - aws
+extra_tool_confirmations:
+  aws_observability: "yes"
+  aws: "yes"
+result_enricher: llm.agents.aws.utils.aws_rca_metric.aws_rca_enricher

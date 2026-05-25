@@ -1,0 +1,7 @@
+user_prompt: List all managed disks and identify unattached ones.
+expected_output:
+- az disk list --query "[?diskState=='Unattached']" --output table
+type: command
+tags:
+- command
+- azure

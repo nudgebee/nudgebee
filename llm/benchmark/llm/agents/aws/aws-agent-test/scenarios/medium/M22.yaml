@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M22: CloudWatch Alarm never triggers despite high CPU on ASG.
+  User complaint: "Our Auto Scaling Group 'm22-worker-asg' never scales out even
+  though CloudWatch shows CPU at 90%+. The alarm 'm22-cpu-alarm' stays in
+  INSUFFICIENT_DATA state. We've been manually adding instances."
+  Root cause: The CloudWatch alarm evaluates CPUUtilization over 5-minute periods
+  with 3 evaluation periods (15 min total). But the ASG has a cooldown of 900s (15 min).
+  Additionally, the alarm's dimensions reference the wrong ASG name (has a typo:
+  'm22-workers-asg' vs actual 'm22-worker-asg'). The metric never matches.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Alarm dimension references wrong ASG name ('m22-workers-asg').
+      Fixed = Alarm dimension references correct ASG name ('m22-worker-asg').
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Worker instance security group
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      Tags:
+        - Key: Name
+          Value: m22-worker-sg
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: m22-worker-lt
+      LaunchTemplateData:
+        InstanceType: t3.micro
+        ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+        SecurityGroupIds:
+          - !Ref InstanceSecurityGroup
+        UserData:
+          Fn::Base64: |
+            #!/bin/bash
+            # Simulate CPU-intensive worker
+            while true; do
+              echo "Processing jobs..."
+              sleep 60
+            done
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: m22-worker
+              - Key: Environment
+                Value: production
+
+  WorkerASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: m22-worker-asg
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MinSize: 1
+      MaxSize: 6
+      DesiredCapacity: 1
+      VPCZoneIdentifier:
+        - !ImportValue aws-agent-test-private-subnet-a
+        - !ImportValue aws-agent-test-private-subnet-b
+      Tags:
+        - Key: Name
+          Value: m22-worker-asg
+          PropagateAtLaunch: false
+
+  # THE BUG: Alarm references wrong ASG name — typo 'm22-workers-asg' vs 'm22-worker-asg'
+  CPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: m22-cpu-alarm
+      AlarmDescription: Scale out when CPU exceeds 70%
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 70
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: AutoScalingGroupName
+          # Broken: typo 'm22-workers-asg' (extra 's')
+          # Fixed: correct 'm22-worker-asg'
+          Value: !If [IsFixed, 'm22-worker-asg', 'm22-workers-asg']
+      AlarmActions:
+        - !Ref ScaleOutPolicy
+
+  ScaleOutPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref WorkerASG
+      PolicyType: SimpleScaling
+      AdjustmentType: ChangeInCapacity
+      ScalingAdjustment: 2
+      Cooldown: 300
+
+Outputs:
+  ASGName:
+    Description: Auto Scaling Group Name
+    Value: !Ref WorkerASG
+  AlarmName:
+    Description: CloudWatch Alarm Name
+    Value: m22-cpu-alarm
+  AlarmDimension:
+    Description: Alarm ASG dimension value (typo in Broken mode)
+    Value: !If [IsFixed, 'm22-worker-asg', 'm22-workers-asg (typo — extra s)']
+  ActualASGName:
+    Description: Actual ASG name
+    Value: m22-worker-asg
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

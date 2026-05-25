@@ -1,0 +1,6 @@
+user_prompt: Switch my kubectl context to interact with the 'staging-cluster'.
+expected_output:
+- kubectl config use-context staging-cluster
+tags:
+- command
+- kubernetes

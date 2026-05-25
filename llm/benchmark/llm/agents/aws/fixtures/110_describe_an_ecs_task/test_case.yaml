@@ -1,0 +1,6 @@
+user_prompt: Describe an ECS task.
+expected_output:
+- aws ecs describe-tasks --cluster <cluster-name> --tasks <task-id>
+tags:
+- command
+- aws

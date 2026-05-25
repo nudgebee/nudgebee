@@ -1,0 +1,7 @@
+user_prompt: What is the SQL query to find the top 5 longest-running active events?
+expected_output:
+- SELECT id, title, starts_at, (NOW() - starts_at) AS duration FROM events WHERE status
+  = 'FIRING' ORDER BY duration DESC LIMIT 5;
+tags:
+- command
+- events

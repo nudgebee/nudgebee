@@ -1,0 +1,9 @@
+user_prompt: what is the promql query for max memory usage by app-dev in nudgebee
+  namespace
+expected_output:
+- max by (pod) (container_memory_usage_bytes{namespace=~"(?i)nudgebee", pod=~"(?i)app-dev.*"})
+- max by (pod) (container_memory_working_set_bytes{namespace=~"(?i)nudgebee", pod=~"(?i)app-dev.*"})
+- max(container_resources_memory_rss_bytes{namespace="nudgebee", pod=~".*app.dev.*"})
+tags:
+- command
+- promql

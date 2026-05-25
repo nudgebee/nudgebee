@@ -1,0 +1,10 @@
+user_prompt: Find recommendations where the recommendation text mentions 'deprecate'
+  but are not in the 'K8sVersionUpgrade' category.
+expected_output:
+- SELECT * FROM recommendation_view WHERE recommendation ILIKE '%deprecate%' AND category
+  != 'K8sVersionUpgrade';
+- SELECT namespace, name, recommendation, category FROM recommendation_view WHERE
+  recommendation ILIKE '%deprecate%' AND category != 'K8sVersionUpgrade';
+tags:
+- command
+- recommendations

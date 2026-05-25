@@ -1,0 +1,7 @@
+user_prompt: Count the total number of recommendations per namespace.
+expected_output:
+- SELECT namespace, COUNT(*) AS total_recommendations from recommendation_view GROUP
+  BY namespace ORDER BY total_recommendations DESC;
+tags:
+- command
+- recommendations

@@ -1,0 +1,7 @@
+user_prompt: Show me all running pods in the default namespace.
+expected_output:
+- kubectl get pods
+- kubectl get po
+tags:
+- command
+- kubernetes

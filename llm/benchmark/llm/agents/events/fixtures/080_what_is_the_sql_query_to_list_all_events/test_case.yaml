@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to list all events where finding_type is issue?
+expected_output:
+- SELECT id, title, starts_at, status, priority, subject_node FROM events WHERE finding_type
+  = 'issue';
+- SELECT * FROM events WHERE finding_type = 'issue';
+tags:
+- command
+- events

@@ -1,0 +1,7 @@
+user_prompt: List namespaces that have more than 5 open 'Critical' recommendations.
+expected_output:
+- SELECT namespace FROM recommendation_view WHERE severity = 'Critical' AND status
+  = 'Open' GROUP BY namespace HAVING COUNT(*) > 5;
+tags:
+- command
+- recommendations

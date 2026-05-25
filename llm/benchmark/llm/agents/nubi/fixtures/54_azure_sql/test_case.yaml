@@ -1,0 +1,6 @@
+user_prompt: "Check Azure SQL database health"
+expected_output: "Azure SQL diagnostics"
+tags:
+  - azure
+skip: true
+skip_reason: "Incomplete fixture - no test setup, only utility scripts"

@@ -1,0 +1,9 @@
+user_prompt: What is the SQL query to show all Kubernetes controller manager down
+  alerts?
+expected_output:
+- SELECT id, title, starts_at, status, priority, subject_node   FROM events   WHERE
+  aggregation_key = 'KubeControllerManagerDown';
+- SELECT * FROM events   WHERE aggregation_key = 'KubeControllerManagerDown';
+tags:
+- command
+- events

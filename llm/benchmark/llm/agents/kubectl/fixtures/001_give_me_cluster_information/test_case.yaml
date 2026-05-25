@@ -1,0 +1,6 @@
+user_prompt: give me cluster information.
+expected_output:
+- kubectl cluster-info
+tags:
+- command
+- kubernetes

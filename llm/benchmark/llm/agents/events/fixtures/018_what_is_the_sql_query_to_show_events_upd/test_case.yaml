@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to show events updated in the last 24 hours?
+expected_output:
+- SELECT id, title, updated_at, status, priority   FROM events   WHERE updated_at
+  >= NOW() - INTERVAL '24 hours';
+- SELECT * FROM events   WHERE updated_at >= NOW() - INTERVAL '24 hours';
+tags:
+- command
+- events

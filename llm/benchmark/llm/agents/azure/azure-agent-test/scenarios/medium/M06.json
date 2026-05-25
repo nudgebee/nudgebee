@@ -1,0 +1,69 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "M06: App Service has APPINSIGHTS_SAMPLING_PERCENTAGE=1, discarding 99% of telemetry. Traces and requests appear sparse in Application Insights. User complaint: only 1 in 100 requests visible in App Insights, errors hard to diagnose. Requires checking sampling configuration."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "appName": "[concat('m06app', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "appInsightsName": "m06-api-insights",
+    "samplingPercentage": "[if(equals(parameters('scenarioMode'), 'Fixed'), '100', '1')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[variables('appInsightsName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "web",
+      "tags": { "Environment": "production", "Scenario": "M06" },
+      "properties": { "Application_Type": "web", "RetentionInDays": 30 }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('appName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "app",
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('appInsightsName'))]"
+      ],
+      "tags": {
+        "Name": "m06-analytics-api",
+        "Environment": "production",
+        "Team": "analytics",
+        "Scenario": "M06",
+        "ScenarioMode": "[parameters('scenarioMode')]"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "siteConfig": {
+          "appSettings": [
+            { "name": "APPINSIGHTS_INSTRUMENTATIONKEY", "value": "[reference(resourceId('Microsoft.Insights/components', variables('appInsightsName'))).InstrumentationKey]" },
+            { "name": "APPINSIGHTS_SAMPLING_PERCENTAGE", "value": "[variables('samplingPercentage')]" },
+            { "name": "ApplicationInsightsAgent_EXTENSION_VERSION", "value": "~3" },
+            { "name": "APP_ENV", "value": "production" }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "AppServiceName": { "type": "string", "value": "[variables('appName')]" },
+    "AppInsightsName": { "type": "string", "value": "[variables('appInsightsName')]" },
+    "SamplingPercentage": { "type": "string", "value": "[variables('samplingPercentage')]" },
+    "BugNote": { "type": "string", "value": "APPINSIGHTS_SAMPLING_PERCENTAGE=1 discards 99% of telemetry - errors nearly invisible in App Insights" },
+    "ScenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

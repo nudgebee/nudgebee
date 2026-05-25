@@ -1,0 +1,10 @@
+user_prompt: List all events from the 'kube-system' namespace that are not related
+  to pods.
+expected_output:
+- SELECT id, title, subject_type FROM events WHERE subject_namespace = 'kube-system'
+  AND subject_type != 'pod';
+- SELECT * FROM events WHERE subject_namespace = 'kube-system' AND subject_type <>
+  'pod';
+tags:
+- command
+- events

@@ -1,0 +1,10 @@
+user_prompt: Are there any 'High' severity recommendations that have been open for
+  more than 90 days?
+expected_output:
+- SELECT namespace, name, rule_name, created_at FROM recommendation_view WHERE severity
+  = 'High' AND status = 'Open' AND created_at < NOW() - INTERVAL '90 days';
+- SELECT * FROM recommendation_view WHERE severity = 'High' AND status = 'Open' AND
+  created_at < NOW() - INTERVAL '90 days';
+tags:
+- command
+- recommendations

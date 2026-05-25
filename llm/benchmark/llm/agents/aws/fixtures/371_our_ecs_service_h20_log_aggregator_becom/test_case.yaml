@@ -1,0 +1,28 @@
+user_prompt: Our ECS Fargate service 'h20-log-aggregator' on cluster 'h20-logging-cluster'
+  becomes unresponsive under sustained load. Tasks appear RUNNING and TCP health checks
+  pass, but the application freezes. New replacement tasks also become unresponsive
+  after a few hours of operation. Restarting the service temporarily fixes it but the
+  problem returns. The service uses an EFS filesystem 'h20-shared-logs' for shared
+  storage. What's causing the tasks to hang?
+expected_output:
+- The root cause is that the EFS filesystem 'h20-shared-logs' is configured with
+  'bursting' throughput mode. In bursting mode, EFS provides burst credits that allow
+  high throughput temporarily, but under sustained write load the burst credits exhaust.
+  Once credits are depleted, throughput drops to the baseline rate which is proportional
+  to the filesystem size — for a small filesystem this can be as low as 50 KB/s.
+  The ECS tasks perform continuous writes to EFS, and when throughput drops to baseline,
+  all file I/O operations block. The application threads hang waiting for I/O to
+  complete, making the application unresponsive. However, TCP health checks still pass
+  because the network stack responds independently of application-level I/O. New tasks
+  start fresh but also exhaust burst credits after a few hours. The fix is to change
+  the EFS throughput mode from 'bursting' to 'elastic', which automatically scales
+  throughput based on demand without burst credit limitations.
+tags:
+- rca
+- aws
+- efs
+- ecs
+- throughput
+- burst-credits
+type: rca
+agent: aws_debug

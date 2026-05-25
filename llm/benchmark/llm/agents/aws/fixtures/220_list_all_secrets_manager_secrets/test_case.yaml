@@ -1,0 +1,6 @@
+user_prompt: List all Secrets Manager secrets.
+expected_output:
+- aws secretsmanager list-secrets
+tags:
+- command
+- aws

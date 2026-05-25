@@ -1,0 +1,10 @@
+user_prompt: Get cost and usage for a specific availability zone (e.g., us-east-1a)
+  for the last month.
+expected_output:
+- 'aws ce get-cost-and-usage --time-period Start=$(date -d ''last month'' +%Y-%m-01)
+  --End=$(date -d ''last month'' +%Y-%m-%d) --granularity MONTHLY --metrics BlendedCost
+  --group-by Type=DIMENSION,Key=AVAILABILITY_ZONE --filter ''{\Dimensions\": {\"Key\":
+  \"AVAILABILITY_ZONE\", \"Values\": [\"us-east-1a\"]}}'''
+tags:
+- command
+- aws

@@ -1,0 +1,9 @@
+user_prompt: What is the SQL query to list all HIGH priority issues currently firing?
+expected_output:
+- SELECT id, title, starts_at, subject_name, subject_namespace   FROM events   WHERE
+  priority = 'HIGH'     AND finding_type = 'issue'     AND status = 'FIRING';
+- SELECT * FROM events   WHERE priority = 'HIGH'     AND finding_type = 'issue'     AND
+  status = 'FIRING';
+tags:
+- command
+- events

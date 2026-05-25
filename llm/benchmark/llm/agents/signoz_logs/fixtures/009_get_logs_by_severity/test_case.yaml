@@ -1,0 +1,6 @@
+user_prompt: Show me all FATAL logs in the last 24 hours
+expected_output: '{"where": {"severity_text": {"_eq": "FATAL"}}, "time_range": "24h"}'
+tags:
+  - command
+  - severity
+  - signoz

@@ -1,0 +1,10 @@
+user_prompt: What is the SQL query to find any 'KubePodCrashLooping' events in the
+  'production' namespace?
+expected_output:
+- SELECT COUNT(*)   FROM events   WHERE aggregation_key = 'KubePodCrashLooping'     AND
+  subject_namespace = 'production';
+- SELECT * FROM events   WHERE aggregation_key = 'KubePodCrashLooping'     AND subject_namespace
+  = 'production';
+tags:
+- command
+- events

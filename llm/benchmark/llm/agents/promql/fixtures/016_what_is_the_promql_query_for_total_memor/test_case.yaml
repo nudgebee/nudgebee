@@ -1,0 +1,7 @@
+user_prompt: what is the promql query for total memory available on node-2?
+expected_output:
+- node_memory_MemTotal_bytes{instance="node-2"}
+- sum by (instance) (node_memory_MemTotal_bytes{instance="node-2"})
+tags:
+- command
+- promql

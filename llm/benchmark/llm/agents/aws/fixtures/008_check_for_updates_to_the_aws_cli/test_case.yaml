@@ -1,0 +1,6 @@
+user_prompt: Check for updates to the AWS CLI.
+expected_output:
+- pip list --outdated awscli
+tags:
+- command
+- aws

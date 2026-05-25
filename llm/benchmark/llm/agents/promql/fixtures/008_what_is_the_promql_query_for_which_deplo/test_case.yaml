@@ -1,0 +1,8 @@
+user_prompt: what is the promql query for which deployment is using highest cpu?
+expected_output:
+- topk(1, sum by (pod) (rate(container_cpu_usage_seconds_total{container!~"POD|"}[1m]))
+  * on (pod, namespace) group_left(node) kube_pod_info{type="Deployment"})
+- sort_desc(sum by (deployment) (rate(container_cpu_usage_seconds_total{container!~"POD|"}[1m])))
+tags:
+- command
+- promql

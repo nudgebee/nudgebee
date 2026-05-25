@@ -1,0 +1,10 @@
+user_prompt: How many requests are hitting my Application Load Balancers?
+expected_output:
+  - "sum:aws.applicationelb.request_count{*} by {loadbalancer}"
+  - "avg:aws.applicationelb.request_count{*} by {loadbalancer}"
+  - "sum:aws.applicationelb.request_count{*}"
+tags:
+  - command
+  - aws
+  - alb
+  - traffic

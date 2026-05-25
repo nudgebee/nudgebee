@@ -1,0 +1,15 @@
+user_prompt: The metrics API App Service in resource group 'azure-agent-test-E08'
+  is not sending any telemetry to Application Insights. The Application Insights resource
+  'e08-telemetry' exists and is active. What is misconfigured?
+expected_output:
+- 'The App Service APPINSIGHTS_INSTRUMENTATIONKEY is set to ''00000000-0000-0000-0000-000000000000''
+  (a fake/null GUID) instead of the actual instrumentation key from the ''e08-telemetry''
+  Application Insights resource. Fix: Update APPINSIGHTS_INSTRUMENTATIONKEY to the
+  real instrumentation key from az monitor app-insights component show.'
+agent: azure_debug
+scenario: E08
+type: rca
+tags:
+- rca
+- easy
+- azure

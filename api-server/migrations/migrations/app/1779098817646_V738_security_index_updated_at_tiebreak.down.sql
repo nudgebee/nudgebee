@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_recommendation_security_status_weight;
