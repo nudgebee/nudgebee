@@ -1,0 +1,1 @@
+alter table workflows add column if not exists last_execution_status_message text;

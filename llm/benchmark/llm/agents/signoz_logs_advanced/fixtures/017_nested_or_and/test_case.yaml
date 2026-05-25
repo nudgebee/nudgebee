@@ -1,0 +1,6 @@
+user_prompt: Get ERROR or FATAL logs from payment-service or order-service in the last hour
+expected_output: '{"where": {"severity_text": {"_in": ["ERROR", "FATAL"]}}, "_or": [{"service.name": {"_ilike": "%payment-service%"}}, {"service.name": {"_ilike": "%order-service%"}}], "time_range": "1h"}'
+tags:
+  - complex
+  - nested-logic
+  - signoz

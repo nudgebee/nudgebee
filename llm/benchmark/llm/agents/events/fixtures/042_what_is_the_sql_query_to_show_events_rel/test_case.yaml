@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to show events related to 'daemonset' subjects
+  in the 'monitoring' namespace?
+expected_output:
+- SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE
+  subject_type = 'daemonset' AND subject_namespace = 'monitoring';
+tags:
+- command
+- events

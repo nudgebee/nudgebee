@@ -1,0 +1,7 @@
+# RCA (Root Cause Analysis) agent benchmark configuration
+agent: k8s_debug
+tool_names: []
+max_retries: 0
+before_query: llm.agents.rca.utils.feature_flag_controller.rca_before_query
+after_query: llm.agents.rca.utils.feature_flag_controller.rca_after_query
+result_enricher: llm.agents.rca.utils.feature_flag_controller.rca_signal_enricher

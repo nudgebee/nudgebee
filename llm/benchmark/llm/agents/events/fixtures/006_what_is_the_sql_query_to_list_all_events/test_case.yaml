@@ -1,0 +1,11 @@
+user_prompt: What is the SQL query to list all events that occurred on node 'worker-node-5'
+  yesterday?
+expected_output:
+- SELECT id, title, starts_at, priority, status   FROM events   WHERE subject_node
+  = 'worker-node-5'     AND starts_at >= CURRENT_DATE - INTERVAL '1 day'     AND starts_at
+  < CURRENT_DATE;
+- SELECT * FROM events   WHERE subject_node = 'worker-node-5'     AND starts_at >=
+  CURRENT_DATE - INTERVAL '1 day'     AND starts_at < CURRENT_DATE;
+tags:
+- command
+- events

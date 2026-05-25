@@ -1,0 +1,6 @@
+user_prompt: Describe an ECR repository.
+expected_output:
+- aws ecr describe-repositories --repository-names <repository-name>
+tags:
+- command
+- aws

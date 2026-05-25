@@ -1,0 +1,18 @@
+user_prompt: "How can I save money on my cloud bill?"
+expected_output:
+  - |
+    Lead with: "You have $X/month in potential savings across N recommendations."
+    The agent should call the recommendations tool sorted by estimated_saving
+    descending and present the top 5 ranked by dollar impact. For each
+    recommendation, include: what to change, estimated monthly savings, risk
+    level (Low/Medium/High with reason — HPA present? bursty traffic? shared
+    resource?), and evidence from metrics if available. Close with the total
+    savings if all are implemented and a recommended order (quick wins first).
+    Only recommendations with status='Open' should be counted. If total
+    savings exceeds current spend, the agent must flag this as suspicious.
+    Cite [recommendations] for each item.
+tags:
+  - optimization
+  - recommendations
+  - medium
+  - finops

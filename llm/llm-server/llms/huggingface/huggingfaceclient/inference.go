@@ -1,0 +1,113 @@
+package huggingfaceclient
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"nudgebee/llm/common"
+	"strings"
+)
+
+var ErrUnexpectedStatusCode = errors.New("unexpected status code")
+
+// InferenceTask is the type of inference task to run.
+type InferenceTask string
+
+const (
+	InferenceTaskTextGeneration      InferenceTask = "text-generation"
+	InferenceTaskText2TextGeneration InferenceTask = "text2text-generation"
+)
+
+type inferencePayload struct {
+	Model      string     `json:"model,omitempty"`
+	Inputs     string     `json:"inputs"`
+	Parameters parameters `json:"parameters,omitempty"`
+}
+
+type parameters struct {
+	Adapter_id        string  `json:"adapter_id,omitempty"`
+	Temperature       float64 `json:"temperature"`
+	TopP              float64 `json:"top_p,omitempty"`
+	TopK              int     `json:"top_k,omitempty"`
+	MinLength         int     `json:"min_length,omitempty"`
+	MaxLength         int     `json:"max_length,omitempty"`
+	RepetitionPenalty float64 `json:"repetition_penalty,omitempty"`
+	Seed              int     `json:"seed,omitempty"`
+}
+
+type (
+	inferenceResponsePayload []inferenceResponse
+	inferenceResponse        struct {
+		Text string `json:"generated_text"`
+	}
+)
+
+func (c *Client) runInference(ctx context.Context, payload *inferencePayload) (inferenceResponsePayload, error) {
+	payload2 := inferencePayload{
+		Model:      payload.Model,
+		Inputs:     payload.Inputs,
+		Parameters: payload.Parameters,
+	}
+
+	url := c.url
+	if !strings.Contains(c.url, "endpoints.huggingface.cloud") {
+		url = fmt.Sprintf("%s/models/%s/infer", c.url, payload.Model)
+		payload2.Model = ""
+	}
+
+	payloadBytes, err := common.MarshalJson(payload2)
+	if err != nil {
+		return nil, err
+	}
+	body := bytes.NewReader(payloadBytes)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	req.Header.Set("Content-Type", "application/json")
+
+	r, err := common.HttpClient().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err := r.Body.Close(); err != nil {
+			// Log the error, but don't return it as it's a defer call
+			fmt.Printf("Error closing response body: %v\n", err)
+		}
+	}()
+
+	if r.StatusCode != http.StatusOK {
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response body: %w", err)
+		}
+
+		if len(b) > 0 {
+			err = fmt.Errorf("%w: %d, body: %s", ErrUnexpectedStatusCode, r.StatusCode, string(b))
+		} else {
+			err = fmt.Errorf("%w: %d", ErrUnexpectedStatusCode, r.StatusCode)
+		}
+		return nil, err
+	}
+
+	// debug print the http response with httputil:
+	// resDump, err := httputil.DumpResponse(r, true)
+	// if err != nil {
+	// 	return nil, err
+	// }
+	// fmt.Fprintf(os.Stderr, "%s", resDump)
+
+	var response inferenceResponsePayload
+	err = json.NewDecoder(r.Body).Decode(&response)
+	if err != nil {
+		return nil, err
+	}
+	return response, nil
+}

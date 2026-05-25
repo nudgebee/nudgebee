@@ -1,0 +1,7 @@
+user_prompt: Find recommendations where the workload name is 'api-gateway'.
+expected_output:
+- SELECT namespace, controller_name, category, severity, status from recommendation_view
+  WHERE name = 'api-gateway';
+tags:
+- command
+- recommendations

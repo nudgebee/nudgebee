@@ -1,0 +1,21 @@
+user_prompt: |
+  2026-04-06T06:12:33.456Z ERROR [llm-server] worker: recovered panic in pool 'execute_planner'
+  2026-04-06T06:12:33.457Z ERROR [llm-server] panic: runtime error: index out of range [3] with length 2
+  2026-04-06T06:12:33.458Z ERROR [llm-server] goroutine 1234 [running]:
+  nudgebee/llm/agents/core.(*ReWooPlanExecutor).executePlanStep(0xc000a12000, 0xc000b23400, 0x3)
+  	/app/agents/core/executor_planner.go:847 +0x1a2f
+  nudgebee/llm/agents/core.(*ReWooPlanExecutor).executeParallelPlan.func1(0xc000b23400)
+  	/app/agents/core/executor_planner.go:921 +0x8e
+  nudgebee/llm/common.(*WorkerPool).safeExecute(0xc0001a4000, 0xc000c45600)
+  	/app/common/worker.go:56 +0x47
+  2026-04-06T06:12:33.459Z WARN  [llm-server] conversation_id=c8f3a2b1-9e4d agent=k8s_debug message_id=m-7b2e step_id=E3
+  2026-04-06T06:12:33.460Z ERROR [llm-server] Plan step E3 failed: index out of range. Plan has 2 steps but tried to access index 3
+  namespace: nudgebee, pod: llm-server-5f78f69f65-pqtq2, container: llm-server
+expected_output:
+  - The llm-server in the nudgebee namespace experienced a panic in the ReWOO plan executor during parallel plan execution. The panic occurred in executor_planner.go at line 847 — an index out of range error where index 3 was accessed on a slice with length 2. The panic was recovered by the worker pool's safeExecute handler. This affected conversation c8f3a2b1-9e4d for the k8s_debug agent at step E3. The root cause is a bug in the plan execution logic where step dependencies reference a plan step index that doesn't exist, likely due to a plan generation issue where the critiquer approved a plan with invalid dependency references. Suggested actions include adding bounds checking before accessing plan steps by index in executor_planner.go, reviewing the plan validation logic in the critiquer, and checking if the k8s_debug agent's plan generation is producing invalid step references.
+tags:
+  - go
+  - panic
+  - planner
+  - nudgebee
+type: log_analysis

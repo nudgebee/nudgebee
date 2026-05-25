@@ -1,0 +1,19 @@
+user_prompt: Show me error logs from the GKE cluster 'nudgebee-dev' in project 'nudgebee-dev' from the last 1 hour. Limit to 50 entries.
+expected_output:
+  - >-
+    gcloud logging read
+    'resource.type="k8s_cluster"
+    resource.labels.cluster_name="nudgebee-dev"
+    severity>=ERROR
+    timestamp>="$(date -u -d ''1 hour ago'' +%Y-%m-%dT%H:%M:%SZ)"'
+    --project=nudgebee-dev --limit=50 --format=json
+  - >-
+    gcloud logging read
+    'resource.type="k8s_cluster"
+    resource.labels.cluster_name="nudgebee-dev"
+    severity>=ERROR'
+    --project=nudgebee-dev --freshness=1h --limit=50 --format=json
+tags:
+  - command
+  - trace
+  - gcp

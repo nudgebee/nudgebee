@@ -1,0 +1,6 @@
+user_prompt: Delete a Glue table.
+expected_output:
+- aws glue delete-table --database-name <database-name> --name <table-name>
+tags:
+- command
+- aws

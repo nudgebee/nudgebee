@@ -1,0 +1,7 @@
+user_prompt: Create a method for a resource in an API Gateway REST API.
+expected_output:
+- aws apigateway put-method --rest-api-id <api-id> --resource-id <resource-id> --http-method
+  <http-method> --authorization-type <authorization-type>
+tags:
+- command
+- aws

@@ -1,0 +1,8 @@
+user_prompt: Open the configuration for 'my-service' in my default editor for a live
+  change.
+expected_output:
+- kubectl edit service my-service
+- kubectl edit svc my-service
+tags:
+- command
+- kubernetes

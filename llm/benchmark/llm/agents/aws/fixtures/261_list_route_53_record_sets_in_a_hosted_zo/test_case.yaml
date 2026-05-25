@@ -1,0 +1,6 @@
+user_prompt: List Route 53 record sets in a hosted zone.
+expected_output:
+- aws route53 list-resource-record-sets --hosted-zone-id <hosted-zone-id>
+tags:
+- command
+- aws

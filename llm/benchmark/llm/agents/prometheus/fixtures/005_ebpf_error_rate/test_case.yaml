@@ -1,0 +1,19 @@
+# eBPF metrics use destination_workload_name / destination_workload_namespace,
+# not pod / namespace. This fixture catches the most common label-schema
+# regression in the prometheus agent.
+user_prompt: What is the 5xx error rate of the api-server workload in namespace default?
+expected_output:
+  - sum(rate(container_http_requests_total{destination_workload_name="api-server", destination_workload_namespace="default", status=~"5.."}[5m])) / sum(rate(container_http_requests_total{destination_workload_name="api-server", destination_workload_namespace="default"}[5m]))
+expected_metrics:
+  - container_http_requests_total
+expected_tools:
+  - prometheus_execute
+forbidden_tools:
+  - shell_execute
+  - search_metrics
+expected_max_tool_calls: 4
+tags:
+  - fast_path
+  - ebpf
+  - http
+  - regression

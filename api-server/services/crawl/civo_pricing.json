@@ -1,0 +1,190 @@
+
+  [
+      {
+        "name": "g4p.kube.small",
+        "size": "Small",
+        "ram": "16 GB",
+        "cpu": "4 cores",
+        "storage": "60GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 0.119048
+      },
+      {
+        "name": "g4p.kube.medium",
+        "size": "Medium",
+        "ram": "32 GB",
+        "cpu": "8 cores",
+        "storage": "80GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 0.238095
+      },
+      {
+        "name": "g4p.kube.large",
+        "size": "Large",
+        "ram": "64 GB",
+        "cpu": "16 cores",
+        "storage": "120GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 0.476190
+      },
+      {
+        "name": "g4p.kube.xlarge",
+        "size": "Extra Large",
+        "ram": "128 GB",
+        "cpu": "32 cores",
+        "storage": "180GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 0.952381
+      },
+      {
+        "name": "g4s.kube.xsmall",
+        "size": "Extra Small",
+        "ram": "1 GB",
+        "cpu": "1 core",
+        "storage": "30GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 0.00744
+      },
+      {
+        "name": "g4s.kube.small",
+        "size": "Small",
+        "ram": "2 GB",
+        "cpu": "1 core",
+        "storage": "40GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 0.014881
+      },
+      {
+        "name": "g4s.kube.medium",
+        "size": "Medium",
+        "ram": "4 GB",
+        "cpu": "2 cores",
+        "storage": "50GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 0.029762
+      },
+      {
+        "name": "g4s.kube.large",
+        "size": "Large",
+        "ram": "8 GB",
+        "cpu": "4 cores",
+        "storage": "60GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 0.059524
+      },
+      {
+        "name":"g4c.kube.small",
+        "size": "Small",
+        "ram": "16 GB",
+        "cpu": "8 cores",
+        "storage": "60GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 0.190476
+      },
+      {
+        "name":"g4c.kube.medium",
+        "size": "Medium",
+        "ram": "32 GB",
+        "cpu": "16 cores",
+        "storage": "80GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 0.380952
+      },
+      {
+        "name":"g4c.kube.large",
+        "size": "Large",
+        "ram": "64 GB",
+        "cpu": "32 cores",
+        "storage": "120GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 0.761905
+      },
+      {
+        "name":"g4c.kube.xlarge",
+        "size": "Extra Large",
+        "ram": "128 GB",
+        "cpu": "64 cores",
+        "storage": "180GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 1.52381
+      }
+      ,
+      {
+        "name": "g4m.kube.small",
+        "size": "Small",
+        "ram": "16 GB",
+        "cpu": "2 cores",
+        "storage": "60GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 0.107143
+      },
+      {
+        "name": "g4m.kube.medium",
+        "size": "Medium",
+        "ram": "32 GB",
+        "cpu": "4 cores",
+        "storage": "80GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 0.214286
+      },
+      {
+        "name": "g4m.kube.large",
+        "size": "Large",
+        "ram": "64 GB",
+        "cpu": "8 cores",
+        "storage": "120GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 0.428571
+      },
+      {
+        "name": "g4m.kube.xlarge",
+        "size": "Extra Large",
+        "ram": "128 GB",
+        "cpu": "16 cores",
+        "storage": "180GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 0.857143
+      }
+      ,
+      {
+        "name": "an.g1.l40s.kube.x1",
+        "size": "Small",
+        "ram": "128 GB",
+        "cpu": "12 cores",
+        "gpu": "1 x Nvidia L40S 40GB",
+        "storage": "200GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 1.49
+      },
+      {
+        "name": "an.g1.l40s.kube.x2",
+        "size": "Medium",
+        "ram": "255 GB",
+        "cpu": "24 cores",
+        "gpu": "2 x Nvidia L40S 40GB",
+        "storage": "200GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 2.98
+      },
+      {
+        "name": "an.g1.l40s.kube.x4",
+        "size": "Large",
+        "ram": "512 GB",
+        "cpu": "48 cores",
+        "gpu": "4 x Nvidia L40S 40GB",
+        "storage": "400GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 5.96
+      },
+      {
+        "name": "an.g1.l40s.kube.x8",
+        "size": "Extra Large",
+        "ram": "1024 GB",
+        "cpu": "96 cores",
+        "gpu": "8 x Nvidia L40S 40GB",
+        "storage": "400GB NVMe",
+        "data_transfer": "FREE",
+        "price_per_hour": 11.92
+      }
+    ]
+  

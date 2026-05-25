@@ -1,0 +1,82 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "M01: App Service has a typo in SERVICE_BUS_QUEUE env var - 'orders-incomin' instead of 'orders-incoming'. Consumer reads from a non-existent queue while real queue accumulates unprocessed messages. Requires checking both Service Bus queues and app settings to find the mismatch."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "appName": "[concat('m01app', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "sbNamespace": "[concat('m01sb', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "correctQueueName": "orders-incoming",
+    "queueName": "[if(equals(parameters('scenarioMode'), 'Fixed'), 'orders-incoming', 'orders-incomin')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ServiceBus/namespaces",
+      "apiVersion": "2022-10-01-preview",
+      "name": "[variables('sbNamespace')]",
+      "location": "[resourceGroup().location]",
+      "sku": { "name": "Basic", "tier": "Basic" },
+      "tags": { "Environment": "production", "Team": "orders", "Scenario": "M01" }
+    },
+    {
+      "type": "Microsoft.ServiceBus/namespaces/queues",
+      "apiVersion": "2022-10-01-preview",
+      "name": "[concat(variables('sbNamespace'), '/', variables('correctQueueName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.ServiceBus/namespaces', variables('sbNamespace'))]"
+      ],
+      "properties": {
+        "lockDuration": "PT1M",
+        "maxSizeInMegabytes": 1024,
+        "defaultMessageTimeToLive": "P1D"
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('appName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "app",
+      "dependsOn": [
+        "[resourceId('Microsoft.ServiceBus/namespaces', variables('sbNamespace'))]"
+      ],
+      "tags": {
+        "Name": "m01-order-consumer",
+        "Environment": "production",
+        "Team": "orders",
+        "ScenarioMode": "[parameters('scenarioMode')]"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "siteConfig": {
+          "appSettings": [
+            { "name": "SERVICE_BUS_NAMESPACE", "value": "[concat(variables('sbNamespace'), '.servicebus.windows.net')]" },
+            { "name": "SERVICE_BUS_QUEUE", "value": "[variables('queueName')]" },
+            { "name": "WORKER_THREADS", "value": "4" },
+            { "name": "MAX_RETRY_COUNT", "value": "3" }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "AppServiceName": { "type": "string", "value": "[variables('appName')]" },
+    "ServiceBusNamespace": { "type": "string", "value": "[variables('sbNamespace')]" },
+    "ActualQueueName": { "type": "string", "value": "[variables('correctQueueName')]" },
+    "ConfiguredQueueName": { "type": "string", "value": "[variables('queueName')]" },
+    "BugNote": { "type": "string", "value": "SERVICE_BUS_QUEUE='orders-incomin' (typo) - actual queue is 'orders-incoming'" },
+    "ScenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

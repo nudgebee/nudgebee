@@ -1,0 +1,7 @@
+# Datadog logs agent benchmark configuration
+agent: datadog_logs
+tool_names:
+  - datadog_log_execute
+config_types:
+  - datadog
+db_tool_name: datadog_log_execute

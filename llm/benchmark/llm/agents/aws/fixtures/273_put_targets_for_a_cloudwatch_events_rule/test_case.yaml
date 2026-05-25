@@ -1,0 +1,6 @@
+user_prompt: Put targets for a CloudWatch Events rule.
+expected_output:
+- aws events put-targets --rule <rule-name> --targets <targets>
+tags:
+- command
+- aws

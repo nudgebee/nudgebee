@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to show the percentage of events that are HIGH
+  priority?
+expected_output:
+- SELECT (COUNT(*) FILTER (WHERE priority = 'HIGH') * 100.0 / COUNT(*)) AS high_priority_percentage
+  FROM events;
+tags:
+- command
+- events

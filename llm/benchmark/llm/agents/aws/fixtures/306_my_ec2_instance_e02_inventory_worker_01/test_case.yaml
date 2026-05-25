@@ -1,0 +1,16 @@
+agent: aws_debug
+expected_output:
+- The root cause is that the private subnet's route table is missing a route to the NAT Gateway. The route table for the private
+  subnet where 'e02-inventory-worker-01' resides only has the local VPC route (10.1.0.0/16). There is no 0.0.0.0/0 route pointing
+  to the NAT Gateway. A NAT Gateway exists and is available in the public subnet, but without a route entry in the private
+  route table directing 0.0.0.0/0 traffic to it, the instance cannot reach the internet. The fix is to add a route 0.0.0.0/0
+  -> NAT Gateway ID to the private subnet's route table.
+scenario: E02
+tags:
+- command
+- aws
+- easy
+type: rca
+user_prompt: My EC2 instance 'e02-inventory-worker-01' in us-east-1 can't reach the internet. It needs to pull updates from
+  external package repos but curl just hangs. The instance is in a private subnet. Can you figure out why it has no internet
+  connectivity?

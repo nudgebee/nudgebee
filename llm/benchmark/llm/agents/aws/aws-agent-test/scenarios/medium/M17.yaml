@@ -1,0 +1,112 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M17: Auto Scaling Group won't scale — CloudWatch alarm INSUFFICIENT_DATA.
+  User complaint: "ASG 'm17-worker-asg' won't scale up even though CPU is at 100%
+  on all instances. The scaling policy exists but never triggers."
+  Root cause: The scale-up CloudWatch alarm references a wrong AutoScalingGroupName
+  dimension ('m17-workers-asg' instead of 'm17-worker-asg'). Since no ASG matches
+  that name, the alarm stays in INSUFFICIENT_DATA and never transitions to ALARM.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Alarm dimension has typo in ASG name.
+      Fixed = Alarm dimension matches actual ASG name.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: m17-worker-lt
+      LaunchTemplateData:
+        InstanceType: t3.micro
+        ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+        SecurityGroupIds:
+          - !Ref WorkerSecurityGroup
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: m17-worker
+              - Key: Environment
+                Value: production
+
+  WorkerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for worker instances
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      Tags:
+        - Key: Name
+          Value: m17-worker-sg
+
+  WorkerASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: m17-worker-asg
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MinSize: '1'
+      MaxSize: '5'
+      DesiredCapacity: '1'
+      VPCZoneIdentifier:
+        - !ImportValue aws-agent-test-public-subnet-a
+      Tags:
+        - Key: Name
+          Value: m17-worker
+          PropagateAtLaunch: true
+
+  ScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref WorkerASG
+      PolicyType: SimpleScaling
+      AdjustmentType: ChangeInCapacity
+      ScalingAdjustment: 1
+      Cooldown: 300
+
+  # THE BUG: Alarm dimension has typo — 'm17-workers-asg' instead of 'm17-worker-asg'
+  HighCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: m17-worker-high-cpu
+      AlarmDescription: Scale up when CPU exceeds 70%
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: AutoScalingGroupName
+          # BUG: Extra 's' in name — 'm17-workers-asg' vs actual 'm17-worker-asg'
+          Value: !If [IsFixed, 'm17-worker-asg', 'm17-workers-asg']
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 70
+      ComparisonOperator: GreaterThanThreshold
+      AlarmActions:
+        - !Ref ScaleUpPolicy
+
+Outputs:
+  ASGName:
+    Description: Auto Scaling Group Name
+    Value: !Ref WorkerASG
+  AlarmName:
+    Description: CloudWatch Alarm Name
+    Value: !Ref HighCPUAlarm
+  AlarmDimension:
+    Description: Alarm ASG dimension value
+    Value: !If [IsFixed, 'm17-worker-asg', 'm17-workers-asg (TYPO)']
+  ActualASGName:
+    Description: Actual ASG name
+    Value: m17-worker-asg
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

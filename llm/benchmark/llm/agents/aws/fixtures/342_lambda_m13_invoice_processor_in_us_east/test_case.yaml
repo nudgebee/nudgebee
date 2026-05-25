@@ -1,0 +1,18 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is that the SQS queue VisibilityTimeout (30 seconds) is shorter than the Lambda function Timeout (300 seconds).
+  When Lambda processing takes longer than 30 seconds, the message becomes visible again in the queue. Another Lambda invocation
+  picks it up, causing duplicate processing. After the message is received maxReceiveCount (3) times, it goes to the DLQ —
+  even though it was being processed each time. Check: (1) aws sqs get-queue-attributes --queue-url <url> --attribute-names
+  VisibilityTimeout to see 30, (2) aws lambda get-function-configuration --function-name m13-invoice-processor to see Timeout=300.
+  AWS recommends VisibilityTimeout be at least 6x the Lambda timeout. The fix is to increase VisibilityTimeout to at least
+  360 seconds.'
+scenario: M13
+tags:
+- command
+- aws
+- medium
+type: rca
+user_prompt: Lambda 'm13-invoice-processor' in us-east-1 processes SQS messages from 'm13-invoices-queue' but some invoices
+  get processed twice and others appear in the DLQ 'm13-invoices-dlq'. The Lambda function itself works correctly when tested.
+  What's causing duplicate processing and DLQ messages?

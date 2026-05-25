@@ -1,0 +1,29 @@
+name: input-validation-test
+description: Workflow to test input validation
+definition:
+  inputs:
+    - id: required_string
+      description: A required string input
+      type: string
+      required: true
+    - id: optional_int
+      description: An optional integer input
+      type: int
+      required: false
+    - id: required_bool
+      description: A required boolean input
+      type: bool
+      required: true
+    - id: required_with_default
+      description: A required input with a default value
+      type: string
+      required: true
+      default: "default_value"
+  triggers:
+    - type: manual
+  tasks:
+    - id: print_inputs
+      type: core.print
+      name: print_task
+      params:
+        message: "Inputs: {{ .Inputs.required_string }} {{ .Inputs.optional_int }} {{ .Inputs.required_bool }}"

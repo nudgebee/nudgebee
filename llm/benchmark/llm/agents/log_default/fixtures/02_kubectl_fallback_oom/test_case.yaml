@@ -1,0 +1,32 @@
+user_prompt: "Get logs for the deployment analytics-exporter-fast in namespace log-default-02 and tell me what's going wrong."
+expected_output: |
+  The response should identify that analytics-exporter-fast is failing due to a memory
+  limit breach (100Mi) — either surfacing the OOMKilled condition or quoting the
+  pre-crash log line that names the 180MB allocation attempt against the 100Mi limit.
+  Evidence comes from the last-terminated container's log tail via kubectl_log
+  fallback, since no observability provider is wired to this namespace.
+setup_timeout: 240
+before_test: |
+  set -e
+  kubectl create namespace log-default-02 || true
+  kubectl label namespace log-default-02 benchmark=true --overwrite || true
+  kubectl apply -f ./manifest.yaml -n log-default-02
+  # Wait for at least one OOM restart so `kubectl logs --previous` has content.
+  for i in {1..60}; do
+    RESTARTS=$(kubectl get pod -l app=analytics-exporter-fast -n log-default-02 \
+      -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}' 2>/dev/null || echo 0)
+    REASON=$(kubectl get pod -l app=analytics-exporter-fast -n log-default-02 \
+      -o jsonpath='{.items[0].status.containerStatuses[0].lastState.terminated.reason}' 2>/dev/null || true)
+    if [ "${RESTARTS:-0}" -ge 1 ] || [ "$REASON" = "OOMKilled" ]; then
+      echo "Pod has terminated at least once (restarts=$RESTARTS reason=$REASON)"
+      break
+    fi
+    sleep 3
+  done
+after_test: |
+  kubectl delete -f ./manifest.yaml -n log-default-02 --wait=false || true
+  kubectl delete namespace log-default-02 --wait=false || true
+tags:
+  - easy
+  - kubernetes
+  - kubectl-fallback

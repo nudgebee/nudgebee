@@ -1,0 +1,7 @@
+user_prompt: Get daily blended cost for the last 7 days.
+expected_output:
+- aws ce get-cost-and-usage --time-period Start=$(date -v -7d +%Y-%m-%d) --End=$(date
+  +%Y-%m-%d) --granularity DAILY --metrics BlendedCost
+tags:
+- command
+- aws

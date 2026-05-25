@@ -1,0 +1,6 @@
+user_prompt: Get the value of a Systems Manager Parameter Store parameter.
+expected_output:
+- aws ssm get-parameter --name <parameter-name> --with-decryption
+tags:
+- command
+- aws

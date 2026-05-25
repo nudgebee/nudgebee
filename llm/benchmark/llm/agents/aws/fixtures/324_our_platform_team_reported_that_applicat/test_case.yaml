@@ -1,0 +1,19 @@
+user_prompt: Our platform team reported that application logs for EC2 instance 'm10-app-server-01'
+  (us-east-1) are not appearing in CloudWatch Logs. The CloudWatch agent is installed
+  and running on the instance. The agent configuration file at /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+  looks correct and targets log group '/m10/app-server/application'. Application is
+  running and generating log entries to /var/log/app/application.log. What's preventing
+  logs from appearing in CloudWatch?
+expected_output:
+- 'The root cause is that the EC2 instance profile ''m10-app-server-profile'' (role:
+  ''m10-app-server-role'') is missing the CloudWatchAgentServerPolicy (or equivalent
+  cloudwatch:PutLogEvents, logs:CreateLogGroup, logs:CreateLogStream permissions).
+  The CloudWatch agent is installed and its configuration points to the correct log
+  group ''/m10/app-server/application''. However, when the agent tries to ship log
+  events, it calls the CloudWatch Logs API using the instance''s IAM credentials and
+  gets AccessDenied. The agent fails silently and logs don''t appear in CloudWatch.
+  Verify by checking: aws iam list-attached-role-policies --role-name m10-app-server-role.
+  The fix is to attach CloudWatchAgentServerPolicy to the instance role.'
+tags:
+- command
+- aws

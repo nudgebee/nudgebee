@@ -1,0 +1,7 @@
+user_prompt: Find all pods that have the label 'app=backend'.
+expected_output:
+- kubectl get pods --selector=app=backend
+- kubectl get pods -l app=backend
+tags:
+- command
+- kubernetes

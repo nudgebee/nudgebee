@@ -1,0 +1,19 @@
+user_prompt: Users trying to sign into our app through Cognito user pool 'e21-app-users'
+  are getting authentication errors. The user pool exists, users are confirmed, and
+  passwords are correct. The app client 'e21-web-app-client' is configured but standard
+  username/password authentication fails. What's causing the auth failure?
+expected_output:
+- The root cause is that the Cognito app client 'e21-web-app-client' is missing the
+  ALLOW_USER_SRP_AUTH flow in its ExplicitAuthFlows configuration. The client only has
+  ALLOW_REFRESH_TOKEN_AUTH enabled, which means it can refresh existing tokens but
+  cannot perform the initial SRP (Secure Remote Password) authentication that standard
+  username/password login requires. Without ALLOW_USER_SRP_AUTH, the InitiateAuth API
+  call with SRP_AUTH flow returns an error. The fix is to add ALLOW_USER_SRP_AUTH to
+  the app client's ExplicitAuthFlows list.
+tags:
+- rca
+- aws
+- cognito
+- authentication
+type: rca
+agent: aws_debug

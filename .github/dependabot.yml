@@ -1,0 +1,168 @@
+# Dependabot configuration for nudgebee-oss.
+#
+# Currently paused during the OSS dry-run (open-pull-requests-limit: 0
+# on every entry). To re-enable, remove the open-pull-requests-limit
+# lines from each entry — the grouping config is already in place so
+# routine (minor + patch) updates per directory will bundle into a
+# single weekly PR. Majors remain individual.
+#
+# Docs: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+updates:
+  # ── Python services ────────────────────────────────────────────────
+  - package-ecosystem: "pip"
+    directory: "/notifications-server"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0  # paused during dry-run; remove this line to re-enable
+    groups:
+      routine-updates:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "pip"
+    directory: "/ml-k8s-server"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0  # paused during dry-run; remove this line to re-enable
+    groups:
+      routine-updates:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "pip"
+    directory: "/llm/rag-server"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0  # paused during dry-run; remove this line to re-enable
+    groups:
+      routine-updates:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "pip"
+    directory: "/llm/benchmark"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0  # paused during dry-run; remove this line to re-enable
+    groups:
+      routine-updates:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "pip"
+    directory: "/collector-server/k8s-collector/app"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0  # paused during dry-run; remove this line to re-enable
+    groups:
+      routine-updates:
+        update-types: ["minor", "patch"]
+
+  # ── Go services ────────────────────────────────────────────────────
+  - package-ecosystem: "gomod"
+    directory: "/api-server/services"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0  # paused during dry-run; remove this line to re-enable
+    groups:
+      routine-updates:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "gomod"
+    directory: "/ticket-server"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0  # paused during dry-run; remove this line to re-enable
+    groups:
+      routine-updates:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "gomod"
+    directory: "/llm/llm-server"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0  # paused during dry-run; remove this line to re-enable
+    groups:
+      routine-updates:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "gomod"
+    directory: "/llm/code-analysis"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0  # paused during dry-run; remove this line to re-enable
+    groups:
+      routine-updates:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "gomod"
+    directory: "/runbook-server"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0  # paused during dry-run; remove this line to re-enable
+    groups:
+      routine-updates:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "gomod"
+    directory: "/collector-server/cloud-collector"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0  # paused during dry-run; remove this line to re-enable
+    groups:
+      routine-updates:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "gomod"
+    directory: "/collector-server/k8s-collector/relay-server"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0  # paused during dry-run; remove this line to re-enable
+    groups:
+      routine-updates:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "gomod"
+    directory: "/collector-server/otel-collector"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0  # paused during dry-run; remove this line to re-enable
+    groups:
+      routine-updates:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "gomod"
+    directory: "/ops/github-move-tickets"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0  # paused during dry-run; remove this line to re-enable
+    groups:
+      routine-updates:
+        update-types: ["minor", "patch"]
+
+  # ── Node services ──────────────────────────────────────────────────
+  - package-ecosystem: "npm"
+    directory: "/app"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0  # paused during dry-run; remove this line to re-enable
+    groups:
+      routine-updates:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "npm"
+    directory: "/app-e2e-tests"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0  # paused during dry-run; remove this line to re-enable
+    groups:
+      routine-updates:
+        update-types: ["minor", "patch"]
+
+  # ── GitHub Actions (workflow `uses:` lines) ────────────────────────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0  # paused during dry-run; remove this line to re-enable
+    groups:
+      routine-updates:
+        update-types: ["minor", "patch"]

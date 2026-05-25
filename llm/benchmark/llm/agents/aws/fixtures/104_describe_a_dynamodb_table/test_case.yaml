@@ -1,0 +1,6 @@
+user_prompt: Describe a DynamoDB table.
+expected_output:
+- aws dynamodb describe-table --table-name <table-name>
+tags:
+- command
+- aws

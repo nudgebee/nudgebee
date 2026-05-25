@@ -1,0 +1,17 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is a health check port mismatch. The ALB target group ''m12-payment-tg'' health check is configured on port
+  8080 (a management/metrics port), while the actual application serves on port 3000. The management server on port 8080 always
+  returns HTTP 200, so health checks pass. But the actual application on port 3000 has crashed. When the ALB forwards real
+  traffic to port 3000, it gets connection refused or 502 because the app is down. The health check masks the failure by checking
+  the wrong port. Check: aws elbv2 describe-target-groups --names m12-payment-tg to see HealthCheckPort is 8080 while Port
+  is 3000. The fix is to change the health check port to 3000 (the actual application port).'
+scenario: M12
+tags:
+- command
+- aws
+- medium
+type: rca
+user_prompt: Our ALB 'm12-payment-alb' in us-east-1 shows all targets as healthy, but actual HTTP requests through the ALB
+  return 502 Bad Gateway. If the targets are healthy, why are requests failing? The application team says the app should be
+  on port 3000.

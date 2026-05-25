@@ -1,0 +1,6 @@
+# GCP Traces agent benchmark configuration
+agent: gcp
+tool_names:
+  - gcloud_execute
+config_types:
+  - gcp

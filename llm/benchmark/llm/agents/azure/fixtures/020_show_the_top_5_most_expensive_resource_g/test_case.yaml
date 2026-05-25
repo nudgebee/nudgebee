@@ -1,0 +1,11 @@
+user_prompt: Show the top 5 most expensive resource groups in my Azure subscription
+  for this month.
+expected_output:
+- az costmanagement query --type Usage --scope /subscriptions/19e207a9-769d-4afd-b261-10bbed2d43e8
+  --dataset-aggregation '{"totalCost":{"name":"Cost","function":"Sum"}}' --timeframe
+  MonthToDate --dataset-grouping '[{"type":"Dimension","name":"ResourceGroupName"}]'
+  --output table
+type: command
+tags:
+- command
+- azure

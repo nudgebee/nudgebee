@@ -1,0 +1,368 @@
+{
+	"info": {
+		"_postman_id": "benchmark-server-api-123",
+		"name": "Benchmark Server API",
+		"description": "API collection for the Nudgebee LLM Benchmark Server.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Health Check",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/health",
+					"host": ["{{base_url}}"],
+					"path": ["health"]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "RAGAS Score",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"query\": \"What is the issue with my pod?\",\n    \"answer\": \"The pod is crashing due to an OOMKilled error.\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/score",
+					"host": ["{{base_url}}"],
+					"path": ["score"]
+				},
+				"description": "Standalone utility: calculates the RAGAS Answer Relevancy score (0-100) for a query/answer pair."
+			},
+			"response": []
+		},
+		{
+			"name": "Agent Benchmark",
+			"item": [
+				{
+					"name": "Trigger Run",
+					"item": [
+						{
+							"name": "Run Agent Benchmark (string agent)",
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"account_id\": \"{{test_account}}\",\n    \"user_id\": \"{{test_user}}\",\n    \"tenant_id\": \"{{test_tenant}}\",\n    \"agent\": \"aws\",\n    \"max_tests\": 3\n}"
+								},
+								"url": {
+									"raw": "{{base_url}}/agent-benchmark/run",
+									"host": ["{{base_url}}"],
+									"path": ["agent-benchmark", "run"]
+								},
+								"description": "Trigger a benchmark run with agent as a simple string.\n\nReturns a `run_id` for lifecycle management.\n\nSupported agents: aws, kubectl, rca, loki, promql, trace, events, datadog, kubectl_log, es, recommendations, azure, nubi"
+							},
+							"response": []
+						},
+						{
+							"name": "Run Agent Benchmark (with tool_config)",
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"account_id\": \"{{test_account}}\",\n    \"user_id\": \"{{test_user}}\",\n    \"tenant_id\": \"{{test_tenant}}\",\n    \"agent\": {\n        \"name\": \"aws\",\n        \"tool_config\": \"dev-new\"\n    },\n    \"max_tests\": 1,\n    \"cc_emails\": [\"team@example.com\"]\n}"
+								},
+								"url": {
+									"raw": "{{base_url}}/agent-benchmark/run",
+									"host": ["{{base_url}}"],
+									"path": ["agent-benchmark", "run"]
+								},
+								"description": "Trigger a benchmark run with agent config object (name + tool_config).\n\nOptional fields:\n- `max_tests`: limit number of tests\n- `test_indices`: run specific tests e.g. \"0,2,5-7\"\n- `test_filter`: pytest -k filter (nubi only)\n- `cc_emails`: additional email recipients\n- `deploy_infra`: deploy cloud infra before tests\n- `skip_nuke`: skip infra cleanup after tests"
+							},
+							"response": []
+						},
+						{
+							"name": "Run Agent Benchmark (specific test indices)",
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"account_id\": \"{{test_account}}\",\n    \"user_id\": \"{{test_user}}\",\n    \"tenant_id\": \"{{test_tenant}}\",\n    \"agent\": \"kubectl\",\n    \"test_indices\": \"0,2,5-7\"\n}"
+								},
+								"url": {
+									"raw": "{{base_url}}/agent-benchmark/run",
+									"host": ["{{base_url}}"],
+									"path": ["agent-benchmark", "run"]
+								},
+								"description": "Run specific test cases by index (0-based). Supports comma-separated and ranges."
+							},
+							"response": []
+						},
+						{
+							"name": "Run Agent Benchmark (with infra deploy)",
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"account_id\": \"{{test_account}}\",\n    \"user_id\": \"{{test_user}}\",\n    \"tenant_id\": \"{{test_tenant}}\",\n    \"agent\": \"aws\",\n    \"deploy_infra\": true,\n    \"skip_nuke\": false,\n    \"max_tests\": 2\n}"
+								},
+								"url": {
+									"raw": "{{base_url}}/agent-benchmark/run",
+									"host": ["{{base_url}}"],
+									"path": ["agent-benchmark", "run"]
+								},
+								"description": "Deploy cloud infrastructure (CloudFormation scenarios) before running tests. Set `skip_nuke: true` to keep infra alive for debugging."
+							},
+							"response": []
+						}
+					]
+				},
+				{
+					"name": "Lifecycle Control",
+					"item": [
+						{
+							"name": "Pause Run",
+							"request": {
+								"method": "POST",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/agent-benchmark/{{run_id}}/pause",
+									"host": ["{{base_url}}"],
+									"path": ["agent-benchmark", "{{run_id}}", "pause"]
+								},
+								"description": "Pause a running benchmark. It will pause after the current query completes.\n\nReturns 409 if the run is not in 'running' state."
+							},
+							"response": []
+						},
+						{
+							"name": "Resume Run",
+							"request": {
+								"method": "POST",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/agent-benchmark/{{run_id}}/resume",
+									"host": ["{{base_url}}"],
+									"path": ["agent-benchmark", "{{run_id}}", "resume"]
+								},
+								"description": "Resume a paused benchmark.\n\nReturns 409 if the run is not in 'paused' state."
+							},
+							"response": []
+						},
+						{
+							"name": "Stop Run",
+							"request": {
+								"method": "POST",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/agent-benchmark/{{run_id}}/stop",
+									"host": ["{{base_url}}"],
+									"path": ["agent-benchmark", "{{run_id}}", "stop"]
+								},
+								"description": "Stop a running or paused benchmark. It will stop after the current query and a partial report can be retrieved.\n\nReturns 409 if the run is already completed/stopped/failed."
+							},
+							"response": []
+						}
+					]
+				},
+				{
+					"name": "Status & Reports",
+					"item": [
+						{
+							"name": "Get Run Status",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/agent-benchmark/{{run_id}}/status",
+									"host": ["{{base_url}}"],
+									"path": ["agent-benchmark", "{{run_id}}", "status"]
+								},
+								"description": "Get current status, phase, progress, and test results summary for a run.\n\nPhases: initializing → deploying_infra → running_tests → evaluating → generating_report → sending_report → done\n\nStates: running, paused, stopped, completed, failed"
+							},
+							"response": []
+						},
+						{
+							"name": "Get Run Report",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/agent-benchmark/{{run_id}}/report",
+									"host": ["{{base_url}}"],
+									"path": ["agent-benchmark", "{{run_id}}", "report"]
+								},
+								"description": "Download the assembled JSON report for a completed run.\n\nIncludes: summary scores, per-test details, tag breakdowns, latency percentiles, cost, and token usage."
+							},
+							"response": []
+						}
+					]
+				},
+				{
+					"name": "Run Management",
+					"item": [
+						{
+							"name": "List All Runs",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/agent-benchmark/runs/list",
+									"host": ["{{base_url}}"],
+									"path": ["agent-benchmark", "runs", "list"]
+								},
+								"description": "List all tracked benchmark runs with their state, phase, progress, and agent."
+							},
+							"response": []
+						},
+						{
+							"name": "List Available Agents",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/agent-benchmark/agents",
+									"host": ["{{base_url}}"],
+									"path": ["agent-benchmark", "agents"]
+								},
+								"description": "List all available benchmark agents with fixture counts. Auto-discovered from the filesystem."
+							},
+							"response": []
+						},
+						{
+							"name": "Delete Run",
+							"request": {
+								"method": "DELETE",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/agent-benchmark/{{run_id}}",
+									"host": ["{{base_url}}"],
+									"path": ["agent-benchmark", "{{run_id}}"]
+								},
+								"description": "Delete a benchmark run and its test results from DB.\n\nReturns 409 if the run is still active (running/paused). Stop it first."
+							},
+							"response": []
+						},
+						{
+							"name": "Cleanup Completed Runs",
+							"request": {
+								"method": "DELETE",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/agent-benchmark/runs/cleanup",
+									"host": ["{{base_url}}"],
+									"path": ["agent-benchmark", "runs", "cleanup"]
+								},
+								"description": "Bulk-remove all completed, stopped, and failed runs from DB."
+							},
+							"response": []
+						}
+					]
+				},
+				{
+					"name": "Compare",
+					"item": [
+						{
+							"name": "Compare Report Files",
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"baseline_report\": \"llm_eval_report_aws_20260301_120000.json\",\n    \"candidate_report\": \"llm_eval_report_aws_20260310_150000.json\",\n    \"agent\": \"aws\",\n    \"threshold\": 5.0\n}"
+								},
+								"url": {
+									"raw": "{{base_url}}/agent-benchmark/compare",
+									"host": ["{{base_url}}"],
+									"path": ["agent-benchmark", "compare"]
+								},
+								"description": "Compare two report JSON files on disk.\n\nReturns per-query deltas, regressions, improvements, and summary-level changes.\n\n`threshold` (default 5.0): % change needed to flag as regression/improvement."
+							},
+							"response": []
+						},
+						{
+							"name": "Compare Runs by ID",
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"baseline_run_id\": \"abc123def456\",\n    \"candidate_run_id\": \"789ghi012jkl\",\n    \"threshold\": 5.0\n}"
+								},
+								"url": {
+									"raw": "{{base_url}}/agent-benchmark/compare-runs",
+									"host": ["{{base_url}}"],
+									"path": ["agent-benchmark", "compare-runs"]
+								},
+								"description": "Compare two benchmark runs by run_id using reports assembled from DB.\n\nReturns:\n- Summary deltas (accuracy, similarity, relevancy, planner)\n- Latency deltas (avg, p50, p95)\n- Cost deltas\n- Per-test regressions and improvements\n- Tests only in baseline / only in candidate"
+							},
+							"response": []
+						}
+					]
+				}
+			]
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:9999",
+			"type": "string"
+		},
+		{
+			"key": "test_account",
+			"value": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
+			"type": "string"
+		},
+		{
+			"key": "test_user",
+			"value": "8257d220-0610-4839-83c8-586b31e7c2d6",
+			"type": "string"
+		},
+		{
+			"key": "test_tenant",
+			"value": "890cad87-c452-4aa7-b84a-742cee0454a1",
+			"type": "string"
+		},
+		{
+			"key": "run_id",
+			"value": "",
+			"type": "string",
+			"description": "Set this after triggering a run (from the response run_id)"
+		}
+	]
+}

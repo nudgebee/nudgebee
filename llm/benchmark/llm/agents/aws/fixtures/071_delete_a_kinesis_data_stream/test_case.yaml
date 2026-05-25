@@ -1,0 +1,6 @@
+user_prompt: Delete a Kinesis data stream.
+expected_output:
+- aws kinesis delete-stream --stream-name <stream-name>
+tags:
+- command
+- aws

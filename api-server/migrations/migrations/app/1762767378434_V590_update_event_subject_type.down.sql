@@ -1,0 +1,12 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- UPDATE events
+-- SET subject_type = CASE subject_type
+--     WHEN 'Pod' THEN 'pod'
+--     WHEN 'Deployment' THEN 'deployment'
+--     WHEN 'Job' THEN 'job'
+--     WHEN 'DaemonSet' THEN 'daemonset'
+--     WHEN 'StateSet' THEN 'stateset'
+--     ELSE subject_type
+-- END
+-- WHERE subject_type IN ('Pod', 'Deployment', 'Job', 'DaemonSet', 'StateSet');

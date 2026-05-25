@@ -1,0 +1,6 @@
+user_prompt: Delete a DynamoDB table.
+expected_output:
+- aws dynamodb delete-table --table-name <table-name>
+tags:
+- command
+- aws

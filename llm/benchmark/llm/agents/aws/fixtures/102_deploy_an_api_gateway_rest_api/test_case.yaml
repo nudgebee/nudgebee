@@ -1,0 +1,6 @@
+user_prompt: Deploy an API Gateway REST API.
+expected_output:
+- aws apigateway create-deployment --rest-api-id <api-id> --stage-name <stage-name>
+tags:
+- command
+- aws

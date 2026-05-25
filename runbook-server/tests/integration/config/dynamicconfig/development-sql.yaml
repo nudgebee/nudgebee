@@ -1,0 +1,15 @@
+limit.maxSearchAttributeCount.Keyword:
+  - value: 100
+    constraints: {}
+limit.blobSizeLimitError:
+  - value: 67108864 # 64MB
+    constraints: {}
+limit.blobSizeLimitWarn:
+  - value: 50331648 # 48MB
+    constraints: {}
+frontend.maxGRPCMessageSize:
+  - value: 67108864 # 64MB
+    constraints: {}
+system.maxGRPCMessageSize:
+  - value: 67108864 # 64MB
+    constraints: {}

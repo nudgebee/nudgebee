@@ -1,0 +1,7 @@
+user_prompt: Show the distribution of statuses for the 'CIS' rule.
+expected_output:
+- SELECT status, COUNT(*) as count FROM recommendation_view WHERE rule_name = 'CIS'
+  GROUP BY status ORDER BY count DESC;
+tags:
+- command
+- recommendations

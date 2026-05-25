@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to show all SLO Violation alerts?
+expected_output:
+- SELECT id, title, starts_at, status, priority, description   FROM events   WHERE
+  aggregation_key IN ('SLOViolation', 'SLOViloation');
+- SELECT * FROM events   WHERE aggregation_key IN ('SLOViolation', 'SLOViloation');
+tags:
+- command
+- events

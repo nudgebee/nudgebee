@@ -1,0 +1,8 @@
+user_prompt: Count how many recommendations exist for each distinct controller_name.
+expected_output:
+- SELECT controller_name, COUNT(*) AS recommendation_count from recommendation_view
+  WHERE controller_name IS NOT NULL GROUP BY controller_name ORDER BY recommendation_count
+  DESC;
+tags:
+- command
+- recommendations

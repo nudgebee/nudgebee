@@ -1,0 +1,15 @@
+user_prompt: The Function App 'm04funckry4fvhc' in resource group 'azure-agent-test-M04'
+  is returning HTTP 500 errors for all function invocations. The Python function code
+  was recently deployed. What is wrong?
+expected_output:
+- 'The Function App setting FUNCTIONS_WORKER_RUNTIME is set to ''dotnet'' but the
+  deployed code is Python. The Azure Functions host loads the .NET worker, which cannot
+  execute Python code, causing all invocations to fail with 500. Fix: Change FUNCTIONS_WORKER_RUNTIME
+  to ''python''.'
+agent: azure_debug
+scenario: M04
+type: rca
+tags:
+- rca
+- medium
+- azure

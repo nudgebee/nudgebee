@@ -1,0 +1,6 @@
+user_prompt: Remove an inbound rule from a security group.
+expected_output:
+- aws ec2 revoke-security-group-ingress
+tags:
+- command
+- aws

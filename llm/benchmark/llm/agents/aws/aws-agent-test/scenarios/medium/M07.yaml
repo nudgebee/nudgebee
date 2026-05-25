@@ -1,0 +1,162 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M07: RDS Read Replica Lag causing stale reads.
+  User complaint: "App reads data that was written minutes ago but gets old values."
+  Root cause: App queries only the read replica, which has high ReplicaLag metric.
+  The agent must check CloudWatch ReplicaLag metric and identify the read replica endpoint.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Lambda reads from read replica endpoint (stale data).
+      Fixed = Lambda reads from primary endpoint (always fresh).
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for user database
+      SubnetIds:
+        - !ImportValue aws-agent-test-private-subnet-a
+        - !ImportValue aws-agent-test-private-subnet-b
+      Tags:
+        - Key: Name
+          Value: m07-userdb-subnet-group
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for user database
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: !ImportValue aws-agent-test-vpc-cidr
+      Tags:
+        - Key: Name
+          Value: m07-userdb-sg
+
+  PrimaryDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: m07-userdb-primary
+      DBInstanceClass: db.t3.micro
+      Engine: postgres
+      EngineVersion: '16.4'
+      MasterUsername: app_user
+      MasterUserPassword: AppPass123!
+      AllocatedStorage: 20
+      StorageType: gp2
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      PubliclyAccessible: false
+      MultiAZ: false
+      BackupRetentionPeriod: 1
+      DeletionProtection: false
+      Tags:
+        - Key: Name
+          Value: m07-userdb-primary
+        - Key: Environment
+          Value: production
+        - Key: Role
+          Value: primary
+
+  ReadReplica:
+    Type: AWS::RDS::DBInstance
+    DependsOn: PrimaryDB
+    Properties:
+      DBInstanceIdentifier: m07-userdb-replica
+      DBInstanceClass: db.t3.micro
+      SourceDBInstanceIdentifier: !Ref PrimaryDB
+      PubliclyAccessible: false
+      Tags:
+        - Key: Name
+          Value: m07-userdb-replica
+        - Key: Environment
+          Value: production
+        - Key: Role
+          Value: read-replica
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m07-user-service-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  UserServiceFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - PrimaryDB
+      - ReadReplica
+    Properties:
+      FunctionName: m07-user-service
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      Environment:
+        Variables:
+          # THE BUG: in Broken mode reads from replica (stale), Fixed reads from primary
+          DB_READ_HOST: !If
+            - IsFixed
+            - !GetAtt PrimaryDB.Endpoint.Address
+            - !GetAtt ReadReplica.Endpoint.Address
+          DB_WRITE_HOST: !GetAtt PrimaryDB.Endpoint.Address
+          DB_PORT: '5432'
+          DB_NAME: users
+      Code:
+        ZipFile: |
+          import json
+          import os
+
+          def handler(event, context):
+              read_host = os.environ['DB_READ_HOST']
+              write_host = os.environ['DB_WRITE_HOST']
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({
+                      'read_endpoint': read_host,
+                      'write_endpoint': write_host,
+                      'note': 'App reads from DB_READ_HOST'
+                  })
+              }
+      Tags:
+        - Key: Name
+          Value: m07-user-service
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: user-management
+
+Outputs:
+  PrimaryEndpoint:
+    Description: RDS Primary Endpoint
+    Value: !GetAtt PrimaryDB.Endpoint.Address
+  ReplicaEndpoint:
+    Description: RDS Replica Endpoint
+    Value: !GetAtt ReadReplica.Endpoint.Address
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref UserServiceFunction
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

@@ -1,0 +1,6 @@
+user_prompt: Stream logs from the nudgebee-worker-pod.
+expected_output:
+- kubectl logs -f <pod-name>
+tags:
+- command
+- kubernetes

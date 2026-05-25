@@ -1,0 +1,6 @@
+user_prompt: Get the credentials for a Cognito identity.
+expected_output:
+- aws cognito-identity get-credentials-for-identity --identity-id <identity-id>
+tags:
+- command
+- aws

@@ -1,0 +1,6 @@
+user_prompt: Start a CodeBuild build.
+expected_output:
+- aws codebuild start-build --project-name <project-name>
+tags:
+- command
+- aws

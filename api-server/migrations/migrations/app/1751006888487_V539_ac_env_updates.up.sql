@@ -1,0 +1,1 @@
+UPDATE account_env_type SET value = 'non-prod' WHERE value = 'non-prod';

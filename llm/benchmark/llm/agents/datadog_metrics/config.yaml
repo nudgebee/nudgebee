@@ -1,0 +1,7 @@
+# Datadog metrics agent benchmark configuration
+agent: datadog_metrics
+tool_names:
+  - datadog_metrics_execute
+config_types:
+  - datadog
+db_tool_name: datadog_metrics_execute

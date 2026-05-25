@@ -1,0 +1,302 @@
+[
+  {
+    "query": "How do I get the logs of a pod in Kubernetes?",
+    "ground_truth": [
+      "Use `kubectl logs <pod-name>` to retrieve the logs of a pod. If the pod has multiple containers, specify the container name using `kubectl logs <pod-name> -c <container-name>`.",
+      "Ensure that the pod name and container name are correctly specified to view the logs of the desired container."
+    ],
+    "contexts": [
+      "To view logs of a running pod, use the `kubectl logs` command. If the pod has multiple containers, specify the container using `-c` flag."
+    ]
+  },
+  {
+    "query": "What is a Kubernetes namespace used for?",
+    "ground_truth": [
+      "A Kubernetes namespace is used to partition cluster resources between multiple users. It is useful in environments with many users across multiple teams or projects.",
+      "Namespaces help organize Kubernetes resources, allowing for resource isolation between different teams or projects in a multi-tenant environment."
+    ],
+    "contexts": [
+      "Namespaces help organize Kubernetes resources and allow resource isolation by different teams or projects."
+    ]
+  },
+  {
+    "query": "How do I scale a deployment in Kubernetes?",
+    "ground_truth": [
+      "Scale a deployment using `kubectl scale deployment <deployment-name> --replicas=<number>` or by modifying the `spec.replicas` field in the deployment YAML file.",
+      "Scaling can also be achieved by editing the YAML configuration of the deployment to adjust the number of replicas."
+    ],
+    "contexts": [
+      "You can scale deployments in Kubernetes using `kubectl scale` or updating the YAML configuration."
+    ]
+  },
+  {
+    "query": "How do I delete a pod in Kubernetes?",
+    "ground_truth": [
+      "Use `kubectl delete pod <pod-name>` to delete a pod. If you want to delete all pods in a namespace, use `kubectl delete pods --all`.",
+      "Deleting a pod will cause its managing controller (such as a Deployment or StatefulSet) to automatically recreate it, unless the pod is part of a Job."
+    ],
+    "contexts": [
+      "Pods can be deleted using the `kubectl delete` command."
+    ]
+  },
+  {
+    "query": "What is a Kubernetes service?",
+    "ground_truth": [
+      "A Kubernetes Service is an abstraction that defines a logical set of pods and the policies for accessing them. It provides stable network connectivity.",
+      "Services enable load balancing and expose the pods to other services or external traffic. Different types of services, such as ClusterIP, NodePort, and LoadBalancer, offer various access methods."
+    ],
+    "contexts": [
+      "A Service in Kubernetes allows access to a set of pods and enables load balancing across them."
+    ]
+  },
+  {
+    "query": "How do I expose a deployment externally?",
+    "ground_truth": [
+      "Expose a deployment externally using `kubectl expose deployment <deployment-name> --type=LoadBalancer --port=<port>`. Use `NodePort` or `Ingress` for different access strategies.",
+      "The `LoadBalancer` service type will provision an external load balancer, while `NodePort` opens a port on each node in the cluster to allow external access."
+    ],
+    "contexts": [
+      "Services of type `LoadBalancer` or `Ingress` allow external access to Kubernetes workloads."
+    ]
+  },
+  {
+    "query": "What is a ConfigMap in Kubernetes?",
+    "ground_truth": [
+      "A ConfigMap is an API object used to store configuration data such as environment variables, command-line arguments, or configuration files.",
+      "ConfigMaps provide a way to decouple configuration from application code and are often used to inject configuration into pods at runtime."
+    ],
+    "contexts": [
+      "ConfigMaps decouple configuration from application code and can be used for injecting environment variables."
+    ]
+  },
+  {
+    "query": "How do I restart a pod?",
+    "ground_truth": [
+      "Pods do not restart manually. Instead, delete the pod using `kubectl delete pod <pod-name>`, and the controller (Deployment, StatefulSet, etc.) will recreate it automatically.",
+      "Alternatively, you can trigger a pod restart by performing a rolling update of the deployment it belongs to."
+    ],
+    "contexts": [
+      "Pods in Kubernetes restart when deleted or when their associated controllers recreate them."
+    ]
+  },
+  {
+    "query": "What is a StatefulSet?",
+    "ground_truth": [
+      "A StatefulSet manages the deployment and scaling of stateful applications, ensuring that each pod has a unique identity and stable storage.",
+      "StatefulSets provide guarantees about the ordering and uniqueness of pod names, which is important for stateful applications that require stable network identities."
+    ],
+    "contexts": [
+      "StatefulSets are used for applications requiring persistent identity and storage."
+    ]
+  },
+  {
+    "query": "How do I check CPU and memory usage of a pod?",
+    "ground_truth": [
+      "Use `kubectl top pod <pod-name>` to check CPU and memory usage. Ensure the Metrics Server is running in the cluster.",
+      "You can also view resource usage through the Kubernetes Dashboard or by querying the resource metrics API."
+    ],
+    "contexts": [
+      "The `kubectl top pod` command provides real-time resource usage information."
+    ]
+  },
+  {
+    "query": "What is the difference between a DaemonSet and a Deployment?",
+    "ground_truth": [
+      "A Deployment ensures a specified number of replicas are running, while a DaemonSet ensures that a copy of a pod runs on every node.",
+      "DaemonSets are typically used for deploying system-level applications like monitoring agents or logging daemons."
+    ],
+    "contexts": [
+      "DaemonSets are useful for running node-wide services like logging or monitoring."
+    ]
+  },
+  {
+    "query": "How do I roll back a deployment?",
+    "ground_truth": [
+      "Use `kubectl rollout undo deployment <deployment-name>` to revert to the previous stable version.",
+      "The rollback can be triggered based on the revision history, allowing you to easily revert to earlier versions."
+    ],
+    "contexts": [
+      "The `kubectl rollout undo` command enables rollback of a deployment."
+    ]
+  },
+  {
+    "query": "What is an Ingress in Kubernetes?",
+    "ground_truth": [
+      "An Ingress is an API object that manages external access to services within a cluster, typically via HTTP/HTTPS routing.",
+      "Ingress allows you to define rules for routing external HTTP(S) traffic to services in your cluster, enabling features like load balancing and SSL termination."
+    ],
+    "contexts": [
+      "Ingress resources define rules for external access to services."
+    ]
+  },
+  {
+    "query": "How do I check events in a Kubernetes cluster?",
+    "ground_truth": [
+      "Use `kubectl get events --sort-by=.metadata.creationTimestamp` to see recent events in a cluster.",
+      "Events in Kubernetes provide insights into resource changes, such as pod crashes, deployments, and other important status changes."
+    ],
+    "contexts": [
+      "Events provide information about resource changes and errors."
+    ]
+  },
+  {
+    "query": "How do I get the YAML of an existing resource?",
+    "ground_truth": [
+      "Use `kubectl get <resource-type> <resource-name> -o yaml` to retrieve the YAML definition of a resource.",
+      "You can also use `kubectl get <resource-type> <resource-name> -o json` to get the resource definition in JSON format."
+    ],
+    "contexts": [
+      "The `-o yaml` flag outputs resources in YAML format."
+    ]
+  },
+  {
+    "query": "How do I restart a deployment?",
+    "ground_truth": [
+      "Restart a deployment by running `kubectl rollout restart deployment <deployment-name>`.",
+      "This will trigger a rolling restart of all pods associated with the deployment."
+    ],
+    "contexts": [
+      "Rolling restarts are managed by the `kubectl rollout restart` command."
+    ]
+  },
+  {
+    "query": "How do I check logs of a failed pod?",
+    "ground_truth": [
+      "Use `kubectl logs <pod-name> --previous` to check logs from a terminated container.",
+      "This is useful for debugging pod failures as it allows access to the logs of previously terminated containers in the pod."
+    ],
+    "contexts": [
+      "The `--previous` flag allows viewing logs of a terminated container."
+    ]
+  },
+  {
+    "query": "What is a Horizontal Pod Autoscaler?",
+    "ground_truth": [
+      "HPA automatically scales the number of pods in a deployment based on CPU or memory usage using `kubectl autoscale deployment <deployment-name> --cpu-percent=<threshold> --min=<min-replicas> --max=<max-replicas>`.",
+      "The Horizontal Pod Autoscaler ensures that the right number of pods are running to meet demand without manual intervention."
+    ],
+    "contexts": [
+      "HPA scales workloads dynamically based on resource usage."
+    ]
+  },
+  {
+    "query": "What is a Persistent Volume?",
+    "ground_truth": [
+      "A Persistent Volume (PV) is a piece of storage provisioned by an administrator and managed by Kubernetes.",
+      "PVs allow data to persist beyond the lifecycle of individual pods, enabling stateful applications to store data reliably."
+    ],
+    "contexts": [
+      "PVs abstract storage and allow data persistence across pod restarts."
+    ]
+  },
+  {
+    "query": "How do I check the status of a node?",
+    "ground_truth": [
+      "Use `kubectl get nodes` to list nodes and `kubectl describe node <node-name>` for detailed information.",
+      "You can also use `kubectl get nodes -o wide` to get additional information about the nodes, such as their IP addresses and kernel version."
+    ],
+    "contexts": [
+      "Nodes in Kubernetes can be checked using `kubectl get nodes`."
+    ]
+  },
+  {
+    "query": "How do I update an existing ConfigMap?",
+    "ground_truth": [
+      "Edit a ConfigMap using `kubectl edit configmap <configmap-name>` or replace it using `kubectl apply -f <configmap-file>`.",
+      "Updating a ConfigMap allows you to change configuration data without restarting the application pods, as long as they are configured to watch for changes."
+    ],
+    "contexts": [
+      "ConfigMaps can be updated dynamically using `kubectl edit` or by reapplying the updated file."
+    ]
+  },
+  {
+    "query": "How do I add a new user to a Kubernetes cluster?",
+    "ground_truth": [
+      "Add a new user by creating a Kubernetes service account with `kubectl create serviceaccount <user-name>`.",
+      "To give the user specific roles, bind them to a role or role binding using `kubectl create rolebinding`."
+    ],
+    "contexts": [
+      "Kubernetes service accounts provide a way to manage access to the cluster for different users."
+    ]
+  },
+  {
+    "query": "What is a RoleBinding?",
+    "ground_truth": [
+      "A RoleBinding grants the permissions defined in a Role to a user or set of users in a namespace.",
+      "It is used to assign roles to specific service accounts or users within the Kubernetes cluster."
+    ],
+    "contexts": [
+      "RoleBindings are used to grant users or service accounts access to cluster resources."
+    ]
+  },
+  {
+    "query": "What is a Secret in Kubernetes?",
+    "ground_truth": [
+      "A Secret in Kubernetes stores sensitive data such as passwords, OAuth tokens, or SSH keys.",
+      "Secrets are stored in base64 encoding and can be used in Pods to provide environment variables or mounted as volumes."
+    ],
+    "contexts": [
+      "Secrets are used to store sensitive data securely in Kubernetes."
+    ]
+  },
+  {
+    "query": "How do I configure a pod to run with elevated privileges?",
+    "ground_truth": [
+      "Use the `securityContext` field in the pod spec to define user and group IDs, or enable `privileged: true` to allow the pod to run with elevated privileges.",
+      "Use caution with `privileged` containers, as they give full access to the host system."
+    ],
+    "contexts": [
+      "Running a pod with elevated privileges may be necessary for specific tasks but increases security risks."
+    ]
+  },
+  {
+    "query": "How do I check the status of a deployment?",
+    "ground_truth": [
+      "Use `kubectl rollout status deployment <deployment-name>` to check the status of a deployment.",
+      "You can also use `kubectl get deployments` to see the current state and number of replicas."
+    ],
+    "contexts": [
+      "The `kubectl rollout status` command provides information about the deployment's progress."
+    ]
+  },
+  {
+    "query": "How do I create a new namespace?",
+    "ground_truth": [
+      "Create a new namespace using `kubectl create namespace <namespace-name>`.",
+      "Namespaces help organize resources and provide isolation between different environments or teams."
+    ],
+    "contexts": [
+      "Namespaces can be created to manage resources in a Kubernetes cluster."
+    ]
+  },
+  {
+    "query": "What is a NodePort service?",
+    "ground_truth": [
+      "A NodePort service exposes a service on each node's IP at a static port, allowing external traffic to access the service.",
+      "NodePort services are useful for exposing applications running in a Kubernetes cluster to the outside world."
+    ],
+    "contexts": [
+      "NodePort services allow external access to applications running in Kubernetes."
+    ]
+  },
+  {
+    "query": "How do I check the status of a pod?",
+    "ground_truth": [
+      "Use `kubectl get pods` to check the status of all pods in a namespace. For detailed information, use `kubectl describe pod <pod-name>`.",
+      "The status field indicates whether the pod is running, pending, succeeded, or failed."
+    ],
+    "contexts": [
+      "Pod statuses can be checked using `kubectl get pods`."
+    ]
+  },
+  {
+    "query": "How do I delete a namespace?",
+    "ground_truth": [
+      "Delete a namespace using `kubectl delete namespace <namespace-name>`. This will remove all resources within that namespace.",
+      "Be cautious when deleting namespaces, as it will permanently remove all resources associated with it."
+    ],
+    "contexts": [
+      "Namespaces can be deleted to clean up resources in a Kubernetes cluster."
+    ]
+  }
+]

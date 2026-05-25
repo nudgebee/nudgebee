@@ -1,0 +1,6 @@
+user_prompt: What is the SQL query to count the total number of events?
+expected_output:
+- SELECT COUNT(*) FROM events;
+tags:
+- command
+- events

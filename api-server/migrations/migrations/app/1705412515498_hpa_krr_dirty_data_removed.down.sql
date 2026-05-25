@@ -1,0 +1,49 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- delete from
+--     auto_pilot_task
+-- where
+--     recommendation_id in (
+--         select
+--             id
+--         from
+--             (
+--                 select
+--                     recommendation :: text as column_1,
+--                     created_at,
+--                     id
+--                 from
+--                     recommendation r
+--                 where
+--                     category = 'RightSizing'
+--                     and rule_name = 'pod_right_sizing'
+--             ) as tbl1
+--         where
+--             column_1 ilike '%?%'
+--         order by
+--             created_at desc
+--     );
+--
+-- delete from
+--     recommendation
+-- where
+--     id in (
+--         select
+--             id
+--         from
+--             (
+--                 select
+--                     recommendation :: text as column_1,
+--                     created_at,
+--                     id
+--                 from
+--                     recommendation r
+--                 where
+--                     category = 'RightSizing'
+--                     and rule_name = 'pod_right_sizing'
+--             ) as tbl1
+--         where
+--             column_1 ilike '%?%'
+--         order by
+--             created_at desc
+--     );

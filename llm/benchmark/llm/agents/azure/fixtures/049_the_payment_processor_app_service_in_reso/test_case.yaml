@@ -1,0 +1,20 @@
+user_prompt: The payment processor App Service in resource group 'azure-agent-test-H05'
+  has stopped processing messages from Service Bus. The queue has thousands of pending
+  messages. Additionally, the on-call team says they never received any alerts about
+  the outage. What is wrong?
+expected_output:
+- 'Two issues found: (1) The SERVICE_BUS_CONNECTION_STRING app setting points to ''h05sb-old-namespace''
+  which is a decommissioned Service Bus namespace. The actual namespace in the resource
+  group has a different name, so the app cannot connect to read messages. (2) The action
+  group ''h05-payment-oncall'' has its email receiver configured with ''oncall@old-company-domain.com''
+  which is a dead mailbox from the old company domain. Alerts fire but notifications
+  go nowhere. Fix: Update SERVICE_BUS_CONNECTION_STRING to use the connection string
+  from the actual Service Bus namespace, and update the action group email to the current
+  on-call address.'
+agent: azure_debug
+scenario: H05
+type: rca
+tags:
+- rca
+- hard
+- azure

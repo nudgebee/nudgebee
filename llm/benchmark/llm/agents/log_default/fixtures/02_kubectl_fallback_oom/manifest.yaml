@@ -1,0 +1,39 @@
+# analytics-exporter-fast intentionally allocates more memory than its limit
+# and gets OOMKilled. Before the allocation it prints a clear message so that
+# `kubectl logs --previous` retrieves actionable evidence after the crash.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-exporter-fast
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: analytics-exporter-fast
+  template:
+    metadata:
+      labels:
+        app: analytics-exporter-fast
+    spec:
+      restartPolicy: Always
+      containers:
+      - name: memory-eater
+        image: python:3.11-alpine
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "analytics-exporter-fast starting"
+            echo "FATAL: attempting to allocate ~180MB but container memory limit is 100Mi — OOMKilled expected"
+            python -c "
+            import sys
+            print('allocating 180MB buffer to load batch', flush=True)
+            buf = bytearray(180 * 1024 * 1024)
+            print('loaded', len(buf), 'bytes', flush=True)
+            while True:
+                pass
+            "
+        resources:
+          limits:
+            memory: 100Mi
+          requests:
+            memory: 100Mi

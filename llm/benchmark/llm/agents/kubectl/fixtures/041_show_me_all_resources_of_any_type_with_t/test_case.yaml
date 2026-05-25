@@ -1,0 +1,6 @@
+user_prompt: Show me all resources of any type with the label 'owner=team-alpha'.
+expected_output:
+- kubectl get all -l owner=team-alpha
+tags:
+- command
+- kubernetes

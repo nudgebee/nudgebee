@@ -1,0 +1,153 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H03: Lambda queries DynamoDB using wrong GSI name.
+  User complaint: "Product search is broken - returns empty results for every query.
+  But browsing the product catalog (full table scan) works fine."
+  Root cause: Lambda uses GSI name 'ByCategory' but the actual GSI is named
+  'CategoryIndex'. DynamoDB returns ResourceNotFoundException or empty results
+  depending on SDK version; agent must check DynamoDB table indexes and Lambda code env vars.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Lambda SEARCH_INDEX_NAME env var set to 'ByCategory' (wrong GSI name).
+      Fixed = Lambda SEARCH_INDEX_NAME env var set to 'CategoryIndex' (correct GSI name).
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  ProductsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: h03-products
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: product_id
+          AttributeType: S
+        - AttributeName: category
+          AttributeType: S
+        - AttributeName: created_at
+          AttributeType: S
+      KeySchema:
+        - AttributeName: product_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        # THE BUG: actual GSI is named 'CategoryIndex', Lambda uses 'ByCategory'
+        - IndexName: CategoryIndex
+          KeySchema:
+            - AttributeName: category
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      Tags:
+        - Key: Name
+          Value: h03-products
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: catalog
+
+  SearchServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h03-search-service-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: dynamodb-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:GetItem
+                Resource:
+                  - !GetAtt ProductsTable.Arn
+                  - !Sub '${ProductsTable.Arn}/index/*'
+
+  SearchServiceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h03-search-service
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt SearchServiceRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      Environment:
+        Variables:
+          TABLE_NAME: h03-products
+          # THE BUG: 'ByCategory' does not exist — correct name is 'CategoryIndex'
+          SEARCH_INDEX_NAME: !If [IsFixed, 'CategoryIndex', 'ByCategory']
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+          from boto3.dynamodb.conditions import Key
+
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table(os.environ['TABLE_NAME'])
+          INDEX_NAME = os.environ['SEARCH_INDEX_NAME']
+
+          def handler(event, context):
+              category = event.get('category', 'electronics')
+              try:
+                  response = table.query(
+                      IndexName=INDEX_NAME,
+                      KeyConditionExpression=Key('category').eq(category)
+                  )
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({
+                          'category': category,
+                          'count': response['Count'],
+                          'items': response['Items']
+                      })
+                  }
+              except Exception as e:
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({'error': str(e), 'index_used': INDEX_NAME})
+                  }
+      Tags:
+        - Key: Name
+          Value: h03-search-service
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: product-catalog
+
+Outputs:
+  TableName:
+    Description: DynamoDB Table Name
+    Value: !Ref ProductsTable
+  ActualGSIName:
+    Description: Actual GSI name on the table
+    Value: CategoryIndex
+  ConfiguredGSIName:
+    Description: GSI name configured in Lambda (wrong in Broken mode)
+    Value: !If [IsFixed, 'CategoryIndex', 'ByCategory']
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref SearchServiceFunction
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

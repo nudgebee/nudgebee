@@ -1,0 +1,7 @@
+user_prompt: Get details about the trace sink named 'nudgebee_trace' in project 'nudgebee-dev'.
+expected_output:
+  - gcloud alpha trace sinks describe nudgebee_trace --project=nudgebee-dev
+tags:
+  - command
+  - trace
+  - gcp

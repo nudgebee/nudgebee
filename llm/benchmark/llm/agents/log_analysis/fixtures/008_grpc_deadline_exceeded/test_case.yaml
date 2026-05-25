@@ -1,0 +1,19 @@
+user_prompt: |
+  2026-04-05T22:10:45.123Z INFO  [frontend] Handling request GET /products
+  2026-04-05T22:10:45.124Z INFO  [frontend] Calling ProductCatalogService.ListProducts via gRPC
+  2026-04-05T22:10:50.125Z ERROR [frontend] rpc error: code = DeadlineExceeded desc = context deadline exceeded
+  2026-04-05T22:10:50.126Z ERROR [frontend] Failed to fetch products from product-catalog:8080 after 5000ms timeout
+  2026-04-05T22:10:50.127Z ERROR [frontend] upstream service: product-catalog, method: oteldemo.ProductCatalogService/ListProducts
+  2026-04-05T22:10:50.128Z WARN  [frontend] Serving degraded response to client: product list unavailable
+  2026-04-05T22:10:50.300Z ERROR [frontend] rpc error: code = DeadlineExceeded desc = context deadline exceeded
+  2026-04-05T22:10:50.301Z ERROR [frontend] Failed to fetch recommendations from recommendation:8080 after 5000ms timeout
+  2026-04-05T22:10:50.302Z ERROR [frontend] upstream service: recommendation, method: oteldemo.RecommendationService/ListRecommendations
+  namespace: demo, pod: frontend-6f9dc974d6-blzck, container: frontend
+expected_output:
+  - The frontend service in the demo namespace is experiencing gRPC DeadlineExceeded errors when calling the product-catalog and recommendation services. Both calls timed out after 5000ms. The product-catalog service at product-catalog:8080 is not responding to ListProducts requests, and the recommendation service at recommendation:8080 is not responding to ListRecommendations requests. The root cause is likely that the product-catalog service is down or severely degraded (it is in CrashLoopBackOff), which causes cascading timeouts to dependent services like recommendation. Suggested actions include checking the product-catalog deployment status, investigating why product-catalog pods are failing, and considering implementing circuit breakers in the frontend to handle upstream failures gracefully.
+tags:
+  - grpc
+  - timeout
+  - cascading-failure
+  - demo
+type: log_analysis

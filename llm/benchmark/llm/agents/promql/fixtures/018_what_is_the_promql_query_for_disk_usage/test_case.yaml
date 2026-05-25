@@ -1,0 +1,9 @@
+user_prompt: what is the promql query for disk usage on the root filesystem of node-3?
+expected_output:
+- node_filesystem_size_bytes{mountpoint="/", instance="node-3"} - node_filesystem_free_bytes{mountpoint="/",
+  instance="node-3"}
+- sum by (instance) (node_filesystem_size_bytes{mountpoint="/", instance="node-3"}
+  - node_filesystem_free_bytes{mountpoint="/", instance="node-3"})
+tags:
+- command
+- promql

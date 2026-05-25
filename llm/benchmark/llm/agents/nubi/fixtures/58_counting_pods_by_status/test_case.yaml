@@ -1,0 +1,27 @@
+user_prompt: |
+  Break down the pod states in the test-58 namespace.
+  Group by status and include readiness for each group, and a total.
+expected_output: |
+  Total: 10 pods in the test-58 namespace.
+
+  Breakdown by status (with readiness):
+  - 5 pods Running and Ready (1/1)
+  - 3 pods in ImagePullBackOff, not Ready (0/1)
+  - 2 pods in CrashLoopBackOff, not Ready (0/1)
+
+  Notes:
+  - Running pods are in the Running phase.
+  - ImagePullBackOff pods are still in the Pending phase (the container image
+    has not been successfully pulled).
+  - CrashLoopBackOff pods are technically in the Running phase but the
+    container repeatedly exits and is being restarted.
+before_test: |
+  kubectl apply -f manifests.yaml
+  sleep 90
+after_test: |
+  kubectl delete -f manifests.yaml
+evaluation:
+  correctness: 1
+tags:
+  - counting
+  - pod_state

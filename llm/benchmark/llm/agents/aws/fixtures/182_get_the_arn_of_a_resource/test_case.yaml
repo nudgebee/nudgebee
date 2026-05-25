@@ -1,0 +1,7 @@
+user_prompt: Get the ARN of a resource.
+expected_output:
+- describe
+- list
+tags:
+- command
+- aws

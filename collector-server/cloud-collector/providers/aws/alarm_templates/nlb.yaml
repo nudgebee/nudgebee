@@ -1,0 +1,58 @@
+# NLB (Network Load Balancer) CloudWatch Alarm Recommendations
+# Based on AWS best practices for NLB monitoring
+service_name: "nlb"
+
+templates:
+  - name: "aws_nlb_unhealthy_host_count_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Monitors number of unhealthy targets to ensure NLB can route traffic properly"
+    configuration:
+      namespace: "AWS/NetworkELB"
+      metric_name: "UnHealthyHostCount"
+      statistic: "Average"
+      period: 60
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 0.0  # Any unhealthy host is a problem
+
+  - name: "aws_nlb_processed_bytes_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "Monitors total bytes processed through NLB for capacity planning"
+    configuration:
+      namespace: "AWS/NetworkELB"
+      metric_name: "ProcessedBytes"
+      statistic: "Sum"
+      period: 300
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 1000000000.0  # 1GB in 5 minutes
+
+  - name: "aws_nlb_tcp_target_reset_count_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "Monitors TCP resets sent from targets indicating connection issues"
+    configuration:
+      namespace: "AWS/NetworkELB"
+      metric_name: "TCP_Target_Reset_Count"
+      statistic: "Sum"
+      period: 60
+      evaluation_periods: 5
+      datapoints_to_alarm: 3
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 10.0  # More than 10 resets per minute

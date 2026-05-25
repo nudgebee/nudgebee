@@ -1,0 +1,9 @@
+user_prompt: Find source workloads calling specific APIs (e.g., '/hasura/query', 'amazonaws.com')
+  in 'nudgebee' namespace in the last day.
+expected_output:
+- SELECT DISTINCT workload_name, resource FROM traces_view WHERE workload_namespace
+  = 'nudgebee' AND timestamp >= now() - interval 1 day AND (resource LIKE '%/hasura/query%'
+  OR resource LIKE '%amazonaws.com%' OR resource LIKE '%/rest/api/2/issue%');
+tags:
+- command
+- trace

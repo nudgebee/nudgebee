@@ -1,0 +1,10 @@
+user_prompt: How many active connections are on my NAT Gateways?
+expected_output:
+  - "avg:aws.natgateway.active_connection_count{*} by {name}"
+  - "sum:aws.natgateway.active_connection_count{*} by {name}"
+  - "avg:aws.natgateway.active_connection_count{*}"
+tags:
+  - command
+  - aws
+  - nat
+  - network

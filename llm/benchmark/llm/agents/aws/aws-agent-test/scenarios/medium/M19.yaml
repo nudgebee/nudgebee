@@ -1,0 +1,166 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M19: ElastiCache single-AZ + Lambda multi-AZ causes intermittent cache failures.
+  User complaint: "Our Lambda 'm19-product-cache' has intermittent timeouts when
+  connecting to ElastiCache Redis 'm19-catalog-redis'. About 50% of invocations
+  succeed instantly, the other 50% timeout. There's no pattern — same request
+  sometimes works, sometimes doesn't."
+  Root cause: ElastiCache node is in AZ-a only, Lambda is in both AZ-a and AZ-b
+  subnets. When Lambda runs in AZ-b, it routes through the NAT gateway to reach
+  Redis in AZ-a, but the Redis security group only allows traffic from the VPC CIDR
+  of AZ-a subnet (10.0.11.0/24), not AZ-b (10.0.12.0/24).
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Redis SG allows only AZ-a private subnet CIDR (10.0.11.0/24).
+      Fixed = Redis SG allows full VPC CIDR (10.0.0.0/16).
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for product cache Lambda
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      Tags:
+        - Key: Name
+          Value: m19-lambda-sg
+        - Key: Environment
+          Value: production
+
+  RedisSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for catalog Redis
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      # THE BUG: Only allows AZ-a subnet CIDR, not full VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          CidrIp: !If [IsFixed, '10.0.0.0/16', '10.0.11.0/24']
+      Tags:
+        - Key: Name
+          Value: m19-redis-sg
+        - Key: Environment
+          Value: production
+
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      CacheSubnetGroupName: m19-redis-subnet-group
+      Description: Subnet group for catalog Redis (single AZ)
+      SubnetIds:
+        - !ImportValue aws-agent-test-private-subnet-a
+
+  RedisCluster:
+    Type: AWS::ElastiCache::CacheCluster
+    Properties:
+      ClusterName: m19-catalog-redis
+      Engine: redis
+      CacheNodeType: cache.t3.micro
+      NumCacheNodes: 1
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref RedisSecurityGroup
+      PreferredAvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: m19-catalog-redis
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: product-catalog
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m19-product-cache-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+  ProductCacheFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: m19-product-cache
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue aws-agent-test-private-subnet-a
+          - !ImportValue aws-agent-test-private-subnet-b
+      Environment:
+        Variables:
+          REDIS_HOST: !GetAtt RedisCluster.RedisEndpoint.Address
+          REDIS_PORT: '6379'
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import socket
+
+          def handler(event, context):
+              host = os.environ['REDIS_HOST']
+              port = int(os.environ['REDIS_PORT'])
+              product_id = event.get('productId', 'test-product')
+              try:
+                  sock = socket.create_connection((host, port), timeout=3)
+                  sock.sendall(f"GET product:{product_id}\r\n".encode())
+                  response = sock.recv(4096)
+                  sock.close()
+                  return {'statusCode': 200, 'body': json.dumps({'cached': True})}
+              except socket.timeout:
+                  return {'statusCode': 504, 'body': json.dumps({'error': 'Redis timeout'})}
+              except Exception as e:
+                  return {'statusCode': 500, 'body': json.dumps({'error': str(e)})}
+      Tags:
+        - Key: Name
+          Value: m19-product-cache
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: product-catalog
+
+Outputs:
+  RedisClusterId:
+    Description: ElastiCache cluster ID
+    Value: !Ref RedisCluster
+  RedisAZ:
+    Description: Redis availability zone
+    Value: !Select [0, !GetAZs '']
+  LambdaSubnets:
+    Description: Lambda subnets (both AZs)
+    Value: !Join
+      - ', '
+      - - !ImportValue aws-agent-test-private-subnet-a
+        - !ImportValue aws-agent-test-private-subnet-b
+  RedisSGCidr:
+    Description: Redis SG allowed CIDR (only AZ-a in Broken mode)
+    Value: !If [IsFixed, '10.0.0.0/16', '10.0.11.0/24']
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref ProductCacheFunction
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

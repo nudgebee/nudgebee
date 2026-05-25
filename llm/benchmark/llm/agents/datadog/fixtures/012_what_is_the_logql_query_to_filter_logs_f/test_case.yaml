@@ -1,0 +1,8 @@
+user_prompt: What is the LogQL query to filter logs from the kubernetes-logs job where
+  the JSON field response_time is greater than 500?
+expected_output:
+- '{job="kubernetes-logs"} | json | response_time > 500'
+- '{namespace="production"} | json | response_time > 500'
+tags:
+- command
+- datadog

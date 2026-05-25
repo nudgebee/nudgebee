@@ -1,0 +1,38 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "e2e-tests-job"
+spec:
+  ttlSecondsAfterFinished: 7200
+  backoffLimit: 1
+  template:
+    metadata:
+      name: "e2e-tests-job"
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: e2e-tests-job
+        image: {{ include "imageName" . }}
+        envFrom:
+          - secretRef:
+              {{- if .Values.secretName }}
+              name: {{ .Values.secretName }}
+              {{- end }}
+        env:
+          {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+          {{- end }}
+          
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

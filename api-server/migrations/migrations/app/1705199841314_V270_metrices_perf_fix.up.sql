@@ -1,0 +1,46 @@
+
+CREATE OR REPLACE FUNCTION public.cloud_resource_metrics_groupings(group_by text[] DEFAULT '{}'::text[], "where" json DEFAULT NULL::json, date_unit text DEFAULT 'day'::text, "limit" integer DEFAULT 100, "offset" integer DEFAULT 0, sort_by text DEFAULT 'timestamp'::text, sort_order text DEFAULT 'asc'::text, hasura_session json DEFAULT '{}'::json)
+ RETURNS SETOF cloud_resource_metrics_groupings_type
+ LANGUAGE sql
+ STABLE
+AS $function$
+SELECT
+     (CASE WHEN 'tenant_id' = ANY(group_by) THEN crm.tenant_id ELSE null end ) AS tenant_id,
+     (CASE WHEN 'account_name' = ANY(group_by) THEN NULL END) AS account_name, 
+     (CASE WHEN 'account_id' = ANY(group_by) THEN crm.cloud_account_id ELSE NULL END) AS account_id, 
+     (CASE WHEN 'resource_id' = ANY(group_by) THEN crm.cloud_resource_id ELSE null end ) AS resource_id,
+     (CASE WHEN 'resource_name' = ANY(group_by) THEN null end ) AS resource_name,
+     (CASE WHEN 'metric' = ANY(group_by) THEN crm.metric ELSE NULL END) AS metric,
+     (CASE WHEN 'timestamp' = ANY(group_by) THEN date_trunc(date_unit, crm."timestamp") ELSE NULL END) AS "timestamp",
+     COUNT(*) AS count_value,
+     SUM(crm.value) AS sum_value,
+     AVG(crm.value) AS avg_value,
+     MIN(crm.value) AS min_value,
+     MAX(crm.value) AS max_value
+FROM cloud_resource_metrics crm
+WHERE 
+    ("hasura_session" ->> 'x-hasura-user-tenant-id' IS NULL OR ( crm.tenant_id = ("hasura_session" ->> 'x-hasura-user-tenant-id') :: uuid))
+    AND ("where" #>> '{account_id,_eq}' IS null OR (crm.cloud_account_id = ("where" #>> '{account_id,_eq}') :: uuid))
+    AND ("where" #>> '{metric,_eq}' IS null OR (crm.metric = ("where" #>> '{metric,_eq}')))
+    AND ("where" #>> '{metric,_in}' IS null OR (("where" #>> '{metric,_in}')::jsonb ? crm.metric::text))
+    AND ("where" #>> '{resource_id,_eq}' IS null OR (crm.cloud_resource_id = ("where" #>> '{resource_id,_eq}')::uuid))
+    AND ("where" #>> '{timestamp,_lt}' IS NULL OR (crm."timestamp" < ("where" #>> '{timestamp,_lt}')::timestamp))
+    AND ("where" #>> '{timestamp,_gt}' IS NULL OR (crm."timestamp" > ("where" #>> '{timestamp,_gt}')::timestamp))
+    AND ("where" #>> '{timestamp,_le}' IS NULL OR (crm."timestamp" <= ("where" #>> '{timestamp,_lt}')::timestamp))
+    AND ("where" #>> '{timestamp,_ge}' IS NULL OR (crm."timestamp" >= ("where" #>> '{timestamp,_lt}')::timestamp))
+    AND ("where" #>> '{timestamp,_between}' IS NULL OR (("timestamp" >= ("where" #>> '{timestamp,_between,_ge}')::timestamp) and ("timestamp" <= ("where" #>> '{timestamp,_between,_le}')::timestamp)))
+GROUP BY
+    (CASE WHEN 'tenant_id' = ANY(group_by) THEN crm.tenant_id END),
+    (CASE WHEN 'account_id' = ANY(group_by) THEN crm.cloud_account_id END),
+    (CASE WHEN 'resource_id' = ANY(group_by) THEN crm.cloud_resource_id END),
+    (CASE WHEN 'metric' = ANY(group_by) THEN crm.metric END),
+    (CASE WHEN 'k8s_workload_name' = ANY(group_by) THEN crm.tags ->> 'controller' END),
+    (CASE WHEN 'k8s_pod_name' = ANY(group_by) THEN crm.tags ->> 'name' END),
+    (CASE WHEN 'k8s_namespace_name' = ANY(group_by) THEN crm.tags ->> 'namespace' END),
+    (CASE WHEN 'k8s_node_name' = ANY(group_by) THEN crm.tags ->> 'node' END),
+    (CASE WHEN 'timestamp' = ANY(group_by) THEN date_trunc(date_unit, crm.timestamp) END)
+ORDER BY
+    (case when sort_by = 'timestamp' and sort_order = 'asc' then max(date_trunc(date_unit, crm.timestamp)) end) asc,
+    (case when sort_by = 'timestamp' and sort_order = 'desc' then max(date_trunc(date_unit, crm.timestamp)) end) desc
+LIMIT "limit" OFFSET "offset";
+$function$;

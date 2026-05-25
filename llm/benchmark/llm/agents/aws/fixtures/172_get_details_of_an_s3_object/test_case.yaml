@@ -1,0 +1,6 @@
+user_prompt: Get details of an S3 object.
+expected_output:
+- aws s3api head-object --bucket <bucket-name> --key <object-key>
+tags:
+- command
+- aws

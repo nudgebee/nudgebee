@@ -1,0 +1,424 @@
+global:
+  image:
+    registry: 'ghcr.io/nudgebee'
+  imagePullSecrets: []
+  initImages:
+    postgres: 'ghcr.io/nudgebee/postgres:16.10-alpine'
+    curl: 'ghcr.io/nudgebee/curl:8.10.1'
+  existingNudgebeeSecretName: ''
+nudgebee_registry_secret:
+  enabled: false
+  username: 'nudgebee'
+  password: ''
+  existingSecretName: ''
+nudgebee_secret:
+  BASE_URL: 'http://localhost:3000'
+  EMAIL_FROM: ''
+  EMAIL_SERVER_HOST: ''
+  EMAIL_SERVER_PASSWORD: ''
+  EMAIL_SERVER_USER: ''
+  APP_DATABASE_URL: 'postgresql://postgres:password@postgresql:5432/postgres?sslmode=disable'
+  # Note: If you change APP_DATABASE_URL, ensure you also update the 'temporal.server.config.persistence' section below
+  # to match the host, port, user, and SSL settings.
+  # NUDGEBEE_ENCRYPTION_KEY encrypts DB-stored integration credentials and similar
+  # at-rest secrets. MUST be set per install (the chart fails if empty or left as
+  # __REPLACE__) — regenerating it after data is written makes previously-encrypted
+  # rows unreadable, so generate once and store securely. Generate with:
+  # openssl rand -hex 32
+  NUDGEBEE_ENCRYPTION_KEY: '__REPLACE__'
+  NUDGEBEE_LICENSE: ''
+  RELAY_SERVER_SECRET_KEY: ''
+  AWS_TEMPLATE_URL: 'https://nudgebee-prod-documents.s3.amazonaws.com/nudgebee-aws-cloud-formation.json'
+  NUDGEBEE_INSTANCE_ROLE: ''
+  AWS_ORG_TEMPLATE_URL: ''
+  AWS_ORG_SNS_TOPIC_ARN: ''
+  CLOUD_COLLECTOR_ORG_REGISTRATION_SQS: ''
+  CLOUD_COLLECTOR_AWS_EVENTBRIDGE_SQS: ''
+  NEXTAUTH_DUMMY_CREDS_ENABLED: true
+  TEMPORAL_DB_PASSWORD: 'password'
+  TEMPORAL_GRPC_ENDPOINT: 'temporal-frontend:7233'
+
+  # ------------------------------------------------------------------
+  # Open-source / on-prem configuration knobs.
+  # All defaults preserve the existing Nudgebee SaaS behavior; only set
+  # these when running an OSS fork or a single-tenant on-prem deployment.
+  # ------------------------------------------------------------------
+
+  # RSA public key for verifying NUDGEBEE_LICENSE JWTs (commercial / on-prem).
+  # Leave empty for OSS — getLicenseDetails() short-circuits to licenseType='free'.
+  LICENSE_PUBLIC_KEY: ''
+
+  # Azure AD application (client) ID for /.well-known/microsoft-identity-association.json.
+  # Leave empty for OSS / dev — the endpoint will return an empty associations array.
+  MICROSOFT_IDENTITY_APPLICATION_ID: ''
+
+  # Contact address rendered in the marketplace on-prem / license-only response
+  # HTML pages. When unset, the page degrades to a generic "team will get in touch"
+  # line with no mailto link.
+  MARKETPLACE_CONTACT_EMAIL: ''
+
+  # Public origin of the app, used as a fallback for OAuth redirect URIs and
+  # email links when BASE_URL is not set.
+  NEXT_PUBLIC_APP_URL: ''
+
+  # Base URL of the public docs site, used by in-app "Learn more" links.
+  # Empty value lets the app fall back to its baked-in default (https://docs.nudgebee.com).
+  NEXT_PUBLIC_DOCS_URL: ''
+
+  # Default Docker image registry pre-filled in the K8s installer modal.
+  # OSS deployments should set this to 'ghcr.io/nudgebee' (or your own
+  # mirror). The app has no baked-in fallback — if this is empty, the
+  # installer modal will show "undefined" in the placeholder. EE installs
+  # override to their internal registry via values-enterprise.yaml.
+  NEXT_PUBLIC_DEFAULT_IMAGE_REGISTRY: 'ghcr.io/nudgebee'
+
+
+postgresql:
+  enabled: true
+  fullnameOverride: postgresql
+  auth:
+    existingSecret: 'postgresql'
+    database: 'postgres'
+  # Pin to the GHCR mirror of bitnami/postgresql:16.1.0-debian-11-r16.
+  # Same tag the bitnami chart 13.2.25 already defaults to, but the original
+  # docker.io/bitnami/postgresql path was deprecated in Bitnami's mid-2025
+  # sunset (images moved to docker.io/bitnamilegacy/*). Without this override
+  # the chart's default image-pull 404s.
+  image:
+    registry: 'ghcr.io/nudgebee'
+    repository: postgresql
+    tag: '16.1.0-debian-11-r16'
+  metrics:
+    enabled: true
+    image:
+      registry: 'ghcr.io/nudgebee'
+      repository: postgres-exporter
+      tag: '0.15.0-debian-11-r3'
+    serviceMonitor:
+      enabled: true
+    prometheusRule:
+      enabled: true
+      additionalRules:
+        - name: postgres.rules
+          groups:
+            - name: postgres.rules
+              rules:
+                - alert: PostgresInstanceDown
+                  expr: up{job="postgresql"} == 0
+                  for: 2m
+                  labels:
+                    severity: critical
+                  annotations:
+                    summary: 'PostgreSQL instance is down'
+                    description: 'No metrics received from PostgreSQL (instance: {{ $labels.instance }})'
+
+                - alert: PostgresTooManyConnections
+                  expr: pg_stat_activity_count{job="postgresql"} > 100
+                  for: 5m
+                  labels:
+                    severity: warning
+                  annotations:
+                    summary: 'PostgreSQL too many connections'
+                    description: 'Instance {{ $labels.instance }} has over 100 active connections'
+
+                - alert: PostgresReplicationLag
+                  expr: pg_replication_lag{job="postgresql"} > 10000000
+                  for: 5m
+                  labels:
+                    severity: warning
+                  annotations:
+                    summary: 'PostgreSQL replication lag detected'
+                    description: 'Replication lag on {{ $labels.instance }} > 10MB'
+
+                - alert: PostgresLongRunningQuery
+                  expr: pg_stat_activity_max_tx_duration_seconds{job="postgresql"} > 300
+                  for: 5m
+                  labels:
+                    severity: warning
+                  annotations:
+                    summary: 'Long-running query'
+                    description: 'A query has been running > 5 minutes on {{ $labels.instance }}'
+
+clickhouse:
+  enabled: false
+  fullnameOverride: clickhouse
+  shards: 2
+  replicaCount: 1
+  auth:
+    existingSecret: 'clickhouse'
+    existingSecretKey: 'admin-password'
+redis:
+  enabled: true
+  fullnameOverride: redis
+  # Pin to the GHCR mirror — bitnami chart 17.11.8 defaults at
+  # docker.io/bitnami/redis are dead since Bitnami's mid-2025 sunset
+  # (moved to docker.io/bitnamilegacy/*).
+  image:
+    registry: 'ghcr.io/nudgebee'
+    repository: redis
+    tag: 7.0.12-debian-11-r0
+  auth:
+    password: 'password'
+    existingSecret: 'redis'
+    existingSecretPasswordKey: 'redis-password'
+  replica:
+    replicaCount: 0
+rabbitmq:
+  enabled: true
+  fullnameOverride: rabbitmq
+  image:
+    registry: 'ghcr.io/nudgebee'
+    repository: rabbitmq
+    tag: 3.13.7-debian-12-r5-nb-3
+  extraConfiguration: |-
+    consumer_timeout = 3600000
+  auth:
+    password: 'password'
+    securePassword: false
+    existingPasswordSecret: 'rabbitmq'
+    existingErlangSecret: 'rabbitmq'
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      path: /metrics/per-object
+    prometheusRule:
+      enabled: true
+      rules:
+        - alert: RabbitmqNodeDown
+          expr: 'sum(rabbitmq_build_info{namespace="{{ .Release.Namespace }}"}) < {{ .Values.replicaCount }}'
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: RabbitMQ node down
+            description: 'Less than {{ .Values.replicaCount }} nodes running in RabbitMQ cluster'
+        - alert: RabbitmqInstancesDifferentVersions
+          expr: 'count(count(rabbitmq_build_info{namespace="{{ .Release.Namespace }}"}) by (rabbitmq_version)) > 1'
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: RabbitMQ instances different versions
+            description: 'Running different version of RabbitMQ in the same cluster, can lead to failure.'
+        - alert: RabbitmqMemoryHigh
+          expr: 'rabbitmq_process_resident_memory_bytes{namespace="{{ .Release.Namespace }}"} / rabbitmq_resident_memory_limit_bytes{namespace="{{ .Release.Namespace }}"} * 100 > 90'
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: RabbitMQ memory high
+            description: 'A node use more than 90% of allocated RAM'
+
+        - alert: RabbitmqFileDescriptorsUsage
+          expr: 'rabbitmq_process_open_fds{namespace="{{ .Release.Namespace }}"} / rabbitmq_process_max_fds{namespace="{{ .Release.Namespace }}"} * 100 > 90'
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: RabbitMQ file descriptors usage
+            description: 'A node use more than 90% of file descriptors'
+
+        - alert: RabbitmqTooManyReadyMessages
+          expr: 'sum(rabbitmq_queue_messages_ready{namespace="{{ .Release.Namespace }}"}) BY (queue, pod, namespace) > 10'
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: RabbitMQ too many ready messages
+            description: 'RabbitMQ too many ready messages'
+
+        - alert: RabbitmqTooManyUnackMessages
+          expr: 'sum(rabbitmq_queue_messages_unacked{namespace="{{ .Release.Namespace }}"}) BY (queue, pod, namespace) > 10'
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: RabbitMQ too many unack messages
+            description: 'Too many unacknowledged messages'
+
+        - alert: RabbitmqTooManyConnections
+          expr: 'rabbitmq_connections{namespace="{{ .Release.Namespace }}"} > 100'
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: RabbitMQ too many connections
+            description: 'The total connections of a node is too high'
+
+        - alert: RabbitmqNoQueueConsumer
+          expr: 'rabbitmq_queue_consumers < 1'
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: RabbitMQ no queue consumers
+            description: 'A queue has less than 1 consumer'
+
+        - alert: RabbitmqUnroutableMessages
+          expr: 'increase(rabbitmq_channel_messages_unroutable_returned_total{namespace="{{ .Release.Namespace }}"}[1m]) > 0 or increase(rabbitmq_channel_messages_unroutable_dropped_total{namespace="{{ .Release.Namespace }}"}[1m]) > 0'
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: RabbitMQ unroutable messages
+            description: 'A queue has unroutable messages'
+services-server:
+  fullnameOverride: services-server
+  image:
+    repository: nudgebee-services-server
+    tag: 2024-03-21T04-15-30_fb7ea8b95c031a27386773c6aac8feb5618c9d06
+  env:
+    NOVA_IMAGE: 'ghcr.io/nudgebee/nova:2026-05-12T15-41-58_3b33692e2739d958a11eb43346c4240a70fd15cd'
+    K8S_VERSION_UPGRADE_IMAGE: 'ghcr.io/nudgebee/nova:2026-05-12T15-41-58_3b33692e2739d958a11eb43346c4240a70fd15cd'
+    TRIVY_IMAGE: 'ghcr.io/nudgebee/trivy:0.58.0'
+    POPEYE_IMAGE: 'ghcr.io/nudgebee/popeye:v0.11.1-nudgebee.1'
+    KUBE_BENCH_IMAGE: 'ghcr.io/nudgebee/kube-bench:v0.10.4'
+    CERT_SCANNER_IMAGE: 'ghcr.io/nudgebee/cert-scanner:v0.1.0'
+k8s-collector:
+  fullnameOverride: k8s-collector
+  image:
+    repository: nudgebee-k8s-collector
+    tag: '2024-03-17T15-15-10_90add293389950139c709848cd1da68e7c6e313f'
+relay-server:
+  fullnameOverride: relay-server
+  image:
+    repository: nudgebee-relay-server
+    tag: '2024-03-14T03-57-19_5bb622b3a3a22993c1d3e4614ab5a6d59dd2bd46'
+app:
+  fullnameOverride: app
+  replicaCount: 1
+  image:
+    repository: nudgebee-app
+    tag: '0.7.0-snapshot-20240321093300-62c7d30d'
+notifications:
+  enabled: true
+  fullnameOverride: notifications
+  image:
+    repository: nudgebee-notifications
+    tag: '2024-03-20T13-44-54_3131d1ca2516e1ab26d5b19559b4087e93f80189'
+ticket-server:
+  enabled: true
+  fullnameOverride: ticket-server
+  image:
+    repository: nudgebee-ticket-server
+    tag: '2024-03-15T13-03-03_4b25313a74f83436fd8fc3dba1b849fbfe0eb25d'
+ml-k8s-server:
+  enabled: true
+  fullnameOverride: ml-server
+  image:
+    repository: nudgebee-ml-k8s-server
+    tag: '2024-03-05T07-49-52_6b67c2793c17596e425a96aeb17174d002c8f6d3'
+postgres_migrations:
+  fullnameOverride: postgres_migrations
+  image:
+    repository: nudgebee-hasura-migrations
+    tag: '2024-03-21T12-16-59_fde05c69cb8583dfcdd68c0b19016edceee1dfd1'
+llm-server:
+  enabled: true
+  fullnameOverride: llm-server
+  image:
+    repository: nudgebee-llm-server
+    tag: '2024-10-24T08-31-06_5ef812c2e39cf483c8db474c4d3488fce0f27af4'
+  env:
+    LLM_SERVER_AGENT_CODEAGENT_IMAGE: 'ghcr.io/nudgebee/code-analysis-agent:latest'
+    LLM_SERVER_AGENT_CODEAGENT_IMAGE_PULL_SECRET: ''
+rag-server:
+  enabled: true
+  fullnameOverride: rag-server
+  image:
+    repository: nudgebee-rag-server
+    tag: '2024-10-24T08-33-49_5ef812c2e39cf483c8db474c4d3488fce0f27af4'
+cloud-collector-server:
+  enabled: true
+  fullnameOverride: cloud-collector-server
+  image:
+    repository: nudgebee-cloud-collector-server
+    tag: latest
+nudgebee-qdrant-server:
+  enabled: true
+  fullnameOverride: nudgebee-qdrant-server
+  image:
+    repository: qdrant/qdrant
+    tag: 'v1.16.0'
+temporal:
+  enabled: true
+  fullnameOverride: temporal
+  web:
+    enabled: true
+  admintools:
+    enabled: true
+  server:
+    enabled: true
+    replicaCount: 1
+    dynamicConfig:
+      limit.customSearchAttributes.keyword:
+        - value: 100
+          constraints: {}
+      frontend.validSearchAttributes:
+        - value:
+            nb_tenant_id: 'Keyword'
+            nb_account_id: 'Keyword'
+            nb_workflow_id: 'Keyword'
+            nb_workflow_trigger: 'Keyword'
+            nb_triggered_by: 'Keyword'
+            parent_workflow_id: 'Keyword'
+            parent_run_id: 'Keyword'
+            nb_execution_tags: 'KeywordList'
+            nb_event_type: 'Keyword'
+            nb_event_id: 'Keyword'
+            nb_parent_workflow_id: 'Keyword'
+    config:
+      namespaces:
+        create: true
+        namespace:
+          - name: default
+            retention: 10d
+      persistence:
+        default:
+          driver: 'sql'
+          sql:
+            driver: 'postgres12'
+            host: 'postgresql'
+            port: 5432
+            database: 'temporal'
+            user: 'postgres'
+            existingSecret: 'nudgebee-temporal'
+            tls:
+              enabled: false
+              enableHostVerification: false
+        visibility:
+          driver: 'sql'
+          sql:
+            driver: 'postgres12'
+            host: 'postgresql'
+            port: 5432
+            database: 'temporal_visibility'
+            user: 'postgres'
+            existingSecret: 'nudgebee-temporal'
+            tls:
+              enabled: false
+              enableHostVerification: false
+  schema:
+    createDatabase:
+      enabled: true
+    setup:
+      enabled: true
+    update:
+      enabled: true
+  cassandra:
+    enabled: false
+  mysql:
+    enabled: false
+  elasticsearch:
+    enabled: false
+  prometheus:
+    enabled: false
+  grafana:
+    enabled: false
+workflow-server:
+  enabled: true
+  fullnameOverride: workflow-server
+  image:
+    repository: nudgebee-workflow-server
+    tag: 'latest'

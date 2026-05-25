@@ -1,0 +1,8 @@
+user_prompt: what is the promql query for disk usage percentage on node-6?
+expected_output:
+- (node_filesystem_size_bytes{instance="node-6", mountpoint="/"} - node_filesystem_free_bytes{instance="node-6",
+  mountpoint="/"}) / node_filesystem_size_bytes{instance="node-6", mountpoint="/"}
+  * 100
+tags:
+- command
+- promql

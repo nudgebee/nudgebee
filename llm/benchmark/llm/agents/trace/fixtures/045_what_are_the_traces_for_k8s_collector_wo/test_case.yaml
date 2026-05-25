@@ -1,0 +1,10 @@
+user_prompt: What are the traces for 'k8s-collector' workload?
+expected_output:
+- SELECT * FROM traces_view WHERE workload_name LIKE '%k8s-collector%' ORDER BY timestamp
+  DESC LIMIT 50;
+- SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name,
+  destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE
+  workload_name LIKE '%k8s-collector%' ORDER BY timestamp DESC LIMIT 50;
+tags:
+- command
+- trace

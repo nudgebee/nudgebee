@@ -1,0 +1,26 @@
+agent: k8s_debug
+expected_output:
+- The paymentservice is completely unreachable due to the paymentUnreachable feature flag being enabled. This makes the service
+  unavailable for all payment processing, completely blocking the checkout flow and preventing any customer purchases.
+expected_root_cause:
+  affected_service: paymentservice
+  issue_type: service_unreachable
+  symptoms:
+  - all payment attempts failing
+  - connection timeout to payment service
+  - checkout completely broken
+  - no successful transactions
+  telemetry_signals:
+    logs: connection timeout errors, service unreachable errors in checkout service logs
+    metrics: 100% payment failure rate, connection errors to payment service
+    traces: failed traces showing connection failures to paymentservice
+feature_flag: paymentUnreachable
+flag_variant: 'on'
+scenario_id: payment_service_unreachable
+tags:
+- rca
+- kubernetes
+type: rca
+user_prompt: Checkout is completely broken - customers cannot complete any purchases. The payment service appears to be down.
+  Investigate the payment deployment in nudgebee-demo namespace.
+wait_time_seconds: 60

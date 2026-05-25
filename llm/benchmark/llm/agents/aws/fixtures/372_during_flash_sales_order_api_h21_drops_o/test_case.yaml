@@ -1,0 +1,31 @@
+user_prompt: During flash sales, our order API 'h21-order-api' drops about 15% of orders.
+  API returns 200, SQS queue 'h21-orders' receives messages, but some orders never
+  appear in DynamoDB 'h21-orders-table'. Lambda 'h21-order-processor' shows some
+  errors but the error rate seems low. The DLQ 'h21-orders-dlq' has messages in it.
+  What's causing the order loss?
+expected_output:
+- "The root cause is multiple compounding configuration issues that create a cascading\
+  \ failure during peak traffic. First, Lambda 'h21-order-processor' has\
+  \ ReservedConcurrentExecutions=5, which is too low for flash sale traffic, causing\
+  \ throttling. Second, the SQS VisibilityTimeout (30s) is much shorter than the Lambda\
+  \ Timeout (300s). When Lambda takes longer than 30s to process, the message becomes\
+  \ visible again in the queue and another Lambda instance picks it up. DynamoDB conditional\
+  \ writes (attribute_not_exists) prevent duplicate inserts, but the second Lambda instance\
+  \ fails, incrementing the receive count. Third, maxReceiveCount=3 on the redrive\
+  \ policy is too low — after just 3 receives (which can happen quickly due to the\
+  \ visibility timeout issue), messages are sent to the DLQ and never retried. The\
+  \ combination means messages bounce between Lambda instances due to the timeout\
+  \ mismatch, quickly exceed maxReceiveCount, and are permanently moved to the DLQ.\
+  \ The fix requires increasing Lambda concurrency, setting SQS VisibilityTimeout\
+  \ to at least 6x Lambda Timeout (e.g., 360s), and increasing maxReceiveCount."
+tags:
+- rca
+- aws
+- sqs
+- lambda
+- dynamodb
+- cascading-failure
+- concurrency
+- hard
+type: rca
+agent: aws_debug

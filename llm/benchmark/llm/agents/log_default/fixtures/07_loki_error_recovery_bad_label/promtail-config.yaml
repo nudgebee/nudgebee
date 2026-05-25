@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config
+data:
+  promtail-config.yaml: |
+    server:
+      http_listen_port: 9080
+    positions:
+      filename: /tmp/positions.yaml
+    clients:
+      - url: http://loki:3100/loki/api/v1/push
+    scrape_configs:
+      # Only `namespace` and `app` are exposed as Loki labels — no `service`.
+      # The prompt will tempt the agent to use `service=...`, triggering an
+      # empty/invalid first attempt → retry with a corrected label.
+      - job_name: ns-log-default-07
+        static_configs:
+          - targets: [localhost]
+            labels:
+              namespace: log-default-07
+              app: auth-gateway
+              __path__: /var/log/app/*.log

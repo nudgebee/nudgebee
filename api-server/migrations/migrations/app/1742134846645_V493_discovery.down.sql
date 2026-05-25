@@ -1,0 +1,1 @@
+drop table if exists cloud_resource_attributes;

@@ -1,0 +1,3 @@
+CREATE TABLE IF NOT EXISTS "public"."llm_model_pricing" ("id" uuid NOT NULL DEFAULT gen_random_uuid(), "model_name" text NOT NULL, "provider_name" text NOT NULL, "cost_per_input_token" float4 NOT NULL, "cost_per_output_token" float4 NOT NULL, "created_at" timestamptz DEFAULT now(), PRIMARY KEY ("id") , UNIQUE ("id"), UNIQUE ("model_name", "provider_name"));
+COMMENT ON TABLE "public"."llm_model_pricing" IS E'Lists all llm models, their providers and pricing per input/output tokens. Note: Table should be updated whenever a new model is launched or existing model pricing is changed';
+CREATE EXTENSION IF NOT EXISTS pgcrypto;

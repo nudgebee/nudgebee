@@ -1,0 +1,108 @@
+{{- if .Values.workspaceNetworkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "llm-server.fullname" . }}-workspace
+  labels:
+    {{- include "llm-server.labels" . | nindent 4 }}
+    component: workspace-network-policy
+  {{- with .Values.workspaceNetworkPolicy.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  podSelector:
+    matchLabels:
+      app: workspace
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Only llm-server pods may reach the workspace HTTP server. This blocks
+    # lateral movement from any other pod in the cluster.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "llm-server.name" . }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.workspaceNetworkPolicy.workspacePort }}
+    {{- if .Values.workspaceNetworkPolicy.portForwardCIDRs }}
+    # Allow kubectl port-forward from node IPs for local debugging.
+    # port-forward connections originate from the node (kubelet), not from a
+    # pod, so a podSelector alone is insufficient — we need ipBlocks for the
+    # node subnets. In multi-AZ clusters, nodes span multiple subnets, so this
+    # accepts a list. Leave empty in production to keep the policy tight.
+    - from:
+        {{- range .Values.workspaceNetworkPolicy.portForwardCIDRs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.workspaceNetworkPolicy.workspacePort }}
+    {{- end }}
+    {{- with .Values.workspaceNetworkPolicy.extraIngress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  egress:
+    # DNS resolution is required for any outbound traffic (including the
+    # allow-listed egress rules below). Scope to kube-dns if a selector is
+    # provided, otherwise allow DNS cluster-wide on port 53.
+    - to:
+        {{- if .Values.workspaceNetworkPolicy.dnsNamespaceSelector }}
+        - namespaceSelector:
+            {{- toYaml .Values.workspaceNetworkPolicy.dnsNamespaceSelector | nindent 12 }}
+          {{- if .Values.workspaceNetworkPolicy.dnsPodSelector }}
+          podSelector:
+            {{- toYaml .Values.workspaceNetworkPolicy.dnsPodSelector | nindent 12 }}
+          {{- end }}
+        {{- else }}
+        - namespaceSelector: {}
+        {{- end }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Egress back to llm-server for agent callbacks (code-analysis reports,
+    # stream endpoints, etc.).
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "llm-server.name" . }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.workspaceNetworkPolicy.llmServerPort }}
+    # Egress to relay-server so workspace tools can run cluster operations
+    # via the relay gateway.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ .Values.workspaceNetworkPolicy.relayServerName }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.workspaceNetworkPolicy.relayServerPort }}
+    {{- with .Values.workspaceNetworkPolicy.extraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if .Values.workspaceNetworkPolicy.allowExternalEgress }}
+    # Allow egress to the public internet for tools that need it (e.g.
+    # `git clone`, `curl`) while explicitly blocking:
+    #   * Cloud metadata endpoint (169.254.169.254) — prevents IMDS
+    #     credential theft on AWS/GCP/Azure.
+    #   * Link-local and private ranges by default — prevents SSRF into
+    #     internal services that aren't protected by other NetworkPolicies.
+    # NOTE: this rule is IPv4-only. If your cluster is dual-stack, add a
+    # separate ipBlock for `::/0` with IPv6 excepts (e.g. fd00:ec2::254/128,
+    # fe80::/10) — Kubernetes does not allow mixing address families in a
+    # single ipBlock.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              {{- range .Values.workspaceNetworkPolicy.externalEgressExcept }}
+              - {{ . | quote }}
+              {{- end }}
+    {{- end }}
+{{- end }}

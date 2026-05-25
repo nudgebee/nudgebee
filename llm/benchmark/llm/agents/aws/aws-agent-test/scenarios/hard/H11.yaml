@@ -1,0 +1,194 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H11: S3 access blocked by VPC endpoint policy — traffic rerouted through endpoint.
+  User complaint: "Lambda 'h11-etl-pipeline' in VPC was reading S3 fine until we added
+  a VPC Gateway Endpoint for S3. Now it gets AccessDenied on the target bucket but
+  can still access other buckets. The IAM role and bucket policy are correct."
+  Root cause: VPC Gateway Endpoint for S3 has a restrictive endpoint policy that only
+  allows access to a different bucket (the artifact bucket). When the endpoint was
+  created, S3 traffic was rerouted through it (bypassing NAT). The endpoint policy
+  denies access to the target data bucket. Before the endpoint, traffic went through
+  NAT → internet → S3 (worked fine because IAM allowed it).
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = VPC endpoint policy only allows access to wrong bucket.
+      Fixed = VPC endpoint policy allows access to all S3 buckets.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  EtlSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      CidrBlock: 10.0.221.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: h11-etl-private
+
+  EtlRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      Tags:
+        - Key: Name
+          Value: h11-etl-rt
+
+  EtlNatRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref EtlRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !ImportValue aws-agent-test-nat-gateway-id
+
+  EtlSubnetAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref EtlSubnet
+      RouteTableId: !Ref EtlRouteTable
+
+  # THE BUG: VPC endpoint with restrictive policy — only allows wrong bucket
+  S3VpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref EtlRouteTable
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowS3Access
+            Effect: Allow
+            Principal: '*'
+            Action: 's3:*'
+            Resource: !If
+              - IsFixed
+              - '*'
+              # Broken: Only allows access to the artifact bucket, NOT the data bucket
+              - - !Sub 'arn:aws:s3:::h11-artifacts-${AWS::AccountId}'
+                - !Sub 'arn:aws:s3:::h11-artifacts-${AWS::AccountId}/*'
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'h11-artifacts-${AWS::AccountId}'
+      Tags:
+        - Key: Name
+          Value: h11-artifacts
+        - Key: Purpose
+          Value: build-artifacts
+
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'h11-data-lake-${AWS::AccountId}'
+      Tags:
+        - Key: Name
+          Value: h11-data-lake
+        - Key: Purpose
+          Value: etl-data
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ETL Lambda
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      Tags:
+        - Key: Name
+          Value: h11-etl-sg
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h11-etl-pipeline-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: s3-full-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::h11-data-lake-${AWS::AccountId}'
+                  - !Sub 'arn:aws:s3:::h11-data-lake-${AWS::AccountId}/*'
+
+  EtlPipelineFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h11-etl-pipeline
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      MemorySize: 512
+      VpcConfig:
+        SubnetIds:
+          - !Ref EtlSubnet
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+      Environment:
+        Variables:
+          DATA_BUCKET: !Ref DataBucket
+          ARTIFACT_BUCKET: !Ref ArtifactBucket
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+
+          s3 = boto3.client('s3')
+
+          def handler(event, context):
+              data_bucket = os.environ['DATA_BUCKET']
+              try:
+                  # This call is blocked by VPC endpoint policy
+                  response = s3.list_objects_v2(Bucket=data_bucket, MaxKeys=10)
+                  return {'statusCode': 200, 'body': json.dumps({'count': response.get('KeyCount', 0)})}
+              except Exception as e:
+                  return {'statusCode': 403, 'body': json.dumps({'error': str(e)})}
+      Tags:
+        - Key: Name
+          Value: h11-etl-pipeline
+        - Key: Environment
+          Value: production
+
+Outputs:
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref EtlPipelineFunction
+  DataBucket:
+    Description: Target data bucket (blocked by endpoint policy)
+    Value: !Ref DataBucket
+  ArtifactBucket:
+    Description: Artifact bucket (allowed by endpoint policy)
+    Value: !Ref ArtifactBucket
+  VpcEndpointId:
+    Description: S3 VPC Gateway Endpoint
+    Value: !Ref S3VpcEndpoint
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

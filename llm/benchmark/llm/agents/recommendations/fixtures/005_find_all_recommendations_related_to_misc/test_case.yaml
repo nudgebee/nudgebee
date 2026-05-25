@@ -1,0 +1,8 @@
+user_prompt: Find all recommendations related to 'misconfigurations' (based on rule_name)
+  that are currently 'Open' or 'InProgress'.
+expected_output:
+- SELECT namespace, name, rule_name, status, severity from recommendation_view WHERE
+  rule_name LIKE '%misconfigurations%' AND status IN ('Open', 'InProgress');
+tags:
+- command
+- recommendations

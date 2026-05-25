@@ -1,0 +1,16 @@
+name: Test Polymorphic Vars
+definition:
+  triggers:
+    - type: manual
+  tasks:
+    - id: step1
+      type: core.print
+      params:
+        message: "step1"
+      set_vars:
+        simple_var: "simple_value"
+        complex_var:
+          value: "complex_value"
+  output:
+    out_simple: "{{ Vars.simple_var }}"
+    out_complex: "{{ Vars.complex_var }}"

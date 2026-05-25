@@ -1,0 +1,16 @@
+user_prompt: The backend API App Service in resource group 'azure-agent-test-H01' cannot
+  connect to the Azure SQL database. The app has VNet integration enabled and the database
+  server exists. Connections time out after 30 seconds. What is blocking the connection?
+expected_output:
+- 'The App Service is VNet-integrated into subnet ''app-subnet'' of VNet ''h01-app-vnet''.
+  The subnet has NSG ''h01-app-subnet-nsg'' attached, which contains a ''DenyOutboundSQL''
+  rule that blocks all outbound TCP traffic on port 1433. Since vnetRouteAllEnabled=true,
+  all egress goes through the VNet and hits the NSG deny rule. Fix: Remove or change
+  the DenyOutboundSQL NSG rule to Allow outbound TCP 1433.'
+agent: azure_debug
+scenario: H01
+type: rca
+tags:
+- rca
+- hard
+- azure

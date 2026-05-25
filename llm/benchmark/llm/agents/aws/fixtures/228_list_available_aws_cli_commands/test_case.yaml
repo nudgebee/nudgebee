@@ -1,0 +1,6 @@
+user_prompt: List available AWS CLI commands.
+expected_output:
+- aws help
+tags:
+- command
+- aws

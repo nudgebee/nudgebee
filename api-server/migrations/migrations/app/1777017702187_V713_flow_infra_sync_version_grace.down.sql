@@ -1,0 +1,8 @@
+-- Intentionally a no-op.
+--
+-- Reversing an absolute last_sync_version bump is not safe without a snapshot
+-- of the pre-migration values — tenants' sync versions may have advanced past
+-- the bumped value legitimately, and restoring prior values would mass-tombstone
+-- rows on the next sync. If a rollback is required, flip the
+-- KG_FLOW_INFRA_SWEEP_ENABLED env var back to false; the Go code will then
+-- revert to the legacy predicate and the bumped values become harmless.

@@ -1,0 +1,7 @@
+user_prompt: Get a shard iterator for a Kinesis data stream.
+expected_output:
+- aws kinesis get-shard-iterator --stream-name <stream-name> --shard-id <shard-id>
+  --shard-iterator-type <shard-iterator-type>
+tags:
+- command
+- aws

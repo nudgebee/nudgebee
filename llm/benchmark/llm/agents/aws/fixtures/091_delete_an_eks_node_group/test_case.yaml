@@ -1,0 +1,6 @@
+user_prompt: Delete an EKS node group.
+expected_output:
+- aws eks delete-nodegroup --cluster-name <cluster-name> --nodegroup-name <nodegroup-name>
+tags:
+- command
+- aws

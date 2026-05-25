@@ -1,0 +1,95 @@
+# Azure SQL Database Metric Alert Recommendations
+# Based on Azure best practices for SQL Database monitoring
+service_name: "sql"
+
+templates:
+  - name: "azure_sql_cpu_percent_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "High CPU utilization on Azure SQL Database can impact query performance and application responsiveness. Sustained high CPU may indicate need to scale up the service tier."
+    configuration:
+      namespace: "Microsoft.Sql/servers/databases"
+      metric_name: "cpu_percent"
+      statistic: "Average"
+      period: 300
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 80.0
+
+  - name: "azure_sql_dtu_consumption_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "CONDITIONAL"
+    category: "Configuration"
+    severity: "Medium"
+    description: "High DTU consumption indicates the database is approaching its service tier limits, which can cause query throttling and performance degradation."
+    configuration:
+      namespace: "Microsoft.Sql/servers/databases"
+      metric_name: "dtu_consumption_percent"
+      statistic: "Average"
+      period: 300
+      evaluation_periods: 2
+      datapoints_to_alarm: 2
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 85.0
+    conditions:
+      # Only recommend for DTU-based pricing tiers (not vCore)
+      # DTU tiers: Basic, S0-S12 (Standard), P1-P15 (Premium)
+      - field: "Meta.properties.requestedServiceObjectiveName"
+        operator: "contains"
+        value: "DTU"
+        logic: "OR"
+      - field: "Meta.properties.currentServiceObjectiveName"
+        operator: "contains"
+        value: "S"
+        logic: "OR"
+      - field: "Meta.properties.currentServiceObjectiveName"
+        operator: "contains"
+        value: "P"
+        logic: "OR"
+      - field: "Meta.properties.currentServiceObjectiveName"
+        operator: "contains"
+        value: "Basic"
+        logic: "OR"
+
+  - name: "azure_sql_storage_percent_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Running out of storage space can cause database operations to fail and potential data loss. Azure SQL databases have a maximum size limit per service tier."
+    configuration:
+      namespace: "Microsoft.Sql/servers/databases"
+      metric_name: "storage_percent"
+      statistic: "Average"
+      period: 300
+      evaluation_periods: 1
+      datapoints_to_alarm: 1
+      comparison_operator: "GreaterThanThreshold"
+      treat_missing_data: "breaching"
+    threshold_rules:
+      default: 90.0
+
+  - name: "azure_sql_deadlock_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Deadlocks indicate contention between concurrent transactions and can cause transaction failures and application errors."
+    configuration:
+      namespace: "Microsoft.Sql/servers/databases"
+      metric_name: "deadlock"
+      statistic: "Sum"
+      period: 300
+      evaluation_periods: 1
+      datapoints_to_alarm: 1
+      comparison_operator: "GreaterThanOrEqualToThreshold"
+      treat_missing_data: "notBreaching"
+    threshold_rules:
+      default: 1.0

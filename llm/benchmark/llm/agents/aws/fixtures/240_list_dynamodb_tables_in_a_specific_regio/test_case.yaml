@@ -1,0 +1,6 @@
+user_prompt: List DynamoDB tables in a specific region.
+expected_output:
+- aws dynamodb list-tables --region <region>
+tags:
+- command
+- aws

@@ -1,0 +1,6 @@
+user_prompt: List all Systems Manager Parameter Store parameters.
+expected_output:
+- aws ssm describe-parameters
+tags:
+- command
+- aws

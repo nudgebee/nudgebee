@@ -1,0 +1,8 @@
+user_prompt: Get the list of workloads with latency greater than 1 second in the last
+  hour.
+expected_output:
+- SELECT DISTINCT workload_name, workload_namespace FROM traces_view WHERE duration_ns
+  > 1000 AND timestamp >= now() - interval 1 hour ORDER BY workload_namespace, workload_name;
+tags:
+- command
+- trace

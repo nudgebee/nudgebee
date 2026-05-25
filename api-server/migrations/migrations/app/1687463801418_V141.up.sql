@@ -1,0 +1,3 @@
+
+CREATE TABLE "public"."etl_jobs" ("id" uuid NOT NULL DEFAULT gen_random_uuid(), "created_at" timestamp NOT NULL DEFAULT now(), "updated_at" timestamp NOT NULL DEFAULT now(), "status" text NOT NULL, "status_text" text NOT NULL, "additional_data" jsonb NOT NULL, "host_details" jsonb NOT NULL, "time_taken" integer NOT NULL, "new_records" integer NOT NULL, "duplicate_records" integer NOT NULL, "processed_records" integer NOT NULL, "tenant_id" uuid NOT NULL, "job_trigger_type" text NOT NULL, "job_trigger_id" text NOT NULL, "job_type" text NOT NULL, PRIMARY KEY ("id") );
+CREATE EXTENSION IF NOT EXISTS pgcrypto;

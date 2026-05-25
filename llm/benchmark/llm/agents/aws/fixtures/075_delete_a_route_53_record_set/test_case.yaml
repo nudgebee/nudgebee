@@ -1,0 +1,7 @@
+user_prompt: Delete a Route 53 record set.
+expected_output:
+- aws route53 change-resource-record-sets --hosted-zone-id <hosted-zone-id> --change-batch
+  <change-batch-json>
+tags:
+- command
+- aws

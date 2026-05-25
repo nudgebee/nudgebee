@@ -1,0 +1,14 @@
+{
+  "data": {
+    "auto_pilot_aggregate": {
+      "aggregate": {
+        "count": 1
+      }
+    },
+    "auto_pilot_task_aggregate": {
+      "aggregate": {
+        "count": 10
+      }
+    }
+  }
+}

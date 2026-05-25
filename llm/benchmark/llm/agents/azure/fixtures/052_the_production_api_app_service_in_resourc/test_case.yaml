@@ -1,0 +1,19 @@
+user_prompt: The production API App Service in resource group 'azure-agent-test-P03'
+  is returning database connection errors after a deployment yesterday. The staging
+  slot appears healthy. A SQL server and database exist in the resource group. What
+  went wrong with the deployment?
+expected_output:
+- 'The production slot''s DATABASE_URL app setting points to ''p03sql-decomm.database.windows.net''
+  which is a decommissioned SQL server that no longer exists. The staging slot has
+  the correct DATABASE_URL pointing to the actual SQL server in the resource group.
+  This indicates the slot swap did not properly carry over the connection string, or
+  the production slot''s DATABASE_URL was not marked as a slot-specific setting. Fix:
+  Update the production slot''s DATABASE_URL to use the correct SQL server FQDN from
+  the resource group.'
+agent: azure_debug
+scenario: P03
+type: rca
+tags:
+- rca
+- hard
+- azure

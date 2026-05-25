@@ -1,0 +1,42 @@
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- CREATE OR REPLACE VIEW "public"."recommendation_resourceservice" AS
+--  SELECT cloud_resourses.tenant,
+--     cloud_accounts.id as account_id,
+--     cloud_accounts.account_name,
+--     cloud_resourses.service_name,
+--     recommendation.category,
+--     recommendation.rule_name,
+--     sum(recommendation.estimated_savings) AS estimated_savings,
+--     count(recommendation.*) AS total_resources
+--    FROM ((cloud_resourses
+--      JOIN cloud_accounts ON ((cloud_resourses.account = cloud_accounts.id)))
+--      JOIN recommendation ON ((recommendation.resource_id = cloud_resourses.id)))
+--   GROUP BY cloud_resourses.tenant, cloud_accounts.id, cloud_accounts.account_name, cloud_resourses.service_name, recommendation.category, recommendation.rule_name;
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- DROP VIEW "public"."recommendation_resourceservice";
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- CREATE OR REPLACE VIEW "public"."recommendation_resourceservice" AS
+--     SELECT
+--       cloud_resourses.tenant,
+--       cloud_accounts.account_name,
+--       cloud_accounts.id,
+--       cloud_resourses.service_name,
+--       recommendation.category,
+--       recommendation.rule_name,
+--       sum(recommendation.estimated_savings) as estimated_savings,
+--       count(recommendation.*) as total_resources
+--     FROM cloud_resourses
+--     JOIN cloud_accounts ON ((cloud_resourses.account = cloud_accounts.id))
+--     JOIN recommendation ON ((recommendation.resource_id = cloud_resourses.id))
+--     GROUP BY cloud_resourses.tenant,
+--         cloud_accounts.id,
+--         cloud_accounts.account_name,
+--         cloud_resourses.service_name,
+--         recommendation.category,
+--         recommendation.rule_name;

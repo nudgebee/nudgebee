@@ -1,0 +1,6 @@
+user_prompt: List Cognito users in a user pool.
+expected_output:
+- aws cognito-idp list-users --user-pool-id <user-pool-id>
+tags:
+- command
+- aws

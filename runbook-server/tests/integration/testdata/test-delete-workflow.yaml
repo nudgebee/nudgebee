@@ -1,0 +1,9 @@
+name: test-delete-workflow
+definition:
+  triggers:
+    - type: manual
+  tasks:
+    - id: task1
+      type: scripting.run_script
+      params:
+        script: "echo 'Hello from delete test'"

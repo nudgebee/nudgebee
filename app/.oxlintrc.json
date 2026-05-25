@@ -1,0 +1,40 @@
+{
+  "env": {
+    "browser": true,
+    "node": true,
+    "es2021": true,
+    "jest": true
+  },
+  "plugins": ["jsx-a11y", "typescript", "unicorn", "oxc", "import", "node", "promise", "react", "react-perf", "nextjs"],
+  "rules": {
+    "no-duplicate-imports": "error",
+    "typescript/no-explicit-any": "warn",
+    "eqeqeq": "warn",
+    "curly": "warn",
+    "typescript/no-unused-vars": "error",
+    "typescript/explicit-function-return-type": "warn",
+    "typescript/no-empty-interface": "off",
+    "typescript/consistent-type-imports": "warn",
+    "typescript/require-await": "warn",
+    "react/self-closing-comp": "warn",
+    "react/exhaustive-deps": "warn",
+    "react/jsx-no-useless-fragment": "warn",
+    "nextjs/no-img-element": "off",
+    "no-undef": "error",
+    "no-console": "off",
+    "no-alert": "warn",
+    "no-else-return": "warn",
+    "no-restricted-imports": [
+      "warn",
+      {
+        "patterns": [
+          {
+            "group": ["../*"],
+            "message": "Use path aliases (@components1, @common, @api1, @lib, @hooks, @context, @data, @assets, @utils, @pages) instead of relative imports."
+          }
+        ]
+      }
+    ]
+  },
+  "ignorePatterns": ["dist/", "node_modules/"]
+}

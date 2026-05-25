@@ -1,0 +1,25 @@
+name: "Test Transform Workflow"
+definition:
+  triggers:
+    - type: "manual"
+  tasks:
+    - id: "generatedata"
+      type: "core.print"
+      params:
+        message: |
+          {"users": [{"name": "Alice", "role": "admin"}, {"name": "Bob", "role": "user"}]}
+    - id: getadminname
+      type: data.transform
+      depends_on:
+        - "generatedata"
+      params:
+        expression: "users[role='admin'].name"
+        inputType: "json"
+        input: >
+          {{ Tasks.generatedata.output.data }}
+    - id: "finalstep"
+      type: "core.print"
+      depends_on:
+        - "getadminname"
+      params:
+        message: "The admin is: {{ Tasks.getadminname.output.data }}"

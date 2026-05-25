@@ -1,0 +1,8 @@
+user_prompt: what is the promql query for CPU request usage for pods in the 'development'
+  namespace?
+expected_output:
+- sum(kube_pod_container_resource_requests_cpu_cores{namespace="development"})
+- sum by (pod) (kube_pod_container_resource_requests_cpu_cores{namespace="development"})
+tags:
+- command
+- promql

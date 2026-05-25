@@ -1,0 +1,7 @@
+user_prompt: List all distinct combinations of category and severity present in the
+  data.
+expected_output:
+- SELECT DISTINCT category, severity from recommendation_view ORDER BY category, severity;
+tags:
+- command
+- recommendations

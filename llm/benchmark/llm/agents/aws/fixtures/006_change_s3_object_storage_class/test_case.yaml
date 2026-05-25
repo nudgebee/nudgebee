@@ -1,0 +1,7 @@
+user_prompt: Change S3 object storage class.
+expected_output:
+- aws s3api copy-object --bucket <bucket-name> --copy-source <bucket-name>/<object-key>
+  --key <object-key> --storage-class <storage-class>
+tags:
+- command
+- aws

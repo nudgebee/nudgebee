@@ -1,0 +1,7 @@
+apiVersion: v2
+name: k8s-collector
+keywords:
+  - k8s-collector
+type: application
+version: "0.1"
+appVersion: "V0.1"

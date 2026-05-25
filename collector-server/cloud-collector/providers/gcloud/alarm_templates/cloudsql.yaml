@@ -1,0 +1,117 @@
+# GCP Cloud SQL Cloud Monitoring Alert Policy Recommendations
+# Based on Google Cloud best practices for database monitoring
+service_name: "Cloud SQL"
+
+templates:
+  - name: "gcp_cloudsql_cpu_utilization_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "High CPU utilization on Cloud SQL instances can impact query performance and application responsiveness"
+    configuration:
+      namespace: "cloudsql.googleapis.com"
+      metric_name: "CPUUtilization"
+      metric_type_filter: "cloudsql.googleapis.com/database/cpu/utilization"
+      resource_type: "cloudsql_database"
+      statistic: "ALIGN_MEAN"
+      period: 300  # 5 minutes
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MEAN"
+    threshold_rules:
+      default: 0.80  # 80%
+      # Note: Database type specific thresholds would require ByDatabaseType field in ThresholdRules
+      # by_database_type:
+      #   postgresql: 0.75
+      #   mysql: 0.75
+      #   sqlserver: 0.80
+
+  - name: "gcp_cloudsql_memory_utilization_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "High memory utilization can cause database performance degradation and out-of-memory errors"
+    configuration:
+      namespace: "cloudsql.googleapis.com"
+      metric_name: "MemoryUtilization"
+      metric_type_filter: "cloudsql.googleapis.com/database/memory/utilization"
+      resource_type: "cloudsql_database"
+      statistic: "ALIGN_MEAN"
+      period: 300
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MEAN"
+    threshold_rules:
+      default: 0.85  # 85%
+      # Note: Database type specific thresholds would require ByDatabaseType field in ThresholdRules
+      # by_database_type:
+      #   postgresql: 0.85
+      #   mysql: 0.85
+      #   sqlserver: 0.80
+
+  - name: "gcp_cloudsql_disk_utilization_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Critical"
+    description: "High disk utilization can prevent writes and cause database failures. Cloud SQL auto-scales disk, but monitoring is still important."
+    configuration:
+      namespace: "cloudsql.googleapis.com"
+      metric_name: "DiskUtilization"
+      metric_type_filter: "cloudsql.googleapis.com/database/disk/utilization"
+      resource_type: "cloudsql_database"
+      statistic: "ALIGN_MEAN"
+      period: 300
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MEAN"
+    threshold_rules:
+      default: 0.80  # 80%
+
+  - name: "gcp_cloudsql_replication_lag_alarm_missing"
+    alarm_type: "RELIABILITY"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "Replication lag indicates read replicas are falling behind the primary instance, which can impact data consistency"
+    configuration:
+      namespace: "cloudsql.googleapis.com"
+      metric_name: "ReplicationLag"
+      metric_type_filter: "cloudsql.googleapis.com/database/replication/replica_lag"
+      resource_type: "cloudsql_database"
+      statistic: "ALIGN_MEAN"
+      period: 60
+      evaluation_periods: 3
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MEAN"
+      applies_to_replicas_only: true
+    threshold_rules:
+      default: 30.0  # 30 seconds
+
+  - name: "gcp_cloudsql_connections_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "High number of connections can exhaust available connections and reject new connection attempts"
+    configuration:
+      namespace: "cloudsql.googleapis.com"
+      metric_name: "ConnectionsCount"
+      # NOTE: This metric (num_backends) is PostgreSQL-specific. For MySQL/SQL Server, use database/mysql/connections or database/mssql/connections
+      metric_type_filter: "cloudsql.googleapis.com/database/postgresql/num_backends"
+      resource_type: "cloudsql_database"
+      statistic: "ALIGN_MEAN"
+      period: 300
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MEAN"
+    threshold_rules:
+      default: 80.0  # connections count (needs to be percentage of max_connections)
+      by_instance_class:
+        db-f1-micro: 20
+        db-g1-small: 50
+        db-n1-standard-1: 100
+        db-n1-standard-2: 200
+        db-n1-standard-4: 400

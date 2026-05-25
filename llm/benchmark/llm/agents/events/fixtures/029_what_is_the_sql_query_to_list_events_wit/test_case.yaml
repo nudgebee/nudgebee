@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to list events with INFO or DEBUG priority?
+expected_output:
+- SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE
+  priority IN ('INFO', 'DEBUG');
+- SELECT * FROM events   WHERE priority IN ('INFO', 'DEBUG');
+tags:
+- command
+- events

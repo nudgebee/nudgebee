@@ -1,0 +1,145 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- CREATE MATERIALIZED VIEW public.cloudaccount_k8s_resource_metrics_aggregate
+-- TABLESPACE pg_default
+-- AS
+-- select
+-- 	cr.id as cloud_resource_id ,
+-- 	cr.tenant ,
+-- 	cr.account ,
+-- 	cr."type" ,
+-- 	crm."timestamp" ,
+-- 	avg(
+--         case
+--             when crm.metric = 'cpuCoreUsageAverage'::text then crm.value
+--             else null::double precision
+--         end) as avg_cpu_used,
+-- 	max(
+--         case
+--             when crm.metric = 'cpuCoreUsageAverage'::text then crm.value
+--             else null::double precision
+--         end) as max_cpu_used,
+-- 	avg(
+--         case
+--             when crm.metric = 'ramByteUsageAverage'::text then crm.value
+--             else null::double precision
+--         end) as avg_memory_used,
+-- 	max(
+--         case
+--             when crm.metric = 'ramByteUsageAverage'::text then crm.value
+--             else null::double precision
+--         end) as max_memory_used,
+-- 	avg(
+--         case
+--             when crm.metric = 'cpuCoreRequestAverage'::text then crm.value
+--             else null::double precision
+--         end) as avg_cpu_request,
+-- 	max(
+--         case
+--             when crm.metric = 'cpuCoreRequestAverage'::text then crm.value
+--             else null::double precision
+--         end) as max_cpu_request,
+-- 	avg(
+--         case
+--             when crm.metric = 'ramByteRequestAverage'::text then crm.value
+--             else null::double precision
+--         end) as avg_memory_request,
+-- 	max(
+--         case
+--             when crm.metric = 'ramByteRequestAverage'::text then crm.value
+--             else null::double precision
+--         end) as max_memory_request,
+-- 	avg(
+--         case
+--             when crm.metric = 'cpuEfficiency'::text then crm.value
+--             else null::double precision
+--         end) as avg_cpu_efficiency,
+-- 	max(
+--         case
+--             when crm.metric = 'cpuEfficiency'::text then crm.value
+--             else null::double precision
+--         end) as max_cpu_efficiency,
+-- 	avg(
+--         case
+--             when crm.metric = 'ramEfficiency'::text then crm.value
+--             else null::double precision
+--         end) as avg_ram_efficiency,
+-- 	max(
+--         case
+--             when crm.metric = 'ramEfficiency'::text then crm.value
+--             else null::double precision
+--         end) as max_ram_efficiency,
+--      avg(
+--      case
+--             when crm.metric = 'memory_capacity'::text then crm.value
+--             else null::double precision
+--         end
+--      ) as memory_capacity,
+--       avg(
+--      case
+--             when crm.metric = 'memory_allocatable'::text then crm.value
+--             else null::double precision
+--         end
+--      ) as memory_allocatable,
+--       avg(
+--      case
+--             when crm.metric = 'memory_allocated'::text then crm.value
+--             else null::double precision
+--         end
+--      ) as memory_allocated,
+--       avg(
+--      case
+--             when crm.metric = 'cpu_allocatable'::text then crm.value
+--             else null::double precision
+--         end
+--      ) as cpu_allocatable,
+--       avg(
+--      case
+--             when crm.metric = 'cpu_capacity'::text then crm.value
+--             else null::double precision
+--         end
+--      ) as cpu_capacity,
+--           avg(
+--      case
+--             when crm.metric = 'cpu_allocated'::text then crm.value
+--             else null::double precision
+--         end
+--      ) as cpu_allocated,
+--       avg(
+--      case
+--             when crm.metric = 'pods_count'::text then crm.value
+--             else null::double precision
+--         end
+--      ) as pods_count
+-- from
+-- 	cloud_accounts ca
+-- inner join
+-- 	cloud_resourses cr
+--  on
+-- 	ca.id = cr.account
+-- left join cloud_resource_metrics crm on
+-- 	crm.cloud_resource_id = cr.id
+-- where
+-- 	ca.account_type = 'kubernetes'::text
+-- 	and type = 'node'
+-- 	and (crm.metric = any (array['cpuCoreUsageAverage'::text,
+-- 	'ramByteUsageAverage'::text,
+-- 	'cpuCoreRequestAverage'::text,
+-- 	'ramByteRequestAverage'::text,
+-- 	'memory_capacity'::text,
+-- 	'memory_allocatable'::text,
+-- 	'memory_allocated'::text,
+-- 	'cpu_capacity'::text,
+-- 	'cpu_allocatable'::text,
+-- 	'cpu_allocated':: text,
+-- 	'pods_count':: text
+-- 	]))
+-- group by
+-- 	cr.id ,
+-- 	cr.account ,
+-- 	cr.tenant,
+-- 	crm."timestamp"
+-- WITH DATA;
+-- 	
+-- 	-- View indexes:
+-- CREATE UNIQUE INDEX cloudaccount_k8s_resource_metric_aggregate_pk ON public.cloudaccount_k8s_resource_metrics_aggregate USING btree (cloud_resource_id, tenant, account, "timestamp");

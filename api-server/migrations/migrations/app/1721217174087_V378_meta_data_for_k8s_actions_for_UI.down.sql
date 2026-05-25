@@ -1,0 +1,71 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- update
+--     runbook_action
+-- set
+--     attributes = '{"doc_link": "{{doc_url}}/help/docs/features/Autopilot/Actions/create_ticket/", "resource_filter": {"resource_type": "workload", "context_applicable": true, "resource_mandatory": false, "resource_applicable": true}, "applicable_trigger": [], "applicable_event_type": []}'
+-- where
+--     internal_identifier = 'notification';
+--
+-- update
+--     runbook_action
+-- set
+--     attributes = '{"doc_link": "{{doc_url}}/help/docs/features/Autopilot/Actions/create_ticket/", "resource_filter": {"resource_type": "workload", "context_applicable": true, "resource_mandatory": false, "resource_applicable": true}, "applicable_trigger": [], "applicable_event_type": []}'
+-- where
+--     internal_identifier = 'ticket_create';
+--
+-- update
+--     runbook_action
+-- set
+--     attributes = '{"resource_filter": {"resource_type": null, "context_applicable": true, "resource_mandatory": false, "resource_applicable": false}, "applicable_trigger": ["event"], "applicable_event_type": []}'
+-- where
+--     internal_identifier = 'pv_rightsize';
+--
+-- update
+--     runbook_action
+-- set
+--     attributes = '{"doc_link": "{{doc_url}}/help/docs/features/Autopilot/Actions/delete_pod_gracefully/", "resource_filter": {"resource_type": "workload", "context_applicable": true, "resource_mandatory": false, "resource_applicable": true}, "applicable_trigger": ["event", "schedule"], "applicable_event_type": []}'
+-- where
+--     internal_identifier = 'pod_delete';
+--
+-- update
+--     runbook_action
+-- set
+--     attributes = '{"doc_link": "{{doc_url}}/help/docs/features/Autopilot/Actions/execute_bash/", "resource_filter": {"resource_type": "workload", "context_applicable": true, "resource_mandatory": false, "resource_applicable": true}, "applicable_trigger": ["event", "schedule"], "applicable_event_type": []}'
+-- where
+--     internal_identifier = 'k8s_bash';
+--
+-- update
+--     runbook_action
+-- set
+--     attributes = '{"doc_link": "{{doc_url}}/help/docs/features/Autopilot/Actions/execute_custom_image/", "resource_filter": {"resource_type": "workload", "context_applicable": true, "resource_mandatory": false, "resource_applicable": true}, "applicable_trigger": ["event", "schedule"], "applicable_event_type": []}'
+-- where
+--     internal_identifier = 'custom_image_execute';
+--
+-- update
+--     runbook_action
+-- set
+--     attributes = '{"doc_link": "{{doc_url}}/help/docs/features/Autopilot/Actions/vertical_rightsize/", "resource_filter": {"resource_type": "workload", "context_applicable": true, "resource_mandatory": false, "resource_applicable": true}, "applicable_trigger": ["event", "schedule"], "applicable_event_type": []}'
+-- where
+--     internal_identifier = 'vertical_rightsize';
+--
+-- update
+--     runbook_action
+-- set
+--     attributes = '{"doc_link": "{{doc_url}}/help/docs/features/Autopilot/Actions/workload_restart/", "resource_filter": {"resource_type": "workload", "context_applicable": true, "resource_mandatory": false, "resource_applicable": true}, "applicable_trigger": ["event", "schedule"], "applicable_event_type": []}'
+-- where
+--     internal_identifier = 'workload_restart';
+--
+-- update
+--     runbook_action
+-- set
+--     attributes = '{"doc_link": "{{doc_url}}/help/docs/features/Autopilot/Actions/workload_scalar/", "resource_filter": {"resource_type": "workload", "context_applicable": false, "resource_mandatory": true, "resource_applicable": true}, "applicable_trigger": ["event"], "applicable_event_type": []}'
+-- where
+--     internal_identifier = 'workload_scalar';
+--
+-- update
+--     runbook_action
+-- set
+--     attributes = '{"doc_link": "{{doc_url}}/help/docs/features/Autopilot/Actions/horizontal_rightsize/", "resource_filter": {"resource_type": "workload", "context_applicable": true, "resource_mandatory": false, "resource_applicable": true}, "applicable_trigger": ["event", "schedule"], "applicable_event_type": []}'
+-- where
+--     internal_identifier = 'horizontal_rightsize';

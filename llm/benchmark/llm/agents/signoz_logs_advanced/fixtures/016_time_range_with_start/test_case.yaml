@@ -1,0 +1,6 @@
+user_prompt: Show me error logs for payment-service after 2026-03-30
+expected_output: '{"where": {"service.name": {"_ilike": "%payment-service%"}, "severity_text": {"_eq": "ERROR"}}, "start_time": "2026-03-30T00:00:00Z"}'
+tags:
+  - complex
+  - time-absolute
+  - signoz

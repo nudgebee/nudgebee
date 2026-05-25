@@ -1,0 +1,6 @@
+user_prompt: List all Cognito user pools.
+expected_output:
+- aws cognito-idp list-user-pools --max-results 60
+tags:
+- command
+- aws

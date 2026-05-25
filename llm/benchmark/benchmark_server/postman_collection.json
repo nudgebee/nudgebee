@@ -1,0 +1,427 @@
+{
+  "info": {
+    "name": "Benchmark Server API",
+    "description": "API collection for the LLM Benchmark Server - run, control, and manage benchmark tests.\n\n## Quick Start\n1. Hit 'Health Check' to confirm server is up\n2. Use one of the 'Trigger Benchmark' requests — run_id is auto-saved to {{run_id}}\n3. Poll 'Get Run Status' to track progress\n4. Fetch 'Download Report' when state = completed\n\n## Infrastructure (AWS / Azure RCA tests)\nRCA queries test against live broken cloud infrastructure.\nUse deploy_infra + skip_nuke flags to control the lifecycle:\n  - deploy_infra: true  → deploy bootstrap + scenarios before tests\n  - skip_nuke: false    → destroy infrastructure after tests\n  - skip_nuke: true     → keep infrastructure up (for re-runs / debugging)\n\n## Index Reference (benchmark_aws.json)\n  - 0–303   → command queries (no infra needed)\n  - 304–333 → RCA queries (infra required, one scenario per index)\n    304=E01, 305=E02, ... 313=E10\n    314=M01, 315=M02, ... 323=M10\n    324=H01, 325=H02, ... 333=H10\n\n## Index Reference (benchmark_azure.json)\n  - 0–19  → command queries\n  - 20–39 → RCA queries\n    20=E01, 21=E02, ... 29=E10\n    30=M01, 31=M02, ... 39=M10",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:9999",
+      "type": "string",
+      "description": "Benchmark server base URL"
+    },
+    {
+      "key": "run_id",
+      "value": "",
+      "type": "string",
+      "description": "Auto-populated from the last Trigger Benchmark response"
+    },
+    {
+      "key": "account_id",
+      "value": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
+      "type": "string"
+    },
+    {
+      "key": "user_id",
+      "value": "dc62c016-a2d9-47df-80c1-0653eeefb5f8",
+      "type": "string"
+    },
+    {
+      "key": "tenant_id",
+      "value": "890cad87-c452-4aa7-b84a-742cee0454a1",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": ["{{base_url}}"],
+              "path": ["health"]
+            },
+            "description": "Verify the benchmark server is running.\nExpected response: {\"status\": \"ok\"}"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Run Benchmark",
+      "item": [
+        {
+          "name": "AWS - Command Query (no infra needed)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// Auto-save run_id so other requests can use {{run_id}}",
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.run_id) {",
+                  "    pm.collectionVariables.set('run_id', jsonData.run_id);",
+                  "    console.log('run_id saved:', jsonData.run_id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"account_id\": \"{{account_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"agent\": {\n    \"name\": \"aws\",\n    \"tool_config\": \"dev-new\"\n  },\n  \"test_indices\": \"0\",\n\n  // deploy_infra: false → skip infra deploy (command queries don't need it)\n  \"deploy_infra\": false,\n  \"skip_nuke\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/agent-benchmark/run",
+              "host": ["{{base_url}}"],
+              "path": ["agent-benchmark", "run"]
+            },
+            "description": "Run a single AWS command query (index 0).\nCommand queries (indices 0-303) do NOT need cloud infrastructure.\ndeploy_infra is false — no CloudFormation stacks are created."
+          },
+          "response": []
+        },
+        {
+          "name": "AWS - RCA Single Scenario (deploy + nuke)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// Auto-save run_id so other requests can use {{run_id}}",
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.run_id) {",
+                  "    pm.collectionVariables.set('run_id', jsonData.run_id);",
+                  "    console.log('run_id saved:', jsonData.run_id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"account_id\": \"{{account_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"agent\": {\n    \"name\": \"aws\",\n    \"tool_config\": \"dev-new\"\n  },\n\n  // index 304 = E01 RCA scenario (SSH timeout on EC2 bastion)\n  // index 305 = E02, 306 = E03 ... 333 = H10\n  \"test_indices\": \"304\",\n\n  // deploy_infra: true → deploy bootstrap VPC + E01 CloudFormation stack in Broken mode\n  // Only the scenario(s) needed for the selected indices are deployed (not all 30)\n  \"deploy_infra\": true,\n\n  // skip_nuke: false → destroy all stacks after test completes\n  // Set to true to keep infra up for debugging or re-runs\n  \"skip_nuke\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/agent-benchmark/run",
+              "host": ["{{base_url}}"],
+              "path": ["agent-benchmark", "run"]
+            },
+            "description": "Full lifecycle for a single AWS RCA scenario:\n  1. Deploy bootstrap (shared VPC + S3) + E01 CloudFormation stack (Broken mode)\n  2. Run the RCA benchmark query against live broken infrastructure\n  3. Nuke all stacks after completion\n\nNote: CloudFormation deploy takes ~5-10 min before the test starts.\nCheck status via GET /agent-benchmark/{{run_id}}/status"
+          },
+          "response": []
+        },
+        {
+          "name": "AWS - RCA Single Scenario (deploy, keep infra)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.run_id) {",
+                  "    pm.collectionVariables.set('run_id', jsonData.run_id);",
+                  "    console.log('run_id saved:', jsonData.run_id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"account_id\": \"{{account_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"agent\": {\n    \"name\": \"aws\",\n    \"tool_config\": \"dev-new\"\n  },\n  \"test_indices\": \"304\",\n\n  // deploy_infra: true  → deploy bootstrap + E01 stack\n  \"deploy_infra\": true,\n\n  // skip_nuke: true → leave infrastructure up after test\n  // Use this when you want to re-run the test without redeploying\n  // Remember to manually nuke when done: bash scripts/nuke.sh\n  \"skip_nuke\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/agent-benchmark/run",
+              "host": ["{{base_url}}"],
+              "path": ["agent-benchmark", "run"]
+            },
+            "description": "Deploy infra, run test, but KEEP infrastructure up.\nUseful for:\n  - Debugging a failed test (infra stays up for manual inspection)\n  - Running the same test multiple times without redeploying\n\nFollow up with 'AWS - RCA Re-run (infra already up)' for subsequent runs.\nManually nuke when done: bash llm/agents/aws/aws-agent-test/scripts/nuke.sh"
+          },
+          "response": []
+        },
+        {
+          "name": "AWS - RCA Re-run (infra already up)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.run_id) {",
+                  "    pm.collectionVariables.set('run_id', jsonData.run_id);",
+                  "    console.log('run_id saved:', jsonData.run_id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"account_id\": \"{{account_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"agent\": {\n    \"name\": \"aws\",\n    \"tool_config\": \"dev-new\"\n  },\n  \"test_indices\": \"304\",\n\n  // deploy_infra: false → skip deploy, infra is already up from a previous run\n  \"deploy_infra\": false,\n\n  // skip_nuke: false → nuke after this run (set true to keep up again)\n  \"skip_nuke\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/agent-benchmark/run",
+              "host": ["{{base_url}}"],
+              "path": ["agent-benchmark", "run"]
+            },
+            "description": "Re-run a test against already-deployed infrastructure.\nUse after 'AWS - RCA Single Scenario (deploy, keep infra)'.\n\nNo deploy step → test starts immediately."
+          },
+          "response": []
+        },
+        {
+          "name": "AWS - RCA All Scenarios (full run)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.run_id) {",
+                  "    pm.collectionVariables.set('run_id', jsonData.run_id);",
+                  "    console.log('run_id saved:', jsonData.run_id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"account_id\": \"{{account_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"agent\": {\n    \"name\": \"aws\",\n    \"tool_config\": \"dev-new\"\n  },\n\n  // No test_indices → run ALL 334 queries (304 command + 30 RCA)\n\n  // deploy_infra: true → deploy bootstrap + all 30 scenarios (E01-E10, M01-M10, H01-H10)\n  // WARNING: This takes ~30-40 min to deploy before tests start\n  \"deploy_infra\": true,\n\n  // skip_nuke: false → destroy everything after all tests complete\n  \"skip_nuke\": false,\n\n  \"cc_emails\": [\"team@example.com\"]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/agent-benchmark/run",
+              "host": ["{{base_url}}"],
+              "path": ["agent-benchmark", "run"]
+            },
+            "description": "Full benchmark run: all 334 AWS queries including all 30 RCA scenarios.\n\nLifecycle:\n  1. Deploy bootstrap (shared VPC + S3 bucket)\n  2. Deploy all 30 scenario stacks in Broken mode (~30-40 min)\n  3. Run all 334 benchmark queries\n  4. Nuke all stacks\n  5. Email report to user + cc_emails\n\nUse status endpoint to monitor progress."
+          },
+          "response": []
+        },
+        {
+          "name": "Azure - RCA Single Scenario (deploy + delete)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.run_id) {",
+                  "    pm.collectionVariables.set('run_id', jsonData.run_id);",
+                  "    console.log('run_id saved:', jsonData.run_id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"account_id\": \"{{account_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"agent\": {\n    \"name\": \"azure\",\n    \"tool_config\": \"dev-new\"\n  },\n\n  // index 20 = E01 RCA (SSH into bastion NSG)\n  // index 21 = E02, 22 = E03 ... 29 = E10\n  // index 30 = M01, 31 = M02 ... 39 = M10\n  \"test_indices\": \"20\",\n\n  // deploy_infra: true → deploy bootstrap (shared App Service Plan) + E01 resource group\n  \"deploy_infra\": true,\n\n  // skip_nuke: false → delete resource groups after test\n  // Note: Azure deletes RGs asynchronously in the background\n  \"skip_nuke\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/agent-benchmark/run",
+              "host": ["{{base_url}}"],
+              "path": ["agent-benchmark", "run"]
+            },
+            "description": "Full lifecycle for a single Azure RCA scenario:\n  1. Deploy bootstrap (shared App Service Plan)\n  2. Deploy E01 ARM template in Broken mode\n  3. Run the RCA benchmark query\n  4. Delete resource groups (async)\n\nAzure ARM deploys are faster than CloudFormation (~2-5 min per scenario)."
+          },
+          "response": []
+        },
+        {
+          "name": "Azure - Command Query (no infra needed)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.run_id) {",
+                  "    pm.collectionVariables.set('run_id', jsonData.run_id);",
+                  "    console.log('run_id saved:', jsonData.run_id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"account_id\": \"{{account_id}}\",\n  \"user_id\": \"{{user_id}}\",\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"agent\": \"azure\",\n\n  // indices 0-19 are command queries, no infra needed\n  \"test_indices\": \"0\",\n\n  \"deploy_infra\": false,\n  \"skip_nuke\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/agent-benchmark/run",
+              "host": ["{{base_url}}"],
+              "path": ["agent-benchmark", "run"]
+            },
+            "description": "Run a single Azure command query (no infrastructure needed).\nCommand queries (indices 0-19) just call the Azure agent with az CLI questions."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Run Control",
+      "item": [
+        {
+          "name": "Pause Benchmark",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{base_url}}/agent-benchmark/{{run_id}}/pause",
+              "host": ["{{base_url}}"],
+              "path": ["agent-benchmark", "{{run_id}}", "pause"]
+            },
+            "description": "Pause a running benchmark.\nThe current query will complete before pausing — it won't cut mid-query.\nResume with the Resume endpoint."
+          },
+          "response": []
+        },
+        {
+          "name": "Resume Benchmark",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{base_url}}/agent-benchmark/{{run_id}}/resume",
+              "host": ["{{base_url}}"],
+              "path": ["agent-benchmark", "{{run_id}}", "resume"]
+            },
+            "description": "Resume a paused benchmark from where it left off."
+          },
+          "response": []
+        },
+        {
+          "name": "Stop Benchmark",
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{base_url}}/agent-benchmark/{{run_id}}/stop",
+              "host": ["{{base_url}}"],
+              "path": ["agent-benchmark", "{{run_id}}", "stop"]
+            },
+            "description": "Stop a running benchmark permanently.\nA partial report is generated with the queries completed so far.\nCannot be resumed after stopping."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Monitoring",
+      "item": [
+        {
+          "name": "Get Run Status",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/agent-benchmark/{{run_id}}/status",
+              "host": ["{{base_url}}"],
+              "path": ["agent-benchmark", "{{run_id}}", "status"]
+            },
+            "description": "Poll this to track progress.\n\nResponse fields:\n  - state: running | paused | stopped | completed\n  - progress: \"3/30\" (current/total queries)\n  - current_query: the query currently being processed\n\nNote: During infra deployment (deploy_infra: true), state stays 'running'\nuntil all CloudFormation/ARM stacks are up — then queries start."
+          },
+          "response": []
+        },
+        {
+          "name": "List All Runs",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/agent-benchmark/runs/list",
+              "host": ["{{base_url}}"],
+              "path": ["agent-benchmark", "runs", "list"]
+            },
+            "description": "List all tracked benchmark runs with their state, agent, and progress.\nUseful to find run_ids from previous sessions."
+          },
+          "response": []
+        },
+        {
+          "name": "Download Report",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/agent-benchmark/{{run_id}}/report",
+              "host": ["{{base_url}}"],
+              "path": ["agent-benchmark", "{{run_id}}", "report"]
+            },
+            "description": "Download the JSON report for a completed run.\n\nReport contains:\n  - details[]: per-query scores (answer_similarity, answer_relevancy, rca_quality_score)\n  - summary: overall accuracy, avg RCA score, failed indices"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Cleanup",
+      "item": [
+        {
+          "name": "Cleanup All Completed Runs",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{base_url}}/agent-benchmark/runs/cleanup",
+              "host": ["{{base_url}}"],
+              "path": ["agent-benchmark", "runs", "cleanup"]
+            },
+            "description": "Remove state files for all completed and stopped runs.\nDoes NOT delete cloud infrastructure — only cleans up local run tracking files."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Specific Run",
+          "request": {
+            "method": "DELETE",
+            "url": {
+              "raw": "{{base_url}}/agent-benchmark/{{run_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["agent-benchmark", "{{run_id}}"]
+            },
+            "description": "Remove state file for a specific benchmark run.\nDoes NOT delete cloud infrastructure."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

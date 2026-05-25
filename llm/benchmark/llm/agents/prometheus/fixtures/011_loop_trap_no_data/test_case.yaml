@@ -1,0 +1,19 @@
+# Regression for the 25-tool-call payments-service loop observed in prod
+# (DB run 6856ebb2-41cd-4b06-9a5b-ba9e9e79178e). The namespace does not
+# exist, so every prometheus_execute returns no data. The agent must
+# notice the empty results and stop — not retry the same query family
+# with cosmetic label tweaks.
+user_prompt: Show CPU, memory, and request latency (P50/P95/P99) for payments-service in namespace payments
+expected_output:
+  - No data found
+  - Prometheus has no data for the requested workload
+expected_tools:
+  - prometheus_execute
+forbidden_tools:
+  - shell_execute
+  - search_metrics
+expected_max_tool_calls: 6
+tags:
+  - regression
+  - loop_trap
+  - no_data

@@ -1,0 +1,1 @@
+INSERT INTO "public"."auto_pilot_status"("value", "description") VALUES (E'Active', E'the auto pilot is in active state');

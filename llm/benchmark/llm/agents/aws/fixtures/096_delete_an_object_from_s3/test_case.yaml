@@ -1,0 +1,6 @@
+user_prompt: Delete an object from S3.
+expected_output:
+- aws s3 rm s3://bucket/object
+tags:
+- command
+- aws

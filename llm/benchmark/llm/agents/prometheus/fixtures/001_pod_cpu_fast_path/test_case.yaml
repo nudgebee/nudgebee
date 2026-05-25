@@ -1,0 +1,15 @@
+user_prompt: Show CPU usage of the relay-server pod in namespace nudgebee
+expected_output:
+  - sum(rate(container_cpu_usage_seconds_total{pod=~"relay-server.*", namespace="nudgebee"}[5m])) by (pod)
+expected_metrics:
+  - container_cpu_usage_seconds_total
+expected_tools:
+  - prometheus_execute
+forbidden_tools:
+  - shell_execute
+  - search_metrics
+expected_max_tool_calls: 3
+tags:
+  - fast_path
+  - cadvisor
+  - cpu

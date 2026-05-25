@@ -1,0 +1,43 @@
+user_prompt: |
+  Check the Redis slow queries and also check the PostgreSQL connection pool status
+
+expected_output:
+  - Redis slow query analysis or slowlog results
+  - PostgreSQL connection pool status or pg_stat_activity results
+
+tags:
+  - hard
+  - database
+  - multi-followup
+
+description: |
+  Tests the multi-agent concurrent followup scenario (#28141).
+
+  When the account has multiple Redis AND PostgreSQL configs, the k8s_debug
+  planner dispatches both redis and postgres sub-agents in parallel. Each
+  sub-agent needs a tool_config selection (which Redis/Postgres instance),
+  generating two independent followup prompts simultaneously.
+
+  This test verifies:
+  1. Both followup messages are created (not just one)
+  2. Both are shown to the user
+  3. Answering each resumes the respective agent independently
+  4. Parent agent continues to solver after both complete
+
+  NOTE: This test will generate followups and enter WAITING status.
+  The benchmark orchestrator should auto-answer tool_config followups
+  if TOOL_CONFIG env var is set.
+
+setup_timeout: 120
+before_test: |
+  kubectl apply -f manifest.yaml
+  kubectl wait --for=condition=ready pod/redis-bench-163 -n bench-163 --timeout=60s
+  kubectl wait --for=condition=ready pod/postgres-bench-163 -n bench-163 --timeout=60s
+  # Generate some Redis slow queries
+  kubectl exec redis-bench-163 -n bench-163 -- redis-cli DEBUG SLEEP 0.01 || true
+  kubectl exec redis-bench-163 -n bench-163 -- redis-cli SET bench-key "test-value" || true
+  kubectl exec redis-bench-163 -n bench-163 -- redis-cli KEYS "*" || true
+  echo "Redis and PostgreSQL pods ready"
+after_test: |
+  kubectl delete -f manifest.yaml --ignore-not-found
+  kubectl delete namespace bench-163 --ignore-not-found

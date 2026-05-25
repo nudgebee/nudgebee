@@ -1,0 +1,141 @@
+{% extends "_base.html" %}
+
+{% block title %}Agent Status — {{ _brand_name }}{% endblock %}
+
+{% block content %}
+  {#- Compute totals for AI summary -#}
+  {% set ns = namespace(total=0, disconnected=0, partial=0) %}
+  {% for account in accounts %}
+    {% set ns.total = ns.total + 1 %}
+    {% set agent_details = account.agent_details.data.agent[0] %}
+    {% set status = agent_details.connection_status %}
+    {% set is_running = agent_details.status | lower in ['running', 'connected', 'active'] %}
+    {% set connected_count = 0 %}
+    {% if status.alertManagerConnection %}{% set connected_count = connected_count + 1 %}{% endif %}
+    {% if status.grafanaEnabled %}{% set connected_count = connected_count + 1 %}{% endif %}
+    {% if status.karpenterEnabled %}{% set connected_count = connected_count + 1 %}{% endif %}
+    {% if status.logsConnection %}{% set connected_count = connected_count + 1 %}{% endif %}
+    {% if status.opencostConnection %}{% set connected_count = connected_count + 1 %}{% endif %}
+    {% if not is_running %}
+      {% set ns.disconnected = ns.disconnected + 1 %}
+    {% elif connected_count < 5 %}
+      {% set ns.partial = ns.partial + 1 %}
+    {% endif %}
+  {% endfor %}
+
+  <!-- AI SUMMARY OPENING -->
+  <h1 class="subject-h" style="font-family:'DM Serif Display',Georgia,serif; font-size:26px; color:#0D1B2A; line-height:1.25; margin:0 0 20px; letter-spacing:-0.3px; font-weight:400;">
+    Agent Status
+  </h1>
+
+  <p style="font-family:'DM Sans',Arial,sans-serif; font-size:15.5px; color:#3D3D3D; line-height:1.85; font-weight:300; margin:0 0 24px;">
+    I checked <strong style="color:#0D1B2A;">{{ ns.total }}</strong> account{{ 's' if ns.total != 1 else '' }}.
+    {% if ns.disconnected > 0 or ns.partial > 0 %}
+      {% if ns.disconnected > 0 %}<strong style="color:#EF4444;">{{ ns.disconnected }}</strong> agent{{ 's' if ns.disconnected != 1 else '' }} disconnected{% endif %}{% if ns.disconnected > 0 and ns.partial > 0 %} and {% endif %}{% if ns.partial > 0 %}<strong style="color:#F59E0B;">{{ ns.partial }}</strong> ha{{ 've' if ns.partial != 1 else 's' }} partial connectivity{% endif %} — details below.
+    {% else %}
+      All agents are running healthy.
+    {% endif %}
+  </p>
+
+  <!-- SUMMARY TABLE (data table — proper th headers) -->
+  <table style="border-collapse:collapse; border-spacing:0; width:100%; font-family:'DM Sans',Arial,sans-serif; margin:0 0 24px;">
+    <thead>
+      <tr style="background:#F8F9FA;">
+        <th style="padding:10px 12px; text-align:left; font-size:12px; font-weight:600; color:#6B7280; border-bottom:1px solid #F0F0F0;">Account</th>
+        <th style="padding:10px 12px; text-align:center; font-size:12px; font-weight:600; color:#6B7280; border-bottom:1px solid #F0F0F0;">Status</th>
+        <th style="padding:10px 12px; text-align:center; font-size:12px; font-weight:600; color:#6B7280; border-bottom:1px solid #F0F0F0;">Connections</th>
+        <th style="padding:10px 12px; text-align:center; font-size:12px; font-weight:600; color:#6B7280; border-bottom:1px solid #F0F0F0;">Last Connected</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for account in accounts %}
+      {% set agent_details = account.agent_details.data.agent[0] %}
+      {% set status = agent_details.connection_status %}
+      {% set connected_count = 0 %}
+      {% if status.alertManagerConnection %}{% set connected_count = connected_count + 1 %}{% endif %}
+      {% if status.grafanaEnabled %}{% set connected_count = connected_count + 1 %}{% endif %}
+      {% if status.karpenterEnabled %}{% set connected_count = connected_count + 1 %}{% endif %}
+      {% if status.logsConnection %}{% set connected_count = connected_count + 1 %}{% endif %}
+      {% if status.opencostConnection %}{% set connected_count = connected_count + 1 %}{% endif %}
+      <tr style="border-bottom:1px solid #F0F0F0;">
+        <td style="padding:10px 12px; font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:#0D1B2A; font-weight:500;">{{ account.account_name }}</td>
+        <td style="padding:10px 12px; text-align:center;">
+          <span style="color:{% if agent_details.status | lower in ['running', 'connected', 'active'] %}#22C55E{% else %}#EF4444{% endif %}; font-size:16px;">&#9679;</span>
+        </td>
+        <td style="padding:10px 12px; text-align:center; font-family:'DM Sans',Arial,sans-serif; font-size:13px; font-weight:500; color:{% if connected_count == 5 %}#22C55E{% elif connected_count >= 3 %}#F59E0B{% else %}#EF4444{% endif %};">
+          {{ connected_count }}/5
+        </td>
+        <td style="padding:10px 12px; text-align:center; font-family:'DM Sans',Arial,sans-serif; font-size:12px; color:#6B7280;">{{ agent_details.last_connected_at }} UTC</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <!-- ISSUES SECTION -->
+  {% set accounts_with_issues = [] %}
+  {% for account in accounts %}
+    {% set agent_details = account.agent_details.data.agent[0] %}
+    {% set status = agent_details.connection_status %}
+    {% if agent_details.status | lower not in ['running', 'connected', 'active'] or not status.alertManagerConnection or not status.grafanaEnabled or not status.karpenterEnabled or not status.logsConnection or not status.opencostConnection %}
+      {% if accounts_with_issues.append(account) %}{% endif %}
+    {% endif %}
+  {% endfor %}
+
+  {% if accounts_with_issues %}
+  <!-- "Fix these connections" banner -->
+  <div style="background-color:#FEF2F2; padding:10px 16px; border-radius:4px; margin:0 0 16px; font-family:'DM Sans',Arial,sans-serif; font-size:14px; font-weight:600; color:#EF4444;">
+    Fix these connections
+  </div>
+
+  {% for account in accounts_with_issues %}
+    {% set agent_details = account.agent_details.data.agent[0] %}
+    {% set status = agent_details.connection_status %}
+    {% set is_running = agent_details.status | lower in ['running', 'connected', 'active'] %}
+    {% set disconnected_connections = [] %}
+    {% if not status.alertManagerConnection %}{% if disconnected_connections.append('Alert Manager') %}{% endif %}{% endif %}
+    {% if not status.grafanaEnabled %}{% if disconnected_connections.append('Grafana') %}{% endif %}{% endif %}
+    {% if not status.karpenterEnabled %}{% if disconnected_connections.append('Karpenter') %}{% endif %}{% endif %}
+    {% if not status.logsConnection %}{% if disconnected_connections.append('Logs') %}{% endif %}{% endif %}
+    {% if not status.opencostConnection %}{% if disconnected_connections.append('OpenCost') %}{% endif %}{% endif %}
+
+    <!-- Account issue card -->
+    <div style="border-left:3px solid {% if not is_running %}#EF4444{% else %}#F59E0B{% endif %}; padding:14px 18px; margin:0 0 16px;">
+      <!-- Account name -->
+      <p style="font-family:'DM Serif Display',Georgia,serif; font-size:16px; color:#0D1B2A; font-weight:400; margin:0 0 8px;">
+        {{ account.account_name }}
+      </p>
+
+      <!-- Impact description -->
+      {% if not is_running %}
+      <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:#EF4444; line-height:1.6; font-weight:400; margin:0 0 8px;">
+        Agent {{ agent_details.status | lower | capitalize }} since {{ agent_details.last_connected_at }} UTC. No data is being collected.
+      </p>
+      <p style="font-family:'DM Sans',Arial,sans-serif; font-size:12px; color:#6B7280; margin:0 0 10px;">
+        Version: {{ agent_details.version }} &nbsp;&middot;&nbsp; {{ agent_details.k8s_provider }}/{{ agent_details.k8s_version }}
+      </p>
+      {% endif %}
+
+      {% if disconnected_connections | length > 0 %}
+      <p style="font-family:'DM Sans',Arial,sans-serif; font-size:13px; color:{% if is_running %}#F59E0B{% else %}#EF4444{% endif %}; line-height:1.6; font-weight:400; margin:0 0 8px;">
+        {% if is_running %}{{ disconnected_connections | length }} integration{{ 's' if disconnected_connections | length != 1 else '' }} down — cost and scaling data may be incomplete.{% endif %}
+        Disconnected: {{ disconnected_connections | join(', ') }}
+      </p>
+      {% endif %}
+
+      <!-- Action button -->
+      <a href="{{ _base_url }}/user-management#integrations"
+        style="display:inline-block; font-family:'DM Sans',Arial,sans-serif; font-size:12px; font-weight:500; color:#3B82F6; background-color:#DBEAFE; text-decoration:none; padding:5px 14px; border-radius:4px; margin-top:4px;">
+        {% if not is_running %}Check agent{% else %}Reconnect integrations{% endif %} &rarr;
+      </a>
+    </div>
+  {% endfor %}
+
+  {% else %}
+  <!-- All healthy -->
+  <div style="background:#F0FDF4; padding:14px 18px; border-radius:4px; border-left:3px solid #22C55E; margin:0 0 16px;">
+    <p style="font-family:'DM Sans',Arial,sans-serif; font-size:14px; color:#166534; font-weight:500; margin:0;">
+      &#10003; All {{ accounts|length }} account{{ 's' if accounts|length != 1 else '' }} are running healthy
+    </p>
+  </div>
+  {% endif %}
+{% endblock %}

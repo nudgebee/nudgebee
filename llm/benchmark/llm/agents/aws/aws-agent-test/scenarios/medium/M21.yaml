@@ -1,0 +1,175 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M21: Kinesis + Lambda data pipeline loses records on partial batch failure.
+  User complaint: "Our analytics pipeline from Kinesis 'm21-events-stream' through
+  Lambda 'm21-event-processor' to DynamoDB 'm21-events-table' is losing about 10-15%
+  of records. Some events never appear in DynamoDB. No errors in Lambda logs."
+  Root cause: Lambda batch size is 100 with a 30s timeout. When one record in the
+  batch fails, the entire batch is retried (no BisectBatchOnFunctionError). Records
+  that were already processed get re-processed, while the failing record keeps blocking
+  the shard. Eventually the record exceeds MaximumRetryAttempts and the whole batch
+  (including unprocessed records after the failure) is dropped.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = No BisectBatchOnFunctionError, large batch, short timeout.
+      Fixed = BisectBatchOnFunctionError enabled, smaller batch, longer timeout.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  EventsStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: m21-events-stream
+      ShardCount: 2
+      RetentionPeriodHours: 48
+      Tags:
+        - Key: Name
+          Value: m21-events-stream
+        - Key: Environment
+          Value: production
+
+  EventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: m21-events-table
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: eventId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: eventId
+          KeyType: HASH
+      Tags:
+        - Key: Name
+          Value: m21-events-table
+        - Key: Environment
+          Value: production
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m21-event-processor-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: kinesis-dynamodb
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kinesis:GetRecords
+                  - kinesis:GetShardIterator
+                  - kinesis:DescribeStream
+                  - kinesis:DescribeStreamSummary
+                  - kinesis:ListShards
+                Resource: !GetAtt EventsStream.Arn
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:BatchWriteItem
+                Resource: !GetAtt EventsTable.Arn
+
+  EventProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: m21-event-processor
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: !If [IsFixed, 120, 30]
+      MemorySize: 256
+      Environment:
+        Variables:
+          TABLE_NAME: m21-events-table
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import base64
+          import boto3
+          from datetime import datetime
+
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table(os.environ['TABLE_NAME'])
+
+          def handler(event, context):
+              records = event['Records']
+              with table.batch_writer() as batch:
+                  for record in records:
+                      payload = base64.b64decode(record['kinesis']['data']).decode()
+                      data = json.loads(payload)
+                      batch.put_item(Item={
+                          'eventId': data['eventId'],
+                          'eventType': data.get('eventType', 'unknown'),
+                          'userId': data.get('userId', ''),
+                          'timestamp': datetime.utcnow().isoformat(),
+                          'payload': json.dumps(data)
+                      })
+              return {'processed': len(records)}
+      Tags:
+        - Key: Name
+          Value: m21-event-processor
+        - Key: Environment
+          Value: production
+
+  # THE BUG: Large batch (100), no BisectBatchOnFunctionError, low MaximumRetryAttempts
+  KinesisEventMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt EventsStream.Arn
+      FunctionName: !Ref EventProcessorFunction
+      StartingPosition: TRIM_HORIZON
+      BatchSize: !If [IsFixed, 25, 100]
+      MaximumBatchingWindowInSeconds: 5
+      BisectBatchOnFunctionError: !If [IsFixed, true, false]
+      MaximumRetryAttempts: !If [IsFixed, 5, 1]
+      MaximumRecordAgeInSeconds: !If [IsFixed, 86400, 3600]
+      DestinationConfig:
+        OnFailure:
+          Destination: !GetAtt FailureDLQ.Arn
+
+  FailureDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: m21-events-failures-dlq
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Name
+          Value: m21-events-failures-dlq
+
+Outputs:
+  StreamName:
+    Description: Kinesis Stream Name
+    Value: !Ref EventsStream
+  TableName:
+    Description: DynamoDB Table Name
+    Value: !Ref EventsTable
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref EventProcessorFunction
+  BatchSize:
+    Description: Event source mapping batch size
+    Value: !If [IsFixed, '25', '100']
+  BisectOnError:
+    Description: BisectBatchOnFunctionError setting
+    Value: !If [IsFixed, 'true', 'false (records lost on partial failure)']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

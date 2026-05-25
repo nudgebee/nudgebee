@@ -1,0 +1,7 @@
+user_prompt: what is the promql query for the number of pods per node?
+expected_output:
+- count by (node) (kube_pod_info)
+- sum by (node) (kube_pod_info)
+tags:
+- command
+- promql

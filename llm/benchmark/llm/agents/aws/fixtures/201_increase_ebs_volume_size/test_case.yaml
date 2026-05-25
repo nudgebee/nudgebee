@@ -1,0 +1,6 @@
+user_prompt: Increase EBS volume size.
+expected_output:
+- aws ec2 modify-volume --volume-id <volume-id> --size <new-size>
+tags:
+- command
+- aws

@@ -1,0 +1,6 @@
+user_prompt: Delete a Lambda function.
+expected_output:
+- aws lambda delete-function --function-name <function-name>
+tags:
+- command
+- aws

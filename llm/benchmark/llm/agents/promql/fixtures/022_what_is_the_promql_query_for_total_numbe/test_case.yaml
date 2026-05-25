@@ -1,0 +1,7 @@
+user_prompt: what is the promql query for total number of replicas for the nginx deployment?
+expected_output:
+- kube_deployment_spec_replicas{deployment="nginx"}
+- sum(kube_deployment_spec_replicas{deployment="nginx"})
+tags:
+- command
+- promql

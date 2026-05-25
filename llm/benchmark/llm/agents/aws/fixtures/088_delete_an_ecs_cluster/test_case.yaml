@@ -1,0 +1,6 @@
+user_prompt: Delete an ECS cluster.
+expected_output:
+- aws ecs delete-cluster --cluster <cluster-name>
+tags:
+- command
+- aws

@@ -1,0 +1,100 @@
+# Default values for services-server-server.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+image:
+  repository: nudgebee-services-server
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: 'latest'
+
+global:
+  image:
+    registry: 'ghcr.io/nudgebee'
+  imagePullSecrets: []
+  initImages:
+    postgres: 'ghcr.io/nudgebee/postgres:16.10-alpine'
+    curl: 'ghcr.io/nudgebee/curl:8.10.1'
+nameOverride: ''
+fullnameOverride: ''
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template
+  name: ''
+
+podAnnotations: {}
+
+podSecurityContext:
+  {}
+  # fsGroup: 2000
+
+securityContext:
+  {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  # -- Enable [ingress](https://kubernetes.io/docs/concepts/services-networking/ingress/).
+  enabled: false
+  # -- Ingress [class name](https://kubernetes.io/docs/concepts/services-networking/ingress/#ingress-class).
+  className: 'nginx'
+  # -- Annotations to be added to the ingress.
+  annotations: {}
+  # -- Ingress host configuration.
+  # @default -- See [values.yaml](values.yaml).
+  hosts: [] # -- Ingress TLS configuration.
+  # @default -- See [values.yaml](values.yaml).
+  tls: []
+
+secretName: 'nudgebee'
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 1500Mi
+  requests:
+    cpu: 300m
+    memory: 1024Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+annotations: {}
+
+# Scanner images for scan_orchestrator. Tags live here — bump in a PR or let
+# CI resolve them. trivy/popeye/kube-bench/cert-scanner are mirrored to
+# ghcr.io/nudgebee by .github/workflows/scanner-images-mirror.yaml. Nova is
+# published directly by nova/.github/workflows/build-image.yaml and bumped by
+# the nudgebee-build-*.yaml workflows.
+env:
+  NOVA_IMAGE: 'ghcr.io/nudgebee/nova:2026-05-12T15-41-58_3b33692e2739d958a11eb43346c4240a70fd15cd'
+  K8S_VERSION_UPGRADE_IMAGE: 'ghcr.io/nudgebee/nova:2026-05-12T15-41-58_3b33692e2739d958a11eb43346c4240a70fd15cd'
+  TRIVY_IMAGE: 'ghcr.io/nudgebee/trivy:0.58.0'
+  POPEYE_IMAGE: 'ghcr.io/nudgebee/popeye:v0.11.1-nudgebee.1'
+  KUBE_BENCH_IMAGE: 'ghcr.io/nudgebee/kube-bench:v0.10.4'
+  CERT_SCANNER_IMAGE: 'ghcr.io/nudgebee/cert-scanner:v0.1.0'

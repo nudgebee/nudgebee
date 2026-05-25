@@ -1,0 +1,7 @@
+user_prompt: what is the promql query for disk write rate on node-2?
+expected_output:
+- rate(node_disk_written_bytes_total{instance="node-2"}[5m])
+- sum by (instance) (rate(node_disk_written_bytes_total{instance="node-2"}[5m]))
+tags:
+- command
+- promql

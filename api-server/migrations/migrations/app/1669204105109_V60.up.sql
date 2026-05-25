@@ -1,0 +1,51 @@
+
+
+CREATE
+OR REPLACE VIEW "public"."spends_resource_monthly_aggregate" AS
+select 
+     cloud_resource_id 
+    ,date_part('year', "date") as date_year
+    ,date_part('month', "date") as date_month
+    ,sum(amount) 
+from spends
+group by cloud_resource_id, date_part('year', "date"), date_part('month', "date") 
+order by cloud_resource_id, date_year, date_month;
+
+CREATE
+OR REPLACE VIEW "public"."spends_resource_monthly_aggregate" AS
+select 
+     cloud_resource_id 
+    ,date_part('year', "date") as date_year
+    ,date_part('month', "date") as date_month
+    ,sum(amount) 
+from spends
+group by cloud_resource_id, date_part('year', "date"), date_part('month', "date") 
+order by cloud_resource_id, date_year, date_month;
+
+CREATE
+OR REPLACE VIEW "public"."spends_resource_monthly_aggregate" AS
+select 
+     cloud_resource_id 
+    ,date_part('year', "date") as date_year
+    ,date_part('month', "date") as date_month
+    ,sum(amount) 
+from spends
+group by cloud_resource_id, date_part('year', "date"), date_part('month', "date") 
+order by cloud_resource_id, date_year, date_month;
+
+CREATE
+OR REPLACE VIEW "public"."spends_resource_monthly_aggregate" AS
+select 
+     cloud_resource_id 
+    ,date_part('year', "date") as date_year
+    ,date_part('month', "date") as date_month
+    ,sum(amount) 
+from spends
+group by cloud_resource_id, date_part('year', "date"), date_part('month', "date") 
+order by cloud_resource_id, date_year, date_month;
+
+CREATE OR REPLACE VIEW "public"."spends_resource_monthly_aggregate" AS 
+select cloud_resource_id ,date_part('year', "date") as date_year, date_part('month', "date") as date_month, sum(amount), tenant, cloud_account
+from spends
+group by tenant, cloud_account, cloud_resource_id, date_part('year', "date"), date_part('month', "date") 
+order by tenant, cloud_account, cloud_resource_id, date_year, date_month;

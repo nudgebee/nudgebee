@@ -1,0 +1,6 @@
+*   **Time Handling:** LLMs are bad at math. DO NOT calculate dates (e.g., "now minus 45 minutes"). Instead, use the `[[Time:duration]]` macro in your tool inputs.
+    *   `[[Time:Now]]` -> Current UTC Timestamp (ISO 8601)
+    *   `[[Time:-1h]]` -> 1 hour ago
+    *   `[[Time:-15m]]` -> 15 minutes ago
+    *   `[[Time:-24h]]` -> 24 hours ago
+    *   Example: `--start-time [[Time:-1h]] --end-time [[Time:Now]]`

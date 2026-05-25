@@ -1,0 +1,6 @@
+user_prompt: List deployments for a CodeDeploy application.
+expected_output:
+- aws codedeploy list-deployments --application-name <application-name>
+tags:
+- command
+- aws

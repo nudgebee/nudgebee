@@ -1,0 +1,6 @@
+user_prompt: Delete an IAM group.
+expected_output:
+- aws iam delete-group --group-name <group-name>
+tags:
+- command
+- aws

@@ -1,0 +1,6 @@
+user_prompt: Get the commit details for a CodeCommit repository.
+expected_output:
+- aws codecommit get-commit --repository-name <repository-name> --commit-id <commit-id>
+tags:
+- command
+- aws

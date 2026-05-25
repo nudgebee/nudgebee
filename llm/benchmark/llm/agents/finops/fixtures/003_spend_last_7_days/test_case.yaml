@@ -1,0 +1,13 @@
+user_prompt: "How much have we spent in the last 7 days?"
+expected_output:
+  - |
+    The agent should call spend_summary with window=7d and report the 7-day
+    total spend in dollars, broken out by cloud account, with comparison to
+    the prior 7-day period. The answer must contain explicit dollar figures
+    and cite [spend_summary]. Date ranges being compared should be stated
+    explicitly (e.g. "last 7 days vs prior 7 days").
+tags:
+  - spend
+  - window
+  - easy
+  - finops

@@ -1,0 +1,8 @@
+user_prompt: What is the LogQL query to get the top 10 services with the most logs
+  in the last 5 minutes from the kubernetes-logs job?
+expected_output:
+- topk(10, count_over_time({job="kubernetes-logs"}[5m]))
+- topk(10, count_over_time({namespace="default"}[5m]))
+tags:
+- command
+- loki

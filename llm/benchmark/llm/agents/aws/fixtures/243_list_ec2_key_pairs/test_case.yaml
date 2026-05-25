@@ -1,0 +1,6 @@
+user_prompt: List EC2 key pairs.
+expected_output:
+- aws ec2 describe-key-pairs
+tags:
+- command
+- aws

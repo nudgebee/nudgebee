@@ -1,0 +1,7 @@
+user_prompt: How to show logs from the default namespace but not from the test deployment.
+expected_output:
+- '{namespace="default", deployment!="test"}'
+- '{namespace="default"} |= "info" | deployment != "test-runner"'
+tags:
+- command
+- loki

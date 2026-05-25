@@ -1,0 +1,7 @@
+user_prompt: What is the SQL query to mark the event with id evt-a1b2c3d4 as CLOSED
+  and update updated_at?
+expected_output:
+- UPDATE events SET status = 'CLOSED', updated_at = NOW() WHERE id = 'evt-a1b2c3d4';
+tags:
+- command
+- events

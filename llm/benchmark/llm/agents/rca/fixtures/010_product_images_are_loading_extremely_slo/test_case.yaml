@@ -1,0 +1,26 @@
+agent: k8s_debug
+expected_output:
+- The frontend is experiencing slow image loading due to the imageSlowLoad feature flag being set to 5 seconds. This artificial
+  delay in serving images severely degrades the user experience and page load performance.
+expected_root_cause:
+  affected_service: frontend
+  issue_type: slow_image_loading
+  symptoms:
+  - images taking 5+ seconds to load
+  - poor page rendering performance
+  - user frustration with slow UI
+  - delayed time to interactive
+  telemetry_signals:
+    logs: slow image load logs in frontend service
+    metrics: image load time metrics showing 5+ second delays, page load time degradation
+    traces: traces showing image loading operations with 5+ second duration
+feature_flag: imageSlowLoad
+flag_variant: 5sec
+scenario_id: image_slow_load
+tags:
+- rca
+- kubernetes
+type: rca
+user_prompt: Product images are loading extremely slowly, causing poor user experience. Diagnose issues with the frontend
+  deployment in nudgebee-demo namespace.
+wait_time_seconds: 60

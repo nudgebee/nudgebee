@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Dev Environment – E2E Test Setup Guide</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      font-size: 13px;
+      color: #1a1a1a;
+      background: #fff;
+      padding: 40px 60px;
+      max-width: 960px;
+      margin: auto;
+      line-height: 1.6;
+    }
+
+    /* ── Cover ── */
+    .cover {
+      text-align: center;
+      padding: 60px 0 50px;
+      border-bottom: 3px solid #6c5ce7;
+      margin-bottom: 40px;
+    }
+    .cover .badge {
+      display: inline-block;
+      background: #6c5ce7;
+      color: #fff;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      padding: 4px 14px;
+      border-radius: 20px;
+      margin-bottom: 18px;
+    }
+    .cover h1 {
+      font-size: 30px;
+      font-weight: 800;
+      color: #2d3436;
+      margin-bottom: 8px;
+    }
+    .cover .subtitle {
+      font-size: 15px;
+      color: #636e72;
+      margin-bottom: 24px;
+    }
+    .cover .meta {
+      font-size: 12px;
+      color: #b2bec3;
+    }
+
+    /* ── Section headings ── */
+    h2 {
+      font-size: 17px;
+      font-weight: 700;
+      color: #6c5ce7;
+      border-left: 4px solid #6c5ce7;
+      padding-left: 10px;
+      margin: 36px 0 14px;
+    }
+    h3 {
+      font-size: 13px;
+      font-weight: 700;
+      color: #2d3436;
+      margin: 20px 0 8px;
+    }
+
+    /* ── Code blocks ── */
+    pre {
+      background: #1e1e2e;
+      color: #cdd6f4;
+      border-radius: 8px;
+      padding: 14px 18px;
+      font-size: 12px;
+      font-family: 'Consolas', 'Courier New', monospace;
+      overflow-x: auto;
+      margin: 8px 0 14px;
+      line-height: 1.7;
+    }
+    code {
+      background: #f0f0f5;
+      color: #6c5ce7;
+      font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 12px;
+      padding: 1px 6px;
+      border-radius: 4px;
+    }
+    pre code {
+      background: none;
+      color: inherit;
+      padding: 0;
+    }
+
+    /* ── Comment colors in code ── */
+    .cm { color: #6272a4; }   /* comment */
+    .kw { color: #ff79c6; }   /* keyword */
+    .st { color: #f1fa8c; }   /* string */
+    .va { color: #8be9fd; }   /* variable */
+
+    /* ── Tables ── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 10px 0 18px;
+      font-size: 12px;
+    }
+    th {
+      background: #6c5ce7;
+      color: #fff;
+      text-align: left;
+      padding: 8px 12px;
+      font-weight: 600;
+    }
+    td {
+      padding: 7px 12px;
+      border-bottom: 1px solid #f0f0f5;
+      vertical-align: top;
+    }
+    tr:nth-child(even) td { background: #fafafa; }
+
+    /* ── Info / Warning boxes ── */
+    .box {
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin: 12px 0;
+      font-size: 12px;
+    }
+    .box-info    { background: #e8f4fd; border-left: 4px solid #3498db; }
+    .box-warning { background: #fef9e7; border-left: 4px solid #f39c12; }
+    .box-success { background: #eafaf1; border-left: 4px solid #27ae60; }
+    .box strong  { display: block; margin-bottom: 4px; font-size: 12px; }
+
+    /* ── Step list ── */
+    .steps { counter-reset: step; list-style: none; padding: 0; }
+    .steps li {
+      counter-increment: step;
+      display: flex;
+      gap: 14px;
+      margin-bottom: 16px;
+      align-items: flex-start;
+    }
+    .steps li::before {
+      content: counter(step);
+      background: #6c5ce7;
+      color: #fff;
+      font-weight: 700;
+      font-size: 12px;
+      min-width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    /* ── Command reference cards ── */
+    .cmd-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin: 14px 0;
+    }
+    .cmd-card {
+      background: #f8f7ff;
+      border: 1px solid #e0d9ff;
+      border-radius: 8px;
+      padding: 12px 14px;
+    }
+    .cmd-card .label {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: #6c5ce7;
+      margin-bottom: 6px;
+    }
+    .cmd-card pre {
+      margin: 0;
+      font-size: 11px;
+      padding: 8px 12px;
+    }
+
+    /* ── Divider ── */
+    hr { border: none; border-top: 1px solid #f0f0f5; margin: 28px 0; }
+
+    /* ── Print ── */
+    @media print {
+      body { padding: 20px 30px; }
+      pre { white-space: pre-wrap; }
+      .cmd-grid { grid-template-columns: 1fr; }
+      h2 { page-break-before: auto; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════════════════════ COVER -->
+<div class="cover">
+  <div class="badge">QA Automation</div>
+  <h1>Dev Environment – E2E Test Setup Guide</h1>
+  <p class="subtitle">Playwright · GitHub Actions · Nudgebee</p>
+  <p class="meta">Project: nudgebee &nbsp;|&nbsp; Branch: main &nbsp;|&nbsp; Date: April 2026</p>
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════ 1. OVERVIEW -->
+<h2>1. Overview</h2>
+<p>This guide covers how to run E2E (Playwright) test cases against the <strong>Dev environment</strong> (<code>https://dev.nudgebee.pollux.in</code>) as well as the existing <strong>Test environment</strong>. A single environment flag controls which URL, tenant, and cluster are used — no test code needs to change.</p>
+
+<table>
+  <thead><tr><th>Environment</th><th>URL</th><th>Tenant</th><th>K8s Cluster</th><th>AWS Cloud</th><th>Azure Cloud</th><th>GCP Cloud</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Test</strong> (default)</td><td>test.nudgebee.pollux.in</td><td>Iteration-160</td><td>iteration-test</td><td>iteration-aws</td><td>iteration-azure</td><td>iteration-gcp</td></tr>
+    <tr><td><strong>Dev</strong></td><td>dev.nudgebee.pollux.in</td><td>Nudgebee</td><td>k8s-dev</td><td>dev-aws</td><td>nudgebee-azure</td><td>nudgebee-dev</td></tr>
+  </tbody>
+</table>
+
+
+<!-- ══════════════════════════════════════════════════════ 2. PREREQUISITES -->
+<h2>2. Prerequisites</h2>
+<ul class="steps">
+  <li>Node.js LTS installed (<code>node -v</code> should return v18+)</li>
+  <li>Inside <code>app-e2e-tests/</code>, run <code>npm ci</code> to install all dependencies (includes <code>cross-env</code> and Playwright)</li>
+  <li>Download Chromium browser: <pre><code>npx playwright install chromium</code></pre></li>
+  <li>Confirm <code>.env</code> and <code>.env.dev</code> files exist in <code>app-e2e-tests/</code></li>
+  <li>Confirm <code>e2e-config.json</code> exists in <code>app-e2e-tests/</code></li>
+</ul>
+
+
+<!-- ══════════════════════════════════════════════════════ 3. FILES CREATED -->
+<h2>3. Files Created / Modified</h2>
+<table>
+  <thead><tr><th>File</th><th>Purpose</th><th>Action</th></tr></thead>
+  <tbody>
+    <tr><td><code>app-e2e-tests/.env.dev</code></td><td>Dev-specific env vars (URL, tenant, cluster, Slack)</td><td>Created</td></tr>
+    <tr><td><code>app-e2e-tests/pages/devLogin.ts</code></td><td>Standalone dev login helper (no Switch Tenant step)</td><td>Created</td></tr>
+    <tr><td><code>app-e2e-tests/dt.js</code></td><td>Cross-platform Node.js runner – actual logic lives here (works on Windows + Mac/Linux)</td><td>Created</td></tr>
+    <tr><td><code>app-e2e-tests/dt.bat</code></td><td>Windows wrapper – calls <code>dt.js</code> so <code>.\dt</code> keeps working</td><td>Modified</td></tr>
+    <tr><td><code>app-e2e-tests/dt.sh</code></td><td>Mac/Linux wrapper – calls <code>dt.js</code>, run with <code>./dt.sh</code></td><td>Created</td></tr>
+    <tr><td><code>.github/workflows/app-e2e-tests-dev.yaml</code></td><td>GitHub Actions workflow for dev env</td><td>Created</td></tr>
+    <tr><td><code>app-e2e-tests/playwright.config.ts</code></td><td>Loads <code>.env.dev</code> when <code>E2E_ENVIRONMENT=dev</code></td><td>Modified</td></tr>
+    <tr><td><code>app-e2e-tests/config/environments.ts</code></td><td>Added <code>dev</code> environment entry</td><td>Modified</td></tr>
+    <tr><td><code>app-e2e-tests/pages/LoginPage.ts</code></td><td>Skips Switch Tenant step on dev env</td><td>Modified</td></tr>
+    <tr><td><code>app-e2e-tests/tests/ClusterDetails/ClusterDetailsLocators.ts</code></td><td>Reads cluster name from <code>CLUSTER_NAME</code> env var first</td><td>Modified</td></tr>
+    <tr><td><code>app-e2e-tests/package.json</code></td><td>Added <code>test:dev</code>, <code>test:dev:ui</code>, <code>test:dev:headed</code> scripts</td><td>Modified</td></tr>
+  </tbody>
+</table>
+
+
+<!-- ══════════════════════════════════════════════════════ 4. ENV FILES -->
+<h2>4. Environment Files</h2>
+
+<h3>app-e2e-tests/.env &nbsp;(Test Environment)</h3>
+<p>Already exists. Contains all test env credentials. <strong>Do not modify.</strong></p>
+
+<h3>app-e2e-tests/.env.dev &nbsp;(Dev Environment)</h3>
+<pre><code><span class="cm">#--------------------- Login details ---------------------</span>
+LDAP_USERNAME=raman.kharche01
+LDAP_PASSWORD=Test!12345
+
+<span class="cm">#-------------------- Tenant & Cluster Details --------------------</span>
+SWITCH_TENANT=Nudgebee
+CLUSTER_NAME=k8s-dev
+
+<span class="cm">#-------------------- Cloud Account Cluster Names (Dev) --------------------</span>
+AWS_CLUSTER_NAME=dev-aws
+AZURE_CLUSTER_NAME=nudgebee-azure
+GCP_CLUSTER_NAME=nudgebee-dev
+
+<span class="cm">#-------------------- Dev Environment URL --------------------</span>
+BASE_URL=https://dev.nudgebee.pollux.in
+
+<span class="cm">#-------------------- Slack Notifications --------------------</span>
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/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</code></pre>
+
+<div class="box box-info">
+  <strong>How loading works</strong>
+  When <code>E2E_ENVIRONMENT=dev</code> is set, Playwright loads <code>.env.dev</code> first, then cascades to <code>.env</code> for any missing variables. Values in <code>.env.dev</code> always take precedence.
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════ 5. LOGIN FLOW -->
+<h2>5. Login Flow – Dev vs Test</h2>
+<table>
+  <thead><tr><th>Step</th><th>Test Environment</th><th>Dev Environment</th></tr></thead>
+  <tbody>
+    <tr><td>1. Navigate</td><td>test.nudgebee.pollux.in</td><td>dev.nudgebee.pollux.in</td></tr>
+    <tr><td>2. LDAP Login</td><td>raman.kharche01 / Test!12345</td><td>raman.kharche01 / Test!12345</td></tr>
+    <tr><td>3. Switch Tenant</td><td>✅ Switches to Iteration-160</td><td>❌ Skipped (not needed on dev)</td></tr>
+    <tr><td>4. Select Cluster</td><td>iteration-test</td><td>k8s-dev</td></tr>
+  </tbody>
+</table>
+
+<div class="box box-success">
+  <strong>No test file changes needed</strong>
+  All existing tests use <code>LoginPage.doFullLogin()</code> which automatically handles both environments. Switch Tenant is skipped only when <code>E2E_ENVIRONMENT=dev</code>.
+</div>
+
+
+<!-- ══════════════════════════════════════════════════════ 6. RUN COMMANDS -->
+<h2>6. Running Test Cases</h2>
+
+<div class="box box-warning">
+  <strong>Working directory</strong>
+  All commands below must be run from inside the <code>app-e2e-tests/</code> folder.
+  <pre style="margin-top:6px"><code>cd app-e2e-tests</code></pre>
+</div>
+
+<h3>6.1 Shortcut Script – Dev Only (Recommended)</h3>
+<p>Logic lives in <code>dt.js</code> (cross-platform). Platform-specific wrappers delegate to it — same flags work everywhere.</p>
+
+<table>
+  <thead><tr><th>Platform</th><th>Command</th><th>First-time setup</th></tr></thead>
+  <tbody>
+    <tr><td>Windows</td><td><code>.\dt &lt;args&gt;</code></td><td>None</td></tr>
+    <tr><td>Mac / Linux</td><td><code>./dt.sh &lt;args&gt;</code></td><td><code>chmod +x dt.sh</code> (once)</td></tr>
+    <tr><td>Any (universal)</td><td><code>node dt.js &lt;args&gt;</code></td><td>None</td></tr>
+  </tbody>
+</table>
+
+<div class="cmd-grid">
+  <div class="cmd-card">
+    <div class="label">Run specific file – Dev</div>
+    <pre><code><span class="cm"># Windows</span>
+.\dt tests/ClusterDetails/Monitoring/MonitoringAlertManager.spec.ts
+<span class="cm"># Mac/Linux</span>
+./dt.sh tests/ClusterDetails/Monitoring/MonitoringAlertManager.spec.ts</code></pre>
+  </div>
+  <div class="cmd-card">
+    <div class="label">Run entire folder – Dev (one by one)</div>
+    <pre><code><span class="cm"># Windows</span>
+.\dt tests/ClusterDetails/ --workers=1
+<span class="cm"># Mac/Linux</span>
+./dt.sh tests/ClusterDetails/ --workers=1</code></pre>
+  </div>
+  <div class="cmd-card">
+    <div class="label">Run Cloud Account – AWS</div>
+    <pre><code><span class="cm"># Windows</span>
+.\dt tests/CloudAccount/AWS --workers=1
+<span class="cm"># Mac/Linux</span>
+./dt.sh tests/CloudAccount/AWS --workers=1</code></pre>
+  </div>
+  <div class="cmd-card">
+    <div class="label">Run by test name – Dev</div>
+    <pre><code><span class="cm"># Windows</span>
+.\dt --grep "API testing Cluster Details"
+<span class="cm"># Mac/Linux</span>
+./dt.sh --grep "API testing Cluster Details"</code></pre>
+  </div>
+</div>
+
+<h3>6.2 Full Commands – Dev Environment</h3>
+<pre><code><span class="cm"># Specific test file</span>
+npx cross-env E2E_ENVIRONMENT=dev npx playwright test --project=chromium tests/ClusterDetails/Monitoring/MonitoringAlertManager.spec.ts --headed
+
+<span class="cm"># Specific folder, sequential</span>
+npx cross-env E2E_ENVIRONMENT=dev npx playwright test --project=chromium tests/ClusterDetails/ --headed --workers=1
+
+<span class="cm"># By test name (grep)</span>
+npx cross-env E2E_ENVIRONMENT=dev npx playwright test --project=chromium --grep "API testing Cluster Details" --headed
+
+<span class="cm"># Full suite</span>
+npx cross-env E2E_ENVIRONMENT=dev npx playwright test --project=chromium --headed</code></pre>
+
+<h3>6.3 Full Commands – Test Environment</h3>
+<pre><code><span class="cm"># Specific test file</span>
+npx playwright test tests/ClusterDetails/Monitoring/MonitoringAlertManager.spec.ts --headed
+
+<span class="cm"># Specific folder, sequential</span>
+npx playwright test tests/ClusterDetails/ --headed --workers=1
+
+<span class="cm"># By test name (grep)</span>
+npx playwright test --grep "API testing Cluster Details" --headed
+
+<span class="cm"># Full suite</span>
+npx playwright test --headed</code></pre>
+
+<h3>6.4 npm Scripts</h3>
+<table>
+  <thead><tr><th>Script</th><th>Environment</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td><code>npm run test</code></td><td>Test</td><td>Full suite, headless</td></tr>
+    <tr><td><code>npm run test:ui</code></td><td>Test</td><td>Full suite, Playwright UI mode</td></tr>
+    <tr><td><code>npm run test:dev</code></td><td>Dev</td><td>Full suite, headless</td></tr>
+    <tr><td><code>npm run test:dev:ui</code></td><td>Dev</td><td>Full suite, Playwright UI mode</td></tr>
+    <tr><td><code>npm run test:dev:headed</code></td><td>Dev</td><td>Full suite, browser visible</td></tr>
+    <tr><td><code>npm run report</code></td><td>Both</td><td>Open last HTML report</td></tr>
+  </tbody>
+</table>
+
+<h3>6.5 Common Playwright Flags</h3>
+<table>
+  <thead><tr><th>Flag</th><th>Purpose</th><th>Example</th></tr></thead>
+  <tbody>
+    <tr><td><code>--headed</code></td><td>Open browser window</td><td><code>.\dt tests/... --headed</code></td></tr>
+    <tr><td><code>--workers=1</code></td><td>Run one test at a time</td><td><code>.\dt tests/folder/ --workers=1</code></td></tr>
+    <tr><td><code>--grep "name"</code></td><td>Filter by test name</td><td><code>.\dt --grep "Alert Manager"</code></td></tr>
+    <tr><td><code>--project=chromium</code></td><td>Run chromium only (auto-set on dev)</td><td>—</td></tr>
+    <tr><td><code>--retries=1</code></td><td>Retry failed tests once</td><td><code>.\dt tests/... --retries=1</code></td></tr>
+    <tr><td><code>--timeout=120000</code></td><td>Override per-test timeout (ms)</td><td><code>.\dt tests/... --timeout=120000</code></td></tr>
+  </tbody>
+</table>
+
+
+<!-- ══════════════════════════════════════════════════════ 7. GITHUB ACTIONS -->
+<h2>7. GitHub Actions – Dev Workflow</h2>
+
+<h3>Workflow file</h3>
+<p><code>.github/workflows/app-e2e-tests-dev.yaml</code></p>
+
+<h3>Triggers</h3>
+<table>
+  <thead><tr><th>Trigger</th><th>When</th><th>Tests Run</th></tr></thead>
+  <tbody>
+    <tr><td>Schedule</td><td>Daily at <strong>6:00 AM IST</strong></td><td>Full suite</td></tr>
+    <tr><td>Push to main</td><td>Changes in <code>app-e2e-tests/**</code></td><td>Only changed spec files</td></tr>
+    <tr><td>Pull Request to main</td><td>Changes in <code>app-e2e-tests/**</code></td><td>Only changed spec files</td></tr>
+    <tr><td>Manual (workflow_dispatch)</td><td>GitHub → Actions → Run workflow</td><td>Controlled by inputs below</td></tr>
+  </tbody>
+</table>
+
+<h3>Manual Run Inputs (workflow_dispatch)</h3>
+<table>
+  <thead><tr><th>Input</th><th>Description</th><th>Example</th></tr></thead>
+  <tbody>
+    <tr><td><code>test_file</code></td><td>Comma-separated spec file paths</td><td><code>tests/ClusterDetails/Monitoring/MonitoringAlertManager.spec.ts</code></td></tr>
+    <tr><td><code>test_name</code></td><td>Test name to grep</td><td><code>API testing Cluster Details</code></td></tr>
+    <tr><td><code>run_all</code></td><td>Run full suite (overrides above)</td><td><code>true</code></td></tr>
+    <tr><td><code>cluster_name</code></td><td>Override cluster (default: k8s-dev)</td><td><code>k8s-dev</code></td></tr>
+    <tr><td><code>switch_tenant</code></td><td>Override tenant (default: Nudgebee)</td><td><code>Nudgebee</code></td></tr>
+  </tbody>
+</table>
+
+<h3>Required GitHub Secret</h3>
+<p>The dev workflow uses the <strong>same secret as the test workflow</strong> — no new secret needed.</p>
+<table>
+  <thead><tr><th>Secret Name</th><th>Content</th></tr></thead>
+  <tbody>
+    <tr><td><code>E2E_TEST_ENV</code></td><td>Full contents of <code>.env</code> file + the 4 <code>DEV_*</code> vars below</td></tr>
+  </tbody>
+</table>
+
+<p>Add these 4 lines to the <code>E2E_TEST_ENV</code> secret in GitHub:</p>
+<pre><code>DEV_BASE_URL=https://dev.nudgebee.pollux.in
+DEV_SWITCH_TENANT=Nudgebee
+DEV_CLUSTER_NAME=k8s-dev
+DEV_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/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</code></pre>
+
+<div class="box box-info">
+  <strong>How it works in CI</strong>
+  The workflow writes <code>.env</code> from the secret, then extracts all <code>DEV_*</code> lines and strips the prefix to create <code>.env.dev</code>. Playwright loads <code>.env.dev</code> first (dev values win), then cascades to <code>.env</code> for integration credentials.
+</div>
+
+<h3>Add Secret in GitHub</h3>
+<ol class="steps">
+  <li>Go to: GitHub repo → <strong>Settings</strong> → <strong>Secrets and variables</strong> → <strong>Actions</strong></li>
+  <li>Click <strong>E2E_TEST_ENV</strong> → Edit</li>
+  <li>Append the 4 <code>DEV_*</code> lines shown above at the bottom</li>
+  <li>Click <strong>Update secret</strong></li>
+</ol>
+
+
+<!-- ══════════════════════════════════════════════════════ 8. QUICK REFERENCE -->
+<h2>8. Quick Reference Card</h2>
+
+<table>
+  <thead><tr><th>Task</th><th>Command</th></tr></thead>
+  <tbody>
+    <tr><td>Run 1 test on <strong>Dev</strong> (Windows)</td><td><code>.\dt tests/path/to/Test.spec.ts</code></td></tr>
+    <tr><td>Run 1 test on <strong>Dev</strong> (Mac/Linux)</td><td><code>./dt.sh tests/path/to/Test.spec.ts</code></td></tr>
+    <tr><td>Run 1 test on <strong>Dev</strong> (Universal)</td><td><code>node dt.js tests/path/to/Test.spec.ts</code></td></tr>
+    <tr><td>Run 1 test on <strong>Test</strong></td><td><code>npx playwright test tests/path/to/Test.spec.ts --headed</code></td></tr>
+    <tr><td>Run folder on <strong>Dev</strong> (Windows, sequential)</td><td><code>.\dt tests/ClusterDetails/ --workers=1</code></td></tr>
+    <tr><td>Run folder on <strong>Dev</strong> (Mac/Linux, sequential)</td><td><code>./dt.sh tests/ClusterDetails/ --workers=1</code></td></tr>
+    <tr><td>Run Cloud Account AWS – Dev (Windows)</td><td><code>.\dt tests/CloudAccount/AWS --workers=1</code></td></tr>
+    <tr><td>Run Cloud Account AWS – Dev (Mac/Linux)</td><td><code>./dt.sh tests/CloudAccount/AWS --workers=1</code></td></tr>
+    <tr><td>Run folder on <strong>Test</strong> (sequential)</td><td><code>npx playwright test tests/ClusterDetails/ --headed --workers=1</code></td></tr>
+    <tr><td>Run full suite on <strong>Dev</strong></td><td><code>npm run test:dev</code></td></tr>
+    <tr><td>Run full suite on <strong>Test</strong></td><td><code>npm run test</code></td></tr>
+    <tr><td>Open Playwright UI – Dev</td><td><code>npm run test:dev:ui</code></td></tr>
+    <tr><td>Open Playwright UI – Test</td><td><code>npm run test:ui</code></td></tr>
+    <tr><td>View last HTML report</td><td><code>npm run report</code></td></tr>
+    <tr><td>Install browsers (first time)</td><td><code>npx playwright install chromium</code></td></tr>
+    <tr><td>Mac/Linux – make dt.sh executable</td><td><code>chmod +x dt.sh</code></td></tr>
+  </tbody>
+</table>
+
+<hr>
+<p style="text-align:center; color:#b2bec3; font-size:11px;">
+  Nudgebee QA Automation &nbsp;|&nbsp; app-e2e-tests &nbsp;|&nbsp; April 2026
+</p>
+
+</body>
+</html>

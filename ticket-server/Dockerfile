@@ -1,0 +1,32 @@
+# syntax=docker/dockerfile:1.7
+FROM golang:1.26-alpine as build-stage
+
+
+# Set destination for COPY
+WORKDIR /app
+
+# Download Go modules
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
+
+COPY ./ ./
+
+# Build
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build  -o /app/ticket-server .
+RUN chmod +x /app/ticket-server
+RUN rm -rf /go
+
+EXPOSE 8000
+CMD ["/app/ticket-server"]
+
+
+FROM alpine:3.19 AS release-stage
+WORKDIR /app
+COPY --from=build-stage /app/ticket-server /app/ticket-server
+RUN chmod +x /app/ticket-server
+EXPOSE 8000
+CMD ["/app/ticket-server"]

@@ -1,0 +1,6 @@
+user_prompt: Get Lambda function configuration.
+expected_output:
+- aws lambda get-function-configuration --function-name <function-name>
+tags:
+- command
+- aws

@@ -1,0 +1,6 @@
+user_prompt: List AppSync data sources.
+expected_output:
+- aws appsync list-data-sources --api-id <api-id>
+tags:
+- command
+- aws

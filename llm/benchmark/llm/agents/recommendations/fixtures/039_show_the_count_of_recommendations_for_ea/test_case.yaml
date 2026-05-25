@@ -1,0 +1,8 @@
+user_prompt: Show the count of recommendations for each rule_name within the 'Security'
+  category.
+expected_output:
+- SELECT rule_name, COUNT(*) AS count from recommendation_view WHERE category = 'Security'
+  GROUP BY rule_name ORDER BY count DESC;
+tags:
+- command
+- recommendations

@@ -1,0 +1,9 @@
+user_prompt: What is the LogQL query to format error-level logs so they show only
+  the pod name and the message?
+expected_output:
+- '{level="error"} | json | line_format "Pod: {{.kubernetes.pod_name}} | Message:
+  {{.message}}"'
+- '{namespace="production"} |= "error" | logfmt | line_format "{{.pod}}: {{.msg}}"'
+tags:
+- command
+- datadog

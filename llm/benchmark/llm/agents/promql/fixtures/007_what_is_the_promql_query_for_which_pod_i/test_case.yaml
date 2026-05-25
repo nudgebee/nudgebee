@@ -1,0 +1,9 @@
+user_prompt: what is the promql query for which pod is taking most of the memory in
+  my cluster?
+expected_output:
+- sort_desc(max(container_memory_usage_bytes) by (pod))
+- topk(1, max by (pod) (container_memory_usage_bytes))
+- sum(container_memory_working_set_bytes) by (pod)
+tags:
+- command
+- promql

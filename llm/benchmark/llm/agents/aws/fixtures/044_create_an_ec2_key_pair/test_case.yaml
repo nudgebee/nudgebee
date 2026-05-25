@@ -1,0 +1,6 @@
+user_prompt: Create an EC2 key pair.
+expected_output:
+- aws ec2 create-key-pair --key-name <key-name>
+tags:
+- command
+- aws

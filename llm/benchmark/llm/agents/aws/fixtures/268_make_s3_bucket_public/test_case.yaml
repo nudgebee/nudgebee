@@ -1,0 +1,6 @@
+user_prompt: Make S3 bucket public.
+expected_output:
+- aws s3api put-bucket-acl --bucket <bucket-name> --acl public-read
+tags:
+- command
+- aws

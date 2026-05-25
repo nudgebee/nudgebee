@@ -1,0 +1,26 @@
+agent: k8s_debug
+expected_output:
+- The paymentservice is failing approximately 50% of charge requests due to the paymentFailure feature flag being set to 50%.
+  This causes half of all payment attempts to fail, preventing customers from completing their purchases.
+expected_root_cause:
+  affected_service: paymentservice
+  issue_type: payment_processing_failure
+  symptoms:
+  - payment transaction failures
+  - checkout errors
+  - 50% failure rate on payments
+  - customer complaints
+  telemetry_signals:
+    logs: payment failure errors in paymentservice logs
+    metrics: payment failure rate at ~50%, error rate spike
+    traces: failed payment traces showing charge request errors
+feature_flag: paymentFailure
+flag_variant: 50%
+scenario_id: payment_failure
+tags:
+- rca
+- kubernetes
+type: rca
+user_prompt: Multiple customers are reporting failed payment transactions during checkout. Diagnose issues with the payment
+  deployment in nudgebee-demo namespace.
+wait_time_seconds: 60

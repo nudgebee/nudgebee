@@ -1,0 +1,62 @@
+# Dockerfile_base
+# This Dockerfile builds a base image with Playwright browsers and the playwright-go CLI.
+# It uses a multi-stage build to minimize the final image size.
+# Build this image first: docker build -t playwright-base-image -f Dockerfile_base .
+
+# --- Stage 1: Build playwright-go CLI ---
+FROM golang:1.26 AS go-builder
+
+ARG TARGETPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
+
+ENV GOOS=${TARGETOS:-linux}
+ENV GOARCH=${TARGETARCH:-amd64}
+ENV CGO_ENABLED=0
+
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download -x
+
+# Install the Playwright-Go CLI globally using the version from go.mod
+RUN PWGO_VER=$(grep -oE "playwright-go v\S+" /app/go.mod | sed 's/playwright-go //g') && \
+    go install github.com/playwright-community/playwright-go/cmd/playwright@${PWGO_VER}
+
+# --- Stage 2: Install Playwright browsers and copy playwright-go CLI ---
+FROM ubuntu:noble AS playwright-installer
+
+LABEL maintainer="nudgebee"
+LABEL version="noble-playwright-go-optimized"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install minimal system dependencies, letting playwright install --with-deps handle the rest
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    tzdata \
+    wget \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN (type -p wget >/dev/null || (apt update && apt install wget -y)) \
+	&& mkdir -p -m 755 /etc/apt/keyrings \
+	&& out=$(mktemp) && wget -nv -O$out https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+	&& cat $out | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+	&& chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+	&& mkdir -p -m 755 /etc/apt/sources.list.d \
+	&& echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+	&& apt update \
+	&& apt install gh -y
+
+# Copy the compiled playwright-go CLI from the previous stage
+COPY --from=go-builder /go/bin/playwright /usr/local/bin/playwright
+RUN chmod +x /usr/local/bin/playwright
+
+# Install Playwright browsers using the playwright-go CLI, which will pull in its own dependencies
+RUN /usr/local/bin/playwright --version \
+    && mkdir -p /root/.cache \
+    && /usr/local/bin/playwright install --with-deps chromium chromium-headless-shell \
+    && rm -rf /root/.cache/ms-playwright/ffmpeg-* \
+    && ls -lh /root/.cache/ms-playwright
+
+WORKDIR /app

@@ -1,0 +1,7 @@
+user_prompt: what is the promql query for network receive errors on eth0 for node-7?
+expected_output:
+- rate(node_network_receive_errs_total{instance="node-7", device="eth0"}[5m])
+- sum by (instance) (rate(node_network_receive_errs_total{device="eth0"}[5m]))
+tags:
+- command
+- promql

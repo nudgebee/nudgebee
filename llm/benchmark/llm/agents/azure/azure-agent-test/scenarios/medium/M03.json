@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "M03: App Service minTlsVersion=1.3 but most client libraries and mobile apps use TLS 1.2. Connections from TLS 1.2 clients are rejected with handshake failure. User complaint: mobile app and partner APIs get SSL handshake errors. Requires checking TLS configuration."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "appName": "[concat('m03app', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "minTlsVersion": "[if(equals(parameters('scenarioMode'), 'Fixed'), '1.2', '1.3')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('appName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "app",
+      "tags": {
+        "Name": "m03-partner-api",
+        "Environment": "production",
+        "Team": "integrations",
+        "Scenario": "M03",
+        "ScenarioMode": "[parameters('scenarioMode')]"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "httpsOnly": true,
+        "siteConfig": {
+          "minTlsVersion": "[variables('minTlsVersion')]",
+          "appSettings": [
+            { "name": "APP_ENV", "value": "production" },
+            { "name": "API_VERSION", "value": "v2" }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "AppServiceName": { "type": "string", "value": "[variables('appName')]" },
+    "MinTlsVersion": { "type": "string", "value": "[variables('minTlsVersion')]" },
+    "BugNote": { "type": "string", "value": "minTlsVersion=1.3 rejects TLS 1.2 connections from mobile apps and partner integrations" },
+    "ScenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}
