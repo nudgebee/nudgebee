@@ -378,6 +378,12 @@ the overlay forever.
   (multi-arch where supported, amd64-only for ML images). Used by the
   top-level `docker-compose.yaml` so `docker compose up` always tracks
   tip-of-main without waiting for a versioned release. OSS-only.
+- `.github/workflows/migrations.yaml` — PR-time validation of Postgres
+  migration files. Lints (filename pattern, up/down pair, V<N> collision,
+  CREATE-INDEX-CONCURRENTLY needs `migrate:no-transaction`, monotonic
+  timestamps vs main) and dry-runs against an ephemeral Postgres
+  service container. No deploy — OSS users run the migration image
+  themselves against their own DB via the `migrations` chart. OSS-only.
 
 **Group B — OSS-modified upstream files.** _(Currently empty.)_
 
@@ -576,7 +582,8 @@ rm -f .github/workflows/oss-boundary.yaml
 #   .github/ISSUE_TEMPLATE/FEATURE-REQUEST.yml,
 #   .github/pull_request_template.md,
 #   .github/workflows/release.yaml,
-#   .github/workflows/edge.yaml
+#   .github/workflows/edge.yaml,
+#   .github/workflows/migrations.yaml
 #
 # Group B (exists upstream, OSS-modified):
 #   CONTRIBUTING.md — has a "Contributor License Agreement" section
@@ -609,6 +616,7 @@ git diff --stat HEAD -- \
   .github/pull_request_template.md \
   .github/workflows/release.yaml \
   .github/workflows/edge.yaml \
+  .github/workflows/migrations.yaml \
   docker-compose.yaml
 
 # OSS overlay: restore files maintained in the OSS repo only. HEAD
@@ -625,6 +633,7 @@ git checkout HEAD -- \
   .github/pull_request_template.md \
   .github/workflows/release.yaml \
   .github/workflows/edge.yaml \
+  .github/workflows/migrations.yaml \
   docker-compose.yaml
 
 # Delete templates that upstream still ships but we don't want in OSS
@@ -646,7 +655,7 @@ rm -f api-server/hasura/.env.prod api-server/hasura/.env.dev
 # end in `-prod.yaml`. Drops hasura, migrations, all build/ops/dev/
 # test workflows. Idempotent: extra patterns harmless if not present.
 cd .github/workflows
-ls | grep -vE '^(release\.yaml|edge\.yaml|(app|benchmark-server|cloud-collector-server|code-analysis|k8s-collector-server|llm-server|ml-k8s-server|notifications|rag-server|relay-server|services-server|ticket-server|workflow-server)-prod\.ya?ml)$' | xargs rm -f
+ls | grep -vE '^(release\.yaml|edge\.yaml|migrations\.yaml|(app|benchmark-server|cloud-collector-server|code-analysis|k8s-collector-server|llm-server|ml-k8s-server|notifications|rag-server|relay-server|services-server|ticket-server|workflow-server)-prod\.ya?ml)$' | xargs rm -f
 
 # CI workflows step 2: drop -prod suffix from filenames, fix self-
 # references in path filters, and switch runners to ubuntu-latest

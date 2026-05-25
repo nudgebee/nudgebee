@@ -53,6 +53,8 @@ jobs:
           - { image: services-server,         context: api-server/services,                              platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
           - { image: services-server-sidecar, context: api-server/services/sidecar,                      platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
           - { image: services-server-sidecar, context: api-server/services/sidecar,                      platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: migrations,              context: api-server/migrations,                            platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { image: migrations,              context: api-server/migrations,                            platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
           - { image: app,                     context: app,                                              platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
           - { image: app,                     context: app,                                              platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
           - { image: ticket-server,           context: ticket-server,                                    platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
@@ -138,6 +140,7 @@ jobs:
         include:
           - { image: services-server,         archs: "amd64 arm64" }
           - { image: services-server-sidecar, archs: "amd64 arm64" }
+          - { image: migrations,              archs: "amd64 arm64" }
           - { image: app,                     archs: "amd64 arm64" }
           - { image: ticket-server,           archs: "amd64 arm64" }
           - { image: code-analysis,           archs: "amd64 arm64" }
