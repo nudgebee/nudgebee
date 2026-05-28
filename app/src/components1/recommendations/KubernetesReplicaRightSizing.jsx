@@ -55,7 +55,16 @@ const KubernetesReplicaRightSizingDrilldown = (props) => {
   }
 
   return (
-    <>
+    <Box
+      sx={{
+        width: '100%',
+        overflow: 'hidden',
+        backgroundColor: colors.background.white,
+        border: `1px solid ${colors.border.secondaryLight}`,
+        borderRadius: 'var(--ds-radius-md, 8px)',
+        p: 'var(--ds-space-3)',
+      }}
+    >
       <Grid container sx={{ mb: '24px' }} spacing={2}>
         <Grid item xs={6}>
           <LineChart
@@ -108,7 +117,7 @@ const KubernetesReplicaRightSizingDrilldown = (props) => {
           />
         </Grid>
       </Grid>
-      <Grid container sx={{ mb: '24px' }}>
+      <Grid container sx={{ mb: '24px' }} spacing={2}>
         <Grid item xs={6}>
           <LineChart
             colors={[colors.text.cpuUsage]}
@@ -144,7 +153,7 @@ const KubernetesReplicaRightSizingDrilldown = (props) => {
           />
         </Grid>
       </Grid>
-      <Grid container sx={{ mb: '24px' }}>
+      <Grid container sx={{ mb: '24px' }} spacing={2}>
         <Grid item xs={6}>
           <LineChart
             colors={[colors.text.tertiary]}
@@ -180,7 +189,7 @@ const KubernetesReplicaRightSizingDrilldown = (props) => {
           />
         </Grid>
       </Grid>
-    </>
+    </Box>
   );
 };
 

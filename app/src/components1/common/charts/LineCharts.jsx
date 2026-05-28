@@ -207,7 +207,7 @@ const Charts = ({
 
   if (data && data.length > 0 && !Array.isArray(data[0])) {
     data = [data];
-    chartLabel = [chartLabel];
+    if (!Array.isArray(chartLabel)) chartLabel = [chartLabel];
   }
 
   let chartDatasets = [];
