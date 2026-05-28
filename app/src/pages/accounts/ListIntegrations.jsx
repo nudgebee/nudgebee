@@ -92,8 +92,6 @@ const getConnectionInfo = (integrationName, configValues) => {
 };
 
 const ListIntegrations = ({ integrationName }) => {
-  const headers = ['Name', 'Connection Info', 'Account', 'Created By', 'Updated By', 'Status', ''];
-
   const integrationsWithCautionMessage = [
     'pagerduty_webhook',
     'zenduty_webhook',
@@ -132,6 +130,14 @@ const ListIntegrations = ({ integrationName }) => {
     'solarwinds_webhook',
   ];
   const agentManagedIntegrations = ['ES', 'loki', 'prometheus', 'otel_clickhouse', 'jaeger'];
+  const hideConnectionInfo =
+    integrationName === 'LLM' ||
+    integrationName === 'vm_agent' ||
+    integrationName?.endsWith('_webhook') ||
+    integrationWebhooks.includes(integrationName);
+  const headers = hideConnectionInfo
+    ? ['Name', 'Account', 'Created By', 'Updated By', 'Status', '']
+    : ['Name', 'Connection Info', 'Account', 'Created By', 'Updated By', 'Status', ''];
 
   const { data: session } = useSession();
   const router = useRouter();
@@ -391,9 +397,8 @@ const ListIntegrations = ({ integrationName }) => {
       integrationName === 'vm_agent'
         ? getAgentConnectionInfo(item)
         : { text: getConnectionInfo(integrationName === 'postgres' ? 'postgresql' : integrationName, item.integration_config_values) };
-    return [
+    const baseRow = [
       { text: item.name },
-      connectionInfoCell,
       { text: item?.integrations_cloud_accounts?.map((d) => d?.cloud_account_name)?.join(', ') || '-' },
       { text: item?.source == 'agent' ? 'agent' : item?.created_by_display_name || '-' },
       { text: item?.source == 'agent' ? 'agent' : item?.updated_by_display_name || '-' },
@@ -402,6 +407,10 @@ const ListIntegrations = ({ integrationName }) => {
         component: <ThreeDotsMenu sx={{ ...action.primary }} menuItems={getMenuItems(item)} data={item} onMenuClick={onMenuClick} />,
       },
     ];
+    if (hideConnectionInfo) {
+      return baseRow;
+    }
+    return [baseRow[0], connectionInfoCell, ...baseRow.slice(1)];
   };
 
   // Derive tableData from source state to avoid stale async updates
