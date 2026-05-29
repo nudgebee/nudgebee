@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
+// added a test change which does absolutely nothing
+
 const { spawnSync } = require('child_process');
 const path = require('path');
 

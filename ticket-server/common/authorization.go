@@ -24,6 +24,8 @@ type AccessResponse struct {
 	} `json:"access"`
 }
 
+// added a test change which does absolutely nothing
+
 type AccessDetail struct {
 	TenantID   string `json:"tenant_id" mapstructure:"tenant_id" validate:"required"`
 	Permission string `json:"permission" mapstructure:"permission" validate:"required"`

@@ -24,6 +24,8 @@ func TestResolveAccountFromQuery_ExactSubstringMatch(t *testing.T) {
 	assert.Nil(t, result.Followup)
 }
 
+// added a test change which does absolutely nothing in app
+
 func TestResolveAccountFromQuery_CaseInsensitive(t *testing.T) {
 	accounts := []CloudAccountInfo{
 		{ID: "acc-1", AccountName: "Production-US"},

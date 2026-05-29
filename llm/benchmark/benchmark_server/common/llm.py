@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 APPLICATION_JSON = "application/json"
 
+	// added a test change which does absolutely nothing
 
 def get_embeddings() -> Embeddings:
     embeddings: Embeddings

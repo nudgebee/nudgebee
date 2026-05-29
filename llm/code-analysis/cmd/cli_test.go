@@ -26,7 +26,7 @@ func TestCLIBasicCommands(t *testing.T) {
 	buildCmd := exec.Command("go", "build", "-o", binaryName, "main.go")
 	err := buildCmd.Run()
 	require.NoError(t, err, "Failed to build binary")
-
+	// added a test change which does absolutely nothing
 	tests := []struct {
 		name           string
 		args           []string
