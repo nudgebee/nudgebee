@@ -28,6 +28,16 @@ func IsValidKBName(name string) bool {
 	return KBNameRegex.MatchString(name)
 }
 
+// GCNameRegex matches the error message surfaced for global-context names:
+// letters, numbers, spaces, hyphens, and underscores. Must start with a letter,
+// 3-100 chars total. Keeping this separate from NameRegex so agent/tool/function
+// names (which still must be identifier-shaped) are unaffected.
+var GCNameRegex = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_ \-]{2,99}$`)
+
+func IsValidGCName(name string) bool {
+	return GCNameRegex.MatchString(name)
+}
+
 // KubernetesNameRegex follows DNS-1123 label standard: lowercase alphanumeric, '-', start/end with alphanumeric
 // This strictly prevents SQL injection characters like space, quote, semicolon, etc.
 var KubernetesNameRegex = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)

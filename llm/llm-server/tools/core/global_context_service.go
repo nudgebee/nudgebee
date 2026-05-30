@@ -194,7 +194,7 @@ func CreateGlobalContext(sc *security.RequestContext, gc GlobalContext) (GlobalC
 		return GlobalContext{}, errors.New(errGCNameRequired)
 	}
 
-	if !common.IsValidName(gc.Name) {
+	if !common.IsValidGCName(gc.Name) {
 		return GlobalContext{}, errors.New(errGCNameInvalid)
 	}
 
@@ -469,7 +469,7 @@ func UpdateGlobalContext(sc *security.RequestContext, accountId, gcId string, up
 	// Validate name if being changed
 	if updates.Name != "" && updates.Name != existingGC.Name {
 		updates.Name = strings.TrimSpace(updates.Name)
-		if !common.IsValidName(updates.Name) {
+		if !common.IsValidGCName(updates.Name) {
 			return errors.New(errGCNameInvalid)
 		}
 	} else {
