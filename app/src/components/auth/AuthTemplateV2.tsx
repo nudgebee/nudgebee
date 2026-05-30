@@ -7,8 +7,18 @@ import SafeIcon from '@components1/common/SafeIcon';
 import { SignInInvestigate, SignInOps, SignInWorkflow, SignInOptimize } from '@assets';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
 
-// Feature carousel slide data
-export const carouselSlides = [
+// A carousel slide. `image` is a bundled static import (default slides) or a
+// partner-supplied URL string sourced from branding config (theme.json).
+export interface CarouselSlide {
+  title: string;
+  // A partner-supplied URL string, or a bundled static image import
+  // (`StaticImageData`, or the module namespace from `require('*.png')`).
+  image: string | { src: string } | { default: { src: string } };
+}
+
+// Feature carousel slide data — bundled defaults, used when a partner hasn't
+// supplied its own `carouselSlides` in branding config.
+export const carouselSlides: CarouselSlide[] = [
   {
     title: 'AI SRE Troubleshooting',
     image: SignInInvestigate,
@@ -28,7 +38,7 @@ export const carouselSlides = [
 ];
 
 interface FeatureCarouselProps {
-  slides: typeof carouselSlides;
+  slides: CarouselSlide[];
 }
 
 // Feature Carousel Component
@@ -217,6 +227,10 @@ export const AuthTemplateV2: React.FC<AuthTemplateV2Props> = ({ children }) => {
   const [signinLeftImageFailed, setSigninLeftImageFailed] = React.useState(false);
   const signinLeftImageUrl = !brandingConfig?.loading && !signinLeftImageFailed ? brandingConfig?.signinLeftImageUrl : '';
 
+  // Prefer partner-supplied carousel slides from branding config; fall back to bundled defaults.
+  const partnerSlides = brandingConfig?.carouselSlides as CarouselSlide[] | null | undefined;
+  const slides: CarouselSlide[] = partnerSlides && partnerSlides.length > 0 ? partnerSlides : carouselSlides;
+
   return (
     <Grid container sx={{ height: '100vh', overflow: 'hidden' }}>
       {/* Left Column - Feature Carousel or custom image (60%) - Fixed, no scroll */}
@@ -243,7 +257,7 @@ export const AuthTemplateV2: React.FC<AuthTemplateV2Props> = ({ children }) => {
             </Box>
           ) : (
             <>
-              <FeatureCarousel slides={carouselSlides} />
+              <FeatureCarousel slides={slides} />
             </>
           )}
         </Grid>

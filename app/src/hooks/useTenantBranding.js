@@ -67,6 +67,7 @@ export const useBrandingConfig = () => {
     loaderUrl: DEFAULT_LOADER_URL,
     signinImageUrl: DEFAULT_SIGNIN_IMAGE,
     signinLeftImageUrl: '',
+    carouselSlides: null,
     relayUrl: DEFAULT_RELAY_URL,
     k8sCollectorUrl: DEFAULT_K8S_COLLECTOR_URL,
     signingPublicKey: DEFAULT_SIGNING_PUBLIC_KEY,

@@ -33,6 +33,9 @@ export default function handler(req, res) {
     nubiIconLightUrl: brandingFile?.nubiIconLightUrl || '/branding/default/nubi-icon-light.svg',
     signinImageUrl: brandingFile?.signinImageUrl ?? '',
     signinLeftImageUrl: brandingFile?.signinLeftImageUrl ?? '',
+    // Optional partner-supplied auth carousel slides: [{ title, image }].
+    // `image` is a URL (absolute or under /branding/<partner>/). Null ⇒ frontend uses bundled defaults.
+    carouselSlides: Array.isArray(brandingFile?.carouselSlides) ? brandingFile.carouselSlides : null,
     loaderUrl: brandingFile?.loaderUrl || '',
     helpbeeIconUrl: brandingFile?.helpbeeIconUrl || '',
     troubleshootBeeUrl: brandingFile?.troubleshootBeeUrl || '',
