@@ -98,6 +98,9 @@ type InsightRule struct {
 type RelevantApplications struct {
 	Name      string `json:"name"`
 	Namespace string `json:"namespace"`
+	// EventID is the representative (most recent) event id for this application.
+	// Populated only for Event-source (EventAggregation) insights.
+	EventID string `json:"event_id,omitempty"`
 }
 
 type Insight struct {

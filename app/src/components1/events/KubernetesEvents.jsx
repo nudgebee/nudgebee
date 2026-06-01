@@ -1396,17 +1396,6 @@ const KubernetesEventsTable = ({
                       isOptionsLoading={isOptionsLoading.subjectType}
                     />
                   )}
-                  {!disabledFilters.includes('aggregationKey') && (
-                    <FilterDropdown
-                      id='filter-event-type'
-                      label='Event Type'
-                      multiple
-                      options={ensureSelectedInOptions(aggregationKeyFilter, selectedAggregationKey)}
-                      value={selectedAggregationKey}
-                      onSelect={onAggregationKeyFilterChange}
-                      isOptionsLoading={isOptionsLoading.aggregationKey}
-                    />
-                  )}
                 </>
               ) : null}
 
@@ -1431,6 +1420,17 @@ const KubernetesEventsTable = ({
                 </>
               ) : null}
 
+              {!disabledFilters.includes('aggregationKey') && (
+                <FilterDropdown
+                  id='filter-event-type'
+                  label='Event Type'
+                  multiple
+                  options={ensureSelectedInOptions(aggregationKeyFilter, selectedAggregationKey)}
+                  value={selectedAggregationKey}
+                  onSelect={onAggregationKeyFilterChange}
+                  isOptionsLoading={isOptionsLoading.aggregationKey}
+                />
+              )}
               {!disabledFilters.includes('priority') && (
                 <FilterDropdown
                   id='filter-priority'

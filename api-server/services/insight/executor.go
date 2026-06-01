@@ -874,6 +874,10 @@ func (re *ruleExecutor) processEventAggregationRule(rule InsightRule, accountIds
 		rangeFilter = fmt.Sprintf("created_at > now() - interval '%d %s'", rule.Range, rule.RangeUnit)
 	}
 
+	// Inner query collapses to one row per application (subject_name/namespace) and
+	// carries the most recent event id for that application via array_agg(... ORDER BY
+	// created_at DESC)[1]. This keeps event_count == distinct-application count (same
+	// threshold semantics as before) while letting each application carry an event_id.
 	query := fmt.Sprintf(`
 		SELECT
 			sub.%s AS tenant,
@@ -882,16 +886,19 @@ func (re *ruleExecutor) processEventAggregationRule(rule InsightRule, accountIds
 			json_agg(
 				jsonb_build_object(
 					'name', sub.subject_name,
-					'namespace', COALESCE(sub.subject_namespace, '')
+					'namespace', COALESCE(sub.subject_namespace, ''),
+					'event_id', sub.event_id
 				)
 			) AS applications
 		FROM (
-			SELECT DISTINCT %s, %s, subject_name, subject_namespace
+			SELECT %s, %s, subject_name, subject_namespace,
+			       (array_agg(id ORDER BY created_at DESC))[1] AS event_id
 			FROM %s
 			WHERE %s
 			  AND %s
 			  AND subject_name IS NOT NULL
 			  AND subject_name != ''
+			GROUP BY %s, %s, subject_name, subject_namespace
 		) sub
 		GROUP BY sub.%s, sub.%s
 	`,
@@ -899,6 +906,7 @@ func (re *ruleExecutor) processEventAggregationRule(rule InsightRule, accountIds
 		re.tenantCol, re.accountCol,
 		re.tableName,
 		rangeFilter, additionalFilters,
+		re.tenantCol, re.accountCol,
 		re.tenantCol, re.accountCol,
 	)
 
