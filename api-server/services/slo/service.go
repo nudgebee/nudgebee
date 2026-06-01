@@ -55,6 +55,10 @@ func Execute() error {
 	return nil
 }
 func ExecuteSLO(accountId string) error {
+	if accountId == "" {
+		return fmt.Errorf("slo: accountId is empty")
+	}
+
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return err
