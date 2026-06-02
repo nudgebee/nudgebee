@@ -753,11 +753,106 @@ func GetDefaultProvider(context *security.RequestContext, accountId, providerTyp
 	}
 	caps := getProviderCapabilities(defaultProvider, integrationSource, providerType)
 	return &DefaultProviderResponse{
-		Provider:          defaultProvider,
-		IntegrationSource: integrationSource,
-		DefaultIndex:      readIndexFromIntegration(context, integrationDto, providerType),
-		Capabilities:      caps,
+		Provider:           defaultProvider,
+		IntegrationSource:  integrationSource,
+		DefaultIndex:       readIndexFromIntegration(context, integrationDto, providerType),
+		Capabilities:       caps,
+		AvailableProviders: listAvailableProviders(context, accountId, providerType),
 	}, nil
+}
+
+// listAvailableProviders returns the active providers that can serve the
+// requested provider_type for the account — the account's active (non-disabled)
+// user-configured integrations plus the agent-detected provider (loki / ES /
+// prometheus / signoz / chronosphere, source "agent") — each with its supported
+// query operators for that type. Capability is derived from the same source
+// factories used by getProviderCapabilities (pure switch statements, no side
+// effects), so non-observability integrations (slack, jira, …) resolve no
+// source and are naturally excluded. Returns an empty slice on lookup failure —
+// the available list is auxiliary and must never fail default-provider resolution.
+func listAvailableProviders(context *security.RequestContext, accountId, providerType string) []AvailableProvider {
+	servesType := func(provider, source string) bool {
+		switch providerType {
+		case "logs":
+			_, err := getLogSource(provider, source)
+			return err == nil
+		case "traces":
+			_, err := getTraceSource(provider, source)
+			return err == nil
+		case "metrics":
+			_, err := getMetricsSource(provider, source)
+			return err == nil
+		default:
+			return false
+		}
+	}
+
+	seen := map[string]bool{}
+	available := []AvailableProvider{}
+	add := func(provider, source string) {
+		if provider == "" || seen[provider] || !servesType(provider, source) {
+			return
+		}
+		seen[provider] = true
+		caps := getProviderCapabilities(provider, source, providerType)
+		available = append(available, AvailableProvider{
+			Provider:                     provider,
+			SupportedOperators:           caps.SupportedOperators,
+			SupportedOperatorDescriptors: caps.SupportedOperatorDescriptors,
+		})
+	}
+
+	// User-configured integrations.
+	integrations, err := core.ListActiveIntegrationsForAccount(context, accountId)
+	if err != nil {
+		context.GetLogger().Warn("listAvailableProviders: failed to list active integrations",
+			"account_id", accountId, "error", err)
+	}
+	for _, integration := range integrations {
+		add(integration.Type, integration.Source)
+	}
+
+	// Agent-detected provider (source "agent"). Mirrors the per-type resolution
+	// in getLogsMetricsTracesProviderWithIntegration so the two paths can't drift.
+	add(agentProviderForType(context, accountId, providerType), "agent")
+
+	return available
+}
+
+// agentProviderForType resolves the provider name the connected agent exposes
+// for the given provider_type, or "" when none is configured. Kept in sync with
+// the agent branch of getLogsMetricsTracesProviderWithIntegration.
+func agentProviderForType(context *security.RequestContext, accountId, providerType string) string {
+	agentDetails, err := account.GetAgentConnectionDetails(accountId)
+	if err != nil {
+		// No connected agent (or lookup failure) — agent providers simply absent.
+		context.GetLogger().Debug("agentProviderForType: no agent connection details",
+			"account_id", accountId, "error", err)
+		return ""
+	}
+	isChronosphere := agentDetails.Features.PrometheusUrl != nil &&
+		strings.Contains(*agentDetails.Features.PrometheusUrl, "chronosphere")
+	switch providerType {
+	case "logs":
+		if agentDetails.Features.LogsConnectionProvider != nil {
+			return *agentDetails.Features.LogsConnectionProvider
+		}
+	case "traces":
+		if agentDetails.Features.TraceProvider != nil {
+			if isChronosphere {
+				return "chronosphere"
+			}
+			return *agentDetails.Features.TraceProvider
+		}
+	case "metrics":
+		if agentDetails.Features.PrometheusUrl != nil {
+			if isChronosphere {
+				return "chronosphere"
+			}
+			return "prometheus"
+		}
+	}
+	return ""
 }
 
 // readIndexFromIntegration reads the log_index / metrics_index / trace_index

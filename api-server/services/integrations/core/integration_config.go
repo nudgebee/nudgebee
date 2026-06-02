@@ -1911,6 +1911,75 @@ func GetIntegrationByConfigNameValues(
 	return nil, nil
 }
 
+// ListActiveIntegrationsForAccount returns every active (non-disabled)
+// integration linked to the given cloud account for the caller's tenant.
+// Only identity columns (id, name, source, type) are populated — config
+// values are intentionally not loaded since callers of this list path only
+// need the type/source pair (e.g. to enumerate available observability
+// providers). Mirrors the `status != 'disabled'` active-filter used by the
+// other read paths in this file.
+func ListActiveIntegrationsForAccount(
+	context *security.RequestContext,
+	accountId string,
+) ([]IntegrationDto, error) {
+	integrations := []IntegrationDto{}
+
+	if accountId == "" {
+		return integrations, errors.New("integrations: accountId is required")
+	}
+
+	tenantId := context.GetSecurityContext().GetTenantId()
+	if tenantId == "" {
+		return integrations, errors.New("integrations: tenant id is required")
+	}
+
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		context.GetLogger().Error("integrations: failed to get database manager", "error", err)
+		return integrations, err
+	}
+
+	// String interpolation via BuildInClause (not $1/$2) to avoid lib/pq
+	// unnamed prepared-statement collisions under concurrent goroutines —
+	// same rationale as ListIntegrationConfigs / GetIntegrationByConfigNameValues.
+	rows, err := dbms.Db.Queryx(fmt.Sprintf(`
+		SELECT i.id::text, i.name::text, i.source::text, i.type::text
+		FROM integrations i
+		JOIN integrations_cloud_accounts ica
+			ON i.id = ica.integration_id
+		WHERE ica.cloud_account_id = %s
+		  AND i.tenant_id = %s
+		  AND i.status != 'disabled'
+	`, dbms.BuildInClause(accountId), dbms.BuildInClause(tenantId)))
+	if err != nil {
+		context.GetLogger().Error("integrations: failed to list active integrations for account", "error", err)
+		return integrations, err
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			slog.Error("integrations: failed to close active integrations result", "error", cerr)
+		}
+	}()
+
+	for rows.Next() {
+		var id, name, source, integrationType string
+		if err := rows.Scan(&id, &name, &source, &integrationType); err != nil {
+			context.GetLogger().Error("integrations: failed to scan active integration row", "error", err)
+			return integrations, err
+		}
+		integrations = append(integrations, IntegrationDto{
+			Id:      id,
+			Name:    name,
+			Source:  source,
+			Type:    integrationType,
+			Configs: []IntegrationConfigValue{},
+			Tags:    map[string]any{},
+		})
+	}
+
+	return integrations, nil
+}
+
 func GetIntegrationByType(
 	context *security.RequestContext,
 	accountId string,

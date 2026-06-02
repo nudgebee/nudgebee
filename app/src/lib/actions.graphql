@@ -7803,11 +7803,18 @@ type OperatorDescriptor {
   kinds: [String!]!
 }
 
+type AvailableProvider {
+  provider: String!
+  supported_operators: [String]
+  supported_operator_descriptors: [OperatorDescriptor!]
+}
+
 type DefaultProviderResponse {
   provider: String!
   integration_source: String
   default_index: String
   capabilities: ProviderCapabilities
+  available_providers: [AvailableProvider!]
 }
 
 input ListProviderCapabilitiesRequest {

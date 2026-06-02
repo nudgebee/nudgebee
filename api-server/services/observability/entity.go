@@ -225,12 +225,24 @@ type ProviderCapabilities struct {
 	SupportedOperatorDescriptors []query.OperatorDescriptor `json:"supported_operator_descriptors"`
 }
 
+// AvailableProvider is one active observability provider that can serve the
+// requested provider_type, with its supported query operators for that type.
+type AvailableProvider struct {
+	Provider                     string                     `json:"provider"`
+	SupportedOperators           []string                   `json:"supported_operators"`
+	SupportedOperatorDescriptors []query.OperatorDescriptor `json:"supported_operator_descriptors"`
+}
+
 // DefaultProviderResponse is the response for the get_default_provider action.
 type DefaultProviderResponse struct {
 	Provider          string               `json:"provider"`
 	IntegrationSource string               `json:"integration_source"`
 	DefaultIndex      string               `json:"default_index"`
 	Capabilities      ProviderCapabilities `json:"capabilities"`
+	// AvailableProviders lists the account's active providers (user-configured
+	// integrations plus the agent-detected provider) that can serve the
+	// requested provider_type, each with its supported operators for that type.
+	AvailableProviders []AvailableProvider `json:"available_providers"`
 }
 
 // ListProviderCapabilitiesRequest is the request for the observability_list_provider_capabilities action.

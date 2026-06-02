@@ -550,6 +550,16 @@ const apiAccount = {
         observability_get_default_provider(request: __WHERE__) {
           provider
           default_index
+          available_providers {
+            provider
+            supported_operators
+            supported_operator_descriptors {
+              token
+              chip_label
+              line_label
+              kinds
+            }
+          }
           capabilities {
             supports_cross_zone_communication
             supports_trace_grouping
