@@ -347,6 +347,75 @@ jobs:
           # Keep top-level VERSION file in sync for traceability.
           echo "${VERSION}" > VERSION
 
+      - name: Bump scanner image tags to latest resolvable GHCR manifests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Pick the newest non-dev, non-arch-suffixed tag whose manifest
+          # actually resolves on the GHCR registry endpoint. Packages-API
+          # tag listings can include entries whose manifest was replaced
+          # by a later rebuild of the same git SHA — pinning one of those
+          # bakes an ImagePullBackOff into the release. Walk the list and
+          # verify each candidate.
+          ghcr_latest_resolvable_tag() {
+            local pkg=$1 tok tag code
+            tok=$(curl -sSfL \
+              "https://ghcr.io/token?scope=repository:nudgebee/${pkg}:pull&service=ghcr.io" \
+              | jq -r .token)
+            local candidates
+            candidates=$(curl -sSfL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/orgs/nudgebee/packages/container/${pkg}/versions?per_page=100" \
+              | jq -r '[.[] | .metadata.container.tags[]?]
+                       | map(select(test("-(arm64|amd64)$") | not))
+                       | map(select(test("^dev-") | not))
+                       | .[]')
+            while IFS= read -r tag; do
+              [ -z "$tag" ] && continue
+              code=$(curl -sSfL -o /dev/null -w '%{http_code}' \
+                -H "Authorization: Bearer ${tok}" \
+                -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json' \
+                "https://ghcr.io/v2/nudgebee/${pkg}/manifests/${tag}" || true)
+              if [ "$code" = "200" ]; then
+                echo "$tag"
+                return 0
+              fi
+              echo "  skip ${pkg}:${tag} (HTTP ${code})" >&2
+            done <<< "$candidates"
+            echo "ERROR: no resolvable tag found for ${pkg}" >&2
+            return 1
+          }
+
+          nova_tag=$(ghcr_latest_resolvable_tag nova)
+          echo "nova_tag: $nova_tag"
+          popeye_tag=$(ghcr_latest_resolvable_tag popeye)
+          echo "popeye_tag: $popeye_tag"
+
+          # Umbrella chart — services-server.env block.
+          NOVA_REF="ghcr.io/nudgebee/nova:${nova_tag}" \
+          POPEYE_REF="ghcr.io/nudgebee/popeye:${popeye_tag}" \
+          yq -i '
+            .services-server.env.NOVA_IMAGE              = strenv(NOVA_REF) |
+            .services-server.env.K8S_VERSION_UPGRADE_IMAGE = strenv(NOVA_REF) |
+            .services-server.env.POPEYE_IMAGE             = strenv(POPEYE_REF)
+          ' deploy/kubernetes/nudgebee/values.yaml
+
+          # Standalone services-server subchart — env block.
+          NOVA_REF="ghcr.io/nudgebee/nova:${nova_tag}" \
+          POPEYE_REF="ghcr.io/nudgebee/popeye:${popeye_tag}" \
+          yq -i '
+            .env.NOVA_IMAGE              = strenv(NOVA_REF) |
+            .env.K8S_VERSION_UPGRADE_IMAGE = strenv(NOVA_REF) |
+            .env.POPEYE_IMAGE             = strenv(POPEYE_REF)
+          ' deploy/kubernetes/services-server/values.yaml
+
+          # trivy / kube-bench / cert-scanner stay hard-pinned in values.yaml —
+          # bumping them requires re-validating parser_*.go against the new
+          # output schema, which doesn't belong in an automated bumper.
+
       - name: Package first-party subcharts
         run: |
           set -euo pipefail
