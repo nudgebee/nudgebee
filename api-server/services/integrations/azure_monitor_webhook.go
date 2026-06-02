@@ -139,17 +139,20 @@ func (m AzureMonitorWebhook) ConfigSchema() core.IntegrationSchema {
 				Description:      "Name of Azure Monitor Webhook",
 				Default:          "",
 				AutoGenerateFunc: "",
+				Priority:         100,
 			},
 			"account_id": {
 				Type:             core.ToolSchemaTypeArray,
 				Description:      "Select Account",
 				Default:          "",
 				AutoGenerateFunc: "listAccounts",
+				Priority:         95,
 			},
 			"token": {
 				Type:             core.ToolSchemaTypeString,
 				Default:          "",
 				AutoGenerateFunc: "",
+				Priority:         70,
 			},
 		},
 	}

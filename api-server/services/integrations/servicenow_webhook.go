@@ -38,23 +38,27 @@ func (m ServiceNowWebhook) ConfigSchema() core.IntegrationSchema {
 				Description:      "Name of ServiceNow Webhook",
 				Default:          "",
 				AutoGenerateFunc: "",
+				Priority:         100,
 			},
 			"account_id": {
 				Type:             core.ToolSchemaTypeArray,
 				Description:      "Select Account",
 				Default:          "",
 				AutoGenerateFunc: "listAccounts",
+				Priority:         95,
 			},
 			"token": {
 				Type:             core.ToolSchemaTypeString,
 				Description:      "Inbound webhook auth token (shared secret used by SNOW Business Rule)",
 				Default:          "",
 				AutoGenerateFunc: "",
+				Priority:         70,
 			},
 			"instance_url": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "ServiceNow instance URL (e.g. https://mycompany.service-now.com). Used as the event_url base; enrichment credentials come from the separate 'servicenow' integration when configured.",
 				Default:     "",
+				Priority:    85,
 			},
 		},
 	}

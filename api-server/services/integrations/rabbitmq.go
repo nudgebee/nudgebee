@@ -35,23 +35,27 @@ func (m RabbitMq) ConfigSchema() core.IntegrationSchema {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Rabbitmq Secret in k8s, Required Keys, RABBITMQ_HOST, RABBITMQ_PASSWORD, RABBITMQ_PORT, RABBITMQ_USER",
 				IsTestable:  true,
+				Priority:    82,
 			},
 			"host": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "rabbitmq host",
 				IsTestable:  true,
+				Priority:    80,
 			},
 			"account_id": {
 				Type:             core.ToolSchemaTypeArray,
 				Description:      "Select Account",
 				Default:          "",
 				AutoGenerateFunc: "listAccounts",
+				Priority:         95,
 			},
 			"integration_config_name": {
 				Type:             core.ToolSchemaTypeString,
 				Description:      "Name of RabbitMq",
 				Default:          "",
 				AutoGenerateFunc: "",
+				Priority:         100,
 			},
 		},
 	}

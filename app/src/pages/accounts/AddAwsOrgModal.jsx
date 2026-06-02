@@ -6,7 +6,7 @@ import apiAccount from '@api1/account';
 import { Modal } from '@components1/common/modal';
 import { Input } from '@components1/ds/Input';
 import { isK8sAccountNameValid } from 'src/utils/common';
-import CustomButton from '@components1/common/NewCustomButton';
+import { Button } from '@components1/ds/Button';
 import { snackbar } from '@components1/common/snackbarService';
 import { colors } from 'src/utils/colors';
 import { CopyIconBlue } from '@assets';
@@ -209,24 +209,21 @@ const AddAwsOrgModal = ({ open, onClose }) => {
 
       <Grid container spacing={2} mt={3} mb={2} justifyContent='flex-end'>
         <Grid item>
-          <CustomButton
-            id='cancel-org-btn'
-            size='Medium'
-            text='Cancel'
-            variant='secondary'
-            onClick={() => handleCloseModal(false)}
-            disabled={isSubmitting}
-          />
+          <Button id='cancel-org-btn' size='md' tone='secondary' onClick={() => handleCloseModal(false)} disabled={isSubmitting}>
+            Cancel
+          </Button>
         </Grid>
         <Grid item>
-          <CustomButton
+          <Button
             id='generate-token-btn'
-            size='Medium'
-            text='Next'
+            size='md'
+            tone='primary'
             loading={isSubmitting}
             disabled={!accountName || !!validationError.accountName || isSubmitting}
             onClick={handleGenerateToken}
-          />
+          >
+            Next
+          </Button>
         </Grid>
       </Grid>
     </>
@@ -259,15 +256,16 @@ const AddAwsOrgModal = ({ open, onClose }) => {
           </Typography>
 
           <Box sx={{ display: 'flex', gap: 1, mt: 1 }}>
-            <CustomButton
+            <Button
               id='copy-token-btn'
-              size='Small'
-              text='Copy Token'
-              startIcon={<SafeIcon src={CopyIconBlue} alt='copy token' height={16} width={16} />}
-              variant='tertiary'
+              size='sm'
+              tone='ghost'
+              icon={<SafeIcon src={CopyIconBlue} alt='copy token' height={16} width={16} />}
+              iconPlacement='start'
               onClick={handleCopyToken}
-              sx={{ fontSize: '12px' }}
-            />
+            >
+              Copy Token
+            </Button>
           </Box>
         </Box>
       </Box>
@@ -299,15 +297,16 @@ const AddAwsOrgModal = ({ open, onClose }) => {
           </Typography>
 
           <Box sx={{ display: 'flex', gap: 1, mt: 1 }}>
-            <CustomButton
+            <Button
               id='copy-template-url-btn'
-              size='Small'
-              text='Copy URL'
-              startIcon={<SafeIcon src={CopyIconBlue} alt='copy url' height={16} width={16} />}
-              variant='tertiary'
+              size='sm'
+              tone='ghost'
+              icon={<SafeIcon src={CopyIconBlue} alt='copy url' height={16} width={16} />}
+              iconPlacement='start'
               onClick={handleCopyTemplateUrl}
-              sx={{ fontSize: '12px' }}
-            />
+            >
+              Copy URL
+            </Button>
           </Box>
         </Box>
       </Box>
@@ -356,17 +355,18 @@ const AddAwsOrgModal = ({ open, onClose }) => {
                 >
                   {value}
                 </Box>
-                <CustomButton
-                  size='xSmall'
-                  text='Copy'
-                  startIcon={<SafeIcon src={CopyIconBlue} alt={`copy ${key}`} height={14} width={14} />}
-                  variant='tertiary'
+                <Button
+                  size='xs'
+                  tone='ghost'
+                  icon={<SafeIcon src={CopyIconBlue} alt={`copy ${key}`} height={14} width={14} />}
+                  iconPlacement='start'
                   onClick={() => {
                     navigator.clipboard.writeText(value);
                     snackbar.success(`${key} copied`);
                   }}
-                  sx={{ fontSize: '11px', minWidth: 'auto' }}
-                />
+                >
+                  Copy
+                </Button>
               </Box>
             ))}
           </Box>
@@ -380,14 +380,16 @@ const AddAwsOrgModal = ({ open, onClose }) => {
         <Typography variant='body2' sx={{ color: colors.secondary.dark, fontSize: '12px' }}>
           Open the AWS CloudFormation console to create the StackSet with the template and parameters above.
         </Typography>
-        <CustomButton
+        <Button
           id='launch-stackset-btn'
-          size='Medium'
-          text='Launch StackSet in AWS'
+          size='md'
+          tone='primary'
           onClick={handleLaunchStackSet}
-          endIcon={<OpenInNewIcon fontSize='small' />}
-          sx={{ ml: 2, minWidth: '200px' }}
-        />
+          icon={<OpenInNewIcon fontSize='small' />}
+          iconPlacement='end'
+        >
+          Launch StackSet in AWS
+        </Button>
       </Box>
 
       {/* Organization Status — appears after launching */}
@@ -502,13 +504,9 @@ const AddAwsOrgModal = ({ open, onClose }) => {
       {/* Footer buttons */}
       <Grid container spacing={2} mt={3} mb={2} justifyContent='flex-end'>
         <Grid item>
-          <CustomButton
-            id='close-org-btn'
-            size='Medium'
-            text='Close'
-            variant='secondary'
-            onClick={() => handleCloseModal(isPolling || memberAccounts.length > 0)}
-          />
+          <Button id='close-org-btn' size='md' tone='secondary' onClick={() => handleCloseModal(isPolling || memberAccounts.length > 0)}>
+            Close
+          </Button>
         </Grid>
       </Grid>
     </Box>

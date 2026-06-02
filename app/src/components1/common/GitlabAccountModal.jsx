@@ -6,7 +6,7 @@ import apiIntegrations from '@api1/integrations';
 import { infoIcon } from '@assets';
 import apiTicketIntegrations from '@api1/tickets';
 import PropTypes from 'prop-types';
-import CustomButton from './NewCustomButton';
+import { Button } from '@components1/ds/Button';
 import CustomTooltip from './CustomTooltip';
 import SafeIcon from '@components1/common/SafeIcon';
 import { snackbar } from './snackbarService';
@@ -336,29 +336,29 @@ const GitlabAccountModal = ({ openModal, handleClose, editConfig = null }) => {
           },
         }}
       >
-        <CustomButton
-          id='cancel-btn'
-          text='Cancel'
-          variant='secondary'
-          size='Medium'
-          onClick={() => handleCloseModal()}
-          disabled={isSubmitting || isTesting}
-        />
-        <CustomButton
+        <Button id='cancel-btn' tone='secondary' size='md' onClick={() => handleCloseModal()} disabled={isSubmitting || isTesting}>
+          Cancel
+        </Button>
+        <Button
           id='test-gitlab-connection'
-          text={isTesting ? 'Testing...' : 'Test Connection'}
-          variant='secondary'
-          size='Medium'
+          tone='secondary'
+          size='md'
+          loading={isTesting}
           onClick={handleTestConnection}
           disabled={isSubmitting || isTesting}
-        />
-        <CustomButton
-          size='Medium'
+        >
+          Test Connection
+        </Button>
+        <Button
           id={isEdit ? 'update-gitlab-acc' : 'create-gitlab-acc'}
-          text={isEdit ? 'Update' : 'Save'}
+          tone='primary'
+          size='md'
+          loading={isSubmitting}
           disabled={isSubmitting || isTesting}
           onClick={submitForm}
-        />
+        >
+          {isEdit ? 'Update' : 'Save'}
+        </Button>
       </Box>
     </Modal>
   );

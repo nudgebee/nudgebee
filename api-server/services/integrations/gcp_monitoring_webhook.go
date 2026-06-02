@@ -94,14 +94,17 @@ func (m GCPMonitoringWebhook) ConfigSchema() core.IntegrationSchema {
 			"integration_config_name": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Name of GCP Monitoring Webhook",
+				Priority:    100,
 			},
 			"account_id": {
 				Type:             core.ToolSchemaTypeArray,
 				Description:      "Select Account",
 				AutoGenerateFunc: "listAccounts",
+				Priority:         95,
 			},
 			"token": {
-				Type: core.ToolSchemaTypeString,
+				Type:     core.ToolSchemaTypeString,
+				Priority: 70,
 			},
 		},
 	}

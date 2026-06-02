@@ -57,7 +57,7 @@ func (m SSH) ConfigSchema() core.IntegrationSchema {
 				Description: "Connection mode",
 				Default:     "k8s",
 				Enum:        []any{"k8s", "vm_agent"},
-				Priority:    100,
+				Priority:    92,
 				IsTestable:  true,
 			},
 			core.AccountId: {
@@ -65,12 +65,14 @@ func (m SSH) ConfigSchema() core.IntegrationSchema {
 				Description:      "Select Account",
 				Default:          "",
 				AutoGenerateFunc: "listAccounts",
+				Priority:         95,
 			},
 			core.IntegrationConfigName: {
 				Type:             core.ToolSchemaTypeString,
 				Description:      "Name of Ssh",
 				Default:          "",
 				AutoGenerateFunc: "",
+				Priority:         100,
 			},
 			// K8s fields
 			"k8s_secret": {

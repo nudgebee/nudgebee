@@ -32,7 +32,7 @@ import { useState } from 'react';
 import apiAccount from '@api1/account';
 import { Modal } from '@components1/common/modal';
 import { isK8sAccountNameValid, parseHttpResponseBodyMessage } from 'src/utils/common';
-import CustomButton from '@components1/common/NewCustomButton';
+import { Button } from '@components1/ds/Button';
 import { snackbar } from '@components1/common/snackbarService';
 import MarkDowns from '@components1/common/MarkDowns';
 
@@ -480,10 +480,14 @@ const AddAzureAccountModal = ({ open, onClose }) => {
 
           <Grid container spacing={2} mt={1} mb={4} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
             <Grid item>
-              <CustomButton id='cancel-btn' size='Medium' text='Cancel' variant='secondary' onClick={() => handleCloseModal(false)} />
+              <Button id='cancel-btn' size='md' tone='secondary' onClick={() => handleCloseModal(false)}>
+                Cancel
+              </Button>
             </Grid>
             <Grid item>
-              <CustomButton size='Medium' id='next-to-subscriptions' text='Next' onClick={handleNextToSubscriptions} />
+              <Button size='md' id='next-to-subscriptions' tone='primary' onClick={handleNextToSubscriptions}>
+                Next
+              </Button>
             </Grid>
           </Grid>
         </>
@@ -495,13 +499,16 @@ const AddAzureAccountModal = ({ open, onClose }) => {
           {discoveredSubscriptions.length === 0 && !discoveryError && (
             <Box sx={{ textAlign: 'center', py: 4 }}>
               <Typography sx={{ fontSize: 14, color: '#6B7280', mb: 2 }}>Discover subscriptions accessible by your service principal.</Typography>
-              <CustomButton
-                size='Medium'
+              <Button
+                size='md'
                 id='discover-subscriptions'
-                text={isDiscovering ? 'Discovering...' : 'Discover Subscriptions'}
+                tone='primary'
+                loading={isDiscovering}
                 onClick={handleDiscoverSubscriptions}
                 disabled={isDiscovering}
-              />
+              >
+                Discover Subscriptions
+              </Button>
             </Box>
           )}
 
@@ -511,7 +518,9 @@ const AddAzureAccountModal = ({ open, onClose }) => {
                 {discoveryError}
               </Alert>
               <Box sx={{ textAlign: 'center' }}>
-                <CustomButton size='Medium' id='retry-discover' text='Retry' onClick={handleDiscoverSubscriptions} disabled={isDiscovering} />
+                <Button size='md' id='retry-discover' tone='secondary' onClick={handleDiscoverSubscriptions} disabled={isDiscovering}>
+                  Retry
+                </Button>
               </Box>
             </Box>
           )}
@@ -580,16 +589,14 @@ const AddAzureAccountModal = ({ open, onClose }) => {
 
           <Grid container spacing={2} mt={1} mb={4} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
             <Grid item>
-              <CustomButton id='back-to-credentials' size='Medium' text='Back' variant='secondary' onClick={() => setStep(0)} />
+              <Button id='back-to-credentials' size='md' tone='secondary' onClick={() => setStep(0)}>
+                Back
+              </Button>
             </Grid>
             <Grid item>
-              <CustomButton
-                size='Medium'
-                id='next-to-review'
-                text='Next'
-                onClick={handleNextToReview}
-                disabled={selectedSubscriptionIds.size === 0}
-              />
+              <Button size='md' id='next-to-review' tone='primary' onClick={handleNextToReview} disabled={selectedSubscriptionIds.size === 0}>
+                Next
+              </Button>
             </Grid>
           </Grid>
         </>
@@ -679,29 +686,29 @@ const AddAzureAccountModal = ({ open, onClose }) => {
             {!onboardResults && (
               <>
                 <Grid item>
-                  <CustomButton
-                    id='back-to-subscriptions'
-                    size='Medium'
-                    text='Back'
-                    variant='secondary'
-                    onClick={() => setStep(1)}
-                    disabled={isSubmitting}
-                  />
+                  <Button id='back-to-subscriptions' size='md' tone='secondary' onClick={() => setStep(1)} disabled={isSubmitting}>
+                    Back
+                  </Button>
                 </Grid>
                 <Grid item>
-                  <CustomButton
-                    size='Medium'
+                  <Button
+                    size='md'
                     id='onboard-subscriptions'
-                    text={isSubmitting ? 'Onboarding...' : 'Onboard'}
+                    tone='primary'
+                    loading={isSubmitting}
                     disabled={isSubmitting}
                     onClick={handleBulkOnboard}
-                  />
+                  >
+                    Onboard
+                  </Button>
                 </Grid>
               </>
             )}
             {onboardResults && (
               <Grid item>
-                <CustomButton size='Medium' id='close-modal' text='Done' onClick={() => handleCloseModal(true)} />
+                <Button size='md' id='close-modal' tone='primary' onClick={() => handleCloseModal(true)}>
+                  Done
+                </Button>
               </Grid>
             )}
           </Grid>

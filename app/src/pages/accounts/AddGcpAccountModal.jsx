@@ -25,7 +25,7 @@ import apiIntegrations from '@api1/integrations';
 // import apiKubernetes1 from '@api1/kubernetes1';
 import { Modal } from '@components1/common/modal';
 import { isK8sAccountNameValid, parseHttpResponseBodyMessage } from 'src/utils/common';
-import CustomButton from '@components1/common/NewCustomButton';
+import { Button } from '@components1/ds/Button';
 import { snackbar } from '@components1/common/snackbarService';
 import MarkDowns from '@components1/common/MarkDowns';
 import ValidationResultBanner from '@components1/accounts/ValidationResultBanner';
@@ -536,21 +536,26 @@ const AddGcpAccountModal = ({ open, onClose }) => {
 
           <Grid container spacing={2} mt={1} mb={4} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
             <Grid item>
-              <CustomButton id='cancel-btn' size='Medium' text='Cancel' variant='secondary' onClick={() => handleCloseModal(false)} />
+              <Button id='cancel-btn' size='md' tone='secondary' onClick={() => handleCloseModal(false)}>
+                Cancel
+              </Button>
             </Grid>
             <Grid item>
-              <CustomButton
+              <Button
                 id='check-permissions-btn'
-                size='Medium'
-                text='Check Permissions'
-                variant='secondary'
+                size='md'
+                tone='secondary'
                 disabled={!serviceAccountData || isValidating}
                 loading={isValidating}
                 onClick={handleValidateCredentials}
-              />
+              >
+                Check Permissions
+              </Button>
             </Grid>
             <Grid item>
-              <CustomButton size='Medium' id='next-step1' text='Next' disabled={!canProceedStep1} onClick={() => setStep(1)} />
+              <Button size='md' tone='primary' id='next-step1' disabled={!canProceedStep1} onClick={() => setStep(1)}>
+                Next
+              </Button>
             </Grid>
           </Grid>
         </>
@@ -571,14 +576,16 @@ const AddGcpAccountModal = ({ open, onClose }) => {
           {projectTab === 0 && (
             <>
               <Box sx={{ display: 'flex', gap: 1, mb: 2, alignItems: 'center' }}>
-                <CustomButton
+                <Button
                   id='discover-projects-btn'
-                  size='Medium'
-                  text='Discover Projects'
+                  size='md'
+                  tone='primary'
                   loading={isDiscovering}
                   disabled={isDiscovering}
                   onClick={handleDiscoverProjects}
-                />
+                >
+                  Discover Projects
+                </Button>
                 {discoveredProjects.length > 0 && (
                   <Typography sx={{ fontSize: 13, color: '#6B7280' }}>{discoveredProjects.length} project(s) found</Typography>
                 )}
@@ -673,10 +680,14 @@ const AddGcpAccountModal = ({ open, onClose }) => {
 
           <Grid container spacing={2} mt={2} mb={4} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
             <Grid item>
-              <CustomButton id='back-step2' size='Medium' text='Back' variant='secondary' onClick={() => setStep(0)} />
+              <Button id='back-step2' size='md' tone='secondary' onClick={() => setStep(0)}>
+                Back
+              </Button>
             </Grid>
             <Grid item>
-              <CustomButton size='Medium' id='next-step2' text='Next' disabled={!canProceedStep2} onClick={() => setStep(2)} />
+              <Button size='md' tone='primary' id='next-step2' disabled={!canProceedStep2} onClick={() => setStep(2)}>
+                Next
+              </Button>
             </Grid>
           </Grid>
         </>
@@ -749,28 +760,33 @@ const AddGcpAccountModal = ({ open, onClose }) => {
 
           <Grid container spacing={2} mt={2} mb={4} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
             <Grid item>
-              <CustomButton id='back-step3' size='Medium' text='Back' variant='secondary' onClick={() => setStep(1)} />
+              <Button id='back-step3' size='md' tone='secondary' onClick={() => setStep(1)}>
+                Back
+              </Button>
             </Grid>
             <Grid item>
-              <CustomButton
+              <Button
                 id='validate-billing-btn'
-                size='Medium'
-                text='Validate Billing'
-                variant='secondary'
+                size='md'
+                tone='secondary'
                 disabled={!billingDatasetName || !billingTableName || isValidatingBilling}
                 loading={isValidatingBilling}
                 onClick={handleValidateBilling}
-              />
+              >
+                Validate Billing
+              </Button>
             </Grid>
             <Grid item>
-              <CustomButton
-                size='Medium'
+              <Button
+                size='md'
+                tone='primary'
                 id='save-and-continue-btn'
-                text='Save & Continue'
                 disabled={isSubmitting || !billingDatasetName.trim() || !billingTableName.trim()}
                 loading={isSubmitting}
                 onClick={handleBulkOnboard}
-              />
+              >
+                Save &amp; Continue
+              </Button>
             </Grid>
           </Grid>
         </>
@@ -840,10 +856,10 @@ const AddGcpAccountModal = ({ open, onClose }) => {
                     Your service account has the required Cloud Monitoring permissions. Click below to automatically create a webhook notification
                     channel and attach it to all alert policies.
                   </Typography>
-                  <CustomButton
+                  <Button
                     id='auto-setup-webhook-btn'
-                    size='Medium'
-                    text='Enable Real-Time Alerts'
+                    size='md'
+                    tone='primary'
                     loading={isSettingUpWebhook}
                     disabled={isSettingUpWebhook || !webhookUrl}
                     onClick={async () => {
@@ -873,7 +889,9 @@ const AddGcpAccountModal = ({ open, onClose }) => {
                       }
                       setIsSettingUpWebhook(false);
                     }}
-                  />
+                  >
+                    Enable Real-Time Alerts
+                  </Button>
                 </Box>
               )}
 
@@ -925,12 +943,9 @@ const AddGcpAccountModal = ({ open, onClose }) => {
 
           <Grid container spacing={2} mt={1} mb={4} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
             <Grid item>
-              <CustomButton
-                id='close-webhook-btn'
-                size='Medium'
-                text={webhookSetupResult?.succeeded?.length > 0 ? 'Close' : 'Skip for now'}
-                onClick={() => handleCloseModal(true)}
-              />
+              <Button id='close-webhook-btn' size='md' tone='primary' onClick={() => handleCloseModal(true)}>
+                {webhookSetupResult?.succeeded?.length > 0 ? 'Close' : 'Skip for now'}
+              </Button>
             </Grid>
           </Grid>
         </>

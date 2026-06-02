@@ -48,21 +48,21 @@ func (h Hive) ConfigSchema() core.IntegrationSchema {
 			"hive_url": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "HiveServer2 endpoint as host:port (e.g., hiveserver2.hive.svc.cluster.local:10000)",
-				Priority:    100,
+				Priority:    90,
 			},
 			core.IntegrationConfigName: {
 				Type:             core.ToolSchemaTypeString,
 				Description:      "Name of Hive integration",
 				Default:          "",
 				AutoGenerateFunc: "",
-				Priority:         95,
+				Priority:         100,
 			},
 			core.AccountId: {
 				Type:             core.ToolSchemaTypeArray,
 				Description:      "Select Account",
 				Default:          "",
 				AutoGenerateFunc: "listAccounts",
-				Priority:         90,
+				Priority:         95,
 			},
 			"hive_database": {
 				Type:        core.ToolSchemaTypeString,
@@ -96,7 +96,7 @@ func (h Hive) ConfigSchema() core.IntegrationSchema {
 				Type:        core.ToolSchemaTypeBoolean,
 				Description: "Skip TLS certificate verification (only for self-signed HiveServer2 deployments — leaves credentials vulnerable to MITM)",
 				Default:     false,
-				Priority:    73,
+				Priority:    25,
 			},
 			"hive_table": {
 				Type:        core.ToolSchemaTypeString,

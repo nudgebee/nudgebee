@@ -6,7 +6,7 @@ import { Input } from '@components1/ds/Input';
 import FilterDropdownButton from './FilterDropdownButton';
 import apiUser from '@api1/user';
 import { Modal } from './modal';
-import CustomButton from './NewCustomButton';
+import { Button } from '@components1/ds/Button';
 import apiIntegrations from '@api1/integrations';
 import NDialog from './modal/NDialog';
 import { colors } from 'src/utils/colors';
@@ -1265,7 +1265,9 @@ const IntegrationDynamicFormModal = ({
                 },
               }}
             >
-              <CustomButton id='cancel-btn' text='Close' variant='secondary' size='Medium' onClick={() => handleCloseModal(false)} />
+              <Button id='cancel-btn' tone='secondary' size='md' onClick={() => handleCloseModal(false)}>
+                Close
+              </Button>
             </Box>
           </Box>
         ) : (
@@ -1790,13 +1792,9 @@ const IntegrationDynamicFormModal = ({
                         </Box>
                       ))}
                       <Box sx={{ mb: 2 }}>
-                        <CustomButton
-                          id={`add-condition-btn-${ruleIdx}`}
-                          text='+ Add condition'
-                          variant='secondary'
-                          size='Small'
-                          onClick={() => handleAddCondition(ruleIdx)}
-                        />
+                        <Button id={`add-condition-btn-${ruleIdx}`} tone='secondary' size='sm' onClick={() => handleAddCondition(ruleIdx)}>
+                          + Add condition
+                        </Button>
                       </Box>
 
                       <Typography
@@ -1817,7 +1815,9 @@ const IntegrationDynamicFormModal = ({
                   ))}
 
                   <Box sx={{ mt: 1 }}>
-                    <CustomButton id='add-rule-btn' text='+ Add rule' variant='secondary' size='Medium' onClick={handleAddRule} />
+                    <Button id='add-rule-btn' tone='secondary' size='md' onClick={handleAddRule}>
+                      + Add rule
+                    </Button>
                   </Box>
 
                   <Typography
@@ -1845,34 +1845,34 @@ const IntegrationDynamicFormModal = ({
                 },
               }}
             >
-              <CustomButton
-                id='cancel-btn'
-                text='Cancel'
-                variant='secondary'
-                size='Medium'
-                onClick={() => handleCloseModal(false)}
-                disabled={isSubmitting || isTesting}
-              />
+              <Button id='cancel-btn' tone='secondary' size='md' onClick={() => handleCloseModal(false)} disabled={isSubmitting || isTesting}>
+                Cancel
+              </Button>
               {isTestable && (
-                <CustomButton
+                <Button
                   id='test-connection-btn'
-                  text={isTesting ? 'Testing...' : 'Test Connection'}
-                  variant='primary'
-                  size='Medium'
+                  tone='secondary'
+                  size='md'
                   onClick={handleTestConnection}
+                  loading={isTesting}
                   disabled={isSubmitting || isTesting}
-                />
+                >
+                  Test Connection
+                </Button>
               )}
-              <CustomButton
-                size='Medium'
-                id={'create-integration-acc'}
-                text={editData && Object.keys(editData).length ? 'Update' : 'Save'}
+              <Button
+                size='md'
+                tone='primary'
+                id='create-integration-acc'
+                aria-label='Save Webhook'
                 disabled={isSubmitting || isTesting || (isTestable && !connectionVerified)}
+                loading={isSubmitting}
                 onClick={() => {
                   submitForm();
                 }}
-                label='Save Webhook'
-              />
+              >
+                {editData && Object.keys(editData).length ? 'Update' : 'Save'}
+              </Button>
             </Box>
           </>
         )}

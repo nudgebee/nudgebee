@@ -40,7 +40,7 @@ func (m Elasticsearch) ConfigSchema() core.IntegrationSchema {
 			"url": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Base URL of the Elasticsearch/OpenSearch endpoint (e.g., https://my-domain.us-east-1.es.amazonaws.com)",
-				Priority:    100,
+				Priority:    85,
 				IsTestable:  true,
 			},
 			"auth_type": {
@@ -48,7 +48,7 @@ func (m Elasticsearch) ConfigSchema() core.IntegrationSchema {
 				Description: "Authentication method",
 				Default:     "basic",
 				Enum:        []any{"basic", "cognito", "api_key", "bearer_token"},
-				Priority:    95,
+				Priority:    90,
 				IsTestable:  true,
 			},
 			"username": {
@@ -56,7 +56,7 @@ func (m Elasticsearch) ConfigSchema() core.IntegrationSchema {
 				Description:  "Username for basic auth or Cognito User Pool",
 				ShowWhen:     map[string]any{"auth_type": []any{"basic", "cognito"}},
 				RequiredWhen: map[string]any{"auth_type": []any{"basic", "cognito"}},
-				Priority:     90,
+				Priority:     80,
 				IsTestable:   true,
 			},
 			"password": {
@@ -65,7 +65,7 @@ func (m Elasticsearch) ConfigSchema() core.IntegrationSchema {
 				IsEncrypted:  true,
 				ShowWhen:     map[string]any{"auth_type": []any{"basic", "cognito"}},
 				RequiredWhen: map[string]any{"auth_type": []any{"basic", "cognito"}},
-				Priority:     85,
+				Priority:     78,
 				IsTestable:   true,
 			},
 			"api_key": {
@@ -74,7 +74,7 @@ func (m Elasticsearch) ConfigSchema() core.IntegrationSchema {
 				IsEncrypted:  true,
 				ShowWhen:     map[string]any{"auth_type": "api_key"},
 				RequiredWhen: map[string]any{"auth_type": "api_key"},
-				Priority:     80,
+				Priority:     76,
 				IsTestable:   true,
 			},
 			"bearer_token": {
@@ -83,35 +83,35 @@ func (m Elasticsearch) ConfigSchema() core.IntegrationSchema {
 				IsEncrypted:  true,
 				ShowWhen:     map[string]any{"auth_type": "bearer_token"},
 				RequiredWhen: map[string]any{"auth_type": "bearer_token"},
-				Priority:     75,
+				Priority:     74,
 				IsTestable:   true,
 			},
 			"region": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "AWS region (e.g., us-east-1)",
 				ShowWhen:    map[string]any{"auth_type": "cognito"},
-				Priority:    70,
+				Priority:    72,
 				IsTestable:  true,
 			},
 			"user_pool_id": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Cognito User Pool ID (e.g., us-east-1_xxxxxx)",
 				ShowWhen:    map[string]any{"auth_type": "cognito"},
-				Priority:    65,
+				Priority:    68,
 				IsTestable:  true,
 			},
 			"identity_pool_id": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Cognito Identity Pool ID (e.g., us-east-1:xxxxx-xxxx-xxx)",
 				ShowWhen:    map[string]any{"auth_type": "cognito"},
-				Priority:    60,
+				Priority:    66,
 				IsTestable:  true,
 			},
 			"app_client_id": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Cognito App Client ID",
 				ShowWhen:    map[string]any{"auth_type": "cognito"},
-				Priority:    55,
+				Priority:    64,
 				IsTestable:  true,
 			},
 			core.IntegrationConfigName: {
@@ -119,14 +119,14 @@ func (m Elasticsearch) ConfigSchema() core.IntegrationSchema {
 				Description:      "Name of Elasticsearch integration",
 				Default:          "",
 				AutoGenerateFunc: "",
-				Priority:         40,
+				Priority:         100,
 			},
 			core.AccountId: {
 				Type:             core.ToolSchemaTypeArray,
 				Description:      "Select Account",
 				Default:          "",
 				AutoGenerateFunc: "listAccounts",
-				Priority:         39,
+				Priority:         95,
 			},
 			core.DefaultLogProvider: {
 				Type:             core.ToolSchemaTypeBoolean,

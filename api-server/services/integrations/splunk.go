@@ -93,20 +93,20 @@ func (m SplunkO11y) ConfigSchema() core.IntegrationSchema {
 				Description:      "Select Accounts",
 				Default:          nil,
 				AutoGenerateFunc: "listAccounts",
-				Priority:         85,
+				Priority:         95,
 			},
 			SplunkO11yConfigRealm: {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Splunk Observability Cloud realm. Find it in Settings → Organizations.",
 				Enum:        []any{"us0", "us1", "us2", "eu0", "ap0", "jp0", "au0"},
-				Priority:    90,
+				Priority:    88,
 				IsTestable:  true,
 			},
 			SplunkO11yConfigAccessToken: {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Organization access token. Find or create it in Settings → Access Tokens.",
 				IsEncrypted: true,
-				Priority:    95,
+				Priority:    72,
 				IsTestable:  true,
 			},
 			// core.DefaultLogProvider: {

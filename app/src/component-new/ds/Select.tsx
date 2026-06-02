@@ -21,6 +21,10 @@
  *   <Select value={s}     onChange={(v) => …} options={…} />          ← single
  *   <Select multiple value={[…]} onChange={(arr) => …} options={…} /> ← multi
  *
+ * The `required` asterisk renders only alongside a non-empty `label`; when the
+ * label is absent (undefined / null / empty / whitespace) the asterisk is
+ * suppressed — it has nothing to attach to.
+ *
  * Don't (per spec):
  *   - Don't use Select with > ~20 options without search — use Autocomplete.
  *   - Don't use Select for actions — use DropdownMenu.
@@ -64,6 +68,13 @@ interface SelectBaseProps {
   error?: string;
   placeholder?: string;
   required?: boolean;
+  /**
+   * Show the inline clear (✕) button (and, in multi mode, the popup "Clear all"
+   * action) when there's a selection. Default `true`. Set `false` for pickers
+   * where an empty value is not a meaningful state (e.g. a navigation selector
+   * that must always have an active choice). `required` also suppresses clear.
+   */
+  clearable?: boolean;
   disabled?: boolean;
   size?: SelectSize;
   /** Min-width of the trigger AND the popup. Popup matches trigger width by default. */
@@ -185,6 +196,7 @@ export function Select(props: SelectProps) {
     error,
     placeholder = 'Select…',
     required,
+    clearable = true,
     disabled,
     size = 'md',
     minWidth,
@@ -358,9 +370,14 @@ export function Select(props: SelectProps) {
   const describedBy =
     [hasError ? errorId : null, !hasError && help ? helpId : null, instructionText ? instrId : null].filter(Boolean).join(' ') || undefined;
 
+  // A label counts as "present" only when it has renderable content — an empty
+  // string / whitespace / null label is treated as absent, so the `required`
+  // asterisk never renders on its own without a visible label to attach to.
+  const hasLabel = label !== undefined && label !== null && !(typeof label === 'string' && label.trim() === '');
+
   return (
     <Box className={className} sx={{ display: 'flex', flexDirection: 'column', gap: tokens.labelGap, width: '100%' }}>
-      {label !== undefined && (
+      {hasLabel && (
         <Box
           component='label'
           htmlFor={inputId}
@@ -448,7 +465,7 @@ export function Select(props: SelectProps) {
         </Box>
         {/* No clear button on required fields — clearing to empty would leave a
             required field invalid with no value to fall back to. */}
-        {hasSelection && !disabled && !required && <ClearButton onClear={handleClear} label='Clear selection' />}
+        {clearable && hasSelection && !disabled && !required && <ClearButton onClear={handleClear} label='Clear selection' />}
         <Chevron open={open} />
       </Box>
       {!hasError && help !== undefined && (
@@ -482,7 +499,7 @@ export function Select(props: SelectProps) {
             <OverlaySelectAll
               checked={allFilteredSelected}
               onToggle={allFilteredSelected ? handleClearAll : handleSelectAll}
-              showClear={selectedOpts.length > 0}
+              showClear={clearable && selectedOpts.length > 0}
               onClear={handleClearAll}
             />
           )}

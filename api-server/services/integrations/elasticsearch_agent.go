@@ -28,31 +28,37 @@ func (m ElasticsearchAgent) ConfigSchema() core.IntegrationSchema {
 				Type:        core.ToolSchemaTypeBoolean,
 				Description: "Set as default log provider for this account",
 				Default:     false,
+				Priority:    18,
 			},
 			"log_index": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Log Index",
 				ShowWhen:    map[string]any{"default_log_provider": true},
+				Priority:    17,
 			},
 			"default_traces_provider": {
 				Type:        core.ToolSchemaTypeBoolean,
 				Description: "Set as default traces provider for this account",
 				Default:     false,
+				Priority:    14,
 			},
 			"trace_index": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Trace Index",
 				ShowWhen:    map[string]any{"default_traces_provider": true},
+				Priority:    13,
 			},
 			"default_metrics_provider": {
 				Type:        core.ToolSchemaTypeBoolean,
 				Description: "Set as default metrics provider for this account",
 				Default:     false,
+				Priority:    16,
 			},
 			"metrics_index": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Metrics Index",
 				ShowWhen:    map[string]any{"default_metrics_provider": true},
+				Priority:    15,
 			},
 		},
 	}

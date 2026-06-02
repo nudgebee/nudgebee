@@ -824,6 +824,7 @@ const K8sIntegrationTile = () => {
 
       <NDialog
         buttonText='Confirm'
+        submitTone={updateAccountStatus.status == 'active' ? 'primary' : 'danger'}
         handleClose={() => setUpdateAccountStatus({})}
         dialogTitle={
           <Typography component='h2' variant='h6' fontWeight={600}>

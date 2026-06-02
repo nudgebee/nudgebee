@@ -41,19 +41,19 @@ func (m MCP) ConfigSchema() core.IntegrationSchema {
 				Description: "Connection mode",
 				Default:     "direct",
 				Enum:        []any{"direct", "vm_agent"},
-				Priority:    100,
+				Priority:    90,
 			},
 			core.IntegrationConfigName: {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Name of MCP integration",
-				Priority:    95,
+				Priority:    100,
 			},
 			core.AccountId: {
 				Type:             core.ToolSchemaTypeArray,
 				Description:      "Select Account",
 				Default:          "",
 				AutoGenerateFunc: "listAccounts",
-				Priority:         90,
+				Priority:         95,
 			},
 			// Transport selection
 			"transport": {
@@ -78,38 +78,38 @@ func (m MCP) ConfigSchema() core.IntegrationSchema {
 				Default:     "none",
 				Enum:        []any{"none", "bearer", "basic", "api_key", "custom_header", "oauth2"},
 				ShowWhen:    map[string]any{"connection_mode": "direct", "transport": "http"},
-				Priority:    70,
+				Priority:    78,
 			},
 			"bearer_token": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Bearer token",
 				IsEncrypted: true,
 				ShowWhen:    map[string]any{"auth_type": "bearer", "connection_mode": "direct"},
-				Priority:    65,
+				Priority:    74,
 			},
 			"username": {
 				Type:     core.ToolSchemaTypeString,
 				ShowWhen: map[string]any{"auth_type": "basic", "connection_mode": "direct"},
-				Priority: 65,
+				Priority: 72,
 			},
 			"password": {
 				Type:        core.ToolSchemaTypeString,
 				IsEncrypted: true,
 				ShowWhen:    map[string]any{"auth_type": "basic", "connection_mode": "direct"},
-				Priority:    64,
+				Priority:    70,
 			},
 			"custom_header_name": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Custom header name",
 				ShowWhen:    map[string]any{"auth_type": []any{"api_key", "custom_header"}, "connection_mode": "direct"},
-				Priority:    65,
+				Priority:    68,
 			},
 			"custom_header_value": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Custom header value",
 				IsEncrypted: true,
 				ShowWhen:    map[string]any{"auth_type": []any{"api_key", "custom_header"}, "connection_mode": "direct"},
-				Priority:    64,
+				Priority:    66,
 			},
 			// OAuth 2.0 client_credentials fields
 			"oauth_token_url": {
@@ -117,7 +117,7 @@ func (m MCP) ConfigSchema() core.IntegrationSchema {
 				Description:  "OAuth 2.0 token endpoint URL",
 				ShowWhen:     map[string]any{"auth_type": "oauth2", "connection_mode": "direct"},
 				RequiredWhen: map[string]any{"auth_type": "oauth2"},
-				Priority:     65,
+				Priority:     64,
 			},
 			"oauth_client_id": {
 				Type:         core.ToolSchemaTypeString,
@@ -125,7 +125,7 @@ func (m MCP) ConfigSchema() core.IntegrationSchema {
 				IsEncrypted:  true,
 				ShowWhen:     map[string]any{"auth_type": "oauth2", "connection_mode": "direct"},
 				RequiredWhen: map[string]any{"auth_type": "oauth2"},
-				Priority:     64,
+				Priority:     62,
 			},
 			"oauth_client_secret": {
 				Type:         core.ToolSchemaTypeString,
@@ -133,19 +133,19 @@ func (m MCP) ConfigSchema() core.IntegrationSchema {
 				IsEncrypted:  true,
 				ShowWhen:     map[string]any{"auth_type": "oauth2", "connection_mode": "direct"},
 				RequiredWhen: map[string]any{"auth_type": "oauth2"},
-				Priority:     63,
+				Priority:     60,
 			},
 			"oauth_scope": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "OAuth 2.0 scope (space-separated)",
 				ShowWhen:    map[string]any{"auth_type": "oauth2", "connection_mode": "direct"},
-				Priority:    62,
+				Priority:    58,
 			},
 			"oauth_audience": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "OAuth 2.0 audience / resource",
 				ShowWhen:    map[string]any{"auth_type": "oauth2", "connection_mode": "direct"},
-				Priority:    61,
+				Priority:    56,
 			},
 			// VM agent credential fields
 			"credential_source": {
@@ -154,7 +154,7 @@ func (m MCP) ConfigSchema() core.IntegrationSchema {
 				Default:     "cloud_push",
 				Enum:        []any{"cloud_push", "local"},
 				ShowWhen:    map[string]any{"connection_mode": "vm_agent", "transport": "http"},
-				Priority:    70,
+				Priority:    76,
 			},
 			// LLM instructions
 			"llm_instructions": {
@@ -165,9 +165,10 @@ func (m MCP) ConfigSchema() core.IntegrationSchema {
 			},
 			// Hidden proxy_type for vm_agent mode config push
 			"proxy_type": {
-				Type:    core.ToolSchemaTypeString,
-				Default: "mcp-proxy",
-				Hidden:  true,
+				Type:     core.ToolSchemaTypeString,
+				Default:  "mcp-proxy",
+				Hidden:   true,
+				Priority: 4,
 			},
 		},
 	}

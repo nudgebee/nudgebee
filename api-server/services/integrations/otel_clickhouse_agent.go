@@ -28,6 +28,7 @@ func (m OtelClickhouseAgent) ConfigSchema() core.IntegrationSchema {
 				Type:        core.ToolSchemaTypeBoolean,
 				Description: "Set as default traces provider for this account",
 				Default:     false,
+				Priority:    14,
 			},
 		},
 	}

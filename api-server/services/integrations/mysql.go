@@ -37,20 +37,20 @@ func (m Mysql) ConfigSchema() core.IntegrationSchema {
 				Description: "Connection mode",
 				Default:     "k8s",
 				Enum:        []any{"k8s", "vm_agent"},
-				Priority:    100,
+				Priority:    90,
 				IsTestable:  true,
 			},
 			core.IntegrationConfigName: {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Integration name",
-				Priority:    95,
+				Priority:    100,
 			},
 			core.AccountId: {
 				Type:             core.ToolSchemaTypeArray,
 				Description:      "Select Account",
 				Default:          "",
 				AutoGenerateFunc: "listAccounts",
-				Priority:         90,
+				Priority:         95,
 			},
 			// K8s fields
 			"k8s_secret": {
@@ -58,7 +58,7 @@ func (m Mysql) ConfigSchema() core.IntegrationSchema {
 				Description:  "Kubernetes secret containing MYSQL_DATABASE, MYSQL_HOST, MYSQL_USER, MYSQL_PWD keys",
 				ShowWhen:     map[string]any{"connection_mode": "k8s"},
 				RequiredWhen: map[string]any{"connection_mode": "k8s"},
-				Priority:     80,
+				Priority:     84,
 				IsTestable:   true,
 			},
 			// VM agent connection fields
@@ -66,7 +66,7 @@ func (m Mysql) ConfigSchema() core.IntegrationSchema {
 				Type:         core.ToolSchemaTypeString,
 				Description:  "MySQL host (e.g. db.example.com or 10.0.1.5)",
 				RequiredWhen: map[string]any{"connection_mode": "vm_agent"},
-				Priority:     80,
+				Priority:     82,
 				IsTestable:   true,
 			},
 			"port": {

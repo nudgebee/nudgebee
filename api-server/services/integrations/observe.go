@@ -98,7 +98,7 @@ func (m Observe) ConfigSchema() core.IntegrationSchema {
 				RequiredWhen: map[string]any{
 					core.AuthType: []string{ObserveApiToken},
 				},
-				Priority: 98,
+				Priority: 72,
 			},
 			ObserveConfigUserEmail: {
 				Type:        core.ToolSchemaTypeString,
@@ -107,7 +107,7 @@ func (m Observe) ConfigSchema() core.IntegrationSchema {
 				RequiredWhen: map[string]any{
 					core.AuthType: []string{"email_password"},
 				},
-				Priority: 97,
+				Priority: 70,
 			},
 			ObserveConfigUserPassword: {
 				Type:        core.ToolSchemaTypeString,
@@ -117,52 +117,52 @@ func (m Observe) ConfigSchema() core.IntegrationSchema {
 				RequiredWhen: map[string]any{
 					core.AuthType: []string{"email_password"},
 				},
-				Priority: 96,
+				Priority: 69,
 			},
 			ObserveConfigCustomerID: {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Observe Customer ID",
-				Priority:    95,
+				Priority:    85,
 				IsTestable:  true,
 			},
 			ObserveConfigLogDatasetID: {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Observe Log Dataset ID",
-				Priority:    94,
+				Priority:    50,
 			},
 			core.AccountId: {
 				Type:             core.ToolSchemaTypeArray,
 				Description:      "Select Account",
 				Default:          "",
 				AutoGenerateFunc: "listAccounts",
-				Priority:         100,
+				Priority:         95,
 			},
 			core.DefaultLogProvider: {
 				Type:             core.ToolSchemaTypeBoolean,
 				Description:      "Make Observe Default Log Provider",
 				Default:          false,
 				AutoGenerateFunc: "",
-				Priority:         93,
+				Priority:         15,
 			},
 			core.IntegrationConfigName: {
 				Type:             core.ToolSchemaTypeString,
 				Description:      "Name To Observe Integration",
 				Default:          "",
 				AutoGenerateFunc: "",
-				Priority:         92,
+				Priority:         100,
 			},
 			core.AuthType: {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Select Authentication Type",
 				Enum:        []any{"api_token", "email_password"},
-				Priority:    99,
+				Priority:    90,
 				IsTestable:  true,
 			},
 			ObserveConfigDomain: {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Observe Domain (e.g. observeinc)",
 				Enum:        []any{"ap-1.observeinc", "au-1.observeinc", "ca-1.observeinc", "eu-1.observeinc", "observeinc"},
-				Priority:    91,
+				Priority:    84,
 				Default:     "observeinc",
 				IsTestable:  true,
 			},

@@ -6,7 +6,7 @@ import apiIntegrations from '@api1/integrations';
 import { getAccountCreationSuccessMsg } from 'src/utils/common';
 import apiTicketIntegrations from '@api1/tickets';
 import PropTypes from 'prop-types';
-import CustomButton from './NewCustomButton';
+import { Button } from '@components1/ds/Button';
 import { snackbar } from './snackbarService';
 import { colors } from 'src/utils/colors';
 
@@ -299,26 +299,24 @@ const ZenDutyAccountModal = ({ openModal, handleClose, editConfig = null }) => {
           },
         }}
       >
-        <CustomButton
-          id='cancel-btn'
-          text='Cancel'
-          variant='secondary'
-          size='Medium'
-          onClick={handleCloseZenDutyModal}
-          disabled={isSubmitting || isTesting}
-        />
-        <CustomButton
+        <Button id='cancel-btn' tone='secondary' size='md' onClick={handleCloseZenDutyModal} disabled={isSubmitting || isTesting}>
+          Cancel
+        </Button>
+        <Button
           id='test-zenduty-connection'
-          text={isTesting ? 'Testing...' : 'Test Connection'}
-          variant='secondary'
-          size='Medium'
+          tone='secondary'
+          size='md'
+          loading={isTesting}
           onClick={handleTestConnection}
           disabled={isSubmitting || isTesting}
-        />
-        <CustomButton
-          size='Medium'
+        >
+          Test Connection
+        </Button>
+        <Button
           id={isEdit ? 'update-zenduty-acc' : 'create-zenduty-acc'}
-          text={isEdit ? 'Update' : 'Save'}
+          tone='primary'
+          size='md'
+          loading={isSubmitting}
           disabled={isSubmitting || isTesting}
           onClick={() => {
             submitForm(
@@ -331,7 +329,9 @@ const ZenDutyAccountModal = ({ openModal, handleClose, editConfig = null }) => {
               'ZENDUTY'
             );
           }}
-        />
+        >
+          {isEdit ? 'Update' : 'Save'}
+        </Button>
       </Box>
     </Modal>
   );

@@ -3,7 +3,7 @@ import { Checkbox } from '@components1/ds/Checkbox';
 import React, { useRef, useState } from 'react';
 import PropTypes from 'prop-types';
 import { Modal } from '@components1/common/modal';
-import CustomButton from '@components1/common/NewCustomButton';
+import { Button } from '@components1/ds/Button';
 import { snackbar } from '@components1/common/snackbarService';
 import MarkDowns from '@components1/common/MarkDowns';
 import apiKubernetes1 from '@api1/kubernetes1';
@@ -135,13 +135,15 @@ const CfUpdateModal = ({ open, onClose, accountId }) => {
 
           <Grid container spacing={2} mt={1} mb={4} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
             <Grid item>
-              <CustomButton id='close-cf-update-btn' size='Medium' text='Close' variant='secondary' onClick={handleClose} />
+              <Button id='close-cf-update-btn' size='md' tone='secondary' onClick={handleClose}>
+                Close
+              </Button>
             </Grid>
             <Grid item>
-              <CustomButton
+              <Button
                 id='open-cf-console-btn'
-                size='Medium'
-                text='Open AWS Console'
+                size='md'
+                tone='primary'
                 onClick={() => {
                   const cfUrl = new URL(data.url);
                   const hash = cfUrl.hash;
@@ -151,7 +153,9 @@ const CfUpdateModal = ({ open, onClose, accountId }) => {
                   cfUrl.hash = hash + paramSuffix;
                   window.open(cfUrl.toString(), '_blank', 'noopener,noreferrer');
                 }}
-              />
+              >
+                Open AWS Console
+              </Button>
             </Grid>
           </Grid>
         </>

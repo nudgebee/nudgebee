@@ -30,10 +30,12 @@ func (v VMAgent) ConfigSchema() core.IntegrationSchema {
 				Description:      "Select Account",
 				Default:          "",
 				AutoGenerateFunc: "listAccounts",
+				Priority:         95,
 			},
 			core.IntegrationConfigName: {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Name of Proxy Agent",
+				Priority:    100,
 			},
 		},
 	}

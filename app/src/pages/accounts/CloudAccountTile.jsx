@@ -609,6 +609,7 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
       </Modal>
       <NDialog
         buttonText='Confirm'
+        submitTone={updateAccountStatus.status == 'active' ? 'primary' : 'danger'}
         handleClose={() => setUpdateAccountStatus({})}
         dialogTitle={
           <Typography component='h2' variant='h6' fontWeight={600}>

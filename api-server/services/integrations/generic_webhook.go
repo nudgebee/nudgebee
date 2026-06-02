@@ -42,12 +42,14 @@ func (m WorkflowWebhook) ConfigSchema() core.IntegrationSchema {
 				Description:      "Name of Workflow Webhook",
 				Default:          "",
 				AutoGenerateFunc: "",
+				Priority:         100,
 			},
 			"account_id": {
 				Type:             core.ToolSchemaTypeArray,
 				Description:      "Select Account(s)",
 				Default:          "",
 				AutoGenerateFunc: "listAccounts",
+				Priority:         95,
 				// Multi-select: a workflow_webhook can fan out to workflows
 				// across multiple accounts. Each subscribing workflow declares
 				// its own webhook trigger pointing at this integration; the
@@ -57,6 +59,7 @@ func (m WorkflowWebhook) ConfigSchema() core.IntegrationSchema {
 				Type:             core.ToolSchemaTypeString,
 				Default:          "",
 				AutoGenerateFunc: "",
+				Priority:         70,
 			},
 			// workflow_id binds the webhook to a specific automation. Set
 			// programmatically by runbook-server CreateWorkflowWebhookTrigger
@@ -75,6 +78,7 @@ func (m WorkflowWebhook) ConfigSchema() core.IntegrationSchema {
 				Type:        core.ToolSchemaTypeString,
 				Description: "ID of the automation this webhook is bound to",
 				Hidden:      true,
+				Priority:    4,
 			},
 		},
 	}

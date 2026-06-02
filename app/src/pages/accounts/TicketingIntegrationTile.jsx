@@ -163,6 +163,7 @@ const TicketingIntegrationTile = ({ tool, displayName, cloudProvider, AccountMod
     <>
       <NDialog
         buttonText='Confirm'
+        submitTone={disableConfig.active ? 'primary' : 'danger'}
         handleClose={() => setDisableConfig({})}
         dialogContent={`Are you sure you want to ${disableConfig.active ? 'enable' : 'disable'} this "${
           disableConfig.name

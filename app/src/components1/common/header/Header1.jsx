@@ -50,7 +50,7 @@ import K8sAccountModal from '@common/K8sAccountModal';
 import JiraAccountModal from '@common/JiraAccountModal';
 import GithubAccountModal from '@common/GithubAccountModal';
 import ServiceNowAccountModal from '@common/ServiceNowAccountModal';
-import CustomDropdown from '@common/CustomDropdown';
+import { Select } from '@components1/ds/Select';
 import apiAppGrouping from '@api1/application-groupings';
 import CustomBackButton from '@common-new/CustomBackButton';
 import Link from 'next/link';
@@ -142,8 +142,8 @@ const Header1 = ({ showBorder = false }) => {
     }
   }, [router.query]);
 
-  const handleChangeGroup = (e, v) => {
-    router.push(`/grouping?groupId=${v.id}`);
+  const handleChangeGroup = (groupValue) => {
+    router.push(groupValue ? `/grouping?groupId=${groupValue}` : '/grouping');
   };
 
   // Help-menu items for the DS DropdownMenu. Computed inline (NOT memoised) so
@@ -917,21 +917,16 @@ const Header1 = ({ showBorder = false }) => {
                   </DsTooltip>
                 )}
                 {anchorActiveTab.showGroupingDropdown && (
-                  <CustomDropdown
-                    id={'app-group'}
+                  <Select
+                    id='app-group'
                     minWidth='250px'
-                    value={activeGroup.label ?? ' '}
-                    onChange={(e, v) => {
-                      handleChangeGroup(e, v);
-                    }}
+                    label=''
+                    value={activeGroup.value?.trim() ? activeGroup.value : ''}
                     options={allAppGroupNames}
-                    customStyle={{
-                      '.MuiFormControl-root': {
-                        marginTop: 'var(--ds-space-2)',
-                      },
-                    }}
+                    onChange={(next) => handleChangeGroup(next)}
                     loading={loading}
-                    label='Select Application Group'
+                    required={false}
+                    clearable={false}
                   />
                 )}
               </Box>

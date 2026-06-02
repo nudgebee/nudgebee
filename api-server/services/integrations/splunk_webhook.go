@@ -36,16 +36,19 @@ func (m SplunkWebhook) ConfigSchema() core.IntegrationSchema {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Name of Splunk Webhook",
 				Default:     "",
+				Priority:    100,
 			},
 			"account_id": {
 				Type:             core.ToolSchemaTypeArray,
 				Description:      "Select Account",
 				Default:          "",
 				AutoGenerateFunc: "listAccounts",
+				Priority:         95,
 			},
 			"token": {
-				Type:    core.ToolSchemaTypeString,
-				Default: "",
+				Type:     core.ToolSchemaTypeString,
+				Default:  "",
+				Priority: 70,
 			},
 		},
 	}

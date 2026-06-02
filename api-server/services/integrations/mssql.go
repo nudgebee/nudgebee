@@ -35,14 +35,14 @@ func (m Mssql) ConfigSchema() core.IntegrationSchema {
 			core.IntegrationConfigName: {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Integration name",
-				Priority:    95,
+				Priority:    100,
 			},
 			core.AccountId: {
 				Type:             core.ToolSchemaTypeArray,
 				Description:      "Select Account",
 				Default:          "",
 				AutoGenerateFunc: "listAccounts",
-				Priority:         90,
+				Priority:         95,
 			},
 			// Connection fields
 			"host": {

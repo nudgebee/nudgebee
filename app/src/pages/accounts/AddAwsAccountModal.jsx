@@ -6,7 +6,7 @@ import { Modal } from '@components1/common/modal';
 import { Input } from '@components1/ds/Input';
 import { isK8sAccountNameValid } from 'src/utils/common';
 import apiKubernetes1 from '@api1/kubernetes1';
-import CustomButton from '@components1/common/NewCustomButton';
+import { Button } from '@components1/ds/Button';
 import { snackbar } from '@components1/common/snackbarService';
 import MarkDowns from '@components1/common/MarkDowns';
 import ValidationResultBanner from '@components1/accounts/ValidationResultBanner';
@@ -310,14 +310,16 @@ const AddAwsAccountModal = ({ open, onClose }) => {
 
   const renderCloudFormationTab = () => (
     <Grid container direction='column'>
-      <CustomButton
+      <Button
         id='connect-aws-console-btn'
+        tone='primary'
         loading={isFetchingCloudFormationUrl}
-        size='Medium'
+        size='md'
         disabled={!!externalId || !accountNameOk}
-        text='Connect via AWS Console'
         onClick={handleNavToAwsConsole}
-      />
+      >
+        Connect via AWS Console
+      </Button>
 
       {(isPolling || showManualInput) && (
         <Grid container direction='column' mt={2} mb={2}>
@@ -357,14 +359,16 @@ const AddAwsAccountModal = ({ open, onClose }) => {
                 disabled={isSubmitting}
               />
               <Grid container justifyContent='flex-start' sx={{ mt: 1 }}>
-                <CustomButton
+                <Button
                   id='manual-connect-btn'
+                  tone='primary'
                   loading={isSubmitting}
-                  size='Medium'
+                  size='md'
                   disabled={!roleArn || isSubmitting}
-                  text='Connect'
                   onClick={handleManualCfSubmit}
-                />
+                >
+                  Connect
+                </Button>
               </Grid>
             </Grid>
           )}
@@ -453,25 +457,28 @@ const AddAwsAccountModal = ({ open, onClose }) => {
     <Grid container direction='column' sx={{ mt: 2 }}>
       <Grid container spacing={1}>
         <Grid item>
-          <CustomButton
+          <Button
             id='aws-validate-btn'
+            tone='secondary'
             loading={isValidating}
-            size='Medium'
-            variant='secondary'
+            size='md'
             disabled={!accountNameOk || isValidating || isSubmitting}
-            text='Validate'
             onClick={handleValidate}
-          />
+          >
+            Validate
+          </Button>
         </Grid>
         <Grid item>
-          <CustomButton
+          <Button
             id='aws-connect-btn'
+            tone='primary'
             loading={isSubmitting}
-            size='Medium'
+            size='md'
             disabled={!accountNameOk || !validationResult?.success || isSubmitting}
-            text='Connect'
             onClick={handleConnect}
-          />
+          >
+            Connect
+          </Button>
         </Grid>
       </Grid>
 
@@ -579,14 +586,9 @@ const AddAwsAccountModal = ({ open, onClose }) => {
 
       <Grid container spacing={2} mt={1} mb={4} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
         <Grid item>
-          <CustomButton
-            id='cancel-btn'
-            size='Medium'
-            text='Cancel'
-            variant='secondary'
-            onClick={() => handleCloseModal(false)}
-            disabled={isSubmitting}
-          />
+          <Button id='cancel-btn' tone='secondary' size='md' onClick={() => handleCloseModal(false)} disabled={isSubmitting}>
+            Cancel
+          </Button>
         </Grid>
       </Grid>
     </Modal>

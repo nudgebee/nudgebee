@@ -28,6 +28,7 @@ func (m PrometheusAgent) ConfigSchema() core.IntegrationSchema {
 				Type:        core.ToolSchemaTypeBoolean,
 				Description: "Set as default metrics provider for this account",
 				Default:     false,
+				Priority:    16,
 			},
 		},
 	}

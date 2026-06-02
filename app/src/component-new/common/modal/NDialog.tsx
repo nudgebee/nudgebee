@@ -3,7 +3,7 @@ import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import DialogContentText from '@mui/material/DialogContentText';
 import { Box } from '@mui/material';
-import CustomButton from '@common/NewCustomButton';
+import { Button, ButtonTone } from '@components1/ds/Button';
 import { Modal } from '@components1/ds/Modal';
 import { ds } from '@utils/colors';
 
@@ -19,6 +19,8 @@ interface NDialogProps {
   loading?: boolean;
   isSubmitRequired?: boolean;
   isCancelRequired?: boolean;
+  /** Tone of the submit button. Use 'danger' for destructive confirmations (delete/disable). Defaults to 'primary'. */
+  submitTone?: ButtonTone;
   sx?: React.CSSProperties;
   backdropClickClose?: boolean;
   width?: 'xs' | 'sm' | 'md' | 'lg' | 'xl';
@@ -36,6 +38,7 @@ export default function NDialog({
   loading = false,
   isSubmitRequired = true,
   isCancelRequired = true,
+  submitTone = 'primary',
   backdropClickClose = true,
   width = 'md',
 }: NDialogProps) {
@@ -76,12 +79,18 @@ export default function NDialog({
         )}
 
         {(isCancelRequired || isSubmitRequired) && (
-          <DialogActions sx={{ px: 'var(--ds-space-5)', my: 'var(--ds-space-4)', button: { minWidth: ds.space.mul(0, 70) } }}>
+          <DialogActions
+            sx={{ px: 'var(--ds-space-5)', my: 'var(--ds-space-4)', gap: 'var(--ds-space-3)', button: { minWidth: ds.space.mul(0, 70) } }}
+          >
             {isCancelRequired && (
-              <CustomButton variant='secondary' text='Cancel' onClick={handleClose} size='Medium' id='cancel' type='button' disabled={loading} />
+              <Button tone='secondary' onClick={handleClose} size='md' id='cancel' type='button' disabled={loading}>
+                Cancel
+              </Button>
             )}
             {isSubmitRequired && (
-              <CustomButton text={buttonText} onClick={handleSubmit} disabled={disabled || loading} size='Medium' id='submit' type='button' />
+              <Button tone={submitTone} onClick={handleSubmit} disabled={disabled || loading} loading={loading} size='md' id='submit' type='button'>
+                {buttonText}
+              </Button>
             )}
           </DialogActions>
         )}

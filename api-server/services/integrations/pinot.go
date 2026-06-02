@@ -38,21 +38,21 @@ func (p Pinot) ConfigSchema() core.IntegrationSchema {
 			"pinot_url": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Pinot controller URL (e.g., http://pinot-controller:9000)",
-				Priority:    100,
+				Priority:    90,
 			},
 			core.IntegrationConfigName: {
 				Type:             core.ToolSchemaTypeString,
 				Description:      "Name of Pinot integration",
 				Default:          "",
 				AutoGenerateFunc: "",
-				Priority:         95,
+				Priority:         100,
 			},
 			core.AccountId: {
 				Type:             core.ToolSchemaTypeArray,
 				Description:      "Select Account",
 				Default:          "",
 				AutoGenerateFunc: "listAccounts",
-				Priority:         90,
+				Priority:         95,
 			},
 			"auth_type": {
 				Type:        core.ToolSchemaTypeString,

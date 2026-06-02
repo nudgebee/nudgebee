@@ -696,7 +696,8 @@ const ListIntegrations = ({ integrationName }) => {
       )}
       <NDialog
         handleClose={handleConfirmationClose}
-        buttonText='Submit'
+        buttonText={modalAction ? snakeToTitleCase(modalAction) : 'Submit'}
+        submitTone={modalAction === 'delete' || modalAction === 'disable' ? 'danger' : 'primary'}
         dialogTitle={
           <Typography component='h2' variant='h6' fontWeight={600}>
             {`${snakeToTitleCase(modalAction || '')} ${getDisplayName(integrationName)} Integration: ${selectedIntegration.name}`}
@@ -726,7 +727,7 @@ const ListIntegrations = ({ integrationName }) => {
                   borderRadius={2}
                   p={2}
                   sx={{
-                    margin: '15px 0 30px 0px',
+                    marginTop: 'var(--ds-space-2)',
                     display: 'flex',
                     flexDirection: 'row',
                     justifyContent: 'space-between',

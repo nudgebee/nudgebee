@@ -28,6 +28,7 @@ func (m LokiAgent) ConfigSchema() core.IntegrationSchema {
 				Type:        core.ToolSchemaTypeBoolean,
 				Description: "Set as default log provider for this account",
 				Default:     false,
+				Priority:    18,
 			},
 		},
 	}

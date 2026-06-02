@@ -3,7 +3,7 @@ import DialogActions from '@mui/material/DialogActions';
 import DialogContent from '@mui/material/DialogContent';
 import DialogContentText from '@mui/material/DialogContentText';
 import { Box } from '@mui/material';
-import CustomButton from '@common/NewCustomButton';
+import { Button } from '@components1/ds/Button';
 import { Modal } from '@components1/common/modal';
 
 interface NDialogProps {
@@ -75,12 +75,16 @@ export default function NDialog({
         )}
 
         {(isCancelRequired || isSubmitRequired) && (
-          <DialogActions sx={{ px: 'var(--ds-space-5)', my: 'var(--ds-space-4)', button: { minWidth: '140px' } }}>
+          <DialogActions sx={{ px: 'var(--ds-space-5)', my: 'var(--ds-space-4)', gap: 'var(--ds-space-3)', button: { minWidth: '140px' } }}>
             {isCancelRequired && (
-              <CustomButton variant='secondary' text='Cancel' onClick={handleClose} size='Medium' id='cancel' type='button' disabled={loading} />
+              <Button tone='secondary' onClick={handleClose} size='md' id='cancel' type='button' disabled={loading}>
+                Cancel
+              </Button>
             )}
             {isSubmitRequired && (
-              <CustomButton text={buttonText} onClick={handleSubmit} disabled={disabled || loading} size='Medium' id='submit' type='button' />
+              <Button tone='primary' onClick={handleSubmit} disabled={disabled || loading} loading={loading} size='md' id='submit' type='button'>
+                {buttonText}
+              </Button>
             )}
           </DialogActions>
         )}

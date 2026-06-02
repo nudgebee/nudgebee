@@ -6,7 +6,7 @@ import apiAccount from '@api1/account';
 import { Modal } from '@components1/common/modal';
 import { Input } from '@components1/ds/Input';
 import { isK8sAccountNameValid } from 'src/utils/common';
-import CustomButton from '@components1/common/NewCustomButton';
+import { Button } from '@components1/ds/Button';
 import { snackbar } from '@components1/common/snackbarService';
 import MarkDowns from '@components1/common/MarkDowns';
 
@@ -212,17 +212,14 @@ const AddCloudFoundryAccountModal = ({ open, onClose }) => {
 
       <Grid container spacing={2} mt={1} mb={4} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
         <Grid item>
-          <CustomButton
-            id='cf-cancel-btn'
-            size='Medium'
-            text='Cancel'
-            variant='secondary'
-            onClick={() => handleCloseModal(false)}
-            disabled={isSubmitting}
-          />
+          <Button id='cf-cancel-btn' size='md' tone='secondary' onClick={() => handleCloseModal(false)} disabled={isSubmitting}>
+            Cancel
+          </Button>
         </Grid>
         <Grid item>
-          <CustomButton id='cf-save-btn' size='Medium' text='Save' disabled={!isFormValid() || isSubmitting} onClick={handleSubmit} />
+          <Button id='cf-save-btn' size='md' tone='primary' disabled={!isFormValid() || isSubmitting} onClick={handleSubmit}>
+            Save
+          </Button>
         </Grid>
       </Grid>
     </Modal>

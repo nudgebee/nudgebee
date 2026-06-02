@@ -29,25 +29,29 @@ func (m HTTPProxy) ConfigSchema() core.IntegrationSchema {
 		Required: []string{"base_url"},
 		Properties: map[string]core.IntegrationSchemaProperty{
 			"proxy_type": {
-				Type:    core.ToolSchemaTypeString,
-				Default: "http-proxy",
-				Hidden:  true,
+				Type:     core.ToolSchemaTypeString,
+				Default:  "http-proxy",
+				Hidden:   true,
+				Priority: 4,
 			},
 			"base_url": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Base URL of the HTTP endpoint (e.g., http://prometheus.internal:9090)",
+				Priority:    85,
 			},
 			"auth_type": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Authentication method",
 				Default:     "none",
 				Enum:        []any{"none", "basic", "bearer", "custom_header"},
+				Priority:    92,
 			},
 			"username": {
 				Type:         core.ToolSchemaTypeString,
 				Description:  "Username for basic auth",
 				ShowWhen:     map[string]any{"auth_type": "basic"},
 				RequiredWhen: map[string]any{"auth_type": "basic"},
+				Priority:     72,
 			},
 			"password": {
 				Type:         core.ToolSchemaTypeString,
@@ -55,6 +59,7 @@ func (m HTTPProxy) ConfigSchema() core.IntegrationSchema {
 				IsEncrypted:  true,
 				ShowWhen:     map[string]any{"auth_type": "basic"},
 				RequiredWhen: map[string]any{"auth_type": "basic"},
+				Priority:     70,
 			},
 			"bearer_token": {
 				Type:         core.ToolSchemaTypeString,
@@ -62,12 +67,14 @@ func (m HTTPProxy) ConfigSchema() core.IntegrationSchema {
 				IsEncrypted:  true,
 				ShowWhen:     map[string]any{"auth_type": "bearer"},
 				RequiredWhen: map[string]any{"auth_type": "bearer"},
+				Priority:     68,
 			},
 			"custom_header_name": {
 				Type:         core.ToolSchemaTypeString,
 				Description:  "Custom header name (e.g., X-Api-Key)",
 				ShowWhen:     map[string]any{"auth_type": "custom_header"},
 				RequiredWhen: map[string]any{"auth_type": "custom_header"},
+				Priority:     66,
 			},
 			"custom_header_value": {
 				Type:         core.ToolSchemaTypeString,
@@ -75,32 +82,38 @@ func (m HTTPProxy) ConfigSchema() core.IntegrationSchema {
 				IsEncrypted:  true,
 				ShowWhen:     map[string]any{"auth_type": "custom_header"},
 				RequiredWhen: map[string]any{"auth_type": "custom_header"},
+				Priority:     64,
 			},
 			"tls_skip_verify": {
 				Type:        core.ToolSchemaTypeBoolean,
 				Description: "Skip TLS certificate verification (not recommended for production)",
 				Default:     false,
+				Priority:    30,
 			},
 			"credential_source": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Where credentials are stored",
 				Default:     "cloud_push",
 				Enum:        []any{"cloud_push", "aws_sm", "gcp_sm", "azure_kv", "local"},
+				Priority:    90,
 			},
 			"secret_ref": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Secret reference in the secret manager",
 				ShowWhen:    map[string]any{"credential_source": []any{"aws_sm", "gcp_sm", "azure_kv"}},
+				Priority:    62,
 			},
 			core.AccountId: {
 				Type:             core.ToolSchemaTypeArray,
 				Description:      "Select Account",
 				Default:          "",
 				AutoGenerateFunc: "listAccounts",
+				Priority:         95,
 			},
 			core.IntegrationConfigName: {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Name of HTTP Proxy integration",
+				Priority:    100,
 			},
 		},
 	}

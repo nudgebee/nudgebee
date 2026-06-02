@@ -21,7 +21,7 @@ import PropTypes from 'prop-types';
 import apiAccount from '@api1/account';
 import apiIntegrations from '@api1/integrations';
 import { Modal } from '@components1/common/modal';
-import CustomButton from '@components1/common/NewCustomButton';
+import { Button } from '@components1/ds/Button';
 import { snackbar } from '@components1/common/snackbarService';
 import MarkDowns from '@components1/common/MarkDowns';
 import { colors } from 'src/utils/colors';
@@ -307,17 +307,21 @@ const EnableGcpWebhookModal = ({ open, onClose, account, isAlreadyEnabled = fals
             </Typography>
             <Grid container spacing={2} mt={1} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
               <Grid item>
-                <CustomButton size='Medium' text='Close' variant='secondary' onClick={handleClose} />
+                <Button size='md' tone='secondary' onClick={handleClose}>
+                  Close
+                </Button>
               </Grid>
               <Grid item>
-                <CustomButton
-                  size='Medium'
-                  text='Re-run Setup'
+                <Button
+                  size='md'
+                  tone='primary'
                   onClick={() => {
                     setShowWizard(true);
                     setStep(0);
                   }}
-                />
+                >
+                  Re-run Setup
+                </Button>
               </Grid>
             </Grid>
           </>
@@ -373,10 +377,14 @@ const EnableGcpWebhookModal = ({ open, onClose, account, isAlreadyEnabled = fals
 
                 <Grid container spacing={2} mt={1} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
                   <Grid item>
-                    <CustomButton size='Medium' text='Cancel' variant='secondary' onClick={handleClose} />
+                    <Button size='md' tone='secondary' onClick={handleClose}>
+                      Cancel
+                    </Button>
                   </Grid>
                   <Grid item>
-                    <CustomButton size='Medium' text='Next' onClick={() => setStep(1)} />
+                    <Button size='md' tone='primary' onClick={() => setStep(1)}>
+                      Next
+                    </Button>
                   </Grid>
                 </Grid>
               </>
@@ -432,15 +440,21 @@ const EnableGcpWebhookModal = ({ open, onClose, account, isAlreadyEnabled = fals
 
                 <Grid container spacing={2} mt={1} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
                   <Grid item>
-                    <CustomButton size='Medium' text='Back' variant='secondary' onClick={() => setStep(0)} />
+                    <Button size='md' tone='secondary' onClick={() => setStep(0)}>
+                      Back
+                    </Button>
                   </Grid>
                   {!isCheckingPermission && permissionResult && !permissionResult.has_permission && (
                     <Grid item>
-                      <CustomButton size='Medium' text='Re-check' variant='secondary' onClick={checkPermission} />
+                      <Button size='md' tone='secondary' onClick={checkPermission}>
+                        Re-check
+                      </Button>
                     </Grid>
                   )}
                   <Grid item>
-                    <CustomButton size='Medium' text='Next' disabled={isCheckingPermission || !permissionResult} onClick={() => setStep(2)} />
+                    <Button size='md' tone='primary' disabled={isCheckingPermission || !permissionResult} onClick={() => setStep(2)}>
+                      Next
+                    </Button>
                   </Grid>
                 </Grid>
               </>
@@ -500,26 +514,30 @@ const EnableGcpWebhookModal = ({ open, onClose, account, isAlreadyEnabled = fals
 
                 <Grid container spacing={2} mt={1} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
                   <Grid item>
-                    <CustomButton size='Medium' text='Close' variant='secondary' onClick={handleClose} />
+                    <Button size='md' tone='secondary' onClick={handleClose}>
+                      Close
+                    </Button>
                   </Grid>
                   {setupError && (
                     <Grid item>
-                      <CustomButton
-                        size='Medium'
-                        text='Retry'
+                      <Button
+                        size='md'
+                        tone='primary'
                         onClick={() => {
                           setSetupError('');
                           setSetupStatus(null);
                           setWebhookUrl('');
                         }}
-                      />
+                      >
+                        Retry
+                      </Button>
                     </Grid>
                   )}
                   {String(setupStatus) === 'fallback' && (
                     <Grid item>
-                      <CustomButton
-                        size='Medium'
-                        text='Open GCP Console'
+                      <Button
+                        size='md'
+                        tone='primary'
                         onClick={() =>
                           window.open(
                             `https://console.cloud.google.com/monitoring/alerting/notifications/webhooks/new?project=${projectId}`,
@@ -527,7 +545,9 @@ const EnableGcpWebhookModal = ({ open, onClose, account, isAlreadyEnabled = fals
                             'noopener,noreferrer'
                           )
                         }
-                      />
+                      >
+                        Open GCP Console
+                      </Button>
                     </Grid>
                   )}
                 </Grid>

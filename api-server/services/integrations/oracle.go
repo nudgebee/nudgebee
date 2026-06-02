@@ -37,14 +37,14 @@ func (m Oracle) ConfigSchema() core.IntegrationSchema {
 			core.IntegrationConfigName: {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Integration name",
-				Priority:    95,
+				Priority:    100,
 			},
 			core.AccountId: {
 				Type:             core.ToolSchemaTypeArray,
 				Description:      "Select Account",
 				Default:          "",
 				AutoGenerateFunc: "listAccounts",
-				Priority:         90,
+				Priority:         95,
 			},
 			// Connection fields
 			"host": {
@@ -70,7 +70,7 @@ func (m Oracle) ConfigSchema() core.IntegrationSchema {
 				Type:        core.ToolSchemaTypeBoolean,
 				Description: "Enable TLS encryption",
 				Default:     false,
-				Priority:    65,
+				Priority:    30,
 				IsTestable:  true,
 			},
 			// Credential fields

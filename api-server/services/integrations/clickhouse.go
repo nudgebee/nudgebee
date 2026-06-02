@@ -41,20 +41,20 @@ func (ch ClickHouse) ConfigSchema() core.IntegrationSchema {
 				Description: "Connection mode",
 				Default:     "k8s",
 				Enum:        []any{"k8s", "vm_agent"},
-				Priority:    100,
+				Priority:    90,
 				IsTestable:  true,
 			},
 			core.IntegrationConfigName: {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Integration name",
-				Priority:    95,
+				Priority:    100,
 			},
 			core.AccountId: {
 				Type:             core.ToolSchemaTypeArray,
 				Description:      "Select Account",
 				Default:          "",
 				AutoGenerateFunc: "listAccounts",
-				Priority:         90,
+				Priority:         95,
 			},
 			// K8s fields
 			"k8s_secret": {
@@ -62,7 +62,7 @@ func (ch ClickHouse) ConfigSchema() core.IntegrationSchema {
 				Description:  "Kubernetes secret containing CLICKHOUSE_DATABASE, CLICKHOUSE_HOST, CLICKHOUSE_USER, CLICKHOUSE_PASSWORD keys",
 				ShowWhen:     map[string]any{"connection_mode": "k8s"},
 				RequiredWhen: map[string]any{"connection_mode": "k8s"},
-				Priority:     80,
+				Priority:     84,
 				IsTestable:   true,
 			},
 			// Connection fields
@@ -70,7 +70,7 @@ func (ch ClickHouse) ConfigSchema() core.IntegrationSchema {
 				Type:         core.ToolSchemaTypeString,
 				Description:  "ClickHouse host (e.g. ch.example.com or 10.0.1.5)",
 				RequiredWhen: map[string]any{"connection_mode": "vm_agent"},
-				Priority:     80,
+				Priority:     82,
 				IsTestable:   true,
 			},
 			"port": {
