@@ -324,6 +324,18 @@ func handleApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logger
 		handleInsights(&actionPayload, c, tracer, meter, logger)
 	})
 
+	groupV2.POST("/product_updates", func(c *gin.Context) {
+		common.MetricsApiRequestsTotal(c.Request.Context(), "product_updates")
+		var actionPayload ActionRequest
+		err := c.ShouldBindJSON(&actionPayload)
+		if err != nil {
+			common.MetricsApiRequestsFailedTotal(c.Request.Context(), "product_updates", "invalid_json")
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		handleProductUpdates(&actionPayload, c, tracer, meter, logger)
+	})
+
 	groupV2.POST("/integration", func(c *gin.Context) {
 		common.MetricsApiRequestsTotal(c.Request.Context(), "integration")
 		var actionPayload ActionRequest

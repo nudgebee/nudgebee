@@ -5,6 +5,7 @@ import { Typography } from '@mui/material';
 import DOMPurify from 'dompurify';
 import { ds } from 'src/utils/colors';
 import { Button as DsButton } from '@ui/Button';
+import Chip from '@ui/Chip';
 import DsTooltip from '@ui/Tooltip';
 import { Divider as DsDivider } from '@ui/Divider';
 import { Banner } from '@ui/Banner';
@@ -56,6 +57,10 @@ import apiAccount from '@api1/account';
 import { useTenantBranding } from '@hooks/useTenantBranding';
 import { docsUrl } from '@lib/externalUrls';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import CampaignOutlinedIcon from '@mui/icons-material/CampaignOutlined';
+import CustomDrawer from '@shared/CustomDrawer';
+import ProductUpdatesDrawerContent from '@shared/widgets/ProductUpdatesDrawerContent';
+import { useProductUpdates } from '@hooks/useProductUpdates';
 
 const Header1 = ({ showBorder = false }) => {
   const { data } = useSession({ required: true });
@@ -65,6 +70,17 @@ const Header1 = ({ showBorder = false }) => {
   const selectedClusterRef = useRef(selectedCluster);
   selectedClusterRef.current = selectedCluster;
   const isAlertOpen = useRef(false);
+
+  const productUpdates = useProductUpdates();
+  const [updatesDrawerOpen, setUpdatesDrawerOpen] = useState(false);
+  const [updatesSeenSnapshot, setUpdatesSeenSnapshot] = useState(null);
+  const openProductUpdates = () => {
+    // Snapshot the pre-open high-water-mark so the drawer can still flag "New"
+    // items, then advance it to clear the unread badge.
+    setUpdatesSeenSnapshot(productUpdates.lastSeenAt);
+    setUpdatesDrawerOpen(true);
+    productUpdates.markAllSeen();
+  };
 
   const [anchorActiveTab, setAnchorActiveTab] = useState('');
   const [snackbarOpen, setSnackbarOpen] = useState(false);
@@ -963,6 +979,41 @@ const Header1 = ({ showBorder = false }) => {
               </Box>
               <DsDivider orientation='vertical' sx={{ minHeight: ds.space.mul(0, 16), marginLeft: 0, marginRight: 0 }} />
               <Box sx={{ display: 'flex', flexDirection: 'row', gap: ds.space[2] }}>
+                <Box sx={{ position: 'relative', display: 'inline-flex' }}>
+                  <DsButton
+                    composition='icon-only'
+                    tone='secondary'
+                    size='md'
+                    tooltip='Product Updates'
+                    tooltipPlacement='bottom'
+                    aria-label='Product Updates'
+                    icon={<CampaignOutlinedIcon fontSize='small' />}
+                    onClick={openProductUpdates}
+                    data-testid='product-updates-trigger'
+                  />
+                  {productUpdates.unreadCount > 0 && (
+                    <Box
+                      aria-hidden
+                      sx={{
+                        position: 'absolute',
+                        // Superscript: lift above the icon's top-right corner.
+                        top: '-6px',
+                        right: '-6px',
+                        pointerEvents: 'none',
+                      }}
+                    >
+                      <Chip
+                        variant='count'
+                        size='micro'
+                        tone='critical'
+                        solid
+                        count={productUpdates.unreadCount}
+                        // White ring so the count chip reads as a distinct superscript, not part of the icon.
+                        sx={{ boxShadow: '0 0 0 1.5px var(--ds-background-100)' }}
+                      />
+                    </Box>
+                  )}
+                </Box>
                 <DsButton
                   composition='icon-only'
                   tone='secondary'
@@ -994,6 +1045,21 @@ const Header1 = ({ showBorder = false }) => {
           </Box>
         </Box>
       </Box>
+      <CustomDrawer
+        open={updatesDrawerOpen}
+        onClose={() => setUpdatesDrawerOpen(false)}
+        title='Product Updates'
+        width='420px'
+        resizable={false}
+        variant='default'
+      >
+        <ProductUpdatesDrawerContent
+          updates={productUpdates.updates}
+          loading={productUpdates.loading}
+          error={productUpdates.error}
+          seenAt={updatesSeenSnapshot}
+        />
+      </CustomDrawer>
     </>
   );
 };
