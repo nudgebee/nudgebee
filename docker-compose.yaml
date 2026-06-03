@@ -12,7 +12,7 @@ volumes:
 services:
   # ---------- Infra ----------
   postgres:
-    image: postgres:16
+    image: ghcr.io/nudgebee/postgres:16
     networks: [nudgebee]
     restart: unless-stopped
     ports:
@@ -29,7 +29,7 @@ services:
       retries: 10
 
   rabbitmq:
-    image: rabbitmq:3-management
+    image: ghcr.io/nudgebee/rabbitmq:3-management
     networks: [nudgebee]
     restart: unless-stopped
     ports:
@@ -42,7 +42,7 @@ services:
       RABBITMQ_DEFAULT_PASS: guest
 
   redis:
-    image: redis:7-alpine
+    image: ghcr.io/nudgebee/redis:7-alpine
     networks: [nudgebee]
     restart: unless-stopped
     ports:
@@ -51,7 +51,7 @@ services:
       - redis_data:/data
 
   qdrant:
-    image: qdrant/qdrant:v1.16.0
+    image: ghcr.io/nudgebee/qdrant:v1.16.0
     networks: [nudgebee]
     restart: unless-stopped
     ports:
