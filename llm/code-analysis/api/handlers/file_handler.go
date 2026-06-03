@@ -77,6 +77,10 @@ func (h *FileHandler) getWorkspaceDir(conversationID string) string {
 // resolvePath resolves the requested path relative to the workspace directory
 // and ensures it doesn't escape the workspace
 func (h *FileHandler) resolvePath(requestedPath, conversationID string) (string, error) {
+	if conversationID != "" && !safePathRe.MatchString(conversationID) {
+		return "", fmt.Errorf("invalid conversation ID format")
+	}
+
 	workspaceDir := h.getWorkspaceDir(conversationID)
 
 	// Clean the requested path
@@ -103,6 +107,21 @@ func (h *FileHandler) resolvePath(requestedPath, conversationID string) (string,
 	}
 	if strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
 		return "", fmt.Errorf("path outside workspace")
+	}
+
+	// Defense in depth against symlink-based traversal: filepath.Rel is purely lexical,
+	// so a symlink inside workspaceDir that points outside would bypass the check above.
+	// Resolve symlinks and re-check containment. Tolerate ENOENT for paths that don't yet
+	// exist (callers like file-create rely on resolving the parent only).
+	if resolved, evalErr := filepath.EvalSymlinks(fullPath); evalErr == nil {
+		resolvedWorkspace, wsErr := filepath.EvalSymlinks(workspaceDir)
+		if wsErr != nil {
+			resolvedWorkspace = workspaceDir
+		}
+		relResolved, relErr := filepath.Rel(resolvedWorkspace, resolved)
+		if relErr != nil || strings.HasPrefix(relResolved, "..") || strings.HasPrefix(relResolved, "/") {
+			return "", fmt.Errorf("path outside workspace")
+		}
 	}
 
 	return fullPath, nil

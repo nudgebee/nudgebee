@@ -14,6 +14,38 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
+func TestValidateURL_SSRFProtection(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{"loopback IPv4", "http://127.0.0.1/admin", true},
+		{"loopback hostname", "http://localhost/admin", true},
+		{"private 10.x", "http://10.0.0.1/secret", true},
+		{"private 192.168.x", "http://192.168.1.1/", true},
+		{"link-local metadata", "http://169.254.169.254/latest/meta-data/", true},
+		{"unspecified 0.0.0.0", "http://0.0.0.0/", true},
+		{"IPv6 loopback", "http://[::1]/", true},
+		{"empty hostname", "http:///path", true},
+		{"non-http scheme", "ftp://example.com/file", true},
+		{"no scheme", "example.com", true},
+		{"valid external https", "https://example.com/", false},
+		{"valid external http", "http://example.com/", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateURL(tt.url)
+			if tt.wantErr {
+				assert.Error(t, err, "expected validateURL to reject %q", tt.url)
+			} else {
+				assert.NoError(t, err, "expected validateURL to allow %q", tt.url)
+			}
+		})
+	}
+}
+
 // newTestToolContext creates a minimal NbToolContext for tool-level tests.
 func newTestToolContext(t *testing.T, tool core.NBTool, query string) core.NbToolContext {
 	t.Helper()
