@@ -1,0 +1,6 @@
+user_prompt: Unsubscribe an endpoint from an SNS topic.
+expected_output:
+- aws sns unsubscribe --subscription-arn <subscription-arn>
+tags:
+- command
+- aws

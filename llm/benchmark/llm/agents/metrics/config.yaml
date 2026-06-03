@@ -1,0 +1,10 @@
+# Metrics capability benchmark configuration.
+#
+# Targets the Tier-1 'metrics' agent — the provider-agnostic wrapper that
+# routes to whichever metrics provider (Prometheus, Datadog, etc.) is
+# configured at run time. The fixtures here ship the Prometheus baseline;
+# Datadog / other provider coverage is exercised through Nubi orchestrator
+# fixtures rather than provider-specific dirs.
+agent: metrics
+tool_names:
+  - prometheus_execute

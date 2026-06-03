@@ -1,0 +1,6 @@
+user_prompt: List objects in an S3 bucket.
+expected_output:
+- aws s3 ls s3://bucket-name
+tags:
+- command
+- aws

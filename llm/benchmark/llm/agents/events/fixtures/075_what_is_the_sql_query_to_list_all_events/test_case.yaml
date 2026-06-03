@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to list all events whose type is Warning?
+expected_output:
+- SELECT id, title, starts_at, status, priority, subject_node  FROM events  WHERE
+  type = 'Warning';
+- SELECT * FROM events WHERE type = 'Warning';
+tags:
+- command
+- events

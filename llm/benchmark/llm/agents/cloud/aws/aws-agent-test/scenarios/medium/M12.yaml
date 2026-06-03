@@ -1,0 +1,156 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M12: ALB health check on management port while app crashes on main port.
+  User complaint: "ALB 'm12-payment-alb' shows all targets as healthy, but actual
+  requests get 502 Bad Gateway. If targets are healthy, why are requests failing?"
+  Root cause: Health check is configured on port 8080 (management/metrics port)
+  which always returns 200. The actual application on port 3000 is crashing.
+  Health check passes on wrong port, masking the real failure.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Health check uses port 8080 (management), app crashes on port 3000.
+      Fixed = Health check uses port 3000 (actual app port).
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for payment service instances
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: m12-payment-sg
+
+  PaymentInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}'
+      SubnetId: !ImportValue aws-agent-test-public-subnet-a
+      SecurityGroupIds:
+        - !Ref InstanceSecurityGroup
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          yum install -y python3
+
+          # Management port (8080) - always healthy
+          cat > /tmp/mgmt_server.py << 'MGMT'
+          from http.server import HTTPServer, BaseHTTPRequestHandler
+          class Handler(BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.send_response(200)
+                  self.end_headers()
+                  self.wfile.write(b'{"status": "healthy"}')
+              def log_message(self, format, *args): pass
+          HTTPServer(('', 8080), Handler).serve_forever()
+          MGMT
+          python3 /tmp/mgmt_server.py &
+
+          # App port (3000) - crashes immediately (simulating broken app)
+          cat > /tmp/app_server.py << 'APP'
+          import sys
+          print("FATAL: Payment processor failed to initialize - missing STRIPE_API_KEY")
+          sys.exit(1)
+          APP
+          python3 /tmp/app_server.py || true
+      Tags:
+        - Key: Name
+          Value: m12-payment-server-01
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: payment-service
+
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: m12-payment-alb
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !ImportValue aws-agent-test-public-subnet-a
+        - !ImportValue aws-agent-test-public-subnet-b
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: m12-payment-alb
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ALB security group
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: m12-payment-alb-sg
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: m12-payment-tg
+      Port: 3000
+      Protocol: HTTP
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      TargetType: instance
+      # THE BUG: Health check on management port (8080) instead of app port (3000)
+      HealthCheckPort: !If [IsFixed, '3000', '8080']
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 15
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Targets:
+        - Id: !Ref PaymentInstance
+          Port: 3000
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+Outputs:
+  ALBDNSName:
+    Description: ALB DNS Name
+    Value: !GetAtt ALB.DNSName
+  TargetGroupArn:
+    Description: Target Group ARN
+    Value: !Ref TargetGroup
+  HealthCheckPort:
+    Description: Health check port configured
+    Value: !If [IsFixed, '3000', '8080']
+  AppPort:
+    Description: Actual application port
+    Value: '3000'
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

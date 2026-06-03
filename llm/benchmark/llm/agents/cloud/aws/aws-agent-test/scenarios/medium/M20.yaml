@@ -1,0 +1,214 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M20: ALB health check path mismatch for ECS service.
+  User complaint: "Our ECS service 'm20-api-svc' on cluster 'm20-api-cluster' keeps
+  showing 0 healthy targets behind ALB 'm20-api-alb'. Containers start fine and
+  logs show the app is running, but ALB returns 502. Tasks keep getting drained
+  and replaced."
+  Root cause: ALB health check path is set to '/health' but the application only
+  responds on '/healthz'. The health check returns 404, ALB marks targets unhealthy,
+  and ECS drains and replaces them in a loop.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Health check path '/health' but app serves '/healthz'.
+      Fixed = Health check path matches app path '/healthz'.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ALB security group
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: m20-api-alb-sg
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ECS task security group
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: m20-task-sg
+
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: m20-api-cluster
+      Tags:
+        - Key: Name
+          Value: m20-api-cluster
+        - Key: Environment
+          Value: production
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/m20-api-svc
+      RetentionInDays: 7
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m20-task-exec-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: m20-api-svc
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: api
+          # Use a simple Python HTTP server that only responds on /healthz
+          Image: public.ecr.aws/amazonlinux/amazonlinux:2023
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
+          Command:
+            - /bin/sh
+            - -c
+            - |
+              python3 -c "
+              from http.server import HTTPServer, BaseHTTPRequestHandler
+              import json
+              class H(BaseHTTPRequestHandler):
+                  def do_GET(self):
+                      if self.path == '/healthz':
+                          self.send_response(200)
+                          self.end_headers()
+                          self.wfile.write(b'{\"status\":\"ok\"}')
+                      else:
+                          self.send_response(404)
+                          self.end_headers()
+                          self.wfile.write(b'{\"error\":\"not found\"}')
+                  def log_message(self, *a): pass
+              HTTPServer(('0.0.0.0', 8080), H).serve_forever()
+              "
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref 'AWS::Region'
+              awslogs-stream-prefix: ecs
+
+  ALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: m20-api-alb
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !ImportValue aws-agent-test-public-subnet-a
+        - !ImportValue aws-agent-test-public-subnet-b
+      SecurityGroups:
+        - !Ref ALBSecurityGroup
+      Tags:
+        - Key: Name
+          Value: m20-api-alb
+
+  # THE BUG: Health check path is '/health' but app only responds on '/healthz'
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: m20-api-tg
+      Port: 8080
+      Protocol: HTTP
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      TargetType: ip
+      HealthCheckPath: !If [IsFixed, '/healthz', '/health']
+      HealthCheckPort: '8080'
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Matcher:
+        HttpCode: '200'
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ALB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  EcsService:
+    Type: AWS::ECS::Service
+    DependsOn: ALBListener
+    Properties:
+      ServiceName: m20-api-svc
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 2
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref TaskSecurityGroup
+          Subnets:
+            - !ImportValue aws-agent-test-public-subnet-a
+            - !ImportValue aws-agent-test-public-subnet-b
+      LoadBalancers:
+        - ContainerName: api
+          ContainerPort: 8080
+          TargetGroupArn: !Ref TargetGroup
+      HealthCheckGracePeriodSeconds: 30
+
+Outputs:
+  ClusterName:
+    Description: ECS Cluster Name
+    Value: !Ref EcsCluster
+  ServiceName:
+    Description: ECS Service Name
+    Value: m20-api-svc
+  ALBDnsName:
+    Description: ALB DNS Name
+    Value: !GetAtt ALB.DNSName
+  HealthCheckPath:
+    Description: ALB health check path (mismatched in Broken mode)
+    Value: !If [IsFixed, '/healthz', '/health']
+  AppHealthPath:
+    Description: Actual app health endpoint
+    Value: /healthz
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

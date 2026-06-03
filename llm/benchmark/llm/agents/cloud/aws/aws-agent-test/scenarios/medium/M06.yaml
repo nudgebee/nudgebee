@@ -1,0 +1,133 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M06: API Gateway 429 due to extremely low stage-level throttle.
+  User complaint: "All API endpoints return 429 even with very low traffic."
+  Root cause: Stage default throttle set to 1 req/s, 1 burst - any traffic hits it.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Stage throttle 1 req/s, burst 1 - fires on any real traffic.
+      Fixed = Stage throttle 1000 req/s, burst 2000.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m06-product-api-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  ProductApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: m06-product-api
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          import json
+          def handler(event, context):
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({'products': [{'id': 1, 'name': 'Widget', 'price': 9.99}]})
+              }
+      Tags:
+        - Key: Name
+          Value: m06-product-api
+        - Key: Environment
+          Value: production
+
+  ProductApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ProductApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+
+  RestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: m06-product-catalog-api
+      Description: Product catalog REST API
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  ProductsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref RestApi
+      ParentId: !GetAtt RestApi.RootResourceId
+      PathPart: products
+
+  ProductsGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref RestApi
+      ResourceId: !Ref ProductsResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductApiFunction.Arn}/invocations'
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: ProductsGetMethod
+    Properties:
+      RestApiId: !Ref RestApi
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref RestApi
+      DeploymentId: !Ref ApiDeployment
+      StageName: prod
+      # THE BUG: Stage default throttle is 1 req/s, 1 burst - fires immediately
+      # Even individual routes look fine in MethodSettings, but the stage default
+      # throttle applies to ALL routes and overrides when set this low
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          ThrottlingRateLimit: !If [IsFixed, 1000, 1]
+          ThrottlingBurstLimit: !If [IsFixed, 2000, 1]
+
+Outputs:
+  ApiId:
+    Description: API Gateway REST API ID
+    Value: !Ref RestApi
+  ApiUrl:
+    Description: API Gateway URL
+    Value: !Sub 'https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/prod/products'
+  StageName:
+    Description: Stage Name
+    Value: !Ref ApiStage
+  ThrottleRate:
+    Description: Stage throttle rate (req/s)
+    Value: !If [IsFixed, '1000', '1']
+  ThrottleBurst:
+    Description: Stage throttle burst
+    Value: !If [IsFixed, '2000', '1']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

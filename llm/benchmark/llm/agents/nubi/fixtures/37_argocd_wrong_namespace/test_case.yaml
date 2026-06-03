@@ -1,0 +1,13 @@
+# Requires: ArgoCD installed with the demo-app application deployed
+# and ARGOCD_AUTH_TOKEN env var configured for the running agent.
+user_prompt: "what's wrong with the argocd app `demo-app`?"
+expected_output: "`my-demoshop-namespaces` should be `my-demoshop-namespace`"
+evaluation:
+  # Often Nubi does not suggest the correct namespace even if it consistently identify the namespace is wrong
+  correctness: 0
+tags:
+  - hard
+  - kubernetes
+
+skip: true
+skip_reason: "Requires ArgoCD with ARGOCD_AUTH_TOKEN and pre-configured demo-app"

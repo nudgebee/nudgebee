@@ -1,0 +1,7 @@
+user_prompt: Create a CodeDeploy deployment group.
+expected_output:
+- aws codedeploy create-deployment-group --application-name <application-name> --deployment-group-name
+  <deployment-group-name> --service-role-arn <service-role-arn>
+tags:
+- command
+- aws

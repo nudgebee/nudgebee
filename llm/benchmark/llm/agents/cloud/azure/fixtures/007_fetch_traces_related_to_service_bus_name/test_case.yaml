@@ -1,0 +1,9 @@
+user_prompt: Fetch traces related to Service Bus namespace nudgebee-dev-azure-service-bus.
+expected_output:
+- az monitor metrics list --resource nudgebee-dev-azure-service-bus --resource-type
+  Microsoft.ServiceBus/namespaces --resource-group NUDGEBEE-DEV_GROUP --metric "IncomingMessages"
+  "OutgoingMessages" "ActiveMessages" --output table
+type: command
+tags:
+- command
+- azure

@@ -1,0 +1,15 @@
+user_prompt: Our S3 static website bucket returns 403 Forbidden on all requests. The
+  bucket has website hosting enabled and we added a bucket policy allowing public
+  s3:GetObject. The website URL is correct. Why are all requests getting 403?
+expected_output:
+- 'The root cause is that S3 Block Public Access (BPA) is enabled on the bucket, overriding
+  the bucket policy. Even though the bucket policy allows s3:GetObject for Principal
+  ''*'', BPA blocks all public access at a higher level. Check: aws s3api get-public-access-block
+  --bucket <bucket-name>. All four BPA settings are true: BlockPublicAcls, BlockPublicPolicy,
+  IgnorePublicAcls, RestrictPublicBuckets. BPA takes precedence over bucket policies
+  — when enabled, any policy granting public access is effectively ignored. The fix
+  is to disable Block Public Access: aws s3api delete-public-access-block --bucket
+  <bucket-name>, then verify the bucket policy allows public read.'
+tags:
+- command
+- aws

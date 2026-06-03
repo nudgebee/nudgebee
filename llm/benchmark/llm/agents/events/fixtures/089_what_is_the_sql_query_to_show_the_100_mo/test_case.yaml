@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to show the 100 most recent events?
+expected_output:
+- SELECT id, title, starts_at, status, priority, subject_node FROM events ORDER BY
+  starts_at DESC LIMIT 100;
+- SELECT * FROM events ORDER BY starts_at DESC LIMIT 100;
+tags:
+- command
+- events

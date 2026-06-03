@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to show the top 5 most frequent aggregation keys
+  for firing events?
+expected_output:
+- SELECT aggregation_key, COUNT(*) AS frequency   FROM events   WHERE status = 'FIRING'   GROUP
+  BY aggregation_key   ORDER BY frequency DESC   LIMIT 5;
+tags:
+- command
+- events

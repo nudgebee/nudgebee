@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "💬 General questions / contact"
+    url: mailto:contact@nudgebee.com
+    about: "For general questions, partnership inquiries, or anything that doesn't fit the bug/feature/spike templates."
+  - name: "🛠 Contribution / OSS questions"
+    url: mailto:dev@nudgebee.com
+    about: "For questions about contributing, OSS roadmap, or starting your first PR."
+  - name: "🔒 Report a security vulnerability"
+    url: mailto:security@nudgebee.com
+    about: "Please do NOT open a public issue for security vulnerabilities. Email us directly. See SECURITY.md for the disclosure policy."
+  - name: "📜 Code of Conduct concerns"
+    url: mailto:legal@nudgebee.com
+    about: "Report Code of Conduct violations or other community concerns. See CODE_OF_CONDUCT.md."

@@ -1,0 +1,6 @@
+user_prompt: Create an RDS instance.
+expected_output:
+- aws rds create-db-instance
+tags:
+- command
+- aws

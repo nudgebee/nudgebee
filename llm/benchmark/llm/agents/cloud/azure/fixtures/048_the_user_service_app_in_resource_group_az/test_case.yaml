@@ -1,0 +1,19 @@
+user_prompt: The user service App Service in resource group 'azure-agent-test-H04' is
+  failing on startup. It cannot read secrets from Key Vault and also cannot connect
+  to the database. The app has a managed identity enabled and all resources exist.
+  What are the root causes?
+expected_output:
+- 'Two independent root causes found: (1) The App Service managed identity has no
+  RBAC role assignment on the Key Vault. The Key Vault uses RBAC authorization, so
+  the identity needs the ''Key Vault Secrets User'' role to read secrets. (2) The
+  DB_HOST app setting points to ''h04sql-old-decommissioned.database.windows.net''
+  which is a non-existent server. The actual SQL server in the resource group has a
+  different name. Fix: Assign Key Vault Secrets User role to the App Service managed
+  identity on the Key Vault, and update DB_HOST to the correct SQL server FQDN.'
+agent: azure_debug
+scenario: H04
+type: rca
+tags:
+- rca
+- hard
+- azure

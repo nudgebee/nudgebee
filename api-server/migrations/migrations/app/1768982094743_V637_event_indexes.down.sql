@@ -1,0 +1,28 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- -- For namespace filter (subject_namespace)
+-- CREATE INDEX  idx_events_tenant_account_namespace
+-- ON events (tenant, cloud_account_id, subject_namespace)
+-- WHERE subject_namespace IS NOT NULL AND subject_namespace != '';
+--
+-- -- For workload filter (subject_owner)
+-- CREATE INDEX  idx_events_tenant_account_owner
+-- ON events (tenant, cloud_account_id, subject_owner)
+-- WHERE subject_owner IS NOT NULL AND subject_owner != '';
+--
+-- -- For cluster filter
+-- CREATE INDEX  idx_events_tenant_account_cluster
+-- ON events (tenant, cloud_account_id, cluster)
+-- WHERE cluster IS NOT NULL AND cluster != '';
+--
+-- -- For priority filter
+-- CREATE INDEX  idx_events_tenant_account_priority
+-- ON events (tenant, cloud_account_id, priority)
+-- WHERE priority IS NOT NULL;
+--
+-- -- Priority 2: For label queries (expensive JSONB operations)
+--
+-- -- GIN index for label_key extraction
+-- CREATE INDEX  idx_events_labels_gin
+-- ON events USING GIN (labels jsonb_path_ops)
+-- WHERE labels IS NOT NULL AND labels != '{}'::jsonb;

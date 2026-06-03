@@ -1,0 +1,8 @@
+user_prompt: Create an SQL query to delete all 'INFO' or 'DEBUG' priority events that
+  are older than 7 days.
+expected_output:
+- DELETE FROM events WHERE priority IN ('INFO', 'DEBUG') AND starts_at < NOW() - INTERVAL
+  '7 days';
+tags:
+- command
+- events

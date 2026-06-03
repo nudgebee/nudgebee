@@ -1,0 +1,173 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M14: Lambda in VPC can't reach S3 — no VPC Gateway Endpoint.
+  User complaint: "Lambda 'm14-data-processor' in VPC times out when calling S3
+  operations. It can reach external APIs fine via NAT Gateway, but S3 calls
+  specifically are extremely slow or timeout."
+  Root cause: No S3 VPC Gateway Endpoint exists. S3 traffic goes through NAT
+  Gateway (expensive, bandwidth-limited) instead of the free, high-throughput
+  VPC Gateway Endpoint. Under load, NAT Gateway bandwidth is exhausted and
+  S3 operations timeout.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = No S3 VPC Gateway Endpoint; S3 traffic routes through NAT.
+      Fixed = S3 VPC Gateway Endpoint added to route table.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  # Scenario-specific private subnet
+  DataProcessorSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      CidrBlock: 10.0.214.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: m14-data-processor-private
+
+  DataProcessorRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      Tags:
+        - Key: Name
+          Value: m14-data-processor-rt
+
+  DataProcessorNatRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref DataProcessorRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !ImportValue aws-agent-test-nat-gateway-id
+
+  DataProcessorSubnetAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref DataProcessorSubnet
+      RouteTableId: !Ref DataProcessorRouteTable
+
+  # THE FIX: S3 VPC Gateway Endpoint (only in Fixed mode)
+  S3VpcEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: IsFixed
+    Properties:
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref DataProcessorRouteTable
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for data processor Lambda
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: m14-data-processor-sg
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m14-data-processor-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: s3-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::m14-data-bucket-${AWS::AccountId}'
+                  - !Sub 'arn:aws:s3:::m14-data-bucket-${AWS::AccountId}/*'
+
+  DataBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'm14-data-bucket-${AWS::AccountId}'
+      Tags:
+        - Key: Name
+          Value: m14-data-bucket
+
+  DataProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: m14-data-processor
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      MemorySize: 512
+      VpcConfig:
+        SubnetIds:
+          - !Ref DataProcessorSubnet
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref DataBucket
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+
+          s3 = boto3.client('s3')
+          bucket = os.environ['BUCKET_NAME']
+
+          def handler(event, context):
+              try:
+                  # This S3 call goes through NAT (slow) instead of VPC endpoint (fast)
+                  s3.put_object(
+                      Bucket=bucket,
+                      Key='test/output.json',
+                      Body=json.dumps({'processed': True})
+                  )
+                  return {'statusCode': 200, 'body': 'Success'}
+              except Exception as e:
+                  return {'statusCode': 500, 'body': str(e)}
+      Tags:
+        - Key: Name
+          Value: m14-data-processor
+        - Key: Environment
+          Value: production
+
+Outputs:
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref DataProcessorFunction
+  BucketName:
+    Description: S3 Bucket
+    Value: !Ref DataBucket
+  HasS3Endpoint:
+    Description: Whether S3 VPC Gateway Endpoint exists
+    Value: !If [IsFixed, 'Yes', 'No — S3 traffic routes through NAT']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

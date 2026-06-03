@@ -1,0 +1,938 @@
+{
+  "InsightSummary": {
+    "data": {
+      "data": {
+        "insights_list": {
+          "rows": [
+            {
+              "account_id": "ff87fbfd-5729-4474-b9d6-96beb693e3fd",
+              "unique_id": "4",
+              "title": "Frequent Restarts",
+              "id": "6376c076-b775-442a-93a1-a93debcaa098",
+              "applications": [
+                {
+                  "name": "notifications",
+                  "namespace": "nudgebee"
+                }
+              ],
+              "type": "Troubleshooting",
+              "rule": {
+                "type": "Prometheus",
+                "with": "",
+                "query": "(sum(increase(kube_pod_container_status_restarts_total[10m])) by (pod, namespace)) > 0",
+                "range": -1,
+                "source": "Prometheus",
+                "filters": [],
+                "category": "Troubleshooting",
+                "distinct": "",
+                "threshold": 1,
+                "unique_id": "4",
+                "view_name": "",
+                "grouped_by": ["application"],
+                "range_unit": "DAY",
+                "ui_filters": [
+                  {
+                    "name": "aggregation_key",
+                    "value": "report_crash_loop"
+                  }
+                ],
+                "subcategory": "Events",
+                "account_column": "",
+                "insight_format": "Frequent Restarts",
+                "aggregate_column": "",
+                "resource_id_column_name": ""
+              }
+            },
+            {
+              "account_id": "ff87fbfd-5729-4474-b9d6-96beb693e3fd",
+              "unique_id": "3",
+              "title": "Frequent Log Errors",
+              "id": "cc8ecfd7-3819-4aa2-89ba-dc73abdc3ccc",
+              "applications": [
+                {
+                  "name": "clickhouse-shard0",
+                  "namespace": "clickhouse"
+                },
+                {
+                  "name": "ingress-nginx-controller",
+                  "namespace": "ingress-nginx"
+                },
+                {
+                  "name": "app-prod",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "auto-pilot-worker",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "cloud-collector-server",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "webapp",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "k8s-collector",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "notifications",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "nudgebee-doc-docs",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "rag-server",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "services-server",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "rabbitmq",
+                  "namespace": "rabbit"
+                }
+              ],
+              "type": "Troubleshooting",
+              "rule": {
+                "type": "Prometheus",
+                "with": "",
+                "query": "topk(5, sum(increase(container_log_messages_total{level=~\"error|critical\", container_id!~\".*(prometheus|grafana|kube-system|nudgebee-agent|containerd|kubelet|keda|actions-runner-system-1).*\"}[5m])) by (container_id))",
+                "range": -1,
+                "source": "Prometheus",
+                "filters": [],
+                "category": "Troubleshooting",
+                "distinct": "",
+                "threshold": 1,
+                "unique_id": "3",
+                "view_name": "",
+                "grouped_by": ["application"],
+                "range_unit": "DAY",
+                "ui_filters": [],
+                "subcategory": "LogGroup",
+                "account_column": "",
+                "insight_format": "Frequent Log Errors",
+                "aggregate_column": "",
+                "resource_id_column_name": ""
+              }
+            },
+            {
+              "account_id": "ff87fbfd-5729-4474-b9d6-96beb693e3fd",
+              "unique_id": "2",
+              "title": "API Error Rate (>50%)",
+              "id": "76dc986f-eca4-499d-8ae3-fcc131cf9572",
+              "applications": [
+                {
+                  "name": "app-prod",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "ecr-proxy-server",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "nudgebee-doc-docs",
+                  "namespace": "nudgebee"
+                }
+              ],
+              "type": "Troubleshooting",
+              "rule": {
+                "type": "Prometheus",
+                "with": "",
+                "query": "(sum by (destination_workload_name, destination_workload_namespace)( increase(container_http_requests_total{destination_workload_name!~\"(kubernetes)\", destination_workload_namespace!~\"(external|node)\", status=~\"5..|4..\"}[5m]) ) / sum by (destination_workload_name, destination_workload_namespace)( increase(container_http_requests_total{destination_workload_name!~\"(kubernetes)\", destination_workload_namespace!~\"(external|node)\"}[5m]) ) ) > 0.50",
+                "range": -1,
+                "source": "Prometheus",
+                "filters": [],
+                "category": "Troubleshooting",
+                "distinct": "",
+                "threshold": 0.5,
+                "unique_id": "2",
+                "view_name": "",
+                "grouped_by": ["application"],
+                "range_unit": "DAY",
+                "ui_filters": [
+                  {
+                    "name": "status_code",
+                    "value": "error"
+                  }
+                ],
+                "subcategory": "Trace",
+                "account_column": "",
+                "insight_format": "API Error Rate (>50%)",
+                "aggregate_column": "",
+                "resource_id_column_name": ""
+              }
+            },
+            {
+              "account_id": "ff87fbfd-5729-4474-b9d6-96beb693e3fd",
+              "unique_id": "17",
+              "title": "1 workload has Critical/High security vulnerabilities",
+              "id": "691e7dec-550e-44a1-9e4f-5f7010203b29",
+              "applications": null,
+              "type": "Ops",
+              "rule": {
+                "type": "Ratio",
+                "with": "WITH pod_container AS ( SELECT cr.workload_name AS workload_name, cr.workload_type AS workload_type, cr.\"namespace\" AS \"namespace\", cr.cloud_account_id AS cloud_account_id, container ->> 'image'::text AS image, cr.tenant_id AS tenant_id FROM k8s_pods cr, LATERAL jsonb_array_elements(cr.meta->'config'->'containers') AS container WHERE cr.is_active IS NOT FALSE GROUP BY cr.workload_name, cr.workload_type, cr.\"namespace\", cr.cloud_account_id, cr.tenant_id, container ->> 'image'::text ), workload_security_issues as ( SELECT COUNT(DISTINCT cr.workload_name || '-' || cr.\"namespace\") * 1.0 AS workload_namespace_count, r.cloud_account_id as cloud_account_id, r.tenant_id as tenant_id FROM pod_container cr RIGHT OUTER JOIN recommendation r ON r.category = 'Security' AND r.rule_name = 'image_scan' AND r.account_object_id IS NOT NULL AND r.cloud_account_id = cr.cloud_account_id AND r.tenant_id = cr.tenant_id AND r.recommendation->> 'image_name'::text = cr.image WHERE r.severity IN ('Critical', 'High') group by r.cloud_account_id, r.tenant_id )",
+                "query": "",
+                "range": 7,
+                "source": "Recommendation",
+                "filters": null,
+                "category": "Ops",
+                "distinct": "",
+                "threshold": 0,
+                "unique_id": "17",
+                "view_name": "workload_security_issues",
+                "grouped_by": ["cloud_account_id", "tenant_id"],
+                "range_unit": "DAY",
+                "ui_filters": null,
+                "subcategory": "",
+                "account_column": "cloud_account_id",
+                "insight_format": "{} workload has Critical/High security vulnerabilities",
+                "aggregate_column": "",
+                "resource_id_column_name": ""
+              }
+            },
+            {
+              "account_id": "ff87fbfd-5729-4474-b9d6-96beb693e3fd",
+              "unique_id": "16",
+              "title": "45 workload can be right sized",
+              "id": "b25ba24d-0d98-475a-89c2-0f358625617c",
+              "applications": null,
+              "type": "Optimization",
+              "rule": {
+                "type": "Addition",
+                "with": "",
+                "query": "",
+                "range": -1,
+                "source": "Recommendation",
+                "filters": [
+                  {
+                    "value": "pod_right_sizing",
+                    "column": "rule_name",
+                    "operator": "="
+                  },
+                  {
+                    "value": "RightSizing",
+                    "column": "category",
+                    "operator": "="
+                  },
+                  {
+                    "value": "Open",
+                    "column": "status",
+                    "operator": "="
+                  }
+                ],
+                "category": "Optimization",
+                "distinct": "",
+                "threshold": 0,
+                "unique_id": "16",
+                "view_name": "",
+                "grouped_by": null,
+                "range_unit": "DAY",
+                "ui_filters": null,
+                "subcategory": "",
+                "account_column": "cloud_account_id",
+                "insight_format": "{} workload can be right sized",
+                "aggregate_column": "",
+                "resource_id_column_name": ""
+              }
+            },
+            {
+              "account_id": "ff87fbfd-5729-4474-b9d6-96beb693e3fd",
+              "unique_id": "15",
+              "title": "7 persistent volume seems to be abandoned",
+              "id": "3eb4237d-69d0-48a3-b743-abd8cf90e0e1",
+              "applications": null,
+              "type": "Optimization",
+              "rule": {
+                "type": "Addition",
+                "with": "",
+                "query": "",
+                "range": -1,
+                "source": "Recommendation",
+                "filters": [
+                  {
+                    "value": "unused_pvc",
+                    "column": "rule_name",
+                    "operator": "="
+                  },
+                  {
+                    "value": "Open",
+                    "column": "status",
+                    "operator": "="
+                  }
+                ],
+                "category": "Optimization",
+                "distinct": "",
+                "threshold": 0,
+                "unique_id": "15",
+                "view_name": "",
+                "grouped_by": null,
+                "range_unit": "DAY",
+                "ui_filters": null,
+                "subcategory": "",
+                "account_column": "cloud_account_id",
+                "insight_format": "{} persistent volume seems to be abandoned",
+                "aggregate_column": "",
+                "resource_id_column_name": ""
+              }
+            },
+            {
+              "account_id": "ff87fbfd-5729-4474-b9d6-96beb693e3fd",
+              "unique_id": "11",
+              "title": "High Cluster Allocation, 93% memory is allocated",
+              "id": "79c481ea-53b1-40e2-848b-335279e594c2",
+              "applications": null,
+              "type": "Ratio",
+              "rule": {
+                "type": "Ratio",
+                "with": "with resource_allocation as ( select crm2.cloud_account_id, crm2.tenant_id, sum(case when crm2.metric = 'memory_capacity' then crm2.value else 0 end) as memory_capacity, sum(case when crm2.metric = 'cpu_capacity' then crm2.value else 0 end) as cpu_capacity, sum(case when crm2.metric = 'memory_allocated' then crm2.value else 0 end) as memory_allocated , sum(case when crm2.metric = 'cpu_allocated' then crm2.value else 0 end) as cpu_allocated, row_number() over (partition by crm2.cloud_account_id order by crm2.timestamp desc) as rn from k8s_nodes ksn2 inner join cloud_resource_metrics crm2 on ksn2.cloud_resource_id = crm2.cloud_resource_id where ksn2.is_active is not false group by crm2.timestamp, crm2.cloud_account_id, crm2.tenant_id ), resorce_utilization_percent as ( select (case when memory_capacity > 0 then memory_allocated / memory_capacity * 100 else 0 end) as memory_utilize_percent, cloud_account_id, tenant_id from resource_allocation where rn = 1 )",
+                "range": 7,
+                "source": "Metric",
+                "filters": null,
+                "distinct": "",
+                "threshold": 90,
+                "unique_id": "11",
+                "view_name": "resorce_utilization_percent",
+                "grouped_by": ["cloud_account_id", "tenant_id"],
+                "range_unit": "DAY",
+                "account_column": "cloud_account_id",
+                "insight_format": "High Cluster Allocation, {}%% memory is allocated",
+                "aggregate_column": "sum(memory_utilize_percent)",
+                "resource_id_column_name": ""
+              }
+            },
+            {
+              "account_id": "ff87fbfd-5729-4474-b9d6-96beb693e3fd",
+              "unique_id": "12",
+              "title": "High Cluster Allocation, 90% cpu is allocated",
+              "id": "229e3299-40f3-4810-91cd-494e331f68ff",
+              "applications": null,
+              "type": "Ratio",
+              "rule": {
+                "type": "Ratio",
+                "with": "with resource_allocation as ( select crm2.cloud_account_id, crm2.tenant_id, sum(case when crm2.metric = 'memory_capacity' then crm2.value else 0 end) as memory_capacity, sum(case when crm2.metric = 'cpu_capacity' then crm2.value else 0 end) as cpu_capacity, sum(case when crm2.metric = 'memory_allocated' then crm2.value else 0 end) as memory_allocated , sum(case when crm2.metric = 'cpu_allocated' then crm2.value else 0 end) as cpu_allocated, row_number() over (partition by crm2.cloud_account_id order by crm2.timestamp desc) as rn from k8s_nodes ksn2 inner join cloud_resource_metrics crm2 on ksn2.cloud_resource_id = crm2.cloud_resource_id where ksn2.is_active is not false group by crm2.timestamp, crm2.cloud_account_id, crm2.tenant_id ), resorce_utilization_percent as ( select (case when cpu_capacity > 0 then cpu_allocated / cpu_capacity * 100 else 0 end) as cpu_utilize_percent, cloud_account_id, tenant_id from resource_allocation where rn = 1 )",
+                "range": 7,
+                "source": "Metric",
+                "filters": null,
+                "distinct": "",
+                "threshold": 90,
+                "unique_id": "12",
+                "view_name": "resorce_utilization_percent",
+                "grouped_by": ["cloud_account_id", "tenant_id"],
+                "range_unit": "DAY",
+                "account_column": "cloud_account_id",
+                "insight_format": "High Cluster Allocation, {}%% cpu is allocated",
+                "aggregate_column": "sum(cpu_utilize_percent)",
+                "resource_id_column_name": ""
+              }
+            },
+            {
+              "account_id": "ff87fbfd-5729-4474-b9d6-96beb693e3fd",
+              "unique_id": "9",
+              "title": "Low Cluster Allocation, 100% memory is available",
+              "id": "9332dc82-a999-4881-b70c-21ff2c277333",
+              "applications": [
+                {
+                  "name": "app-prod",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "aws-node",
+                  "namespace": "kube-system"
+                },
+                {
+                  "name": "clickhouse-shard0",
+                  "namespace": "clickhouse"
+                },
+                {
+                  "name": "clickhouse-shard1",
+                  "namespace": "clickhouse"
+                },
+                {
+                  "name": "nudgebee-agent-prod-clickhouse-shard0",
+                  "namespace": "nudgebee-agent-prod"
+                },
+                {
+                  "name": "ebs-csi-node",
+                  "namespace": "kube-system"
+                },
+                {
+                  "name": "grafana",
+                  "namespace": "grafana"
+                },
+                {
+                  "name": "kube-proxy",
+                  "namespace": "kube-system"
+                },
+                {
+                  "name": "nudgebee-agent-forwarder",
+                  "namespace": "nudgebee-agent"
+                },
+                {
+                  "name": "loki",
+                  "namespace": "grafana"
+                },
+                {
+                  "name": "ml-k8s-server",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "nudgebee-agent-prod",
+                  "namespace": "nudgebee-agent-prod"
+                },
+                {
+                  "name": "prometheus-prometheus-node-exporter",
+                  "namespace": "prometheus"
+                },
+                {
+                  "name": "prometheus-prometheus-kube-prometheus-prometheus",
+                  "namespace": "prometheus"
+                },
+                {
+                  "name": "loki-promtail",
+                  "namespace": "grafana"
+                },
+                {
+                  "name": "rabbitmq",
+                  "namespace": "rabbit"
+                },
+                {
+                  "name": "rag-server",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "nudgebee-agent-runner",
+                  "namespace": "nudgebee-agent"
+                },
+                {
+                  "name": "services-server",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "clickhouse-zookeeper",
+                  "namespace": "clickhouse"
+                }
+              ],
+              "type": "Ratio",
+              "rule": {
+                "type": "Ratio",
+                "with": "with resource_allocation as ( select crm2.cloud_account_id, crm2.tenant_id, sum(case when crm2.metric = 'memory_capacity' then crm2.value else 0 end) as memory_capacity, sum(case when crm2.metric = 'cpu_capacity' then crm2.value else 0 end) as cpu_capacity, sum(case when crm2.metric = 'memory_allocated' then crm2.value else 0 end) as memory_allocated , sum(case when crm2.metric = 'cpu_allocated' then crm2.value else 0 end) as cpu_allocated, row_number() over (partition by crm2.cloud_account_id order by crm2.timestamp desc) as rn from k8s_nodes ksn2 inner join cloud_resource_metrics crm2 on ksn2.cloud_resource_id = crm2.cloud_resource_id where is_active is not false group by crm2.timestamp, crm2.cloud_account_id, crm2.tenant_id ), resorce_utilization_percent as ( select 100 - (case when memory_capacity > 0 then memory_allocated / memory_capacity * 100 else 0 end) as memory_utilize_percent, cloud_account_id, tenant_id from resource_allocation where rn = 1 )",
+                "range": 7,
+                "source": "Metric",
+                "filters": null,
+                "distinct": "",
+                "threshold": 50,
+                "unique_id": "9",
+                "view_name": "resorce_utilization_percent",
+                "grouped_by": ["cloud_account_id", "tenant_id"],
+                "range_unit": "DAY",
+                "account_column": "cloud_account_id",
+                "insight_format": "Low Cluster Allocation, {}%% memory is available",
+                "aggregate_column": "sum(memory_utilize_percent)",
+                "resource_id_column_name": ""
+              }
+            },
+            {
+              "account_id": "ff87fbfd-5729-4474-b9d6-96beb693e3fd",
+              "unique_id": "14",
+              "title": "11 persistent volume can be rightsized",
+              "id": "cc8368a9-8c44-4ef0-818f-c7fcf42f3936",
+              "applications": null,
+              "type": "Optimization",
+              "rule": {
+                "type": "Addition",
+                "with": "",
+                "query": "",
+                "range": -1,
+                "source": "Recommendation",
+                "filters": [
+                  {
+                    "value": "pv_rightsize",
+                    "column": "rule_name",
+                    "operator": "="
+                  },
+                  {
+                    "value": "Open",
+                    "column": "status",
+                    "operator": "="
+                  }
+                ],
+                "category": "Optimization",
+                "distinct": "",
+                "threshold": 0,
+                "unique_id": "14",
+                "view_name": "",
+                "grouped_by": null,
+                "range_unit": "DAY",
+                "ui_filters": null,
+                "subcategory": "",
+                "account_column": "cloud_account_id",
+                "insight_format": "{} persistent volume can be rightsized",
+                "aggregate_column": "",
+                "resource_id_column_name": ""
+              }
+            },
+            {
+              "account_id": "ff87fbfd-5729-4474-b9d6-96beb693e3fd",
+              "unique_id": "13",
+              "title": "1 workload seems to be abandoned with no load",
+              "id": "5cdf232c-950d-4bf7-802d-e4b629722773",
+              "applications": null,
+              "type": "Optimization",
+              "rule": {
+                "type": "Addition",
+                "with": "",
+                "query": "",
+                "range": -1,
+                "source": "Recommendation",
+                "filters": [
+                  {
+                    "value": "abandoned_resource",
+                    "column": "rule_name",
+                    "operator": "="
+                  },
+                  {
+                    "value": "Open",
+                    "column": "status",
+                    "operator": "="
+                  }
+                ],
+                "category": "Optimization",
+                "distinct": "",
+                "threshold": 0,
+                "unique_id": "13",
+                "view_name": "",
+                "grouped_by": null,
+                "range_unit": "DAY",
+                "ui_filters": null,
+                "subcategory": "",
+                "account_column": "cloud_account_id",
+                "insight_format": "{} workload seems to be abandoned with no load",
+                "aggregate_column": "",
+                "resource_id_column_name": ""
+              }
+            },
+            {
+              "account_id": "ff87fbfd-5729-4474-b9d6-96beb693e3fd",
+              "unique_id": "10",
+              "title": "Low Cluster Allocation, 100% cpu is available",
+              "id": "18472f98-1af8-42cf-8954-cd40f4dd2e73",
+              "applications": null,
+              "type": "Ratio",
+              "rule": {
+                "type": "Ratio",
+                "with": "with resource_allocation as ( select crm2.cloud_account_id, crm2.tenant_id, sum(case when crm2.metric = 'memory_capacity' then crm2.value else 0 end) as memory_capacity, sum(case when crm2.metric = 'cpu_capacity' then crm2.value else 0 end) as cpu_capacity, sum(case when crm2.metric = 'memory_allocated' then crm2.value else 0 end) as memory_allocated , sum(case when crm2.metric = 'cpu_allocated' then crm2.value else 0 end) as cpu_allocated, row_number() over (partition by crm2.cloud_account_id order by crm2.timestamp desc) as rn from k8s_nodes ksn2 inner join cloud_resource_metrics crm2 on ksn2.cloud_resource_id = crm2.cloud_resource_id where ksn2.is_active is not false group by crm2.timestamp, crm2.cloud_account_id, crm2.tenant_id ), resorce_utilization_percent as ( select 100 - (case when cpu_capacity > 0 then cpu_allocated / cpu_capacity * 100 else 0 end) as cpu_utilize_percent, cloud_account_id, tenant_id from resource_allocation where rn = 1 )",
+                "range": 7,
+                "source": "Metric",
+                "filters": null,
+                "distinct": "",
+                "threshold": 50,
+                "unique_id": "10",
+                "view_name": "resorce_utilization_percent",
+                "grouped_by": ["cloud_account_id", "tenant_id"],
+                "range_unit": "DAY",
+                "account_column": "cloud_account_id",
+                "insight_format": "Low Cluster Allocation, {}%% cpu is available",
+                "aggregate_column": "sum(cpu_utilize_percent)",
+                "resource_id_column_name": ""
+              }
+            },
+            {
+              "account_id": "ff87fbfd-5729-4474-b9d6-96beb693e3fd",
+              "unique_id": "6",
+              "title": "High CPU Usage (>80%)",
+              "id": "ac6928e7-3f5d-4f7d-8d2e-3a6e91ea82b4",
+              "applications": [
+                {
+                  "name": "nudgebee-nudgebee-profiler-1737352678-714924-1737352678",
+                  "namespace": "nudgebee-agent"
+                }
+              ],
+              "type": "Troubleshooting",
+              "rule": {
+                "type": "Prometheus",
+                "with": "",
+                "query": "avg(rate(container_cpu_usage_seconds_total{container!=\"\"}[5m])) by (pod, namespace, container) / avg(kube_pod_container_resource_limits{resource=\"cpu\", container!=\"\"}) by (pod, namespace, container) > 0.8",
+                "range": -1,
+                "source": "Prometheus",
+                "filters": [],
+                "category": "Troubleshooting",
+                "distinct": "",
+                "threshold": 0.8,
+                "unique_id": "6",
+                "view_name": "",
+                "grouped_by": ["application"],
+                "range_unit": "DAY",
+                "ui_filters": [],
+                "subcategory": "Application",
+                "account_column": "",
+                "insight_format": "High CPU Usage (>80%)",
+                "aggregate_column": "",
+                "resource_id_column_name": ""
+              }
+            },
+            {
+              "account_id": "ff87fbfd-5729-4474-b9d6-96beb693e3fd",
+              "unique_id": "1",
+              "title": "API Latency (>500ms) ",
+              "id": "692a6284-68d1-4c31-95d2-b5b5f70d6ed6",
+              "applications": [
+                {
+                  "name": "app-prod",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "ecr-proxy-server",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "webapp",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "k8s-collector",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "relay-server",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "services-server",
+                  "namespace": "nudgebee"
+                }
+              ],
+              "type": "Troubleshooting",
+              "rule": {
+                "type": "Prometheus",
+                "with": "",
+                "query": "histogram_quantile(0.95,sum(rate(container_http_requests_duration_seconds_total_bucket{destination_workload_name!~\"nudgebee-agent\",destination_workload_namespace!~\"(external|node)\"}[5m])) by (le, destination_workload_name, destination_workload_namespace)) > 0.5",
+                "range": -1,
+                "source": "Prometheus",
+                "filters": [],
+                "category": "Troubleshooting",
+                "distinct": "",
+                "threshold": 0.5,
+                "unique_id": "1",
+                "view_name": "",
+                "grouped_by": ["application"],
+                "range_unit": "DAY",
+                "ui_filters": [
+                  {
+                    "name": "duration",
+                    "value": "500"
+                  }
+                ],
+                "subcategory": "Trace",
+                "account_column": "",
+                "insight_format": "API Latency (>500ms) ",
+                "aggregate_column": "",
+                "resource_id_column_name": ""
+              }
+            },
+            {
+              "account_id": "ff87fbfd-5729-4474-b9d6-96beb693e3fd",
+              "unique_id": "8",
+              "title": "13 failures with OOMKilled and Hi-Restarts",
+              "id": "2138c8c5-09a1-4740-a046-6f4f8c29d7e7",
+              "applications": null,
+              "type": "Addition",
+              "rule": {
+                "type": "Addition",
+                "with": "",
+                "range": 1,
+                "source": "Event",
+                "filters": [
+                  {
+                    "value": ["pod_oom_killer_enricher", "report_crash_loop"],
+                    "column": "aggregation_key",
+                    "operator": "in"
+                  }
+                ],
+                "distinct": "",
+                "threshold": 0,
+                "unique_id": "8",
+                "view_name": "",
+                "grouped_by": null,
+                "range_unit": "DAY",
+                "account_column": "cloud_account_id",
+                "insight_format": "{} failures with OOMKilled and Hi-Restarts",
+                "aggregate_column": "",
+                "resource_id_column_name": ""
+              }
+            },
+            {
+              "account_id": "ff87fbfd-5729-4474-b9d6-96beb693e3fd",
+              "unique_id": "7",
+              "title": "45 workload can be right sized",
+              "id": "4cfe0729-2954-4c9e-ada0-7da335e6f725",
+              "applications": null,
+              "type": "Addition",
+              "rule": {
+                "type": "Addition",
+                "with": "",
+                "range": -1,
+                "source": "Recommendation",
+                "filters": [
+                  {
+                    "value": "pod_right_sizing",
+                    "column": "rule_name",
+                    "operator": "="
+                  },
+                  {
+                    "value": "RightSizing",
+                    "column": "category",
+                    "operator": "="
+                  },
+                  {
+                    "value": "Open",
+                    "column": "status",
+                    "operator": "="
+                  }
+                ],
+                "distinct": "",
+                "threshold": 0,
+                "unique_id": "7",
+                "view_name": "",
+                "grouped_by": null,
+                "range_unit": "DAY",
+                "account_column": "cloud_account_id",
+                "insight_format": "{} workload can be right sized",
+                "aggregate_column": "",
+                "resource_id_column_name": ""
+              }
+            },
+            {
+              "account_id": "ff87fbfd-5729-4474-b9d6-96beb693e3fd",
+              "unique_id": "5",
+              "title": "High Memory Usage (>80%)",
+              "id": "b28229f2-c747-45a1-9978-96be5587cdd0",
+              "applications": [
+                {
+                  "name": "nudgebee-agent-prod-clickhouse-shard0",
+                  "namespace": "nudgebee-agent-prod"
+                },
+                {
+                  "name": "notifications",
+                  "namespace": "nudgebee"
+                },
+                {
+                  "name": "prometheus-prometheus-kube-prometheus-prometheus",
+                  "namespace": "prometheus"
+                },
+                {
+                  "name": "rag-server",
+                  "namespace": "nudgebee"
+                }
+              ],
+              "type": "Troubleshooting",
+              "rule": {
+                "type": "Prometheus",
+                "with": "",
+                "query": "avg(container_memory_usage_bytes{container!=\"\"}) by (pod, namespace, container) /  avg(kube_pod_container_resource_limits{resource=\"memory\", container!=\"\"}) by (pod, namespace, container) > 0.8",
+                "range": -1,
+                "source": "Prometheus",
+                "filters": [],
+                "category": "Troubleshooting",
+                "distinct": "",
+                "threshold": 0.8,
+                "unique_id": "5",
+                "view_name": "",
+                "grouped_by": ["application"],
+                "range_unit": "DAY",
+                "ui_filters": [
+                  {
+                    "name": "aggregation_key",
+                    "value": "PodMemoryReachingLimit"
+                  }
+                ],
+                "subcategory": "Events",
+                "account_column": "",
+                "insight_format": "High Memory Usage (>80%)",
+                "aggregate_column": "",
+                "resource_id_column_name": ""
+              }
+            }
+          ]
+        }
+      }
+    }
+  },
+  "RunbookData": {
+    "data": {
+      "data": {
+        "schedule": {
+          "rows": [
+            {
+              "count": 8
+            }
+          ]
+        },
+        "event": {
+          "rows": [
+            {
+              "count": 2
+            }
+          ]
+        },
+        "total": {
+          "rows": [
+            {
+              "count": 24
+            }
+          ]
+        }
+      }
+    }
+  },
+  "CertificateData": {
+    "data": {
+      "data": {
+        "recommendation": {
+          "rows": [
+            {
+              "recommendation": "{\"name\": \"registry-dev-collector-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"35e1eaec-5bd1-4285-b068-3e19d1e9311b\", \"kind\": \"Ingress\", \"name\": \"ecr-proxy-server\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee\", \"expiry_date\": \"2025-02-28 09:03:15+00:00\", \"days_until_expiry\": 38}"
+            },
+            {
+              "recommendation": "{\"name\": \"nudgebee-test-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"d04c80ae-b06a-4e00-a524-0c167de6319f\", \"kind\": \"Ingress\", \"name\": \"app-test\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee-test\", \"expiry_date\": \"2025-03-02 05:57:57+00:00\", \"days_until_expiry\": 40}"
+            },
+            {
+              "recommendation": "{\"name\": \"relay-test-collector-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"d5ca0991-d329-4ff6-8993-63c96a42ef92\", \"kind\": \"Ingress\", \"name\": \"relay-server\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee-test\", \"expiry_date\": \"2025-03-02 05:58:14+00:00\", \"days_until_expiry\": 40}"
+            },
+            {
+              "recommendation": "{\"name\": \"nudgebee-test-collector-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"9d4d3a6d-2ba3-4491-8cbe-010c5c9b4816\", \"kind\": \"Ingress\", \"name\": \"k8s-collector\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee-test\", \"expiry_date\": \"2025-03-02 05:58:47+00:00\", \"days_until_expiry\": 40}"
+            },
+            {
+              "recommendation": "{\"name\": \"actions-runner-controller-serving-cert\", \"metadata\": {\"owners\": [], \"managed-by\": \"Helm\"}, \"namespace\": \"actions-runner-system-1\", \"expiry_date\": \"2025-03-06 07:14:12+00:00\", \"days_until_expiry\": 44}"
+            },
+            {
+              "recommendation": "{\"name\": \"nudgebee-dev-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"a9977b63-00a6-42f0-8fde-73c712500386\", \"kind\": \"Ingress\", \"name\": \"app-dev\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee\", \"expiry_date\": \"2025-03-07 08:37:19+00:00\", \"days_until_expiry\": 45}"
+            },
+            {
+              "recommendation": "{\"name\": \"relay-dev-collector-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"9746fb24-0082-43ce-ab58-cb7f89c28a75\", \"kind\": \"Ingress\", \"name\": \"relay-server\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee\", \"expiry_date\": \"2025-03-07 08:39:47+00:00\", \"days_until_expiry\": 45}"
+            },
+            {
+              "recommendation": "{\"name\": \"nudgebee-dev-collector-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"709eb8f8-ba4d-464c-8303-47e088f55312\", \"kind\": \"Ingress\", \"name\": \"k8s-collector\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee\", \"expiry_date\": \"2025-03-07 08:44:41+00:00\", \"days_until_expiry\": 45}"
+            },
+            {
+              "recommendation": "{\"name\": \"nudgebee-dev-docs-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"6e6e7e1c-be7f-411a-9164-925cc40a1aa5\", \"kind\": \"Ingress\", \"name\": \"nudgebee-doc-docs\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee\", \"expiry_date\": \"2025-03-08 05:52:00+00:00\", \"days_until_expiry\": 46}"
+            },
+            {
+              "recommendation": "{\"name\": \"nudgebee-test-docs-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"46a406c8-93a2-4d41-b5bf-b41d6e101ae8\", \"kind\": \"Ingress\", \"name\": \"nudgebee-doc-docs\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee-test\", \"expiry_date\": \"2025-03-11 02:32:21+00:00\", \"days_until_expiry\": 49}"
+            },
+            {
+              "recommendation": "{\"name\": \"ca-cert\", \"metadata\": {\"owners\": [], \"managed-by\": \"\"}, \"namespace\": \"cert-manager\", \"expiry_date\": \"2029-12-11 04:07:02+00:00\", \"days_until_expiry\": 1785}"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "ImageScanData": {
+    "data": {
+      "data": {
+        "recommendation_security_groupings_v2": {
+          "rows": [
+            {
+              "count_image": 1,
+              "account_id": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
+              "count_severity_critical": 1,
+              "workload_name": "auto-pilot-server",
+              "namespace": "nudgebee-test"
+            },
+            {
+              "count_image": 1,
+              "account_id": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
+              "count_severity_critical": 1,
+              "workload_name": "auto-pilot-worker",
+              "namespace": "nudgebee-test"
+            },
+            {
+              "count_image": 1,
+              "account_id": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
+              "count_severity_critical": 125,
+              "workload_name": "deployment--with-all-resources",
+              "namespace": "auto-pilot-testing"
+            },
+            {
+              "count_image": 1,
+              "account_id": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
+              "count_severity_critical": 125,
+              "workload_name": "deployment--with-no-resources",
+              "namespace": "auto-pilot-testing"
+            },
+            {
+              "count_image": 1,
+              "account_id": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
+              "count_severity_critical": 125,
+              "workload_name": "deployment--with-only-cpu",
+              "namespace": "auto-pilot-testing"
+            },
+            {
+              "count_image": 1,
+              "account_id": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
+              "count_severity_critical": 125,
+              "workload_name": "deployment--with-only-limit",
+              "namespace": "auto-pilot-testing"
+            },
+            {
+              "count_image": 1,
+              "account_id": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
+              "count_severity_critical": 125,
+              "workload_name": "deployment--with-only-memory",
+              "namespace": "auto-pilot-testing"
+            },
+            {
+              "count_image": 1,
+              "account_id": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
+              "count_severity_critical": 125,
+              "workload_name": "deployment--with-only-request",
+              "namespace": "auto-pilot-testing"
+            },
+            {
+              "count_image": 1,
+              "account_id": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
+              "count_severity_critical": 2,
+              "workload_name": "nudgebee-doc-docs",
+              "namespace": "nudgebee-test"
+            },
+            {
+              "count_image": 1,
+              "account_id": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
+              "count_severity_critical": 1,
+              "workload_name": "postgres-postgresql",
+              "namespace": "nudgebee-test"
+            },
+            {
+              "count_image": 2,
+              "account_id": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
+              "count_severity_critical": 12,
+              "workload_name": "redis-master",
+              "namespace": "redis"
+            },
+            {
+              "count_image": 2,
+              "account_id": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
+              "count_severity_critical": 12,
+              "workload_name": "redis-master",
+              "namespace": "redis-test"
+            },
+            {
+              "count_image": 1,
+              "account_id": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
+              "count_severity_critical": 34,
+              "workload_name": "sonarqube-postgresql",
+              "namespace": "sonarqube"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is that the ECS task definition ''h09-catalog-api'' has the REQUIRED_CONFIG environment variable set to
+  an empty string. The container startup script checks if REQUIRED_CONFIG is empty and exits with code 1, preventing the service
+  from starting. Check: (1) aws ecs describe-services --cluster h09-catalog-cluster --services h09-catalog-svc to see runningCount=0
+  and stoppedCount increasing, (2) aws ecs list-tasks --cluster h09-catalog-cluster --desired-status STOPPED to find recent
+  stopped tasks, (3) aws ecs describe-tasks to see StoppedReason ''Essential container in task exited'', (4) Check CloudWatch
+  logs /ecs/h09-catalog-api for ''FATAL: REQUIRED_CONFIG environment variable is not set or empty''. The fix is to update
+  the task definition with a valid REQUIRED_CONFIG value and redeploy the service.'
+scenario: H09
+tags:
+- command
+- aws
+- hard
+type: rca
+user_prompt: Our catalog ECS service 'h09-catalog-svc' on cluster 'h09-catalog-cluster' in us-east-1 keeps crashing. The desired
+  count is 1 but the running count is always 0. ECS shows tasks starting then immediately stopping. This started after our
+  latest task definition deployment. What's causing the container to crash on startup?

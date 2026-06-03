@@ -1,0 +1,514 @@
+[
+  {
+    "id": "wl-deploy-1",
+    "tenant_id": "test-tenant-1",
+    "cloud_account_id": "test-account-k8s-1",
+    "kind": "Deployment",
+    "namespace": "production",
+    "name": "api-deployment",
+    "cluster_name": "my-eks-cluster",
+    "is_active": true,
+    "meta": {
+      "metadata": {
+        "name": "api-deployment",
+        "namespace": "production",
+        "uid": "deploy-uuid-1",
+        "labels": {
+          "app": "api",
+          "tier": "backend",
+          "version": "v1.2.3"
+        },
+        "annotations": {
+          "deployment.kubernetes.io/revision": "3"
+        }
+      },
+      "spec": {
+        "replicas": 3,
+        "selector": {
+          "matchLabels": {
+            "app": "api"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "api",
+              "version": "v1.2.3"
+            }
+          },
+          "spec": {
+            "containers": [
+              {
+                "name": "api-container",
+                "image": "myapp/api:v1.2.3",
+                "ports": [
+                  {
+                    "containerPort": 8080,
+                    "protocol": "TCP"
+                  }
+                ],
+                "env": [
+                  {
+                    "name": "DB_HOST",
+                    "value": "mydb.abc123.us-east-1.rds.amazonaws.com"
+                  },
+                  {
+                    "name": "REDIS_HOST",
+                    "value": "redis-cluster.abc123.cache.amazonaws.com"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "status": {
+        "availableReplicas": 3,
+        "readyReplicas": 3,
+        "replicas": 3,
+        "updatedReplicas": 3
+      }
+    }
+  },
+  {
+    "id": "wl-sts-1",
+    "tenant_id": "test-tenant-1",
+    "cloud_account_id": "test-account-k8s-1",
+    "kind": "StatefulSet",
+    "namespace": "production",
+    "name": "postgres-statefulset",
+    "cluster_name": "my-eks-cluster",
+    "is_active": true,
+    "meta": {
+      "metadata": {
+        "name": "postgres-statefulset",
+        "namespace": "production",
+        "uid": "sts-uuid-1",
+        "labels": {
+          "app": "postgres",
+          "tier": "database"
+        }
+      },
+      "spec": {
+        "serviceName": "postgres-service",
+        "replicas": 1,
+        "selector": {
+          "matchLabels": {
+            "app": "postgres"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "postgres"
+            }
+          },
+          "spec": {
+            "containers": [
+              {
+                "name": "postgres",
+                "image": "postgres:14",
+                "ports": [
+                  {
+                    "containerPort": 5432,
+                    "name": "postgres"
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "status": {
+        "readyReplicas": 1,
+        "replicas": 1,
+        "currentReplicas": 1
+      }
+    }
+  },
+  {
+    "id": "wl-pod-1",
+    "tenant_id": "test-tenant-1",
+    "cloud_account_id": "test-account-k8s-1",
+    "kind": "Pod",
+    "namespace": "production",
+    "name": "api-pod-1",
+    "cluster_name": "my-eks-cluster",
+    "is_active": true,
+    "meta": {
+      "metadata": {
+        "name": "api-pod-1",
+        "namespace": "production",
+        "uid": "pod-uuid-1",
+        "labels": {
+          "app": "api",
+          "pod-template-hash": "abc123",
+          "version": "v1.2.3"
+        }
+      },
+      "spec": {
+        "nodeName": "k8s-node-1",
+        "containers": [
+          {
+            "name": "api-container",
+            "image": "myapp/api:v1.2.3",
+            "ports": [
+              {
+                "containerPort": 8080
+              }
+            ]
+          }
+        ],
+        "restartPolicy": "Always"
+      },
+      "status": {
+        "phase": "Running",
+        "conditions": [
+          {
+            "type": "Ready",
+            "status": "True"
+          }
+        ],
+        "hostIP": "10.0.1.100",
+        "podIP": "10.244.1.10",
+        "startTime": "2024-12-20T10:00:00Z"
+      }
+    }
+  },
+  {
+    "id": "wl-pod-2",
+    "tenant_id": "test-tenant-1",
+    "cloud_account_id": "test-account-k8s-1",
+    "kind": "Pod",
+    "namespace": "production",
+    "name": "api-pod-2",
+    "cluster_name": "my-eks-cluster",
+    "is_active": true,
+    "meta": {
+      "metadata": {
+        "name": "api-pod-2",
+        "namespace": "production",
+        "uid": "pod-uuid-2",
+        "labels": {
+          "app": "api",
+          "pod-template-hash": "abc123",
+          "version": "v1.2.3"
+        }
+      },
+      "spec": {
+        "nodeName": "k8s-node-2",
+        "containers": [
+          {
+            "name": "api-container",
+            "image": "myapp/api:v1.2.3",
+            "ports": [
+              {
+                "containerPort": 8080
+              }
+            ]
+          }
+        ]
+      },
+      "status": {
+        "phase": "Running",
+        "podIP": "10.244.2.10"
+      }
+    }
+  },
+  {
+    "id": "wl-pod-3",
+    "tenant_id": "test-tenant-1",
+    "cloud_account_id": "test-account-k8s-1",
+    "kind": "Pod",
+    "namespace": "production",
+    "name": "postgres-0",
+    "cluster_name": "my-eks-cluster",
+    "is_active": true,
+    "meta": {
+      "metadata": {
+        "name": "postgres-0",
+        "namespace": "production",
+        "uid": "pod-uuid-3",
+        "labels": {
+          "app": "postgres",
+          "controller-revision-hash": "postgres-statefulset-xyz",
+          "statefulset.kubernetes.io/pod-name": "postgres-0"
+        }
+      },
+      "spec": {
+        "nodeName": "k8s-node-1",
+        "containers": [
+          {
+            "name": "postgres",
+            "image": "postgres:14",
+            "ports": [
+              {
+                "containerPort": 5432,
+                "name": "postgres"
+              }
+            ]
+          }
+        ]
+      },
+      "status": {
+        "phase": "Running",
+        "podIP": "10.244.1.20"
+      }
+    }
+  },
+  {
+    "id": "wl-ds-1",
+    "tenant_id": "test-tenant-1",
+    "cloud_account_id": "test-account-k8s-1",
+    "kind": "DaemonSet",
+    "namespace": "kube-system",
+    "name": "monitoring-agent",
+    "cluster_name": "my-eks-cluster",
+    "is_active": true,
+    "meta": {
+      "metadata": {
+        "name": "monitoring-agent",
+        "namespace": "kube-system",
+        "uid": "ds-uuid-1",
+        "labels": {
+          "app": "monitoring",
+          "component": "agent"
+        }
+      },
+      "spec": {
+        "selector": {
+          "matchLabels": {
+            "app": "monitoring"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app": "monitoring"
+            }
+          },
+          "spec": {
+            "containers": [
+              {
+                "name": "agent",
+                "image": "monitoring/agent:latest"
+              }
+            ]
+          }
+        }
+      },
+      "status": {
+        "currentNumberScheduled": 2,
+        "numberMisscheduled": 0,
+        "desiredNumberScheduled": 2,
+        "numberReady": 2,
+        "numberAvailable": 2
+      }
+    }
+  },
+  {
+    "id": "wl-svc-1",
+    "tenant_id": "test-tenant-1",
+    "cloud_account_id": "test-account-k8s-1",
+    "kind": "Service",
+    "namespace": "production",
+    "name": "api-service",
+    "cluster_name": "my-eks-cluster",
+    "is_active": true,
+    "meta": {
+      "metadata": {
+        "name": "api-service",
+        "namespace": "production",
+        "uid": "svc-uuid-1",
+        "labels": {
+          "app": "api"
+        }
+      },
+      "spec": {
+        "type": "ClusterIP",
+        "clusterIP": "10.100.10.10",
+        "ports": [
+          {
+            "name": "http",
+            "port": 80,
+            "targetPort": 8080,
+            "protocol": "TCP"
+          }
+        ],
+        "selector": {
+          "app": "api"
+        }
+      },
+      "status": {}
+    }
+  },
+  {
+    "id": "wl-deploy-2",
+    "tenant_id": "test-tenant-1",
+    "cloud_account_id": "test-account-k8s-1",
+    "kind": "Deployment",
+    "namespace": "production",
+    "name": "frontend-deployment",
+    "cluster_name": "my-eks-cluster",
+    "is_active": true,
+    "meta": {
+      "metadata": {
+        "name": "frontend-deployment",
+        "namespace": "production",
+        "uid": "deploy-uuid-2",
+        "labels": {
+          "app": "frontend",
+          "tier": "web"
+        }
+      },
+      "spec": {
+        "replicas": 2,
+        "selector": {
+          "matchLabels": {
+            "app": "frontend"
+          }
+        }
+      },
+      "status": {
+        "availableReplicas": 2,
+        "readyReplicas": 2
+      }
+    }
+  },
+  {
+    "id": "wl-configmap-1",
+    "tenant_id": "test-tenant-1",
+    "cloud_account_id": "test-account-k8s-1",
+    "kind": "ConfigMap",
+    "namespace": "production",
+    "name": "app-config",
+    "cluster_name": "my-eks-cluster",
+    "is_active": true,
+    "meta": {
+      "metadata": {
+        "name": "app-config",
+        "namespace": "production",
+        "uid": "configmap-uuid-1",
+        "labels": {
+          "app": "api"
+        }
+      },
+      "data": {
+        "database.host": "mydb.abc123.us-east-1.rds.amazonaws.com",
+        "database.port": "5432",
+        "cache.host": "redis-cluster.abc123.cache.amazonaws.com",
+        "app.env": "production"
+      }
+    }
+  },
+  {
+    "id": "wl-secret-1",
+    "tenant_id": "test-tenant-1",
+    "cloud_account_id": "test-account-k8s-1",
+    "kind": "Secret",
+    "namespace": "production",
+    "name": "app-secrets",
+    "cluster_name": "my-eks-cluster",
+    "is_active": true,
+    "meta": {
+      "metadata": {
+        "name": "app-secrets",
+        "namespace": "production",
+        "uid": "secret-uuid-1",
+        "labels": {
+          "app": "api"
+        }
+      },
+      "type": "Opaque",
+      "data": {
+        "database.password": "cGFzc3dvcmQxMjM=",
+        "api.key": "YXBpa2V5MTIz"
+      }
+    }
+  },
+  {
+    "id": "wl-ingress-1",
+    "tenant_id": "test-tenant-1",
+    "cloud_account_id": "test-account-k8s-1",
+    "kind": "Ingress",
+    "namespace": "production",
+    "name": "api-ingress",
+    "cluster_name": "my-eks-cluster",
+    "is_active": true,
+    "meta": {
+      "metadata": {
+        "name": "api-ingress",
+        "namespace": "production",
+        "uid": "ingress-uuid-1",
+        "labels": {
+          "app": "api"
+        },
+        "annotations": {
+          "kubernetes.io/ingress.class": "nginx",
+          "cert-manager.io/cluster-issuer": "letsencrypt-prod"
+        }
+      },
+      "spec": {
+        "rules": [
+          {
+            "host": "api.example.com",
+            "http": {
+              "paths": [
+                {
+                  "path": "/",
+                  "pathType": "Prefix",
+                  "backend": {
+                    "service": {
+                      "name": "api-service",
+                      "port": {
+                        "number": 80
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "tls": [
+          {
+            "hosts": ["api.example.com"],
+            "secretName": "api-tls"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "wl-pvc-1",
+    "tenant_id": "test-tenant-1",
+    "cloud_account_id": "test-account-k8s-1",
+    "kind": "PersistentVolumeClaim",
+    "namespace": "production",
+    "name": "postgres-data",
+    "cluster_name": "my-eks-cluster",
+    "is_active": true,
+    "meta": {
+      "metadata": {
+        "name": "postgres-data",
+        "namespace": "production",
+        "uid": "pvc-uuid-1",
+        "labels": {
+          "app": "postgres"
+        }
+      },
+      "spec": {
+        "accessModes": ["ReadWriteOnce"],
+        "resources": {
+          "requests": {
+            "storage": "10Gi"
+          }
+        },
+        "storageClassName": "gp3"
+      },
+      "status": {
+        "phase": "Bound"
+      }
+    }
+  }
+]

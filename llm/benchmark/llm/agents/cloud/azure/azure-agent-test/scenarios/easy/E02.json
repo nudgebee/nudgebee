@@ -1,0 +1,118 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "E02: Function App 'e02-report-generator' system identity missing Storage Blob Data Reader role on data storage account. User complaint: Report generation fails with 403 - cannot read source data from storage."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "funcStorageName": "[concat('e02func', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "dataStorageName": "[concat('e02data', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "storageBlobDataReaderRoleId": "2a2b9908-6ea1-4ae2-8e65-a410df84e7d1",
+    "roleAssignmentName": "[guid(resourceGroup().id, 'e02-blob-reader')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('funcStorageName')]",
+      "location": "[resourceGroup().location]",
+      "sku": { "name": "Standard_LRS" },
+      "kind": "StorageV2",
+      "tags": { "Environment": "production", "Purpose": "function-runtime" }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('dataStorageName')]",
+      "location": "[resourceGroup().location]",
+      "sku": { "name": "Standard_LRS" },
+      "kind": "StorageV2",
+      "tags": {
+        "Environment": "production",
+        "Purpose": "report-source-data",
+        "Scenario": "E02"
+      }
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2022-03-01",
+      "name": "e02-report-plan",
+      "location": "[resourceGroup().location]",
+      "sku": { "name": "Y1", "tier": "Dynamic" },
+      "kind": "functionapp",
+      "tags": { "Environment": "production" },
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "e02-report-generator",
+      "location": "[resourceGroup().location]",
+      "kind": "functionapp",
+      "identity": { "type": "SystemAssigned" },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', 'e02-report-plan')]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('funcStorageName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('dataStorageName'))]"
+      ],
+      "tags": {
+        "Name": "e02-report-generator",
+        "Environment": "production",
+        "Team": "reporting",
+        "ScenarioMode": "[parameters('scenarioMode')]"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', 'e02-report-plan')]",
+        "siteConfig": {
+          "appSettings": [
+            {
+              "name": "AzureWebJobsStorage",
+              "value": "[concat('DefaultEndpointsProtocol=https;AccountName=', variables('funcStorageName'), ';AccountKey=', listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('funcStorageName')), '2023-01-01').keys[0].value)]"
+            },
+            { "name": "FUNCTIONS_EXTENSION_VERSION", "value": "~4" },
+            { "name": "FUNCTIONS_WORKER_RUNTIME", "value": "python" },
+            { "name": "DATA_STORAGE_ACCOUNT", "value": "[variables('dataStorageName')]" },
+            { "name": "DATA_CONTAINER", "value": "reports-source" }
+          ]
+        }
+      }
+    },
+    {
+      "condition": "[equals(parameters('scenarioMode'), 'Fixed')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[variables('roleAssignmentName')]",
+      "scope": "[concat('Microsoft.Storage/storageAccounts/', variables('dataStorageName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', 'e02-report-generator')]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('dataStorageName'))]"
+      ],
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('storageBlobDataReaderRoleId'))]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', 'e02-report-generator'), '2022-03-01', 'Full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      }
+    }
+  ],
+  "outputs": {
+    "FunctionAppName": { "type": "string", "value": "e02-report-generator" },
+    "DataStorageAccount": { "type": "string", "value": "[variables('dataStorageName')]" },
+    "FunctionPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Web/sites', 'e02-report-generator'), '2022-03-01', 'Full').identity.principalId]"
+    },
+    "BugNote": { "type": "string", "value": "Function App identity missing Storage Blob Data Reader role on data storage - reads return 403" },
+    "ScenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

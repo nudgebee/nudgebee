@@ -1,0 +1,10 @@
+user_prompt: Get cost and usage for a specific operation (e.g., RunInstances) for
+  the last month.
+expected_output:
+- 'aws ce get-cost-and-usage --time-period Start=$(date -d ''last month'' +%Y-%m-01)
+  --End=$(date -d ''last month'' +%Y-%m-%d) --granularity MONTHLY --metrics BlendedCost
+  --group-by Type=DIMENSION,Key=OPERATION --filter ''{\Dimensions\": {\"Key\": \"OPERATION\",
+  \"Values\": [\"RunInstances\"]}}'''
+tags:
+- command
+- aws

@@ -1,0 +1,7 @@
+user_prompt: Get CloudFront distribution's domain name.
+expected_output:
+- aws cloudfront get-distribution --id <distribution-id> --query 'Distribution.DomainName'
+  --output text
+tags:
+- command
+- aws

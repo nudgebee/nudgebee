@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "M02: App Service health check configured with path '/health' which returns 404. Azure marks all instances as unhealthy and continuously restarts them. User complaint: app restarts every few minutes, traffic disrupted. Requires checking healthCheckPath and understanding its implications."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "appName": "[concat('m02app', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "healthCheckPath": "[if(equals(parameters('scenarioMode'), 'Fixed'), '', '/health')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('appName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "app",
+      "tags": {
+        "Name": "m02-checkout-api",
+        "Environment": "production",
+        "Team": "checkout",
+        "Scenario": "M02",
+        "ScenarioMode": "[parameters('scenarioMode')]"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "siteConfig": {
+          "healthCheckPath": "[variables('healthCheckPath')]",
+          "appSettings": [
+            { "name": "APP_ENV", "value": "production" },
+            { "name": "LOG_LEVEL", "value": "INFO" },
+            { "name": "PORT", "value": "8080" }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "AppServiceName": { "type": "string", "value": "[variables('appName')]" },
+    "HealthCheckPath": { "type": "string", "value": "[variables('healthCheckPath')]" },
+    "BugNote": { "type": "string", "value": "healthCheckPath='/health' returns 404 - Azure marks all instances unhealthy and restarts them" },
+    "ScenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

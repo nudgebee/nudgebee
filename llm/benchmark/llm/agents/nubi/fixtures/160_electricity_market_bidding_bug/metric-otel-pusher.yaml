@@ -1,0 +1,115 @@
+# Synthetic OTLP push of `bid_acceptance_total` counter showing NordPool
+# exchange has an abnormally high acceptance rate (~99.9%) compared to
+# other exchanges (~10%). Original fixture deployed a real bidder + k6
+# generator; we replicate the steady-state shape without any of that.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-pusher-script
+data:
+  push.sh: |
+    #!/bin/sh
+    set -eu
+    : "${OTLP_HTTP_ENDPOINT:?must be set}"
+
+    while true; do
+      NOW_NS=$(date +%s)000000000
+      cat > /tmp/payload.json <<EOF
+    {
+      "resourceMetrics": [{
+        "resource": {
+          "attributes": [
+            {"key": "service.name", "value": {"stringValue": "bidder"}},
+            {"key": "service.namespace", "value": {"stringValue": "app-160"}},
+            {"key": "service.version", "value": {"stringValue": "1.0.0"}},
+            {"key": "k8s.namespace.name", "value": {"stringValue": "app-160"}},
+            {"key": "k8s.pod.name", "value": {"stringValue": "${HOSTNAME}"}},
+            {"key": "telemetry.sdk.language", "value": {"stringValue": "shell"}},
+            {"key": "telemetry.sdk.name", "value": {"stringValue": "otlp-curl"}}
+          ]
+        },
+        "scopeMetrics": [{
+          "scope": {"name": "bidder"},
+          "metrics": [{
+            "name": "bid_acceptance_total",
+            "description": "Total bid acceptance/rejection counts per exchange",
+            "unit": "1",
+            "sum": {
+              "isMonotonic": true,
+              "aggregationTemporality": 2,
+              "dataPoints": [
+                {"asInt": "999", "timeUnixNano": "${NOW_NS}", "startTimeUnixNano": "${NOW_NS}", "attributes": [{"key": "exchange", "value": {"stringValue": "nordpool"}}, {"key": "status", "value": {"stringValue": "accepted"}}]},
+                {"asInt": "1",   "timeUnixNano": "${NOW_NS}", "startTimeUnixNano": "${NOW_NS}", "attributes": [{"key": "exchange", "value": {"stringValue": "nordpool"}}, {"key": "status", "value": {"stringValue": "rejected"}}]},
+                {"asInt": "100", "timeUnixNano": "${NOW_NS}", "startTimeUnixNano": "${NOW_NS}", "attributes": [{"key": "exchange", "value": {"stringValue": "epex"}},     {"key": "status", "value": {"stringValue": "accepted"}}]},
+                {"asInt": "900", "timeUnixNano": "${NOW_NS}", "startTimeUnixNano": "${NOW_NS}", "attributes": [{"key": "exchange", "value": {"stringValue": "epex"}},     {"key": "status", "value": {"stringValue": "rejected"}}]},
+                {"asInt": "90",  "timeUnixNano": "${NOW_NS}", "startTimeUnixNano": "${NOW_NS}", "attributes": [{"key": "exchange", "value": {"stringValue": "aemo"}},     {"key": "status", "value": {"stringValue": "accepted"}}]},
+                {"asInt": "810", "timeUnixNano": "${NOW_NS}", "startTimeUnixNano": "${NOW_NS}", "attributes": [{"key": "exchange", "value": {"stringValue": "aemo"}},     {"key": "status", "value": {"stringValue": "rejected"}}]}
+              ]
+            }
+          }, {
+            "name": "bid_request_total",
+            "description": "Total bid requests received per exchange",
+            "unit": "1",
+            "sum": {
+              "isMonotonic": true,
+              "aggregationTemporality": 2,
+              "dataPoints": [
+                {"asInt": "1000", "timeUnixNano": "${NOW_NS}", "startTimeUnixNano": "${NOW_NS}", "attributes": [{"key": "exchange", "value": {"stringValue": "nordpool"}}]},
+                {"asInt": "1000", "timeUnixNano": "${NOW_NS}", "startTimeUnixNano": "${NOW_NS}", "attributes": [{"key": "exchange", "value": {"stringValue": "epex"}}]},
+                {"asInt": "900",  "timeUnixNano": "${NOW_NS}", "startTimeUnixNano": "${NOW_NS}", "attributes": [{"key": "exchange", "value": {"stringValue": "aemo"}}]}
+              ]
+            }
+          }]
+        }]
+      }]
+    }
+    EOF
+      curl -sS -o /dev/null -w "%{http_code}" -X POST \
+        -H "Content-Type: application/json" \
+        --data-binary @/tmp/payload.json \
+        "${OTLP_HTTP_ENDPOINT}/v1/metrics" || true
+      echo " — pushed at $(date -u +%H:%M:%S)"
+      sleep 10
+    done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metric-otel-pusher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: metric-otel-pusher
+  template:
+    metadata:
+      labels:
+        app: metric-otel-pusher
+    spec:
+      containers:
+      - name: pusher
+        image: curlimages/curl:8.10.1
+        command: ["sh", "/script/push.sh"]
+        env:
+        - name: OTLP_HTTP_ENDPOINT
+          value: "http://otel-deployment-collector-collector.otel.svc.cluster.local:4318"
+        - name: HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        volumeMounts:
+        - name: script
+          mountPath: /script
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "16Mi"
+          limits:
+            cpu: "100m"
+            memory: "64Mi"
+      volumes:
+      - name: script
+        configMap:
+          name: otel-pusher-script
+          defaultMode: 0755

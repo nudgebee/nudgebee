@@ -1,0 +1,7 @@
+user_prompt: List all Azure App Service plans and their current usage.
+expected_output:
+- az appservice plan list --output table
+type: command
+tags:
+- command
+- azure

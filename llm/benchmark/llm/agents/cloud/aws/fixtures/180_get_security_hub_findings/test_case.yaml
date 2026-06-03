@@ -1,0 +1,6 @@
+user_prompt: Get Security Hub findings.
+expected_output:
+- aws securityhub get-findings
+tags:
+- command
+- aws

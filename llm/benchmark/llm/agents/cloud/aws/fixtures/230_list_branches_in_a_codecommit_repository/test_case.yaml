@@ -1,0 +1,6 @@
+user_prompt: List branches in a CodeCommit repository.
+expected_output:
+- aws codecommit list-branches --repository-name <repository-name>
+tags:
+- command
+- aws

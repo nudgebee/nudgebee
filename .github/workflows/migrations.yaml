@@ -1,0 +1,189 @@
+name: Migrations Validate
+
+# OSS-side migration validation. Catches issues BEFORE they land on main:
+# wrong filename, missing .down.sql pair, non-monotonic timestamps, SQL
+# that doesn't apply against a fresh Postgres.
+#
+# Deliberately scoped to validation only — no deploy, no image push,
+# no kubectl. The migration image itself is built/published by
+# release.yaml (tagged) and edge.yaml (rolling). OSS users run the
+# image against their own DB via the `migrations` chart or umbrella
+# chart's post-install hook.
+#
+# For ops-recovery patterns (apply / force / backfill_versions /
+# apply_from), see api-server/migrations/README.md — those are
+# operator commands, not a CI workflow.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'api-server/migrations/**'
+      - '.github/workflows/migrations.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint migrations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need main for the monotonic-timestamp check.
+          fetch-depth: 0
+
+      - name: Verify filename convention + up/down pair existence
+        run: |
+          set -euo pipefail
+          MIGRATIONS_DIR=api-server/migrations/migrations/app
+          PATTERN='^[0-9]{13,}_V[0-9]+_[a-z0-9_]+\.(up|down)\.sql$'
+          FAILED=0
+
+          # 1. Every file matches the canonical pattern
+          while IFS= read -r f; do
+            base=$(basename "$f")
+            if ! [[ "$base" =~ $PATTERN ]]; then
+              echo "::error file=${f}::filename does not match ${PATTERN}"
+              FAILED=1
+            fi
+          done < <(find "$MIGRATIONS_DIR" -maxdepth 1 -type f -name '*.sql')
+
+          # 2. Every .up.sql has a matching .down.sql with the same stem
+          while IFS= read -r up; do
+            down="${up%.up.sql}.down.sql"
+            if [ ! -f "$down" ]; then
+              echo "::error file=${up}::missing matching .down.sql (expected ${down})"
+              FAILED=1
+            fi
+          done < <(find "$MIGRATIONS_DIR" -maxdepth 1 -type f -name '*.up.sql')
+
+          # 3. No V<N> collisions (two files with same V number = silent skip
+          # by golang-migrate's version-tracker; very hard to detect later).
+          dupes=$(find "$MIGRATIONS_DIR" -maxdepth 1 -name '*.up.sql' \
+                  | sed -E 's@.*/[0-9]+_(V[0-9]+)_.*@\1@' \
+                  | sort | uniq -d)
+          if [ -n "$dupes" ]; then
+            echo "::error::V<N> label collision(s):"
+            echo "$dupes" | sed 's/^/  /' >&2
+            FAILED=1
+          fi
+
+          [ "$FAILED" -eq 0 ] && echo "✓ filename + pair checks clean"
+          exit "$FAILED"
+
+      - name: Verify monotonic timestamps vs main
+        run: |
+          set -euo pipefail
+          MIGRATIONS_DIR=api-server/migrations/migrations/app
+
+          # golang-migrate's tracker is single-row "current version". A new
+          # migration whose leading integer is LOWER than `max(version)
+          # already applied` is silently skipped — silently. The drop-side
+          # workaround is `mode=apply_from <ts>` (forces tracker back, runs
+          # forward). Cheaper to catch the out-of-order file at PR time.
+          existing_max=$(git show "origin/main:${MIGRATIONS_DIR}" 2>/dev/null \
+            | grep -oE '^[0-9]{13,}' | sort -nu | tail -1 || echo "0")
+          [ -n "$existing_max" ] || existing_max=0
+
+          FAILED=0
+          # Files added in this PR (vs main).
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            [ -e "$f" ] || continue
+            [[ "$f" == *.up.sql ]] || continue
+            ts=$(basename "$f" | grep -oE '^[0-9]+')
+            if [ -n "$ts" ] && [ "$ts" -le "$existing_max" ]; then
+              echo "::error file=${f}::timestamp ${ts} <= main's max ${existing_max} — would be silently skipped by golang-migrate"
+              FAILED=1
+            fi
+          done < <(git diff --name-only --diff-filter=A origin/main..HEAD -- "$MIGRATIONS_DIR")
+
+          [ "$FAILED" -eq 0 ] && echo "✓ monotonic timestamps (new max ≤ $(date -d @0 2>/dev/null || true))"
+          exit "$FAILED"
+
+      - name: Refuse CREATE INDEX CONCURRENTLY without --migrate:no-transaction
+        run: |
+          set -euo pipefail
+          MIGRATIONS_DIR=api-server/migrations/migrations/app
+
+          # golang-migrate wraps each file in a transaction by default, and
+          # CREATE INDEX CONCURRENTLY can't run inside one. The fix is to
+          # add `-- migrate:no-transaction` as the first line of the file.
+          # Easier to catch here than to debug a stuck `dirty=true` tracker
+          # in production. (See api-server/migrations/README.md.)
+          FAILED=0
+          while IFS= read -r f; do
+            if grep -qiE 'CREATE\s+INDEX\s+CONCURRENTLY' "$f"; then
+              if ! head -1 "$f" | grep -qE '^--\s*migrate:no-transaction'; then
+                echo "::error file=${f}::CREATE INDEX CONCURRENTLY requires '-- migrate:no-transaction' as the first line"
+                FAILED=1
+              fi
+            fi
+          done < <(find "$MIGRATIONS_DIR" -maxdepth 1 -type f -name '*.sql')
+
+          [ "$FAILED" -eq 0 ] && echo "✓ no CONCURRENTLY-without-no-transaction violations"
+          exit "$FAILED"
+
+  dry-run:
+    name: Dry-run migrations against ephemeral Postgres
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: nudgebee
+          POSTGRES_PASSWORD: nudgebee
+          POSTGRES_DB: nudgebee_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Matches the URL shape that run-migrations.sh consumes in production.
+      APP_DATABASE_URL: postgres://nudgebee:nudgebee@localhost:5432/nudgebee_test?sslmode=disable
+      GOLANG_MIGRATE_VERSION: v4.17.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install golang-migrate ${{ env.GOLANG_MIGRATE_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 \
+            "https://github.com/golang-migrate/migrate/releases/download/${GOLANG_MIGRATE_VERSION}/migrate.linux-amd64.deb" \
+            -o /tmp/migrate.deb
+          sudo dpkg -i /tmp/migrate.deb
+          migrate -version
+
+      - name: Install psql (postgresql-client)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Wait for Postgres
+        run: |
+          for i in {1..20}; do
+            pg_isready -h localhost -p 5432 && break
+            sleep 1
+          done
+
+      - name: Create nudgebee schema (tracker target)
+        run: |
+          psql "$APP_DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS nudgebee;"
+
+      - name: migrate up
+        run: |
+          set -euo pipefail
+          # Same URL shape as run-migrations.sh — tracker in nudgebee schema,
+          # quoted-table feature on.
+          MIGRATE_URL="${APP_DATABASE_URL}&x-migrations-table=%22nudgebee%22.%22schema_migrations%22&x-migrations-table-quoted=true"
+          migrate -path api-server/migrations/migrations/app -database "$MIGRATE_URL" up
+
+      - name: Show applied tracker state
+        run: |
+          psql "$APP_DATABASE_URL" -tA \
+            -c "SELECT version, dirty FROM nudgebee.schema_migrations;"

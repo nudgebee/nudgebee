@@ -1,0 +1,18 @@
+source_node_type,source_name,source_namespace,source_cluster,source_arn,source_account_id,source_region,dest_node_type,dest_name,dest_namespace,dest_cluster,dest_arn,dest_account_id,dest_region,relationship_type,notes
+K8sService,app-prod,nudgebee,k8s-prod,,,,K8sService,auto-pilot-server,nudgebee,k8s-prod,,,,CALLS,A1: happy path — fully specified k8s→k8s; should resolve cleanly
+K8sService,auto-pilot-server,nudgebee,k8s-prod,,,,K8sService,benchmark-server,nudgebee,k8s-prod,,,,CALLS,A2: another fully specified k8s→k8s; should resolve cleanly
+K8sService,auto-pilot-server,nudgebee,,,,,K8sService,benchmark-server,nudgebee,k8s-prod,,,,CALLS,B1: source ambiguous — auto-pilot-server exists on k8s-dev AND k8s-prod; no cluster on source
+K8sService,app-prod,nudgebee,k8s-prod,,,,K8sService,benchmark-server,nudgebee,,,,,CALLS,C1: dest ambiguous — benchmark-server exists on both clusters; no cluster on dest
+K8sService,auto-pilot-server,nudgebee,,,,,K8sService,benchmark-server,nudgebee,,,,,CALLS,D1: BOTH ambiguous — neither side specifies cluster; exercises the both-sides resolve panel
+K8sService,non-existent-service-xyz,nudgebee,k8s-prod,,,,K8sService,benchmark-server,nudgebee,k8s-prod,,,,CALLS,E1: source unmatched — name does not exist
+K8sService,app-prod,nudgebee,k8s-prod,,,,K8sService,non-existent-dest-xyz,nudgebee,k8s-prod,,,,CALLS,E2: dest unmatched — name does not exist
+Workload,api-server,nudgebee,,,,,Database,,,,arn:aws:rds:us-east-1:123456789012:db:orders-primary,123456789012,us-east-1,CALLS,F1: cross-stack k8s Workload → AWS RDS by ARN (dest likely unmatched in dev DB; format check)
+Workload,checkout-worker,nudgebee,,,,,ServerlessFunction,,,,arn:aws:lambda:us-east-1:123456789012:function:send-receipt,123456789012,us-east-1,PUBLISHES_TO,F2: cross-stack k8s Workload → AWS Lambda by ARN with PUBLISHES_TO
+K8sService,notifier,nudgebee,k8s-prod,,,,Queue,,,,arn:aws:sqs:us-east-1:123456789012:notifications-q,123456789012,us-east-1,SUBSCRIBES_TO,F3: cross-stack k8s → AWS SQS with SUBSCRIBES_TO
+K8sService,app-prod,nudgebee,k8s-prod,,,,Topic,,,,arn:aws:sns:us-east-1:123456789012:alerts,123456789012,us-east-1,PUBLISHES_TO,G1: PUBLISHES_TO to SNS topic
+K8sService,app-prod,nudgebee,k8s-prod,,,,K8sService,auto-pilot-worker,nudgebee,k8s-prod,,,,,H1: blank relationship_type — parser must default to CALLS
+K8sService,app-prod,nudgebee,k8s-prod,,,,K8sService,auto-pilot-worker,nudgebee,k8s-prod,,,,OWNS,I1: rejected — invalid relationship_type (only CALLS/PUBLISHES_TO/SUBSCRIBES_TO allowed)
+K8sService,,nudgebee,k8s-prod,,,,K8sService,auto-pilot-worker,nudgebee,k8s-prod,,,,CALLS,I2: rejected — source_name empty
+K8sService,app-prod,nudgebee,k8s-prod,,,,,auto-pilot-worker,nudgebee,k8s-prod,,,,CALLS,I3: rejected — dest_node_type empty
+,app-prod,nudgebee,k8s-prod,,,,K8sService,auto-pilot-worker,nudgebee,k8s-prod,,,,CALLS,I4: rejected — source_node_type empty
+K8sService,app-prod,nudgebee,k8s-prod,,,,K8sService,,nudgebee,k8s-prod,,,,CALLS,I5: rejected — dest_name empty

@@ -1,0 +1,6 @@
+user_prompt: Delete an S3 bucket.
+expected_output:
+- aws s3 rb s3://bucket-name --force
+tags:
+- command
+- aws

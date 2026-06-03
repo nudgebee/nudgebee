@@ -1,0 +1,107 @@
+# GCP Compute Engine Cloud Monitoring Alert Policy Recommendations
+# Based on Google Cloud best practices for VM monitoring
+service_name: "Compute Engine"
+
+templates:
+  - name: "gcp_compute_cpu_utilization_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "High CPU utilization can indicate resource constraints or inefficient application code. Create an alert policy to monitor CPU usage."
+    configuration:
+      namespace: "compute.googleapis.com"
+      metric_name: "CPUUtilization"
+      metric_type_filter: "compute.googleapis.com/instance/cpu/utilization"
+      resource_type: "gce_instance"
+      statistic: "ALIGN_MEAN"
+      period: 300  # 5 minutes
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"  # Greater than
+      aggregation: "REDUCE_MEAN"
+    threshold_rules:
+      default: 0.80  # 80%
+      by_instance_family:
+        # General purpose
+        n1: 0.80
+        n2: 0.80
+        n2d: 0.80
+        # Compute optimized - can handle higher CPU
+        c2: 0.85
+        c2d: 0.85
+        # Memory optimized
+        m1: 0.85
+        m2: 0.85
+        m3: 0.85
+        # Shared-core (burstable) - alert earlier
+        e2: 0.70
+        f1: 0.70
+        g1: 0.70
+
+  - name: "gcp_compute_memory_utilization_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "AGENT"
+    category: "Configuration"
+    severity: "Medium"
+    description: "High memory utilization can lead to application crashes or degraded performance. Requires Cloud Monitoring agent installed."
+    configuration:
+      namespace: "agent.googleapis.com"
+      metric_name: "MemoryUtilization"
+      metric_type_filter: "agent.googleapis.com/memory/percent_used"
+      resource_type: "gce_instance"
+      statistic: "ALIGN_MEAN"
+      period: 300
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MEAN"
+      requires_agent: true
+    threshold_rules:
+      default: 0.85  # 85%
+      by_instance_family:
+        # Memory optimized - can handle higher memory
+        m1: 0.90
+        m2: 0.90
+        m3: 0.90
+        # Shared-core
+        e2: 0.80
+        f1: 0.80
+        g1: 0.80
+
+  - name: "gcp_compute_disk_utilization_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "AGENT"
+    category: "Configuration"
+    severity: "High"
+    description: "High disk utilization can cause applications to fail or become unresponsive. Requires Cloud Monitoring agent installed."
+    configuration:
+      namespace: "agent.googleapis.com"
+      metric_name: "DiskUtilization"
+      metric_type_filter: "agent.googleapis.com/disk/percent_used"
+      resource_type: "gce_instance"
+      statistic: "ALIGN_MEAN"
+      period: 300
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MAX"  # Alert on max across all disks
+      requires_agent: true
+    threshold_rules:
+      default: 0.85  # 85%
+
+  - name: "gcp_compute_uptime_check_alarm_missing"
+    alarm_type: "AVAILABILITY"
+    metric_type: "UPTIME"
+    category: "Configuration"
+    severity: "High"
+    description: "Uptime checks verify instance availability and responsiveness. Configure an uptime check for critical instances."
+    configuration:
+      namespace: "monitoring.googleapis.com"
+      metric_name: "UptimeCheckPassed"
+      metric_type_filter: "monitoring.googleapis.com/uptime_check/check_passed"
+      resource_type: "uptime_url"
+      statistic: "ALIGN_NEXT_OLDER"
+      period: 60
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_LT"
+      aggregation: "REDUCE_COUNT_FALSE"
+    threshold_rules:
+      default: 1.0  # Alert if check fails

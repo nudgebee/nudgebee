@@ -1,0 +1,142 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H06: Lambda recursive self-invocation — concurrency exhaustion.
+  User complaint: "Our image resizing Lambda randomly becomes completely unresponsive.
+  After ~30 seconds it starts timing out. Then eventually it recovers. This happens
+  every few hours. AWS console shows Lambda throttling errors."
+  Root cause: Lambda invokes itself recursively for 'retry' logic, but the retry
+  condition is too broad (always retries on any error). Under load this causes
+  exponential self-invocations, hitting reserved concurrency limit of 5.
+  Agent must correlate CloudWatch metrics (Throttles, ConcurrentExecutions) with
+  Lambda configuration (reserved concurrency) and CloudTrail (invocation source).
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Lambda has recursive retry logic with reserved concurrency 5 (easy to exhaust).
+      Fixed = Lambda reserved concurrency set to 100, retry logic fixed.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  ImageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'h06-image-uploads-${AWS::AccountId}'
+      Tags:
+        - Key: Name
+          Value: h06-image-uploads
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: media-processing
+
+  ImageProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h06-image-processor-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: s3-lambda-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                Resource: !Sub 'arn:aws:s3:::h06-image-uploads-${AWS::AccountId}/*'
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:h06-image-processor'
+
+  # THE BUG: Low reserved concurrency (5) + recursive invocations = concurrency exhaustion
+  ImageProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h06-image-processor
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ImageProcessorRole.Arn
+      Timeout: 30
+      MemorySize: 512
+      # Broken: reserved concurrency 5 (easy to exhaust with recursive calls)
+      # Fixed: reserved concurrency 100
+      ReservedConcurrentExecutions: !If [IsFixed, 100, 5]
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+
+          lambda_client = boto3.client('lambda')
+
+          def handler(event, context):
+              image_key = event.get('image_key', 'unknown.jpg')
+              retry_count = event.get('retry_count', 0)
+              is_retry = event.get('is_retry', False)
+
+              print(f"Processing {image_key}, retry_count={retry_count}")
+
+              try:
+                  # Simulate image processing (sometimes fails)
+                  if not is_retry and image_key.endswith('.png'):
+                      raise ValueError("PNG processing requires conversion step first")
+
+                  # Simulate work
+                  result = f"processed_{image_key}"
+                  return {'statusCode': 200, 'body': json.dumps({'result': result})}
+
+              except Exception as e:
+                  if retry_count < 10:  # BUG: no upper bound effectively - retries too aggressively
+                      print(f"Error: {e}. Retrying (attempt {retry_count + 1})...")
+                      # Recursively invoke self — causes concurrency exhaustion
+                      lambda_client.invoke(
+                          FunctionName=context.function_name,
+                          InvocationType='Event',  # async
+                          Payload=json.dumps({
+                              'image_key': image_key,
+                              'retry_count': retry_count + 1,
+                              'is_retry': True
+                          })
+                      )
+                      return {'statusCode': 202, 'body': 'Retry queued'}
+                  else:
+                      return {'statusCode': 500, 'body': json.dumps({'error': str(e)})}
+      Tags:
+        - Key: Name
+          Value: h06-image-processor
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: media-processing
+        - Key: Team
+          Value: platform
+
+Outputs:
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref ImageProcessorFunction
+  ReservedConcurrency:
+    Description: Reserved concurrency limit
+    Value: !If [IsFixed, '100', '5']
+  BucketName:
+    Description: S3 Bucket for image uploads
+    Value: !Ref ImageBucket
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

@@ -1,0 +1,153 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H09: ECS Fargate task crashes on startup — missing required environment variable.
+  User complaint: "Our catalog service ECS tasks keep crashing. ECS shows tasks
+  starting then immediately stopping. The desired count is 1 but running count
+  stays at 0. We just deployed a new task definition."
+  Root cause: The container entrypoint script checks for REQUIRED_CONFIG env var
+  and exits with code 1 if it's empty/unset. In Broken mode, the env var is set
+  to empty string. ECS keeps trying to restart the task in an infinite crash loop.
+  Agent must: (1) check ECS task stopped reason, (2) read CloudWatch logs,
+  (3) identify missing env var causing exit code 1.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = REQUIRED_CONFIG env var is empty string → container crashes on startup.
+      Fixed = REQUIRED_CONFIG env var is set to valid value.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: h09-catalog-cluster
+      Tags:
+        - Key: Name
+          Value: h09-catalog-cluster
+        - Key: Environment
+          Value: production
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h09-catalog-task-exec-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for catalog service ECS tasks
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      Tags:
+        - Key: Name
+          Value: h09-catalog-task-sg
+
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/h09-catalog-api
+      RetentionInDays: 7
+
+  # THE BUG: REQUIRED_CONFIG is empty in Broken mode → container exits with code 1
+  CatalogTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    DependsOn: LogGroup
+    Properties:
+      Family: h09-catalog-api
+      Cpu: '256'
+      Memory: '512'
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: catalog-api
+          Image: public.ecr.aws/amazonlinux/amazonlinux:2023
+          Command:
+            - '/bin/bash'
+            - '-c'
+            - |
+              if [ -z "$REQUIRED_CONFIG" ]; then
+                echo "FATAL: REQUIRED_CONFIG environment variable is not set or empty"
+                echo "Cannot start service without database configuration"
+                exit 1
+              fi
+              echo "Starting catalog service with config: $REQUIRED_CONFIG"
+              # Keep running (simulating service)
+              while true; do echo "Running..."; sleep 30; done
+          Environment:
+            - Name: APP_NAME
+              Value: catalog-api
+            # THE BUG: empty string in Broken mode → container startup check fails
+            - Name: REQUIRED_CONFIG
+              Value: !If [IsFixed, 'db.h09.internal:5432/catalog', '']
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: /ecs/h09-catalog-api
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: catalog
+
+  # Deploy with MinimumHealthyPercent=0 so CF succeeds even if tasks crash
+  # No circuit breaker — tasks crash silently in ECS
+  CatalogService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: h09-catalog-svc
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref CatalogTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      DeploymentConfiguration:
+        # MinimumHealthyPercent=0 lets CF mark service as created even if tasks crash
+        MaximumPercent: 200
+        MinimumHealthyPercent: 0
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets:
+            - !ImportValue aws-agent-test-public-subnet-a
+            - !ImportValue aws-agent-test-public-subnet-b
+          SecurityGroups:
+            - !Ref TaskSecurityGroup
+      Tags:
+        - Key: Name
+          Value: h09-catalog-svc
+        - Key: Environment
+          Value: production
+
+Outputs:
+  ClusterName:
+    Description: ECS Cluster Name
+    Value: !Ref ECSCluster
+  ServiceName:
+    Description: ECS Service Name
+    Value: !GetAtt CatalogService.Name
+  LogGroup:
+    Description: CloudWatch Log Group
+    Value: !Ref LogGroup
+  RequiredConfig:
+    Description: REQUIRED_CONFIG env var value (empty in Broken mode)
+    Value: !If [IsFixed, 'db.h09.internal:5432/catalog', '(empty - causes crash)']
+  BugNote:
+    Description: The bug
+    Value: 'REQUIRED_CONFIG env var is empty → container exits 1 → ECS crash loop'
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

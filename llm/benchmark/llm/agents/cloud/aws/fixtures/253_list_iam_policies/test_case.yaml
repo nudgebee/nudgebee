@@ -1,0 +1,6 @@
+user_prompt: List IAM policies.
+expected_output:
+- aws iam list-policies
+tags:
+- command
+- aws

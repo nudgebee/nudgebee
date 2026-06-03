@@ -1,0 +1,6 @@
+user_prompt: List GuardDuty findings.
+expected_output:
+- aws guardduty list-findings --detector-id <detector-id>
+tags:
+- command
+- aws

@@ -1,0 +1,6 @@
+user_prompt: List EKS clusters.
+expected_output:
+- aws eks list-clusters
+tags:
+- command
+- aws

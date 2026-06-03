@@ -1,0 +1,18 @@
+user_prompt: Find requests with latency greater than 5 seconds for the Cloud Run service 'nudgebee-booth' in project 'nudgebee-dev'. Show up to 30 results.
+expected_output:
+  - >-
+    gcloud logging read
+    'resource.type="cloud_run_revision"
+    resource.labels.service_name="nudgebee-booth"
+    httpRequest.latency>"5s"'
+    --project=nudgebee-dev --limit=30 --format=json
+  - >-
+    gcloud logging read
+    'resource.type="cloud_run_revision"
+    resource.labels.service_name="nudgebee-booth"
+    httpRequest.latency>"5s"'
+    --project=nudgebee-dev --limit=30
+tags:
+  - command
+  - trace
+  - gcp

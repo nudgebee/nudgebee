@@ -1,0 +1,12 @@
+# Requires: ArgoCD installed with the demo-app application deployed
+# and ARGOCD_AUTH_TOKEN env var configured for the running agent.
+user_prompt: "what's wrong with the demo-app?"
+expected_output: Mention of my-demoshop-namespaces not found
+evaluation:
+  correctness: 1
+tags:
+  - medium
+  - kubernetes
+
+skip: true
+skip_reason: "Requires ArgoCD with ARGOCD_AUTH_TOKEN and pre-configured demo-app"

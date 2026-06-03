@@ -1,0 +1,6 @@
+user_prompt: Delete an ECS service.
+expected_output:
+- aws ecs delete-service --cluster <cluster-name> --service <service-name>
+tags:
+- command
+- aws

@@ -1,0 +1,17 @@
+agent: aws_debug
+expected_output:
+- The root cause is that the Lambda function 'm03-webhook-processor' is deployed in a VPC private subnet that has no internet
+  egress path. When Lambda is attached to a VPC, it loses its default internet access and must use the VPC's networking. The
+  private subnet's route table has no 0.0.0.0/0 route to a NAT Gateway, and there is no VPC endpoint for the external service.
+  Without internet access, the outbound HTTPS call to the Slack webhook URL times out. The fix is to either add a NAT Gateway
+  with a route from the private subnet, add a VPC endpoint if calling an AWS service, or move the Lambda out of the VPC if
+  VPC access is not required.
+scenario: M03
+tags:
+- command
+- aws
+- medium
+type: rca
+user_prompt: Our Lambda function 'm03-webhook-processor' in us-east-1 times out every time it tries to send a webhook to an
+  external Slack URL. We moved it into a VPC last week for compliance reasons. The same code worked perfectly before the VPC
+  move. Can you investigate?

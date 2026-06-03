@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+{#
+=======================================================================
+  BASE EMAIL TEMPLATE — Shared chrome for all emails
+=======================================================================
+  Provides: head (meta, fonts, responsive styles), card wrapper,
+  centered logo with divider, footer.
+
+  Blocks available to child templates:
+    block title        — <title> tag content
+    block extra_styles — additional <style> rules
+    block content      — main card body
+    block card_footer  — inside card, after content (sign-offs etc.)
+=======================================================================
+#}
+{%- set _brand_name     = branding.name           | default("Nudgebee", true) -%}
+{%- set _primary_color  = branding.primary_color   | default("#3470e9", true) -%}
+{%- set _support_email  = branding.support_email   | default("", true) -%}
+{%- set _brand_logo_url = images.logo_url           | default("/branding/default/logo.png", true) -%}
+{%- set _copyright      = texts.copyright          | default("Copyright © 2022-2025", true) -%}
+{%- set _address        = texts.address            | default("Pune", true) -%}
+{%- set _base_url       = links.base_url           | default("#", true) -%}
+{%- set _branding_url   = links.branding_url       | default("", true) -%}
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="x-apple-disable-message-reformatting" />
+  <title>{% block title %}{{ _brand_name }}{% endblock %}</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&amp;family=DM+Sans:wght@300;400;500;600&amp;display=swap" rel="stylesheet" />
+
+  <style>
+    body, table, td, a { -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; }
+    table, td, th { mso-table-lspace:0pt; mso-table-rspace:0pt; }
+
+    @media only screen and (max-width:600px) {
+      .email-card  { width:100% !important; padding:36px 28px 32px !important; }
+      .subject-h   { font-size:22px !important; }
+      .footer-wrap { width:100% !important; }
+    }
+    {% block extra_styles %}{% endblock %}
+  </style>
+</head>
+
+<body style="margin:0; padding:0; background-color:#F0F2F5; font-family:'DM Sans',-apple-system,Arial,sans-serif; -webkit-font-smoothing:antialiased;">
+
+  <!-- Outer wrapper -->
+  <table style="border-collapse:collapse; border-spacing:0; border:0; width:100%; background-color:#F0F2F5;">
+    <tr style="height:0; font-size:0; line-height:0;"><th style="padding:0; height:0; font-size:0; line-height:0; overflow:hidden;" scope="col">&nbsp;</th></tr>
+    <tr>
+      <td style="text-align:center; padding:40px 16px;">
+
+        <!-- Email card -->
+        <table class="email-card"
+          style="border-collapse:collapse; border-spacing:0; border:0; width:660px; margin:0 auto; background-color:#FFFFFF; border-radius:4px; box-shadow:0 1px 3px rgba(0,0,0,0.06),0 4px 20px rgba(0,0,0,0.04);">
+          <tr style="height:0; font-size:0; line-height:0;"><th style="padding:0; height:0; font-size:0; line-height:0; overflow:hidden;" scope="col">&nbsp;</th></tr>
+          <tr>
+            <td style="text-align:left; padding:52px 56px 48px;" class="email-card">
+
+              {% block content %}{% endblock %}
+
+              {% block card_footer %}{% endblock %}
+
+            </td>
+          </tr>
+        </table>
+        <!-- /Email card -->
+
+        <!-- FOOTER -->
+        <table class="footer-wrap" style="border-collapse:collapse; border-spacing:0; border:0; width:660px; margin:0 auto;">
+          <tr style="height:0; font-size:0; line-height:0;"><th style="padding:0; height:0; font-size:0; line-height:0; overflow:hidden;" scope="col">&nbsp;</th></tr>
+          <tr>
+            <td style="padding:22px 0 0;">
+              <table style="border-collapse:collapse; border-spacing:0; border:0; width:100%;">
+                <tr>
+                  <td style="text-align:left; vertical-align:middle;">
+                    <p style="font-family:'DM Sans',Arial,sans-serif; font-size:11.5px; color:#999999; line-height:1.7; margin:0; font-weight:300;">
+                      &copy; {{ _copyright }} {{ _brand_name }}
+                      {% if _support_email %}
+                      &nbsp;&middot;&nbsp;
+                      <a href="mailto:{{ _support_email }}" style="color:#888888; text-decoration:none;">{{ _support_email }}</a>
+                      {% endif %}
+                      {% if _branding_url %}
+                      &nbsp;&middot;&nbsp;
+                      <a href="{{ _branding_url }}/privacy" style="color:#888888; text-decoration:none;">Privacy</a>
+                      &nbsp;&middot;&nbsp;
+                      <a href="{{ _branding_url }}/terms" style="color:#888888; text-decoration:none;">Terms</a>
+                      {% endif %}
+                    </p>
+                  </td>
+                  <td style="text-align:right; vertical-align:middle; white-space:nowrap;">
+                    <img alt="{{ _brand_name }}"
+                         src="{{ _brand_logo_url }}"
+                         width="72" height="20"
+                         style="width:72px; height:20px; display:inline-block; vertical-align:middle;" />
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+        <!-- /Footer -->
+
+      </td>
+    </tr>
+  </table>
+
+</body>
+</html>

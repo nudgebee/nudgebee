@@ -1,0 +1,16 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is that the EventBridge rule ''m08-nightly-backup-schedule'' is in DISABLED state. Even though the rule
+  exists with the correct schedule expression ''cron(0 2 * * ? *)'' and has the Lambda ''m08-nightly-backup-job'' as a target,
+  a disabled rule never fires. The Lambda works correctly when invoked manually but the EventBridge trigger is inactive. Run
+  ''aws events describe-rule --name m08-nightly-backup-schedule'' to confirm the State is DISABLED. The fix is to enable the
+  rule: ''aws events enable-rule --name m08-nightly-backup-schedule''.'
+scenario: M08
+tags:
+- command
+- aws
+- medium
+type: rca
+user_prompt: Our nightly backup Lambda 'm08-nightly-backup-job' hasn't run in several days. The Lambda itself works fine when
+  manually invoked. The EventBridge cron schedule looks correct - it's set to run at 2 AM UTC daily. What's preventing it
+  from running?

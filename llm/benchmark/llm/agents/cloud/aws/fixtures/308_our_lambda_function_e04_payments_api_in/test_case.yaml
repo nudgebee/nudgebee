@@ -1,0 +1,16 @@
+agent: aws_debug
+expected_output:
+- The root cause is a port mismatch between the application configuration and the database. The Lambda function 'e04-payments-api'
+  is configured with DB_PORT=3306 (MySQL default) in its environment variables, but the RDS instance 'e04-payments-db' is
+  a PostgreSQL database listening on port 5432. The connection times out because nothing is listening on port 3306, and the
+  RDS security group only allows inbound on 5432. The fix is to update the Lambda environment variable DB_PORT from 3306 to
+  5432 to match the PostgreSQL RDS instance.
+scenario: E04
+tags:
+- command
+- aws
+- easy
+type: rca
+user_prompt: Our Lambda function 'e04-payments-api' in us-east-1 can't connect to its database. It keeps timing out. The RDS
+  instance is 'e04-payments-db'. This was set up recently and has never worked. Can you investigate why the database connection
+  is failing?

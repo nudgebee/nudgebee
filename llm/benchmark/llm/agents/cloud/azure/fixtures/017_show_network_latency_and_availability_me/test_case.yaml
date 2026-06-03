@@ -1,0 +1,10 @@
+user_prompt: Show network latency and availability metrics for the Application Gateway
+  nudgebee-dev-agw.
+expected_output:
+- az monitor metrics list --resource nudgebee-dev-agw --resource-type Microsoft.Network/applicationGateways
+  --resource-group NUDGEBEE-DEV_GROUP --metric "ApplicationGatewayTotalTime" "FailedRequests"
+  "TotalRequests" --output table
+type: command
+tags:
+- command
+- azure

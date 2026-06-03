@@ -1,0 +1,1 @@
+drop table if exists public.insights_summary

@@ -1,0 +1,21 @@
+name: test-vars-context-workflow
+definition:
+  triggers:
+    - type: "manual"
+  inputs:
+    - id: initial_greeting
+      default: "Hello"
+  tasks:
+    - id: task-a
+      type: core.print
+      params:
+        message: "World"
+      set_vars:
+        my_var: "{{ Self.output.data }}"
+    - id: task-b
+      type: core.print
+      depends_on: [task-a]
+      params:
+        message: "{{ Vars.initial_greeting }} {{ Vars.my_var }}"
+  output:
+    final_result: "{{ Tasks['task-b'].output.data }}"

@@ -1,0 +1,1 @@
+delete from recommendation_category_type where value in ( 'K8sMissingAttribute', 'K8sInstanceRecommendation', 'WarehouseComputeOptimization', 'WarehouseTableOptimization', 'WarehouseQueryOptimization', 'PodRightSizing', 'MissingAttribute');

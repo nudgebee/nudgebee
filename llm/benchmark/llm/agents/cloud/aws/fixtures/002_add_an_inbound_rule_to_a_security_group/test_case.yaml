@@ -1,0 +1,6 @@
+user_prompt: Add an inbound rule to a security group.
+expected_output:
+- aws ec2 authorize-security-group-ingress
+tags:
+- command
+- aws

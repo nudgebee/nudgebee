@@ -1,0 +1,2 @@
+
+INSERT INTO "public"."runbook_action"("attributes", "base_action_configs", "configs", "account_type", "action_name", "description", "internal_identifier", "status", "created_at", "updated_at", "created_by", "id", "library_id", "tenant_id") VALUES ('{}', '{}', '{}', E'K8s', E'Right Size CPU / Memory', E'Fine tune CPU/Memory setting', E'vertical_rightsize', E'ACTIVE', E'2024-06-12T16:39:42.665671', null, null, E'12eeeafa-e4d3-4313-b6c5-cb55bcc378ca', E'0e1e7e4c-b09c-4259-81dc-aec51ef45114', null);

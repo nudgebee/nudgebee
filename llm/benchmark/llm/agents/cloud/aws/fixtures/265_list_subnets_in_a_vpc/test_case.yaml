@@ -1,0 +1,6 @@
+user_prompt: List subnets in a VPC.
+expected_output:
+- aws ec2 describe-subnets
+tags:
+- command
+- aws

@@ -1,0 +1,15 @@
+global:
+  image: {}
+  imagePullSecrets: []
+
+image:
+  repository: ghcr.io/nudgebee/app-e2e-tests
+  pullPolicy: IfNotPresent
+  tag: 'latest'
+# imagePullSecrets is only needed for private registries; GHCR public
+# pulls don't need credentials. Override via values-enterprise.yaml for
+# EE-internal registry installs.
+imagePullSecrets:
+  - name: nudgebee-registry-secret
+
+secretName: nudgebee

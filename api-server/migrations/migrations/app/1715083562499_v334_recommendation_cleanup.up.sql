@@ -1,0 +1,11 @@
+DROP TABLE IF EXISTS public.recommendation_assignment;
+ALTER TABLE public.auto_pilot_task DROP CONSTRAINT IF EXISTS scheduled_task_recommendation_id_fkey;
+delete from recommendation where category  = 'Security' and  rule_name != 'CIS' and rule_name like 'CVE%' and account_object_id is null ;
+delete from recommendation where category  = 'Security' and rule_name like 'image_scan' and account_object_id is null ;
+update recommendation r set recommendation  = jsonb_set(r.recommendation, '{image_name}', to_jsonb(r.account_object_id), true) where category  = 'Security'  and rule_name != 'CIS' and rule_name like 'CVE%' and recommendation is not null and r.account_object_id is not null;
+update recommendation set account_object_id = ((recommendation->>'image_name')::text || '-' || (recommendation->>'PkgID')::text || '-' || (recommendation->>'VulnerabilityID')::text)  where category  = 'Security' and  rule_name != 'CIS' and (rule_name like 'CVE%' or rule_name = 'image_scan' ) ;
+delete from recommendation_resolution where recommendation_id in ( select id from ( select id, row_number() over( partition by cloud_account_id, tenant_id, rule_name, category, account_object_id, resource_id, rule_name order by created_at ) as row_num from recommendation r ) as t where row_num >1);
+delete from recommendation where id in ( select id from ( select id, row_number() over( partition by cloud_account_id, tenant_id, rule_name, category, account_object_id, resource_id, rule_name order by created_at ) as row_num from recommendation r ) as t where row_num >1);
+ALTER TABLE public.recommendation DROP CONSTRAINT IF EXISTS recommendation_cloud_account_id_rule_name_resource_id_category_;
+ALTER TABLE public.recommendation ADD CONSTRAINT recommendation_cloud_account_id_rule_name_resource_id_category_ UNIQUE NULLS NOT DISTINCT(cloud_account_id, rule_name, resource_id, category, account_object_id) ;
+update recommendation r set rule_name = 'image_scan' where category  = 'Security' and  rule_name != 'CIS' and rule_name like 'CVE%' and account_object_id is not null;

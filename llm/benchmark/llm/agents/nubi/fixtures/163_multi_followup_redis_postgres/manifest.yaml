@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    benchmark: "true"
+  name: bench-163
+---
+# Redis pod with slow query simulation
+apiVersion: v1
+kind: Pod
+metadata:
+  name: redis-bench-163
+  namespace: bench-163
+  labels:
+    app: redis-bench
+spec:
+  containers:
+    - name: redis
+      image: redis:7-alpine
+      ports:
+        - containerPort: 6379
+      command: ["redis-server", "--slowlog-log-slower-than", "0", "--slowlog-max-len", "128"]
+---
+# PostgreSQL pod
+apiVersion: v1
+kind: Pod
+metadata:
+  name: postgres-bench-163
+  namespace: bench-163
+  labels:
+    app: postgres-bench
+spec:
+  containers:
+    - name: postgres
+      image: postgres:16-alpine
+      ports:
+        - containerPort: 5432
+      env:
+        - name: POSTGRES_PASSWORD
+          value: "example-fake-password"
+        - name: POSTGRES_DB
+          value: "benchdb"

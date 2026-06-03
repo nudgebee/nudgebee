@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    benchmark: "true"
+  name: nubi-test-47
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: long-logs-app
+  namespace: nubi-test-47
+  labels:
+    app: long-logs-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: long-logs-app
+  template:
+    metadata:
+      labels:
+        app: long-logs-app
+    spec:
+      containers:
+      - name: long-logs-app
+        image: busybox:1.36
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            # Generate lots of noise logs with the real error buried in them
+            i=0
+            while true; do
+              i=$((i + 1))
+              echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) INFO Processing request #$i - user session validated"
+              echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) DEBUG Cache hit for key user:$((i % 50)):session"
+              echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) INFO Request #$i completed in $((RANDOM % 200 + 10))ms"
+              # Every 100 lines, emit the actual error
+              if [ $((i % 100)) -eq 0 ]; then
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ERROR FATAL: database ran out of free connections (max=50, active=50, waiting=23)"
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ERROR Connection pool exhausted - all 50 connections in use, 23 requests queued"
+              fi
+              sleep 0.1
+            done
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "10m"
+          limits:
+            memory: "64Mi"
+      restartPolicy: Always

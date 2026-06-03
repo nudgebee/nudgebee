@@ -1,0 +1,68 @@
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- CREATE OR REPLACE FUNCTION public.spend_groupings(group_by text[] DEFAULT '{}'::text[], "where" json DEFAULT NULL::json, spend_date_unit text DEFAULT 'date'::text, "limit" integer DEFAULT 100, "offset" integer DEFAULT 0, hasura_session json DEFAULT '{}'::json)
+--  RETURNS SETOF spend_groupings_type
+--  LANGUAGE sql
+--  STABLE
+-- AS $function$
+-- SELECT
+-- 	( CASE WHEN 'tenant_id' = ANY(group_by) THEN s.tenant ELSE null end ) AS tenant_id,
+-- 	( CASE WHEN 'account_id' = ANY(group_by) THEN s.cloud_account ELSE null END) AS account_id,
+-- 	( CASE WHEN 'account_name' = ANY(group_by) THEN ca.account_name ELSE null END) AS account_name,
+-- 	( CASE WHEN 'account_cloud_provider' = ANY(group_by) THEN ca.cloud_provider ELSE null END) AS account_cloud_provider,
+-- 	( CASE WHEN 'resource_id' = ANY(group_by) THEN s.cloud_resource_id ELSE null END) AS resource_id,
+-- 	( CASE WHEN 'resource_name' = ANY(group_by) THEN cr."name" ELSE null END) AS resource_name,
+-- 	( CASE WHEN 'resource_service_name' = ANY(group_by) THEN cr.service_name ELSE null END) AS resource_service_name,
+-- 	( CASE WHEN 'resource_region' = ANY(group_by) THEN cr.region ELSE null END) AS resource_region,
+-- 	( CASE WHEN 'resource_type' = ANY(group_by) THEN cr."type" ELSE null END) AS resource_type,
+-- 	( CASE WHEN 'spend_date' = ANY(group_by) THEN date_trunc(spend_date_unit, s."date") ELSE null END) AS spend_date,
+-- 	count(distinct cr.id) AS resource_count,
+-- 	sum(s.amount) AS spend_amount,
+--     count(DISTINCT cr.service_name) AS service_count,
+--     count(DISTINCT concat(cr.service_name, cr.region)) AS region_service_count
+-- FROM spends s
+-- left join cloud_resourses cr on cr.id = s.cloud_resource_id
+-- left join cloud_accounts ca on ca.id = s.cloud_account
+-- WHERE ("hasura_session" ->> 'x-hasura-user-tenant-id' IS NULL OR ( s.tenant = ("hasura_session" ->> 'x-hasura-user-tenant-id') :: uuid))
+-- 	AND ("where" #>> '{account_id,_eq}' IS null OR (s.cloud_account = ("where" #>> '{account_id,_eq}') :: uuid))
+-- 	AND ("where" #>> '{account_id,_in}' IS null OR ( ("where" #>> '{account_id,_in}')::jsonb ? s.cloud_account::text))
+-- 	AND ("where" #>> '{account_name,_eq}' IS null OR ( ca.account_name = ("where" #>> '{account_name,_eq}')))
+-- 	AND ("where" #>> '{account_name,_in}' IS null OR ( ("where" #>> '{account_name,_in}')::jsonb ? ca.account_name))
+-- 	AND ("where" #>> '{account_cloud_provider,_eq}' IS NULL OR (ca.cloud_provider = ("where" #>> '{account_cloud_provider,_eq}')))
+-- 	AND ("where" #>> '{account_cloud_provider,_in}' IS null OR (("where" #>> '{account_cloud_provider,_in}')::jsonb ? ca.cloud_provider))
+-- 	AND ("where" #>> '{resource_region,_eq}' IS null OR (cr.region = ("where" #>> '{resource_region,_eq}')))
+-- 	AND ("where" #>> '{resource_region,_in}' IS null OR (("where" #>> '{resource_region,_in}')::jsonb ? cr.region))
+-- 	AND ("where" #>> '{resource_id,_eq}' IS null OR ( s.cloud_resource_id = ("where" #>> '{resource_id,_eq}') :: uuid ))
+-- 	AND ("where" #>> '{resource_id,_in}' IS null OR ( ("where" #>> '{resource_id,_in}')::jsonb ? s.cloud_resource_id::text))
+-- 	AND ("where" #>> '{resource_name,_eq}' IS null OR ( cr."name" = ("where" #>> '{resource_name,_eq}')))
+-- 	AND ("where" #>> '{resource_name,_in}' IS null OR ( ("where" #>> '{resource_name,_in}')::jsonb ? cr."name"))
+-- 	AND ("where" #>> '{resource_service_name,_eq}' IS null OR ( cr.service_name = ("where" #>> '{resource_service_name,_eq}')))
+-- 	AND ("where" #>> '{resource_service_name,_in}' IS null OR ( ("where" #>> '{resource_service_name,_in}')::jsonb ? cr.service_name))
+-- 	AND ("where" #>> '{resource_service_id,_in}' IS null OR ( ("where" #>> '{resource_service_id,_in}')::jsonb ? concat(s.cloud_account, '.', cr.service_name)))
+-- 	AND ("where" #>> '{resource_type,_eq}' IS null OR ( cr.type = ("where" #>> '{resource_type,_eq}')))
+-- 	AND ("where" #>> '{resource_type,_ne}' IS null OR ( cr.type != ("where" #>> '{resource_type,_ne}')))
+-- 	AND ("where" #>> '{resource_type,_in}' IS null OR ( ("where" #>> '{resource_type,_in}')::jsonb ? cr.type))
+-- 	AND ("where" #>> '{spend_date,_eq}' IS NULL OR (s."date" :: date = ("where" #>> '{spend_date,_eq}')::date))
+-- 	AND ("where" #>> '{spend_date,_gt}' IS NULL OR (s."date" :: date > ("where" #>> '{spend_date,_eq}')::date))
+-- 	AND ("where" #>> '{spend_date,_lt}' IS NULL OR (s."date" :: date < ("where" #>> '{spend_date,_eq}')::date))
+-- 	AND ("where" #>> '{spend_date,_le}' IS NULL OR (s."date" :: date <= ("where" #>> '{spend_date,_eq}')::date))
+-- 	AND ("where" #>> '{spend_date,_ge}' IS NULL OR (s."date" :: date >= ("where" #>> '{spend_date,_eq}')::date))
+-- 	AND ("where" #>> '{spend_date,_between,_le}' IS NULL OR (s."date" :: date <= ("where" #>> '{spend_date,_between,_le}')::date))
+-- 	AND ("where" #>> '{spend_date,_between,_lt}' IS null OR (s."date" :: date < ("where" #>> '{spend_date,_between,_lt}')::date))
+-- 	AND ("where" #>> '{spend_date,_between,_gt}' IS NULL OR (s."date" :: date > ("where" #>> '{spend_date,_between,_gt}')::date))
+-- 	AND ("where" #>> '{spend_date,_between,_ge}' IS null OR (s."date" :: date >= ("where" #>> '{spend_date,_between,_ge}')::date))
+-- GROUP BY
+-- 	(CASE WHEN 'tenant_id' = ANY(group_by) THEN s.tenant END),
+-- 	(CASE WHEN 'account_id' = ANY(group_by) THEN s.cloud_account END),
+-- 	(CASE WHEN 'account_name' = ANY(group_by) THEN ca.account_name END),
+-- 	(CASE WHEN 'account_cloud_provider' = ANY(group_by) THEN ca.cloud_provider END),
+-- 	(CASE WHEN 'resource_id' = ANY(group_by) THEN s.cloud_resource_id END),
+-- 	(CASE WHEN 'resource_name' = ANY(group_by) THEN cr."name" END),
+-- 	(CASE WHEN 'resource_service_name' = ANY(group_by) THEN cr.service_name END),
+-- 	(CASE WHEN 'resource_region' = ANY(group_by) THEN cr.region END),
+-- 	(CASE WHEN 'resource_type' = ANY(group_by) THEN cr."type" END),
+-- 	(CASE WHEN 'spend_date' = ANY(group_by) THEN date_trunc(spend_date_unit, s."date") end)
+-- order by sum(s.amount) desc
+-- limit "limit" offset "offset"
+-- $function$;

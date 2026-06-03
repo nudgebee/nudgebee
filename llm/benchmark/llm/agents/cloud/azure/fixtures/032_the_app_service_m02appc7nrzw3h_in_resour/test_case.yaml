@@ -1,0 +1,16 @@
+user_prompt: The App Service 'm02appc7nrzw3h' in resource group 'azure-agent-test-M02'
+  is experiencing random instance restarts every few minutes. Users report intermittent
+  503 errors. The application code looks correct. What is causing the restarts?
+expected_output:
+- 'The App Service has a health check path configured as ''/health'', but the application
+  does not expose a ''/health'' endpoint (it returns 404). Azure''s health check mechanism
+  marks the instance as unhealthy after repeated 404 responses and restarts it. Fix:
+  Either implement a ''/health'' endpoint that returns 200, or clear the healthCheckPath
+  setting.'
+agent: azure_debug
+scenario: M02
+type: rca
+tags:
+- rca
+- medium
+- azure

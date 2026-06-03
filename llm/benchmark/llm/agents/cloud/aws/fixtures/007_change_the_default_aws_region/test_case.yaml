@@ -1,0 +1,7 @@
+user_prompt: Change the default AWS region.
+expected_output:
+- AWS_DEFAULT_REGION
+- --region
+tags:
+- command
+- aws

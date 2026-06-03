@@ -1,0 +1,62 @@
+update
+    runbook_action
+set
+    attributes = '{"doc_link": "{{doc_url}}/help/docs/features/Autopilot/create_ticket/", "resource_filter": {"resource_type": "workload", "context_applicable": true, "resource_mandatory": false, "resource_applicable": true}, "applicable_trigger": [], "applicable_event_type": []}'
+where
+    internal_identifier = 'notification';
+
+update
+    runbook_action
+set
+    attributes = '{"doc_link": "{{doc_url}}/help/docs/features/Autopilot/create_ticket/", "resource_filter": {"resource_type": "workload", "context_applicable": true, "resource_mandatory": false, "resource_applicable": true}, "applicable_trigger": [], "applicable_event_type": []}'
+where
+    internal_identifier = 'ticket_create';
+
+update
+    runbook_action
+set
+    attributes = '{"doc_link": "{{doc_url}}/help/docs/features/Autopilot/delete_pod_gracefully/", "resource_filter": {"resource_type": "workload", "context_applicable": true, "resource_mandatory": false, "resource_applicable": true}, "applicable_trigger": ["event", "schedule"], "applicable_event_type": []}'
+where
+    internal_identifier = 'pod_delete';
+
+update
+    runbook_action
+set
+    attributes = '{"doc_link": "{{doc_url}}/help/docs/features/Autopilot/execute_bash/", "resource_filter": {"resource_type": "workload", "context_applicable": true, "resource_mandatory": false, "resource_applicable": true}, "applicable_trigger": ["event", "schedule"], "applicable_event_type": []}'
+where
+    internal_identifier = 'k8s_bash';
+
+update
+    runbook_action
+set
+    attributes = '{"doc_link": "{{doc_url}}/help/docs/features/Autopilot/execute_custom_image/", "resource_filter": {"resource_type": "workload", "context_applicable": true, "resource_mandatory": false, "resource_applicable": true}, "applicable_trigger": ["event", "schedule"], "applicable_event_type": []}'
+where
+    internal_identifier = 'custom_image_execute';
+
+update
+    runbook_action
+set
+    attributes = '{"doc_link": "{{doc_url}}/help/docs/features/Autopilot/vertical_rightsize/", "resource_filter": {"resource_type": "workload", "context_applicable": true, "resource_mandatory": false, "resource_applicable": true}, "applicable_trigger": ["event", "schedule"], "applicable_event_type": []}'
+where
+    internal_identifier = 'vertical_rightsize';
+
+update
+    runbook_action
+set
+    attributes = '{"doc_link": "{{doc_url}}/help/docs/features/Autopilot/workload_restart/", "resource_filter": {"resource_type": "workload", "context_applicable": true, "resource_mandatory": false, "resource_applicable": true}, "applicable_trigger": ["event", "schedule"], "applicable_event_type": []}'
+where
+    internal_identifier = 'workload_restart';
+
+update
+    runbook_action
+set
+    attributes = '{"doc_link": "{{doc_url}}/help/docs/features/Autopilot/workload_scaler/", "resource_filter": {"resource_type": "workload", "context_applicable": false, "resource_mandatory": true, "resource_applicable": true}, "applicable_trigger": ["event"], "applicable_event_type": []}'
+where
+    internal_identifier = 'workload_scalar';
+
+update
+    runbook_action
+set
+    attributes = '{"doc_link": "{{doc_url}}/help/docs/features/Autopilot/horizontal_rightsize/", "resource_filter": {"resource_type": "workload", "context_applicable": true, "resource_mandatory": false, "resource_applicable": true}, "applicable_trigger": ["event", "schedule"], "applicable_event_type": []}'
+where
+    internal_identifier = 'horizontal_rightsize';

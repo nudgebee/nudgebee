@@ -1,0 +1,6 @@
+user_prompt: Create an IAM group.
+expected_output:
+- aws iam create-group --group-name <group-name>
+tags:
+- command
+- aws

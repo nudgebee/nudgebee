@@ -1,0 +1,19 @@
+user_prompt: Our engineering team needs to restore the analytics database 'h05-analytics-db'
+  in us-east-1 to a point in time from 2 hours ago after an accidental mass-delete
+  of analytics records. When trying to use RDS point-in-time recovery, we get an error
+  that PITR is not available. The database is running fine right now. Why can't we
+  restore?
+expected_output:
+- 'The root cause is that BackupRetentionPeriod=0 on RDS instance ''h05-analytics-db''
+  has disabled automated backups, making point-in-time recovery impossible. Check:
+  aws rds describe-db-instances --db-instance-identifier h05-analytics-db and look
+  at BackupRetentionPeriod (it will be 0) and LatestRestorableTime (it will be empty/null).
+  With BackupRetentionPeriod=0, RDS does not create automated backups or capture transaction
+  logs needed for PITR. The database can only be restored from manual snapshots if
+  any exist. The fix is to enable automated backups by setting BackupRetentionPeriod
+  to at least 1: aws rds modify-db-instance --db-instance-identifier h05-analytics-db
+  --backup-retention-period 7 --apply-immediately. Note: backups will only be available
+  from when retention is re-enabled onward.'
+tags:
+- command
+- aws

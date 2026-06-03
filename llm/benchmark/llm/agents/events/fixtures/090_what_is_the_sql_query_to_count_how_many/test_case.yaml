@@ -1,0 +1,6 @@
+user_prompt: What is the SQL query to count how many events are currently FIRING?
+expected_output:
+- SELECT COUNT(*) FROM events WHERE status = 'FIRING';
+tags:
+- command
+- events

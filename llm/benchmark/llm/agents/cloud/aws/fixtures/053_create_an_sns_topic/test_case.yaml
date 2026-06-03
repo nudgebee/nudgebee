@@ -1,0 +1,6 @@
+user_prompt: Create an SNS topic.
+expected_output:
+- aws sns create-topic --name <topic-name>
+tags:
+- command
+- aws

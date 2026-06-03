@@ -1,0 +1,6 @@
+user_prompt: Stop a Step Functions execution.
+expected_output:
+- aws stepfunctions stop-execution --execution-arn <execution-arn>
+tags:
+- command
+- aws

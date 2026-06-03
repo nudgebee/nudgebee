@@ -1,0 +1,7 @@
+user_prompt: Get cost and usage summary by service.
+expected_output:
+- aws ce get-cost-and-usage --time-period Start=<start-date>,End=<end-date> --metrics
+  <metrics> --group-by DIMENSION=SERVICE
+tags:
+- command
+- aws

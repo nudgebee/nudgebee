@@ -1,0 +1,107 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M16: Route 53 health check wrong protocol — HTTP vs HTTPS.
+  User complaint: "Route 53 health check 'm16-api-health' shows unhealthy even
+  though our API endpoint is up and responding perfectly. We can curl it fine."
+  Root cause: Health check is configured with HTTP protocol on port 443, but
+  the endpoint (Lambda Function URL) only serves HTTPS. An HTTP request to an
+  HTTPS endpoint on port 443 gets a TLS handshake error, causing the health
+  check to fail.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Health check uses HTTP protocol to HTTPS-only endpoint.
+      Fixed = Health check uses HTTPS protocol.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m16-api-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: m16-api-service
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ApiRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          import json
+          def handler(event, context):
+              return {
+                  'statusCode': 200,
+                  'headers': {'Content-Type': 'application/json'},
+                  'body': json.dumps({'status': 'healthy', 'service': 'api'})
+              }
+      Tags:
+        - Key: Name
+          Value: m16-api-service
+        - Key: Environment
+          Value: production
+
+  ApiFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !Ref ApiFunction
+      AuthType: NONE
+
+  ApiFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref ApiFunction
+      Action: lambda:InvokeFunctionUrl
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  # THE BUG: HTTP protocol to an HTTPS-only endpoint
+  ApiHealthCheck:
+    Type: AWS::Route53::HealthCheck
+    Properties:
+      HealthCheckConfig:
+        # Lambda Function URLs only serve HTTPS
+        FullyQualifiedDomainName: !Select [2, !Split ['/', !GetAtt ApiFunctionUrl.FunctionUrl]]
+        Port: 443
+        # BUG: Using HTTP to an HTTPS endpoint causes TLS handshake failure
+        Type: !If [IsFixed, 'HTTPS', 'HTTP']
+        ResourcePath: /
+        RequestInterval: 30
+        FailureThreshold: 3
+      HealthCheckTags:
+        - Key: Name
+          Value: m16-api-health
+
+Outputs:
+  HealthCheckId:
+    Description: Route 53 Health Check ID
+    Value: !Ref ApiHealthCheck
+  FunctionUrl:
+    Description: Lambda Function URL (HTTPS only)
+    Value: !GetAtt ApiFunctionUrl.FunctionUrl
+  HealthCheckProtocol:
+    Description: Health check protocol
+    Value: !If [IsFixed, 'HTTPS', 'HTTP (wrong — endpoint only serves HTTPS)']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

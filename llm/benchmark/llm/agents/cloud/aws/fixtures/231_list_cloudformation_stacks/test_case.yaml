@@ -1,0 +1,6 @@
+user_prompt: List CloudFormation stacks.
+expected_output:
+- aws cloudformation describe-stacks
+tags:
+- command
+- aws

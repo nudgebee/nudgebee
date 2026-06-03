@@ -1,0 +1,30 @@
+name: "multiple-schedule-test"
+definition:
+  version: "v1"
+  inputs:
+    - id: action
+      type: string
+      required: true
+    - id: mode
+      type: string
+      default: "standard" # Default value
+
+  triggers:
+    - type: schedule
+      params:
+        cron: "0 9 * * *"
+        action: "start"
+        # mode: "standard" (implicitly)
+    - type: schedule
+      params:
+        cron: "0 18 * * *"
+        action: "stop"
+        mode: "maintenance" # Override default
+
+  tasks:
+    - id: echo-action
+      type: scripting.run_script
+      params:
+        script: |
+          echo "Action is: {{ Inputs.action }}"
+          echo "Mode is: {{ Inputs.mode }}"

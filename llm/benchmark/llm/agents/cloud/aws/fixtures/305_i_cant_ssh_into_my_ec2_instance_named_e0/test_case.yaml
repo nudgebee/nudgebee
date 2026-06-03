@@ -1,0 +1,15 @@
+user_prompt: I can't SSH into my EC2 instance named 'e01-bastion-01' in us-east-1.
+  The connection just times out. It's supposed to be running our checkout service.
+  Can you investigate why SSH is not working?
+expected_output:
+- The root cause is that the security group attached to EC2 instance 'e01-bastion-01'
+  has no inbound/ingress rules. AWS security groups deny all inbound traffic by default
+  unless explicit allow rules are added. Since there is no rule allowing TCP port
+  22 (SSH), all SSH connection attempts are silently dropped, causing a connection
+  timeout. The networking setup is otherwise correct - the instance is in a public
+  subnet with a public IP, the route table has a route to the internet gateway. The
+  fix is to add an inbound rule to the security group allowing TCP port 22 from the
+  appropriate source CIDR.
+tags:
+- command
+- aws

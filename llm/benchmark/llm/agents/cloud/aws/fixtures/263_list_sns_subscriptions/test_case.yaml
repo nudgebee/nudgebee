@@ -1,0 +1,6 @@
+user_prompt: List SNS subscriptions.
+expected_output:
+- aws sns list-subscriptions
+tags:
+- command
+- aws

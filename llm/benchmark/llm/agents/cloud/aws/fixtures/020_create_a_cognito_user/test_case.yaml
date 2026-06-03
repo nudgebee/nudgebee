@@ -1,0 +1,6 @@
+user_prompt: Create a Cognito user.
+expected_output:
+- aws cognito-idp admin-create-user --user-pool-id <user-pool-id> --username <username>
+tags:
+- command
+- aws

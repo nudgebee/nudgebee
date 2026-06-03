@@ -1,0 +1,19 @@
+name: test-child-workflow-fail
+definition:
+  triggers:
+    - type: manual
+  inputs:
+    - id: fail
+      type: bool
+      default: true
+  tasks:
+    - id: failing_task
+      type: scripting.run_script
+      params:
+        script: |
+          if [ "{{ Inputs.fail }}" = "true" ]; then
+            echo "Failing as requested"
+            exit 1
+          else
+            echo "Succeeding"
+          fi

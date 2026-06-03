@@ -1,0 +1,7 @@
+user_prompt: Update a CloudFront distribution.
+expected_output:
+- aws cloudfront update-distribution --id <distribution-id> --distribution-config
+  <distribution-config> --if-match <etag>
+tags:
+- command
+- aws

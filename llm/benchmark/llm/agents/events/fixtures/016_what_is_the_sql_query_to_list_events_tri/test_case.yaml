@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to list events triggered by 'Prometheus' source?
+expected_output:
+- SELECT id, title, starts_at, status, priority, aggregation_key   FROM events   WHERE
+  source LIKE '%Prometheus%';
+- SELECT * FROM events   WHERE source LIKE '%Prometheus%';
+tags:
+- command
+- events

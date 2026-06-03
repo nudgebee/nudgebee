@@ -1,0 +1,6 @@
+user_prompt: Create an SQS queue.
+expected_output:
+- aws sqs create-queue --queue-name <queue-name>
+tags:
+- command
+- aws

@@ -1,0 +1,124 @@
+.container {
+  margin-inline: auto;
+}
+
+.container-inner {
+  display: flex;
+  align-items: center;
+}
+
+.y-axis-legend {
+  transform: rotate(-90deg);
+  transform-origin: left bottom;
+  white-space: nowrap;
+  height: 20px;
+  width: 20px;
+}
+
+.heatmap {
+  display: grid;
+  align-items: start;
+}
+
+.col {
+  display: grid;
+}
+
+.cell {
+  width: 100%;
+  aspect-ratio: 1/1;
+  position: relative;
+  border: 0.25px solid #dadada;
+}
+
+.label {
+  text-align: center;
+  height: 15px;
+  font-size: 12px;
+  font-weight: 500;
+  margin-top: 9px;
+}
+
+.vertical {
+  max-width: 400px;
+  grid-template-columns: repeat(8, 1fr);
+}
+
+.vertical .col {
+  flex-direction: column;
+}
+
+.horizontal {
+  grid-template-rows: repeat(8, 1fr);
+}
+
+.horizontal .col {
+  display: grid;
+  grid-template-columns: repeat(25, 1fr);
+}
+
+.horizontal .cells .label {
+  text-align: right;
+  padding-right: 20px;
+}
+
+.first-col {
+  width: 50px;
+}
+
+.tooltip {
+  position: absolute;
+  display: none;
+  background: white;
+  border: 1px solid #ccc;
+  padding: 10px;
+  z-index: 1;
+  top: 50%;
+  left: 100%;
+  font-size: 18px;
+  border-radius: 4px;
+  min-width: 110px;
+}
+
+.tooltip span {
+  display: block;
+  font-size: 14px;
+}
+
+.tooltip .count {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.cell:hover .tooltip {
+  display: block;
+}
+
+.legend-outer {
+  display: flex;
+  justify-content: center;
+  margin-inline: auto;
+  gap: 28px;
+}
+
+.legend {
+  /* max-width: 500px; */
+  width: 500px;
+  /* margin-inline: auto; */
+}
+
+.legend .cell {
+  height: 15px;
+  width: 100%;
+}
+
+.legend .labels {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 5px;
+}
+
+.legend span {
+  font-size: 12px;
+  font-weight: 500;
+}

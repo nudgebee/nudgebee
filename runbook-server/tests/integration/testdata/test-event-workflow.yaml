@@ -1,0 +1,21 @@
+name: test-event-workflow
+definition:
+  version: v1
+  # inputs:
+  #   - id: event
+  #     type: object
+  #     description: "The event payload"
+  set_execution_tags:
+    - "custom_id:{{ Inputs.event.data }}"
+  triggers:
+    - type: event
+      params:
+        event_type: "my.custom.event"
+        filter: "{{ event.source == 'integration-test' }}"
+  tasks:
+    - id: print-event
+      type: core.print
+      params:
+        message: "Received event: {{ Inputs.event.event_type }} from {{ Inputs.event.source }}. Full payload: {{ Inputs.event | to_json }}"
+  output:
+    final_message: "{{ Tasks['print-event'].output.data }}"

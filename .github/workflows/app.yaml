@@ -1,0 +1,66 @@
+name: App CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ['main']
+    paths:
+      - app/**
+      - .github/workflows/app.yaml
+
+jobs:
+  # Job 1: Lint and validate (runs on any runner)
+  lint:
+    runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --max_old_space_size=4096
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Install libatomic1
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libatomic1
+
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 25.x
+
+      - name: Cache node_modules
+        id: cache-node-modules
+        uses: actions/cache@v4
+        with:
+          path: app/node_modules
+          key: ${{ runner.os }}-node-modules-${{ hashFiles('app/package-lock.json') }}
+
+      - name: Cache Next.js build
+        uses: actions/cache@v4
+        with:
+          path: app/.next/cache
+          key: ${{ runner.os }}-nextjs-${{ hashFiles('app/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-nextjs-
+
+      - name: Run NPM install
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        working-directory: ./app
+        run: |
+          npm ci  --legacy-peer-deps
+
+      - name: Run NPM lint
+        working-directory: ./app
+        run: |
+          npm run lint2
+
+      - name: Run Tests
+        continue-on-error: true
+        working-directory: ./app
+        run: |
+          npm run test -- --ci --passWithNoTests
+
+      - name: Run NPM Build
+        working-directory: ./app
+        run: |
+          npm run build --legacy-peer-deps

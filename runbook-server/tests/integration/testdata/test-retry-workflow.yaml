@@ -1,0 +1,33 @@
+name: test-retry-workflow
+definition:
+  triggers:
+    - type: manual
+  tasks:
+    - id: retry-task
+      type: scripting.run_script
+      failure_policy:
+        retry:
+          maximum_attempts: 3
+          initial_interval: "1s"
+      params:
+        # This script will fail twice and succeed on the third attempt.
+        # It uses a temporary file to keep track of the attempt number.
+        script: |
+          ATTEMPT_FILE="/tmp/retry_attempt_count"
+          if [ ! -f "$ATTEMPT_FILE" ]; then
+              echo 1 > "$ATTEMPT_FILE"
+          else
+              val=$(cat "$ATTEMPT_FILE")
+              val=$((val + 1))
+              echo "$val" > "$ATTEMPT_FILE"
+          fi
+
+          count=$(cat "$ATTEMPT_FILE")
+          if [ "$count" -lt 3 ]; then
+              echo "Attempt $count: Failing..."
+              exit 1
+          else
+              echo "Attempt $count: Succeeding!"
+              rm "$ATTEMPT_FILE"
+              exit 0
+          fi

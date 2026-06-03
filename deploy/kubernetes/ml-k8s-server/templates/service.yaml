@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ml-k8s-server.fullname" . }}
+  labels:
+    {{- include "ml-k8s-server.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+    - port: 8081
+      targetPort: health
+      protocol: TCP
+      name: health
+  selector:
+    {{- include "ml-k8s-server.selectorLabels" . | nindent 4 }}

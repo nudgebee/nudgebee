@@ -1,0 +1,17 @@
+user_prompt: "Which namespaces are spending the most? Break down our cost by namespace."
+expected_output:
+  - |
+    The agent should call spend_allocation with group_by=namespace and
+    present a ranked table of namespaces, each with its spend in dollars,
+    resource count, and share of attributed spend (pct_of_total). It should
+    lead with the top namespace(s) and their dollar figures, and note that
+    spend on resources without a namespace is excluded from the attributed
+    total. Every figure must cite [spend_allocation]. If there is no
+    namespace-attributable spend, the agent must say so rather than invent
+    numbers.
+tags:
+  - showback
+  - allocation
+  - namespace
+  - spend
+  - finops

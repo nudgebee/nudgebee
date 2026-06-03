@@ -1,0 +1,11 @@
+name: test-scheduled-workflow
+definition:
+  triggers:
+    - type: schedule
+      params:
+        cron: "* * * * *"
+  tasks:
+    - id: scheduled-task
+      type: core.print
+      params:
+        message: "Hello from scheduled workflow"

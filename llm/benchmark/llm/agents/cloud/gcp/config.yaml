@@ -1,0 +1,9 @@
+# GCP agent benchmark configuration.
+# Targets the general 'gcp' cloud agent (gcloud_execute). The fixture set
+# is currently weighted toward Cloud Trace operations but also covers
+# GKE logs, Cloud Run latency, and Cloud Run HTTP errors.
+agent: gcp
+tool_names:
+  - gcloud_execute
+config_types:
+  - gcp

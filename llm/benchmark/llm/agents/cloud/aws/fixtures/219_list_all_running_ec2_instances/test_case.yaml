@@ -1,0 +1,6 @@
+user_prompt: List all running EC2 instances.
+expected_output:
+- aws ec2 describe-instances --filters Name=instance-state-name,Values=running
+tags:
+- command
+- aws

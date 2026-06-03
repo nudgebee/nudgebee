@@ -1,0 +1,19 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is that Lambda ''h06-image-processor'' has recursive self-invocation logic combined with a very low reserved
+  concurrency (5). When the function encounters an error (which happens for every PNG image), it asynchronously invokes itself
+  for retry. This triggers a chain of concurrent self-invocations that rapidly fills the reserved concurrency of 5. New invocations
+  are throttled while existing ones retry recursively. Check: (1) aws lambda get-function-concurrency --function-name h06-image-processor
+  to see ReservedConcurrentExecutions=5, (2) CloudWatch metric ConcurrentExecutions for h06-image-processor. The fix requires
+  two changes: increase reserved concurrency to a higher value AND fix the retry logic to use exponential backoff with a maximum
+  retry count, or use SQS dead-letter queue instead of recursive self-invocation.'
+scenario: H06
+tags:
+- command
+- aws
+- hard
+type: rca
+user_prompt: Our image processor Lambda 'h06-image-processor' periodically exhausts its concurrency and throttles, causing
+  all image processing to queue up for 30+ seconds before recovering. This happens every few hours, especially after PNG image
+  uploads. CloudWatch shows ConcurrentExecutions hitting its limit. The Lambda has reserved concurrency set to 5. What's causing
+  the concurrency spike?

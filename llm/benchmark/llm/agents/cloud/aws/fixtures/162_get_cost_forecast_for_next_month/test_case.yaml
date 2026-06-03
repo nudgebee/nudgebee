@@ -1,0 +1,7 @@
+user_prompt: Get cost forecast for next month.
+expected_output:
+- aws ce get-cost-forecast --time-period Start=<start-date>,End=<end-date> --metric
+  <metric> --granularity <granularity>
+tags:
+- command
+- aws

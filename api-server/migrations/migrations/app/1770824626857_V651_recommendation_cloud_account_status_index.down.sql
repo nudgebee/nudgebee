@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS idx_recommendation_tenant_account_status;

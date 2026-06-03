@@ -1,0 +1,36 @@
+# Exchange-acceptance anomaly scenario. A live setup would run a real bidder
+# service + k6 load to surface NordPool's acceptance rate spiking to ~100%
+# while other exchanges stay at ~10%. Nubi's catalog reads from the OTel
+# pipeline, so the fixture pushes synthetic counters with the same observable
+# ratio.
+
+user_prompt: "Is there issues with the bidding rate in the bidding endpoint in namespace app-160? Check the recent metrics."
+
+expected_output:
+  - The answer must identify that NordPool exchange has an abnormally high bid acceptance rate (close to 100%) compared to other exchanges (~10%)
+  - The answer should note that this disparity is anomalous
+
+tags:
+  - kubernetes
+  - prometheus
+  - hard
+  - chain-of-causation
+
+before_test: |
+  set -e
+  kubectl create namespace app-160 --save-config --dry-run=client -o yaml | kubectl apply -f - || true
+  kubectl label namespace app-160 benchmark=true --overwrite || true
+  kubectl apply -f metric-otel-pusher.yaml -n app-160
+
+  echo "Waiting for OTLP pusher pod to be ready..."
+  kubectl wait --for=condition=ready pod -l app=metric-otel-pusher -n app-160 --timeout=120s
+
+  echo "Waiting for OTel pipeline to ingest the test metrics..."
+  sleep 120
+
+after_test: |
+  kubectl delete -f metric-otel-pusher.yaml -n app-160 --ignore-not-found
+  kubectl delete namespace app-160 --ignore-not-found
+
+include_files:
+  - bidding_system.md

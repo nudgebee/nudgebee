@@ -1,0 +1,6 @@
+user_prompt: Get the latest version of the AWS CLI.
+expected_output:
+- pip install --upgrade awscli
+tags:
+- command
+- aws

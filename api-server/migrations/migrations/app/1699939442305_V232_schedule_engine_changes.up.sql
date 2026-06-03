@@ -1,0 +1,6 @@
+
+CREATE TABLE "public"."schedules" ("id" uuid NOT NULL DEFAULT gen_random_uuid(), "name" varchar NOT NULL, "account_id" uuid NOT NULL, "rule" jsonb NOT NULL, "creation_date" date NOT NULL, "update_date" date NOT NULL, "created_by" uuid NOT NULL, "schedule_time" varchar NOT NULL, PRIMARY KEY ("id") , FOREIGN KEY ("account_id") REFERENCES "public"."cloud_accounts"("id") ON UPDATE restrict ON DELETE restrict, FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON UPDATE restrict ON DELETE restrict, UNIQUE ("id"));COMMENT ON TABLE "public"."schedules" IS E'to staore meta data for schedules created.';
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE "public"."scheduled_task" ("id" uuid NOT NULL DEFAULT gen_random_uuid(), "task_id" uuid NOT NULL, "schedule_id" uuid NOT NULL, "scheduled_time" date NOT NULL, "recommendation_id" uuid NOT NULL, "name" varchar NOT NULL, PRIMARY KEY ("id") , FOREIGN KEY ("recommendation_id") REFERENCES "public"."recommendation"("id") ON UPDATE restrict ON DELETE restrict, FOREIGN KEY ("schedule_id") REFERENCES "public"."schedules"("id") ON UPDATE restrict ON DELETE restrict, UNIQUE ("id"), UNIQUE ("task_id", "schedule_id"));COMMENT ON TABLE "public"."scheduled_task" IS E'will track tasks scheduled by schedulers';
+CREATE EXTENSION IF NOT EXISTS pgcrypto;

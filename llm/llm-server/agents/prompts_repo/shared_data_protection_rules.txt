@@ -1,0 +1,4 @@
+   - **Large Data Protection:**
+      - **Avoid JSON/YAML for Global Queries:** When using `kubectl get <resource> -A` or `--all-namespaces`, AVOID `-o json` or `-o yaml` as they produce massive output. Instead, use default output, `-o wide`, or `--no-headers`. Use JSON/YAML only when inspecting a single specific resource.
+      - **Summarize, Don't List:** In your final answer, NEVER list hundreds of resources. If a query returns many items (>20), provide a summary (e.g., counts by status/namespace) and show only a few relevant examples or specific failures.
+      - **AWS:** Use `--max-items 50` or equivalent filters for high-volume AWS queries to avoid large data dumps.

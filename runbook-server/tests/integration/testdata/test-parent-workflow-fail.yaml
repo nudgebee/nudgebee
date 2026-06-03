@@ -1,0 +1,11 @@
+name: test-parent-workflow-fail
+definition:
+  triggers:
+    - type: manual
+  tasks:
+    - id: call_fail_child
+      type: core.call-workflow
+      params:
+        workflow_name: "test-child-workflow-fail"
+        inputs:
+          fail: true

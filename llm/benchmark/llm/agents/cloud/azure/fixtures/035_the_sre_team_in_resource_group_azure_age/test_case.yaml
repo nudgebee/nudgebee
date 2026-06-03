@@ -1,0 +1,15 @@
+user_prompt: The SRE team in resource group 'azure-agent-test-M05' cannot query logs
+  from more than 30 days ago in Log Analytics workspace 'm05-platform-logs'. A compliance
+  audit requires 90 days of log history. What is wrong?
+expected_output:
+- 'The Log Analytics workspace ''m05-platform-logs'' has retentionInDays set to 30
+  (minimum default). Logs older than 30 days are automatically purged, making them
+  unavailable for compliance audits that require 90 days. Fix: Update retentionInDays
+  to 90 to meet the compliance requirement.'
+agent: azure_debug
+scenario: M05
+type: rca
+tags:
+- rca
+- medium
+- azure

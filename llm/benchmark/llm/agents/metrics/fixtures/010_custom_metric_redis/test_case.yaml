@@ -1,0 +1,19 @@
+# Custom metric discovery path: agent should use metrics_list with a single
+# technology keyword, NOT spam search_metrics or fall through to promql_query.
+user_prompt: What is the Redis memory usage?
+expected_output:
+  - redis_memory_used_bytes
+  - sum(redis_memory_used_bytes)
+expected_metrics:
+  - redis_memory_used_bytes
+expected_tools:
+  - metrics_list
+  - prometheus_execute
+forbidden_tools:
+  - shell_execute
+  - search_metrics
+expected_max_tool_calls: 4
+tags:
+  - custom_metric
+  - redis
+  - discovery

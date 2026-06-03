@@ -1,0 +1,17 @@
+name: "Test Approval IM Workflow"
+definition:
+  triggers:
+    - type: "manual"
+  inputs:
+    - id: "im_channel"
+      type: "string"
+      required: true
+  tasks:
+    - id: "im-wait-for-approval"
+      type: "core.approval"
+      params:
+        message: "Please approve via IM."
+        approval_type: "instant_message"
+        im_provider: "slack"
+        im_channel: "{{ Inputs.im_channel }}"
+        approval_options: ["approved", "rejected"]

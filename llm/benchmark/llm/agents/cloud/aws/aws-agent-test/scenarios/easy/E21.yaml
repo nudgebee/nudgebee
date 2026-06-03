@@ -1,0 +1,103 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E21: Cognito user pool app client OAuth scope mismatch.
+  User complaint: "Users trying to sign into our app through Cognito get an
+  'invalid_scope' error. The user pool 'e21-app-users' exists and has users,
+  but authentication fails for everyone."
+  Root cause: The app client is configured with AllowedOAuthScopes including
+  'profile' but the user pool resource server doesn't define a 'profile' scope.
+  The ExplicitAuthFlows is missing ALLOW_USER_SRP_AUTH needed for standard login.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = App client missing ALLOW_USER_SRP_AUTH in ExplicitAuthFlows.
+      Fixed = ALLOW_USER_SRP_AUTH included.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: e21-app-users
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+        - Name: name
+          AttributeDataType: String
+          Required: false
+          Mutable: true
+      UserPoolTags:
+        Environment: production
+        Application: customer-portal
+
+  # THE BUG: Missing ALLOW_USER_SRP_AUTH in Broken mode — users can't do standard auth
+  AppClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: e21-web-app-client
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows: !If
+        - IsFixed
+        - - ALLOW_USER_SRP_AUTH
+          - ALLOW_REFRESH_TOKEN_AUTH
+        - - ALLOW_REFRESH_TOKEN_AUTH
+      SupportedIdentityProviders:
+        - COGNITO
+      AllowedOAuthFlows:
+        - implicit
+      AllowedOAuthScopes:
+        - openid
+        - email
+      AllowedOAuthFlowsUserPoolClient: true
+      CallbackURLs:
+        - https://app.example.com/callback
+      LogoutURLs:
+        - https://app.example.com/logout
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub 'e21-app-${AWS::AccountId}'
+      UserPoolId: !Ref UserPool
+
+Outputs:
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref UserPool
+  AppClientId:
+    Description: App Client ID
+    Value: !Ref AppClient
+  ExplicitAuthFlows:
+    Description: Auth flows configured (missing SRP in Broken mode)
+    Value: !If
+      - IsFixed
+      - 'ALLOW_USER_SRP_AUTH, ALLOW_REFRESH_TOKEN_AUTH'
+      - 'ALLOW_REFRESH_TOKEN_AUTH (missing ALLOW_USER_SRP_AUTH)'
+  UserPoolDomain:
+    Description: Cognito domain
+    Value: !Sub 'e21-app-${AWS::AccountId}'
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

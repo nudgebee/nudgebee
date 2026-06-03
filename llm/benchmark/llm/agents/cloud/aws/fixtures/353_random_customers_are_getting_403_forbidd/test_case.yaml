@@ -1,0 +1,19 @@
+user_prompt: Random customers are getting 403 Forbidden from our ALB 'h16-api-alb'
+  in us-east-1. It's intermittent — some requests go through fine, others get blocked.
+  It started right after we enabled WAF on the ALB. The application itself shows no
+  errors for requests that do reach it. What's causing the 403s?
+expected_output:
+- 'The root cause is a WAF rate-based rule with an overly restrictive limit. The Web
+  ACL ''h16-api-waf'' has a rate-based rule ''h16-rate-limit'' that blocks IPs exceeding
+  100 requests per 5 minutes. This threshold is too low because many customers access
+  the API from behind corporate NAT gateways, sharing a single public IP. Their combined
+  traffic quickly exceeds 100 requests, triggering the WAF to block the shared IP
+  — affecting all users behind that NAT. The 403s are intermittent because different
+  corporate IPs hit the limit at different times. Check: (1) aws wafv2 get-web-acl
+  to see the rate-based rule and its Limit=100, (2) aws wafv2 get-sampled-requests
+  to see which IPs are being blocked. The fix is to increase the rate limit to accommodate
+  shared IPs (e.g., 10000) or implement more granular rate limiting using headers
+  like X-Forwarded-For.'
+tags:
+- command
+- aws

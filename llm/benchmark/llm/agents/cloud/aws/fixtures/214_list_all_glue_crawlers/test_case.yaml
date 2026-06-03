@@ -1,0 +1,6 @@
+user_prompt: List all Glue crawlers.
+expected_output:
+- aws glue list-crawlers
+tags:
+- command
+- aws

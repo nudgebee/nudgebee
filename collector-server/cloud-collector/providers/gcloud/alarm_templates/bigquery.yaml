@@ -1,0 +1,61 @@
+# GCP BigQuery Cloud Monitoring Alert Policy Recommendations
+# Based on Google Cloud best practices for BigQuery monitoring
+service_name: "BigQuery"
+
+templates:
+  - name: "gcp_bigquery_slots_utilization_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "High"
+    description: "High slot utilization indicates query contention and potential performance degradation. Queries may be queued or run slower than expected."
+    configuration:
+      namespace: "bigquery.googleapis.com"
+      metric_name: "SlotsAllocatedForProject"
+      metric_type_filter: "bigquery.googleapis.com/slots/allocated_for_project"
+      resource_type: "bigquery_project"
+      statistic: "ALIGN_MEAN"
+      period: 300
+      evaluation_periods: 3
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MEAN"
+    threshold_rules:
+      default: 0.80  # 80% of total available slots
+
+  - name: "gcp_bigquery_query_execution_time_alarm_missing"
+    alarm_type: "PERFORMANCE"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "Long average query execution times may indicate inefficient queries, missing partitioning/clustering, or insufficient slot capacity."
+    configuration:
+      namespace: "bigquery.googleapis.com"
+      metric_name: "QueryExecutionTimes"
+      metric_type_filter: "bigquery.googleapis.com/query/execution_times"
+      resource_type: "bigquery_project"
+      statistic: "ALIGN_PERCENTILE_99"
+      period: 300
+      evaluation_periods: 2
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_MEAN"
+    threshold_rules:
+      default: 30.0  # 30 seconds p99
+
+  - name: "gcp_bigquery_high_total_storage_alarm_missing"
+    alarm_type: "COST"
+    metric_type: "NATIVE"
+    category: "Configuration"
+    severity: "Medium"
+    description: "High total storage increases BigQuery costs. Monitor storage size to identify datasets with excessive data accumulation or missing lifecycle policies."
+    configuration:
+      namespace: "bigquery.googleapis.com"
+      metric_name: "StoredBytes"
+      metric_type_filter: "bigquery.googleapis.com/storage/stored_bytes"
+      resource_type: "bigquery_dataset"
+      statistic: "ALIGN_MEAN"
+      period: 3600
+      evaluation_periods: 24
+      comparison_operator: "COMPARISON_GT"
+      aggregation: "REDUCE_SUM"
+    threshold_rules:
+      default: 1099511627776  # 1 TB

@@ -1,0 +1,6 @@
+user_prompt: List repositories with tag t1 and value v1
+expected_output:
+- aws ecr describe-repositories --tag-status TAGGED --tag-key t1 --tag-value v1
+tags:
+- command
+- aws

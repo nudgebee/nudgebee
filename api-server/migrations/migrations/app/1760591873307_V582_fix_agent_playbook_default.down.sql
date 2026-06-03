@@ -1,0 +1,1 @@
+alter table "public"."agent_playbook" alter column "processor" drop default;

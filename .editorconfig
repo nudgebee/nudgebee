@@ -1,0 +1,53 @@
+# EditorConfig — https://editorconfig.org
+# Standardizes file formatting across editors. Each language section reflects
+# the convention already enforced by that service's formatter (gofmt, black,
+# prettier). Without this file, editors using project-agnostic defaults
+# (Sublime, vim w/o LSP, IntelliJ without per-language settings) produce diffs
+# that fail `make validate` / `npm run lint2`.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Python — black uses 4 spaces, line length 120 across the monorepo.
+[*.{py,pyi}]
+indent_style = space
+indent_size = 4
+max_line_length = 120
+
+# Go — gofmt uses tabs, displayed as 4 spaces. This block just documents what
+# gofmt already produces; editors that auto-run gofmt on save will overwrite
+# anything inconsistent.
+[*.go]
+indent_style = tab
+indent_size = 4
+
+# TypeScript / JavaScript — Next.js + prettier defaults.
+[*.{ts,tsx,js,jsx,mjs,cjs}]
+indent_style = space
+indent_size = 2
+
+# Web stylesheets + JSON/YAML.
+[*.{css,scss,sass,html,json,yaml,yml}]
+indent_style = space
+indent_size = 2
+
+# Markdown — trailing whitespace is significant (two spaces = `<br>`).
+[*.md]
+trim_trailing_whitespace = false
+
+# Makefile — tabs are mandatory (the make spec requires them).
+[{Makefile,makefile,*.mk}]
+indent_style = tab
+indent_size = 4
+
+# Shell scripts.
+[*.sh]
+indent_style = space
+indent_size = 2

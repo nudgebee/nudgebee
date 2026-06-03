@@ -1,0 +1,7 @@
+user_prompt: Show all Azure Container Registry repositories and their image tags.
+expected_output:
+- az acr list --output table
+type: command
+tags:
+- command
+- azure

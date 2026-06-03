@@ -1,0 +1,8 @@
+user_prompt: Fetch Azure Activity Logs for the last 24 hours.
+expected_output:
+- az monitor activity-log list --start-time "<start-time>" --end-time "<end-time>"
+  --output table
+type: command
+tags:
+- command
+- azure

@@ -1,0 +1,14 @@
+name: test-matrix-input-workflow
+definition:
+  inputs:
+    - id: fruits
+      type: array # Using array to pass a list
+  triggers:
+    - type: manual
+  tasks:
+    - id: matrix-task
+      type: core.print
+      matrix:
+        fruit: "{{ Inputs.fruits }}"
+      params:
+        message: "echo {{ Matrix.fruit }}"

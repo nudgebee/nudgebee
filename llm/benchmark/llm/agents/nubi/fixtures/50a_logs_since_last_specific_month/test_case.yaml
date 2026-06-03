@@ -1,0 +1,49 @@
+# Tests datetime handling: "last hour" for log retrieval
+user_prompt: "What were the errors in the log-generator deployment in namespace bench-50a in the last hour?"
+tags:
+  - logs
+  - medium
+expected_output:
+  - The errors found in the logs are "SSL certificate expired for api.example.com" and "Connection refused to upstream database:5432"
+  - Should identify these as ERROR level entries from the log-generator pod
+
+before_test: |
+  kubectl create namespace bench-50a || true
+  kubectl label namespace bench-50a benchmark=true --overwrite || true
+  kubectl apply -f - <<'EOF'
+  apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: log-generator
+    namespace: bench-50a
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        app: log-generator
+    template:
+      metadata:
+        labels:
+          app: log-generator
+      spec:
+        containers:
+        - name: logger
+          image: busybox:1.36
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              while true; do
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) INFO Service started successfully"
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ERROR SSL certificate expired for api.example.com"
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) ERROR Connection refused to upstream database:5432"
+                sleep 10
+              done
+  EOF
+  kubectl wait --for=condition=ready pod -l app=log-generator -n bench-50a --timeout=60s
+  sleep 5
+
+evaluation:
+  correctness: 1
+
+after_test: |
+  kubectl delete namespace bench-50a --ignore-not-found

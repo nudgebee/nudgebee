@@ -1,0 +1,19 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is that the Lambda ''m18-auth-service'' is deployed in a VPC private subnet without any path to reach the
+  Secrets Manager API endpoint. The subnet''s route table only has the local VPC route — no NAT Gateway route and no Secrets
+  Manager VPC Interface Endpoint. Before the VPC move, Lambda had default internet access. Inside a VPC, Lambda uses the VPC''s
+  networking and needs either: (1) a NAT Gateway route to reach Secrets Manager over the internet, or (2) a VPC Interface
+  Endpoint for Secrets Manager (com.amazonaws.us-east-1.secretsmanager). Check: (1) aws lambda get-function-configuration
+  --function-name m18-auth-service to confirm VPC config, (2) aws ec2 describe-route-tables to see no NAT route, (3) aws ec2
+  describe-vpc-endpoints to see no Secrets Manager endpoint. The fix is to create a Secrets Manager VPC Interface Endpoint
+  or add a NAT Gateway route to the subnet.'
+scenario: M18
+tags:
+- command
+- aws
+- medium
+type: rca
+user_prompt: Our Lambda function 'm18-auth-service' in us-east-1 times out when calling Secrets Manager to fetch database
+  credentials. It was working fine before we moved it into a VPC for compliance. The Lambda has correct IAM permissions for
+  secretsmanager:GetSecretValue. What changed?

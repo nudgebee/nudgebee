@@ -1,0 +1,15 @@
+agent: aws_debug
+expected_output:
+- The root cause is that the DynamoDB table 'e-m02-user-sessions' has extremely low provisioned throughput - only 1 RCU and
+  1 WCU. At 1 WCU, the table can sustain only 1 write per second for items up to 1KB. Any real application traffic, even minimal,
+  will exceed this capacity and trigger ProvisionedThroughputExceededException. The GSI 'UserIdIndex' also has only 1 RCU/1
+  WCU. The fix is to increase the provisioned capacity to match expected traffic (e.g., 25+ RCU/WCU) or switch to on-demand
+  billing mode.
+scenario: M02
+tags:
+- command
+- aws
+- medium
+type: rca
+user_prompt: Our session management Lambda 'm02-session-manager' in us-east-1 is getting ProvisionedThroughputExceededException
+  from DynamoDB table 'e-m02-user-sessions'. We barely have any traffic right now. Why is DynamoDB throttling us?

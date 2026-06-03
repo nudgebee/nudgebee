@@ -1,0 +1,6 @@
+user_prompt: List ECS task definitions.
+expected_output:
+- aws ecs list-task-definitions
+tags:
+- command
+- aws

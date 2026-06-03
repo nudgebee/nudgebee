@@ -1,0 +1,6 @@
+user_prompt: Delete API Gateway stage.
+expected_output:
+- aws apigateway delete-stage --rest-api-id <api-id> --stage-name <stage-name>
+tags:
+- command
+- aws

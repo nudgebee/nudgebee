@@ -1,0 +1,7 @@
+user_prompt: Create an ECS service.
+expected_output:
+- aws ecs create-service --cluster <cluster-name> --service-name <service-name> --task-definition
+  <task-definition-name>
+tags:
+- command
+- aws

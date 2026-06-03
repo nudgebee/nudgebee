@@ -1,0 +1,15 @@
+user_prompt: Which 5 workloads have the worst P99 latency right now?
+expected_output:
+  - topk(5, histogram_quantile(0.99, sum(rate(container_http_requests_duration_seconds_total_bucket[5m])) by (le, destination_workload_name, destination_workload_namespace)))
+expected_metrics:
+  - container_http_requests_duration_seconds_total_bucket
+expected_tools:
+  - prometheus_execute
+forbidden_tools:
+  - shell_execute
+  - search_metrics
+expected_max_tool_calls: 4
+tags:
+  - fast_path
+  - ebpf
+  - topk

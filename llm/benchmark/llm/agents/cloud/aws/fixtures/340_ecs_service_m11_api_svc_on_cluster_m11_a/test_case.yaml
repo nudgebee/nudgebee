@@ -1,0 +1,18 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is that the ECS task definition references a non-existent container image tag ''nginx:99.99.99''. This tag
+  does not exist on Docker Hub. When ECS Fargate tries to pull the image, it fails with CannotPullContainerError. Check: (1)
+  aws ecs describe-services --cluster m11-api-cluster --services m11-api-svc to see failed deployments, (2) aws ecs list-tasks
+  --cluster m11-api-cluster --desired-status STOPPED to find stopped tasks, (3) aws ecs describe-tasks to see stoppedReason
+  containing ''CannotPullContainerError'', (4) aws ecs describe-task-definition --task-definition m11-api-service to see the
+  image field is ''nginx:99.99.99''. The fix is to update the task definition with a valid image tag (e.g., nginx:1.25) and
+  update the service.'
+scenario: M11
+tags:
+- command
+- aws
+- medium
+type: rca
+user_prompt: ECS service 'm11-api-svc' on cluster 'm11-api-cluster' in us-east-1 keeps failing to start tasks. Tasks start
+  and immediately stop with CannotPullContainerError. We just updated the task definition with a new image version. The previous
+  version was working fine. Can you investigate?

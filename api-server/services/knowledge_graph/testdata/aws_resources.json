@@ -1,0 +1,706 @@
+[
+  {
+    "id": "cr-vpc-1",
+    "resourse_id": "vpc-12345",
+    "name": "main-vpc",
+    "type": "vpc",
+    "status": "available",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:ec2:us-east-1:123456789012:vpc/vpc-12345",
+    "tags": {
+      "Name": "main-vpc",
+      "Environment": "production"
+    },
+    "meta": {
+      "VpcId": "vpc-12345",
+      "CidrBlock": "10.0.0.0/16",
+      "State": "available"
+    },
+    "service_name": "AmazonVPC",
+    "is_active": true,
+    "external_resource_id": "vpc-12345",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-rds-1",
+    "resourse_id": "mydb-instance",
+    "name": "mydb-instance",
+    "type": "db",
+    "status": "available",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:rds:us-east-1:123456789012:db:mydb-instance",
+    "tags": {
+      "Name": "mydb-instance",
+      "Environment": "production"
+    },
+    "meta": {
+      "DBInstanceIdentifier": "mydb-instance",
+      "DBInstanceClass": "db.t3.medium",
+      "Engine": "postgres",
+      "EngineVersion": "14.7",
+      "DBInstanceStatus": "available",
+      "Endpoint": {
+        "Address": "mydb.abc123.us-east-1.rds.amazonaws.com",
+        "Port": 5432
+      },
+      "AllocatedStorage": 100,
+      "MultiAZ": true,
+      "DBSubnetGroup": {
+        "DBSubnetGroupName": "main-subnet-group",
+        "VpcId": "vpc-12345"
+      },
+      "KmsKeyId": "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012",
+      "PerformanceInsightsEnabled": true,
+      "PerformanceInsightsKMSKeyId": "arn:aws:kms:us-east-1:123456789012:key/87654321-4321-4321-4321-210987654321"
+    },
+    "service_name": "AmazonRDS",
+    "is_active": true,
+    "external_resource_id": "mydb-instance",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-dynamodb-1",
+    "resourse_id": "users-table",
+    "name": "users-table",
+    "type": "table",
+    "status": "ACTIVE",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:dynamodb:us-east-1:123456789012:table/users-table",
+    "tags": {
+      "Name": "users-table",
+      "Environment": "production"
+    },
+    "meta": {
+      "TableName": "users-table",
+      "TableStatus": "ACTIVE"
+    },
+    "service_name": "AmazonDynamoDB",
+    "is_active": true,
+    "external_resource_id": "users-table",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-lambda-1",
+    "resourse_id": "lambda-api-handler",
+    "name": "api-handler-function",
+    "type": "lambda",
+    "status": "Active",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:lambda:us-east-1:123456789012:function:api-handler-function",
+    "tags": {
+      "Environment": "production",
+      "Team": "backend"
+    },
+    "meta": {
+      "FunctionName": "api-handler-function",
+      "Runtime": "python3.11",
+      "Handler": "index.handler",
+      "MemorySize": 512,
+      "Timeout": 30,
+      "Environment": {
+        "Variables": {
+          "DYNAMODB_TABLE": "users-table",
+          "QUEUE_URL": "https://sqs.us-east-1.amazonaws.com/123456789012/order-queue",
+          "TOPIC_ARN": "arn:aws:sns:us-east-1:123456789012:order-notifications",
+          "DATABASE_HOST": "mydb.abc123.us-east-1.rds.amazonaws.com",
+          "CACHE_ENDPOINT": "redis-cluster.abc123.cache.amazonaws.com:6379"
+        }
+      },
+      "EventSourceMappings": [
+        {
+          "UUID": "event-source-1",
+          "EventSourceArn": "arn:aws:sqs:us-east-1:123456789012:trigger-queue",
+          "State": "Enabled"
+        }
+      ]
+    },
+    "service_name": "AWSLambda",
+    "is_active": true,
+    "external_resource_id": "lambda-api-handler",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-sqs-1",
+    "resourse_id": "sqs-order-queue",
+    "name": "order-queue",
+    "type": "queue",
+    "status": "available",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:sqs:us-east-1:123456789012:order-queue",
+    "tags": {
+      "Environment": "production"
+    },
+    "meta": {
+      "QueueName": "order-queue",
+      "QueueUrl": "https://sqs.us-east-1.amazonaws.com/123456789012/order-queue",
+      "QueueArn": "arn:aws:sqs:us-east-1:123456789012:order-queue",
+      "MessageRetentionPeriod": "345600",
+      "VisibilityTimeout": "30",
+      "DelaySeconds": "0",
+      "RedrivePolicy": "{\"deadLetterTargetArn\":\"arn:aws:sqs:us-east-1:123456789012:order-queue-dlq\",\"maxReceiveCount\":5}"
+    },
+    "service_name": "AWSQueueService",
+    "is_active": true,
+    "external_resource_id": "sqs-order-queue",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-sqs-dlq",
+    "resourse_id": "sqs-order-queue-dlq",
+    "name": "order-queue-dlq",
+    "type": "queue",
+    "status": "available",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:sqs:us-east-1:123456789012:order-queue-dlq",
+    "tags": {
+      "Environment": "production",
+      "Type": "DLQ"
+    },
+    "meta": {
+      "QueueName": "order-queue-dlq",
+      "QueueUrl": "https://sqs.us-east-1.amazonaws.com/123456789012/order-queue-dlq",
+      "QueueArn": "arn:aws:sqs:us-east-1:123456789012:order-queue-dlq",
+      "MessageRetentionPeriod": "1209600"
+    },
+    "service_name": "AWSQueueService",
+    "is_active": true,
+    "external_resource_id": "sqs-order-queue-dlq",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-sqs-trigger",
+    "resourse_id": "sqs-trigger-queue",
+    "name": "trigger-queue",
+    "type": "queue",
+    "status": "available",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:sqs:us-east-1:123456789012:trigger-queue",
+    "tags": {
+      "Environment": "production"
+    },
+    "meta": {
+      "QueueName": "trigger-queue",
+      "QueueUrl": "https://sqs.us-east-1.amazonaws.com/123456789012/trigger-queue",
+      "QueueArn": "arn:aws:sqs:us-east-1:123456789012:trigger-queue"
+    },
+    "service_name": "AWSQueueService",
+    "is_active": true,
+    "external_resource_id": "sqs-trigger-queue",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-sns-1",
+    "resourse_id": "sns-order-notifications",
+    "name": "order-notifications",
+    "type": "topic",
+    "status": "available",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:sns:us-east-1:123456789012:order-notifications",
+    "tags": {
+      "Environment": "production"
+    },
+    "meta": {
+      "TopicName": "order-notifications",
+      "TopicArn": "arn:aws:sns:us-east-1:123456789012:order-notifications",
+      "DisplayName": "Order Notifications Topic"
+    },
+    "service_name": "AmazonSNS",
+    "is_active": true,
+    "external_resource_id": "sns-order-notifications",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-s3-1",
+    "resourse_id": "my-app-bucket",
+    "name": "my-app-bucket",
+    "type": "storage",
+    "status": "active",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:s3:::my-app-bucket",
+    "tags": {
+      "Name": "my-app-bucket",
+      "Environment": "production"
+    },
+    "meta": {
+      "Name": "my-app-bucket",
+      "Region": "us-east-1",
+      "VersioningConfiguration": {
+        "Status": "Enabled"
+      },
+      "ServerSideEncryptionConfiguration": {
+        "Rules": [
+          {
+            "ApplyServerSideEncryptionByDefault": {
+              "SSEAlgorithm": "AES256"
+            }
+          }
+        ]
+      },
+      "NotificationConfiguration": {
+        "TopicConfigurations": [
+          {
+            "TopicArn": "arn:aws:sns:us-east-1:123456789012:order-notifications",
+            "Events": ["s3:ObjectCreated:*"]
+          }
+        ],
+        "QueueConfigurations": [
+          {
+            "QueueArn": "arn:aws:sqs:us-east-1:123456789012:order-queue",
+            "Events": ["s3:ObjectRemoved:*"]
+          }
+        ],
+        "LambdaFunctionConfigurations": [
+          {
+            "LambdaFunctionArn": "arn:aws:lambda:us-east-1:123456789012:function:api-handler-function",
+            "Events": ["s3:ObjectCreated:Put"]
+          }
+        ]
+      }
+    },
+    "service_name": "AmazonS3",
+    "is_active": true,
+    "external_resource_id": "my-app-bucket",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-cache-1",
+    "resourse_id": "redis-cluster-001",
+    "name": "redis-cluster-001",
+    "type": "cluster",
+    "status": "available",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:elasticache:us-east-1:123456789012:cluster:redis-cluster-001",
+    "tags": {
+      "Name": "redis-cluster-001",
+      "Environment": "production"
+    },
+    "meta": {
+      "CacheClusterId": "redis-cluster-001",
+      "CacheNodeType": "cache.t3.medium",
+      "Engine": "redis",
+      "EngineVersion": "7.0.7",
+      "NumCacheNodes": 1,
+      "ConfigurationEndpoint": {
+        "Address": "redis-cluster.abc123.cache.amazonaws.com",
+        "Port": 6379
+      }
+    },
+    "service_name": "AmazonElastiCache",
+    "is_active": true,
+    "external_resource_id": "redis-cluster-001",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-lb-1",
+    "resourse_id": "my-alb",
+    "name": "my-alb",
+    "type": "application_loadbalancer",
+    "status": "active",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/my-alb/50dc6c495c0c9188",
+    "tags": {
+      "Name": "my-alb",
+      "Environment": "production"
+    },
+    "meta": {
+      "LoadBalancerName": "my-alb",
+      "DNSName": "my-alb-1234567890.us-east-1.elb.amazonaws.com",
+      "Scheme": "internet-facing",
+      "Type": "application",
+      "VPCId": "vpc-12345"
+    },
+    "service_name": "AWSELB",
+    "is_active": true,
+    "external_resource_id": "my-alb",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-cloudfront-1",
+    "resourse_id": "E1234567890ABC",
+    "name": "my-cdn-distribution",
+    "type": "distribution",
+    "status": "Deployed",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:cloudfront::123456789012:distribution/E1234567890ABC",
+    "tags": {
+      "Name": "my-cdn-distribution",
+      "Environment": "production"
+    },
+    "meta": {
+      "Id": "E1234567890ABC",
+      "DomainName": "d111111abcdef8.cloudfront.net",
+      "Status": "Deployed",
+      "Origins": {
+        "Items": [
+          {
+            "Id": "alb-origin",
+            "DomainName": "my-alb-1234567890.us-east-1.elb.amazonaws.com",
+            "CustomOriginConfig": {
+              "HTTPPort": 80,
+              "HTTPSPort": 443,
+              "OriginProtocolPolicy": "https-only"
+            }
+          }
+        ]
+      }
+    },
+    "service_name": "AmazonCloudFront",
+    "is_active": true,
+    "external_resource_id": "E1234567890ABC",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-route53-1",
+    "resourse_id": "Z1234567890ABC",
+    "name": "example.com",
+    "type": "hosted-zone",
+    "status": "INSYNC",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:route53:::hostedzone/Z1234567890ABC",
+    "tags": {
+      "Name": "example.com",
+      "Environment": "production"
+    },
+    "meta": {
+      "Id": "Z1234567890ABC",
+      "Name": "example.com",
+      "PrivateZone": false,
+      "AliasTarget": {
+        "HostedZoneId": "Z35SXDOTRQ7X7K",
+        "DNSName": "my-alb-1234567890.us-east-1.elb.amazonaws.com",
+        "EvaluateTargetHealth": true
+      }
+    },
+    "service_name": "AmazonRoute53",
+    "is_active": true,
+    "external_resource_id": "Z1234567890ABC",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-ecr-1",
+    "resourse_id": "my-app-repo",
+    "name": "my-app-repo",
+    "type": "repository",
+    "status": "ACTIVE",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:ecr:us-east-1:123456789012:repository/my-app-repo",
+    "tags": {
+      "Name": "my-app-repo",
+      "Environment": "production"
+    },
+    "meta": {
+      "RepositoryName": "my-app-repo",
+      "RepositoryUri": "123456789012.dkr.ecr.us-east-1.amazonaws.com/my-app-repo",
+      "RegistryId": "123456789012",
+      "ImageTagMutability": "MUTABLE"
+    },
+    "service_name": "AmazonECR",
+    "is_active": true,
+    "external_resource_id": "my-app-repo",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-kms-1",
+    "resourse_id": "12345678-1234-1234-1234-123456789012",
+    "name": "rds-encryption-key",
+    "type": "key",
+    "status": "Enabled",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012",
+    "tags": {
+      "Name": "rds-encryption-key",
+      "Environment": "production",
+      "Purpose": "RDS storage encryption"
+    },
+    "meta": {
+      "KeyId": "12345678-1234-1234-1234-123456789012",
+      "Arn": "arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012",
+      "KeyState": "Enabled",
+      "KeyUsage": "ENCRYPT_DECRYPT",
+      "KeySpec": "SYMMETRIC_DEFAULT",
+      "Origin": "AWS_KMS",
+      "MultiRegion": false,
+      "Description": "KMS key for RDS database encryption"
+    },
+    "service_name": "AWSKMS",
+    "is_active": true,
+    "external_resource_id": "12345678-1234-1234-1234-123456789012",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-kms-2",
+    "resourse_id": "87654321-4321-4321-4321-210987654321",
+    "name": "performance-insights-key",
+    "type": "key",
+    "status": "Enabled",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:kms:us-east-1:123456789012:key/87654321-4321-4321-4321-210987654321",
+    "tags": {
+      "Name": "performance-insights-key",
+      "Environment": "production",
+      "Purpose": "RDS Performance Insights"
+    },
+    "meta": {
+      "KeyId": "87654321-4321-4321-4321-210987654321",
+      "Arn": "arn:aws:kms:us-east-1:123456789012:key/87654321-4321-4321-4321-210987654321",
+      "KeyState": "Enabled",
+      "KeyUsage": "ENCRYPT_DECRYPT",
+      "KeySpec": "SYMMETRIC_DEFAULT",
+      "Origin": "AWS_KMS",
+      "MultiRegion": false,
+      "Description": "KMS key for RDS Performance Insights"
+    },
+    "service_name": "AWSKMS",
+    "is_active": true,
+    "external_resource_id": "87654321-4321-4321-4321-210987654321",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-kms-3",
+    "resourse_id": "abcdef12-3456-7890-abcd-ef1234567890",
+    "name": "ebs-encryption-key",
+    "type": "key",
+    "status": "Enabled",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:kms:us-east-1:123456789012:key/abcdef12-3456-7890-abcd-ef1234567890",
+    "tags": {
+      "Name": "ebs-encryption-key",
+      "Environment": "production",
+      "Purpose": "EBS volume encryption"
+    },
+    "meta": {
+      "KeyId": "abcdef12-3456-7890-abcd-ef1234567890",
+      "Arn": "arn:aws:kms:us-east-1:123456789012:key/abcdef12-3456-7890-abcd-ef1234567890",
+      "KeyState": "Enabled",
+      "KeyUsage": "ENCRYPT_DECRYPT",
+      "KeySpec": "SYMMETRIC_DEFAULT",
+      "Origin": "AWS_KMS",
+      "MultiRegion": false,
+      "Description": "KMS key for EBS volume encryption"
+    },
+    "service_name": "AWSKMS",
+    "is_active": true,
+    "external_resource_id": "abcdef12-3456-7890-abcd-ef1234567890",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-kms-4",
+    "resourse_id": "fedcba98-7654-3210-fedc-ba9876543210",
+    "name": "cloudwatch-logs-key",
+    "type": "key",
+    "status": "Enabled",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:kms:us-east-1:123456789012:key/fedcba98-7654-3210-fedc-ba9876543210",
+    "tags": {
+      "Name": "cloudwatch-logs-key",
+      "Environment": "production",
+      "Purpose": "CloudWatch Logs encryption"
+    },
+    "meta": {
+      "KeyId": "fedcba98-7654-3210-fedc-ba9876543210",
+      "Arn": "arn:aws:kms:us-east-1:123456789012:key/fedcba98-7654-3210-fedc-ba9876543210",
+      "KeyState": "Enabled",
+      "KeyUsage": "ENCRYPT_DECRYPT",
+      "KeySpec": "SYMMETRIC_DEFAULT",
+      "Origin": "AWS_KMS",
+      "MultiRegion": false,
+      "Description": "KMS key for CloudWatch Logs encryption"
+    },
+    "service_name": "AWSKMS",
+    "is_active": true,
+    "external_resource_id": "fedcba98-7654-3210-fedc-ba9876543210",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-ebs-1",
+    "resourse_id": "vol-1234567890abcdef",
+    "name": "app-server-volume",
+    "type": "storage",
+    "status": "in-use",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:ec2:us-east-1:123456789012:volume/vol-1234567890abcdef",
+    "tags": {
+      "Name": "app-server-volume",
+      "Environment": "production"
+    },
+    "meta": {
+      "VolumeId": "vol-1234567890abcdef",
+      "Size": 100,
+      "VolumeType": "gp3",
+      "State": "in-use",
+      "Encrypted": true,
+      "KmsKeyId": "arn:aws:kms:us-east-1:123456789012:key/abcdef12-3456-7890-abcd-ef1234567890",
+      "Iops": 3000,
+      "Throughput": 125,
+      "Attachments": [
+        {
+          "Device": "/dev/sda1",
+          "InstanceId": "i-1234567890abcdef",
+          "State": "attached",
+          "VolumeId": "vol-1234567890abcdef",
+          "DeleteOnTermination": false
+        }
+      ]
+    },
+    "service_name": "AmazonEC2",
+    "is_active": true,
+    "external_resource_id": "vol-1234567890abcdef",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-cwlogs-1",
+    "resourse_id": "/aws/lambda/api-handler-function",
+    "name": "/aws/lambda/api-handler-function",
+    "type": "log-group",
+    "status": "ACTIVE",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:logs:us-east-1:123456789012:log-group:/aws/lambda/api-handler-function",
+    "tags": {
+      "Name": "lambda-logs",
+      "Environment": "production"
+    },
+    "meta": {
+      "LogGroupName": "/aws/lambda/api-handler-function",
+      "CreationTime": 1609459200000,
+      "RetentionInDays": 7,
+      "StoredBytes": 1048576,
+      "KmsKeyId": "arn:aws:kms:us-east-1:123456789012:key/fedcba98-7654-3210-fedc-ba9876543210"
+    },
+    "service_name": "AmazonCloudWatch",
+    "is_active": true,
+    "external_resource_id": "/aws/lambda/api-handler-function",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-s3-encrypted-1",
+    "resourse_id": "encrypted-data-bucket",
+    "name": "encrypted-data-bucket",
+    "type": "storage",
+    "status": "active",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:s3:::encrypted-data-bucket",
+    "tags": {
+      "Name": "encrypted-data-bucket",
+      "Environment": "production",
+      "Encrypted": "true"
+    },
+    "meta": {
+      "Name": "encrypted-data-bucket",
+      "Region": "us-east-1",
+      "Encrypted": true,
+      "KmsKeyId": "arn:aws:kms:us-east-1:123456789012:key/abcdef12-3456-7890-abcd-ef1234567890",
+      "VersioningConfiguration": {
+        "Status": "Enabled"
+      },
+      "ServerSideEncryptionConfiguration": {
+        "Rules": [
+          {
+            "ApplyServerSideEncryptionByDefault": {
+              "SSEAlgorithm": "aws:kms",
+              "KMSMasterKeyID": "arn:aws:kms:us-east-1:123456789012:key/abcdef12-3456-7890-abcd-ef1234567890"
+            }
+          }
+        ]
+      }
+    },
+    "service_name": "AWSS3",
+    "is_active": true,
+    "external_resource_id": "encrypted-data-bucket",
+    "account_number": "123456789012"
+  },
+  {
+    "id": "cr-efs-1",
+    "resourse_id": "fs-1234567890abcdef",
+    "name": "shared-app-storage",
+    "type": "filesystem",
+    "status": "available",
+    "account": "test-account-aws-1",
+    "tenant": "test-tenant-1",
+    "cloud_provider": "AWS",
+    "region": "us-east-1",
+    "arn": "arn:aws:elasticfilesystem:us-east-1:123456789012:file-system/fs-1234567890abcdef",
+    "tags": {
+      "Name": "shared-app-storage",
+      "Environment": "production"
+    },
+    "meta": {
+      "FileSystemId": "fs-1234567890abcdef",
+      "CreationToken": "my-app-efs",
+      "LifeCycleState": "available",
+      "Encrypted": true,
+      "KmsKeyId": "arn:aws:kms:us-east-1:123456789012:key/abcdef12-3456-7890-abcd-ef1234567890",
+      "PerformanceMode": "generalPurpose",
+      "ThroughputMode": "bursting",
+      "SizeInBytes": {
+        "Value": 6144
+      }
+    },
+    "service_name": "AmazonEFS",
+    "is_active": true,
+    "external_resource_id": "fs-1234567890abcdef",
+    "account_number": "123456789012"
+  }
+]
