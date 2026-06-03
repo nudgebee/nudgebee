@@ -1,0 +1,17 @@
+user_prompt: Our CloudFront distribution started returning 502 errors on ALL requests
+  after we updated our Lambda@Edge function 'h13-edge-handler'. The Lambda code is
+  correct — it works fine when tested directly via invoke. The CloudFront distribution
+  was working before we updated the function code. What went wrong?
+expected_output:
+- 'The root cause is that the CloudFront Lambda@Edge association references the unqualified
+  Lambda function ARN (which resolves to $LATEST). Lambda@Edge requires a published,
+  numbered version ARN — $LATEST is not supported. When CloudFront tries to invoke
+  the function at the $LATEST version, it fails with an error and returns 502 to the
+  client. Check: (1) aws cloudfront get-distribution --id <distribution-id> to see
+  the LambdaFunctionAssociations and the ARN used, (2) aws lambda list-versions-by-function
+  --function-name h13-edge-handler to see published versions. The fix is to publish
+  a new version (aws lambda publish-version --function-name h13-edge-handler) and
+  update the CloudFront distribution to reference the numbered version ARN.'
+tags:
+- command
+- aws

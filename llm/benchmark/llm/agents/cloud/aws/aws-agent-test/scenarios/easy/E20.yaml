@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E20: Kinesis event source mapping disabled — consumer Lambda never triggers.
+  User complaint: "We're putting records into Kinesis stream 'e20-clickstream' and
+  they show up in monitoring, but our Lambda consumer 'e20-click-processor' never
+  fires. No invocations, no errors, nothing in CloudWatch Logs."
+  Root cause: The Lambda event source mapping for the Kinesis stream is disabled
+  (Enabled: false). Records accumulate in the stream but are never consumed.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Event source mapping Enabled: false (Lambda never triggers).
+      Fixed = Event source mapping Enabled: true.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  ClickStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: e20-clickstream
+      ShardCount: 1
+      RetentionPeriodHours: 24
+      Tags:
+        - Key: Name
+          Value: e20-clickstream
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: analytics
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: e20-click-processor-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: kinesis-read
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kinesis:GetRecords
+                  - kinesis:GetShardIterator
+                  - kinesis:DescribeStream
+                  - kinesis:DescribeStreamSummary
+                  - kinesis:ListShards
+                  - kinesis:ListStreams
+                Resource: !GetAtt ClickStream.Arn
+
+  ClickProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: e20-click-processor
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 60
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          import json
+          import base64
+
+          def handler(event, context):
+              processed = 0
+              for record in event['Records']:
+                  payload = base64.b64decode(record['kinesis']['data']).decode('utf-8')
+                  click = json.loads(payload)
+                  print(f"Processing click: user={click.get('userId')}, page={click.get('page')}")
+                  processed += 1
+              print(f"Processed {processed} click events")
+              return {'statusCode': 200, 'processed': processed}
+      Tags:
+        - Key: Name
+          Value: e20-click-processor
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: analytics
+
+  # THE BUG: Event source mapping is disabled in Broken mode
+  KinesisEventMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt ClickStream.Arn
+      FunctionName: !Ref ClickProcessorFunction
+      StartingPosition: LATEST
+      BatchSize: 100
+      MaximumBatchingWindowInSeconds: 5
+      Enabled: !If [IsFixed, true, false]
+
+Outputs:
+  StreamName:
+    Description: Kinesis Stream Name
+    Value: !Ref ClickStream
+  StreamArn:
+    Description: Kinesis Stream ARN
+    Value: !GetAtt ClickStream.Arn
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref ClickProcessorFunction
+  EventSourceMappingEnabled:
+    Description: Event source mapping state (disabled in Broken mode)
+    Value: !If [IsFixed, 'true', 'false']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

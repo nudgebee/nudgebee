@@ -1,0 +1,10 @@
+# Azure agent benchmark configuration
+agent: azure
+tool_names:
+  - azure_execute
+config_types:
+  - azure
+extra_tool_confirmations:
+  azure_observability: "yes"
+  azure: "yes"
+result_enricher: llm.agents.cloud.azure.utils.azure_rca_metric.azure_rca_enricher

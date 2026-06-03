@@ -1,0 +1,16 @@
+user_prompt: "Show me our cloud spend trend over the last 90 days."
+expected_output:
+  - |
+    The agent should call spend_summary with window=90d and report total
+    spend over the 90-day window in dollars, alongside the prior 90-day
+    period for comparison. The response should name the largest movers
+    (services or accounts with the biggest absolute or percentage change)
+    and explicitly state the date ranges being compared. Cite
+    [spend_summary]. If anomalies exist in the window, the agent may
+    optionally surface them via anomaly_execute.
+tags:
+  - spend
+  - trend
+  - window
+  - medium
+  - finops

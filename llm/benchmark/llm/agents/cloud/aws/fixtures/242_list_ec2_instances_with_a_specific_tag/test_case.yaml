@@ -1,0 +1,6 @@
+user_prompt: List EC2 instances with a specific tag.
+expected_output:
+- aws ec2 describe-instances --filters 'Name=tag:Name,Values=<tag-value>'
+tags:
+- command
+- aws

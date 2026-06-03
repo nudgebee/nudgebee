@@ -1,0 +1,7 @@
+user_prompt: For each node, what is the timestamp of the most recent event?
+expected_output:
+- SELECT subject_node, MAX(starts_at) AS last_event_time FROM events WHERE subject_node
+  IS NOT NULL GROUP BY subject_node;
+tags:
+- command
+- events

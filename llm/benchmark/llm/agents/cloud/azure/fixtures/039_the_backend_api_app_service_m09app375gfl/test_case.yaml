@@ -1,0 +1,17 @@
+user_prompt: 'The backend API App Service ''m09app375gflqd'' in resource group ''azure-agent-test-M09''
+  is sending telemetry to the wrong Application Insights workspace. Two App Insights
+  resources exist: ''m09-telemetry'' (active) and ''m09-legacy-telemetry'' (decommissioned).
+  What is wrong?'
+expected_output:
+- 'The App Service APPLICATIONINSIGHTS_CONNECTION_STRING points to the ''m09-legacy-telemetry''
+  App Insights resource (decommissioned) instead of the active ''m09-telemetry'' resource.
+  The InstrumentationKey in the connection string matches ''m09-legacy-telemetry'',
+  not ''m09-telemetry''. Fix: Update APPLICATIONINSIGHTS_CONNECTION_STRING to use
+  the connection string from ''m09-telemetry''.'
+agent: azure_debug
+scenario: M09
+type: rca
+tags:
+- rca
+- medium
+- azure

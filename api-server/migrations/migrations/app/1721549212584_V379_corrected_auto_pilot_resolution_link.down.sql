@@ -1,0 +1,10 @@
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- update
+-- 	recommendation_resolution
+-- set
+-- 	type_reference_id = replace(type_reference_id,
+-- 	'autopilot/task',
+-- 	'auto-pilot/task')
+-- where
+-- 	type_reference_id ilike '%autopilot/task%';

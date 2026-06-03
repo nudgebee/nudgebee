@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "app.fullname" . }}-nginx-config
+data:
+  nginx.conf: |
+    server {
+      listen 80;
+      root /app;
+
+      # gzip compression
+      gzip on;
+      gzip_vary on;
+      gzip_min_length 1024;
+      gzip_proxied any;
+      gzip_comp_level 6;
+      gzip_types
+          text/html
+          text/css
+          text/plain
+          application/javascript
+          application/json
+          application/xml
+          application/x-font-ttf
+          font/opentype
+          image/svg+xml
+          image/x-icon;
+
+      location /_next/static/ {
+        alias /app/.next/static/;
+        expires 30d;
+        add_header Cache-Control "public";
+      }
+
+      location /public/ {
+        alias /app/public/;
+        expires 30d;
+        add_header Cache-Control "public";
+      }
+
+      location / {
+        proxy_pass http://127.0.0.1:3000; # Proxy to Next.js
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 120;
+        proxy_send_timeout 120;        
+        proxy_buffers 8 16k;
+        proxy_buffer_size 32k;
+        proxy_busy_buffers_size 32k;
+      }
+    }

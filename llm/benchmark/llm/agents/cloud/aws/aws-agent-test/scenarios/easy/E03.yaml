@@ -1,0 +1,132 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E03: Lambda Permission Denied to S3.
+  User complaint: "Lambda throws AccessDenied when writing to S3."
+  Root cause: Lambda execution role missing s3:PutObject permission.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Lambda role missing s3:PutObject.
+      Fixed = Lambda role has s3:PutObject.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  ReportBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'e03-daily-reports-${AWS::AccountId}'
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: e03-report-generator-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: s3-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt ReportBucket.Arn
+                  - !Sub '${ReportBucket.Arn}/*'
+              # In Fixed mode, also grant PutObject
+              - !If
+                - IsFixed
+                - Effect: Allow
+                  Action:
+                    - s3:PutObject
+                  Resource:
+                    - !Sub '${ReportBucket.Arn}/*'
+                - !Ref AWS::NoValue
+
+  ReportGeneratorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: e03-report-generator
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          REPORT_BUCKET: !Ref ReportBucket
+          REPORT_PREFIX: daily-reports/
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+          from datetime import datetime
+
+          def handler(event, context):
+              s3 = boto3.client('s3')
+              bucket = os.environ['REPORT_BUCKET']
+              prefix = os.environ['REPORT_PREFIX']
+
+              report = {
+                  'generated_at': datetime.utcnow().isoformat(),
+                  'total_orders': 1542,
+                  'revenue': 89432.50,
+                  'status': 'complete'
+              }
+
+              key = f"{prefix}{datetime.utcnow().strftime('%Y-%m-%d')}.json"
+
+              s3.put_object(
+                  Bucket=bucket,
+                  Key=key,
+                  Body=json.dumps(report),
+                  ContentType='application/json'
+              )
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({'message': f'Report uploaded to s3://{bucket}/{key}'})
+              }
+      Tags:
+        - Key: Name
+          Value: e03-report-generator
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: analytics
+        - Key: Application
+          Value: daily-reporting
+
+Outputs:
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref ReportGeneratorFunction
+  FunctionArn:
+    Description: Lambda Function ARN
+    Value: !GetAtt ReportGeneratorFunction.Arn
+  RoleName:
+    Description: Lambda Execution Role Name
+    Value: !Ref LambdaExecutionRole
+  BucketName:
+    Description: S3 Bucket Name
+    Value: !Ref ReportBucket
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

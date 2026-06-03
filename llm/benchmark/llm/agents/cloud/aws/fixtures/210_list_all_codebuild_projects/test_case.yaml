@@ -1,0 +1,6 @@
+user_prompt: List all CodeBuild projects.
+expected_output:
+- aws codebuild list-projects
+tags:
+- command
+- aws

@@ -1,0 +1,19 @@
+user_prompt: The high traffic API App Service in resource group 'azure-agent-test-P04'
+  is getting overwhelmed during peak hours. Autoscale is supposedly configured but
+  the app never scales beyond a single instance. Users experience timeouts and 503
+  errors. Why is autoscale not working?
+expected_output:
+- 'The autoscale setting has two problems: (1) The CPU threshold is set to 95%, which
+  is practically unreachable under normal conditions — the app will time out or crash
+  before CPU reaches 95%. (2) The maximum instance count is set to 1, which is the
+  same as the minimum — even if the threshold were reached, autoscale cannot add more
+  instances because the maximum is already the current count. Fix: Lower the CPU threshold
+  to a reasonable value like 70%, and increase the maximum instance count to at least
+  3.'
+agent: azure_debug
+scenario: P04
+type: rca
+tags:
+- rca
+- hard
+- azure

@@ -1,0 +1,6 @@
+user_prompt: Attach an IAM policy to a user.
+expected_output:
+- aws iam attach-user-policy --user-name <user-name> --policy-arn <policy-arn>
+tags:
+- command
+- aws

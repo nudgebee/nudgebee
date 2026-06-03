@@ -1,0 +1,8 @@
+user_prompt: Show me the bill for December 2025.
+expected_output:
+- az consumption usage list --start-date 2025-12-01 --end-date 2025-12-31 --include-additional-properties
+  --output table
+type: command
+tags:
+- command
+- azure

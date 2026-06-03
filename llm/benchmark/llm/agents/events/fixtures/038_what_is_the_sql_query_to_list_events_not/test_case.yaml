@@ -1,0 +1,7 @@
+user_prompt: What is the SQL query to list events not updated in the last 7 days?
+expected_output:
+- SELECT id, title, updated_at, status, priority   FROM events   WHERE updated_at
+  < NOW() - INTERVAL '7 days';
+tags:
+- command
+- events

@@ -1,0 +1,313 @@
+{
+  "k8s_namespace_list": {
+    "data": {
+      "k8s_namespaces_aggregate": {
+        "aggregate": {
+          "count": 50
+        }
+      },
+      "k8s_namespaces": [
+        {
+          "name": "nudgebee",
+          "workload_count": 26,
+          "pod_count": 16,
+          "creation_time": "2024-02-17T17:05:09"
+        },
+        {
+          "name": "kube-system",
+          "workload_count": 14,
+          "pod_count": 15,
+          "creation_time": "2023-01-10T20:09:29"
+        },
+        {
+          "name": "nudgebee-test",
+          "workload_count": 24,
+          "pod_count": 12,
+          "creation_time": "2024-02-18T03:25:48"
+        },
+        {
+          "name": "nudgebee-test-agent-1",
+          "workload_count": 7,
+          "pod_count": 10,
+          "creation_time": "2024-01-14T12:01:01"
+        },
+        {
+          "name": "monitoring",
+          "workload_count": 14,
+          "pod_count": 9,
+          "creation_time": "2024-03-01T09:44:18"
+        },
+        {
+          "name": "backup-jobs",
+          "workload_count": 0,
+          "pod_count": 9,
+          "creation_time": "2023-09-12T06:57:28"
+        },
+        {
+          "name": "grafana",
+          "workload_count": 6,
+          "pod_count": 8,
+          "creation_time": "2024-02-18T02:12:56"
+        },
+        {
+          "name": "nudgebee-agent",
+          "workload_count": 10,
+          "pod_count": 8,
+          "creation_time": "2024-02-18T05:41:55"
+        },
+        {
+          "name": "prometheus",
+          "workload_count": 7,
+          "pod_count": 7,
+          "creation_time": "2024-02-18T02:16:08"
+        },
+        {
+          "name": "clickhouse-test",
+          "workload_count": 3,
+          "pod_count": 5,
+          "creation_time": "2024-02-18T09:16:16"
+        },
+        {
+          "name": "komodor",
+          "workload_count": 3,
+          "pod_count": 5,
+          "creation_time": "2024-03-06T12:53:53"
+        },
+        {
+          "name": "nudgebee-agent-prod",
+          "workload_count": 5,
+          "pod_count": 5,
+          "creation_time": "2024-03-07T15:05:57"
+        },
+        {
+          "name": "clickhouse",
+          "workload_count": 3,
+          "pod_count": 5,
+          "creation_time": "2024-02-17T16:33:35"
+        },
+        {
+          "name": "calico-system",
+          "workload_count": 6,
+          "pod_count": 4,
+          "creation_time": "2024-03-01T06:38:26"
+        },
+        {
+          "name": "ops",
+          "workload_count": 0,
+          "pod_count": 4,
+          "creation_time": "2024-02-19T03:46:47"
+        },
+        {
+          "name": "cert-manager",
+          "workload_count": 6,
+          "pod_count": 3,
+          "creation_time": "2024-02-17T15:56:03"
+        },
+        {
+          "name": "testenv52",
+          "workload_count": 6,
+          "pod_count": 3,
+          "creation_time": "2024-03-18T12:46:37"
+        },
+        {
+          "name": "actions-runner-system",
+          "workload_count": 0,
+          "pod_count": 2,
+          "creation_time": "2023-10-07T15:19:26"
+        },
+        {
+          "name": "sonarqube",
+          "workload_count": 2,
+          "pod_count": 2,
+          "creation_time": "2024-02-17T18:33:39"
+        },
+        {
+          "name": "default",
+          "workload_count": 4,
+          "pod_count": 2,
+          "creation_time": "2023-01-10T20:09:31"
+        },
+        {
+          "name": "nudgebee-agent-dev",
+          "workload_count": 4,
+          "pod_count": 2,
+          "creation_time": "2023-11-28T02:06:55"
+        },
+        {
+          "name": "opencost",
+          "workload_count": 2,
+          "pod_count": 1,
+          "creation_time": "2023-01-24T07:21:18"
+        },
+        {
+          "name": "actions-runner-system-1",
+          "workload_count": 2,
+          "pod_count": 1,
+          "creation_time": "2024-02-17T15:49:18"
+        },
+        {
+          "name": "nudgebee-agent-mp",
+          "workload_count": 3,
+          "pod_count": 1,
+          "creation_time": "2024-03-04T17:42:35"
+        },
+        {
+          "name": "karpenter",
+          "workload_count": 2,
+          "pod_count": 1,
+          "creation_time": "2024-02-18T04:32:15"
+        },
+        {
+          "name": "rabbit",
+          "workload_count": 1,
+          "pod_count": 1,
+          "creation_time": "2024-02-17T15:53:36"
+        },
+        {
+          "name": "rabbit-test",
+          "workload_count": 1,
+          "pod_count": 1,
+          "creation_time": "2024-02-18T09:16:36"
+        },
+        {
+          "name": "ingress-nginx",
+          "workload_count": 2,
+          "pod_count": 1,
+          "creation_time": "2024-02-17T17:20:56"
+        },
+        {
+          "name": "velero",
+          "workload_count": 2,
+          "pod_count": 1,
+          "creation_time": "2023-03-07T08:15:21"
+        },
+        {
+          "name": "tigera-operator",
+          "workload_count": 2,
+          "pod_count": 1,
+          "creation_time": "2024-03-01T06:38:34"
+        },
+        {
+          "name": "nudgebee-agent-example",
+          "workload_count": 0,
+          "pod_count": 0,
+          "creation_time": "2023-11-08T16:00:34"
+        },
+        {
+          "name": "optscale",
+          "workload_count": 20,
+          "pod_count": 0,
+          "creation_time": "2023-05-26T17:45:02"
+        },
+        {
+          "name": "nudgebee-agent-test",
+          "workload_count": 0,
+          "pod_count": 0,
+          "creation_time": "2024-01-02T13:15:03"
+        },
+        {
+          "name": "nudgebee-agent-test-mp",
+          "workload_count": 0,
+          "pod_count": 0,
+          "creation_time": "2024-03-14T10:58:43"
+        },
+        {
+          "name": "testenv51",
+          "workload_count": 0,
+          "pod_count": 0,
+          "creation_time": "2024-03-11T12:59:45"
+        },
+        {
+          "name": "optscale-test",
+          "workload_count": 19,
+          "pod_count": 0,
+          "creation_time": "2023-09-01T09:11:11"
+        },
+        {
+          "name": "etcd",
+          "workload_count": 1,
+          "pod_count": 0,
+          "creation_time": "2023-06-29T15:21:13"
+        },
+        {
+          "name": "etcd-test",
+          "workload_count": 1,
+          "pod_count": 0,
+          "creation_time": "2023-09-21T16:09:41"
+        },
+        {
+          "name": "helm-nudgebee",
+          "workload_count": 0,
+          "pod_count": 0,
+          "creation_time": "2023-12-30T18:25:31"
+        },
+        {
+          "name": "testenvcluster",
+          "workload_count": 0,
+          "pod_count": 0,
+          "creation_time": "2024-03-05T13:49:29"
+        },
+        {
+          "name": "testenvkub",
+          "workload_count": 0,
+          "pod_count": 0,
+          "creation_time": "2024-03-05T13:12:08"
+        },
+        {
+          "name": "devenvcluster48",
+          "workload_count": 0,
+          "pod_count": 0,
+          "creation_time": "2024-02-26T06:04:14"
+        },
+        {
+          "name": "keda",
+          "workload_count": 0,
+          "pod_count": 0,
+          "creation_time": "2024-02-19T05:25:33"
+        },
+        {
+          "name": "kube-node-lease",
+          "workload_count": 0,
+          "pod_count": 0,
+          "creation_time": "2024-02-17T14:01:50"
+        },
+        {
+          "name": "prodenvtest48",
+          "workload_count": 0,
+          "pod_count": 0,
+          "creation_time": "2024-02-28T08:06:07"
+        },
+        {
+          "name": "prodtest47",
+          "workload_count": 0,
+          "pod_count": 0,
+          "creation_time": "2024-02-25T07:36:40"
+        },
+        {
+          "name": "testenv49",
+          "workload_count": 0,
+          "pod_count": 0,
+          "creation_time": "2024-02-26T13:02:16"
+        },
+        {
+          "name": "testk8s",
+          "workload_count": 0,
+          "pod_count": 0,
+          "creation_time": "2024-02-25T07:28:02"
+        },
+        {
+          "name": "devenv49",
+          "workload_count": 0,
+          "pod_count": 0,
+          "creation_time": "2024-02-26T13:18:31"
+        },
+        {
+          "name": "on-prem-nudgebee",
+          "workload_count": 0,
+          "pod_count": 0,
+          "creation_time": "2024-02-21T06:50:28"
+        }
+      ]
+    }
+  }
+}

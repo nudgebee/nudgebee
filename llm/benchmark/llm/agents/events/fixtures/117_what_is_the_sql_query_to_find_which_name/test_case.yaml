@@ -1,0 +1,9 @@
+user_prompt: What is the SQL query to find which namespace has the highest number
+  of FIRING issues?
+expected_output:
+- SELECT subject_namespace, COUNT(*) as issue_count FROM events WHERE finding_type
+  = 'issue' AND status = 'FIRING' GROUP BY subject_namespace ORDER BY issue_count
+  DESC LIMIT 1;
+tags:
+- command
+- events

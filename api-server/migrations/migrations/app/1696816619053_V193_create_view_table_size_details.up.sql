@@ -1,0 +1,12 @@
+CREATE
+OR REPLACE VIEW "public"."table_size_details" AS
+SELECT
+  table_metadata_details.database_name,
+  sum(table_metadata_details.row_count) AS table_count,
+  sum(table_metadata_details.table_size) AS active,
+  sum(table_metadata_details.table_fail_safe_byte) AS fail_safe,
+  sum(table_metadata_details.time_travel_bytes) AS time_travel
+FROM
+  table_metadata_details
+GROUP BY
+  table_metadata_details.database_name;

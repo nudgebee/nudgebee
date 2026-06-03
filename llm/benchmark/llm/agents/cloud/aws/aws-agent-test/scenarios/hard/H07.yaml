@@ -1,0 +1,88 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H07: CloudTrail whodunit — Security Group ingress rule 0.0.0.0/0 on port 22 was
+  revoked, causing SSH access failures for the ops team.
+  User complaint: "SSH to our bastion host suddenly stopped working this morning.
+  Nothing changed in our infrastructure. The SG looks fine from the EC2 console
+  but someone must have changed something."
+  Root cause: CloudTrail shows an IAM user revoked the wide-open inbound SSH rule
+  and added a restricted IP-range rule, but the ops team's IP is not in the new range.
+  Agent must query CloudTrail for RevokeSecurityGroupIngress events on the SG.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = SG has restrictive SSH rule (10.0.0.0/8 only), 0.0.0.0/0 was removed.
+      Fixed = SG has 0.0.0.0/0 SSH access restored.
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  # THE BUG: In Broken mode, SG only allows SSH from 10.0.0.0/8 (internal only).
+  # The original 0.0.0.0/0 SSH rule was revoked (visible in CloudTrail).
+  # In Fixed mode, 0.0.0.0/0 SSH rule is restored.
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ops bastion host
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !If [IsFixed, '0.0.0.0/0', '10.0.0.0/8']
+      Tags:
+        - Key: Name
+          Value: h07-bastion-sg
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: ops
+
+  BastionHost:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t3.micro
+      ImageId: !Ref LatestAmiId
+      SubnetId: !ImportValue aws-agent-test-public-subnet-a
+      SecurityGroupIds:
+        - !Ref BastionSecurityGroup
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          echo "Bastion host ready" > /var/log/bastion-init.log
+      Tags:
+        - Key: Name
+          Value: h07-bastion-01
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: ops
+        - Key: Role
+          Value: bastion
+
+Outputs:
+  BastionInstanceId:
+    Description: Bastion EC2 Instance ID
+    Value: !Ref BastionHost
+  SecurityGroupId:
+    Description: Bastion Security Group ID
+    Value: !Ref BastionSecurityGroup
+  SSHAccessCIDR:
+    Description: Current SSH access CIDR (restricted in Broken mode)
+    Value: !If [IsFixed, '0.0.0.0/0', '10.0.0.0/8']
+  BugNote:
+    Description: The bug
+    Value: 'SSH rule changed from 0.0.0.0/0 to 10.0.0.0/8 - check CloudTrail for RevokeSecurityGroupIngress event'
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

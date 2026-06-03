@@ -1,0 +1,101 @@
+# Default values for qdrant-server
+# This is a YAML-formatted file.
+
+replicaCount: 1
+
+image:
+  repository: qdrant/qdrant
+  pullPolicy: IfNotPresent
+  tag: "v1.16.0"
+
+imagePullSecrets: [ ]
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: { }
+  name: ""
+
+podAnnotations: { }
+podLabels:
+  app: nudgebee-qdrant-server
+
+podSecurityContext: { }
+
+securityContext: { }
+
+service:
+  type: ClusterIP
+  # HTTP API port
+  httpPort: 6333
+  # gRPC port (optional, for better performance)
+  grpcPort: 6334
+
+# Resource limits optimized for ~700MB memory footprint with on-disk storage
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 700Mi
+
+# Startup probe: gives Qdrant up to 10 minutes to recover collections on startup
+# 60 failures * 10 seconds = 600 seconds (10 minutes)
+startupProbe:
+  httpGet:
+    path: /
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 60
+
+livenessProbe:
+  httpGet:
+    path: /
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# Persistent volume for Qdrant storage
+persistence:
+  enabled: true
+  size: 50Gi
+  # storageClass: "" # Use default storage class
+  accessMode: ReadWriteOnce
+  mountPath: /qdrant/storage
+
+labels:
+  app: nudgebee-qdrant-server
+
+# Qdrant configuration
+config:
+  # Enable on-disk storage for vectors (low memory footprint)
+  storage:
+    on_disk_payload: true
+    optimizers:
+      indexing_threshold_kb: 20000
+      memmap_threshold_kb: 10000
+  # Performance tuning for faster startup
+  performance:
+    max_optimization_threads: 2
+
+nodeSelector: { }
+
+tolerations: [ ]
+
+affinity: { }

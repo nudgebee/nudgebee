@@ -1,0 +1,6 @@
+user_prompt: Describe a Systems Manager Parameter Store parameter.
+expected_output:
+- aws ssm describe-parameters --filters Key=Name,Values=<parameter-name>
+tags:
+- command
+- aws

@@ -1,0 +1,12 @@
+user_prompt: "What is the issue with redis?"
+expected_output: The PersistentVolumeClaim (pvc) is misconfigured
+tags:
+  - easy # observed failure mode (1/20 runs): agent asked the user for more information instead of investigating first.
+  - kubernetes
+before_test: |
+  kubectl create namespace app-24a || true
+  kubectl label namespace app-24a benchmark=true --overwrite || true
+  kubectl apply -f ./manifest.yaml -n app-24a
+after_test: |
+  kubectl delete -f ./manifest.yaml -n app-24a
+  kubectl delete namespace app-24a || true

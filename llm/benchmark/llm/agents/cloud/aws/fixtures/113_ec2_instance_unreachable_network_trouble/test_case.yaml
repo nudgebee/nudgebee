@@ -1,0 +1,8 @@
+user_prompt: EC2 instance unreachable. Network troubleshooting?
+expected_output:
+- aws ec2 describe-network-interfaces
+- aws ec2 describe-security-groups
+- aws ec2 describe-network-acls
+tags:
+- command
+- aws

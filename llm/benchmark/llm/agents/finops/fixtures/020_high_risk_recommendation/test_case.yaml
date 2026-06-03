@@ -1,0 +1,21 @@
+user_prompt: "Should I downsize our shared production database?"
+expected_output:
+  - |
+    The agent should perform a parallel investigation: recommendations (for
+    any rightsizing recommendation on the database), prometheus_execute
+    (CPU/memory p50 and p95 over 14 days to assess whether the workload is
+    bursty), and kubectl_execute (or delegate_agent for managed DBs) to
+    inspect configuration. Because a database is a SHARED resource with
+    blast radius across multiple services and downsizing requires a
+    restart, the risk must be classified as HIGH with explicit reasoning
+    referencing: shared dependency, restart required, and any peaks from
+    p95. The response should still quote the potential savings in dollars
+    but recommend careful planning (off-peak window, snapshot, rollback
+    plan) rather than immediate action. Cite [prometheus_execute] and the
+    inspection tool used.
+tags:
+  - rightsizing
+  - risk
+  - database
+  - hard
+  - finops

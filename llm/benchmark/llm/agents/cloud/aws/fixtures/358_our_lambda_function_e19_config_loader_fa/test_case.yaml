@@ -1,0 +1,22 @@
+user_prompt: Our Lambda function 'e19-config-loader' fails at startup with a
+  'ParameterNotFound' error when trying to read configuration from SSM Parameter
+  Store. The parameters definitely exist — I can see '/prod/app/database-url' and
+  '/prod/app/api-key' in the SSM console. The Lambda has IAM permissions for SSM.
+  Why can't it find the parameters?
+expected_output:
+- The root cause is a case sensitivity mismatch in the SSM parameter path. The Lambda
+  function's SSM_PATH environment variable is set to '/prod/App/' (with capital 'A')
+  but the actual SSM parameters are stored at '/prod/app/' (lowercase 'a'). SSM
+  Parameter Store paths are case-sensitive, so '/prod/App/database-url' is a different
+  parameter than '/prod/app/database-url'. The Lambda tries to read from the
+  capitalized path which doesn't exist, resulting in a ParameterNotFound error. The
+  fix is to update the Lambda's SSM_PATH environment variable from '/prod/App/' to
+  '/prod/app/' to match the actual parameter paths.
+tags:
+- rca
+- aws
+- ssm
+- lambda
+- case-sensitivity
+type: rca
+agent: aws_debug

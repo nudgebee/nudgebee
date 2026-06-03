@@ -1,0 +1,35 @@
+name: test-ai-router-ref-workflow
+definition:
+  triggers:
+    - type: manual
+  inputs:
+    - id: user_request
+      type: string
+      description: The user query
+  tasks:
+    - id: route_request
+      type: llm.router
+      params:
+        prompt: "{{ Inputs.user_request }}"
+        branches:
+          - name: database_issue
+            description: Handle database related problems
+            tasks:
+              - id: handle_db_ref
+          - name: network_issue
+            description: Handle network related problems
+            tasks:
+              - id: handle_net_ref
+
+    # External Task Definitions
+    - id: handle_db_ref
+      type: core.print
+      params:
+        message: "Handling DB issue via Ref"
+        
+    - id: handle_net_ref
+      type: core.print
+      params:
+        message: "Handling Network issue via Ref"
+  output:
+    selected_branch: "{{ Tasks['route_request'].output['selected_branch'] }}"

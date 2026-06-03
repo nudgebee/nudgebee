@@ -1,0 +1,9 @@
+user_prompt: Show the top 10 failing APIs (resources) in the 'nudgebee' namespace
+  over the last 1 day.
+expected_output:
+- SELECT resource, count(*) as failure_count FROM traces_view WHERE workload_namespace
+  = 'nudgebee' AND http_status_code >= 400 AND timestamp >= now() - interval 1 day
+  GROUP BY resource ORDER BY failure_count DESC LIMIT 10;
+tags:
+- command
+- trace

@@ -1,0 +1,6 @@
+user_prompt: Create a Lambda function.
+expected_output:
+- aws lambda create-function
+tags:
+- command
+- aws

@@ -1,0 +1,392 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Box, Typography, ToggleButtonGroup, ToggleButton, Autocomplete, TextField, CircularProgress, Chip } from '@mui/material';
+import { ArrowDropDown, Code } from '@mui/icons-material';
+import { colors } from 'src/utils/colors';
+import SafeIcon from '@common/SafeIcon';
+import FilterDropdownButton from '@common/FilterDropdownButton';
+import TemplateTextField from './TemplateTextField';
+
+interface PreviousTask {
+  id: string;
+  name: string;
+  type: string;
+  outputSchema?: any;
+}
+
+interface TemplateSource {
+  type: 'input' | 'config' | 'secret';
+  key: string;
+  description?: string;
+}
+
+interface HybridFieldProps {
+  fieldName: string;
+  value: string;
+  onChange: (value: string) => void;
+  label?: string;
+  placeholder?: string;
+  disabled?: boolean;
+  error?: string;
+  required?: boolean;
+  options: { label: string; value: string; icon?: any; type?: string }[];
+  optionsLoading?: boolean;
+  previousTasks?: PreviousTask[];
+  templateSources?: TemplateSource[];
+  workflowInputs?: Array<{ id: string; type: string; description?: string }>;
+  workflowConfigs?: Array<{ key: string; value: string; type: string }>;
+  contextChips?: Array<{ label: string; value: string }>;
+  onDrop?: (e: React.DragEvent) => void;
+  onDragOver?: (e: React.DragEvent) => void;
+  onDragLeave?: () => void;
+  isDropTarget?: boolean;
+  // When provided, the Autocomplete behaves as async typeahead: onSearch is invoked
+  // (debounced internally) on keystrokes so parent can refetch options. Client-side
+  // filtering is disabled in this mode — the server decides what to return.
+  onSearch?: (query: string) => void;
+}
+
+type FieldMode = 'select' | 'expression';
+
+type OptionLike = { value: string };
+
+const detectMode = (value: string, options: OptionLike[], optionsLoading: boolean, isAsync: boolean): FieldMode => {
+  if (!value) return 'select';
+  const trimmed = value.trim();
+  if (trimmed.includes('{{') && trimmed.includes('}}')) return 'expression';
+  // Async fields fetch options on-demand — the current value may legitimately not
+  // be in the cached option list, so don't auto-flip to expression mode.
+  if (isAsync) return 'select';
+  if (optionsLoading) return 'select';
+  if (options.some((opt) => opt.value === trimmed)) return 'select';
+  return 'expression';
+};
+
+const HybridField: React.FC<HybridFieldProps> = ({
+  fieldName,
+  value,
+  onChange,
+  label,
+  placeholder,
+  disabled = false,
+  error,
+  required = false,
+  options,
+  optionsLoading = false,
+  previousTasks = [],
+  workflowInputs = [],
+  workflowConfigs = [],
+  contextChips = [],
+  onDrop,
+  onDragOver,
+  onDragLeave,
+  isDropTarget = false,
+  onSearch,
+}) => {
+  const isAsync = !!onSearch;
+  const [mode, setMode] = useState<FieldMode>(() => detectMode(value, options, optionsLoading, isAsync));
+  const userToggledRef = useRef(false);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    },
+    []
+  );
+
+  // Keep mode in sync with the saved value and async-loaded options. Skipped
+  // once the user has manually toggled modes in this mount so we don't yank
+  // them back after an explicit choice.
+  useEffect(() => {
+    if (userToggledRef.current) return;
+    const detected = detectMode(value, options, optionsLoading, isAsync);
+    if (detected !== mode) {
+      setMode(detected);
+    }
+  }, [value, options, optionsLoading, isAsync]);
+
+  const handleModeChange = (_event: React.MouseEvent<HTMLElement>, newMode: FieldMode | null) => {
+    if (newMode && newMode !== mode) {
+      userToggledRef.current = true;
+      setMode(newMode);
+      // Clear value when switching modes to avoid invalid state
+      if (newMode === 'select' && value?.includes('{{')) {
+        onChange('');
+      }
+    }
+  };
+
+  // Handle drag events - auto-switch to expression mode
+  const handleDrop = (e: React.DragEvent) => {
+    const template = e.dataTransfer.getData('text/plain');
+    if (template?.includes('{{')) {
+      userToggledRef.current = true;
+      setMode('expression');
+    }
+    onDrop?.(e);
+  };
+
+  const dropHandlers =
+    !disabled && (onDrop || onDragOver)
+      ? {
+          onDrop: handleDrop,
+          onDragOver,
+          onDragLeave,
+        }
+      : {};
+
+  return (
+    <Box
+      {...dropHandlers}
+      sx={{
+        width: '100%',
+        transition: 'all 0.2s ease',
+        borderRadius: 1,
+        ...(isDropTarget && {
+          outline: '2px dashed var(--ds-blue-400)',
+          outlineOffset: 2,
+          backgroundColor: 'var(--ds-blue-100)',
+        }),
+      }}
+    >
+      {/* Label */}
+      {label && (
+        <Typography
+          sx={{
+            fontSize: 'var(--ds-text-body)',
+            fontWeight: 'var(--ds-font-weight-medium)',
+            color: colors.text.secondary,
+            mb: 0.5,
+          }}
+        >
+          {label} {required && <span style={{ color: colors.border.error }}>*</span>}
+        </Typography>
+      )}
+
+      {/* Context chips - show current Account/Namespace/Kind */}
+      {contextChips.length > 0 && (
+        <Box sx={{ display: 'flex', gap: 0.5, mb: 1, flexWrap: 'wrap' }}>
+          {contextChips.map(
+            (chip) =>
+              chip.value && (
+                <Chip
+                  key={chip.label}
+                  label={`${chip.label}: ${chip.value}`}
+                  size='small'
+                  sx={{
+                    fontSize: 'var(--ds-text-caption)',
+                    height: '22px',
+                    backgroundColor: 'var(--ds-blue-100)',
+                    color: 'var(--ds-blue-700)',
+                    border: '1px solid var(--ds-brand-200)',
+                    '& .MuiChip-label': { px: 1 },
+                  }}
+                />
+              )
+          )}
+        </Box>
+      )}
+
+      {/* Mode toggle */}
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.75 }}>
+        <ToggleButtonGroup value={mode} exclusive onChange={handleModeChange} size='small' disabled={disabled}>
+          <ToggleButton
+            value='select'
+            sx={{
+              px: 1.5,
+              py: 0.25,
+              fontSize: 'var(--ds-text-caption)',
+              textTransform: 'none',
+              borderColor: 'var(--ds-gray-300)',
+              '&.Mui-selected': {
+                backgroundColor: 'var(--ds-blue-200)',
+                color: 'var(--ds-purple-600)',
+                borderColor: 'var(--ds-brand-200)',
+                '&:hover': { backgroundColor: 'var(--ds-brand-200)' },
+              },
+            }}
+          >
+            <ArrowDropDown sx={{ fontSize: 14, mr: 0.5 }} />
+            Select
+          </ToggleButton>
+          <ToggleButton
+            value='expression'
+            sx={{
+              px: 1.5,
+              py: 0.25,
+              fontSize: 'var(--ds-text-caption)',
+              textTransform: 'none',
+              borderColor: 'var(--ds-gray-300)',
+              '&.Mui-selected': {
+                backgroundColor: 'var(--ds-red-100)',
+                color: 'var(--ds-red-600)',
+                borderColor: 'var(--ds-red-300)',
+                '&:hover': { backgroundColor: 'var(--ds-red-200)' },
+              },
+            }}
+          >
+            <Code sx={{ fontSize: 14, mr: 0.5 }} />
+            {'{{ }} Expression'}
+          </ToggleButton>
+        </ToggleButtonGroup>
+      </Box>
+
+      {/* Select mode - async typeahead keeps MUI Autocomplete since
+          FilterDropdownButton has no async onSearch hook. */}
+      {mode === 'select' && isAsync && (
+        <Autocomplete
+          value={options.find((opt) => opt.value === value) || null}
+          onChange={(_event, newValue) => {
+            onChange(newValue ? newValue.value : '');
+          }}
+          onInputChange={(_event, inputValue, reason) => {
+            if (reason !== 'input') return;
+            if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+            searchDebounceRef.current = setTimeout(() => onSearch!(inputValue), 250);
+          }}
+          filterOptions={(x) => x}
+          options={options}
+          getOptionLabel={(option) => option.label}
+          loading={optionsLoading}
+          disabled={disabled}
+          size='small'
+          freeSolo={false}
+          renderOption={(props, option) => {
+            const { key, ...liProps } = props as React.HTMLAttributes<HTMLLIElement> & { key?: React.Key };
+            return (
+              <Box
+                component='li'
+                key={key}
+                {...liProps}
+                sx={{ display: 'flex', alignItems: 'center', gap: 1, fontSize: 'var(--ds-text-body)', py: 0.75 }}
+              >
+                {option.icon && (
+                  <SafeIcon src={option.icon} alt={option.type ?? ''} style={{ width: 16, height: 16, flexShrink: 0, objectFit: 'contain' }} />
+                )}
+                <Box sx={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{option.label}</Box>
+                {option.type && (
+                  <Chip
+                    label={option.type}
+                    size='small'
+                    sx={{
+                      height: 18,
+                      fontSize: 10,
+                      bgcolor: 'var(--ds-background-300)',
+                      color: colors.text.secondary,
+                      flexShrink: 0,
+                      '& .MuiChip-label': { px: 0.75 },
+                    }}
+                  />
+                )}
+              </Box>
+            );
+          }}
+          renderInput={(params) => {
+            const selected = options.find((opt) => opt.value === value);
+            return (
+              <TextField
+                {...params}
+                placeholder={
+                  optionsLoading
+                    ? 'Loading...'
+                    : options.length === 0
+                    ? 'Select dependencies first'
+                    : placeholder || `Select ${fieldName.replace(/_/g, ' ')}`
+                }
+                error={!!error}
+                InputProps={{
+                  ...params.InputProps,
+                  startAdornment: selected?.icon ? (
+                    <SafeIcon
+                      src={selected.icon}
+                      alt={selected.type ?? ''}
+                      style={{ width: 16, height: 16, marginLeft: 4, flexShrink: 0, objectFit: 'contain' }}
+                    />
+                  ) : null,
+                  endAdornment: (
+                    <>
+                      {optionsLoading ? <CircularProgress color='inherit' size={18} /> : null}
+                      {params.InputProps.endAdornment}
+                    </>
+                  ),
+                }}
+                sx={{
+                  '& .MuiOutlinedInput-root': {
+                    borderRadius: 'var(--ds-radius-md)',
+                    backgroundColor: 'white',
+                    fontSize: 'var(--ds-text-body)',
+                    '& fieldset': { borderColor: 'var(--ds-gray-300)' },
+                    '&:hover fieldset': { borderColor: 'var(--ds-blue-300)' },
+                    '&.Mui-focused fieldset': { borderColor: 'var(--ds-blue-600)', borderWidth: '2px' },
+                  },
+                  '& .MuiInputBase-input': {
+                    padding: 'var(--ds-space-1) var(--ds-space-3)',
+                    '&::placeholder': { color: 'var(--ds-gray-400)', fontSize: 'var(--ds-text-small)', opacity: 1 },
+                  },
+                }}
+              />
+            );
+          }}
+          noOptionsText={optionsLoading ? 'Loading resources...' : 'No resources found'}
+          sx={{ width: '100%' }}
+        />
+      )}
+
+      {/* Select mode - FilterDropdownButton for standard (non-async) dropdowns.
+          Note: per-option icon and type chip are not rendered here — the
+          shared FilterDropdownButton renders text labels only. Callers that
+          need icons (integration/ticket dropdowns) still get them via the
+          async branch above when onSearch is wired. */}
+      {mode === 'select' && !isAsync && (
+        <Box sx={{ width: '100%' }}>
+          <FilterDropdownButton
+            id={fieldName}
+            options={options}
+            value={value || null}
+            onSelect={(_event: any, selected: any) => {
+              onChange(selected?.value ?? selected ?? '');
+            }}
+            disabled={disabled}
+            isOptionsLoading={optionsLoading}
+            required={required}
+            placeholder={placeholder || `Select ${fieldName.replace(/_/g, ' ')}`}
+            searchPlaceholder={placeholder || `Search ${fieldName.replace(/_/g, ' ')}`}
+            sx={{
+              width: '100%',
+              ...(error && {
+                border: `1px solid ${colors.border?.error || '#d32f2f'}`,
+                boxShadow: 'none',
+              }),
+            }}
+          />
+        </Box>
+      )}
+
+      {/* Expression mode - Template text field (error text handled by HybridField below) */}
+      {mode === 'expression' && (
+        <TemplateTextField
+          value={value}
+          onChange={onChange}
+          placeholder={placeholder || `e.g. {{ Tasks['task-id'].output.name }}`}
+          disabled={disabled}
+          required={required}
+          previousTasks={previousTasks}
+          workflowInputs={workflowInputs}
+          workflowConfigs={workflowConfigs}
+          fullWidth
+        />
+      )}
+
+      {/* Error message */}
+      {error && (
+        <Typography
+          sx={{ color: colors.border?.error || '#d32f2f', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', mt: 0.5 }}
+        >
+          {error}
+        </Typography>
+      )}
+    </Box>
+  );
+};
+
+export default HybridField;

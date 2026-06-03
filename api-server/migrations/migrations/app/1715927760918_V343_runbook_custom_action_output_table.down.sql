@@ -1,0 +1,1 @@
+drop table public.runbook_task_output

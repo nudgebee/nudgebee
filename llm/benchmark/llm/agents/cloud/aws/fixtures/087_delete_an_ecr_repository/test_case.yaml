@@ -1,0 +1,6 @@
+user_prompt: Delete an ECR repository.
+expected_output:
+- aws ecr delete-repository --repository-name <repository-name>
+tags:
+- command
+- aws

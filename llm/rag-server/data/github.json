@@ -1,0 +1,288 @@
+[
+    {
+      "question": "How can I clone the 'owner/repo' repository?",
+      "output": "gh repo clone owner/repo",
+      "explanation": "Clones the specified repository from GitHub to your local machine."
+    },
+    {
+      "question": "View details (like description, homepage) about the 'owner/repo' repository.",
+      "output": "gh repo view --repo owner/repo",
+      "explanation": "Displays metadata and information about the specified repository."
+    },
+    {
+      "question": "Fork the 'cli/cli' repository under my own account but don't clone it.",
+      "output": "gh repo fork cli/cli --clone=false",
+      "explanation": "Creates a copy (fork) of a repository under your namespace. '--clone=false' prevents immediate cloning. The --repo flag is not needed here as the target repo is specified directly."
+    },
+    {
+      "question": "List all branches in the 'owner/repo' repository.",
+      "output": "gh branch list --repo owner/repo",
+      "explanation": "Shows all branches for the specified repository."
+    },
+    {
+      "question": "What is the default branch of the 'owner/repo' repository?",
+      "output": "gh repo view owner/repo --json defaultBranchRef --jq .defaultBranchRef.name",
+      "explanation": "Fetches repository details and extracts the name of the default branch."
+    },
+    {
+      "question": "List all tags in the 'owner/repo' repository.",
+      "output": "gh tag list --repo owner/repo",
+      "explanation": "Displays a list of tags (typically used for releases) in the specified repository."
+    },
+    {
+      "question": "List the last 5 commits on the main branch of 'owner/repo'.",
+      "output": "gh commit list --repo owner/repo --branch main --limit 5",
+      "explanation": "Shows the most recent commits on a specific branch in the specified repository."
+    },
+    {
+      "question": "View the details of a specific commit with SHA 'commit_sha' in 'owner/repo'.",
+      "output": "gh api repos/owner/repo/commits/commit_sha",
+      "explanation": "Uses the GitHub API via gh to fetch detailed information about a specific commit."
+    },
+      {
+      "question": "Show the changes introduced by commit 'commit_sha' in 'owner/repo'.",
+      "output": "gh api repos/owner/repo/commits/commit_sha --jq .files",
+      "explanation": "Uses the GitHub API via gh to show files changed in a specific commit. For a diff view, often `git show commit_sha` locally is easier after fetching."
+    },
+    {
+      "question": "List all available labels in the 'owner/repo' repository.",
+      "output": "gh label list --repo owner/repo",
+      "explanation": "Displays all the labels defined for the specified repository."
+    },
+      {
+      "question": "List all open milestones in the 'owner/repo' repository.",
+      "output": "gh milestone list --repo owner/repo --state open",
+      "explanation": "Displays open milestones defined for the specified repository."
+    },
+    {
+      "question": "List all open issues in the 'owner/repo' repository.",
+      "output": "gh issue list --repo owner/repo",
+      "explanation": "Displays a list of open issues for the specified repository."
+    },
+    {
+      "question": "List all open issues assigned to me in the 'owner/repo' repository.",
+      "output": "gh issue list --repo owner/repo --assignee \"@me\"",
+      "explanation": "Filters the issue list for the specified repository to show only those assigned to the currently authenticated user."
+    },
+    {
+      "question": "List open issues with the 'bug' label in the 'owner/repo' repository.",
+      "output": "gh issue list --repo owner/repo --label \"bug\"",
+      "explanation": "Filters the issue list for the specified repository to show only those tagged with the 'bug' label."
+    },
+    {
+      "question": "Create a new issue titled 'Feature Request' in the 'owner/repo' repository and assign it to user 'monalisa'.",
+      "output": "gh issue create --repo owner/repo --title \"Feature Request\" --body \"Details here\" --assignee \"monalisa\"",
+      "explanation": "Creates a new issue in the specified repository and immediately assigns it to a specific user."
+    },
+    {
+      "question": "Add the label 'enhancement' to issue number 42 in the 'owner/repo' repository.",
+      "output": "gh issue edit 42 --repo owner/repo --add-label \"enhancement\"",
+      "explanation": "Modifies issue #42 in the specified repository to add a label."
+    },
+    {
+      "question": "Assign issue number 55 in the 'owner/repo' repository to me.",
+      "output": "gh issue edit 55 --repo owner/repo --add-assignee \"@me\"",
+      "explanation": "Assigns issue #55 in the specified repository to yourself."
+    },
+    {
+      "question": "Close issue number 30 in the 'owner/repo' repository with a comment.",
+      "output": "gh issue close 30 --repo owner/repo --comment \"Fixed in PR #124\"",
+      "explanation": "Closes issue #30 in the specified repository and adds a closing comment."
+    },
+    {
+      "question": "Reopen issue number 30 in the 'owner/repo' repository.",
+      "output": "gh issue reopen 30 --repo owner/repo",
+      "explanation": "Reopens a previously closed issue in the specified repository."
+    },
+    {
+      "question": "View the details of issue number 42 in the 'owner/repo' repository.",
+      "output": "gh issue view 42 --repo owner/repo",
+      "explanation": "Displays the title, body, comments, labels, assignees, and other details of issue #42 in the specified repository."
+    },
+    {
+      "question": "List open pull requests in the 'owner/repo' repository.",
+      "output": "gh pr list --repo owner/repo",
+      "explanation": "Shows a list of open pull requests for the specified repository."
+    },
+    {
+      "question": "List open pull requests created by me in the 'owner/repo' repository.",
+      "output": "gh pr list --repo owner/repo --author \"@me\"",
+      "explanation": "Shows open pull requests that you have created in the specified repository."
+    },
+    {
+      "question": "List open pull requests in 'owner/repo' that need my review.",
+      "output": "gh search prs --repo owner/repo --review-requested=@me --state=open",
+      "explanation": "Finds open pull requests in the specified repository where your review has been specifically requested. Uses 'gh search prs' for better filtering."
+    },
+    {
+      "question": "Create a new pull request in the 'owner/repo' repository from the current branch.",
+      "output": "gh pr create --repo owner/repo",
+      "explanation": "Initiates the process to create a pull request in the specified repository, prompting for title, body, base branch, and reviewers."
+    },
+    {
+      "question": "Check out pull request number 123 from the 'owner/repo' repository locally.",
+      "output": "gh pr checkout 123 --repo owner/repo",
+      "explanation": "Switches your local branch to the code from pull request #123 in the specified repository."
+    },
+    {
+      "question": "View the changes introduced in pull request number 123 in the 'owner/repo' repository.",
+      "output": "gh pr diff 123 --repo owner/repo",
+      "explanation": "Shows the differences (diff) for pull request #123 in the specified repository."
+    },
+    {
+      "question": "View the status checks for pull request number 123 in the 'owner/repo' repository.",
+      "output": "gh pr checks 123 --repo owner/repo",
+      "explanation": "Displays the status of automated checks (like CI tests) running on pull request #123 in the specified repository."
+    },
+    {
+      "question": "Request a review from user 'octocat' on pull request 99 in the 'owner/repo' repository.",
+      "output": "gh pr edit 99 --repo owner/repo --add-reviewer \"octocat\"",
+      "explanation": "Adds 'octocat' as a requested reviewer for pull request #99 in the specified repository."
+    },
+    {
+      "question": "Add a comment 'Looks good!' to pull request 99 in the 'owner/repo' repository.",
+      "output": "gh pr comment 99 --repo owner/repo --body \"Looks good!\"",
+      "explanation": "Adds a general comment to the specified pull request."
+    },
+    {
+      "question": "Merge pull request number 123 in the 'owner/repo' repository using a squash merge.",
+      "output": "gh pr merge 123 --repo owner/repo --squash",
+      "explanation": "Merges pull request #123 in the specified repository, combining its commits into a single commit on the base branch."
+    },
+    {
+      "question": "View the status of your work (issues, PRs assigned to you) across all repositories.",
+      "output": "gh status",
+      "explanation": "Provides a summary of your assigned issues, pull requests, and review requests across all your repositories. Does not take --repo."
+    },
+    {
+      "question": "Search for repositories matching 'ai-app' with more than 100 stars.",
+      "output": "gh search repos ai-app --stars=\">100\" --limit 10",
+      "explanation": "Searches GitHub globally for repositories based on keywords and criteria. Does not take --repo."
+    },
+    {
+      "question": "Search for open issues containing 'refactor' in the 'owner/repo' repository.",
+      "output": "gh search issues refactor --state=open --repo=owner/repo",
+      "explanation": "Searches for issues within the specified repository matching criteria."
+    },
+    {
+      "question": "List releases for the 'owner/repo' repository.",
+      "output": "gh release list --repo owner/repo",
+      "explanation": "Displays published releases for the specified repository."
+    },
+    {
+      "question": "Create a new release tagged 'v1.1.0' in 'owner/repo' and mark it as a pre-release.",
+      "output": "gh release create v1.1.0 --repo owner/repo --prerelease --generate-notes",
+      "explanation": "Creates a new pre-release in the specified repository and automatically generates release notes."
+    },
+    {
+      "question": "List my gists.",
+      "output": "gh gist list",
+      "explanation": "Shows a list of your personal gists. Does not relate to a specific repository."
+    },
+    {
+      "question": "Create a new private gist named 'config.yml' from the local file './config.yml'.",
+      "output": "gh gist create ./config.yml --desc \"My private config\" --private",
+      "explanation": "Creates a new private gist. Does not relate to a specific repository."
+    },
+    {
+      "question": "List my active GitHub Codespaces.",
+      "output": "gh codespace list",
+      "explanation": "Shows your current Codespaces. Not specific to one repo context initially."
+    },
+    {
+      "question": "Create a new Codespace for the 'main' branch of the 'owner/repo' repository.",
+      "output": "gh codespace create -r owner/repo -b main",
+      "explanation": "Creates and starts a new Codespace for the specified repository and branch."
+    },
+    {
+      "question": "List workflow files (GitHub Actions) in the 'owner/repo' repository.",
+      "output": "gh workflow list --repo owner/repo",
+      "explanation": "Displays the GitHub Actions workflow files defined in the specified repository."
+    },
+    {
+      "question": "Manually trigger the 'deploy.yml' workflow on the 'staging' branch in the 'owner/repo' repository.",
+      "output": "gh workflow run deploy.yml --ref staging --repo owner/repo",
+      "explanation": "Starts a new run of a specific workflow in the specified repository."
+    },
+    {
+      "question": "View the run history for the 'ci.yml' workflow in the 'owner/repo' repository.",
+      "output": "gh run list --workflow=ci.yml --repo owner/repo",
+      "explanation": "Shows recent runs for a specific GitHub Actions workflow in the specified repository."
+    },
+      {
+      "question": "View the workflow runs triggered by pushes to the 'dev' branch in 'owner/repo'.",
+      "output": "gh run list --repo owner/repo --branch dev",
+      "explanation": "Filters the workflow run history to show only runs triggered on a specific branch."
+    },
+    {
+      "question": "View the details and logs for the latest failed run of any workflow in 'owner/repo'.",
+      "output": "gh run view --log --exit-status failure --repo owner/repo",
+      "explanation": "Displays details and logs for the most recent failed workflow run in the specified repository."
+    },
+    {
+      "question": "What is the primary email address associated with my GitHub account?",
+      "output": "gh api user --jq .email",
+      "explanation": "Uses the GitHub API via gh to fetch user details and extracts the email address. Not repository-specific."
+    },
+    {
+      "question": "List collaborators for the 'owner/repo' repository.",
+      "output": "gh api repos/owner/repo/collaborators --jq '.[].login'",
+      "explanation": "Uses the GitHub API via gh to list the usernames of collaborators for the specified repository."
+    },
+    {
+      "question": "Compare the 'develop' branch to the 'main' branch in 'owner/repo'.",
+      "output": "gh api repos/owner/repo/compare/main...develop --jq '.files[].filename'",
+      "explanation": "Uses the GitHub API via gh to compare two branches and list the files that have changed."
+    },
+    {
+      "question": "What are the projects in the 'organization-name' organization?",
+      "output": "gh api orgs/organization-name/projects --jq '.[].name'",
+      "explanation": "Lists all projects in the specified organization using the GitHub API."
+    },
+    {
+      "question": "What are the details of project number 123 in the 'owner/repo' repository?",
+      "output": "gh api repos/owner/repo/projects/123",
+      "explanation": "Fetches detailed information about a specific project in the repository."
+    },
+    {
+      "question": "What are the columns in project number 123 in the 'owner/repo' repository?",
+      "output": "gh api repos/owner/repo/projects/123/columns --jq '.[].name'",
+      "explanation": "Lists all columns in the specified project using the GitHub API."
+    },
+    {
+      "question": "What are the cards in column number 456 of project 123 in the 'owner/repo' repository?",
+      "output": "gh api repos/owner/repo/projects/columns/456/cards --jq '.[].note'",
+      "explanation": "Lists all cards in the specified column of a project."
+    },
+    {
+      "question": "Can you create a new project named 'New Project' in the 'owner/repo' repository?",
+      "output": "gh api repos/owner/repo/projects -X POST -f name='New Project' -f body='Description of the project'",
+      "explanation": "Creates a new project in the specified repository with the given name and description."
+    },
+    {
+      "question": "Can you add a card with the note 'This is a new task' to column number 456 in project 123 of the 'owner/repo' repository?",
+      "output": "gh api repos/owner/repo/projects/columns/456/cards -X POST -f note='This is a new task'",
+      "explanation": "Adds a new card with the specified note to the given column in a project."
+    },
+    {
+      "question": "Can you move card number 789 to column number 456 in project 123 of the 'owner/repo' repository?",
+      "output": "gh api repos/owner/repo/projects/columns/cards/789/moves -X POST -f position='top' -f column_id=456",
+      "explanation": "Moves the specified card to the top of the given column in a project."
+    },
+    {
+      "question": "Can you delete project number 123 in the 'owner/repo' repository?",
+      "output": "gh api repos/owner/repo/projects/123 -X DELETE",
+      "explanation": "Deletes the specified project from the repository."
+    },
+    {
+      "question": "List all open issues assigned to a specific user 'username' in the 'owner/repo' repository.",
+      "output": "gh issue list --repo owner/repo --assignee 'username'",
+      "explanation": "Filters and lists all open issues assigned to the specified user in the repository."
+    },
+    {
+      "question": "List all issues in the current sprint for the 'owner/repo' repository.",
+      "output": "gh issue list --repo owner/repo --label 'sprint'",
+      "explanation": "Lists all issues tagged with the 'sprint' label, assuming this label is used to track sprint-specific issues."
+    }
+]
+

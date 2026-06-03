@@ -1,0 +1,23 @@
+### Implicit Reference Resolution (CRITICAL)
+The conversation context contains two sources of continuity:
+1. **"Current Subject"** block (from Conversation Memory) — the distilled active investigation target (Topic, Focus, Domain, and properties like namespace, service, pod, cluster).
+2. **"Previous Messages"** — the raw message history containing recent user queries, tool results, and assistant responses.
+
+**Resolution algorithm — apply on EVERY query:**
+1. Does the user's query explicitly name a resource/entity? → Use the user's explicit values.
+2. For any parameter NOT explicitly stated (namespace, cluster, resource name, etc.) → resolve it by checking **both** sources with **recency priority**:
+   a. Scan **Previous Messages** (most recent first) for the last-mentioned value of that parameter.
+   b. Check the **Current Subject** block for that parameter.
+   c. **If both sources have a value and they differ → use the Previous Messages value** (it reflects the latest user intent; the Current Subject may be stale).
+   d. If only one source has a value → use it.
+   *   Example 1: Current Subject shows `namespace: production`. Most recent Previous Message worked in `staging`. User asks "get replica count as well" → use namespace **staging** (Previous Messages win).
+   *   Example 2: Current Subject shows `Topic: Debugging pod-abc`, `namespace: prod`. No namespace change in Previous Messages. User asks "get logs" → get logs for **pod-abc in namespace prod**.
+   *   Example 3: No Current Subject, but previous user message was "describe pod checkout-7f in namespace payments". User now asks "get its logs" → get logs for **pod checkout-7f in namespace payments**.
+3. If the user changes scope (different namespace, region, cluster) but NOT the topic → carry the subject into the new scope.
+   *   Example: Current Subject topic is "service-X dependencies". User asks "look into namespace staging" → investigate **service-X in namespace staging**.
+4. If no Current Subject exists, no relevant entities in Previous Messages, or the query is a genuinely new topic → treat as fresh investigation.
+
+**Previous Messages scanning rules:**
+- Scan from **most recent to oldest**. The first match for each parameter wins.
+- Extract: entity names, resource types, namespaces, clusters, regions, and error details.
+- A parameter value from Previous Messages always overrides the same parameter in Current Subject, because Previous Messages represent the actual latest user activity while Current Subject may lag behind.

@@ -1,0 +1,214 @@
+{{/*
+One-time migration: rag-server moved from StatefulSet to Deployment.
+
+Helm cannot mutate .spec.volumeClaimTemplates in place and cannot swap kinds
+on the same release-managed resource, so the first helm upgrade after the
+chart change would fail. These pre/post-upgrade hooks run that sequence
+automatically:
+
+  pre-upgrade:  if a legacy StatefulSet exists, delete it with
+                --cascade=orphan (keeps the pod serving traffic).
+  main upgrade: Helm applies the new Deployment (see deployment.yaml).
+  post-upgrade: wait for the Deployment to be Ready, then delete the
+                orphaned STS-born pod and its PVC.
+
+Idempotent. Runs on every upgrade but short-circuits when there is nothing
+to migrate. Intended to be deleted in a follow-up PR once every environment
+and on-prem installation has been upgraded past the STS-to-Deployment cut.
+*/}}
+{{- $fullname := include "rag-server.fullname" . -}}
+{{- $saName := printf "%s-migration" $fullname | trunc 63 | trimSuffix "-" -}}
+{{- $pvcName := printf "%s-storage-%s-0" $fullname $fullname -}}
+{{- $legacyPod := printf "%s-0" $fullname -}}
+{{/*
+Hook image defaults to alpine/k8s:1.32.13 — a conservative kubectl version
+chosen to work across the range of Kubernetes versions customers are
+likely to run. kubectl 1.32 is officially skew-compatible with k8s
+servers 1.31-1.33, and in practice works against 1.28+ for the basic
+core/v1 + apps/v1 operations this hook uses (get/delete sts/pod/pvc,
+rollout status deployment). Override via .Values.migrationHookImage for
+air-gapped environments or when a specific kubectl version is needed.
+*/}}
+{{- $image := default "alpine/k8s:1.32.13" .Values.migrationHookImage -}}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $saName }}
+  labels:
+    {{- include "rag-server.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $saName }}
+  labels:
+    {{- include "rag-server.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+rules:
+  # Legacy StatefulSet: pre-upgrade Job deletes it with --cascade=orphan.
+  # list+watch are required because kubectl ≥1.32 uses a client-go informer
+  # (list → watch) to confirm the deletion has propagated before exiting,
+  # not just the single DELETE API call. Without them the Job spams
+  # `statefulsets "rag-server" is forbidden … cannot list resource` and
+  # never completes.
+  - apiGroups: ["apps"]
+    resources: ["statefulsets"]
+    verbs: ["get", "list", "watch", "delete"]
+  # New Deployment: post-upgrade Job uses `kubectl rollout status` which
+  # list+watches the Deployment. No delete needed — the Deployment is
+  # managed by Helm, not by this migration.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+  # Orphan pod and legacy PVC cleanup.
+  - apiGroups: [""]
+    resources: ["pods", "persistentvolumeclaims"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $saName }}
+  labels:
+    {{- include "rag-server.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $saName }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $saName }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-sts-migrate-pre" $fullname | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "rag-server.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "rag-server.labels" . | nindent 8 }}
+    spec:
+      {{- with (( default .Values.global.imagePullSecrets .Values.imagePullSecrets )) }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ $saName }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ $image }}
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              NS={{ .Release.Namespace }}
+              NAME={{ $fullname }}
+              if kubectl -n "$NS" get sts "$NAME" >/dev/null 2>&1; then
+                echo "Legacy StatefulSet $NAME found; orphan-deleting before Deployment upgrade..."
+                kubectl -n "$NS" delete sts "$NAME" --cascade=orphan
+              else
+                echo "No legacy StatefulSet — nothing to migrate."
+              fi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-sts-migrate-post" $fullname | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "rag-server.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "rag-server.labels" . | nindent 8 }}
+    spec:
+      {{- with (( default .Values.global.imagePullSecrets .Values.imagePullSecrets )) }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ $saName }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      restartPolicy: Never
+      containers:
+        - name: cleanup
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ $image }}
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              NS={{ .Release.Namespace }}
+              NAME={{ $fullname }}
+              LEGACY_POD={{ $legacyPod }}
+              LEGACY_PVC={{ $pvcName }}
+
+              # Wait for the new Deployment to be Ready before dropping the orphan.
+              # If it never becomes Ready, skip cleanup (the orphan pod keeps serving).
+              if ! kubectl -n "$NS" rollout status deployment/"$NAME" --timeout=300s; then
+                echo "Deployment $NAME did not become Ready in 5m; leaving legacy pod/PVC in place"
+                exit 0
+              fi
+
+              # Orphan STS-born pod: labels match the Service selector but no owner
+              # references (ReplicaSet won't adopt without a pod-template-hash label).
+              # Delete if present; do not wait so we don't block the hook Job.
+              if kubectl -n "$NS" get pod "$LEGACY_POD" >/dev/null 2>&1; then
+                echo "Deleting orphan pod $LEGACY_POD..."
+                kubectl -n "$NS" delete pod "$LEGACY_POD" --ignore-not-found --wait=false
+              fi
+
+              # Old PVC. --wait=false lets k8s handle teardown async; with no pod
+              # referencing it, pvc-protection finalizer clears and the PV is
+              # released automatically (storageClass reclaimPolicy handles the disk).
+              if kubectl -n "$NS" get pvc "$LEGACY_PVC" >/dev/null 2>&1; then
+                echo "Deleting orphan PVC $LEGACY_PVC..."
+                kubectl -n "$NS" delete pvc "$LEGACY_PVC" --ignore-not-found --wait=false
+              fi

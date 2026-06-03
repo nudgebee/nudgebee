@@ -1,0 +1,6 @@
+user_prompt: List all available AWS services.
+expected_output:
+- No single CLI command; check the AWS documentation.
+tags:
+- command
+- aws

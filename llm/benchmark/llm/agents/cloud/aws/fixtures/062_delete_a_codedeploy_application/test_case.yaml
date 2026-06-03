@@ -1,0 +1,6 @@
+user_prompt: Delete a CodeDeploy application.
+expected_output:
+- aws codedeploy delete-application --application-name <application-name>
+tags:
+- command
+- aws

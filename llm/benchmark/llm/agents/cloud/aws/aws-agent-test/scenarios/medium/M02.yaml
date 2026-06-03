@@ -1,0 +1,141 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M02: DynamoDB Throttling under light load.
+  User complaint: "DynamoDB returns ProvisionedThroughputExceededException but traffic is low."
+  Root cause: Table provisioned at 1 RCU / 1 WCU - any real request throttles.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = 1 RCU / 1 WCU provisioned capacity.
+      Fixed = 25 RCU / 25 WCU provisioned capacity.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  SessionTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: m02-user-sessions
+      BillingMode: PROVISIONED
+      ProvisionedThroughput:
+        ReadCapacityUnits: !If [IsFixed, 25, 1]
+        WriteCapacityUnits: !If [IsFixed, 25, 1]
+      AttributeDefinitions:
+        - AttributeName: session_id
+          AttributeType: S
+        - AttributeName: user_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: session_id
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: UserIdIndex
+          KeySchema:
+            - AttributeName: user_id
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+          ProvisionedThroughput:
+            ReadCapacityUnits: !If [IsFixed, 25, 1]
+            WriteCapacityUnits: !If [IsFixed, 25, 1]
+      Tags:
+        - Key: Name
+          Value: m02-user-sessions
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: auth
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m02-session-manager-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: dynamodb-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt SessionTable.Arn
+                  - !Sub '${SessionTable.Arn}/index/*'
+
+  SessionManagerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: m02-session-manager
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref SessionTable
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+          import uuid
+          from datetime import datetime
+
+          def handler(event, context):
+              dynamodb = boto3.resource('dynamodb')
+              table = dynamodb.Table(os.environ['TABLE_NAME'])
+              errors = []
+
+              # Try to write a few sessions - will throttle at 1 WCU
+              for i in range(5):
+                  try:
+                      table.put_item(Item={
+                          'session_id': str(uuid.uuid4()),
+                          'user_id': f'user-{i}',
+                          'created_at': datetime.utcnow().isoformat(),
+                          'data': {'cart_items': i, 'last_page': '/checkout'}
+                      })
+                  except Exception as e:
+                      errors.append(str(e))
+
+              if errors:
+                  return {'statusCode': 429, 'body': json.dumps({'errors': errors})}
+              return {'statusCode': 200, 'body': json.dumps({'status': 'sessions created'})}
+      Tags:
+        - Key: Name
+          Value: m02-session-manager
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: session-service
+
+Outputs:
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref SessionManagerFunction
+  TableName:
+    Description: DynamoDB Table Name
+    Value: !Ref SessionTable
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

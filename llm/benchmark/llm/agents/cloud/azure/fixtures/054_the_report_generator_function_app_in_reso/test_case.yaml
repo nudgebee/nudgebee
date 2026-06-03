@@ -1,0 +1,18 @@
+user_prompt: The report generator Function App in resource group 'azure-agent-test-P05'
+  can read blobs from the storage account but fails with 403 AuthorizationPermissionMismatch
+  when trying to write generated reports back. The function has a managed identity
+  with a role assignment on the storage account. What is wrong with the permissions?
+expected_output:
+- 'The Function App managed identity has the ''Storage Blob Data Reader'' role on the
+  storage account, which only permits read operations (list, get). Writing blobs requires
+  the ''Storage Blob Data Contributor'' role. The 403 AuthorizationPermissionMismatch
+  error occurs because the identity has sufficient permissions to read but not to create
+  or write blobs. Fix: Change the role assignment from Storage Blob Data Reader to
+  Storage Blob Data Contributor.'
+agent: azure_debug
+scenario: P05
+type: rca
+tags:
+- rca
+- hard
+- azure

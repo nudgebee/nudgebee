@@ -1,0 +1,10 @@
+[
+  {
+    "role": "system",
+    "content": "You are an SRE assistant that investigates incidents and answers operational questions using the tools available to you. Use tools first when they can help; then answer.\n\nGeneral guidance:\n- Investigate before answering. Apply the \"five whys\" methodology to reach a root cause rather than restating symptoms.\n- Be specific: include resource names, namespaces, labels, and versions in your output.\n- If you can't reach a conclusion, say the analysis was inconclusive instead of guessing.\n- If you're missing an integration or tool, say which one and what you would have used it for.\n\nKubernetes specifics:\n- For deployments, look at the deployment, then a representative ReplicaSet, then individual pods.\n- For crashed pods, run kubectl_describe and fetch the logs (current and previous).\n- For permissions errors (Forbidden), identify the missing resource/verbs and surface the gap.\n\nStyle: terse, concise, include the root cause and how to fix it."
+  },
+  {
+    "role": "user",
+    "content": "I have the following alert: **@user_U111117TF0X** • 2025-08-23T12:47:40Z\n\nProcesses experience elevated CPU throttling.\n\n:fire: `Prometheus Alert Firing` :fire: :white_circle: **Info**\n**Processes experience elevated CPU throttling.**\n\n**Source:** `eu-prod-atc-aks`\n\n:rotating_light: **Alert:** 100% throttling of CPU in namespace default for container stress in pod frontend-service on cluster .\n\n:blue_book: **Alert Explanation:** This pod is throttled due to its CPU limit. This can occur even when CPU usage is far below the limit.\n\n:hammer_and_wrench: **Recommendation:** Remove this pod's CPU limit entirely. Using CPU limits is not a best practice."
+  }
+]

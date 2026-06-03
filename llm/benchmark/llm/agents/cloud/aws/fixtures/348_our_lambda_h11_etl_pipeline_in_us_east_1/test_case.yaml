@@ -1,0 +1,18 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is the VPC Gateway Endpoint policy for S3. When the S3 VPC endpoint was added, it was configured with a
+  restrictive policy that only allows access to the artifacts bucket (arn:aws:s3:::h11-artifacts-*). All S3 traffic from the
+  VPC now routes through this endpoint instead of through NAT. The endpoint policy acts as an additional authorization check
+  — even though the Lambda''s IAM role allows s3:GetObject on the data lake bucket, the VPC endpoint policy blocks it. Before
+  the endpoint, traffic went through NAT → internet → S3 where only IAM was checked. Check: aws ec2 describe-vpc-endpoints
+  and examine the PolicyDocument to see which buckets are allowed. The fix is to update the VPC endpoint policy to allow access
+  to all needed buckets, or use Resource: ''*''.'
+scenario: H11
+tags:
+- command
+- aws
+- hard
+type: rca
+user_prompt: Our Lambda 'h11-etl-pipeline' in us-east-1 was reading from S3 bucket 'h11-data-lake-*' fine until we added a
+  VPC Gateway Endpoint for S3 to reduce NAT costs. Now it gets AccessDenied on the data lake bucket but can still access the
+  artifacts bucket. The IAM role has correct S3 permissions. What happened?

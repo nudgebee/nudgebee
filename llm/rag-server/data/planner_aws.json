@@ -1,0 +1,1160 @@
+[
+  {
+    "question": "My EC2 instance 'i-0123456789abcdef0' in 'us-east-1' is not reachable.",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Describe EC2 instance status and configuration.",
+        "tool": "aws",
+        "query": "ec2 describe-instances --instance-ids i-0123456789abcdef0 --region us-east-1",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "Check security group rules associated with the instance.",
+        "tool": "aws",
+        "query": "ec2 describe-security-groups --filters Name=instance-id,Values=i-0123456789abcdef0 --region us-east-1",
+        "dependency": ["1"]
+      },
+      {
+        "id": "3",
+        "plan": "Check Network ACLs for the subnet the instance is in. (Requires subnet-id from task 1 output)",
+        "tool": "aws",
+        "query": "ec2 describe-network-acls --filters Name=association.subnet-id,Values=<SUBNET_ID_FROM_TASK_1> --region us-east-1",
+        "dependency": ["1"]
+      },
+      {
+        "id": "4",
+        "plan": "Describe route table for the subnet to check routing to internet/VPC endpoints. (Requires subnet-id from task 1 output)",
+        "tool": "aws",
+        "query": "ec2 describe-route-tables --filters Name=association.subnet-id,Values=<SUBNET_ID_FROM_TASK_1> --region us-east-1",
+        "dependency": ["1"]
+      }
+    ]
+  },
+  {
+    "question": "My EC2 instance 'i-abcdef1234567890' in 'us-west-2' is showing high CPU utilization.",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Get CloudWatch CPUUtilization metrics for instance 'i-abcdef1234567890' for the last 3 hours.",
+        "tool": "aws",
+        "query": "cloudwatch get-metric-statistics --namespace AWS/EC2 --metric-name CPUUtilization --dimensions Name=InstanceId,Value=i-abcdef1234567890 --start-time $(date -u -d '3 hours ago' +%Y-%m-%dT%H:%M:%SZ) --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) --period 300 --statistics Average --region us-west-2",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "Describe instance 'i-abcdef1234567890' to check its type and vCPU count.",
+        "tool": "aws",
+        "query": "ec2 describe-instances --instance-ids i-abcdef1234567890 --region us-west-2 --query 'Reservations[*].Instances[*].[InstanceType,CpuOptions.CoreCount,CpuOptions.ThreadsPerCore]' --output table",
+        "dependency": []
+      },
+      {
+        "id": "3",
+        "plan": "Attempt to list top CPU consuming processes using SSM run-command (requires SSM agent on instance and permissions).",
+        "tool": "aws",
+        "query": "ssm send-command --instance-ids \"i-abcdef1234567890\" --document-name \"AWS-RunShellScript\" --parameters 'commands=[\"ps -eo pcpu,pid,user,args --sort -pcpu | head -n 10\"]' --comment \"Get top CPU processes\" --region us-west-2",
+        "dependency": []
+      },
+      {
+        "id": "4",
+        "plan": "Use the 'llm' tool to suggest common causes of high CPU utilization on EC2 instances based on the metrics and instance type.",
+        "tool": "llm",
+        "query": "Based on CPUUtilization metrics (Task 1) and instance type/vCPU info (Task 2) for EC2 instance i-abcdef1234567890, what are common causes for high CPU usage and initial troubleshooting steps?",
+        "dependency": ["1", "2"]
+      }
+    ]
+  },
+  {
+    "question": "I think my EC2 instance 'i-0987654321fedcba' in 'eu-central-1' is running out of disk space.",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Get CloudWatch disk IOPS (DiskReadOps, DiskWriteOps) and throughput (DiskReadBytes, DiskWriteBytes) metrics for instance 'i-0987654321fedcba' for the last 6 hours.",
+        "tool": "aws",
+        "query": "cloudwatch get-metric-statistics --namespace AWS/EC2 --metric-name DiskReadBytes --dimensions Name=InstanceId,Value=i-0987654321fedcba --start-time $(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ) --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) --period 600 --statistics Sum --region eu-central-1 && aws cloudwatch get-metric-statistics --namespace AWS/EC2 --metric-name DiskWriteBytes --dimensions Name=InstanceId,Value=i-0987654321fedcba --start-time $(date -u -d '6 hours ago' +%Y-%m-%dT%H:%M:%SZ) --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) --period 600 --statistics Sum --region eu-central-1",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "Describe volumes attached to instance 'i-0987654321fedcba' to check their size and type.",
+        "tool": "aws",
+        "query": "ec2 describe-volumes --filters Name=attachment.instance-id,Values=i-0987654321fedcba --region eu-central-1 --query 'Volumes[*].[VolumeId,Size,VolumeType,Iops]' --output table",
+        "dependency": []
+      },
+      {
+        "id": "3",
+        "plan": "Use SSM run-command to check current disk space usage on the instance (requires SSM agent and permissions).",
+        "tool": "aws",
+        "query": "ssm send-command --instance-ids \"i-0987654321fedcba\" --document-name \"AWS-RunShellScript\" --parameters 'commands=[\"df -h\"]' --comment \"Check disk space usage\" --region eu-central-1",
+        "dependency": []
+      },
+      {
+        "id": "4",
+        "plan": "Use the 'llm' tool to suggest how to check disk space within the OS in detail and common cleanup or expansion steps for EC2.",
+        "tool": "llm",
+        "query": "Based on the disk usage from 'df -h' (Task 3) for EC2 instance i-0987654321fedcba, what are common Linux commands to find large files/directories, and what are the general steps to expand an EBS volume if needed?",
+        "dependency": ["3"]
+      }
+    ]
+  },
+  {
+    "question": "Can I retrieve the user data for EC2 instance 'i-1122334455aabbcc' in 'ap-south-1'?",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Retrieve the user data for instance 'i-1122334455aabbcc'.",
+        "tool": "aws",
+        "query": "ec2 describe-instance-attribute --instance-id i-1122334455aabbcc --attribute userData --region ap-south-1 --query \"UserData.Value\" --output text | base64 --decode",
+        "dependency": []
+      }
+    ]
+  },
+  {
+    "question": "My EC2 instance 'i-abc123def456' in 'us-east-2' is failing status checks.",
+    "plan": [
+        {
+            "id": "1",
+            "plan": "Get system and instance status check details for 'i-abc123def456'.",
+            "tool": "aws",
+            "query": "ec2 describe-instance-status --instance-ids i-abc123def456 --region us-east-2 --query \"InstanceStatuses[0]\"",
+            "dependency": []
+        },
+        {
+            "id": "2",
+            "plan": "Get the state reason for 'i-abc123def456' if it's not running.",
+            "tool": "aws",
+            "query": "ec2 describe-instances --instance-ids i-abc123def456 --region us-east-2 --query \"Reservations[0].Instances[0].StateReason.Message\"",
+            "dependency": []
+        },
+        {
+            "id": "3",
+            "plan": "Get CloudWatch metrics for StatusCheckFailed_System and StatusCheckFailed_Instance for 'i-abc123def456' for the last hour.",
+            "tool": "aws",
+            "query": "cloudwatch get-metric-statistics --namespace AWS/EC2 --metric-name StatusCheckFailed_System --dimensions Name=InstanceId,Value=i-abc123def456 --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ) --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) --period 60 --statistics Maximum --region us-east-2 && aws cloudwatch get-metric-statistics --namespace AWS/EC2 --metric-name StatusCheckFailed_Instance --dimensions Name=InstanceId,Value=i-abc123def456 --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ) --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) --period 60 --statistics Maximum --region us-east-2",
+            "dependency": []
+        },
+        {
+            "id": "4",
+            "plan": "Retrieve console output for 'i-abc123def456' to check for OS boot issues.",
+            "tool": "aws",
+            "query": "ec2 get-console-output --instance-id i-abc123def456 --region us-east-2 --query \"Output\" --output text",
+            "dependency": []
+        },
+        {
+            "id": "5",
+            "plan": "Use 'llm' to suggest troubleshooting based on status check details, metrics, and console output.",
+            "tool": "llm",
+            "query": "EC2 instance i-abc123def456 status checks (Task 1), metrics (Task 3), and console output (Task 4). Suggest troubleshooting for system vs. instance failures (e.g., OS logs, CPU/mem for instance; stop/start for system).",
+            "dependency": ["1", "3", "4"]
+        }
+    ]
+  },
+  {
+    "question": "My application on EC2 instance 'i-def456abc123' in 'ap-northeast-1' is slow, and I suspect EBS volume issues.",
+    "plan": [
+        {
+            "id": "1",
+            "plan": "List attached EBS volume IDs for instance 'i-def456abc123'.",
+            "tool": "aws",
+            "query": "ec2 describe-instances --instance-ids i-def456abc123 --region ap-northeast-1 --query \"Reservations[0].Instances[0].BlockDeviceMappings[*].Ebs.VolumeId\" --output json",
+            "dependency": []
+        },
+        {
+            "id": "2",
+            "plan": "For each volume ID from Task 1, describe the volume to check type, size, IOPS, and throughput.",
+            "tool": "aws",
+            "query": "ec2 describe-volumes --volume-ids <VOLUME_ID_FROM_TASK_1> --region ap-northeast-1 --query \"Volumes[0]\"",
+            "dependency": ["1"]
+        },
+        {
+            "id": "3",
+            "plan": "Get CloudWatch metrics for a key volume (e.g., root volume from Task 1 or 2 results) like VolumeQueueLength, VolumeThroughputPercentage, BurstBalance for the last 3 hours.",
+            "tool": "aws",
+            "query": "cloudwatch get-metric-statistics --namespace AWS/EBS --metric-name VolumeQueueLength --dimensions Name=VolumeId,Value=<VOLUME_ID> --start-time $(date -u -d '3 hours ago' +%Y-%m-%dT%H:%M:%SZ) --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) --period 300 --statistics Average --region ap-northeast-1 && cloudwatch get-metric-statistics --namespace AWS/EBS --metric-name VolumeThroughputPercentage --dimensions Name=VolumeId,Value=<VOLUME_ID> --start-time $(date -u -d '3 hours ago' +%Y-%m-%dT%H:%M:%SZ) --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) --period 300 --statistics Average --region ap-northeast-1",
+            "dependency": ["1", "2"]
+        },
+        {
+            "id": "4",
+            "plan": "Use 'llm' to analyze volume metrics and suggest if IOPS/throughput limits are being hit or other disk contention signs.",
+            "tool": "llm",
+            "query": "Analyze EBS volume metrics (Task 3) for volume <VOLUME_ID> on instance i-def456abc123. Are IOPS/throughput limits likely being hit? What other signs of disk contention should be considered?",
+            "dependency": ["3"]
+        }
+    ]
+  },
+  {
+    "question": "My EC2 Auto Scaling Group 'my-asg' in 'eu-west-3' is not scaling out when CPU is high.",
+    "plan": [
+        {
+            "id": "1",
+            "plan": "Describe Auto Scaling Group 'my-asg' configuration (min/max/desired, health check, subnets, launch config/template).",
+            "tool": "aws",
+            "query": "autoscaling describe-auto-scaling-groups --auto-scaling-group-names my-asg --region eu-west-3",
+            "dependency": []
+        },
+        {
+            "id": "2",
+            "plan": "Check for failed or cancelled scaling activities for 'my-asg'.",
+            "tool": "aws",
+            "query": "autoscaling describe-scaling-activities --auto-scaling-group-name my-asg --region eu-west-3 --query \"Activities[?StatusCode=='Failed' || StatusCode=='Cancelled']\"",
+            "dependency": []
+        },
+        {
+            "id": "3",
+            "plan": "Review scaling policies for 'my-asg' and their triggers (e.g., CloudWatch alarm).",
+            "tool": "aws",
+            "query": "autoscaling describe-policies --auto-scaling-group-name my-asg --region eu-west-3",
+            "dependency": []
+        },
+        {
+            "id": "4",
+            "plan": "If policies use CloudWatch alarms (from Task 3), describe the alarm status, threshold, and evaluation periods.",
+            "tool": "aws",
+            "query": "cloudwatch describe-alarms --alarm-names <ALARM_NAME_FROM_TASK_3> --region eu-west-3",
+            "dependency": ["3"]
+        },
+        {
+            "id": "5",
+            "plan": "Use 'llm' to diagnose ASG scaling issues based on events, policy configuration, and alarm status.",
+            "tool": "llm",
+            "query": "Diagnose 'my-asg' scaling issue: ASG config (Task 1), scaling activities (Task 2), policies (Task 3), and alarm (Task 4). Why might it not be scaling out?",
+            "dependency": ["1", "2", "3", "4"]
+        }
+    ]
+  },
+  {
+    "question": "Instances are failing to launch in my Auto Scaling Group 'web-servers-asg' in 'sa-east-1'.",
+    "plan": [
+        {
+            "id": "1",
+            "plan": "Find failed EC2 launch activities for ASG 'web-servers-asg' and their reasons.",
+            "tool": "aws",
+            "query": "autoscaling describe-scaling-activities --auto-scaling-group-name web-servers-asg --region sa-east-1 --query \"Activities[?Description like '%launching a new EC2 instance%' && StatusCode=='Failed']\"",
+            "dependency": []
+        },
+        {
+            "id": "2",
+            "plan": "If using a Launch Template (from ASG description or Task 1 activity details), check its details (AMI ID, instance type, key pair, SGs, IAM profile).",
+            "tool": "aws",
+            "query": "ec2 describe-launch-template-versions --launch-template-name <LAUNCH_TEMPLATE_NAME> --versions \\$Default --region sa-east-1",
+            "dependency": ["1"]
+        },
+        {
+            "id": "3",
+            "plan": "Check IAM permissions for the role launching the instance (or EC2 service role for ASG) for 'ec2:RunInstances' and related permissions.",
+            "tool": "llm",
+            "query": "What specific IAM permissions (e.g. ec2:RunInstances, iam:PassRole, KMS key access for encrypted AMIs) are needed for an EC2 Auto Scaling Group or user to launch instances? Check for role <IAM_ROLE_ARN_IF_KNOWN>.",
+            "dependency": []
+        },
+        {
+            "id": "4",
+            "plan": "Verify AMI ID (from Launch Template or ASG config) is valid and available in region 'sa-east-1'.",
+            "tool": "aws",
+            "query": "ec2 describe-images --image-ids <AMI_ID> --region sa-east-1",
+            "dependency": ["2"]
+        },
+        {
+            "id": "5",
+            "plan": "Check if the specified instance type (from Launch Template or ASG config) is available in the configured Availability Zones/region.",
+            "tool": "aws",
+            "query": "ec2 describe-instance-type-offerings --location-type availability-zone --filters Name=instance-type,Values=<INSTANCE_TYPE> --region sa-east-1",
+            "dependency": ["2"]
+        },
+        {
+            "id": "6",
+            "plan": "Check EC2 instance account limits for region 'sa-east-1'.",
+            "tool": "aws",
+            "query": "service-quotas get-service-quota --service-code ec2 --quota-code L-1216C47A --region sa-east-1",
+            "dependency": []
+        },
+        {
+            "id": "7",
+            "plan": "Use 'llm' to consolidate findings (failed activities, LT details, IAM, AMI, instance type, limits) and suggest specific areas to fix for ASG 'web-servers-asg'.",
+            "tool": "llm",
+            "query": "Consolidate findings for ASG 'web-servers-asg' launch failures: Activity reasons (Task 1), Launch Template (Task 2), IAM (Task 3), AMI status (Task 4), Instance Type availability (Task 5), Account Limits (Task 6). What are the most likely causes?",
+            "dependency": ["1", "2", "3", "4", "5", "6"]
+        }
+    ]
+  },
+  {
+    "question": "I cannot SSH into my EC2 instance 'i-ssh-issue-instance' in 'us-gov-west-1'.",
+    "plan": [
+        {
+            "id": "1",
+            "plan": "Get public IP of instance 'i-ssh-issue-instance'.",
+            "tool": "aws",
+            "query": "ec2 describe-instances --instance-ids i-ssh-issue-instance --region us-gov-west-1 --query \"Reservations[0].Instances[0].NetworkInterfaces[0].Association.PublicIp\"",
+            "dependency": []
+        },
+        {
+            "id": "2",
+            "plan": "Get Security Group IDs associated with 'i-ssh-issue-instance'.",
+            "tool": "aws",
+            "query": "ec2 describe-instances --instance-ids i-ssh-issue-instance --region us-gov-west-1 --query \"Reservations[0].Instances[0].NetworkInterfaces[0].Groups[*].GroupId\" --output json",
+            "dependency": []
+        },
+        {
+            "id": "3",
+            "plan": "For each Security Group ID from Task 2, check inbound rules for port 22 (SSH).",
+            "tool": "aws",
+            "query": "ec2 describe-security-groups --group-ids <SECURITY_GROUP_ID_FROM_TASK_2> --region us-gov-west-1 --query \"SecurityGroups[0].IpPermissions[?ToPort==`22` && IpProtocol=='tcp']\"",
+            "dependency": ["2"]
+        },
+        {
+            "id": "4",
+            "plan": "Get Subnet ID for 'i-ssh-issue-instance'.",
+            "tool": "aws",
+            "query": "ec2 describe-instances --instance-ids i-ssh-issue-instance --region us-gov-west-1 --query \"Reservations[0].Instances[0].NetworkInterfaces[0].SubnetId\" --output text",
+            "dependency": []
+        },
+        {
+            "id": "5",
+            "plan": "Check NACL inbound rules for port 22/TCP for the subnet (Subnet ID from Task 4).",
+            "tool": "aws",
+            "query": "ec2 describe-network-acls --filters Name=association.subnet-id,Values=<SUBNET_ID_FROM_TASK_4> --region us-gov-west-1 --query \"NetworkAcls[0].Entries[?PortRange.To==`22` && Protocol=='6' && RuleAction=='allow']\"",
+            "dependency": ["4"]
+        },
+        {
+            "id": "6",
+            "plan": "Check route table for the subnet (Subnet ID from Task 4) for a route to an Internet Gateway.",
+            "tool": "aws",
+            "query": "ec2 describe-route-tables --filters Name=association.subnet-id,Values=<SUBNET_ID_FROM_TASK_4> --region us-gov-west-1 --query \"RouteTables[0].Routes[?DestinationCidrBlock=='0.0.0.0/0'].GatewayId\"",
+            "dependency": ["4"]
+        },
+        {
+            "id": "7",
+            "plan": "Use 'llm' to interpret Security Group rules, NACL rules, and route table for SSH connectivity to 'i-ssh-issue-instance'.",
+            "tool": "llm",
+            "query": "Interpret SG rules (Task 3), NACL rules (Task 5), and route table (Task 6) for SSH connectivity to instance 'i-ssh-issue-instance'. Is SSH port 22 open from the internet?",
+            "dependency": ["3", "5", "6"]
+        }
+    ]
+  },
+  {
+    "question": "I'm getting access denied errors for my S3 bucket 'my-secure-bucket'.",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Get the S3 bucket policy for 'my-secure-bucket'.",
+        "tool": "aws",
+        "query": "s3api get-bucket-policy --bucket my-secure-bucket",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "Get the S3 bucket ACL for 'my-secure-bucket'.",
+        "tool": "aws",
+        "query": "s3api get-bucket-acl --bucket my-secure-bucket",
+        "dependency": []
+      },
+      {
+        "id": "3",
+        "plan": "Check S3 block public access settings for 'my-secure-bucket'.",
+        "tool": "aws",
+        "query": "s3api get-public-access-block --bucket my-secure-bucket",
+        "dependency": []
+      },
+      {
+        "id": "4",
+        "plan": "If a specific IAM user/role 'my-iam-entity' is involved, list its attached policies related to S3. (Replace my-iam-entity with actual user name or role name)",
+        "tool": "aws",
+        "query": "iam list-attached-user-policies --user-name my-iam-entity",
+        "dependency": []
+      },
+      {
+        "id": "5",
+        "plan": "If a specific IAM user/role 'my-iam-entity' is involved, list its inline policies. (Replace my-iam-entity with actual user name or role name)",
+        "tool": "aws",
+        "query": "iam list-user-policies --user-name my-iam-entity",
+        "dependency": []
+      },
+      {
+        "id": "6",
+        "plan": "Use 'llm' to review the policies from the previous steps (Task 4 and Task 5) to identify S3 related permissions for 'my-iam-entity'.",
+        "tool": "aws",
+        "query": "Review the output of 'iam list-attached-user-policies' (from Task 4) and 'iam list-user-policies' (from Task 5) for IAM entity 'my-iam-entity'. Identify any policies or statements related to S3 access. What S3 actions are permitted or denied for 'my-secure-bucket'?",
+        "dependency": ["4", "5"]
+      }
+    ]
+  },
+  {
+    "question": "My ECS task for service 'my-app-service' in cluster 'production-cluster' (region 'us-east-1') is not starting.",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Describe ECS service 'my-app-service' in cluster 'production-cluster' to check deployment status and events.",
+        "tool": "aws",
+        "query": "ecs describe-services --cluster production-cluster --services my-app-service --region us-east-1",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "List recently stopped tasks for service 'my-app-service' to find the stopped reason.",
+        "tool": "aws",
+        "query": "ecs list-tasks --cluster production-cluster --service-name my-app-service --desired-status STOPPED --max-items 10 --region us-east-1 --query \"taskArns\" --output text | xargs -I {} aws ecs describe-tasks --cluster production-cluster --tasks {} --region us-east-1 --query \"tasks[*].[taskArn,stoppedReason,stopCode]\" --output table",
+        "dependency": ["1"]
+      },
+      {
+        "id": "3",
+        "plan": "Get the task definition ARN from the service (Task 1) and describe it to verify image, command, CPU/memory.",
+        "tool": "aws",
+        "query": "aws ecs describe-task-definition --task-definition $(aws ecs describe-services --cluster production-cluster --services my-app-service --region us-east-1 --query 'services[0].taskDefinition' --output text) --region us-east-1",
+        "dependency": ["1"]
+      },
+      {
+        "id": "4",
+        "plan": "Check CloudWatch Logs for one of the stopped tasks. (Requires LogConfiguration from Task 3 and Task ARN from Task 2)",
+        "tool": "aws",
+        "query": "logs get-log-events --log-group-name <LOG_GROUP_FROM_TASK_DEF> --log-stream-name <LOG_STREAM_PREFIX/CONTAINER_NAME/TASK_ID> --limit 50 --region us-east-1",
+        "dependency": ["2", "3"]
+      }
+    ]
+  },
+  {
+    "question": "My ECS tasks for 'payment-service' in cluster 'prod-cluster' (region 'ap-southeast-1') are cycling. They start and then stop repeatedly.",
+    "plan": [
+        {
+            "id": "1",
+            "plan": "Check service events for 'payment-service' for reasons tasks are stopping.",
+            "tool": "aws",
+            "query": "ecs describe-services --services payment-service --cluster prod-cluster --region ap-southeast-1 --query \"services[0].events[?contains(message, 'stopped') || contains(message, 'failed')][0:5]\" --output json",
+            "dependency": []
+        },
+        {
+            "id": "2",
+            "plan": "List recently stopped tasks for 'payment-service'.",
+            "tool": "aws",
+            "query": "ecs list-tasks --service-name payment-service --cluster prod-cluster --desired-status STOPPED --max-items 5 --region ap-southeast-1 --query \"taskArns\" --output json",
+            "dependency": []
+        },
+        {
+            "id": "3",
+            "plan": "For a sample stopped task ARN from Task 2, get its specific stop reason and container status.",
+            "tool": "aws",
+            "query": "ecs describe-tasks --cluster prod-cluster --tasks <TASK_ARN_FROM_TASK_2> --region ap-southeast-1 --query \"tasks[0].[stoppedReason, containers[0].lastStatus, containers[0].exitCode, containers[0].reason]\"",
+            "dependency": ["2"]
+        },
+        {
+            "id": "4",
+            "plan": "Check CloudWatch Logs for the task's containers (requires log configuration from task definition and task ID).",
+            "tool": "aws",
+            "query": "logs get-log-events --log-group-name /ecs/payment-service --log-stream-name <ecs/container_name/TASK_ID_FROM_TASK_2> --limit 50 --region ap-southeast-1",
+            "dependency": ["2"]
+        },
+        {
+            "id": "5",
+            "plan": "Use 'llm' to analyze stop reasons, exit codes, service events, and logs to suggest potential causes.",
+            "tool": "llm",
+            "query": "Analyze ECS task cycling: Service events (Task 1), stopped task reasons (Task 3), and logs (Task 4) for 'payment-service'. What are likely causes like essential container exiting, health checks, or resource issues?",
+            "dependency": ["1", "3", "4"]
+        }
+    ]
+  },
+  {
+    "question": "My 'user-service' in cluster 'main-cluster' (region 'eu-north-1') can't resolve 'product-service' which is also on ECS using service discovery.",
+    "plan": [
+        {
+            "id": "1",
+            "plan": "Check service discovery configuration for 'product-service'.",
+            "tool": "aws",
+            "query": "ecs describe-services --services product-service --cluster main-cluster --region eu-north-1 --query \"services[0].serviceRegistries\"",
+            "dependency": []
+        },
+        {
+            "id": "2",
+            "plan": "If service discovery is configured (from Task 1), list registered instances for 'product-service'.",
+            "tool": "aws",
+            "query": "servicediscovery list-instances --service-id <PRODUCT_SERVICE_DISCOVERY_ID_FROM_TASK_1> --region eu-north-1",
+            "dependency": ["1"]
+        },
+        {
+            "id": "3",
+            "plan": "Get subnet ID for a 'product-service' task.",
+            "tool": "aws",
+            "query": "ecs list-tasks --cluster main-cluster --service-name product-service --max-items 1 --region eu-north-1 --query taskArns[0] --output text | xargs -I {} aws ecs describe-tasks --cluster main-cluster --tasks {} --region eu-north-1 --query \"tasks[0].attachments[0].details[?name=='subnetId'].value[0]\"",
+            "dependency": []
+        },
+        {
+            "id": "4",
+            "plan": "Get subnet ID for a 'user-service' task.",
+            "tool": "aws",
+            "query": "ecs list-tasks --cluster main-cluster --service-name user-service --max-items 1 --region eu-north-1 --query taskArns[0] --output text | xargs -I {} aws ecs describe-tasks --cluster main-cluster --tasks {} --region eu-north-1 --query \"tasks[0].attachments[0].details[?name=='subnetId'].value[0]\"",
+            "dependency": []
+        },
+        {
+            "id": "5",
+            "plan": "Use 'llm' to suggest checks for security groups (DNS ports TCP/UDP 53) and VPC DNS settings based on subnets from Task 3 & 4.",
+            "tool": "llm",
+            "query": "ECS services 'user-service' and 'product-service' are in subnets <SUBNET_ID_USER> and <SUBNET_ID_PRODUCT> respectively. What security group rules (DNS ports) and VPC DNS settings should be verified for service discovery to work?",
+            "dependency": ["3", "4"]
+        }
+    ]
+  },
+  {
+    "question": "Tasks for 'batch-processor' service in cluster 'analytics-cluster' (region 'ca-central-1') are stuck in PROVISIONING state when using a Fargate capacity provider.",
+    "plan": [
+        {
+            "id": "1",
+            "plan": "Check service events for 'batch-processor' for errors.",
+            "tool": "aws",
+            "query": "ecs describe-services --services batch-processor --cluster analytics-cluster --region ca-central-1 --query \"services[0].events[0:10]\"",
+            "dependency": []
+        },
+        {
+            "id": "2",
+            "plan": "Describe the Fargate capacity provider used by the cluster (e.g., 'FARGATE_SPOT').",
+            "tool": "aws",
+            "query": "ecs describe-capacity-providers --capacity-providers FARGATE_SPOT --region ca-central-1 --query \"capacityProviders[0]\"",
+            "dependency": []
+        },
+        {
+            "id": "3",
+            "plan": "Check VPC attachment status for the 'analytics-cluster'.",
+            "tool": "aws",
+            "query": "ecs describe-clusters --clusters analytics-cluster --include ATTACHMENTS --region ca-central-1 --query \"clusters[0].attachments[?type=='vpc-attachment'].status\"",
+            "dependency": []
+        },
+        {
+            "id": "4",
+            "plan": "Use 'llm' to check account limits for Fargate, IAM permissions for ECS to manage Fargate tasks, and VPC networking (subnets, route tables, NAT for public images).",
+            "tool": "llm",
+            "query": "ECS Fargate tasks for 'batch-processor' are stuck in PROVISIONING. What are common Fargate account limits, IAM permissions (ecsTaskExecutionRole), and VPC networking configurations (subnets with routes to NAT/IGW, security groups) to verify?",
+            "dependency": ["1", "2", "3"]
+        }
+    ]
+  },
+  {
+    "question": "My Fargate task for 'data-exporter' in cluster 'export-cluster' (region 'eu-west-2') in a private subnet can't connect to an external API.",
+    "plan": [
+        {
+            "id": "1",
+            "plan": "Describe the Fargate task to get ENI ID, subnet ID, and security groups.",
+            "tool": "aws",
+            "query": "ecs describe-tasks --cluster export-cluster --tasks <fargate-task-arn> --region eu-west-2 --query \"tasks[0].attachments[0].details\"",
+            "dependency": []
+        },
+        {
+            "id": "2",
+            "plan": "Describe the network interface (ENI from Task 1) to check public IP and security group details.",
+            "tool": "aws",
+            "query": "ec2 describe-network-interfaces --network-interface-ids <ENI_ID_FROM_TASK_1> --region eu-west-2",
+            "dependency": ["1"]
+        },
+        {
+            "id": "3",
+            "plan": "Describe route table for the task's subnet (Subnet ID from Task 1) to check for a route to a NAT Gateway.",
+            "tool": "aws",
+            "query": "ec2 describe-route-tables --filters Name=association.subnet-id,Values=<SUBNET_ID_FROM_TASK_1> --region eu-west-2",
+            "dependency": ["1"]
+        },
+        {
+            "id": "4",
+            "plan": "If a NAT Gateway is used (from Task 3), describe it to check its status and connectivity. (Requires NAT GW ID)",
+            "tool": "aws",
+            "query": "ec2 describe-nat-gateways --nat-gateway-ids <NAT_GATEWAY_ID_FROM_TASK_3> --region eu-west-2",
+            "dependency": ["3"]
+        },
+        {
+            "id": "5",
+            "plan": "Use 'llm' to analyze security group outbound rules (from Task 2) and NACL rules for the task's subnet (from Task 1).",
+            "tool": "llm",
+            "query": "Fargate task in subnet <SUBNET_ID_FROM_TASK_1> with security group <SG_FROM_TASK_2> needs outbound internet. Analyze its SG outbound rules and NACL rules for the subnet. Does it allow HTTPS traffic to 0.0.0.0/0?",
+            "dependency": ["1", "2"]
+        }
+    ]
+  },
+  {
+    "question": "ECS service 'worker-service' in cluster 'data-processing' (region 'eu-west-1') is not scaling out as expected.",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Describe ECS service 'worker-service' to check desired/running/pending counts and deployment configuration.",
+        "tool": "aws",
+        "query": "ecs describe-services --cluster data-processing --services worker-service --region eu-west-1",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "Check service events for 'worker-service' for scaling activities or errors.",
+        "tool": "aws",
+        "query": "ecs describe-services --cluster data-processing --services worker-service --region eu-west-1 --query 'services[0].events' --output table",
+        "dependency": ["1"]
+      },
+      {
+        "id": "3",
+        "plan": "Check CloudWatch metrics for the service (CPU/Memory Utilization) to see if scaling thresholds are met.",
+        "tool": "aws",
+        "query": "cloudwatch get-metric-statistics --namespace AWS/ECS --metric-name CPUUtilization --dimensions Name=ClusterName,Value=data-processing Name=ServiceName,Value=worker-service --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ) --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) --period 60 --statistics Average --region eu-west-1",
+        "dependency": []
+      },
+      {
+        "id": "4",
+        "plan": "If using Application Auto Scaling, describe scalable targets and scaling policies for the service.",
+        "tool": "aws",
+        "query": "application-autoscaling describe-scalable-targets --service-namespace ecs --resource-id service/data-processing/worker-service --region eu-west-1 && aws application-autoscaling describe-scaling-policies --service-namespace ecs --resource-id service/data-processing/worker-service --region eu-west-1",
+        "dependency": []
+      }
+    ]
+  },
+  {
+    "question": "Get logs for a container in task 'task-id-123' of service 'api-service' in cluster 'my-cluster' (region 'us-west-2').",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Describe ECS task 'task-id-123' in cluster 'my-cluster' to get container definitions and log configuration.",
+        "tool": "aws",
+        "query": "ecs describe-tasks --cluster my-cluster --tasks task-id-123 --region us-west-2",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "Using the log configuration from Task 1 (e.g., log group name, stream prefix), get log events. (Stream name often like prefix/container_name/task_id_part)",
+        "tool": "aws",
+        "query": "logs get-log-events --log-group-name <LOG_GROUP_FROM_TASK_1> --log-stream-name <LOG_STREAM_FROM_TASK_1> --limit 100 --region us-west-2",
+        "dependency": ["1"]
+      }
+    ]
+  },
+  {
+    "question": "My Lambda 'user-auth-lambda' in 'us-east-1' is failing with invocation errors. How do I see the actual error?",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Get function configuration for 'user-auth-lambda'.",
+        "tool": "aws",
+        "query": "lambda get-function-configuration --function-name user-auth-lambda --region us-east-1 --query '{Runtime:Runtime, Handler:Handler, MemorySize:MemorySize, Timeout:Timeout}'",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "Fetch recent ERROR messages from CloudWatch Logs for 'user-auth-lambda'.",
+        "tool": "aws",
+        "query": "logs filter-log-events --log-group-name /aws/lambda/user-auth-lambda --filter-pattern ERROR --start-time $(date -d '1 hour ago' +%s000) --region us-east-1 --query 'events[*].message'",
+        "dependency": []
+      },
+      {
+        "id": "3",
+        "plan": "Get error count metrics for 'user-auth-lambda' for the last hour.",
+        "tool": "aws",
+        "query": "cloudwatch get-metric-data --cli-input-json '{\"MetricDataQueries\": [{\"Id\": \"m1\",\"MetricStat\": {\"Metric\": {\"Namespace\": \"AWS/Lambda\",\"MetricName\": \"Errors\",\"Dimensions\": [{\"Name\": \"FunctionName\",\"Value\": \"user-auth-lambda\"}]},\"Period\": 300,\"Stat\": \"Sum\"}}],\"StartTime\": \"$(date -d \"1 hour ago\" -u +%Y-%m-%dT%H:%M:%SZ)\",\"EndTime\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}' --region us-east-1 --query 'MetricDataResults[0].Values'",
+        "dependency": []
+      },
+      {
+        "id": "4",
+        "plan": "Use 'llm' to analyze error messages (Task 2) and suggest debugging based on common runtime errors.",
+        "tool": "llm",
+        "query": "Analyze Lambda error messages: <OUTPUT_TASK_2> for 'user-auth-lambda'. What are potential causes and how to debug them?",
+        "dependency": ["2"]
+      }
+    ]
+  },
+  {
+    "question": "Lambda 'order-processor' in 'us-west-2' reports 'Handler missing or incorrect'.",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Get function configuration for 'order-processor' focusing on Runtime and Handler.",
+        "tool": "aws",
+        "query": "lambda get-function-configuration --function-name order-processor --region us-west-2 --query '{Runtime:Runtime, Handler:Handler}'",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "Use 'llm' to explain the expected handler format based on the runtime (Task 1) and ask user to verify their deployment package structure.",
+        "tool": "llm",
+        "query": "Lambda 'order-processor' runtime is <RUNTIME_FROM_TASK_1> and handler is <HANDLER_FROM_TASK_1>. What is the correct handler syntax (e.g., filename.handler_function)? What should the user verify in their deployment package?",
+        "dependency": ["1"]
+      }
+    ]
+  },
+  {
+    "question": "My Lambda function 'image-resizer' in 'eu-central-1' is running out of memory.",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Get function configuration for 'image-resizer' to check MemorySize and Timeout.",
+        "tool": "aws",
+        "query": "lambda get-function-configuration --function-name image-resizer --region eu-central-1 --query '{MemorySize:MemorySize, Timeout:Timeout}'",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "Look for REPORT logs showing Max Memory Used for 'image-resizer' in CloudWatch Logs.",
+        "tool": "aws",
+        "query": "logs filter-log-events --log-group-name /aws/lambda/image-resizer --filter-pattern \"REPORT RequestId\" --start-time $(date -d '1 hour ago' +%s000) --region eu-central-1 --query \"events[?contains(message, 'Max Memory Used')].message\"",
+        "dependency": []
+      },
+      {
+        "id": "3",
+        "plan": "Use 'llm' to compare 'Max Memory Used' (Task 2) with configured 'MemorySize' (Task 1) and suggest increasing memory if needed.",
+        "tool": "llm",
+        "query": "Lambda 'image-resizer' configured memory: <MEMORY_SIZE_FROM_TASK_1>. Max Memory Used from logs: <MAX_MEMORY_USED_FROM_TASK_2>. Is the function close to its memory limit? Should memory be increased?",
+        "dependency": ["1", "2"]
+      }
+    ]
+  },
+  {
+    "question": "My Lambda 'external-api-caller' in 'ap-northeast-2' is in a VPC and can't connect to a public API.",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Check VPC, Subnet IDs, and Security Group IDs for Lambda 'external-api-caller'.",
+        "tool": "aws",
+        "query": "lambda get-function-configuration --function-name external-api-caller --region ap-northeast-2 --query \"VpcConfig\"",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "For each subnet ID from Task 1, check its route table for a route to a NAT Gateway or Internet Gateway.",
+        "tool": "aws",
+        "query": "ec2 describe-route-tables --filters Name=association.subnet-id,Values=<SUBNET_ID_FROM_TASK_1> --region ap-northeast-2 --query \"RouteTables[0].Routes[?DestinationCidrBlock=='0.0.0.0/0'].GatewayId\"",
+        "dependency": ["1"]
+      },
+      {
+        "id": "3",
+        "plan": "If a NAT Gateway is used (from Task 2), check its state and public IP. (Requires NAT GW ID)",
+        "tool": "aws",
+        "query": "ec2 describe-nat-gateways --nat-gateway-ids <NAT_GATEWAY_ID_FROM_TASK_2> --region ap-northeast-2 --query \"NatGateways[0].[State, NatGatewayAddresses[0].PublicIp]\"",
+        "dependency": ["2"]
+      },
+      {
+        "id": "4",
+        "plan": "Use 'llm' to explain VPC networking for Lambda internet access and check security group outbound rules from Task 1.",
+        "tool": "llm",
+        "query": "Lambda 'external-api-caller' VPC config: <VPC_CONFIG_FROM_TASK_1>. Route to 0.0.0.0/0: <GATEWAY_ID_FROM_TASK_2>. NAT GW State: <NAT_GW_STATE_FROM_TASK_3>. Explain required VPC setup (private subnets, NAT in public subnet, routing). Also, what outbound rules should its security groups have?",
+        "dependency": ["1", "2", "3"]
+      }
+    ]
+  },
+  {
+    "question": "Lambda 'report-generator' in 'ca-central-1' fails with 'module not found: some_library'.",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Get function configuration for 'report-generator' (Runtime, Handler).",
+        "tool": "aws",
+        "query": "lambda get-function-configuration --function-name report-generator --region ca-central-1 --query '{Runtime:Runtime, Handler:Handler}'",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "Use 'llm' to advise on packaging dependencies for the runtime (Task 1) and checking deployment package contents.",
+        "tool": "llm",
+        "query": "Lambda 'report-generator' runtime is <RUNTIME_FROM_TASK_1>. How should dependencies like 'some_library' be packaged for this runtime (e.g., zip, layers)? How can the user verify the deployment package?",
+        "dependency": ["1"]
+      },
+      {
+        "id": "3",
+        "plan": "Get the S3 location of the Lambda code package to suggest download and inspection.",
+        "tool": "aws",
+        "query": "lambda get-function --function-name report-generator --region ca-central-1 --query \"Code.Location\"",
+        "dependency": []
+      },
+      {
+        "id": "4",
+        "plan": "Use 'llm' to explain how to download the package from S3 URL (Task 3) and inspect its contents for 'some_library'.",
+        "tool": "llm",
+        "query": "The code package for 'report-generator' is at <S3_LOCATION_FROM_TASK_3>. How can the user download this and check if 'some_library' is included correctly?",
+        "dependency": ["3"]
+      }
+    ]
+  },
+  {
+    "question": "Investigate cold start times for my 'user-profile-lambda' in 'eu-west-1'.",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Extract 'Init Duration' from recent REPORT logs for 'user-profile-lambda'.",
+        "tool": "aws",
+        "query": "logs filter-log-events --log-group-name /aws/lambda/user-profile-lambda --filter-pattern \"REPORT RequestId\" --start-time $(date -d '6 hours ago' +%s000) --region eu-west-1 --query \"events[?contains(message, 'Init Duration')].message\"",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "Use 'llm' to analyze reported Init Durations (Task 1), identify significant cold starts, and suggest common optimization techniques.",
+        "tool": "llm",
+        "query": "Analyze Lambda Init Durations: <INIT_DURATIONS_FROM_TASK_1> for 'user-profile-lambda'. Are there significant cold starts? What are common ways to optimize (provisioned concurrency, package size, init code)?",
+        "dependency": ["1"]
+      }
+    ]
+  },
+  {
+    "question": "My Lambda 'ddb-writer-lambda' in 'us-east-1' cannot write to DynamoDB table 'my-table'.",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Get the execution role ARN for Lambda 'ddb-writer-lambda'.",
+        "tool": "aws",
+        "query": "lambda get-function-configuration --function-name ddb-writer-lambda --region us-east-1 --query \"Role\" --output text",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "List attached policies for the role ARN from Task 1.",
+        "tool": "aws",
+        "query": "iam list-attached-role-policies --role-name <ROLE_NAME_FROM_ARN_IN_TASK_1> --query \"AttachedPolicies[*].PolicyName\"",
+        "dependency": ["1"]
+      },
+      {
+        "id": "3",
+        "plan": "List inline policy names for the role ARN from Task 1.",
+        "tool": "aws",
+        "query": "iam list-role-policies --role-name <ROLE_NAME_FROM_ARN_IN_TASK_1> --query \"PolicyNames\"",
+        "dependency": ["1"]
+      },
+      {
+        "id": "4",
+        "plan": "For each policy name found (Task 2 & 3), get the policy document. (Example for one policy)",
+        "tool": "aws",
+        "query": "iam get-role-policy --role-name <ROLE_NAME_FROM_ARN_IN_TASK_1> --policy-name <POLICY_NAME_FROM_TASK_2_OR_3>",
+        "dependency": ["2", "3"]
+      },
+      {
+        "id": "5",
+        "plan": "Use 'llm' to check all policy documents (from Task 4) for 'dynamodb:PutItem' or 'dynamodb:UpdateItem' permissions on 'arn:aws:dynamodb:us-east-1:ACCOUNT_ID:table/my-table'.",
+        "tool": "llm",
+        "query": "Review IAM policy documents: <POLICY_DOCUMENTS_FROM_TASK_4>. Do they grant 'dynamodb:PutItem' or 'dynamodb:UpdateItem' for table 'my-table' in region 'us-east-1' for the correct account?",
+        "dependency": ["4"]
+      }
+    ]
+  },
+  {
+    "question": "My Lambda function 'my-critical-function' in 'ap-northeast-1' is timing out.",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Get Lambda function configuration to check memory, timeout setting, and assigned roles.",
+        "tool": "aws",
+        "query": "lambda get-function-configuration --function-name my-critical-function --region ap-northeast-1",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "Check recent CloudWatch Logs for the Lambda function 'my-critical-function'.",
+        "tool": "aws",
+        "query": "logs filter-log-events --log-group-name /aws/lambda/my-critical-function --limit 50 --filter-pattern \"timeout OR error OR failed\" --region ap-northeast-1",
+        "dependency": []
+      },
+      {
+        "id": "3",
+        "plan": "If the Lambda function accesses resources in a VPC, check its VPC configuration, including security groups and subnets. (Requires function ARN from task 1)",
+        "tool": "aws",
+        "query": "lambda get-function-configuration --function-name my-critical-function --query 'VpcConfig' --region ap-northeast-1",
+        "dependency": ["1"]
+      },
+      {
+        "id": "4",
+        "plan": "Check for any Dead Letter Queue (DLQ) configured and inspect messages if present. (Requires function ARN from task 1)",
+        "tool": "aws",
+        "query": "lambda get-function-configuration --function-name my-critical-function --query 'DeadLetterConfig.TargetArn' --region ap-northeast-1",
+        "dependency": ["1"]
+      }
+    ]
+  },
+  {
+    "question": "My Lambda function 'data-processor-lambda' in 'eu-central-1' gets 'permission denied' when trying to write to S3 bucket 'results-bucket'.",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Get Lambda function 'data-processor-lambda' configuration to identify its execution IAM role.",
+        "tool": "aws",
+        "query": "lambda get-function-configuration --function-name data-processor-lambda --region eu-central-1 --query 'Role' --output text",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "List attached and inline policies for the identified Lambda execution role. (Requires Role ARN from Task 1)",
+        "tool": "aws",
+        "query": "iam list-attached-role-policies --role-name <ROLE_NAME_FROM_TASK_1> && aws iam list-role-policies --role-name <ROLE_NAME_FROM_TASK_1>",
+        "dependency": ["1"]
+      },
+      {
+        "id": "3",
+        "plan": "Review policies from Task 2 for 's3:PutObject' permission to 'arn:aws:s3:::results-bucket/*' or broader S3 permissions.",
+        "tool": "llm",
+        "query": "Given these IAM policies (from Task 2 output), do they grant s3:PutObject permission to the S3 bucket 'results-bucket'?",
+        "dependency": ["2"]
+      },
+      {
+        "id": "4",
+        "plan": "Check the S3 bucket policy for 'results-bucket' for any explicit denies or specific conditions.",
+        "tool": "aws",
+        "query": "s3api get-bucket-policy --bucket results-bucket --region eu-central-1",
+        "dependency": []
+      }
+    ]
+  },
+  {
+    "question": "My Lambda function 'realtime-processor' in 'us-east-2' is being throttled.",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Get CloudWatch metrics for Lambda 'realtime-processor' (Invocations, Errors, Throttles, ConcurrentExecutions) for the last hour.",
+        "tool": "aws",
+        "query": "cloudwatch get-metric-statistics --namespace AWS/Lambda --metric-name Throttles --dimensions Name=FunctionName,Value=realtime-processor --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ) --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) --period 60 --statistics Sum --region us-east-2 && aws cloudwatch get-metric-statistics --namespace AWS/Lambda --metric-name ConcurrentExecutions --dimensions Name=FunctionName,Value=realtime-processor --start-time $(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ) --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ) --period 60 --statistics Maximum --region us-east-2",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "Get Lambda function 'realtime-processor' configuration to check reserved concurrency settings.",
+        "tool": "aws",
+        "query": "lambda get-function-concurrency --function-name realtime-processor --region us-east-2",
+        "dependency": []
+      },
+      {
+        "id": "3",
+        "plan": "Check AWS account-level concurrency limits for the region 'us-east-2'.",
+        "tool": "aws",
+        "query": "lambda get-account-settings --region us-east-2 --query 'AccountLimit.ConcurrentExecutions'",
+        "dependency": []
+      },
+      {
+        "id": "4",
+        "plan": "Use 'llm' to suggest strategies for handling Lambda throttling based on findings.",
+        "tool": "llm",
+        "query": "Given Lambda throttling metrics (Task 1), reserved concurrency (Task 2), and account limits (Task 3) for 'realtime-processor', what are common strategies to mitigate throttling?",
+        "dependency": ["1", "2", "3"]
+      }
+    ]
+  },
+  {
+    "question": "Messages are appearing in the DLQ for my Lambda 'order-updater' in 'ap-southeast-2'. How do I see them?",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Get Lambda function 'order-updater' configuration to identify the Dead Letter Queue (DLQ) target ARN.",
+        "tool": "aws",
+        "query": "lambda get-function-configuration --function-name order-updater --region ap-southeast-2 --query 'DeadLetterConfig.TargetArn' --output text",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "If the DLQ is an SQS queue (ARN from Task 1), get its URL and attempt to receive messages. (Requires SQS ARN to be converted to Queue URL, or Queue Name known)",
+        "tool": "aws",
+        "query": "sqs receive-message --queue-url <SQS_DLQ_URL_FROM_TASK_1_ARN> --max-number-of-messages 10 --region ap-southeast-2",
+        "dependency": ["1"]
+      },
+      {
+        "id": "3",
+        "plan": "Use 'llm' to explain how to inspect SQS messages in detail (attributes, body) and common reasons for messages ending up in a Lambda DLQ.",
+        "tool": "llm",
+        "query": "How do I fully inspect the messages received from an SQS DLQ (Task 2 output), including message attributes and body? What are common reasons lambda 'order-updater' might send messages to its DLQ?",
+        "dependency": ["2"]
+      }
+    ]
+  },
+  {
+    "question": "User 'dev-user' cannot launch EC2 instances in 'eu-west-2'.",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "List attached user policies for IAM user 'dev-user'.",
+        "tool": "aws",
+        "query": "iam list-attached-user-policies --user-name dev-user",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "List inline user policies for IAM user 'dev-user'.",
+        "tool": "aws",
+        "query": "iam list-user-policies --user-name dev-user",
+        "dependency": []
+      },
+      {
+        "id": "3",
+        "plan": "List groups IAM user 'dev-user' belongs to.",
+        "tool": "aws",
+        "query": "iam list-groups-for-user --user-name dev-user",
+        "dependency": []
+      },
+      {
+        "id": "4",
+        "plan": "For each group identified in task 3, list attached group policies. (Example for one group: 'dev-group')",
+        "tool": "aws",
+        "query": "iam list-attached-group-policies --group-name <GROUP_NAME_FROM_TASK_3>",
+        "dependency": ["3"]
+      },
+      {
+        "id": "5",
+        "plan": "For each group identified in task 3, list inline group policies. (Example for one group: 'dev-group')",
+        "tool": "aws",
+        "query": "iam list-group-policies --group-name <GROUP_NAME_FROM_TASK_3>",
+        "dependency": ["3"]
+      },
+      {
+        "id": "6",
+        "plan": "Use IAM policy simulator for 'ec2:RunInstances' action for 'dev-user' in 'eu-west-2'. (Requires user ARN: arn:aws:iam::ACCOUNT_ID:user/dev-user - replace ACCOUNT_ID)",
+        "tool": "aws",
+        "query": "iam simulate-principal-policy --policy-source-arn arn:aws:iam::ACCOUNT_ID:user/dev-user --action-names ec2:RunInstances --resource-arns \"*\" --context-entries contextKeyName=aws:RequestedRegion,contextKeyValues=eu-west-2,contextKeyType=string",
+        "dependency": []
+      }
+    ]
+  },
+  {
+    "question": "What is my total AWS bill for the current month so far in 'us-east-1'?",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Fetch current month-to-date unblended costs.",
+        "tool": "aws",
+        "query": "ce get-cost-and-usage --cli-input-json '{\"TimePeriod\":{\"Start\":\"$(date -u +%Y-%m-01)\",\"End\":\"$(date -u +%Y-%m-%d --date='tomorrow')\"},\"Granularity\":\"MONTHLY\",\"Metrics\":[\"UnblendedCost\"],\"Filter\":null}' --region us-east-1",
+        "dependency": []
+      }
+    ]
+  },
+  {
+    "question": "Show me the top 5 services contributing to my AWS bill this month in 'us-east-1'.",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Fetch current month-to-date unblended costs, grouped by service, sorted by cost descending.",
+        "tool": "aws",
+        "query": "ce get-cost-and-usage --cli-input-json '{\"TimePeriod\":{\"Start\":\"$(date -u +%Y-%m-01)\",\"End\":\"$(date -u +%Y-%m-%d --date='tomorrow')\"},\"Granularity\":\"MONTHLY\",\"Metrics\":[\"UnblendedCost\"],\"GroupBy\":[{\"Type\":\"DIMENSION\",\"Key\":\"SERVICE\"}],\"SortBy\":[{\"Key\":\"UnblendedCost\",\"SortOrder\":\"DESCENDING\"}]}' --region us-east-1 --query \"ResultsByTime[0].Groups[0:5]\"",
+        "dependency": []
+      }
+    ]
+  },
+  {
+    "question": "How much has S3 cost increased this month compared to last month in 'ap-southeast-1'?",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Get current month's S3 cost to date.",
+        "tool": "aws",
+        "query": "ce get-cost-and-usage --cli-input-json '{\"TimePeriod\":{\"Start\":\"$(date -u +%Y-%m-01)\",\"End\":\"$(date -u +%Y-%m-%d --date='tomorrow')\"},\"Granularity\":\"MONTHLY\",\"Metrics\":[\"UnblendedCost\"],\"Filter\":{\"Dimensions\":{\"Key\":\"SERVICE\",\"Values\":[\"Amazon Simple Storage Service\"]}}}' --region ap-southeast-1 --query \"ResultsByTime[0].Total.UnblendedCost.Amount\"",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "Get previous month's total S3 cost.",
+        "tool": "aws",
+        "query": "ce get-cost-and-usage --cli-input-json '{\"TimePeriod\":{\"Start\":\"$(date -u -d '-1 month' +%Y-%m-01)\",\"End\":\"$(date -u +%Y-%m-01)\"},\"Granularity\":\"MONTHLY\",\"Metrics\":[\"UnblendedCost\"],\"Filter\":{\"Dimensions\":{\"Key\":\"SERVICE\",\"Values\":[\"Amazon Simple Storage Service\"]}}}' --region ap-southeast-1 --query \"ResultsByTime[0].Total.UnblendedCost.Amount\"",
+        "dependency": []
+      },
+      {
+        "id": "3",
+        "plan": "Use 'llm' to compare the current month's S3 cost (Task 1) with the previous month's S3 cost (Task 2) and calculate the difference.",
+        "tool": "llm",
+        "query": "Compare current S3 cost <OUTPUT_TASK_1> with previous month S3 cost <OUTPUT_TASK_2>. What is the difference and percentage change?",
+        "dependency": ["1", "2"]
+      }
+    ]
+  },
+  {
+    "question": "Which AWS services have had the largest cost increase this month compared to the same period last month in 'eu-west-2'?",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Get current month-to-date costs, grouped by service.",
+        "tool": "aws",
+        "query": "ce get-cost-and-usage --cli-input-json '{\"TimePeriod\":{\"Start\":\"$(date -u +%Y-%m-01)\",\"End\":\"$(date -u +%Y-%m-%d --date='tomorrow')\"},\"Granularity\":\"MONTHLY\",\"Metrics\":[\"UnblendedCost\"],\"GroupBy\":[{\"Type\":\"DIMENSION\",\"Key\":\"SERVICE\"}]}' --region eu-west-2",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "Get previous month's costs for the same period (e.g., first N days), grouped by service. (Note: exact day-to-day comparison for 'same period' is complex with Cost Explorer CLI, this fetches full previous month for simplicity).",
+        "tool": "aws",
+        "query": "ce get-cost-and-usage --cli-input-json '{\"TimePeriod\":{\"Start\":\"$(date -u -d '-1 month' +%Y-%m-01)\",\"End\":\"$(date -u +%Y-%m-01)\"},\"Granularity\":\"MONTHLY\",\"Metrics\":[\"UnblendedCost\"],\"GroupBy\":[{\"Type\":\"DIMENSION\",\"Key\":\"SERVICE\"}]}' --region eu-west-2",
+        "dependency": []
+      },
+      {
+        "id": "3",
+        "plan": "Use 'llm' to process current (Task 1) and previous month (Task 2) cost data. For each service, calculate the cost difference. Sort services by the largest absolute increase and list the top 5.",
+        "tool": "llm",
+        "query": "Analyze current month costs <OUTPUT_TASK_1> and previous month costs <OUTPUT_TASK_2>. For each service, find the difference. List the top 5 services with the largest absolute cost increase this month.",
+        "dependency": ["1", "2"]
+      }
+    ]
+  },
+   {
+    "question": "My CloudWatch Alarm 'CPU_Utilization_High_Prod_EC2' in region 'us-east-1' is currently in ALARM state. Why?",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Describe the alarm 'CPU_Utilization_High_Prod_EC2' to understand its configuration (metric, namespace, dimensions, threshold, period, statistic).",
+        "tool": "aws",
+        "query": "cloudwatch describe-alarms --alarm-names CPU_Utilization_High_Prod_EC2 --region us-east-1",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "Based on alarm configuration from Task 1, construct a query for get-metric-data (e.g., metric name, namespace, dimensions, statistic, period) and fetch data around the time the alarm triggered.",
+        "tool": "aws",
+        "query": "cloudwatch get-metric-data --cli-input-json file://metric-query.json --region us-east-1",
+        "dependency": ["1"]
+      },
+      {
+        "id": "3",
+        "plan": "Get the recent state update history for the alarm 'CPU_Utilization_High_Prod_EC2'.",
+        "tool": "aws",
+        "query": "cloudwatch describe-alarm-history --alarm-name CPU_Utilization_High_Prod_EC2 --history-item-type StateUpdate --max-items 10 --region us-east-1",
+        "dependency": []
+      },
+      {
+        "id": "4",
+        "plan": "Use 'llm' to analyze the fetched metric data (Task 2) against the alarm's threshold (Task 1) and review state history (Task 3) to explain why it's in ALARM. Suggest checking the resource identified by the alarm's dimensions.",
+        "tool": "llm",
+        "query": "Alarm 'CPU_Utilization_High_Prod_EC2' details: <OUTPUT_TASK_1>. Metric data: <OUTPUT_TASK_2>. History: <OUTPUT_TASK_3>. Analyze why it's in ALARM state and suggest checks for the specific resource.",
+        "dependency": ["1", "2", "3"]
+      }
+    ]
+  },
+  {
+    "question": "What is the configuration for the CloudWatch alarm named 'Lambda_Errors_Critical_Function' in region 'ap-southeast-2'?",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Describe the alarm 'Lambda_Errors_Critical_Function'.",
+        "tool": "aws",
+        "query": "cloudwatch describe-alarms --alarm-names Lambda_Errors_Critical_Function --region ap-southeast-2 --query \"MetricAlarms[0]\"",
+        "dependency": []
+      }
+    ]
+  },
+  {
+    "question": "Show me the last 5 state changes for the alarm 'RDS_CPU_High_PrimaryDB' in region 'eu-west-1'.",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Get the last 5 state changes for alarm 'RDS_CPU_High_PrimaryDB'.",
+        "tool": "aws",
+        "query": "cloudwatch describe-alarm-history --alarm-name RDS_CPU_High_PrimaryDB --history-item-type StateUpdate --max-items 5 --scan-direction Backward --region eu-west-1",
+        "dependency": []
+      }
+    ]
+  },
+  {
+    "question": "My alarm 'SQS_Queue_Depth_Orders' in region 'us-west-2' should have triggered, but it didn't. What's wrong?",
+    "plan": [
+      {
+        "id": "1",
+        "plan": "Describe the alarm 'SQS_Queue_Depth_Orders' to verify its full configuration.",
+        "tool": "aws",
+        "query": "cloudwatch describe-alarms --alarm-names SQS_Queue_Depth_Orders --region us-west-2",
+        "dependency": []
+      },
+      {
+        "id": "2",
+        "plan": "Fetch the actual metric data for 'SQS_Queue_Depth_Orders' for the period it was expected to trigger. (Construct get-metric-data query based on Task 1 output: metric name, namespace, dimensions, period, statistic).",
+        "tool": "aws",
+        "query": "cloudwatch get-metric-data --cli-input-json file://metric-query.json --region us-west-2",
+        "dependency": ["1"]
+      },
+      {
+        "id": "3",
+        "plan": "Verify if the metric (from Task 1) is actually being published and has data points during the period.",
+        "tool": "aws",
+        "query": "cloudwatch list-metrics --namespace <NAMESPACE_FROM_TASK_1> --metric-name <METRIC_NAME_FROM_TASK_1> --dimensions <DIMENSIONS_FROM_TASK_1> --recently-active PT3H --region us-west-2",
+        "dependency": ["1"]
+      },
+      {
+        "id": "4",
+        "plan": "Use 'llm' to compare the metric data (Task 2) with the alarm threshold and configuration (Task 1) to identify discrepancies like wrong statistic, incorrect threshold, insufficient datapoints, or metric not being published (Task 3).",
+        "tool": "llm",
+        "query": "Alarm 'SQS_Queue_Depth_Orders' config: <OUTPUT_TASK_1>. Metric data: <OUTPUT_TASK_2>. Metric publication status: <OUTPUT_TASK_3>. Why didn't the alarm trigger?",
+        "dependency": ["1", "2", "3"]
+      }
+    ]
+  }
+]

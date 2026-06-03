@@ -1,0 +1,17 @@
+user_prompt: "Are we on track to overspend this month? What will the bill be?"
+expected_output:
+  - |
+    The agent should call spend_forecast and lead with the projected
+    month-end total in dollars and the projected percentage change versus
+    the previous full month (e.g. "Projected ~$X this month, up Y% vs last
+    month's $Z"). It should report month-to-date spend and the daily
+    run-rate (avg_daily_last_7d) that drives the projection, and state how
+    many days remain. The answer must note that recent days may be partial
+    due to cloud billing lag. Every figure must cite [spend_forecast]. If
+    there is no spend data, the agent must say so rather than inventing a
+    projection.
+tags:
+  - forecast
+  - projection
+  - spend
+  - finops

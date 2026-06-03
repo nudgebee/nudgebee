@@ -1,0 +1,312 @@
+[
+    {
+        "Question": "Find all traces in the 'production' namespace from the last hour.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_namespace = 'production' AND timestamp >= now() - interval 1 hour;",
+        "Solution Hint": "Filters traces by namespace and a recent time window. Useful for monitoring current activity in a specific environment. (ClickHouse Syntax)"
+    },
+    {
+        "Question": "Show traces for the 'api-gateway' workload with duration longer than 500 milliseconds.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%api-gateway%' AND duration_ns > 500 ORDER BY timestamp DESC;",
+        "Solution Hint": "Identifies slow requests for a specific workload. Use 'LIKE' for broader matching of workload names. Sorting by timestamp shows the most recent slow requests first."
+    },
+    {
+        "Question": "List all failed requests (HTTP status code >= 400) in the 'staging' namespace today.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_namespace = 'staging' AND http_status_code >= 400 AND timestamp >= toStartOfDay(now()) ORDER BY timestamp DESC;",
+        "Solution Hint": "Focuses on errors (status 400 or higher) within a specific namespace for the current day. Helps in identifying problematic endpoints or services. (ClickHouse Syntax, Changed to SELECT *)"
+    },
+    {
+        "Question": "Find traces originating from 'frontend-service' and targeting 'backend-service' in the 'production' namespace.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%frontend-service%' AND destination_workload_name LIKE '%backend-service%' AND workload_namespace = 'production' AND destination_workload_namespace = 'production';",
+        "Solution Hint": "Tracks requests between specific services within the same namespace, useful for debugging inter-service communication issues."
+    },
+    {
+        "Question": "What are the top 5 slowest resources accessed in the last 6 hours across all namespaces?",
+        "Answer": "SELECT resource, avg(duration_ns) as avg_duration, count(*) as request_count FROM traces_view WHERE timestamp >= now() - interval 6 hour GROUP BY resource ORDER BY avg_duration DESC LIMIT 5;",
+        "Solution Hint": "Identifies performance bottlenecks by finding the resources (URL paths) with the highest average request duration. Grouping and aggregation provide insights into overall resource performance. (ClickHouse Syntax)"
+    },
+    {
+        "Question": "Show requests to the '/api/v1/users' resource that resulted in a 404 error.",
+        "Answer": "SELECT * FROM traces_view WHERE resource = '/api/v1/users' AND http_status_code = 404 ORDER BY timestamp DESC;",
+        "Solution Hint": "Pinpoints instances where a specific API endpoint returned a 'Not Found' error, helping diagnose routing or resource availability issues. (Changed to SELECT *)"
+    },
+    {
+        "Question": "List distinct destination workloads called by 'data-processor' in the 'default' namespace.",
+        "Answer": "SELECT DISTINCT destination_workload_name, destination_workload_namespace FROM traces_view WHERE workload_name LIKE '%data-processor%' AND workload_namespace = 'default';",
+        "Solution Hint": "Maps out the downstream dependencies of a specific service by identifying all unique destinations it communicates with."
+    },
+    {
+        "Question": "Find traces with duration between 100ms and 200ms for the 'payment-service'.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%payment-service%' AND duration_ns BETWEEN 100 AND 200 ORDER BY timestamp DESC;",
+        "Solution Hint": "Filters traces within a specific performance range for a workload, useful for analyzing typical behavior or specific performance tiers."
+    },
+    {
+        "Question": "Count the number of requests per HTTP status code for the 'auth-service' in the 'security' namespace over the last day.",
+        "Answer": "SELECT http_status_code, count(*) as count FROM traces_view WHERE workload_name LIKE '%auth-service%' AND workload_namespace = 'security' AND timestamp >= now() - interval 1 day GROUP BY http_status_code ORDER BY http_status_code;",
+        "Solution Hint": "Provides a summary of request outcomes (success, client errors, server errors) for a specific service, helping to quickly assess its health. (ClickHouse Syntax)"
+    },
+    {
+        "Question": "Identify source workloads in the 'kube-system' namespace sending requests to destinations outside 'kube-system'.",
+        "Answer": "SELECT DISTINCT workload_name, destination_workload_namespace, destination_workload_name FROM traces_view WHERE workload_namespace = 'kube-system' AND destination_workload_namespace != 'kube-system';",
+        "Solution Hint": "Helps understand interactions between system components and application workloads, potentially identifying unexpected cross-namespace communication."
+    },
+    {
+        "Question": "Find traces with duration longer than 1 second in the last 1 hour for 'clickhouse' workload in 'nudgebee-agent' namespace.",
+        "Answer": "SELECT * FROM traces_view WHERE duration_ns > 1000 AND timestamp >= now() - interval 1 hour AND workload_name LIKE '%clickhouse%' AND workload_namespace = 'nudgebee-agent';",
+        "Solution Hint": "Filters by duration (>1s), time window (1h), workload name (using LIKE), and specific namespace. (ClickHouse Syntax)"
+    },
+    {
+        "Question": "Check traces for 'relay-server' deployment in 'nudgebee' namespace to identify unusual duration traces.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%relay-server%' AND workload_namespace = 'nudgebee' ORDER BY duration_ns DESC LIMIT 100;",
+        "Solution Hint": "Shows traces for 'relay-server', ordered by duration (longest first) to spot outliers. Schema lacks I/O size; duration is used as a proxy for 'unusual size'."
+    },
+    {
+        "Question": "Find source workloads calling specific APIs (e.g., '/rpc/query', 'amazonaws.com') in 'nudgebee' namespace in the last day.",
+        "Answer": "SELECT DISTINCT workload_name, resource FROM traces_view WHERE workload_namespace = 'nudgebee' AND timestamp >= now() - interval 1 day AND (resource LIKE '%/rpc/query%' OR resource LIKE '%amazonaws.com%' OR resource LIKE '%/rest/api/2/issue%');",
+        "Solution Hint": "Identifies source workloads accessing a list of specific resource URL patterns within a namespace and time frame. Use relevant patterns from your list. (ClickHouse Syntax)"
+    },
+    {
+        "Question": "Show the top 10 failing APIs (resources) in the 'nudgebee' namespace over the last 1 day.",
+        "Answer": "SELECT resource, count(*) as failure_count FROM traces_view WHERE workload_namespace = 'nudgebee' AND http_status_code >= 400 AND timestamp >= now() - interval 1 day GROUP BY resource ORDER BY failure_count DESC LIMIT 10;",
+        "Solution Hint": "Groups failing requests (status >= 400) by resource URL and counts them to find the most frequently failing endpoints. (ClickHouse Syntax)"
+    },
+    {
+        "Question": "Recent traces for 'relay-server' in 'nudgebee' namespace with duration longer than 5 seconds.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%relay-server%' AND workload_namespace = 'nudgebee' AND duration_ns > 5000 ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Finds recent (ordered by timestamp DESC, limited results) slow traces (> 5s) for a specific workload and namespace."
+    },
+    {
+        "Question": "Get traces for 'ml-k8s-server' workload in 'nudgebee' namespace around 3 hours 25 minutes ago.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%ml-k8s-server%' AND workload_namespace = 'nudgebee' AND timestamp BETWEEN (now() - interval 3 hour - interval 30 minute) AND (now() - interval 3 hour - interval 20 minute) ORDER BY timestamp DESC;",
+        "Solution Hint": "Filters traces for a workload within a specific 10-minute time window around the specified event time. (ClickHouse Syntax)"
+    },
+    {
+        "Question": "What are the latest failures (status >= 400) for 'services-server' workload?",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%services-server%' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 10;",
+        "Solution Hint": "Shows the 10 most recent traces with error status codes (>=400) for the 'services-server' workload across all namespaces."
+    },
+    {
+        "Question": "Get recent network traffic targeting 'relay-server' in 'nudgebee-test' namespace.",
+        "Answer": "SELECT * FROM traces_view WHERE destination_workload_name LIKE '%relay-server%' AND destination_workload_namespace = 'nudgebee-test' ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Shows recent traces (limited count) where 'relay-server' in 'nudgebee-test' was the destination workload."
+    },
+    {
+        "Question": "Recent traces for 'auto-pilot' service taking more than 10 seconds.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%auto-pilot%' AND duration_ns > 10000 ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Finds recent slow traces (> 10 seconds) for the 'auto-pilot' service/workload (using LIKE for flexibility)."
+    },
+    {
+        "Question": "Get the list of workloads with any non-200 HTTP status code recently.",
+        "Answer": "SELECT DISTINCT workload_name, workload_namespace, http_status_code FROM traces_view WHERE http_status_code != 200 AND timestamp >= now() - interval 1 hour ORDER BY workload_namespace, workload_name, http_status_code;",
+        "Solution Hint": "Lists unique workloads (and their namespaces) that have produced responses with status codes other than 200 (OK) in the last hour. (ClickHouse Syntax)"
+    },
+    {
+        "Question": "Get the list of workloads with latency greater than 1 second in the last hour.",
+        "Answer": "SELECT DISTINCT workload_name, workload_namespace FROM traces_view WHERE duration_ns > 1000 AND timestamp >= now() - interval 1 hour ORDER BY workload_namespace, workload_name;",
+        "Solution Hint": "Lists unique workloads that have experienced requests taking longer than 1 second in the last hour. (ClickHouse Syntax)"
+    },
+    {
+        "Question": "Recent API failures for 'services-server' in 'nudgebee' namespace.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%services-server%' AND workload_namespace = 'nudgebee' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Shows recent traces (limited count) indicating failures (status >= 400) for 'services-server' in the 'nudgebee' namespace."
+    },
+    {
+        "Question": "Recent traces for 'relay-server' workload in 'nudgebee-test' namespace.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%relay-server%' AND workload_namespace = 'nudgebee-test' ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Retrieves the most recent traces (limited count) associated with the 'relay-server' workload in the 'nudgebee-test' namespace."
+    },
+    {
+        "Question": "Recent traces of 'services-server' in 'nudgebee' namespace.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%services-server%' AND workload_namespace = 'nudgebee' ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Gets the latest traces (limited count) for the 'services-server' workload in the 'nudgebee' namespace, regardless of status or duration."
+    },
+    {
+        "Question": "Traces of 'payment-service' in 'us-west' namespace/region with duration > 100ms.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%payment-service%' AND workload_namespace LIKE '%us-west%' AND duration_ns > 100 ORDER BY timestamp DESC;",
+        "Solution Hint": "Filters traces for 'payment-service' with duration > 100ms, assuming region info is in the namespace name (adjust LIKE pattern if needed)."
+    },
+    {
+        "Question": "Recent traces across all services with API calls taking more than 10 seconds.",
+        "Answer": "SELECT * FROM traces_view WHERE duration_ns > 10000 ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Finds the most recent traces across all workloads and namespaces where the request duration exceeded 10 seconds."
+    },
+    {
+        "Question": "Recent traces with high latency (> 1s) in 'nudgebee' namespace.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_namespace = 'nudgebee' AND duration_ns > 1000 AND timestamp >= now() - interval 1 hour ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Shows recent traces (limited count) with latency over 1 second within the 'nudgebee' namespace in the last hour. Define 'high latency' threshold (e.g., 1000ms) as needed. (ClickHouse Syntax)"
+    },
+    {
+        "Question": "Recent traces with high latency (> 1s) for 'k8s-collector' workload in 'nudgebee' namespace.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND workload_namespace = 'nudgebee' AND duration_ns > 1000 AND timestamp >= now() - interval 1 hour ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Identifies recent slow traces (> 1 second) specifically for the 'k8s-collector' workload within the 'nudgebee' namespace in the last hour. (ClickHouse Syntax)"
+    },
+    {
+        "Question": "Get API traces originating from 'nudgebee' namespace.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_namespace = 'nudgebee' ORDER BY timestamp DESC LIMIT 100;",
+        "Solution Hint": "Fetches a sample of the most recent traces (limited count) originating from the 'nudgebee' namespace."
+    },
+    {
+        "Question": "Get failed traces related to specific job workloads (e.g., 'popeye-job', 'helm-chart-upgrade') in 'default' namespace.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_namespace = 'default' AND (workload_name LIKE '%popeye-job%' OR workload_name LIKE '%helm-chart-upgrade%' OR workload_name LIKE '%nudgebee-image-scanner%' OR workload_name LIKE '%postgres-migration-job%') AND http_status_code >= 400 ORDER BY timestamp DESC;",
+        "Solution Hint": "Attempts to find failed traces (status >= 400) related to workloads likely associated with the specified job names in the 'default' namespace. Direct K8s Job status correlation isn't possible with this schema."
+    },
+    {
+        "Question": "Analyze API failures for 'k8s-collector' in 'nudgebee' namespace (last day).",
+        "Answer": "SELECT resource, http_status_code, count(*) as failure_count, avg(duration_ns) as avg_duration FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND workload_namespace = 'nudgebee' AND http_status_code >= 400 AND timestamp >= now() - interval 1 day GROUP BY resource, http_status_code ORDER BY failure_count DESC;",
+        "Solution Hint": "Aggregates API failures (status >= 400) for 'k8s-collector' in 'nudgebee' over the last day, showing count and average duration per resource and status code. (ClickHouse Syntax)"
+    },
+    {
+        "Question": "Filter 'k8s-collector' traces in 'nudgebee' (last day) with status 500 OR latency > 2 seconds.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND workload_namespace = 'nudgebee' AND timestamp >= now() - interval 1 day AND (http_status_code = 500 OR duration_ns > 2000) ORDER BY timestamp DESC;",
+        "Solution Hint": "Selects traces matching specific criteria: workload, namespace, time window, and either a 500 status code OR high latency (> 2 seconds). (ClickHouse Syntax)"
+    },
+    {
+        "Question": "Get recent traces for 'sonarqube' workload in 'sonarqube' namespace.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%sonarqube%' AND workload_namespace = 'sonarqube' ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Retrieves recent traces for the 'sonarqube' workload in the 'sonarqube' namespace."
+    },
+    {
+        "Question": "Get recent traces for 'arca-agent' workload in 'parca' namespace.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%arca-agent%' AND workload_namespace = 'parca' ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Retrieves recent traces for the 'arca-agent' workload in the 'parca' namespace."
+    },
+    {
+        "Question": "Get recent traces for 'rabbitmq' workload in 'rabbit-test' namespace.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%rabbitmq%' AND workload_namespace = 'rabbit-test' ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Retrieves recent traces for the 'rabbitmq' workload in the 'rabbit-test' namespace."
+    },
+    {
+        "Question": "Recent traces with failures (status >= 400) across all services.",
+        "Answer": "SELECT * FROM traces_view WHERE http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Shows the most recent 50 traces across all services that resulted in an error status code (>= 400)."
+    },
+    {
+        "Question": "What is the latency distribution (percentiles) for the '/audit' API resource?",
+        "Answer": "SELECT quantile(0.1)(duration_ns) as p10, quantile(0.5)(duration_ns) as p50, quantile(0.9)(duration_ns) as p90, avg(duration_ns) as avg_duration, count(*) as count FROM traces_view WHERE resource LIKE '%/audit%';",
+        "Solution Hint": "Calculates p10, p50 (median), and p90 latency percentiles, average, and count for requests to resources containing '/audit/'. Adjust resource pattern if needed. (ClickHouse quantile syntax)"
+    },
+    {
+        "Question": "Show details of recent failed traces (status >= 400).",
+        "Answer": "SELECT * FROM traces_view WHERE http_status_code >= 400 ORDER BY timestamp DESC LIMIT 100;",
+        "Solution Hint": "Lists all columns for recent failed traces. The schema does not contain specific error messages. (Changed to SELECT *)"
+    },
+    {
+        "Question": "What are the recent traces for the 'app-dev' workload in the 'nudgebee' namespace?",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%app-dev%' AND workload_namespace = 'nudgebee' ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Retrieves the 50 most recent traces for the 'app-dev' workload in the 'nudgebee' namespace."
+    },
+    {
+        "Question": "Recent traces for 'analytics-exporter' workload in 'default' namespace.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%analytics-exporter%' AND workload_namespace = 'default' ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Retrieves recent traces for the 'analytics-exporter' workload in the 'default' namespace."
+    },
+    {
+        "Question": "What are the top 5 slowest URL paths (resources) in the last hour?",
+        "Answer": "SELECT resource, avg(duration_ns) as avg_duration, count(*) as request_count FROM traces_view WHERE timestamp >= now() - interval 1 hour GROUP BY resource ORDER BY avg_duration DESC LIMIT 5;",
+        "Solution Hint": "Identifies the top 5 resources (URL paths) with the highest average request duration in the last hour. (ClickHouse Syntax)"
+    },
+    {
+        "Question": "What are the top 5 slowest applications (workloads) in the last hour?",
+        "Answer": "SELECT workload_name, workload_namespace, avg(duration_ns) as avg_duration, count(*) as request_count FROM traces_view WHERE timestamp >= now() - interval 1 hour GROUP BY workload_name, workload_namespace ORDER BY avg_duration DESC LIMIT 5;",
+        "Solution Hint": "Identifies the top 5 workloads (apps) with the highest average request duration in the last hour, grouped by name and namespace. (ClickHouse Syntax)"
+    },
+    {
+        "Question": "Recent traces for 'app-dev' in 'nudgebee' with errors (status >= 400).",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%app-dev%' AND workload_namespace = 'nudgebee' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Shows recent traces for 'app-dev' in 'nudgebee' with error status codes (>= 400). Schema lacks severity levels ('critical') or specific error details."
+    },
+    {
+        "Question": "What are the errors or warnings (status >= 400) in the traces for 'k8s-collector'?",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Retrieves recent traces for 'k8s-collector' that have error status codes (>= 400), indicating potential errors or warnings."
+    },
+    {
+        "Question": "What are the traces for 'k8s-collector' workload?",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%k8s-collector%' ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Shows the 50 most recent traces associated with the 'k8s-collector' workload."
+    },
+    {
+        "Question": "What are the top 10 slowest APIs (resources) in the last hour?",
+        "Answer": "SELECT resource, avg(duration_ns) as avg_duration, count(*) as request_count FROM traces_view WHERE timestamp >= now() - interval 1 hour GROUP BY resource ORDER BY avg_duration DESC LIMIT 10;",
+        "Solution Hint": "Identifies the top 10 resources (APIs/URL paths) with the highest average request duration in the last hour. (ClickHouse Syntax)"
+    },
+    {
+        "Question": "What are the traces for 'services-server' with duration greater than 1000 seconds?",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%services-server%' AND duration_ns > 1000000 ORDER BY timestamp DESC;",
+        "Solution Hint": "Finds traces for 'services-server' where the request duration exceeded 1,000,000 milliseconds (1000 seconds)."
+    },
+    {
+        "Question": "What are the traces for 'services-server' workload?",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%services-server%' ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Shows the 50 most recent traces associated with the 'services-server' workload."
+    },
+    {
+        "Question": "What are the top 5 longest duration individual requests for 'services-server'?",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%services-server%' ORDER BY duration_ns DESC LIMIT 5;",
+        "Solution Hint": "Retrieves the 5 individual traces with the absolute longest durations for the 'services-server' workload."
+    },
+    {
+        "Question": "What are the recent traces for 'hasura' workload in 'nudgebee' namespace?",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%hasura%' AND workload_namespace = 'nudgebee' ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Retrieves recent traces for the 'hasura' workload in the 'nudgebee' namespace."
+    },
+    {
+        "Question": "What are the most recent traces for 'k8s-collector' with errors (status >= 400)?",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%k8s-collector%' AND http_status_code >= 400 ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Finds the 50 most recent traces for 'k8s-collector' that resulted in an error status code (>= 400)."
+    },
+    {
+        "Question": "What are the APIs taking more than 20 seconds in the 'nudgebee' namespace?",
+        "Answer": "SELECT * FROM traces_view WHERE workload_namespace = 'nudgebee' AND duration_ns > 20000 ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Shows recent traces (limited count) from the 'nudgebee' namespace where the request duration exceeded 20 seconds. (Changed to SELECT *)"
+    },
+    {
+        "Question": "What are the slow (> 1s) API calls for 'app-dev' in 'nudgebee' namespace?",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%app-dev%' AND workload_namespace = 'nudgebee' AND duration_ns > 1000 ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Identifies recent slow traces (> 1 second) for the 'app-dev' workload within the 'nudgebee' namespace."
+    },
+    {
+        "Question": "Are there any recent API failures (status >= 400) or high latency (> 1s) issues for 'app-dev' in 'nudgebee' namespace?",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%app-dev%' AND workload_namespace = 'nudgebee' AND (http_status_code >= 400 OR duration_ns > 1000) ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Checks for recent traces related to 'app-dev' in 'nudgebee' that indicate either a failure (status >= 400) OR high latency (> 1 second)."
+    },
+    {
+        "Question": "Find traces from 'service-a' in 'prod' targeting 'service-b' in 'dev' namespace (cross-namespace).",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%service-a%' AND workload_namespace = 'prod' AND destination_workload_name LIKE '%service-b%' AND destination_workload_namespace = 'dev' ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Explicitly filters for traces crossing specific namespace boundaries between two defined services."
+    },
+    {
+        "Question": "Show traces with only client-side errors (4xx) for 'api-gateway' in the last 6 hours.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%api-gateway%' AND http_status_code >= 400 AND http_status_code < 500 AND timestamp >= now() - interval 6 hour ORDER BY timestamp DESC;",
+        "Solution Hint": "Filters specifically for HTTP status codes in the 400-499 range for a given workload and time window. (ClickHouse Syntax)"
+    },
+    {
+        "Question": "Show traces with only server-side errors (5xx) for 'backend-processor' in the last day.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%backend-processor%' AND http_status_code >= 500 AND timestamp >= now() - interval 1 day ORDER BY timestamp DESC;",
+        "Solution Hint": "Filters specifically for HTTP status codes 500 or greater for a given workload and time window. (ClickHouse Syntax)"
+    },
+    {
+        "Question": "Find traces for 'user-service' that failed (status >= 400) AND took longer than 2 seconds.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%user-service%' AND http_status_code >= 400 AND duration_ns > 2000 ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Combines failure status and high latency filters to find traces that are both erroneous and slow."
+    },
+    {
+        "Question": "Count requests per hour for the '/login' resource over the last 24 hours.",
+        "Answer": "SELECT toStartOfHour(timestamp) as hour_start, count(*) as request_count FROM traces_view WHERE resource = '/login' AND timestamp >= now() - interval 24 hour GROUP BY hour_start ORDER BY hour_start;",
+        "Solution Hint": "Aggregates request counts hourly for a specific resource to identify traffic patterns or spikes over a day. (ClickHouse Syntax)"
+    },
+    {
+        "Question": "Find traces where the destination workload name is missing or empty.",
+        "Answer": "SELECT * FROM traces_view WHERE destination_workload_name IS NULL OR destination_workload_name = '' ORDER BY timestamp DESC LIMIT 100;",
+        "Solution Hint": "Identifies traces potentially missing destination information, which might indicate configuration issues or specific types of requests."
+    },
+    {
+        "Question": "Show average latency per resource for requests originating from 'mobile-app' workload in 'production' namespace (last hour).",
+        "Answer": "SELECT resource, avg(duration_ns) as avg_latency, count(*) as count FROM traces_view WHERE workload_name LIKE '%mobile-app%' AND workload_namespace = 'production' AND timestamp >= now() - interval 1 hour GROUP BY resource ORDER BY avg_latency DESC;",
+        "Solution Hint": "Calculates average latency for each resource called by a specific workload, helping pinpoint which downstream calls are slowest. (ClickHouse Syntax)"
+    },
+    {
+        "Question": "List resources called by 'batch-job' in 'default' namespace that resulted in a 503 status code.",
+        "Answer": "SELECT DISTINCT resource FROM traces_view WHERE workload_name LIKE '%batch-job%' AND workload_namespace = 'default' AND http_status_code = 503;",
+        "Solution Hint": "Identifies specific resources that returned 'Service Unavailable' errors when called by a particular workload."
+    }
+]

@@ -1,0 +1,6 @@
+user_prompt: Create a Route 53 hosted zone.
+expected_output:
+- aws route53 create-hosted-zone --name <domain-name> --caller-reference <unique-id>
+tags:
+- command
+- aws

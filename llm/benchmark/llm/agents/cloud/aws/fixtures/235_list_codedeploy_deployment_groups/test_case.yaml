@@ -1,0 +1,6 @@
+user_prompt: List CodeDeploy deployment groups.
+expected_output:
+- aws codedeploy list-deployment-groups --application-name <application-name>
+tags:
+- command
+- aws

@@ -1,0 +1,51 @@
+[
+  {
+    "question": "show me logs for auto pilot server",
+    "config": {
+      "index": "fluentk8-prod-2024.11.03"
+    },
+    "answers": [
+      "{\"query\":{\"bool\": {\"must\": [{\"term\": {\"kubernetes.labels.app_kubernetes_io/name.keyword\": {\"value\": \"auto-pilot-server\", \"case_insensitive\": true}}}]}}}"
+    ]
+  },
+  {
+    "question": "show me errors for app auto pilot server for last 1 day",
+    "config": {
+      "index": "fluentk8-prod-2024.11.03"
+    },
+    "answers": [
+      "{\"query\":{\"bool\": {\"must\": [{\"term\": {\"kubernetes.labels.app_kubernetes_io/name.keyword\": {\"value\": \"auto-pilot-server\", \"case_insensitive\": true}}}, {\"range\": {\"@timestamp\": {\"gte\": \"now-1d\"}}}, {\"match\": {\"log\": \"error\"}}]}}}",
+      "{\"query\":{\"bool\": {\"must\": [{\"term\": {\"kubernetes.labels.app_kubernetes_io/name.keyword\": {\"value\": \"auto-pilot-server\", \"case_insensitive\": true}}}, {\"range\": {\"@timestamp\": {\"gte\": \"now-1d\"}}}, {\"term\": {\"levelname.keyword\": \"error\", \"case_insensitive\": true}}]}}}"
+    ]
+  },
+  {
+    "question": "show me errors for auto pilot server",
+    "config": {
+      "index": "fluentk8-prod-2024.11.03"
+    },
+    "answers": [
+      "{\"query\":{\"bool\": {\"must\": [{\"term\": {\"kubernetes.labels.app_kubernetes_io/name.keyword\": {\"value\": \"auto-pilot-server\", \"case_insensitive\": true}}}, {\"term\": {\"levelname.keyword\": {\"value\": \"error\", \"case_insensitive\": true}}}]}}}",
+      "{\"query\":{\"bool\": {\"must\": [{\"term\": {\"kubernetes.labels.app_kubernetes_io/name.keyword\": {\"value\": \"auto-pilot-server\", \"case_insensitive\": true}}}, {\"match\": {\"log\": \"error\"}}]}}}"
+    ]
+  },
+  {
+    "question": "show me errors for production namespace",
+    "config": {
+      "index": "fluentk8-prod-2024.11.03"
+    },
+    "answers": [
+      "{\"query\":{\"bool\": {\"must\": [{\"term\": {\"kubernetes.namespace_name.keyword\": {\"value\": \"production\",\"case_insensitive\": true}}}, {\"match\": {\"log\": \"error\"}}]}}}",
+      "{\"query\":{\"bool\": {\"must\": [{\"term\": {\"kubernetes.namespace_name.keyword\": {\"value\": \"production\",\"case_insensitive\": true}}},  {\"term\": {\"levelname.keyword\": {\"value\": \"error\", \"case_insensitive\": true}}}]}}}"
+    ]
+  },
+  {
+    "question": "show me logs for production namespace",
+    "config": {
+      "index": "fluentk8-prod-2024.11.03"
+    },
+    "answers": [
+      "{\"query\":{\"bool\": {\"must\": [{\"term\": {\"kubernetes.namespace_name.keyword\": {\"value\": \"production\", \"case_insensitive\": true}}}]}}}",
+      ""
+    ]
+  }
+]

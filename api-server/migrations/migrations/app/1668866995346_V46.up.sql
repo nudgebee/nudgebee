@@ -1,0 +1,3 @@
+
+CREATE TABLE "public"."project_cloud_resources" ("id" uuid NOT NULL DEFAULT gen_random_uuid(), "project_account_id" uuid NOT NULL, "cloud_resource_id" uuid NOT NULL, "allocation_pct" float8 NOT NULL DEFAULT 100, "allocation_start" timestamp NOT NULL DEFAULT now(), "allocation_end" timestamp, "created_by" uuid, "updated_by" uuid, "created_at" timestamp NOT NULL DEFAULT now(), "updated_at" timestamp NOT NULL DEFAULT now(), PRIMARY KEY ("id") , FOREIGN KEY ("cloud_resource_id") REFERENCES "public"."cloud_resourses"("id") ON UPDATE restrict ON DELETE restrict, FOREIGN KEY ("project_account_id") REFERENCES "public"."project_accounts"("id") ON UPDATE restrict ON DELETE restrict, UNIQUE ("project_account_id", "cloud_resource_id"));
+CREATE EXTENSION IF NOT EXISTS pgcrypto;

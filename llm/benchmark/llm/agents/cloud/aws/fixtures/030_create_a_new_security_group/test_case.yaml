@@ -1,0 +1,6 @@
+user_prompt: Create a new security group.
+expected_output:
+- aws ec2 create-security-group
+tags:
+- command
+- aws

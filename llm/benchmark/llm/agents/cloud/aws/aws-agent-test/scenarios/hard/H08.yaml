@@ -1,0 +1,194 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H08: Multi-service cascading failure — shared NAT Gateway.
+  User complaint: "Three microservices (payment, inventory, shipping) all went down
+  simultaneously at 3:14 AM. They all call external APIs. The failures correlate
+  perfectly in time. Each service's Lambda works fine independently now."
+  Root cause: All three Lambdas share a single NAT Gateway in a common private subnet.
+  A brief NAT GW connectivity issue (or cost-saving deletion during off-hours) caused
+  all three services to fail simultaneously. Agent must find the shared infrastructure
+  component and correlate timing across services.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = All three Lambdas share a single NAT GW; route table missing in Broken mode.
+      Fixed = NAT route restored.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  # Scenario-specific shared private subnet (all 3 services use this one)
+  SharedPrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      CidrBlock: 10.0.218.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: h08-commerce-private-shared
+
+  # THE BUG: In Broken mode, shared route table is missing NAT route
+  # (simulates NAT GW being removed/failing - all services fail together)
+  SharedPrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      Tags:
+        - Key: Name
+          Value: h08-commerce-private-rt-shared
+
+  SharedPrivateNatRoute:
+    Type: AWS::EC2::Route
+    Condition: IsFixed
+    Properties:
+      RouteTableId: !Ref SharedPrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !ImportValue aws-agent-test-nat-gateway-id
+
+  SharedPrivateSubnetAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref SharedPrivateSubnet
+      RouteTableId: !Ref SharedPrivateRouteTable
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for commerce Lambdas
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      Tags:
+        - Key: Name
+          Value: h08-commerce-lambda-sg
+
+  SharedLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h08-commerce-lambda-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+  PaymentServiceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h08-payment-service
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt SharedLambdaRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      VpcConfig:
+        SubnetIds:
+          - !Ref SharedPrivateSubnet
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+      Code:
+        ZipFile: |
+          import json, urllib.request
+          def handler(event, context):
+              try:
+                  with urllib.request.urlopen('https://httpbin.org/get', timeout=5) as r:
+                      return {'statusCode': 200, 'body': json.dumps({'service': 'payment', 'ok': True})}
+              except Exception as e:
+                  return {'statusCode': 502, 'body': json.dumps({'service': 'payment', 'error': str(e)})}
+      Tags:
+        - Key: Name
+          Value: h08-payment-service
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: commerce
+
+  InventoryServiceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h08-inventory-service
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt SharedLambdaRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      VpcConfig:
+        SubnetIds:
+          - !Ref SharedPrivateSubnet
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+      Code:
+        ZipFile: |
+          import json, urllib.request
+          def handler(event, context):
+              try:
+                  with urllib.request.urlopen('https://httpbin.org/get', timeout=5) as r:
+                      return {'statusCode': 200, 'body': json.dumps({'service': 'inventory', 'ok': True})}
+              except Exception as e:
+                  return {'statusCode': 502, 'body': json.dumps({'service': 'inventory', 'error': str(e)})}
+      Tags:
+        - Key: Name
+          Value: h08-inventory-service
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: commerce
+
+  ShippingServiceFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h08-shipping-service
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt SharedLambdaRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      VpcConfig:
+        SubnetIds:
+          - !Ref SharedPrivateSubnet
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+      Code:
+        ZipFile: |
+          import json, urllib.request
+          def handler(event, context):
+              try:
+                  with urllib.request.urlopen('https://httpbin.org/get', timeout=5) as r:
+                      return {'statusCode': 200, 'body': json.dumps({'service': 'shipping', 'ok': True})}
+              except Exception as e:
+                  return {'statusCode': 502, 'body': json.dumps({'service': 'shipping', 'error': str(e)})}
+      Tags:
+        - Key: Name
+          Value: h08-shipping-service
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: commerce
+
+Outputs:
+  SharedPrivateSubnet:
+    Description: Shared private subnet used by all Lambdas
+    Value: !Ref SharedPrivateSubnet
+  PaymentFunction:
+    Description: Payment Lambda Function Name
+    Value: !Ref PaymentServiceFunction
+  InventoryFunction:
+    Description: Inventory Lambda Function Name
+    Value: !Ref InventoryServiceFunction
+  ShippingFunction:
+    Description: Shipping Lambda Function Name
+    Value: !Ref ShippingServiceFunction
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

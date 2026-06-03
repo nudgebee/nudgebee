@@ -1,0 +1,669 @@
+rules:
+  - name: azure_vm_write_operation
+    description: Handle Azure VM write operations (create, update, start, stop, deallocate, restart)
+    triggers:
+      source: Azure_Monitor_Alert
+      event_filters:
+        - template: '{{ eq .EventType "Microsoft.Resources.ResourceWriteSuccess" }}'
+          description: Match successful write operations
+        - template: '{{ contains .Subject "Microsoft.Compute/virtualMachines" }}'
+          description: Match VM operations by subject path
+
+    event_template:
+      event_name:
+        value: "Azure VM State Change"
+      title:
+        template: 'Azure VM {{ .Subject | basename }} {{ .Data.operationName | getOperationStatus }}'
+      severity: INFO
+      description:
+        template: 'Virtual Machine "{{ .Subject | basename }}" configuration updated: {{ .Data.operationName }}. Status changed to {{ .Data.operationName | getOperationStatus }} in resource group {{ .Subject | extractResourceGroup }}.'
+      status: Open
+      resource_id:
+        template: '{{ .Subject }}'
+      resource_type:
+        value: "virtualmachine"
+      resource_service_name:
+        value: "microsoft.compute/virtualmachines"
+      resource_region:
+        template: '{{ extractRegion .Data }}'
+      labels:
+        azure_operation:
+          template: '{{ .Data.operationName }}'
+        azure_event_type:
+          template: '{{ .EventType }}'
+        azure_subscription_id:
+          template: '{{ .Subject | extractSubscriptionId }}'
+        azure_resource_group:
+          template: '{{ .Subject | extractResourceGroup }}'
+        azure_vm_name:
+          template: '{{ .Subject | basename }}'
+        operation_status:
+          template: '{{ .Data.operationName | getOperationStatus }}'
+        azure_region:
+          template: '{{ extractRegion .Data }}'
+
+    actions:
+      - name: update_vm_state
+        type: update_cloud_resource
+        description: Update cloud_resourses table with new VM state
+        params:
+          resource_id: '{{ .Subject }}'
+          service_name: 'microsoft.compute/virtualmachines'
+          region: '{{ extractRegion .Data }}'
+          new_status: '{{ .Data.operationName | getOperationStatus }}'
+          update_last_seen: true
+          update_meta: true
+          meta_updates:
+            last_operation: '{{ .Data.operationName }}'
+            last_operation_time: '{{ .EventTime }}'
+            operation_status: '{{ .Data.status }}'
+
+  - name: azure_vm_action_operation
+    description: Handle Azure VM action operations (start, stop, deallocate, restart, powerOff)
+    triggers:
+      source: Azure_Monitor_Alert
+      event_filters:
+        - template: '{{ eq .EventType "Microsoft.Resources.ResourceActionSuccess" }}'
+          description: Match successful action operations
+        - template: '{{ contains .Subject "Microsoft.Compute/virtualMachines" }}'
+          description: Match VM operations by subject path
+
+    event_template:
+      event_name:
+        value: "Azure VM State Change"
+      title:
+        template: 'Azure VM {{ .Subject | basename }} {{ .Data.operationName | getOperationStatus }}'
+      severity: INFO
+      description:
+        template: 'Virtual Machine "{{ .Subject | basename }}" state changed to {{ .Data.operationName | getOperationStatus }}. Operation: {{ .Data.operationName }}.'
+      status: Open
+      resource_id:
+        template: '{{ .Subject }}'
+      resource_type:
+        value: "virtualmachine"
+      resource_service_name:
+        value: "microsoft.compute/virtualmachines"
+      resource_region:
+        template: '{{ extractRegion .Data }}'
+      labels:
+        azure_operation:
+          template: '{{ .Data.operationName }}'
+        azure_event_type:
+          template: '{{ .EventType }}'
+        azure_subscription_id:
+          template: '{{ .Subject | extractSubscriptionId }}'
+        azure_resource_group:
+          template: '{{ .Subject | extractResourceGroup }}'
+        azure_vm_name:
+          template: '{{ .Subject | basename }}'
+        operation_status:
+          template: '{{ .Data.operationName | getOperationStatus }}'
+        azure_region:
+          template: '{{ extractRegion .Data }}'
+
+    actions:
+      - name: update_vm_action_state
+        type: update_cloud_resource
+        description: Update cloud_resourses table with VM action state
+        params:
+          resource_id: '{{ .Subject }}'
+          service_name: 'microsoft.compute/virtualmachines'
+          region: '{{ extractRegion .Data }}'
+          new_status: '{{ .Data.operationName | getOperationStatus }}'
+          update_last_seen: true
+          update_meta: true
+          meta_updates:
+            last_operation: '{{ .Data.operationName }}'
+            last_operation_time: '{{ .EventTime }}'
+
+  - name: azure_vm_delete_operation
+    description: Handle Azure VM deletion
+    triggers:
+      source: Azure_Monitor_Alert
+      event_filters:
+        - template: '{{ eq .EventType "Microsoft.Resources.ResourceDeleteSuccess" }}'
+          description: Match successful delete operations
+        - template: '{{ contains .Subject "Microsoft.Compute/virtualMachines" }}'
+          description: Match VM deletions
+
+    event_template:
+      event_name:
+        value: "Azure VM Deleted"
+      title:
+        template: 'Azure VM {{ .Subject | basename }} Deleted'
+      severity: MEDIUM
+      description:
+        template: 'Virtual Machine "{{ .Subject | basename }}" was permanently deleted from resource group {{ .Subject | extractResourceGroup }}. This action cannot be undone.'
+      status: Open
+      resource_id:
+        template: '{{ .Subject }}'
+      resource_type:
+        value: "virtualmachine"
+      resource_service_name:
+        value: "microsoft.compute/virtualmachines"
+      resource_region:
+        template: '{{ extractRegion .Data }}'
+      labels:
+        azure_operation:
+          template: '{{ .Data.operationName }}'
+        azure_event_type:
+          template: '{{ .EventType }}'
+        azure_subscription_id:
+          template: '{{ .Subject | extractSubscriptionId }}'
+        azure_resource_group:
+          template: '{{ .Subject | extractResourceGroup }}'
+        azure_vm_name:
+          template: '{{ .Subject | basename }}'
+        operation_status:
+          value: "Deleted"
+        azure_region:
+          template: '{{ extractRegion .Data }}'
+
+    actions:
+      - name: mark_vm_deleted
+        type: update_cloud_resource
+        description: Mark VM as deleted in cloud_resourses table
+        params:
+          resource_id: '{{ .Subject }}'
+          service_name: 'microsoft.compute/virtualmachines'
+          region: '{{ extractRegion .Data }}'
+          new_status: 'Deleted'
+          update_last_seen: true
+          update_meta: true
+          meta_updates:
+            last_operation: '{{ .Data.operationName }}'
+            last_operation_time: '{{ .EventTime }}'
+            deleted_at: '{{ .EventTime }}'
+
+  - name: azure_sql_database_write_operation
+    description: Handle Azure SQL Database write operations (create, update)
+    triggers:
+      source: Azure_Monitor_Alert
+      event_filters:
+        - template: '{{ eq .EventType "Microsoft.Resources.ResourceWriteSuccess" }}'
+        - template: '{{ contains .Data.operationName "Microsoft.Sql/servers/databases" }}'
+
+    event_template:
+      event_name:
+        value: "Azure SQL State Change"
+      title:
+        template: 'Azure SQL Database {{ .Subject | basename }} {{ .Data.operationName | getOperationStatus }}'
+      severity: INFO
+      description:
+        template: 'SQL Database "{{ .Subject | basename }}" configuration updated: {{ .Data.operationName }}. Database is now {{ .Data.operationName | getOperationStatus }}.'
+      status: Open
+      resource_id:
+        template: '{{ .Subject }}'
+      resource_type:
+        value: "database"
+      resource_service_name:
+        value: "microsoft.sql/servers/databases"
+      resource_region:
+        template: '{{ extractRegion .Data }}'
+      labels:
+        azure_operation:
+          template: '{{ .Data.operationName }}'
+        azure_event_type:
+          template: '{{ .EventType }}'
+        azure_subscription_id:
+          template: '{{ .Subject | extractSubscriptionId }}'
+        azure_resource_group:
+          template: '{{ .Subject | extractResourceGroup }}'
+        azure_database_name:
+          template: '{{ .Subject | basename }}'
+        operation_status:
+          template: '{{ .Data.operationName | getOperationStatus }}'
+        azure_region:
+          template: '{{ extractRegion .Data }}'
+
+    actions:
+      - name: update_sql_database_state
+        type: update_cloud_resource
+        description: Update SQL database state in cloud_resourses table
+        params:
+          resource_id: '{{ .Subject }}'
+          service_name: 'microsoft.sql/servers'
+          region: '{{ extractRegion .Data }}'
+          new_status: '{{ .Data.operationName | getOperationStatus }}'
+          update_last_seen: true
+          update_meta: true
+          meta_updates:
+            last_operation: '{{ .Data.operationName }}'
+            last_operation_time: '{{ .EventTime }}'
+
+  - name: azure_sql_database_action_operation
+    description: Handle Azure SQL Database actions (pause, resume)
+    triggers:
+      source: Azure_Monitor_Alert
+      event_filters:
+        - template: '{{ eq .EventType "Microsoft.Resources.ResourceActionSuccess" }}'
+        - template: '{{ contains .Data.operationName "Microsoft.Sql/servers/databases" }}'
+
+    event_template:
+      event_name:
+        value: "Azure SQL State Change"
+      title:
+        template: 'Azure SQL Database {{ .Subject | basename }} {{ .Data.operationName | getOperationStatus }}'
+      severity: INFO
+      description:
+        template: 'SQL Database "{{ .Subject | basename }}" state changed to {{ .Data.operationName | getOperationStatus }}. Operation: {{ .Data.operationName }}.'
+      status: Open
+      resource_id:
+        template: '{{ .Subject }}'
+      resource_type:
+        value: "database"
+      resource_service_name:
+        value: "microsoft.sql/servers/databases"
+      resource_region:
+        template: '{{ extractRegion .Data }}'
+      labels:
+        azure_operation:
+          template: '{{ .Data.operationName }}'
+        azure_event_type:
+          template: '{{ .EventType }}'
+        azure_subscription_id:
+          template: '{{ .Subject | extractSubscriptionId }}'
+        azure_resource_group:
+          template: '{{ .Subject | extractResourceGroup }}'
+        azure_database_name:
+          template: '{{ .Subject | basename }}'
+        operation_status:
+          template: '{{ .Data.operationName | getOperationStatus }}'
+        azure_region:
+          template: '{{ extractRegion .Data }}'
+
+    actions:
+      - name: update_sql_action_state
+        type: update_cloud_resource
+        description: Update SQL database action state
+        params:
+          resource_id: '{{ .Subject }}'
+          service_name: 'microsoft.sql/servers'
+          region: '{{ extractRegion .Data }}'
+          new_status: '{{ .Data.operationName | getOperationStatus }}'
+          update_last_seen: true
+          update_meta: true
+          meta_updates:
+            last_operation: '{{ .Data.operationName }}'
+            last_operation_time: '{{ .EventTime }}'
+
+  - name: azure_sql_database_delete_operation
+    description: Handle Azure SQL Database deletion
+    triggers:
+      source: Azure_Monitor_Alert
+      event_filters:
+        - template: '{{ eq .EventType "Microsoft.Resources.ResourceDeleteSuccess" }}'
+        - template: '{{ contains .Data.operationName "Microsoft.Sql/servers/databases" }}'
+
+    event_template:
+      event_name:
+        value: "Azure SQL Deleted"
+      title:
+        template: 'Azure SQL Database {{ .Subject | basename }} Deleted'
+      severity: MEDIUM
+      description:
+        template: 'SQL Database "{{ .Subject | basename }}" was permanently deleted from resource group {{ .Subject | extractResourceGroup }}. All data has been removed.'
+      status: Open
+      resource_id:
+        template: '{{ .Subject }}'
+      resource_type:
+        value: "database"
+      resource_service_name:
+        value: "microsoft.sql/servers/databases"
+      resource_region:
+        template: '{{ extractRegion .Data }}'
+      labels:
+        azure_operation:
+          template: '{{ .Data.operationName }}'
+        azure_event_type:
+          template: '{{ .EventType }}'
+        azure_subscription_id:
+          template: '{{ .Subject | extractSubscriptionId }}'
+        azure_resource_group:
+          template: '{{ .Subject | extractResourceGroup }}'
+        azure_database_name:
+          template: '{{ .Subject | basename }}'
+        operation_status:
+          value: "Deleted"
+        azure_region:
+          template: '{{ extractRegion .Data }}'
+
+    actions:
+      - name: mark_sql_deleted
+        type: update_cloud_resource
+        description: Mark SQL database as deleted
+        params:
+          resource_id: '{{ .Subject }}'
+          service_name: 'microsoft.sql/servers'
+          region: '{{ extractRegion .Data }}'
+          new_status: 'Deleted'
+          update_last_seen: true
+          update_meta: true
+          meta_updates:
+            deleted_at: '{{ .EventTime }}'
+
+  - name: azure_storage_account_operation
+    description: Handle Azure Storage Account operations
+    triggers:
+      source: Azure_Monitor_Alert
+      event_filters:
+        - template: '{{ eq .EventType "Microsoft.Resources.ResourceWriteSuccess" }}'
+        - template: '{{ contains .Data.operationName "Microsoft.Storage/storageAccounts" }}'
+
+    event_template:
+      event_name:
+        value: "Azure Storage Operation"
+      title:
+        template: 'Azure Storage Account {{ .Data.resourceUri | basename }} {{ .Data.operationName | getOperationStatus }}'
+      severity: INFO
+      description:
+        template: 'Storage Account "{{ .Data.resourceUri | basename }}" configuration updated: {{ .Data.operationName }}.'
+      status: Open
+      resource_id:
+        template: '{{ .Data.resourceUri }}'
+      resource_type:
+        value: "storageaccount"
+      resource_service_name:
+        value: "microsoft.storage/storageaccounts"
+      resource_region:
+        template: '{{ extractRegion .Data }}'
+      labels:
+        azure_operation:
+          template: '{{ .Data.operationName }}'
+        azure_event_type:
+          template: '{{ .EventType }}'
+        azure_subscription_id:
+          template: '{{ .Data.resourceUri | extractSubscriptionId }}'
+        azure_resource_group:
+          template: '{{ .Data.resourceUri | extractResourceGroup }}'
+        azure_storage_name:
+          template: '{{ .Data.resourceUri | basename }}'
+        operation_status:
+          template: '{{ .Data.operationName | getOperationStatus }}'
+        azure_region:
+          template: '{{ extractRegion .Data }}'
+
+    actions:
+      - name: update_storage_state
+        type: update_cloud_resource
+        params:
+          resource_id: '{{ .Data.resourceUri }}'
+          service_name: 'microsoft.storage/storageaccounts'
+          region: '{{ extractRegion .Data }}'
+          new_status: '{{ .Data.operationName | getOperationStatus }}'
+          update_last_seen: true
+
+  - name: azure_webapp_state_change
+    description: Handle Azure Web App state changes (start, stop)
+    triggers:
+      source: Azure_Monitor_Alert
+      event_filters:
+        - template: '{{ eq .EventType "Microsoft.Resources.ResourceActionSuccess" }}'
+        - template: '{{ contains .Data.operationName "Microsoft.Web/sites" }}'
+
+    event_template:
+      event_name:
+        value: "Azure Web App State Change"
+      title:
+        template: 'Azure Web App {{ .Data.resourceUri | basename }} {{ .Data.operationName | getOperationStatus }}'
+      severity: INFO
+      description:
+        template: 'Web App "{{ .Data.resourceUri | basename }}" state changed to {{ .Data.operationName | getOperationStatus }}. Operation: {{ .Data.operationName }}.'
+      status: Open
+      resource_id:
+        template: '{{ .Data.resourceUri }}'
+      resource_type:
+        value: "webapp"
+      resource_service_name:
+        value: "microsoft.web/sites"
+      resource_region:
+        template: '{{ extractRegion .Data }}'
+      labels:
+        azure_operation:
+          template: '{{ .Data.operationName }}'
+        azure_event_type:
+          template: '{{ .EventType }}'
+        azure_subscription_id:
+          template: '{{ .Data.resourceUri | extractSubscriptionId }}'
+        azure_resource_group:
+          template: '{{ .Data.resourceUri | extractResourceGroup }}'
+        azure_webapp_name:
+          template: '{{ .Data.resourceUri | basename }}'
+        operation_status:
+          template: '{{ .Data.operationName | getOperationStatus }}'
+        azure_region:
+          template: '{{ extractRegion .Data }}'
+
+    actions:
+      - name: update_webapp_state
+        type: update_cloud_resource
+        params:
+          resource_id: '{{ .Data.resourceUri }}'
+          service_name: 'microsoft.web/sites'
+          region: '{{ extractRegion .Data }}'
+          new_status: '{{ .Data.operationName | getOperationStatus }}'
+          update_last_seen: true
+
+  - name: azure_aks_cluster_operation
+    description: Handle AKS cluster operations
+    triggers:
+      source: Azure_Monitor_Alert
+      event_filters:
+        - template: '{{ or (eq .EventType "Microsoft.Resources.ResourceWriteSuccess") (eq .EventType "Microsoft.Resources.ResourceActionSuccess") }}'
+        - template: '{{ contains .Data.operationName "Microsoft.ContainerService/managedClusters" }}'
+
+    event_template:
+      event_name:
+        value: "Azure AKS State Change"
+      title:
+        template: 'Azure AKS Cluster {{ .Data.resourceUri | basename }} {{ .Data.operationName | getOperationStatus }}'
+      severity: INFO
+      description:
+        template: 'AKS Cluster "{{ .Data.resourceUri | basename }}" operation completed: {{ .Data.operationName }}. Cluster is now {{ .Data.operationName | getOperationStatus }}.'
+      status: Open
+      resource_id:
+        template: '{{ .Data.resourceUri }}'
+      resource_type:
+        value: "managedcluster"
+      resource_service_name:
+        value: "microsoft.containerservice/managedclusters"
+      resource_region:
+        template: '{{ extractRegion .Data }}'
+      labels:
+        azure_operation:
+          template: '{{ .Data.operationName }}'
+        azure_event_type:
+          template: '{{ .EventType }}'
+        azure_subscription_id:
+          template: '{{ .Data.resourceUri | extractSubscriptionId }}'
+        azure_resource_group:
+          template: '{{ .Data.resourceUri | extractResourceGroup }}'
+        azure_cluster_name:
+          template: '{{ .Data.resourceUri | basename }}'
+        operation_status:
+          template: '{{ .Data.operationName | getOperationStatus }}'
+        azure_region:
+          template: '{{ extractRegion .Data }}'
+
+    actions:
+      - name: update_aks_state
+        type: update_cloud_resource
+        params:
+          resource_id: '{{ .Data.resourceUri }}'
+          service_name: 'microsoft.containerservice/managedclusters'
+          region: '{{ extractRegion .Data }}'
+          new_status: '{{ .Data.operationName | getOperationStatus }}'
+          update_last_seen: true
+
+  - name: azure_resource_write_generic
+    description: Handle generic resource write events (create, update) across all Azure services
+    triggers:
+      source: Azure_Monitor_Alert
+      event_filters:
+        - template: '{{ eq .EventType "Microsoft.Resources.ResourceWriteSuccess" }}'
+
+    event_template:
+      event_name:
+        value: "Azure Resource Operation"
+      title:
+        template: 'Azure {{ .Subject | extractResourceType | toUpper }} {{ .Subject | basename }} {{ .Data.operationName | getOperationStatus }}'
+      severity: INFO
+      description:
+        template: 'Resource "{{ .Subject | basename }}" changed to {{ .Data.operationName | getOperationStatus }} state. Service: {{ .Subject | extractProvider }}/{{ .Subject | extractResourceType }}. Operation: {{ .Data.operationName }}.'
+      status: Open
+      resource_id:
+        template: '{{ .Subject }}'
+      resource_type:
+        template: '{{ .Subject | extractResourceType }}'
+      resource_service_name:
+        template: '{{ .Subject | extractProvider | toLower }}/{{ .Subject | extractResourceType | toLower }}'
+      resource_region:
+        template: '{{ extractRegion .Data }}'
+      labels:
+        azure_operation:
+          template: '{{ .Data.operationName }}'
+        azure_event_type:
+          template: '{{ .EventType }}'
+        azure_subscription_id:
+          template: '{{ .Subject | extractSubscriptionId }}'
+        azure_resource_group:
+          template: '{{ .Subject | extractResourceGroup }}'
+        azure_resource_name:
+          template: '{{ .Subject | basename }}'
+        azure_resource_type:
+          template: '{{ .Subject | extractResourceType }}'
+        azure_provider:
+          template: '{{ .Subject | extractProvider }}'
+        operation_status:
+          template: '{{ .Data.operationName | getOperationStatus }}'
+        azure_region:
+          template: '{{ extractRegion .Data }}'
+
+    actions:
+      - name: update_resource_write_state
+        type: update_cloud_resource
+        description: Update resource state for write operations
+        params:
+          resource_id: '{{ .Subject }}'
+          service_name: '{{ .Subject | extractProvider | toLower }}/{{ .Subject | extractResourceType | toLower }}'
+          region: '{{ extractRegion .Data }}'
+          new_status: '{{ .Data.operationName | getOperationStatus }}'
+          update_last_seen: true
+          update_meta: true
+          meta_updates:
+            last_operation: '{{ .Data.operationName }}'
+            last_operation_time: '{{ .EventTime }}'
+
+  - name: azure_resource_action_generic
+    description: Handle generic resource action events (listKeys, regenerateKey, etc.)
+    triggers:
+      source: Azure_Monitor_Alert
+      event_filters:
+        - template: '{{ eq .EventType "Microsoft.Resources.ResourceActionSuccess" }}'
+
+    event_template:
+      event_name:
+        value: "Azure Resource Operation"
+      title:
+        template: 'Azure {{ .Subject | extractResourceType | toUpper }} {{ .Subject | basename }} {{ .Data.operationName | getOperationStatus }}'
+      severity: INFO
+      description:
+        template: 'Resource "{{ .Subject | basename }}" changed to {{ .Data.operationName | getOperationStatus }} state. Service: {{ .Subject | extractProvider }}/{{ .Subject | extractResourceType }}. Operation: {{ .Data.operationName }}.'
+      status: Open
+      resource_id:
+        template: '{{ .Subject }}'
+      resource_type:
+        template: '{{ .Subject | extractResourceType }}'
+      resource_service_name:
+        template: '{{ .Subject | extractProvider | toLower }}/{{ .Subject | extractResourceType | toLower }}'
+      resource_region:
+        template: '{{ extractRegion .Data }}'
+      labels:
+        azure_operation:
+          template: '{{ .Data.operationName }}'
+        azure_event_type:
+          template: '{{ .EventType }}'
+        azure_subscription_id:
+          template: '{{ .Subject | extractSubscriptionId }}'
+        azure_resource_group:
+          template: '{{ .Subject | extractResourceGroup }}'
+        azure_resource_name:
+          template: '{{ .Subject | basename }}'
+        azure_resource_type:
+          template: '{{ .Subject | extractResourceType }}'
+        azure_provider:
+          template: '{{ .Subject | extractProvider }}'
+        azure_region:
+          template: '{{ extractRegion .Data }}'
+
+    actions:
+      - name: log_resource_action
+        type: update_cloud_resource
+        description: Log resource action for audit trail
+        params:
+          resource_id: '{{ .Subject }}'
+          service_name: '{{ .Subject | extractProvider | toLower }}/{{ .Subject | extractResourceType | toLower }}'
+          region: '{{ extractRegion .Data }}'
+          update_last_seen: true
+          update_meta: true
+          meta_updates:
+            last_action: '{{ .Subject }}'
+            last_action_time: '{{ .EventTime }}'
+
+  - name: azure_resource_delete
+    description: Handle resource deletion events across all Azure services
+    triggers:
+      source: Azure_Monitor_Alert
+      event_filters:
+        - template: '{{ eq .EventType "Microsoft.Resources.ResourceDeleteSuccess" }}'
+
+    event_template:
+      event_name:
+        value: "Azure Resource Deleted"
+      title:
+        template: 'Azure Resource {{ .Data.resourceUri | basename }} Deleted'
+      severity: MEDIUM
+      description:
+        template: 'Resource "{{ .Data.resourceUri | basename }}" ({{ .Data.resourceProvider }}) was permanently deleted from subscription. This is an irreversible action.'
+      status: Open
+      resource_id:
+        template: '{{ .Data.resourceUri }}'
+      resource_type:
+        template: '{{ .Data.resourceUri | extractResourceType }}'
+      resource_service_name:
+        template: '{{ .Data.resourceProvider | toLower }}'
+      resource_region:
+        template: '{{ extractRegion .Data }}'
+      labels:
+        azure_operation:
+          template: '{{ .Data.operationName }}'
+        azure_event_type:
+          template: '{{ .EventType }}'
+        azure_subscription_id:
+          template: '{{ .Data.resourceUri | extractSubscriptionId }}'
+        azure_resource_group:
+          template: '{{ .Data.resourceUri | extractResourceGroup }}'
+        azure_resource_name:
+          template: '{{ .Data.resourceUri | basename }}'
+        azure_resource_type:
+          template: '{{ .Data.resourceUri | extractResourceType }}'
+        azure_provider:
+          template: '{{ .Data.resourceProvider }}'
+        operation_status:
+          value: "Deleted"
+        azure_region:
+          template: '{{ extractRegion .Data }}'
+
+    actions:
+      - name: mark_resource_deleted
+        type: update_cloud_resource
+        params:
+          resource_id: '{{ .Data.resourceUri }}'
+          service_name: '{{ .Data.resourceProvider | toLower }}'
+          region: '{{ extractRegion .Data }}'
+          new_status: 'Deleted'
+          update_last_seen: true
+          update_meta: true
+          meta_updates:
+            deleted_at: '{{ .EventTime }}'
+            deletion_operation: '{{ .Data.operationName }}'

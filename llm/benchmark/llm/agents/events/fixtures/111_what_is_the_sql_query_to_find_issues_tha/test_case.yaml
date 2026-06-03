@@ -1,0 +1,12 @@
+user_prompt: What is the SQL query to find issues that were closed and then re-fired
+  within 10 minutes for the same subject?
+expected_output:
+- WITH ranked_events AS ( SELECT id, subject_name, status, starts_at, LAG(status,
+  1) OVER (PARTITION BY subject_name ORDER BY starts_at) as prev_status, LAG(ends_at,
+  1) OVER (PARTITION BY subject_name ORDER BY starts_at) as prev_ends_at FROM events
+  WHERE subject_name IS NOT NULL ) SELECT id, subject_name, starts_at FROM ranked_events
+  WHERE status = 'FIRING' AND prev_status = 'CLOSED' AND starts_at - prev_ends_at
+  < INTERVAL '10 minutes';
+tags:
+- command
+- events

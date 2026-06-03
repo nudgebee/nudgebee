@@ -1,0 +1,9 @@
+user_prompt: Get cost and usage for a specific service (e.g., EC2) for the last month.
+expected_output:
+- 'aws ce get-cost-and-usage --time-period Start=$(date -d ''last month'' +%Y-%m-01)
+  --End=$(date -d ''last month'' +%Y-%m-%d) --granularity MONTHLY --metrics BlendedCost
+  --group-by Type=DIMENSION,Key=SERVICE --filter ''{\Dimensions\": {\"Key\": \"SERVICE\",
+  \"Values\": [\"Amazon Elastic Compute Cloud - Compute\"]}}'''
+tags:
+- command
+- aws

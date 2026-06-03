@@ -1,0 +1,9 @@
+user_prompt: What is the SQL query to list events with no associated node (subject_node
+  is NULL)?
+expected_output:
+- SELECT id, title, starts_at, status, priority, subject_name, subject_namespace   FROM
+  events   WHERE subject_node IS NULL;
+- SELECT * FROM events   WHERE subject_node IS NULL;
+tags:
+- command
+- events

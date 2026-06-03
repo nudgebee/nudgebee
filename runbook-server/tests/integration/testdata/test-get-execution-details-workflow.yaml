@@ -1,0 +1,9 @@
+name: test-get-execution-details-workflow
+definition:
+  triggers:
+    - type: manual
+  tasks:
+    - id: task1
+      type: core.print
+      params:
+        message: 'Hello from execution details test'

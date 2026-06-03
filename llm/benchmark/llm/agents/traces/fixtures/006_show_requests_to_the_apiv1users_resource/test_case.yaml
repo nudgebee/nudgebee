@@ -1,0 +1,11 @@
+user_prompt: Show requests to the '/api/v1/users' resource that resulted in a 404
+  error.
+expected_output:
+- SELECT * FROM traces_view WHERE resource = '/api/v1/users' AND http_status_code
+  = 404 ORDER BY timestamp DESC;
+- SELECT timestamp, workload_name, workload_namespace, resource, destination_workload_name,
+  destination_workload_namespace, http_status_code, duration_ns FROM traces_view WHERE
+  resource = '/api/v1/users' AND http_status_code = 404 ORDER BY timestamp DESC;
+tags:
+- command
+- trace

@@ -1,0 +1,10 @@
+user_prompt: What is the SQL query to show HIGH priority Alertmanager alert sending
+  failures?
+expected_output:
+- SELECT id, title, starts_at, status, description   FROM events   WHERE priority
+  = 'HIGH' AND aggregation_key IN ('AlertmanagerClusterFailedToSendAlerts', 'AlertmanagerFailedToSendAlerts');
+- SELECT * FROM events   WHERE priority = 'HIGH' AND aggregation_key IN ('AlertmanagerClusterFailedToSendAlerts',
+  'AlertmanagerFailedToSendAlerts');
+tags:
+- command
+- events

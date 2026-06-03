@@ -1,0 +1,7 @@
+user_prompt: Create a Glue crawler.
+expected_output:
+- aws glue create-crawler --name <crawler-name> --role <role-arn> --database-name
+  <database-name> --targets <targets>
+tags:
+- command
+- aws

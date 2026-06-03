@@ -1,0 +1,8 @@
+user_prompt: Find all log entries correlated with trace ID 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6' in project 'nudgebee-dev'.
+expected_output:
+  - gcloud logging read 'trace="projects/nudgebee-dev/traces/a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"' --project=nudgebee-dev --limit=50 --format=json
+  - gcloud logging read 'trace="projects/nudgebee-dev/traces/a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"' --project=nudgebee-dev --limit=50
+tags:
+  - command
+  - trace
+  - gcp

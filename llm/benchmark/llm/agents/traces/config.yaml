@@ -1,0 +1,7 @@
+# Trace agent benchmark configuration
+agent: traces
+tool_names:
+  - traces_execute
+config_types:
+  - clickhouse
+db_tool_name: traces_execute

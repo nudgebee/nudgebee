@@ -1,0 +1,7 @@
+apiVersion: v2
+name: app-e2e-tests
+keywords:
+  - rpc
+type: application
+version: "0.1"
+appVersion: "V0.1"

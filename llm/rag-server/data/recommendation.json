@@ -1,0 +1,237 @@
+[
+    {
+      "Question": "Find all recommendations with 'Critical' severity.",
+      "Answer": "SELECT namespace, name, recommendation, created_at from recommendation_view WHERE severity = 'Critical';",
+      "Explanation": "This query selects the namespace, name, recommendation details, and creation time for all records in the 'recommendations' table where the 'severity' column is marked as 'Critical'."
+    },
+    {
+      "Question": "Count the number of 'Open' recommendations for each category.",
+      "Answer": "SELECT category, COUNT(*) AS open_recommendation_count from recommendation_view WHERE status = 'Open' GROUP BY category ORDER BY open_recommendation_count DESC;",
+      "Explanation": "This query counts the number of recommendations for each 'category' where the 'status' is 'Open'. It groups the results by category and orders them to show the categories with the most open recommendations first. The count is aliased as 'open_recommendation_count'."
+    },
+    {
+      "Question": "List the names and namespaces of workloads with 'RightSizing' recommendations updated in the last 30 days.",
+      "Answer": "SELECT name, namespace, updated_at from recommendation_view WHERE category = 'RightSizing' AND updated_at >= NOW() - INTERVAL '30 days';",
+      "Explanation": "This query retrieves the 'name', 'namespace', and 'updated_at' timestamp for recommendations categorized as 'RightSizing'. It filters these records to include only those updated within the last 30 days from the current time (NOW()). Remember to replace 'recommendations' with your actual table name if it's different."
+    },
+    {
+      "Question": "What is the total estimated saving for all 'Open' recommendations in the 'K8sSpotRecommendation' category?",
+      "Answer": "SELECT SUM(estimated_saving) AS total_estimated_saving from recommendation_view WHERE category = 'K8sSpotRecommendation' AND status = 'Open';",
+      "Explanation": "This query calculates the sum of the 'estimated_saving' column for all records where the 'category' is 'K8sSpotRecommendation' and the 'status' is 'Open'. The result provides the total potential savings for open spot instance recommendations and is aliased as 'total_estimated_saving'. Ensure 'recommendations' is your table name."
+    },
+    {
+      "Question": "Find all recommendations related to 'misconfigurations' (based on rule_name) that are currently 'Open' or 'InProgress'.",
+      "Answer": "SELECT namespace, name, rule_name, status, severity from recommendation_view WHERE rule_name LIKE '%misconfigurations%' AND status IN ('Open', 'InProgress');",
+      "Explanation": "This query selects key details for recommendations where the 'rule_name' contains the substring 'misconfigurations' (using LIKE with wildcards '%') and the 'status' is either 'Open' or 'InProgress' (using IN). This helps identify active misconfiguration issues. Replace 'recommendations' with your table name."
+    },
+    {
+      "Question": "Which security recommendations (category 'Security') are currently open and have high or critical severity?",
+      "Answer": "SELECT rule_name, namespace, name, severity from recommendation_view WHERE category = 'Security' AND status = 'Open' AND severity IN ('High', 'Critical');",
+      "Explanation": "This query filters the 'recommendations' table to find records belonging to the 'Security' category with an 'Open' status and a severity level of either 'High' or 'Critical'. It returns the rule name, namespace, workload name, and severity for these specific security concerns."
+    },
+    {
+      "Question": "Find all recommendations for the Kubernetes controller named 'deployment-xyz'.",
+      "Answer": "SELECT namespace, name, recommendation, category, severity from recommendation_view WHERE controller_name = 'deployment-xyz';",
+      "Explanation": "This query selects key details for recommendations specifically associated with the Kubernetes controller named 'deployment-xyz'. It filters the 'recommendations' table based on the 'controller_name' column. Remember to replace 'recommendations' with your actual table name."
+    },
+    {
+      "Question": "List recommendations with estimated savings greater than $100, ordered by saving amount (highest first).",
+      "Answer": "SELECT namespace, name, category, estimated_saving from recommendation_view WHERE estimated_saving > 100 ORDER BY estimated_saving DESC;",
+      "Explanation": "This query retrieves recommendations where the 'estimated_saving' is more than 100. It selects the namespace, name, category, and the saving amount, then orders the results in descending order based on the 'estimated_saving' column to show the highest potential savings first. Ensure 'recommendations' is your table name."
+    },
+    {
+      "Question": "What is the oldest 'Open' recommendation based on its creation date?",
+      "Answer": "SELECT namespace, name, recommendation, created_at from recommendation_view WHERE status = 'Open' ORDER BY created_at ASC LIMIT 1;",
+      "Explanation": "This query finds the single oldest recommendation that still has an 'Open' status. It filters by 'status', sorts the results by 'created_at' in ascending order (oldest first), and uses `LIMIT 1` to return only the top row (the oldest one). Replace 'recommendations' with your actual table name."
+    },
+    {
+      "Question": "Find all 'Open' recommendations related to Kubernetes Persistent Volumes.",
+      "Answer": "SELECT namespace, name, recommendation, severity from recommendation_view WHERE category = 'RightSizing' AND rule_name in ('pv_rightsize', 'unused_pvc') AND status = 'Open';",
+      "Explanation": "This query selects key details for recommendations specifically categorized as 'RightSizing' that currently have an 'Open' status. Assumes table name is 'recommendations'."
+    },
+    {
+      "Question": "Show all 'Configuration' recommendations created since the beginning of the year.",
+      "Answer": "SELECT namespace, name, recommendation, created_at from recommendation_view WHERE category = 'Configuration' AND created_at >= date_trunc('year', NOW());",
+      "Explanation": "This query selects details for recommendations in the 'Configuration' category that were created on or after the first day of the current year. `date_trunc('year', NOW())` gets the start of the current year. Assumes table name is 'recommendations'."
+    },
+    {
+      "Question": "Count the total number of recommendations per namespace.",
+      "Answer": "SELECT namespace, COUNT(*) AS total_recommendations from recommendation_view GROUP BY namespace ORDER BY total_recommendations DESC;",
+      "Explanation": "This query counts all recommendations for each namespace and presents the results with the namespace having the most recommendations listed first."
+    },
+    {
+      "Question": "List recommendations that were closed within the last month.",
+      "Answer": "SELECT namespace, name, category, updated_at from recommendation_view WHERE status = 'Closed' AND updated_at >= NOW() - INTERVAL '1 month';",
+      "Explanation": "This query finds recommendations that have been marked as 'Closed' and whose 'updated_at' timestamp falls within the last month from the current time."
+    },
+    {
+      "Question": "Show distinct rule names associated with 'Low' severity recommendations.",
+      "Answer": "SELECT DISTINCT rule_name from recommendation_view WHERE severity = 'Low';",
+      "Explanation": "This query retrieves a unique list of all 'rule_name' values found in recommendations that have a 'Low' severity level."
+    },
+    {
+      "Question": "Calculate the average estimated saving for 'Open' recommendations within each category.",
+      "Answer": "SELECT category, AVG(estimated_saving) AS average_saving from recommendation_view WHERE status = 'Open' AND estimated_saving IS NOT NULL GROUP BY category;",
+      "Explanation": "This query computes the average 'estimated_saving' for 'Open' recommendations, grouped by category. It excludes records where saving is not specified (NULL)."
+    },
+    {
+      "Question": "Find recommendations where the estimated saving amount is not provided.",
+      "Answer": "SELECT namespace, name, category, rule_name from recommendation_view WHERE estimated_saving IS NULL;",
+      "Explanation": "This query lists recommendations for which the 'estimated_saving' column does not contain a value (is NULL)."
+    },
+    {
+      "Question": "List all 'Security' category recommendations that are NOT related to the 'CIS' rule.",
+      "Answer": "SELECT namespace, name, rule_name, severity from recommendation_view WHERE category = 'Security' AND rule_name != 'CIS';",
+      "Explanation": "This query finds security recommendations but excludes any that specifically have the 'rule_name' set to 'CIS'."
+    },
+    {
+      "Question": "Show the top 5 recommendations with the highest estimated savings.",
+      "Answer": "SELECT namespace, name, category, estimated_saving from recommendation_view WHERE estimated_saving IS NOT NULL ORDER BY estimated_saving DESC LIMIT 5;",
+      "Explanation": "This query identifies the five recommendations offering the largest potential cost savings, ordered from highest to lowest saving amount."
+    },
+    {
+      "Question": "Find recommendations created exactly on '2024-10-15'.",
+      "Answer": "SELECT namespace, name, category, rule_name from recommendation_view WHERE DATE(created_at) = '2024-10-15';",
+      "Explanation": "This query retrieves recommendations created on a specific date (October 15, 2024) by comparing the date part of the 'created_at' timestamp."
+    },
+    {
+      "Question": "Count recommendations by status for the 'production' namespace.",
+      "Answer": "SELECT status, COUNT(*) AS count from recommendation_view WHERE namespace = 'production' GROUP BY status;",
+      "Explanation": "This query provides a count of recommendations for each status ('Open', 'Closed', etc.) specifically within the 'production' namespace."
+    },
+    {
+      "Question": "Find recommendations specifically for the 'pod_right_sizing' rule.",
+      "Answer": "SELECT namespace, name, severity, status, recommendation from recommendation_view WHERE rule_name = 'pod_right_sizing';",
+      "Explanation": "This query selects details for all recommendations generated by the exact rule named 'pod_right_sizing'."
+    },
+    {
+      "Question": "List recommendations updated before '2024-01-01'.",
+      "Answer": "SELECT namespace, name, category, updated_at from recommendation_view WHERE updated_at < '2024-01-01';",
+      "Explanation": "This query finds recommendations whose last update occurred prior to the beginning of 2024."
+    },
+    {
+      "Question": "Show all recommendations currently in the 'Archive' status.",
+      "Answer": "SELECT namespace, name, category, rule_name, updated_at from recommendation_view WHERE status = 'Archive';",
+      "Explanation": "This query retrieves all recommendations that have been moved to the 'Archive' status."
+    },
+    {
+      "Question": "Find recommendations with severity 'Medium' or 'Low'.",
+      "Answer": "SELECT namespace, name, category, severity from recommendation_view WHERE severity IN ('Medium', 'Low');",
+      "Explanation": "This query selects recommendations that are classified with either 'Medium' or 'Low' severity using the IN operator."
+    },
+    {
+      "Question": "Count how many recommendations exist for each distinct controller_name.",
+      "Answer": "SELECT controller_name, COUNT(*) AS recommendation_count from recommendation_view WHERE controller_name IS NOT NULL GROUP BY controller_name ORDER BY recommendation_count DESC;",
+      "Explanation": "This query counts the number of recommendations associated with each Kubernetes controller name and orders them, showing which controllers have the most recommendations."
+    },
+    {
+      "Question": "Find recommendations in the 'prod' namespace with 'Critical' severity.",
+      "Answer": "SELECT name, rule_name, recommendation from recommendation_view WHERE namespace = 'prod' AND severity = 'Critical';",
+      "Explanation": "This query specifically targets 'Critical' severity recommendations within the 'prod' namespace."
+    },
+    {
+      "Question": "List recommendations whose 'recommendation' text contains the word 'upgrade'.",
+      "Answer": "SELECT namespace, name, category, recommendation from recommendation_view WHERE recommendation ILIKE '%upgrade%';",
+      "Explanation": "This query searches the 'recommendation' text field for the keyword 'upgrade' (case-insensitive using ILIKE) and returns matching records."
+    },
+    {
+      "Question": "Find the maximum estimated saving among all 'RightSizing' recommendations.",
+      "Answer": "SELECT MAX(estimated_saving) AS max_rightsizing_saving from recommendation_view WHERE category = 'RightSizing';",
+      "Explanation": "This query calculates the single highest 'estimated_saving' value found among all recommendations in the 'RightSizing' category."
+    },
+    {
+      "Question": "Show recommendations created in the last 24 hours.",
+      "Answer": "SELECT namespace, name, category, created_at from recommendation_view WHERE created_at >= NOW() - INTERVAL '24 hours';",
+      "Explanation": "This query retrieves recommendations that were created within the past 24 hours from the current time."
+    },
+    {
+      "Question": "Find 'Security' recommendations with rule name 'image_scan' that are not 'Closed'.",
+      "Answer": "SELECT namespace, name, severity, status from recommendation_view WHERE category = 'Security' AND rule_name = 'image_scan' AND status != 'Closed';",
+      "Explanation": "This query targets 'image_scan' security recommendations that are still in an active state (not 'Closed')."
+    },
+    {
+      "Question": "List all distinct combinations of category and severity present in the data.",
+      "Answer": "SELECT DISTINCT category, severity from recommendation_view ORDER BY category, severity;",
+      "Explanation": "This query identifies all unique pairs of 'category' and 'severity' that exist in the recommendations table."
+    },
+    {
+      "Question": "Find recommendations updated between '2024-05-01' and '2024-05-31'.",
+      "Answer": "SELECT namespace, name, category, updated_at from recommendation_view WHERE updated_at >= '2024-05-01' AND updated_at < '2024-06-01';",
+      "Explanation": "This query selects recommendations whose last update timestamp falls within the month of May 2024."
+    },
+    {
+      "Question": "Count 'Open' recommendations per severity level.",
+      "Answer": "SELECT severity, COUNT(*) AS open_count from recommendation_view WHERE status = 'Open' GROUP BY severity ORDER BY open_count DESC;",
+      "Explanation": "This query counts how many 'Open' recommendations exist for each severity level ('Critical', 'High', etc.) and orders the results."
+    },
+    {
+      "Question": "Find recommendations for the rule 'unused_pvc' in the 'dev' namespace.",
+      "Answer": "SELECT name, recommendation, created_at from recommendation_view WHERE rule_name = 'unused_pvc' AND namespace = 'dev';",
+      "Explanation": "This query specifically looks for recommendations about unused persistent volume claims ('unused_pvc') within the 'dev' namespace."
+    },
+    {
+      "Question": "List recommendations that have been 'InProgress' for more than 7 days.",
+      "Answer": "SELECT namespace, name, category, updated_at from recommendation_view WHERE status = 'InProgress' AND updated_at < NOW() - INTERVAL '7 days';",
+      "Explanation": "This query identifies recommendations currently 'InProgress' whose last update was over a week ago, potentially indicating stalled progress."
+    },
+    {
+      "Question": "Show the count of recommendations for each rule_name within the 'Security' category.",
+      "Answer": "SELECT rule_name, COUNT(*) AS count from recommendation_view WHERE category = 'Security' GROUP BY rule_name ORDER BY count DESC;",
+      "Explanation": "This query counts how many recommendations are associated with each specific rule within the 'Security' category."
+    },
+    {
+      "Question": "Find recommendations with estimated savings between $50 and $100.",
+      "Answer": "SELECT namespace, name, category, estimated_saving from recommendation_view WHERE estimated_saving BETWEEN 50 AND 100;",
+      "Explanation": "This query selects recommendations where the 'estimated_saving' value falls within the inclusive range of 50 to 100."
+    },
+    {
+      "Question": "List all recommendations NOT in 'Open' or 'InProgress' status.",
+      "Answer": "SELECT namespace, name, category, status, updated_at from recommendation_view WHERE status NOT IN ('Open', 'InProgress');",
+      "Explanation": "This query retrieves recommendations that are considered inactive or resolved (e.g., 'Closed', 'Archive')."
+    },
+    {
+      "Question": "Find the most recent recommendation created for the 'K8sSpotRecommendation' category.",
+      "Answer": "SELECT namespace, name, recommendation, created_at from recommendation_view WHERE category = 'K8sSpotRecommendation' ORDER BY created_at DESC LIMIT 1;",
+      "Explanation": "This query identifies the very latest recommendation added to the table specifically for the 'K8sSpotRecommendation' category."
+    },
+    {
+      "Question": "Count recommendations created per month.",
+      "Answer": "SELECT date_trunc('month', created_at) AS creation_month, COUNT(*) AS monthly_count from recommendation_view GROUP BY creation_month ORDER BY creation_month;",
+      "Explanation": "This query groups recommendations by the month they were created and counts how many were created in each month."
+    },
+    {
+      "Question": "List recommendations with 'High' severity in namespaces starting with 'kube-'.",
+      "Answer": "SELECT namespace, name, rule_name from recommendation_view WHERE severity = 'High' AND namespace LIKE 'kube-%';",
+      "Explanation": "This query finds 'High' severity recommendations located in namespaces whose names begin with 'kube-' (e.g., 'kube-system', 'kube-public')."
+    },
+    {
+      "Question": "Find recommendations where the workload name is 'api-gateway'.",
+      "Answer": "SELECT namespace, controller_name, category, severity, status from recommendation_view WHERE name = 'api-gateway';",
+      "Explanation": "This query selects recommendations specifically targeting the workload named 'api-gateway', regardless of namespace."
+    },
+    {
+      "Question": "Show the total estimated savings for all 'Closed' recommendations.",
+      "Answer": "SELECT SUM(estimated_saving) AS total_saved from recommendation_view WHERE status = 'Closed' AND estimated_saving IS NOT NULL;",
+      "Explanation": "This query calculates the sum of estimated savings for all recommendations that have been successfully closed, representing realized savings."
+    },
+    {
+      "Question": "List distinct controller names associated with 'RightSizing' recommendations.",
+      "Answer": "SELECT DISTINCT controller_name from recommendation_view WHERE category = 'RightSizing' AND controller_name IS NOT NULL;",
+      "Explanation": "This query provides a unique list of Kubernetes controller names linked to 'RightSizing' recommendations."
+    },
+    {
+      "Question": "Find recommendations created during Q1 of 2024 (Jan 1 - Mar 31).",
+      "Answer": "SELECT namespace, name, category, created_at from recommendation_view WHERE created_at >= '2024-01-01' AND created_at < '2024-04-01';",
+      "Explanation": "This query selects recommendations based on their creation date falling within the first quarter of the year 2024."
+    },
+    {
+      "Question": "Count the number of recommendations with 'Info' severity.",
+      "Answer": "SELECT COUNT(*) AS info_count from recommendation_view WHERE severity = 'Info';",
+      "Explanation": "This query provides a simple count of all recommendations marked with 'Info' severity."
+    },
+    {
+      "Question": "Find 'Configuration' recommendations updated in the last week with 'High' or 'Critical' severity.",
+      "Answer": "SELECT namespace, name, rule_name, severity, updated_at from recommendation_view WHERE category = 'Configuration' AND severity IN ('High', 'Critical') AND updated_at >= NOW() - INTERVAL '7 days';",
+      "Explanation": "This query targets recently updated, high-priority configuration issues by filtering on category, severity, and update time."
+    }
+  ]

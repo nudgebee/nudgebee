@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="logosandtypes_com" data-name="logosandtypes com" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 150 150">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: url(#radial-gradient);
+        fill-rule: evenodd;
+      }
+
+      .cls-2 {
+        fill: none;
+      }
+    </style>
+    <radialGradient id="radial-gradient" cx="75.58" cy="74.52" fx="57.34" fy="74.52" r="65.85" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#60e684"/>
+      <stop offset=".25" stop-color="#5ce382"/>
+      <stop offset=".47" stop-color="#51da7e"/>
+      <stop offset=".68" stop-color="#3fcc77"/>
+      <stop offset=".82" stop-color="#2fbf71"/>
+    </radialGradient>
+  </defs>
+  <path class="cls-2" d="M0,0H150V150H0V0Z"/>
+  <path class="cls-1" d="M76.15,9.12c31.07,0,57.19,21.49,64.21,50.41-4.55-6.45-12.07-10.66-20.58-10.66-13.88,0-25.21,11.24-25.21,25.21s11.24,25.21,25.21,25.21c9.01,0,16.86-4.71,21.32-11.74-5.7,30.66-32.64,53.88-64.96,53.88-36.53,0-66.11-29.59-66.11-66.11S39.71,9.12,76.15,9.12Z"/>
+</svg>

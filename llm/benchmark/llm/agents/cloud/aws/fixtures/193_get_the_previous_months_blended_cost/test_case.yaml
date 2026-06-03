@@ -1,0 +1,7 @@
+user_prompt: Get the previous month's blended cost.
+expected_output:
+- aws ce get-cost-and-usage --time-period Start=$(date -d 'last month' +%Y-%m-01)
+  --End=$(date -d 'last month' +%Y-%m-%d) --granularity MONTHLY --metrics BlendedCost
+tags:
+- command
+- aws

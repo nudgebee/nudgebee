@@ -1,0 +1,7 @@
+user_prompt: Create an EKS cluster.
+expected_output:
+- aws eks create-cluster --name <cluster-name> --role-arn <role-arn> --resources-vpc-config
+  subnetIds=<subnet-ids>,securityGroupIds=<security-group-ids>
+tags:
+- command
+- aws

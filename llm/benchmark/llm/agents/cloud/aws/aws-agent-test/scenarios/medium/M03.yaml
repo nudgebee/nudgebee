@@ -1,0 +1,136 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M03: Lambda in VPC can't reach the internet.
+  User complaint: "Lambda times out calling external API. Same code works outside VPC."
+  Root cause: Lambda is in a private subnet with no route to the NAT Gateway.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Lambda in private subnet, no NAT route configured.
+      Fixed = NAT Gateway route added.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  # Scenario-specific private subnet (uses shared VPC, own route table for bug)
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      CidrBlock: 10.0.103.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: m03-webhook-private-1a
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      Tags:
+        - Key: Name
+          Value: m03-webhook-private-rt
+
+  PrivateSubnetRTAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  # THE BUG: NAT route only exists in Fixed mode — uses shared NAT Gateway
+  PrivateRouteToNat:
+    Type: AWS::EC2::Route
+    Condition: IsFixed
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !ImportValue aws-agent-test-nat-gateway-id
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for webhook processor Lambda
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: m03-webhook-lambda-sg
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m03-webhook-processor-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+  WebhookFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: m03-webhook-processor
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 10
+      MemorySize: 256
+      VpcConfig:
+        SubnetIds:
+          - !Ref PrivateSubnet
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+      Environment:
+        Variables:
+          WEBHOOK_URL: https://hooks.slack.com/services/EXAMPLE
+      Code:
+        ZipFile: |
+          import urllib.request
+          import json
+          import os
+
+          def handler(event, context):
+              url = os.environ['WEBHOOK_URL']
+              data = json.dumps({"text": "Order processed"}).encode()
+              req = urllib.request.Request(url, data=data, headers={'Content-Type': 'application/json'})
+              try:
+                  resp = urllib.request.urlopen(req, timeout=5)
+                  return {'statusCode': 200, 'body': 'Webhook sent'}
+              except Exception as e:
+                  return {'statusCode': 500, 'body': f'Failed: {str(e)}'}
+      Tags:
+        - Key: Name
+          Value: m03-webhook-processor
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: integrations
+        - Key: Application
+          Value: order-notifications
+
+Outputs:
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref WebhookFunction
+  PrivateSubnetId:
+    Description: Private Subnet ID
+    Value: !Ref PrivateSubnet
+  PrivateRouteTableId:
+    Description: Private Route Table ID
+    Value: !Ref PrivateRouteTable
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

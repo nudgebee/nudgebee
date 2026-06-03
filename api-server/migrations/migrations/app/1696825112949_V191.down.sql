@@ -1,0 +1,429 @@
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- -- public.cloudaccount_k8s_resource_aggregate source
+--
+-- CREATE MATERIALIZED VIEW public.cloudaccount_k8s_resource_aggregate
+-- TABLESPACE pg_default
+-- AS with cluster_nodes as (
+-- select
+-- 	cksna.tenant_id,
+-- 	cksna.account_id,
+-- 	count(distinct "name") as node_count,
+-- 	count(distinct
+--                 case
+--                     when lower(node_type) = 'spot' then "name"
+--                     else null::text
+--                 end) as spot_node_count,
+-- 	count(distinct
+--                 case
+--                     when lower(node_type) = 'on-demand' then "name"
+--                     else null::text
+--                 end) as ondemand_node_count,
+-- 	sum(cksna.avg_cpu_used) as avg_cpu_used_node,
+-- 	sum(cksna.max_cpu_used) as max_cpu_used_node,
+-- 	sum(case
+--                     when cksna.is_active is not false then cpu_capacity else null end) as total_cpu_capacity,
+-- 	sum(avg_memory_used) as avg_memory_used_node,
+-- 	sum(max_memory_used) as max_memory_used_node,
+-- 	sum(case
+--                     when cksna.is_active is not false then memory_capacity
+--                     else null
+--                 end) as total_memory_capacity,
+-- 	cksna."timestamp"
+-- from
+-- 	cloudaccount_k8s_resource_node_aggregate cksna
+-- left join cloud_resource_details crd on
+-- 	crd.resource_type = cksna.node_flavor
+-- 	and crd.resource_region = 'us-east-1'::text
+-- group by
+-- 	cksna.tenant_id,
+-- 	cksna.account_id,
+-- 	cksna."timestamp"
+-- order by
+-- 	cksna.tenant_id,
+-- 	cksna.account_id desc
+--           ),
+-- 	cluster_pods as (
+-- select
+-- 		ckspa.tenant_id,
+-- 		ckspa.account_id,
+-- 		count(distinct ckspa.pod_name) as pod_count,
+-- 		count(
+--                 case
+--                     when ckspa.is_active = false then 1
+--                     else null::integer
+--                 end) as failed_pod_count,
+-- 		count(distinct (ckspa.namespace_name || '.'::text) || ckspa.workload_name) as workload_count,
+-- 		sum(ckspa.pod_cost) as pod_cost
+-- from
+-- 		cloudaccount_k8s_resource_pod_aggregate ckspa
+-- group by
+-- 		ckspa.tenant_id,
+-- 		ckspa.account_id
+--         ),
+-- 	cloud_spend_mtd as (
+-- select
+-- 		sum(s.amount) as mtd_cost,
+-- 		ca_1.id as cloud_account_id
+-- from
+-- 		spends s,
+-- 		cloud_accounts ca_1
+-- where
+-- 		s.cloud_account = ca_1.id
+-- 	and ca_1.account_type = 'kubernetes'::text
+-- 	and date_trunc('month'::text, s.date) = date_trunc('month'::text, CURRENT_DATE::timestamp with time zone)
+-- 		and date_trunc('year'::text, s.date) = date_trunc('year'::text, CURRENT_DATE::timestamp with time zone)
+-- 	group by
+-- 			ca_1.id
+--         )
+--   select
+-- 	cn.tenant_id,
+-- 	cn.account_id,
+-- 	ca.account_name,
+-- 	cn.node_count,
+-- 	cn.spot_node_count,
+-- 	cn.ondemand_node_count,
+-- 	cn.avg_cpu_used_node,
+-- 	cn.max_cpu_used_node,
+-- 	cn.avg_memory_used_node,
+-- 	cn.max_memory_used_node,
+-- 	cp.workload_count,
+-- 	cp.pod_count,
+-- 	cp.failed_pod_count,
+-- 	cp.pod_cost,
+-- 	cn.total_cpu_capacity,
+-- 	cn.total_memory_capacity,
+-- 	csm.mtd_cost,
+-- 	cn."timestamp",
+-- 	row_number() over (partition by cn.tenant_id,
+-- 	cn.account_id
+-- order by
+-- 	cn."timestamp" desc) as rn
+-- from
+-- 	cluster_nodes cn
+-- left join cluster_pods cp on
+-- 	cn.tenant_id = cp.tenant_id
+-- 	and cn.account_id = cp.account_id
+-- join cloud_accounts ca on
+-- 	cn.tenant_id = ca.tenant
+-- 	and cn.account_id = ca.id
+-- left join cloud_spend_mtd csm on
+-- 	csm.cloud_account_id = ca.id
+-- WITH DATA;
+--
+-- -- View indexes:
+-- CREATE UNIQUE INDEX cloudaccount_k8s_resource_aggregate_pk ON public.cloudaccount_k8s_resource_aggregate USING btree (tenant_id, account_id, "timestamp");
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- DROP MATERIALIZED VIEW public.cloudaccount_k8s_resource_pod_aggregate;
+--
+-- -- public.cloudaccount_k8s_aggregate source
+--
+-- CREATE MATERIALIZED VIEW public.cloudaccount_k8s_resource_pod_aggregate
+-- TABLESPACE pg_default
+-- AS SELECT cr.tenant AS tenant_id,
+--     cr.account AS account_id,
+--     cr.id,
+--     cr.name AS pod_name,
+--     cr.is_active,
+--     s.date AS "timestamp",
+--     cr.meta ->> 'controller'::text AS workload_name,
+--     cr.meta ->> 'controllerKind'::text AS workload_type,
+--     cr.meta ->> 'namespace'::text AS namespace_name,
+--     cr.meta ->> 'status'::text AS status,
+--     cr.meta ->> 'restart_count'::text AS restart_count,
+--     cr.first_seen AS creation_time,
+--     cr.meta ->> 'node'::text AS node_name,
+--         CASE
+--             WHEN ((intnc.meta -> 'labels'::text) ->> 'karpenter.sh/capacity-type'::text) IS NOT NULL THEN (intnc.meta -> 'labels'::text) ->> 'karpenter.sh/capacity-type'::text
+--             ELSE 'on-demand'::text
+--         END AS node_type,
+--     (intnc.meta -> 'labels'::text) ->> 'node.kubernetes.io/instance-type'::text AS node_flavor,
+--     sum(s.amount) AS pod_cost,
+--     avg(crm.avg_cpu_used) AS avg_cpu_used,
+--     max(crm.max_cpu_used) AS max_cpu_used,
+--     avg(crm.avg_memory_used) AS avg_memory_used,
+--     max(crm.max_memory_used) AS max_memory_used,
+--     avg(crm.avg_cpu_request) AS avg_cpu_request,
+--     max(crm.max_cpu_request) AS max_cpu_request,
+--     avg(crm.avg_memory_request) AS avg_memory_request,
+--     max(crm.max_memory_request) AS max_memory_request,
+--     avg(crm.avg_cpu_efficiency) AS avg_cpu_efficiency,
+--     max(crm.max_cpu_efficiency) AS max_cpu_efficiency,
+--     avg(crm.avg_ram_efficiency) AS avg_ram_efficiency,
+--     max(crm.max_ram_efficiency) AS max_ram_efficiency,
+--     cr.tags
+--    FROM cloud_resourses cr
+--      LEFT JOIN spends s ON s.cloud_account = cr.account AND s.cloud_resource_id = cr.id
+--      LEFT JOIN cloudaccount_k8s_resource_metrics_aggregate crm ON crm.cloud_resource_id = cr.id and crm."timestamp"= s."date"
+--      LEFT JOIN cloud_resourses intnc ON intnc.tenant = cr.tenant AND intnc.account = cr.account AND (cr.meta ->> 'node'::text) = intnc.name
+--   WHERE lower(cr.type) = 'pod'::text AND cr.is_active IS NOT FALSE AND (cr.meta ->> 'node'::text) IS NOT NULL
+--   GROUP BY cr.account, cr.tenant, cr.id, cr.name, (cr.meta ->> 'node'::text), ((intnc.meta -> 'labels'::text) ->> 'karpenter.sh/capacity-type'::text), ((intnc.meta -> 'labels'::text) ->> 'node.kubernetes.io/instance-type'::text), s.date
+-- WITH DATA;
+--
+-- -- View indexes:
+-- CREATE UNIQUE INDEX cloudaccount_k8s_resource_pod_aggregate_pk ON public.cloudaccount_k8s_resource_pod_aggregate USING btree (id, tenant_id, account_id, "timestamp");
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- DROP MATERIALIZED VIEW public.cloudaccount_k8s_resource_node_aggregate;
+--
+-- CREATE MATERIALIZED VIEW public.cloudaccount_k8s_resource_node_aggregate
+-- TABLESPACE pg_default
+-- AS
+-- select
+-- 	cr.tenant as tenant_id,
+-- 	cr.account as account_id,
+-- 	cr.name,
+-- 	cr.id,
+-- 	cr.is_active,
+-- 	s.date as "timestamp",
+-- 	min(cr.first_seen) as node_creation_time ,
+-- 	cr.meta ->> 'conditions' as conditions ,
+-- 	case
+-- 		when cr.meta -> 'labels' ->> 'karpenter.sh/capacity-type'::text is not null then (cr.meta -> 'labels' ->> 'karpenter.sh/capacity-type'::text)
+-- 		else 'on-demand'
+-- 	end as node_type,
+-- 	(cr.meta -> 'labels' ->> 'node.kubernetes.io/instance-type'::text) as node_flavor,
+-- 	sum(s.amount) as workload_cost,
+-- 	avg(avg_cpu_used) as avg_cpu_used,
+-- 	max(max_cpu_used) as max_cpu_used,
+-- 	avg(avg_memory_used) as avg_memory_used,
+-- 	max(max_memory_used) as max_memory_used,
+-- 	avg(avg_cpu_request) as avg_cpu_request,
+-- 	max(max_cpu_request) as max_cpu_request,
+-- 	avg(avg_memory_request) as avg_memory_request,
+-- 	max(max_memory_request) as max_memory_request,
+-- 	avg(avg_cpu_efficiency) as avg_cpu_efficiency,
+-- 	max(max_cpu_efficiency) as max_cpu_efficiency,
+-- 	avg(avg_ram_efficiency) as avg_ram_efficiency,
+-- 	max(max_ram_efficiency) as max_ram_efficiency,
+-- 	max(cpu_allocated) as cpu_allocated,
+-- 	max(memory_capacity) as memory_capacity,
+-- 	max(cpu_capacity) as cpu_capacity,
+-- 	max(memory_allocatable) as memory_allocatable,
+-- 	max(cpu_allocatable) as cpu_allocatable,
+-- 	max(memory_allocated) as memory_allocated,
+-- 	sum(pods_count) as pods_count
+-- from
+-- 	cloud_resourses cr
+-- join spends s on
+-- 	s.cloud_account = cr.account
+-- 	and s.cloud_resource_id = cr.id
+-- left join cloudaccount_k8s_resource_metrics_aggregate crm
+-- on
+-- 	crm.cloud_resource_id = cr.id
+-- 	and s."date" = crm."timestamp"
+-- where
+-- 	lower(cr.type) = 'node'::text
+-- group by
+--     cr.id,
+-- 	cr.account,
+-- 	cr.tenant,
+-- 	cr.name,
+-- 	s.date,
+-- 	(cr.meta -> 'labels' ->> 'node.kubernetes.io/instance-type'),
+-- 	(cr.meta -> 'labels' ->> 'karpenter.sh/capacity-type'::text),
+-- 	cr.meta ->> 'conditions'
+-- WITH DATA;
+-- 	
+-- 	-- View indexes:
+-- CREATE UNIQUE INDEX cloudaccount_k8s_resource_node_aggregate_pk ON public.cloudaccount_k8s_resource_node_aggregate USING btree (id, tenant_id, account_id, "timestamp");
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- DROP MATERIALIZED VIEW public.cloudaccount_k8s_resource_node_aggregate;
+--
+-- CREATE MATERIALIZED VIEW public.cloudaccount_k8s_resource_node_aggregate
+-- TABLESPACE pg_default
+-- AS
+-- select
+-- 	cr.tenant as tenant_id,
+-- 	cr.account as account_id,
+-- 	cr.name,
+-- 	cr.id,
+-- 	s.date as "timestamp",
+-- 	min(cr.first_seen) as node_creation_time ,
+-- 	cr.meta ->> 'conditions' as conditions ,
+-- 	case
+-- 		when cr.meta -> 'labels' ->> 'karpenter.sh/capacity-type'::text is not null then (cr.meta -> 'labels' ->> 'karpenter.sh/capacity-type'::text)
+-- 		else 'on-demand'
+-- 	end as node_type,
+-- 	(cr.meta -> 'labels' ->> 'node.kubernetes.io/instance-type'::text) as node_flavor,
+-- 	sum(s.amount) as workload_cost,
+-- 	avg(avg_cpu_used) as avg_cpu_used,
+-- 	max(max_cpu_used) as max_cpu_used,
+-- 	avg(avg_memory_used) as avg_memory_used,
+-- 	max(max_memory_used) as max_memory_used,
+-- 	avg(avg_cpu_request) as avg_cpu_request,
+-- 	max(max_cpu_request) as max_cpu_request,
+-- 	avg(avg_memory_request) as avg_memory_request,
+-- 	max(max_memory_request) as max_memory_request,
+-- 	avg(avg_cpu_efficiency) as avg_cpu_efficiency,
+-- 	max(max_cpu_efficiency) as max_cpu_efficiency,
+-- 	avg(avg_ram_efficiency) as avg_ram_efficiency,
+-- 	max(max_ram_efficiency) as max_ram_efficiency,
+-- 	max(cpu_allocated) as cpu_allocated,
+-- 	max(memory_capacity) as memory_capacity,
+-- 	max(cpu_capacity) as cpu_capacity,
+-- 	max(memory_allocatable) as memory_allocatable,
+-- 	max(cpu_allocatable) as cpu_allocatable,
+-- 	max(memory_allocated) as memory_allocated,
+-- 	sum(pods_count) as pods_count
+-- from
+-- 	cloud_resourses cr
+-- join spends s on
+-- 	s.cloud_account = cr.account
+-- 	and s.cloud_resource_id = cr.id
+-- left join cloudaccount_k8s_resource_metrics_aggregate crm
+-- on
+-- 	crm.cloud_resource_id = cr.id
+-- 	and s."date" = crm."timestamp"
+-- where
+-- 	lower(cr.type) = 'node'::text
+-- group by
+--     cr.id,
+-- 	cr.account,
+-- 	cr.tenant,
+-- 	cr.name,
+-- 	s.date,
+-- 	(cr.meta -> 'labels' ->> 'node.kubernetes.io/instance-type'),
+-- 	(cr.meta -> 'labels' ->> 'karpenter.sh/capacity-type'::text),
+-- 	cr.meta ->> 'conditions'
+-- WITH DATA;
+-- 	
+-- 	-- View indexes:
+-- CREATE UNIQUE INDEX cloudaccount_k8s_resource_node_aggregate_pk ON public.cloudaccount_k8s_resource_node_aggregate USING btree (id, tenant_id, account_id, "timestamp");
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- CREATE MATERIALIZED VIEW public.cloudaccount_k8s_resource_node_aggregate
+-- TABLESPACE pg_default
+-- AS
+-- select
+-- 	cr.tenant as tenant_id,
+-- 	cr.account as account_id,
+-- 	cr.name,
+-- 	cr.id,
+-- 	s.date as "timestamp",
+-- 	min(cr.first_seen) as node_creation_time ,
+-- 	cr.meta ->> 'conditions' as conditions ,
+-- 	case
+-- 		when cr.meta -> 'labels' ->> 'karpenter.sh/capacity-type'::text is not null then (cr.meta -> 'labels' ->> 'karpenter.sh/capacity-type'::text)
+-- 		else 'on-demand'
+-- 	end as node_type,
+-- 	(cr.meta -> 'labels' ->> 'node.kubernetes.io/instance-type'::text) as node_flavor,
+-- 	sum(s.amount) as workload_cost,
+-- 	avg(avg_cpu_used) as avg_cpu_used,
+-- 	max(max_cpu_used) as max_cpu_used,
+-- 	avg(avg_memory_used) as avg_memory_used,
+-- 	max(max_memory_used) as max_memory_used,
+-- 	avg(avg_cpu_request) as avg_cpu_request,
+-- 	max(max_cpu_request) as max_cpu_request,
+-- 	avg(avg_memory_request) as avg_memory_request,
+-- 	max(max_memory_request) as max_memory_request,
+-- 	avg(avg_cpu_efficiency) as avg_cpu_efficiency,
+-- 	max(max_cpu_efficiency) as max_cpu_efficiency,
+-- 	avg(avg_ram_efficiency) as avg_ram_efficiency,
+-- 	max(max_ram_efficiency) as max_ram_efficiency,
+-- 	max(cpu_allocated) as cpu_allocated,
+-- 	max(memory_capacity) as memory_capacity,
+-- 	max(memory_allocatable) as memory_allocatable,
+-- 	max(cpu_allocatable) as cpu_allocatable,
+-- 	max(memory_allocated) as memory_allocated,
+-- 	sum(pods_count) as pods_count
+-- from
+-- 	cloud_resourses cr
+-- join spends s on
+-- 	s.cloud_account = cr.account
+-- 	and s.cloud_resource_id = cr.id
+-- left join cloudaccount_k8s_resource_metrics_aggregate crm
+-- on
+-- 	crm.cloud_resource_id = cr.id
+-- 	and s."date" = crm."timestamp"
+-- where
+-- 	lower(cr.type) = 'node'::text
+-- group by
+--     cr.id,
+-- 	cr.account,
+-- 	cr.tenant,
+-- 	cr.name,
+-- 	s.date,
+-- 	(cr.meta -> 'labels' ->> 'node.kubernetes.io/instance-type'),
+-- 	(cr.meta -> 'labels' ->> 'karpenter.sh/capacity-type'::text),
+-- 	cr.meta ->> 'conditions'
+-- WITH DATA;
+-- 	
+-- 	-- View indexes:
+-- CREATE UNIQUE INDEX cloudaccount_k8s_resource_node_aggregate_pk ON public.cloudaccount_k8s_resource_node_aggregate USING btree (id, tenant_id, account_id, "timestamp");
+
+-- Could not auto-generate a down migration.
+-- Please write an appropriate down migration for the SQL below:
+-- CREATE MATERIALIZED VIEW public.cloudaccount_k8s_resource_pod_aggregate
+-- TABLESPACE pg_default
+-- AS
+-- select
+-- 	cr.tenant as tenant_id,
+-- 	cr.account as account_id,
+-- 	cr.id,
+-- 	cr."name" as pod_name,
+-- 	cr.is_active,
+-- 	s.date as "timestamp",
+-- 	cr.meta ->> 'controller' as workload_name,
+-- 	cr.meta ->> 'controllerKind' as workload_type,
+-- 	cr.meta ->> 'namespace'::text AS namespace_name,
+-- 	cr.meta ->> 'status' as status,
+-- 	cr.meta ->> 'restart_count' as restart_count,
+-- 	cr.first_seen as creation_time,
+-- 	cr.meta ->> 'node'::text as node_name,
+-- 	case
+-- 		when intnc.meta -> 'labels' ->> 'karpenter.sh/capacity-type'::text is not null then
+--  	(intnc.meta -> 'labels' ->> 'karpenter.sh/capacity-type'::text)
+-- 		else 'on-demand'
+-- 	end as node_type,
+-- 		(intnc.meta -> 'labels' ->> 'node.kubernetes.io/instance-type'::text) as node_flavor,
+-- 	sum(s.amount) as pod_cost,
+-- 	avg(avg_cpu_used) as avg_cpu_used,
+-- 	max(max_cpu_used) as max_cpu_used,
+-- 	avg(avg_memory_used) as avg_memory_used,
+-- 	max(max_memory_used) as max_memory_used,
+-- 	avg(avg_cpu_request) as avg_cpu_request,
+-- 	max(max_cpu_request) as max_cpu_request,
+-- 	avg(avg_memory_request) as avg_memory_request,
+-- 	max(max_memory_request) as max_memory_request,
+-- 	avg(avg_cpu_efficiency) as avg_cpu_efficiency,
+-- 	max(max_cpu_efficiency) as max_cpu_efficiency,
+-- 	avg(avg_ram_efficiency) as avg_ram_efficiency,
+-- 	max(max_ram_efficiency) as max_ram_efficiency,
+-- 	cr.tags
+-- from
+-- 	cloud_resourses cr
+-- left join spends s on
+-- 	s.cloud_account = cr.account
+-- 	and s.cloud_resource_id = cr.id
+-- left join cloudaccount_k8s_resource_metrics_aggregate crm
+-- on
+-- 	crm.cloud_resource_id = cr.id
+-- left join cloud_resourses intnc on
+-- 	intnc.tenant = cr.tenant
+-- 	and intnc.account = cr.account
+-- 	and (cr.meta ->> 'node'::text) = (intnc."name")
+-- where
+-- 	lower(cr.type) = 'pod'::text
+-- 	and cr.is_active is not false
+-- 	and (cr.meta ->> 'node'::text) is not null
+-- group by
+-- 	cr.account,
+-- 	cr.tenant,
+-- 	cr.id ,
+-- 	cr."name",
+-- 	(cr.meta ->> 'node'::text),
+-- 	intnc.meta -> 'labels' ->> 'karpenter.sh/capacity-type'::text,
+-- 	intnc.meta -> 'labels' ->> 'node.kubernetes.io/instance-type'::text,
+-- 	s.date
+-- WITH DATA;
+-- 	
+-- 	-- View indexes:
+-- CREATE UNIQUE INDEX cloudaccount_k8s_resource_pod_aggregate_pk ON public.cloudaccount_k8s_resource_pod_aggregate USING btree (id, tenant_id, account_id, "timestamp");

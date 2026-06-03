@@ -1,0 +1,210 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  M24: Step Functions + SNS notification workflow drops messages due to raw message delivery.
+  User complaint: "Our order notification workflow in Step Function 'm24-order-notify'
+  sends to SNS topic 'm24-notifications' which has an SQS subscriber 'm24-email-queue'.
+  Lambda consumer 'm24-email-sender' processes SQS messages but gets JSON parse errors.
+  SNS shows messages delivered, SQS shows messages received."
+  Root cause: SNS subscription has RawMessageDelivery=false (default). Step Function
+  sends a JSON payload to SNS. SNS wraps it in another JSON envelope with Message,
+  MessageId, Type fields. Lambda consumer tries to parse the outer JSON's Message field
+  as a string (it's been double-encoded). Setting RawMessageDelivery=true fixes it.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = RawMessageDelivery false — SNS wraps JSON, Lambda can't parse.
+      Fixed = RawMessageDelivery true — clean JSON passthrough.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  NotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: m24-notifications
+      Tags:
+        - Key: Name
+          Value: m24-notifications
+        - Key: Environment
+          Value: production
+
+  EmailQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: m24-email-queue
+      VisibilityTimeout: 60
+      Tags:
+        - Key: Name
+          Value: m24-email-queue
+
+  EmailDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: m24-email-dlq
+      MessageRetentionPeriod: 1209600
+
+  QueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref EmailQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt EmailQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref NotificationTopic
+
+  # THE BUG: RawMessageDelivery false causes double JSON wrapping
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref NotificationTopic
+      Protocol: sqs
+      Endpoint: !GetAtt EmailQueue.Arn
+      RawMessageDelivery: !If [IsFixed, true, false]
+
+  StepFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m24-sfn-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: sns-publish
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref NotificationTopic
+
+  OrderNotifyStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: m24-order-notify
+      RoleArn: !GetAtt StepFunctionRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "Order notification workflow",
+          "StartAt": "FormatNotification",
+          "States": {
+            "FormatNotification": {
+              "Type": "Pass",
+              "Parameters": {
+                "orderId.$": "$.orderId",
+                "customerEmail.$": "$.email",
+                "subject": "Order Confirmation",
+                "body.$": "States.Format('Your order {} has been confirmed.', $.orderId)"
+              },
+              "Next": "SendNotification"
+            },
+            "SendNotification": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::sns:publish",
+              "Parameters": {
+                "TopicArn": "${NotificationTopic}",
+                "Message.$": "States.JsonToString($)"
+              },
+              "End": true
+            }
+          }
+        }
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: m24-email-sender-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: sqs-ses
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt EmailQueue.Arn
+              - Effect: Allow
+                Action: ses:SendEmail
+                Resource: '*'
+
+  EmailSenderFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: m24-email-sender
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          import json
+
+          def handler(event, context):
+              for record in event['Records']:
+                  body = json.loads(record['body'])
+                  # Expects direct JSON: {"orderId": "...", "customerEmail": "..."}
+                  # But with RawMessageDelivery=false, body is SNS wrapper:
+                  # {"Type": "Notification", "Message": "{\"orderId\":...}", ...}
+                  email = body.get('customerEmail')
+                  if not email:
+                      raise ValueError(f"Missing customerEmail in: {json.dumps(body)[:200]}")
+                  print(f"Sending email to {email} for order {body.get('orderId')}")
+              return {'statusCode': 200}
+
+  EventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt EmailQueue.Arn
+      FunctionName: !Ref EmailSenderFunction
+      BatchSize: 10
+      Enabled: true
+
+Outputs:
+  StateMachineName:
+    Description: Step Function Name
+    Value: m24-order-notify
+  TopicArn:
+    Description: SNS Topic ARN
+    Value: !Ref NotificationTopic
+  QueueUrl:
+    Description: SQS Queue URL
+    Value: !Ref EmailQueue
+  RawMessageDelivery:
+    Description: Raw message delivery setting (false causes wrapping in Broken mode)
+    Value: !If [IsFixed, 'true', 'false (causes double JSON wrapping)']
+  FunctionName:
+    Description: Email sender Lambda
+    Value: !Ref EmailSenderFunction
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

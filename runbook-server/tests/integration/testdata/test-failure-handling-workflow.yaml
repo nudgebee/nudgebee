@@ -1,0 +1,17 @@
+name: test-failure-handling-workflow-5
+definition:
+  triggers:
+    - type: manual
+  tasks:
+    - id: failing-task
+      type: data.transform
+      params:
+        expression: somerandom
+        input: |
+          "{"a""
+  hooks:
+    failure:
+      - id: failure-handler-task
+        type: core.print
+        params:
+          message: "The task failed as expected!"

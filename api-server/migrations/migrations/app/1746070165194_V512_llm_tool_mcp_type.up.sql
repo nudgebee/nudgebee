@@ -1,0 +1,2 @@
+alter table llm_tools drop constraint llm_tools_check_executortype;
+ALTER TABLE public.llm_tools ADD CONSTRAINT llm_tools_check_executortype CHECK ((executor_type = ANY (ARRAY['system'::text, 'remote'::text, 'runbook'::text, 'mcp'::text])));

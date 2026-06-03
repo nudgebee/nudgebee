@@ -1,0 +1,31 @@
+# No-matching-runbook scenario, scoped to Nubi. The Nubi runner does not
+# consume the runbook-catalog field that some upstream harnesses use to inject
+# a fake catalog for force-fit checks, so the runbook framing isn't exercised
+# here.
+#
+# The underlying scenario is still useful on its own: a WhaleWatcher CRD
+# operator with an incomplete ClusterRole (missing update/patch on the CRD
+# status). The agent must investigate and identify the RBAC permission denial.
+
+user_prompt: "The custom CRD whale-watcher resources are not being reconciled by the operator in namespace app-96. Investigate why."
+
+expected_output:
+  - The agent must identify that the whale-operator ServiceAccount or ClusterRole lacks the necessary RBAC permissions.
+  - Specifically, the whale-operator role is missing update and/or patch verbs on whalewatchers.ocean.io (or the /status subresource).
+  - The answer should reference the operator's reconciliation failure due to permission denial (forbidden, not authorized, or RBAC denial).
+
+tags:
+  - kubernetes
+  - rbac
+  - medium
+  - holmesgpt-parity
+
+before_test: |
+  kubectl create namespace app-96 || true
+  kubectl label namespace app-96 benchmark=true --overwrite || true
+  kubectl apply -f manifest.yaml
+  sleep 30  # Let the operator start and CRD be created
+
+after_test: |
+  kubectl delete -f manifest.yaml --ignore-not-found
+  kubectl delete namespace app-96 --force --grace-period=0 --ignore-not-found

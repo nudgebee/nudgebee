@@ -1,0 +1,37 @@
+[
+  {
+    "question": "get me logs from app-dev workload",
+    "answer": "{app=\"(?i)app-dev.*\"}"
+  },
+  {
+    "question": "get me error logs from services-server app in last 1day",
+    "answer": "{app=\"(?i)services.*server.*\"} |~ \"(?i)critical|error|exception\""
+  },
+  {
+    "question": "get me error logs from services-server app",
+    "answer": "{app=\"(?i)services.*server.*\"} |~ \"(?i)critical|error|exception\""
+  },
+  {
+    "question": "get me recent logs from services-server containing api",
+    "answer": "{app=\"(?i)services.*server.*\"} |= \"api\""
+  },
+  {
+    "question": "Can you tell me recent 500 erorrs in services-server",
+    "answer": "{app=\"(?i)services[-]?server\"} |~ \"(?i)\\\\b(500|internal server error|server error|http 500)\\\\b\"" 
+  },
+  {
+    "question": "Can you show me recent logs of app-dev in production namespace",
+    "answer": "{app=\"app-dev\", namespace=\"(?i)production\"}"
+  },
+  {
+    "question": "Get logs for cache-service excluding the debug level.",
+    "answer": "{app=\"cache-service\"} != {level=\"debug\"}"
+  },
+  {
+    "question": "Show logs for frontend app in us-west region with info level.",
+    "answer": "{app=\"frontend\", region=\"us-west\", level=\"info\"}"
+  },{
+    "question": "Fetch timeout errors from payment-service in the us-west region that have a duration of more than 100ms, and calculate the average duration over the last hour.",
+    "answer": "{app=\"payment-service\", region=\"us-west\", level=\"error\"} |= \"timeout\" | json | duration > 100 | rate(5m) | avg_over_time(duration[1h])"
+  }
+]

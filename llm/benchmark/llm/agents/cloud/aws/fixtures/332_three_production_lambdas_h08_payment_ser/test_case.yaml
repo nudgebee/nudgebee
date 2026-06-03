@@ -1,0 +1,19 @@
+agent: aws_debug
+expected_output:
+- 'The root cause is a shared infrastructure dependency: all three Lambda functions (payment, inventory, shipping) run in
+  the same private subnet ''h08-commerce-private-shared'' and share the NAT Gateway ''h08-commerce-shared-nat''. The shared
+  private subnet''s route table ''h08-commerce-private-rt-shared'' is missing the 0.0.0.0/0 route to the NAT Gateway. This
+  means all three services lost internet connectivity at the same time. Investigate by: (1) noting that all three Lambdas
+  are in the same VPC/subnet, (2) aws ec2 describe-route-tables to find the shared route table, (3) checking the route table
+  has no internet route. The simultaneous failure is the key indicator of shared infrastructure. The fix is to add 0.0.0.0/0
+  → NAT Gateway route to the shared private route table.'
+scenario: H08
+tags:
+- command
+- aws
+- hard
+type: rca
+user_prompt: Three production Lambdas — 'h08-payment-service', 'h08-inventory-service', and 'h08-shipping-service' — all failed
+  simultaneously at the same moment last night. Each Lambda calls external APIs. The failures lasted about 3 minutes. Now
+  they all work fine. Each service is independent with no direct dependencies. What caused all three to fail at the exact
+  same time?

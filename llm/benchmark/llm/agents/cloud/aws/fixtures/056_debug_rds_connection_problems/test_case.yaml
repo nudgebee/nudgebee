@@ -1,0 +1,7 @@
+user_prompt: Debug RDS connection problems.
+expected_output:
+- aws rds describe-db-instances
+- aws rds describe-db-security-groups
+tags:
+- command
+- aws

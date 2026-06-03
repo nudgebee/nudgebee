@@ -1,0 +1,6 @@
+user_prompt: List Step Functions executions.
+expected_output:
+- aws stepfunctions list-executions --state-machine-arn <state-machine-arn>
+tags:
+- command
+- aws

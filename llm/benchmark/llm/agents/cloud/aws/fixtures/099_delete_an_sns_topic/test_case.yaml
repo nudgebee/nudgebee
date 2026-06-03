@@ -1,0 +1,6 @@
+user_prompt: Delete an SNS topic.
+expected_output:
+- aws sns delete-topic --topic-arn <topic-arn>
+tags:
+- command
+- aws

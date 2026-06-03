@@ -1,0 +1,8 @@
+user_prompt: Get cost and usage for a specific resource ID for the last month.
+expected_output:
+- aws ce get-cost-and-usage --time-period Start=$(date -d 'last month' +%Y-%m-01)
+  --End=$(date -d 'last month' +%Y-%m-%d) --granularity MONTHLY --metrics BlendedCost
+  --group-by Type=DIMENSION,Key=RESOURCE_ID
+tags:
+- command
+- aws

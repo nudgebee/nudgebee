@@ -1,0 +1,138 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H13: Lambda@Edge + CloudFront 502 — function references $LATEST instead of published version.
+  User complaint: "CloudFront distribution started returning 502 on all requests after
+  we updated our Lambda@Edge function. The Lambda code is correct — it works when
+  tested directly."
+  Root cause: CloudFront Lambda@Edge association references the function ARN with
+  $LATEST qualifier. Lambda@Edge requires a PUBLISHED VERSION ARN (numbered version).
+  Code was updated to $LATEST but no new version was published, so CloudFront has
+  an invalid function reference.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = CloudFront references Lambda $LATEST (invalid for Lambda@Edge).
+      Fixed = CloudFront references published Lambda version.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  EdgeFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h13-edge-function-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+                - edgelambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  EdgeFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h13-edge-handler
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt EdgeFunctionRole.Arn
+      Timeout: 5
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              request = event['Records'][0]['cf']['request']
+              # Add custom header
+              request['headers']['x-custom-header'] = [{'key': 'X-Custom-Header', 'value': 'processed'}]
+              return request
+      Tags:
+        - Key: Name
+          Value: h13-edge-handler
+
+  # Published version (needed for Lambda@Edge)
+  EdgeFunctionVersion:
+    Type: AWS::Lambda::Version
+    Properties:
+      FunctionName: !Ref EdgeFunction
+      Description: v1 - production release
+
+  # Origin: simple S3 bucket with a default page
+  OriginBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'h13-cdn-origin-${AWS::AccountId}'
+      WebsiteConfiguration:
+        IndexDocument: index.html
+      Tags:
+        - Key: Name
+          Value: h13-cdn-origin
+
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: h13-oac
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      Tags:
+        - Key: Name
+          Value: h13-cdn
+        - Key: Environment
+          Value: production
+      DistributionConfig:
+        Enabled: true
+        Comment: h13-cdn-with-edge-function
+        DefaultRootObject: index.html
+        Origins:
+          - Id: S3Origin
+            DomainName: !GetAtt OriginBucket.RegionalDomainName
+            OriginAccessControlId: !Ref OriginAccessControl
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: S3Origin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          LambdaFunctionAssociations:
+            - EventType: viewer-request
+              # THE BUG: Using unqualified ARN ($LATEST) instead of published version
+              LambdaFunctionARN: !If
+                - IsFixed
+                - !Ref EdgeFunctionVersion
+                - !GetAtt EdgeFunction.Arn
+
+Outputs:
+  DistributionId:
+    Description: CloudFront Distribution ID
+    Value: !Ref Distribution
+  DistributionDomain:
+    Description: CloudFront Domain
+    Value: !GetAtt Distribution.DomainName
+  LambdaArn:
+    Description: Lambda ARN used by CloudFront
+    Value: !If
+      - IsFixed
+      - !Ref EdgeFunctionVersion
+      - !GetAtt EdgeFunction.Arn
+  PublishedVersionArn:
+    Description: Published version ARN (correct for Lambda@Edge)
+    Value: !Ref EdgeFunctionVersion
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

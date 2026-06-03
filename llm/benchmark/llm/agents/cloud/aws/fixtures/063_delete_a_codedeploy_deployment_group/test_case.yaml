@@ -1,0 +1,7 @@
+user_prompt: Delete a CodeDeploy deployment group.
+expected_output:
+- aws codedeploy delete-deployment-group --application-name <application-name> --deployment-group-name
+  <deployment-group-name>
+tags:
+- command
+- aws

@@ -1,0 +1,27 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+utils/__pycache__/
+
+# Pytest cache
+.pytest_cache/
+.benchmarks/
+
+# Test reports (keep directory structure, ignore generated reports)
+report/*.json
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

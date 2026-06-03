@@ -1,0 +1,15 @@
+user_prompt: What is the memory usage of the relay-server pod in nudgebee?
+expected_output:
+  - container_memory_usage_bytes{pod=~"relay-server.*", namespace="nudgebee"}
+expected_metrics:
+  - container_memory_usage_bytes
+expected_tools:
+  - prometheus_execute
+forbidden_tools:
+  - shell_execute
+  - search_metrics
+expected_max_tool_calls: 3
+tags:
+  - fast_path
+  - cadvisor
+  - memory

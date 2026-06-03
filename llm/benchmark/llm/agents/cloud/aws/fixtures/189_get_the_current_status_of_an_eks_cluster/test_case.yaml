@@ -1,0 +1,6 @@
+user_prompt: Get the current status of an EKS cluster.
+expected_output:
+- aws eks describe-cluster --name <cluster-name>
+tags:
+- command
+- aws

@@ -1,0 +1,67 @@
+[tool.poetry]
+name = "notifications_server"
+version = "0.1.0"
+description = "Notification service for NudgeBee"
+authors = ["Nudgebee <dev@nudgebee.com>"]
+
+
+[tool.black]
+line-length = 120
+exclude = '''
+/(
+    \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+  | venv
+)/
+'''
+
+[tool.poetry.dependencies]
+python = "^3.11"
+python-dotenv = "^1.2.2"
+fastapi = "0.136.3"
+slack-bolt = "1.28.0"
+# Direct dep: webhook_auth.py uses slack_sdk.signature.SignatureVerifier for the
+# inbound Slack HMAC gate. Pinned explicitly (not just transitively via slack-bolt)
+# so the security boundary can't break under a slack-bolt resolution change.
+slack-sdk = "3.41.0"
+sqlalchemy = "^2.0.48"
+aio_pika = "9.6.2"
+uvicorn = ">=0.34.2,<0.49.0"
+psycopg2-binary = "^2.9.11"
+asyncpg = "^0.31.0"
+requests = "2.34.2"
+python-json-logger = "4.1.0"
+pydantic = "2.13.4"
+pydantic-settings = "^2.13.1"
+markdown2 = "^2.5.5"
+tabulate = "0.10.0"
+docutils = "^0.23.0"
+msal = "1.37.0"
+jinja2 = "^3.1.6"
+google-auth-oauthlib = "^1.3.1"
+google-api-python-client = "^2.192.0"
+oauth2client = "^4.1.3"
+redis = "^8.0.0"
+botbuilder-core = "^4.17.1"
+aiohttp = "^3.13.4"
+python-dateutil = "^2.9.0.post0"
+nh3 = "^0.3.4"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.group.dev.dependencies]
+pre-commit = "4.6.0"
+black = "^26.3.1"
+mypy = "1.20.2"
+flake8 = "7.3.0"
+sqlglot = "30.8.0"
+pytest = ">=8.3,<10.0"

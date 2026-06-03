@@ -1,0 +1,6 @@
+user_prompt: List cost allocation tags.
+expected_output:
+- aws ce list-cost-allocation-tags
+tags:
+- command
+- aws

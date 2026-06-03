@@ -1,0 +1,6 @@
+user_prompt: Invoke a Lambda function.
+expected_output:
+- aws lambda invoke --function-name <function-name>
+tags:
+- command
+- aws

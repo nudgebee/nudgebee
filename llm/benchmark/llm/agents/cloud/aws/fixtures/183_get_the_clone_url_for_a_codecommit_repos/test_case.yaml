@@ -1,0 +1,7 @@
+user_prompt: Get the clone URL for a CodeCommit repository.
+expected_output:
+- aws codecommit get-repository --repository-name <repository-name> --query 'repositoryMetadata.cloneUrlHttp'
+  --output text
+tags:
+- command
+- aws

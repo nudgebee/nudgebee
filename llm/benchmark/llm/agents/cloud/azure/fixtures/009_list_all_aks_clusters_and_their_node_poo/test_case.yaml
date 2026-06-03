@@ -1,0 +1,7 @@
+user_prompt: List all AKS clusters and their node pool status.
+expected_output:
+- az aks list --output table
+type: command
+tags:
+- command
+- azure

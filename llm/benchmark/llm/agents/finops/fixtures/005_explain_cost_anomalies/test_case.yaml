@@ -1,0 +1,15 @@
+user_prompt: "Are there any cost anomalies in the last 30 days?"
+expected_output:
+  - |
+    The agent should call anomaly_execute with a query against the 'anomaly'
+    table (singular, NOT 'anomalies') filtered by anomaly_type IN
+    ('CloudSpendService','CloudSpendAccount') AND evaluated_at >= '[[Time:-30d]]'.
+    For each anomaly found, the response should extract from reference_value
+    JSON: service_name, pct_change (as %), total_impact (as $), start_date,
+    and z_score. Higher z_score = more unusual and should be highlighted.
+    If no anomalies are found, the agent should explicitly say so rather than
+    guessing. Cite [anomaly_execute] for the data.
+tags:
+  - anomaly
+  - medium
+  - finops

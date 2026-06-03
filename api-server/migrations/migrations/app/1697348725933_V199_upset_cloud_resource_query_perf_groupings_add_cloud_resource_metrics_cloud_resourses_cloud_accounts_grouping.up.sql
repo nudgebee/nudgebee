@@ -1,0 +1,131 @@
+
+DROP VIEW public.cloud_resource_query_perf_groupings_type cascade;
+
+CREATE OR REPLACE VIEW "public"."cloud_resource_query_perf_groupings_type" AS 
+ SELECT cloud_resource_query_perf.tenant_id,
+    cloud_resource_query_perf.account_id,
+    cloud_resource_query_perf.resource_id,
+    cloud_resource_query_perf.database_name,
+    cloud_resource_query_perf.db_username,
+    cloud_resource_query_perf.query_type,
+	cloud_resource_query_perf.tags ->> 'warehouse_name' AS warehouse_name,
+    AVG(cloud_resource_query_perf.query_exec_duration_micro) AS avg_query_exec_duration_micro,
+    MAX(cloud_resource_query_perf.query_exec_duration_micro) AS max_query_exec_duration_micro,
+    SUM(cloud_resource_query_perf.query_exec_duration_micro) AS sum_query_exec_duration_micro,
+    AVG(cloud_resource_query_perf.bill) AS avg_bill,
+    MAX(cloud_resource_query_perf.bill) AS max_bill,
+    SUM(cloud_resource_query_perf.bill) AS sum_bill,
+	COUNT(*) AS query_count
+   FROM cloud_resource_query_perf
+  WHERE false
+  GROUP BY cloud_resource_query_perf.tenant_id, cloud_resource_query_perf.account_id, cloud_resource_query_perf.resource_id, cloud_resource_query_perf.database_name, cloud_resource_query_perf.db_username, cloud_resource_query_perf.query_type, cloud_resource_query_perf.tags ->> 'warehouse_name';
+
+CREATE OR REPLACE FUNCTION public.cloud_resource_query_perf_groupings(group_by text[] DEFAULT '{}'::text[], "where" json DEFAULT NULL::json, hasura_session json DEFAULT '{}'::json)
+ RETURNS SETOF cloud_resource_query_perf_groupings_type
+ LANGUAGE sql
+ STABLE
+AS $function$
+SELECT
+    (CASE WHEN 'tenant_id' = ANY(group_by) THEN tenant_id ELSE NULL END) AS tenant_id
+    , (CASE WHEN 'account_id' = ANY(group_by) THEN account_id ELSE NULL END) AS account_id
+    , (CASE WHEN 'resource_id' = ANY(group_by) THEN resource_id ELSE NULL END) AS resource_id
+    , (CASE WHEN 'database_name' = ANY(group_by) THEN database_name ELSE NULL END) AS database_name
+    , (CASE WHEN 'db_username' = ANY(group_by) THEN db_username ELSE NULL END) AS db_username
+    , (CASE WHEN 'query_type' = ANY(group_by) THEN query_type ELSE NULL END) AS query_type
+    , (CASE WHEN 'warehouse_name' = ANY(group_by) THEN tags ->> 'warehouse_name' ELSE NULL END) AS warehouse_name
+	, AVG(query_exec_duration_micro) AS avg_query_exec_duration_micro
+	, MAX(query_exec_duration_micro) AS max_query_exec_duration_micro
+	, SUM(query_exec_duration_micro) AS sum_query_exec_duration_micro
+	, AVG(bill) AS avg_bill
+	, MAX(bill) AS max_bill
+	, SUM(bill) AS sum_bill
+	, COUNT(*) AS query_count
+    FROM cloud_resource_query_perf
+    WHERE
+      ("hasura_session" ->> 'x-hasura-user-tenant-id' IS NULL OR ("tenant_id" = ("hasura_session" ->> 'x-hasura-user-tenant-id')::uuid))
+      AND
+      ("where" #>> '{account_id,_eq}' IS NULL OR ("account_id" = ("where" #>> '{account_id,_eq}')::uuid))
+      AND
+      ("where" #>> '{resource_id,_eq}' IS NULL OR ("resource_id" = ("where" #>> '{resource_id,_eq}')::uuid))
+      AND
+      ("where" #>> '{database_name,_eq}' IS NULL OR ("database_name" = ("where" #>> '{database_name,_eq}')))
+      AND
+      ("where" #>> '{db_username,_eq}' IS NULL OR ("db_username" = ("where" #>> '{db_username,_eq}')))
+      AND
+      ("where" #>> '{query_type,_eq}' IS NULL OR ("query_type" = ("where" #>> '{query_type,_eq}')))
+      AND
+      ("where" #>> '{query_started_at,_gt}' IS NULL OR ("query_started_at" > ("where" #>> '{query_started_at,_gt}')::timestamp))
+      AND
+      ("where" #>> '{query_started_at,_lt}' IS NULL OR ("query_started_at" > ("where" #>> '{query_started_at,_lt}')::timestamp))
+      AND
+      ("where" #>> '{query_started_at,_le}' IS NULL OR ("query_started_at" <= ("where" #>> '{query_started_at,_le}')::timestamp))
+      AND
+      ("where" #>> '{query_started_at,_ge}' IS NULL OR ("query_started_at" >= ("where" #>> '{query_started_at,_ge}')::timestamp))
+    GROUP BY
+    (CASE WHEN 'tenant_id' = ANY(group_by) THEN tenant_id END),
+    (CASE WHEN 'account_id' = ANY(group_by) THEN account_id END),
+    (CASE WHEN 'resource_id' = ANY(group_by) THEN resource_id END),
+    (CASE WHEN 'database_name' = ANY(group_by) THEN database_name END),
+    (CASE WHEN 'db_username' = ANY(group_by) THEN db_username END),
+    (CASE WHEN 'query_type' = ANY(group_by) THEN query_type END),
+    (CASE WHEN 'warehouse_name' = ANY(group_by) THEN tags ->> 'warehouse_name' END)
+$function$;
+
+CREATE OR REPLACE VIEW "public"."cloud_resource_metrics_cloud_resourses_cloud_accounts" AS 
+ SELECT a.tenant AS tenant_id,
+    a.account_name AS account_name,
+    cr.account AS account_id,
+    cr.name AS name,
+    crm.metric AS metric,
+    SUM(crm.value) AS usage
+    FROM cloud_resource_metrics crm LEFT JOIN cloud_resourses cr ON crm.cloud_resource_id = cr.id 
+    LEFT JOIN cloud_accounts a ON a.id = cr.account 
+    GROUP BY a.tenant, a.account_name, cr.account, crm.metric, cr.name;
+
+CREATE OR REPLACE FUNCTION public.cloud_resource_metrics_cloud_resourses_cloud_accounts_grouping(group_by text[] DEFAULT '{}'::text[], "where" json DEFAULT NULL::json, hasura_session json DEFAULT '{}'::json)
+ RETURNS SETOF record
+ LANGUAGE sql
+ STABLE
+AS $function$
+SELECT
+    (CASE WHEN 'account_id' = ANY(group_by) THEN cr.account ELSE NULL END) AS account_id
+    , (CASE WHEN 'account_name' = ANY(group_by) THEN a.account_name ELSE NULL END) AS account_name
+	, sum(crm.value) as credit_usage
+    FROM cloud_resource_metrics crm LEFT JOIN cloud_resourses cr ON crm.cloud_resource_id = cr.id LEFT JOIN cloud_accounts a ON a.id = cr.account
+    WHERE
+      ("where" #>> '{account_id,_eq}' IS NULL OR ("account" = ("where" #>> '{a.account_id,_eq}')::uuid))
+      AND
+      ("where" #>> '{metric,_eq}' IS NULL OR ("metric" = ("where" #>> '{crm.metric,_eq}')))
+    group by
+    (CASE WHEN 'account_id' = ANY(group_by) THEN cr.account END),
+    (CASE WHEN 'account_name' = ANY(group_by) THEN a.account_name END)
+$function$;
+
+DROP FUNCTION public.cloud_resource_metrics_cloud_resourses_cloud_accounts_grouping;
+
+CREATE OR REPLACE FUNCTION public.cloud_resource_metrics_cloud_resourses_cloud_accounts_grouping(group_by text[] DEFAULT '{}'::text[], "where" json DEFAULT NULL::json, hasura_session json DEFAULT '{}'::json)
+ RETURNS SETOF cloud_resource_metrics_cloud_resourses_cloud_accounts
+ LANGUAGE sql
+ STABLE
+AS $function$
+SELECT
+     (CASE WHEN 'tenant_id' = ANY(group_by) THEN a.tenant ELSE null end ) AS tenant_id,
+     (CASE WHEN 'account_name' = ANY(group_by) THEN a.account_name ELSE NULL END) AS account_name, 
+     (CASE WHEN 'account_id' = ANY(group_by) THEN cr.account ELSE NULL END) AS account_id, 
+     (CASE WHEN 'name' = ANY(group_by) THEN cr.name ELSE null end ) AS name,
+     (CASE WHEN 'metric' = ANY(group_by) THEN crm.metric ELSE NULL END) AS metric,
+     SUM(crm.value) AS sum_value
+FROM cloud_resource_metrics crm LEFT JOIN cloud_resourses cr ON crm.cloud_resource_id = cr.id 
+    LEFT JOIN cloud_accounts a ON a.id = cr.account
+    WHERE 
+    ("hasura_session" ->> 'x-hasura-user-tenant-id' IS NULL OR ( a.tenant = ("hasura_session" ->> 'x-hasura-user-tenant-id') :: uuid))
+    AND ("where" #>> '{metric,_eq}' IS null OR (crm.metric = ("where" #>> '{metric,_eq}')))
+    AND ("where" #>> '{account_id,_eq}' IS null OR (cr.account = ("where" #>> '{account_id,_eq}') :: uuid))
+    AND ("where" #>> '{name,_eq}' IS null OR (cr.name = ("where" #>> '{name,_eq}')))
+    group by
+    (CASE WHEN 'tenant_id' = ANY(group_by) THEN a.tenant END),
+    (CASE WHEN 'account_id' = ANY(group_by) THEN cr.account END),
+    (CASE WHEN 'account_name' = ANY(group_by) THEN a.account_name END),
+    (CASE WHEN 'metric' = ANY(group_by) THEN crm.metric END),
+    (CASE WHEN 'name' = ANY(group_by) THEN cr.name END)
+$function$;

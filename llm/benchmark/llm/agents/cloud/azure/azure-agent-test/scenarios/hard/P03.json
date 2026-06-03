@@ -1,0 +1,102 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "P03: App Service deployment slot 'staging' has correct settings, but the production slot still has old/wrong DATABASE_URL pointing to a decommissioned database after a slot swap went wrong. The staging slot looks healthy but production is broken. Common post-deployment failure."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    },
+    "sqlAdminPassword": {
+      "type": "secureString",
+      "defaultValue": "[concat('P', uniqueString(resourceGroup().id), '!1a')]"
+    }
+  },
+  "variables": {
+    "appName": "[concat('p03app', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "sqlServerName": "[concat('p03sql', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "brokenDbUrl": "[concat('Server=p03sql-decomm.database.windows.net;Database=appdb;User Id=sqladmin;Password=old;')]",
+    "fixedDbUrl": "[concat('Server=', variables('sqlServerName'), '.database.windows.net;Database=appdb;User Id=sqladmin;Password=', parameters('sqlAdminPassword'), ';')]",
+    "prodDbUrl": "[if(equals(parameters('scenarioMode'), 'Fixed'), variables('fixedDbUrl'), variables('brokenDbUrl'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Sql/servers",
+      "apiVersion": "2022-05-01-preview",
+      "name": "[variables('sqlServerName')]",
+      "location": "[resourceGroup().location]",
+      "tags": { "Environment": "production", "Team": "data", "Scenario": "P03" },
+      "properties": {
+        "administratorLogin": "sqladmin",
+        "administratorLoginPassword": "[parameters('sqlAdminPassword')]",
+        "version": "12.0"
+      }
+    },
+    {
+      "type": "Microsoft.Sql/servers/databases",
+      "apiVersion": "2022-05-01-preview",
+      "name": "[concat(variables('sqlServerName'), '/appdb')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ],
+      "sku": { "name": "Basic", "tier": "Basic" },
+      "properties": {}
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('appName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "app",
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ],
+      "tags": { "Environment": "production", "Team": "platform", "ScenarioMode": "[parameters('scenarioMode')]" },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "siteConfig": {
+          "appSettings": [
+            { "name": "DATABASE_URL", "value": "[variables('prodDbUrl')]" },
+            { "name": "APP_VERSION", "value": "2.1.0" },
+            { "name": "DEPLOYMENT_SLOT", "value": "production" }
+          ]
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites/slots",
+      "apiVersion": "2022-03-01",
+      "name": "[concat(variables('appName'), '/staging')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', variables('appName'))]",
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ],
+      "tags": { "Environment": "staging", "Team": "platform", "Scenario": "P03" },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "siteConfig": {
+          "appSettings": [
+            { "name": "DATABASE_URL", "value": "[concat('Server=', variables('sqlServerName'), '.database.windows.net;Database=appdb;User Id=sqladmin;Password=', parameters('sqlAdminPassword'), ';')]" },
+            { "name": "APP_VERSION", "value": "2.2.0" },
+            { "name": "DEPLOYMENT_SLOT", "value": "staging" }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "appServiceName": { "type": "string", "value": "[variables('appName')]" },
+    "sqlServerName": { "type": "string", "value": "[variables('sqlServerName')]" },
+    "bugNote": { "type": "string", "value": "Production slot DATABASE_URL points to decommissioned 'p03sql-decomm.database.windows.net' while staging slot has correct server. Slot swap did not carry over the connection string." },
+    "scenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

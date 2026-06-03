@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS public.recommendation_cloud_account_id_rule_name_resource_id_category;

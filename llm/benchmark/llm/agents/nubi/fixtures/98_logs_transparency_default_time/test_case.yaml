@@ -1,0 +1,30 @@
+user_prompt: "Show me the logs for the pod ocean-explorer in namespace app-98"
+expected_output: |
+  Quotes or summarizes logs from the ocean-explorer pod.
+  Should include entries like "Application started successfully", "Error connecting to external API",
+  "Database connection pool exhausted", and other log lines from the pod.
+  Explicitly mentions what time period logs were queried for.
+
+port_forwards:
+  - namespace: loki
+    service: loki-gateway
+    local_port: 3198
+    remote_port: 80
+
+before_test: |
+  kubectl create namespace app-98 || true
+  kubectl label namespace app-98 benchmark=true --overwrite || true
+  kubectl apply -f ./manifest.yaml
+  kubectl wait --for=condition=ready pod -l app=ocean-explorer -n app-98 --timeout=60s
+  # Wait for logs to be ingested by Loki
+  sleep 15
+
+after_test: |
+  kubectl delete -f ./manifest.yaml --ignore-not-found
+  kubectl delete namespace app-98 --ignore-not-found
+
+tags:
+  - logs
+  - transparency
+  - datetime
+  - medium

@@ -1,0 +1,19 @@
+user_prompt: "AWS spend looks high this week — what's driving it?"
+expected_output:
+  - |
+    The agent should run spend_summary scoped to the AWS account(s) and
+    anomaly_execute for cost anomalies in parallel. After identifying the
+    top AWS service driver from spend data, it must invoke delegate_agent
+    with {"tools":["aws"]} to investigate WHAT changed (new resources,
+    scaling events, CloudTrail changes 15-30 minutes before the spike). The
+    agent must NOT call aws_debug, gcp_debug, or azure_debug directly —
+    those tools are not in its tool list. The answer should follow the
+    Signal -> Root Cause -> Evidence -> Impact -> Recommendation structure
+    with explicit dollar figures. An answer of "likely due to increased
+    usage" without tool-verified evidence is unacceptable.
+tags:
+  - spike
+  - aws
+  - delegate
+  - hard
+  - finops

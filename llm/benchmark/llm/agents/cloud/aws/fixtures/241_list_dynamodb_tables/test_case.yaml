@@ -1,0 +1,6 @@
+user_prompt: List DynamoDB tables.
+expected_output:
+- aws dynamodb list-tables
+tags:
+- command
+- aws

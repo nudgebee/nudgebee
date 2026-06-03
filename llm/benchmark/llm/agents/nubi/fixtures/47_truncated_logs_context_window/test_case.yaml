@@ -1,0 +1,14 @@
+user_prompt: "Why did the `long-logs-app` app in the `nubi-test-47` namespace stopped working?"
+tags:
+  - logs
+  - context_window
+  - hard
+expected_output: The application is failing because the database ran out of free connections. The connection pool is exhausted with all 50 connections in use and 23 requests queued waiting for a connection.
+before_test: |
+  kubectl apply -f ./manifest.yaml
+  kubectl wait --for=condition=ready pod -l app=long-logs-app -n nubi-test-47 --timeout=60s
+  # Let logs accumulate so there's a lot of noise to search through
+  sleep 30
+after_test: kubectl delete -f ./manifest.yaml --ignore-not-found
+evaluation:
+  correctness: 0

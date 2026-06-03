@@ -1,0 +1,8 @@
+user_prompt: Count requests per hour for the '/login' resource over the last 24 hours.
+expected_output:
+- SELECT toStartOfHour(timestamp) as hour_start, count(*) as request_count FROM traces_view
+  WHERE resource = '/login' AND timestamp >= now() - interval 24 hour GROUP BY hour_start
+  ORDER BY hour_start;
+tags:
+- command
+- trace

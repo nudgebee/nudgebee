@@ -1,0 +1,10 @@
+user_prompt: "Show me a graph of the CPU usage for the pod llm-server over the last 30 minutes"
+
+expected_output:
+  - The response must include a PromQL query that retrieves CPU usage for pods matching the name llm-server.
+  - Acceptable forms include sum(rate(container_cpu_usage_seconds_total{pod=~"llm-server.*"}[5m])) or similar with rate() over container_cpu_usage_seconds_total filtered by pod label.
+  - The agent must invoke the prometheus_execute tool with that query.
+
+tags:
+  - prometheus
+  - easy

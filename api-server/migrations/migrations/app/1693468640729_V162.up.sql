@@ -1,0 +1,9 @@
+CREATE INDEX IF NOT EXISTS recommendation_category ON public.recommendation USING btree (category);
+CREATE INDEX IF NOT EXISTS "recommendation_resourceId" ON public.recommendation USING btree (resource_id);
+CREATE INDEX IF NOT EXISTS recommendation_tenant ON public.recommendation USING btree (tenant_id);
+CREATE INDEX IF NOT EXISTS cloud_accounts_tenant ON public.cloud_accounts USING btree (tenant);
+CREATE INDEX IF NOT EXISTS recommendation_rulename ON public.recommendation USING btree (rule_name);
+CREATE INDEX IF NOT EXISTS cloud_accounts_tenant ON public.cloud_accounts USING btree (tenant);
+CREATE INDEX IF NOT EXISTS cloud_resource_query_perf_tenant_id ON public.cloud_resource_query_perf USING btree (tenant_id);
+CREATE INDEX IF NOT EXISTS cloud_resource_query_perf_resource_id ON public.cloud_resource_query_perf USING btree (resource_id);
+CREATE INDEX IF NOT EXISTS recommendation_category ON public.recommendation USING btree (category);

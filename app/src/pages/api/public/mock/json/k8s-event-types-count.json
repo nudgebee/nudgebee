@@ -1,0 +1,34 @@
+{
+  "data": {
+    "data": {
+      "pod_error_count": {
+        "rows": [
+          {
+            "count": 236
+          }
+        ]
+      },
+      "node_error_count": {
+        "rows": [
+          {
+            "count": 107
+          }
+        ]
+      },
+      "application_error_count": {
+        "rows": [
+          {
+            "count": 249
+          }
+        ]
+      },
+      "event_count": {
+        "rows": [
+          {
+            "count": 1953
+          }
+        ]
+      }
+    }
+  }
+}

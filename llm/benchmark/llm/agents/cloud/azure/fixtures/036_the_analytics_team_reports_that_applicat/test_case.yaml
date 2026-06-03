@@ -1,0 +1,17 @@
+user_prompt: The analytics team reports that Application Insights for App Service
+  'm06appn5oka6hg' in resource group 'azure-agent-test-M06' is only showing about
+  1% of expected requests and traces. Errors are nearly impossible to diagnose. What
+  is wrong?
+expected_output:
+- 'The App Service has APPINSIGHTS_SAMPLING_PERCENTAGE set to 1, meaning only 1% of
+  telemetry (requests, traces, exceptions) is sent to Application Insights. 99% of
+  data is discarded at the SDK level. Fix: Set APPINSIGHTS_SAMPLING_PERCENTAGE to
+  100 to capture all telemetry, or to an appropriate value like 10-25 for high-traffic
+  services.'
+agent: azure_debug
+scenario: M06
+type: rca
+tags:
+- rca
+- medium
+- azure

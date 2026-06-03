@@ -1,0 +1,97 @@
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Project-specific binaries
+code-analysis-agent
+code-analysis-cli
+main
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.html
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+
+# Go workspace file
+go.work
+
+# IDE files
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Build directories
+build/
+dist/
+
+# Configuration files with secrets
+config.yaml
+config.yml
+.env
+.env.local
+
+# Temporary files
+tmp/
+temp/
+
+# Logs
+*.log
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Workspace directories
+/tmp/
+workspace/
+
+# Git temporary files
+temp_keys/
+
+# Docker
+.dockerignore
+
+# Test coverage
+coverage.out
+coverage.html
+
+# Note: go.sum MUST be committed for reproducible builds and Docker
+# builds (the multi-stage Dockerfile COPYs go.sum before `go mod
+# download`). Do NOT add it back to .gitignore.
+
+# Local testing
+test_repos/
+test_data/
+
+# Credentials and keys
+*.pem
+*.key
+*.crt
+id_rsa*
+id_ed25519*
+
+# Local config override
+config.local.yaml
+config.local.yml

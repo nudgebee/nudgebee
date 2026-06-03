@@ -1,0 +1,34 @@
+# Version-regression scenario. A live setup would deploy bidder v1.0 (fast),
+# generate traffic, deploy v2.0 (slow), generate traffic, and wait for HPA
+# scaling — a 5+ minute setup just to surface that v2.0 is ~40x slower than
+# v1.0. Nubi instead pushes synthetic histogram data carrying the same v1/v2
+# latency comparison via the OTel pipeline, preserving the diagnostic signal
+# without the orchestration overhead.
+
+user_prompt: "Users are reporting slow response times from the energy bidding service in namespace app-161. The service was working fine earlier today. Please investigate the cause of the latency."
+
+expected_output:
+  - Must identify that the service is running version v2.0 which has degraded performance
+  - Should compare metrics showing v2.0 processes requests in ~2 seconds vs v1.0's ~50ms
+  - Should conclude the root cause is the version change, not a capacity issue
+
+tags:
+  - kubernetes
+  - prometheus
+  - medium
+
+before_test: |
+  set -e
+  kubectl create namespace app-161 --save-config --dry-run=client -o yaml | kubectl apply -f - || true
+  kubectl label namespace app-161 benchmark=true --overwrite || true
+  kubectl apply -f metric-otel-pusher.yaml -n app-161
+
+  echo "Waiting for OTLP pusher pod to be ready..."
+  kubectl wait --for=condition=ready pod -l app=metric-otel-pusher -n app-161 --timeout=120s
+
+  echo "Waiting for OTel pipeline to ingest the test metrics..."
+  sleep 120
+
+after_test: |
+  kubectl delete -f metric-otel-pusher.yaml -n app-161 --ignore-not-found
+  kubectl delete namespace app-161 --ignore-not-found

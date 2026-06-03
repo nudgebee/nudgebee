@@ -1,0 +1,117 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H10: Lambda function missing CloudWatch Logs permissions — runs successfully
+  but produces no log output. Debugging is impossible.
+  User complaint: "Our transaction processor Lambda runs and returns 200 but
+  we can never see any logs in CloudWatch. We added print statements everywhere
+  but still no logs. CloudWatch log group doesn't even exist for the function."
+  Root cause: Lambda execution role is missing AWSLambdaBasicExecutionRole policy
+  (no logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents).
+  The function executes correctly but cannot write to CloudWatch Logs.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Lambda role missing AWSLambdaBasicExecutionRole (no CW Logs permissions).
+      Fixed = Lambda role has AWSLambdaBasicExecutionRole.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  # THE BUG: In Broken mode, role has no AWSLambdaBasicExecutionRole
+  # → Lambda can run but cannot write CloudWatch logs
+  TransactionProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h10-transaction-processor-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # AWSLambdaBasicExecutionRole only attached in Fixed mode
+        # In Broken mode: Lambda has basic IAM to execute but NO CloudWatch Logs access
+        - !If
+          - IsFixed
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+          - !Ref AWS::NoValue
+      Policies:
+        # A minimal inline policy so the Lambda can actually be invoked
+        - PolicyName: basic-lambda-invoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: '*'
+
+  TransactionProcessorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h10-transaction-processor
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt TransactionProcessorRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          import json
+          import datetime
+
+          def handler(event, context):
+              # These print statements will NOT appear in CloudWatch
+              # because the role lacks logs:PutLogEvents permission
+              print(f"[INFO] Processing transaction at {datetime.datetime.utcnow().isoformat()}")
+              print(f"[INFO] Transaction ID: {event.get('transaction_id', 'unknown')}")
+              print(f"[INFO] Amount: {event.get('amount', 0)}")
+
+              # Business logic
+              txn_id = event.get('transaction_id', 'txn-001')
+              amount = event.get('amount', 0)
+              status = 'approved' if amount < 10000 else 'review_required'
+
+              print(f"[INFO] Transaction {txn_id} → {status}")
+
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({
+                      'transaction_id': txn_id,
+                      'status': status,
+                      'processed_at': datetime.datetime.utcnow().isoformat()
+                  })
+              }
+      Tags:
+        - Key: Name
+          Value: h10-transaction-processor
+        - Key: Environment
+          Value: production
+        - Key: Team
+          Value: payments
+        - Key: Application
+          Value: transaction-service
+
+Outputs:
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref TransactionProcessorFunction
+  RoleName:
+    Description: Lambda Execution Role Name
+    Value: !Ref TransactionProcessorRole
+  BugNote:
+    Description: The bug
+    Value: 'Role missing AWSLambdaBasicExecutionRole - no logs:PutLogEvents - CW logs never appear'
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

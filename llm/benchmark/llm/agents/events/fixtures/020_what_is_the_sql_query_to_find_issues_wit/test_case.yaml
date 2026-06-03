@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to find issues with 'database' in the title?
+expected_output:
+- SELECT id, title, starts_at, status, priority   FROM events   WHERE finding_type
+  = 'issue' AND title LIKE '%database%';
+- SELECT * FROM events   WHERE finding_type = 'issue' AND title LIKE '%database%';
+tags:
+- command
+- events

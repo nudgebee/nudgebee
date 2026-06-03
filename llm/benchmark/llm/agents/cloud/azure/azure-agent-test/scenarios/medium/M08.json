@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "M08: App Service on paid (Basic) plan has alwaysOn=false. App goes idle after 20 minutes of inactivity, causing 20+ second cold start delays on first request. User complaint: first request after quiet period is extremely slow - up to 30 seconds. Requires checking alwaysOn setting."
+  },
+  "parameters": {
+    "scenarioMode": {
+      "type": "string",
+      "allowedValues": ["Broken", "Fixed"],
+      "defaultValue": "Broken"
+    },
+    "sharedAppPlanRg": {
+      "type": "string",
+      "defaultValue": "azure-agent-test-bootstrap"
+    }
+  },
+  "variables": {
+    "appName": "[concat('m08app', substring(uniqueString(resourceGroup().id), 0, 8))]",
+    "alwaysOn": "[if(equals(parameters('scenarioMode'), 'Fixed'), 'true', 'false')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-03-01",
+      "name": "[variables('appName')]",
+      "location": "[resourceGroup().location]",
+      "kind": "app",
+      "tags": {
+        "Name": "m08-user-api",
+        "Environment": "production",
+        "Team": "platform",
+        "Scenario": "M08",
+        "ScenarioMode": "[parameters('scenarioMode')]"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId(parameters('sharedAppPlanRg'), 'Microsoft.Web/serverfarms', 'shared-app-plan')]",
+        "siteConfig": {
+          "alwaysOn": "[bool(variables('alwaysOn'))]",
+          "appSettings": [
+            { "name": "APP_ENV", "value": "production" },
+            { "name": "STARTUP_TIMEOUT_SECONDS", "value": "30" },
+            { "name": "CACHE_WARM_ON_START", "value": "true" }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "AppServiceName": { "type": "string", "value": "[variables('appName')]" },
+    "AlwaysOn": { "type": "string", "value": "[variables('alwaysOn')]" },
+    "BugNote": { "type": "string", "value": "alwaysOn=false on B1 plan - app goes idle after 20min causing 20-30s cold starts" },
+    "ScenarioMode": { "type": "string", "value": "[parameters('scenarioMode')]" }
+  }
+}

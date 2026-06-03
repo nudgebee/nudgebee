@@ -1,0 +1,176 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E22: RDS Aurora application uses instance endpoint instead of cluster endpoint.
+  User complaint: "Our application 'e22-order-api' intermittently loses database
+  connectivity to Aurora cluster 'e22-orders-db'. The connection works, then suddenly
+  drops, then works again after restart. This started after a failover event."
+  Root cause: Application's DB_HOST environment variable points to the writer
+  instance endpoint (e22-orders-db-instance-1) instead of the cluster endpoint.
+  During failover, the writer instance changes but the instance endpoint doesn't
+  follow — it still points to what is now a reader.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Lambda DB_HOST uses instance endpoint (breaks on failover).
+      Fixed = Lambda DB_HOST uses cluster endpoint (follows failover).
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: e22-orders-subnet-group
+      DBSubnetGroupDescription: Subnet group for orders Aurora cluster
+      SubnetIds:
+        - !ImportValue aws-agent-test-private-subnet-a
+        - !ImportValue aws-agent-test-private-subnet-b
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Aurora cluster
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          CidrIp: 10.0.0.0/16
+      Tags:
+        - Key: Name
+          Value: e22-orders-db-sg
+        - Key: Environment
+          Value: production
+
+  AuroraCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      DBClusterIdentifier: e22-orders-db
+      Engine: aurora-postgresql
+      EngineVersion: '15.4'
+      MasterUsername: dbadmin
+      MasterUserPassword: TempPassword123!
+      DatabaseName: orders
+      DBSubnetGroupName: !Ref DBSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref DBSecurityGroup
+      BackupRetentionPeriod: 7
+      Tags:
+        - Key: Name
+          Value: e22-orders-db
+        - Key: Environment
+          Value: production
+
+  AuroraInstance1:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: e22-orders-db-instance-1
+      DBClusterIdentifier: !Ref AuroraCluster
+      DBInstanceClass: db.t3.medium
+      Engine: aurora-postgresql
+      Tags:
+        - Key: Name
+          Value: e22-orders-db-instance-1
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for order API Lambda
+      VpcId: !ImportValue aws-agent-test-vpc-id
+      Tags:
+        - Key: Name
+          Value: e22-lambda-sg
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: e22-order-api-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+  # THE BUG: DB_HOST uses instance endpoint instead of cluster endpoint
+  OrderApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: e22-order-api
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !ImportValue aws-agent-test-private-subnet-a
+          - !ImportValue aws-agent-test-private-subnet-b
+      Environment:
+        Variables:
+          # Broken: instance endpoint (doesn't follow failover)
+          # Fixed: cluster endpoint (follows failover automatically)
+          DB_HOST: !If
+            - IsFixed
+            - !GetAtt AuroraCluster.Endpoint.Address
+            - !GetAtt AuroraInstance1.Endpoint.Address
+          DB_PORT: '5432'
+          DB_NAME: orders
+      Code:
+        ZipFile: |
+          import json
+          import os
+
+          def handler(event, context):
+              host = os.environ['DB_HOST']
+              port = os.environ['DB_PORT']
+              db = os.environ['DB_NAME']
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({
+                      'db_host': host,
+                      'db_port': port,
+                      'database': db,
+                      'connection': 'simulated'
+                  })
+              }
+      Tags:
+        - Key: Name
+          Value: e22-order-api
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: order-service
+
+Outputs:
+  ClusterEndpoint:
+    Description: Aurora cluster endpoint (correct — follows failover)
+    Value: !GetAtt AuroraCluster.Endpoint.Address
+  InstanceEndpoint:
+    Description: Aurora instance endpoint (incorrect — static, breaks on failover)
+    Value: !GetAtt AuroraInstance1.Endpoint.Address
+  LambdaDBHost:
+    Description: DB_HOST configured in Lambda
+    Value: !If
+      - IsFixed
+      - !GetAtt AuroraCluster.Endpoint.Address
+      - !GetAtt AuroraInstance1.Endpoint.Address
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref OrderApiFunction
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

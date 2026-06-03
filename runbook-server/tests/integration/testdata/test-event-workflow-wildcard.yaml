@@ -1,0 +1,14 @@
+name: test-event-workflow-wildcard
+definition:
+  version: v1
+  triggers:
+    - type: event
+      params:
+        filter: "{{ event.source == 'integration-test-wildcard' }}"
+  tasks:
+    - id: print-event
+      type: core.print
+      params:
+        message: "Wildcard fired for event_type={{ Inputs.event.event_type }} source={{ Inputs.event.source }}"
+  output:
+    final_message: "{{ Tasks['print-event'].output.data }}"

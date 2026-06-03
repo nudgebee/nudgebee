@@ -1,0 +1,9 @@
+user_prompt: Show me events that are either HIGH priority or have the word 'critical'
+  in their title.
+expected_output:
+- SELECT id, title, priority, starts_at FROM events WHERE priority = 'HIGH' OR title
+  ILIKE '%critical%';
+- SELECT * FROM events WHERE priority = 'HIGH' OR title ILIKE '%critical%';
+tags:
+- command
+- events

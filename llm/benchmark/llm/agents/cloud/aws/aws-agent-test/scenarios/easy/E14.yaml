@@ -1,0 +1,74 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E14: S3 static website returns 403 — Block Public Access overrides bucket policy.
+  User complaint: "Our S3 static website bucket 'e14-marketing-site' returns 403 Forbidden
+  on all requests. The bucket policy allows public read. Website hosting is enabled."
+  Root cause: S3 Block Public Access (BPA) is enabled on the bucket. BPA overrides
+  the bucket policy and prevents any public access regardless of what the policy says.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Block Public Access enabled, overriding bucket policy.
+      Fixed = Block Public Access disabled, bucket policy allows public read.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  WebsiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub 'e14-marketing-site-${AWS::AccountId}'
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+      # THE BUG: Block Public Access prevents any public access
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: !If [IsFixed, false, true]
+        BlockPublicPolicy: !If [IsFixed, false, true]
+        IgnorePublicAcls: !If [IsFixed, false, true]
+        RestrictPublicBuckets: !If [IsFixed, false, true]
+      Tags:
+        - Key: Name
+          Value: e14-marketing-site
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: marketing-portal
+
+  WebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Condition: IsFixed
+    Properties:
+      Bucket: !Ref WebsiteBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: PublicReadGetObject
+            Effect: Allow
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: !Sub '${WebsiteBucket.Arn}/*'
+
+  # Upload a simple index.html via a custom resource or just note it's expected
+  # For testing, the bucket exists with the configuration — agent investigates config
+
+Outputs:
+  BucketName:
+    Description: S3 Bucket Name
+    Value: !Ref WebsiteBucket
+  WebsiteURL:
+    Description: S3 Website URL
+    Value: !GetAtt WebsiteBucket.WebsiteURL
+  BlockPublicAccess:
+    Description: Block Public Access status
+    Value: !If [IsFixed, 'Disabled', 'Enabled (blocking all public access)']
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

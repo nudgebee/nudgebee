@@ -1,0 +1,41 @@
+name: services-server CI
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - api-server/services/**
+      - .github/workflows/services-server.yaml
+      - deploy/kubernetes/services-server/**
+
+jobs:
+  lint:
+    name: Go Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: api-server/services/go.sum
+
+      - name: Cache Go build
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: ${{ runner.os }}-go-build-${{ hashFiles('api-server/services/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-build-
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.11.3
+          working-directory: api-server/services
+          only-new-issues: true
+          args: --timeout 20m

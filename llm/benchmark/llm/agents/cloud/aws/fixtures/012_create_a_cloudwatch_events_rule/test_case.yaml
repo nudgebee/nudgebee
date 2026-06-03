@@ -1,0 +1,7 @@
+user_prompt: Create a CloudWatch Events rule.
+expected_output:
+- aws events put-rule --name <rule-name> --schedule-expression <schedule-expression>
+  --event-pattern <event-pattern>
+tags:
+- command
+- aws

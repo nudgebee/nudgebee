@@ -1,0 +1,11 @@
+user_prompt: "Find all PVCs that were created from backup ID b7f3a521-8c4d-4e6a-9f2b-1a3d5e7f9c2e and cite their sizes"
+tags:
+  - kubernetes
+  - medium
+  - holmesgpt-parity
+expected_output: 'Found 4 PVCs with the specified backup ID: database-pvc in app-112-prod (2Mi), media-storage in app-112-prod (2Mi), test-database in app-112-staging (2Mi), build-cache in app-112-dev (2Mi). If test infrastructure is not deployed and PVCs do not exist, the agent should report that no PVCs were found with the given backup ID after searching all namespaces.'
+before_test: |
+  kubectl apply -f ./manifest.yaml
+  sleep 5
+after_test: |
+  kubectl delete -f ./manifest.yaml

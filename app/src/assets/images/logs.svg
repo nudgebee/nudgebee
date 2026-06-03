@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 225" preserveAspectRatio="xMidYMid meet">
+
+
+  <!-- Document body -->
+  <path d="M16 14 L132 14 L132 14 L160 42 L160 192 Q160 202 150 202 L26 202 Q16 202 16 192 Z" fill="#7dd8f8"/>
+
+  <!-- Folded corner fill (blue) -->
+  <path d="M132 14 L160 42 L132 42 Z" fill="#1e90e0"/>
+
+  <!-- Document outline -->
+  <path d="M16 14 L132 14 L160 42 L160 192 Q160 202 150 202 L26 202 Q16 202 16 192 Z" fill="none" stroke="#2d2664" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- Fold crease line -->
+  <path d="M132 14 L132 42 L160 42" fill="none" stroke="#2d2664" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- Text lines -->
+  <line x1="38" y1="70"  x2="130" y2="70"  stroke="#2d2664" stroke-width="5.5" stroke-linecap="round"/>
+  <line x1="38" y1="90"  x2="150" y2="90"  stroke="#2d2664" stroke-width="5.5" stroke-linecap="round"/>
+  <line x1="38" y1="110" x2="150" y2="110" stroke="#2d2664" stroke-width="5.5" stroke-linecap="round"/>
+  <line x1="38" y1="130" x2="150" y2="130" stroke="#2d2664" stroke-width="5.5" stroke-linecap="round"/>
+  <line x1="38" y1="150" x2="130" y2="150" stroke="#2d2664" stroke-width="5.5" stroke-linecap="round"/>
+
+  <!-- LOG label shadow -->
+  <rect x="8" y="160" width="148" height="52" rx="9" ry="9" fill="#ccc" opacity="0.4"/>
+
+  <!-- LOG label background -->
+  <rect x="5" y="156" width="148" height="52" rx="9" ry="9" fill="#FFE566"/>
+
+  <!-- LOG label border -->
+  <rect x="5" y="156" width="148" height="52" rx="9" ry="9" fill="none" stroke="#2d2664" stroke-width="5.5"/>
+
+  <!-- LOG text -->
+  <text x="79" y="193" font-family="Arial Black, Arial, sans-serif" font-weight="900" font-size="38" fill="#2d2664" text-anchor="middle" dominant-baseline="auto">LOG</text>
+</svg>

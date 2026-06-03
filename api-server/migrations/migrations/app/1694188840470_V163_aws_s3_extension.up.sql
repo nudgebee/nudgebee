@@ -1,0 +1,3 @@
+select 1+1;
+
+-- CREATE EXTENSION aws_s3 CASCADE;

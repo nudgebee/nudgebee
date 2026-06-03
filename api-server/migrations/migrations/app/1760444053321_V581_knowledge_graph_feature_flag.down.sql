@@ -1,0 +1,2 @@
+
+DELETE FROM "public"."feature" WHERE "value" = 'TRACES_SERVICE_MAP_KNOWLEDGE_GRAPH';

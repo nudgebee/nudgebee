@@ -1,0 +1,6 @@
+user_prompt: Publish a message to an SNS topic.
+expected_output:
+- aws sns publish --topic-arn <topic-arn> --message <message>
+tags:
+- command
+- aws

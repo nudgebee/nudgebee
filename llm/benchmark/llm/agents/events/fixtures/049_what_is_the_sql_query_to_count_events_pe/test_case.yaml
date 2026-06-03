@@ -1,0 +1,6 @@
+user_prompt: What is the SQL query to count events per finding type (issue vs configuration_change)?
+expected_output:
+- SELECT finding_type, COUNT(*) AS event_count   FROM events   GROUP BY finding_type;
+tags:
+- command
+- events

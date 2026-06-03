@@ -1,0 +1,7 @@
+user_prompt: Put a record into a Kinesis data stream.
+expected_output:
+- aws kinesis put-record --stream-name <stream-name> --data <data> --partition-key
+  <partition-key>
+tags:
+- command
+- aws

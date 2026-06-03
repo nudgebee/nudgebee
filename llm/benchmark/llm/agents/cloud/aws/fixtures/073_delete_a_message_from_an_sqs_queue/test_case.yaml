@@ -1,0 +1,6 @@
+user_prompt: Delete a message from an SQS queue.
+expected_output:
+- aws sqs delete-message --queue-url <queue-url> --receipt-handle <receipt-handle>
+tags:
+- command
+- aws

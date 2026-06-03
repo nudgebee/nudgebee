@@ -1,0 +1,114 @@
+
+
+services:
+  postgresql:
+    container_name: temporal-postgresql
+    environment:
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_USER: temporal
+      POSTGRES_DB: temporal
+    image: postgres:15-alpine
+    networks:
+      - temporal-network
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal -d temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - /var/lib/postgresql/data
+      - ./tests/integration/sql/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+
+  temporal:
+    container_name: temporal
+    image: temporalio/auto-setup:latest
+    networks:
+      - temporal-network
+    ports:
+      - "7233:7233"
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=postgresql
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CLI_ADDRESS=temporal:7233
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    volumes:
+      - ./tests/integration/config/dynamicconfig:/etc/temporal/config/dynamicconfig
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+    
+
+  temporal-setup-job:
+    image: temporalio/auto-setup:latest
+    networks:
+      - temporal-network
+    depends_on:
+      temporal:
+        condition: service_healthy
+    entrypoint: /bin/bash
+    volumes:
+      - ./config/dynamicconfig:/etc/temporal/config/dynamicconfig
+    environment:
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+    command: >
+      -c "
+      /usr/local/bin/temporal operator search-attribute create --name nb_tenant_id --type Keyword --namespace default --address temporal:7233;
+      /usr/local/bin/temporal operator search-attribute create --name nb_account_id --type Keyword --namespace default --address temporal:7233;
+      /usr/local/bin/temporal operator search-attribute create --name nb_workflow_id --type Keyword --namespace default --address temporal:7233;
+      /usr/local/bin/temporal operator search-attribute create --name nb_workflow_trigger --type Keyword --namespace default --address temporal:7233;
+      /usr/local/bin/temporal operator search-attribute create --name nb_triggered_by --type Keyword --namespace default --address temporal:7233;
+      /usr/local/bin/temporal operator search-attribute create --name nb_parent_workflow_id --type Keyword --namespace default --address temporal:7233;
+      /usr/local/bin/temporal operator search-attribute create --name nb_execution_tags --type KeywordList --namespace default --address temporal:7233;
+      /usr/local/bin/temporal operator search-attribute create --name nb_event_type --type Keyword --namespace default --address temporal:7233;
+      /usr/local/bin/temporal operator search-attribute create --name nb_event_id --type Keyword --namespace default --address temporal:7233;
+      echo 'Temporal search attributes registered.'
+      "
+
+  runbook-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    networks:
+      - temporal-network
+    environment:
+      - AUTO_PILOT_DATABASE_URL=postgres://temporal:temporal@postgresql:5432/temporal?sslmode=disable
+      - TEMPORAL_GRPC_ENDPOINT=temporal:7233
+      - API_PORT=8000
+    ports:
+      - "8002:8000"
+    depends_on:
+      temporal:
+        condition: service_healthy
+      postgresql:
+        condition: service_healthy
+
+  temporal-ui:
+    container_name: temporal-ui
+    depends_on:
+      - temporal
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3000
+    image: temporalio/ui:latest
+    networks:
+      - temporal-network
+    ports:
+      - 8080:8080
+
+networks:
+  temporal-network:
+    driver: bridge
+    name: temporal-network

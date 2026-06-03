@@ -1,0 +1,7 @@
+apiVersion: v2
+name: ml-k8s-server
+keywords:
+  - ml-k8s-server
+type: application
+version: "0.1"
+appVersion: "V0.1"

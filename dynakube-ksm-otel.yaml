@@ -1,0 +1,141 @@
+
+---
+# OTel collector that scrapes kube-state-metrics and Victoria Metrics (cAdvisor)
+# and forwards into Dynatrace Grail via the telemetry-ingest OTLP endpoint (port 4317).
+#
+# Metrics queryable in DQL after deploying:
+#   KSM (requests/limits/allocatable):
+#     timeseries val = sum(`kube_pod_container_resource_requests`),
+#       from: "...", to: "...", interval: 5m,
+#       filter: {resource == "cpu"}, by: {namespace, pod}
+#
+#   cAdvisor (actual usage via Victoria Metrics federation):
+#     timeseries val = avg(rate(`container_cpu_usage_seconds_total`)),
+#       from: "...", to: "...", interval: 5m,
+#       filter: {namespace == "my-ns" and pod == "my-pod", container != "POD"},
+#       by: {namespace, pod}
+#     timeseries val = avg(`container_memory_working_set_bytes`),
+#       from: "...", to: "...", interval: 5m,
+#       filter: {namespace == "my-ns" and pod == "my-pod", container != "POD"},
+#       by: {namespace, pod}
+#
+# Deploy: kubectl apply -f dynakube-ksm-otel.yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ksm-otel-collector-config
+  namespace: dynatrace
+data:
+  config.yaml: |
+    receivers:
+      prometheus:
+        config:
+          scrape_configs:
+            # --- KSM: requests, limits, allocatable ---
+            - job_name: kube-state-metrics
+              scrape_interval: 60s
+              scrape_timeout: 30s
+              static_configs:
+                - targets:
+                    - victoria-kube-state-metrics.victoria.svc.cluster.local:8080
+              metric_relabel_configs:
+                - source_labels: [__name__]
+                  regex: "kube_pod_container_resource_requests|kube_pod_container_resource_limits|kube_node_status_allocatable|kube_node_status_capacity"
+                  action: keep
+
+            # --- cAdvisor usage metrics via Victoria Metrics federation ---
+            # vmagent already scrapes cAdvisor on every node and stores the result
+            # in vmsingle. We federate only the two metrics we need for Grail DQL.
+            # Labels forwarded verbatim: namespace, pod, container, node, image.
+            - job_name: victoria-cadvisor-federation
+              scrape_interval: 60s
+              scrape_timeout: 30s
+              honor_labels: true
+              metrics_path: /federate
+              params:
+                match[]:
+                  - 'node_namespace_pod_container:container_cpu_usage_seconds_total:sum_irate'
+                  - 'container_memory_working_set_bytes'
+              static_configs:
+                - targets:
+                    - vmsingle-victoria-victoria-metrics-k8s-stack.victoria.svc.cluster.local:8429
+              metric_relabel_configs:
+                # Keep only the two metrics we need
+                - source_labels: [__name__]
+                  regex: "node_namespace_pod_container:container_cpu_usage_seconds_total:sum_irate|container_memory_working_set_bytes"
+                  action: keep
+                # Drop the pause/infra container entries in memory metric only (container="POD" or empty).
+                # Scoped to container_memory_working_set_bytes; sum_irate is already pre-summed and
+                # may legitimately have no container label.
+                - source_labels: [__name__, container]
+                  regex: "container_memory_working_set_bytes;(POD|)"
+                  action: drop
+
+    processors:
+      batch:
+        timeout: 30s
+      resource:
+        attributes:
+          - key: k8s.cluster.name
+            value: nudgebee-dev
+            action: upsert
+
+    exporters:
+      otlp:
+        endpoint: "telemetry-ingest.dynatrace.svc.cluster.local:4317"
+        tls:
+          insecure: true
+
+    service:
+      pipelines:
+        metrics:
+          receivers: [prometheus]
+          processors: [batch, resource]
+          exporters: [otlp]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ksm-otel-collector
+  namespace: dynatrace
+  labels:
+    app: ksm-otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ksm-otel-collector
+  template:
+    metadata:
+      labels:
+        app: ksm-otel-collector
+    spec:
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.96.0
+          args:
+            - "--config=/etc/otel/config.yaml"
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 65534
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otel
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+      volumes:
+        - name: config
+          configMap:
+            name: ksm-otel-collector-config

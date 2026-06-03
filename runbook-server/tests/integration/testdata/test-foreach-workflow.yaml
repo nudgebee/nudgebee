@@ -1,0 +1,23 @@
+name: test-foreach-workflow
+definition:
+  inputs:
+    - id: items
+      type: array
+      default: ["apple", "banana", "cherry"]
+  triggers:
+    - type: manual
+  tasks:
+    - id: foreach-task
+      type: core.foreach
+      params:
+        items: "{{ Inputs.items | tojson }}"
+        item: "fruit"
+        tasks:
+          - id: print-fruit
+            type: core.print
+            params:
+              message: "{{ LoopItem.fruit | upper }}"
+        output:
+          data: "{{ Tasks['print-fruit'].output }}"
+      output:
+        results: "{{ Tasks['foreach-task'].output | tojson }}"

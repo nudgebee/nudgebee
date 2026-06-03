@@ -1,0 +1,9 @@
+user_prompt: What is the SQL query to get a count of events for each namespace, broken
+  down by priority?
+expected_output:
+- SELECT subject_namespace, priority, COUNT(*) AS event_count FROM events WHERE subject_namespace
+  IS NOT NULL GROUP BY subject_namespace, priority ORDER BY subject_namespace, event_count
+  DESC;
+tags:
+- command
+- events

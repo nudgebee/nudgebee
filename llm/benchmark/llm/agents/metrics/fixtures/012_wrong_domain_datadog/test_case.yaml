@@ -1,0 +1,18 @@
+# Regression for the wrong-tool-routing failure observed in prod
+# (DB run 8a60a7cb — 17 tool calls, 287k tokens trying to find Datadog
+# metrics in Prometheus). The agent must recognise the request is for
+# Datadog and refuse cleanly rather than thrash through metrics_list /
+# resource_search / shell_execute.
+user_prompt: List available services in Datadog and search for metrics matching 'web-app', 'system.cpu.idle', and 'trace.http.request.errors'
+expected_output:
+  - This is a Datadog request and is not supported by the prometheus agent
+  - cannot query Datadog
+expected_tools: []
+forbidden_tools:
+  - shell_execute
+  - search_metrics
+expected_max_tool_calls: 3
+tags:
+  - regression
+  - wrong_domain
+  - refuse

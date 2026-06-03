@@ -1,0 +1,7122 @@
+[
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_panicnil_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the runtime package due to a non-default GODEBUG=panicnil=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_evented_pleg_connection_latency_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] The latency of streaming connection with the CRI runtime, measured in seconds.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_started_pods_errors_total",
+    "type": "counter",
+    "help": "[ALPHA] Cumulative number of errors when starting pods",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "workqueue_retries_total",
+    "type": "counter",
+    "help": "[ALPHA] Total number of retries handled by workqueue",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "controller",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "apiserver_storage_data_key_generation_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Latencies in seconds of data encryption key(DEK) generation operations.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_cpu_classes_scavenge_total_cpu_seconds_total",
+    "type": "counter",
+    "help": "Estimated total CPU time spent performing tasks that return unused memory to the underlying platform. This metric is an overestimate, and not directly comparable to system CPU time measurements. Compare only with other /cpu/classes metrics. Sum of all metrics in /cpu/classes/scavenge.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_tarinsecurepath_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the archive/tar package due to a non-default GODEBUG=tarinsecurepath=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_other_sys_bytes",
+    "type": "gauge",
+    "help": "Number of bytes used for other system allocations.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_pleg_discard_events",
+    "type": "counter",
+    "help": "[ALPHA] The number of discard events in PLEG.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_pod_worker_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Duration in seconds to sync a single pod. Broken down by operation type: create, update, or sync",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubernetes_feature_enabled",
+    "type": "gauge",
+    "help": "[BETA] This metric records the data about the stage and enablement of a k8s feature.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service",
+      "stage"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "volume_operation_total_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Storage operation end to end duration in seconds",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "workqueue_longest_running_processor_seconds",
+    "type": "gauge",
+    "help": "[ALPHA] How many seconds has the longest running processor for workqueue been running.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "controller",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_heap_tiny_allocs_objects_total",
+    "type": "counter",
+    "help": "Count of small allocations that are packed together into blocks. These allocations are counted separately from other allocations because each individual allocation is not tracked by the runtime, only their block. Each block is already accounted for in allocs-by-size and frees-by-size.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_heap_allocs_objects_total",
+    "type": "counter",
+    "help": "Cumulative count of heap allocations triggered by the application. Note that this does not include tiny objects as defined by /gc/heap/tiny/allocs:objects, only tiny blocks.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_tlsrsakex_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the crypto/tls package due to a non-default GODEBUG=tlsrsakex=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_zipinsecurepath_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the archive/zip package due to a non-default GODEBUG=zipinsecurepath=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_gc_sys_bytes",
+    "type": "gauge",
+    "help": "Number of bytes used for garbage collection system metadata.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_pod_start_sli_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Duration in seconds to start a pod, excluding time to pull images and run init containers, measured from pod creation timestamp to when all its containers are reported as started and observed via watch",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "apiserver_webhooks_x509_insecure_sha1_total",
+    "type": "counter",
+    "help": "[ALPHA] Counts the number of requests to servers with insecure SHA1 signatures in their serving certificate OR the number of connection failures due to the insecure SHA1 signatures (either/or, based on the runtime environment)",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_running_containers",
+    "type": "gauge",
+    "help": "[ALPHA] Number of containers currently running",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container_state",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "process_open_fds",
+    "type": "gauge",
+    "help": "Number of open file descriptors.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "volume_manager_selinux_pod_context_mismatch_errors_total",
+    "type": "gauge",
+    "help": "[ALPHA] Number of errors when a Pod defines different SELinux contexts for its containers that use the same volume. Kubelet can't start such a Pod then and it will retry, therefore value of this metric may not represent the actual nr. of Pods.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "volume_manager_selinux_pod_context_mismatch_warnings_total",
+    "type": "gauge",
+    "help": "[ALPHA] Number of errors when a Pod defines different SELinux contexts for its containers that use the same volume. They are not errors yet, but they will become real errors when SELinuxMountReadWriteOncePod feature is expanded to all volume access modes.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_x509usepolicies_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the crypto/x509 package due to a non-default GODEBUG=x509usepolicies=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_tlsmaxrsasize_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the crypto/tls package due to a non-default GODEBUG=tlsmaxrsasize=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_stack_inuse_bytes",
+    "type": "gauge",
+    "help": "Number of bytes in use by the stack allocator.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_desired_pods",
+    "type": "gauge",
+    "help": "[ALPHA] The number of pods the kubelet is being instructed to run. static is true if the pod is not from the apiserver.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service",
+      "static"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_orphaned_runtime_pods_total",
+    "type": "counter",
+    "help": "[ALPHA] Number of pods that have been detected in the container runtime without being already known to the pod worker. This typically indicates the kubelet was restarted while a pod was force deleted in the API or in the local configuration, which is unusual.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_cpu_classes_gc_total_cpu_seconds_total",
+    "type": "counter",
+    "help": "Estimated total CPU time spent performing GC tasks. This metric is an overestimate, and not directly comparable to system CPU time measurements. Compare only with other /cpu/classes metrics. Sum of all metrics in /cpu/classes/gc.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memory_classes_heap_stacks_bytes",
+    "type": "gauge",
+    "help": "Memory allocated from the heap that is reserved for stack space, whether or not it is currently in-use. Currently, this represents all stack memory for goroutines. It also includes all OS thread stacks in non-cgo programs. Note that stacks may be allocated differently in the future, and this may change.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_alloc_bytes",
+    "type": "gauge",
+    "help": "Number of bytes allocated and still in use.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_heap_sys_bytes",
+    "type": "gauge",
+    "help": "Number of heap bytes obtained from system.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_mspan_sys_bytes",
+    "type": "gauge",
+    "help": "Number of bytes used for mspan structures obtained from system.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_gotypesalias_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the go/types package due to a non-default GODEBUG=gotypesalias=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_credential_provider_plugin_duration",
+    "type": "histogram",
+    "help": "[ALPHA] Duration of execution in seconds for credential provider plugin",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "reconstruct_volume_operations_errors_total",
+    "type": "counter",
+    "help": "[ALPHA] The number of volumes that failed reconstruction from the operating system during kubelet startup.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "workqueue_unfinished_work_seconds",
+    "type": "gauge",
+    "help": "[ALPHA] How many seconds of work has done that is in progress and hasn't been observed by work_duration. Large values indicate stuck threads. One can deduce the number of stuck threads by observing the rate at which this increases.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "controller",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "apiserver_client_certificate_expiration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Distribution of the remaining lifetime on the certificate used to authenticate a request.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_gogc_percent",
+    "type": "gauge",
+    "help": "Heap size target percentage configured by the user, otherwise 100. This value is set by the GOGC environment variable, and the runtime/debug.SetGCPercent function.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memory_classes_heap_unused_bytes",
+    "type": "gauge",
+    "help": "Memory that is reserved for heap objects but is not currently used to hold heap objects.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "apiserver_audit_event_total",
+    "type": "counter",
+    "help": "[ALPHA] Counter of audit events generated and sent to the audit backend.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "get_token_count",
+    "type": "counter",
+    "help": "[ALPHA] Counter of total Token() requests to the alternate token source",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memory_classes_heap_objects_bytes",
+    "type": "gauge",
+    "help": "Memory occupied by live objects and dead objects that have not yet been marked free by the garbage collector.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_certificate_manager_server_rotation_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Histogram of the number of seconds the previous certificate lived before being rotated.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "apiserver_delegated_authz_request_total",
+    "type": "counter",
+    "help": "[ALPHA] Number of HTTP requests partitioned by status code.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "code",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_volume_stats_used_bytes",
+    "type": "gauge",
+    "help": "[ALPHA] Number of used bytes in the volume",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "persistentvolumeclaim",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_alloc_bytes_total",
+    "type": "counter",
+    "help": "Total number of bytes allocated, even if freed.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_volume_stats_inodes_used",
+    "type": "gauge",
+    "help": "[ALPHA] Number of used inodes in the volume",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "persistentvolumeclaim",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "process_max_fds",
+    "type": "gauge",
+    "help": "Maximum number of open file descriptors.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_gocachetest_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the cmd/go package due to a non-default GODEBUG=gocachetest=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_gomemlimit_bytes",
+    "type": "gauge",
+    "help": "Go runtime memory limit configured by the user, otherwise math.MaxInt64. This value is set by the GOMEMLIMIT environment variable, and the runtime/debug.SetMemoryLimit function.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memory_classes_heap_released_bytes",
+    "type": "gauge",
+    "help": "Memory that is completely free and has been returned to the underlying system. This metric is the runtime's estimate of free address space that is still mapped into the process, but is not backed by physical memory.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_pleg_relist_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Duration in seconds for relisting pods in PLEG.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_runtime_operations_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Duration in seconds of runtime operations. Broken down by operation type.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "apiserver_storage_data_key_generation_failures_total",
+    "type": "counter",
+    "help": "[ALPHA] Total number of failed data encryption key(DEK) generation operations.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_sched_goroutines_goroutines",
+    "type": "gauge",
+    "help": "Count of live goroutines.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_sched_pauses_total_other_seconds",
+    "type": "histogram",
+    "help": "Distribution of individual non-GC-related stop-the-world pause latencies. This is the time from deciding to stop the world until the world is started again. Some of this time is spent getting all threads to stop (measured directly in /sched/pauses/stopping/other:seconds). Bucket counts increase monotonically.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "hidden_metrics_total",
+    "type": "counter",
+    "help": "[BETA] The count of hidden metrics.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_volume_stats_available_bytes",
+    "type": "gauge",
+    "help": "[ALPHA] Number of available bytes in the volume",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "persistentvolumeclaim",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_heap_allocs_by_size_bytes",
+    "type": "histogram",
+    "help": "Distribution of heap allocations by approximate size. Bucket counts increase monotonically. Note that this does not include tiny objects as defined by /gc/heap/tiny/allocs:objects, only tiny blocks.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_last_gc_time_seconds",
+    "type": "gauge",
+    "help": "Number of seconds since 1970 of last garbage collection.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_node_startup_duration_seconds",
+    "type": "gauge",
+    "help": "[ALPHA] Duration in seconds of node startup in total.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_pleg_last_seen_seconds",
+    "type": "gauge",
+    "help": "[ALPHA] Timestamp in seconds when PLEG was last seen active.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_pleg_relist_interval_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Interval in seconds between relisting in PLEG.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_volume_stats_inodes",
+    "type": "gauge",
+    "help": "[ALPHA] Maximum number of inodes in the volume",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "persistentvolumeclaim",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "rest_client_exec_plugin_call_total",
+    "type": "counter",
+    "help": "[ALPHA] Number of calls to an exec plugin, partitioned by the type of event encountered (no_error, plugin_execution_error, plugin_not_found_error, client_internal_error) and an optional exit code. The exit code will be set to 0 if and only if the plugin call was successful.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "call_status",
+      "code",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_cgo_go_to_c_calls_calls_total",
+    "type": "counter",
+    "help": "Count of calls made from Go to C by the current process.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_http2client_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the net/http package due to a non-default GODEBUG=http2client=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_httpmuxgo121_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the net/http package due to a non-default GODEBUG=httpmuxgo121=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_scan_globals_bytes",
+    "type": "gauge",
+    "help": "The total amount of global variable space that is scannable.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memory_classes_profiling_buckets_bytes",
+    "type": "gauge",
+    "help": "Memory that is used by the stack trace hash map used for profiling.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "get_token_fail_count",
+    "type": "counter",
+    "help": "[ALPHA] Counter of failed Token() requests to the alternate token source",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_httplaxcontentlength_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the net/http package due to a non-default GODEBUG=httplaxcontentlength=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memory_classes_metadata_other_bytes",
+    "type": "gauge",
+    "help": "Memory that is reserved for or used to hold runtime metadata.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_evented_pleg_connection_error_count",
+    "type": "counter",
+    "help": "[ALPHA] The number of errors encountered during the establishment of streaming connection with the CRI runtime.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_runtime_operations_errors_total",
+    "type": "counter",
+    "help": "[ALPHA] Cumulative number of runtime operation errors by operation type.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "operation_type",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "volume_manager_total_volumes",
+    "type": "gauge",
+    "help": "[ALPHA] Number of volumes in Volume Manager",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "plugin_name",
+      "service",
+      "state"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "workqueue_depth",
+    "type": "gauge",
+    "help": "[ALPHA] Current depth of workqueue",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "controller",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_http2server_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the net/http package due to a non-default GODEBUG=http2server=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_multipartmaxparts_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the mime/multipart package due to a non-default GODEBUG=multipartmaxparts=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_randautoseed_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the math/rand package due to a non-default GODEBUG=randautoseed=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_orphan_pod_cleaned_volumes_errors",
+    "type": "gauge",
+    "help": "[ALPHA] The number of orphaned Pods whose volumes failed to be cleaned in the last periodic sweep.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_volume_stats_capacity_bytes",
+    "type": "gauge",
+    "help": "[ALPHA] Capacity in bytes of the volume",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "persistentvolumeclaim",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_jstmpllitinterp_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the html/template package due to a non-default GODEBUG=jstmpllitinterp=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memory_classes_total_bytes",
+    "type": "gauge",
+    "help": "All memory mapped by the Go runtime into the current process as read-write. Note that this does not include memory mapped by code called via cgo or via the syscall package. Sum of all metrics in /memory/classes.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_pod_start_total_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Duration in seconds to start a pod since creation, including time to pull images and run init containers, measured from pod creation timestamp to when all its containers are reported as started and observed via watch",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_topology_manager_admission_errors_total",
+    "type": "counter",
+    "help": "[ALPHA] The number of admission request failures where resources could not be aligned.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_topology_manager_admission_requests_total",
+    "type": "counter",
+    "help": "[ALPHA] The number of admission requests where resources have to be aligned.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubernetes_build_info",
+    "type": "gauge",
+    "help": "[ALPHA] A metric with a constant '1' value labeled by major, minor, git version, git commit, git tree state, build date, Go version, and compiler from which Kubernetes was built, and platform on which it is running.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "build_date",
+      "compiler",
+      "endpoint",
+      "git_commit",
+      "git_tree_state",
+      "git_version",
+      "go_version",
+      "instance",
+      "job",
+      "major",
+      "metrics_path",
+      "minor",
+      "namespace",
+      "node",
+      "platform",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "apiserver_delegated_authz_request_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Request latency in seconds. Broken down by status code.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_heap_objects",
+    "type": "gauge",
+    "help": "Number of allocated objects.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_sched_pauses_stopping_gc_seconds",
+    "type": "histogram",
+    "help": "Distribution of individual GC-related stop-the-world stopping latencies. This is the time it takes from deciding to stop the world until all Ps are stopped. This is a subset of the total GC-related stop-the-world time (/sched/pauses/total/gc:seconds). During this time, some threads may be executing. Bucket counts increase monotonically.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_sched_pauses_stopping_other_seconds",
+    "type": "histogram",
+    "help": "Distribution of individual non-GC-related stop-the-world stopping latencies. This is the time it takes from deciding to stop the world until all Ps are stopped. This is a subset of the total non-GC-related stop-the-world time (/sched/pauses/total/other:seconds). During this time, some threads may be executing. Bucket counts increase monotonically.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "rest_client_request_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Request latency in seconds. Broken down by verb, and host.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "csi_operations_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Container Storage Interface operation duration with gRPC error code status total",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "process_cpu_seconds_total",
+    "type": "counter",
+    "help": "Total user and system CPU time spent in seconds.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "authentication_token_cache_request_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] ",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memory_classes_metadata_mspan_free_bytes",
+    "type": "gauge",
+    "help": "Memory that is reserved for runtime mspan structures, but not in-use.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "apiserver_delegated_authn_request_total",
+    "type": "counter",
+    "help": "[ALPHA] Number of HTTP requests partitioned by status code.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "code",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_mallocs_total",
+    "type": "counter",
+    "help": "Total number of mallocs.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_sched_gomaxprocs_threads",
+    "type": "gauge",
+    "help": "The current runtime.GOMAXPROCS setting, or the number of operating system threads that can execute user-level Go code simultaneously.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "registered_metrics_total",
+    "type": "counter",
+    "help": "[BETA] The count of registered metrics broken by stability level and deprecation version.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service",
+      "stability_level"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "workqueue_adds_total",
+    "type": "counter",
+    "help": "[ALPHA] Total number of adds handled by workqueue",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "controller",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_cpu_classes_gc_mark_dedicated_cpu_seconds_total",
+    "type": "counter",
+    "help": "Estimated total CPU time spent performing GC tasks on processors (as defined by GOMAXPROCS) dedicated to those tasks. This metric is an overestimate, and not directly comparable to system CPU time measurements. Compare only with other /cpu/classes metrics.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_heap_live_bytes",
+    "type": "gauge",
+    "help": "Heap memory occupied by live objects that were marked by the previous GC.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_limiter_last_enabled_gc_cycle",
+    "type": "gauge",
+    "help": "GC cycle the last time the GC CPU limiter was enabled. This metric is useful for diagnosing the root cause of an out-of-memory error, because the limiter trades memory for CPU time when the GC's CPU time gets too high. This is most likely to occur with use of SetMemoryLimit. The first GC cycle is cycle 1, so a value of 0 indicates that it was never enabled.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memory_classes_metadata_mcache_free_bytes",
+    "type": "gauge",
+    "help": "Memory that is reserved for runtime mcache structures, but not in-use.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_cpu_classes_idle_cpu_seconds_total",
+    "type": "counter",
+    "help": "Estimated total available CPU time not spent executing any Go or Go runtime code. In other words, the part of /cpu/classes/total:cpu-seconds that was unused. This metric is an overestimate, and not directly comparable to system CPU time measurements. Compare only with other /cpu/classes metrics.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_heap_goal_bytes",
+    "type": "gauge",
+    "help": "Heap size target for the end of the GC cycle.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_netedns0_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the net package due to a non-default GODEBUG=netedns0=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "apiserver_webhooks_x509_missing_san_total",
+    "type": "counter",
+    "help": "[ALPHA] Counts the number of requests to servers missing SAN extension in their serving certificate OR the number of connection failures due to the lack of x509 certificate SAN extension missing (either/or, based on the runtime environment)",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_certificate_manager_server_ttl_seconds",
+    "type": "gauge",
+    "help": "[ALPHA] Gauge of the shortest TTL (time-to-live) of the Kubelet's serving certificate. The value is in seconds until certificate expiry (negative if already expired). If serving certificate is invalid or unused, the value will be +INF.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_http_requests_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Duration in seconds to serve http requests",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_pod_status_sync_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Duration in seconds to sync a pod status update. Measures time from detection of a change to pod status until the API is successfully updated for that pod, even if multiple intevening changes to pod status occur.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_restarted_pods_total",
+    "type": "counter",
+    "help": "[ALPHA] Number of pods that have been restarted because they were deleted and recreated with the same UID while the kubelet was watching them (common for static pods, extremely uncommon for API pods)",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service",
+      "static"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "rest_client_exec_plugin_ttl_seconds",
+    "type": "gauge",
+    "help": "[ALPHA] Gauge of the shortest TTL (time-to-live) of the client certificate(s) managed by the auth exec plugin. The value is in seconds until certificate expiry (negative if already expired). If auth exec plugins are unused or manage no TLS certificates, the value will be +INF.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_heap_frees_bytes_total",
+    "type": "counter",
+    "help": "Cumulative sum of heap memory freed by the garbage collector.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_multipathtcp_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the net package due to a non-default GODEBUG=multipathtcp=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_x509sha1_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the crypto/x509 package due to a non-default GODEBUG=x509sha1=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_cgroup_manager_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Duration in seconds for cgroup manager operations. Broken down by method.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_execerrdot_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the os/exec package due to a non-default GODEBUG=execerrdot=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_cycles_forced_gc_cycles_total",
+    "type": "counter",
+    "help": "Count of completed GC cycles forced by the application.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_mcache_sys_bytes",
+    "type": "gauge",
+    "help": "Number of bytes used for mcache structures obtained from system.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "plugin_manager_total_plugins",
+    "type": "gauge",
+    "help": "[ALPHA] Number of plugins in Plugin Manager",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service",
+      "socket_path",
+      "state"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "apiserver_audit_requests_rejected_total",
+    "type": "counter",
+    "help": "[ALPHA] Counter of apiserver requests rejected due to an error in audit logging backend.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_mcache_inuse_bytes",
+    "type": "gauge",
+    "help": "Number of bytes in use by mcache structures.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_stack_starting_size_bytes",
+    "type": "gauge",
+    "help": "The stack size of new goroutines.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_cpu_classes_user_cpu_seconds_total",
+    "type": "counter",
+    "help": "Estimated total CPU time spent running user Go code. This may also include some small amount of time spent in the Go runtime. This metric is an overestimate, and not directly comparable to system CPU time measurements. Compare only with other /cpu/classes metrics.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_tls10server_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the crypto/tls package due to a non-default GODEBUG=tls10server=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_sched_latencies_seconds",
+    "type": "histogram",
+    "help": "Distribution of the time goroutines have spent in the scheduler in a runnable state before actually running. Bucket counts increase monotonically.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_cpu_manager_pinning_requests_total",
+    "type": "counter",
+    "help": "[ALPHA] The number of cpu core allocations which required pinning.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_started_pods_total",
+    "type": "counter",
+    "help": "[ALPHA] Cumulative number of pods started",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "rest_client_requests_total",
+    "type": "counter",
+    "help": "[ALPHA] Number of HTTP requests, partitioned by status code, method, and host.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "code",
+      "container",
+      "endpoint",
+      "host",
+      "instance",
+      "job",
+      "method",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "apiserver_delegated_authn_request_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Request latency in seconds. Broken down by status code.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_heap_frees_by_size_bytes",
+    "type": "histogram",
+    "help": "Distribution of freed heap allocations by approximate size. Bucket counts increase monotonically. Note that this does not include tiny objects as defined by /gc/heap/tiny/allocs:objects, only tiny blocks.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_scan_total_bytes",
+    "type": "gauge",
+    "help": "The total amount space that is scannable. Sum of all metrics in /gc/scan.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_node_name",
+    "type": "gauge",
+    "help": "[ALPHA] The node's name. The count is always 1.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_working_pods",
+    "type": "gauge",
+    "help": "[ALPHA] Number of pods the kubelet is actually running, broken down by lifecycle phase, whether the pod is desired, orphaned, or runtime only (also orphaned), and whether the pod is static. An orphaned pod has been removed from local configuration or force deleted in the API and consumes resources that are not otherwise visible.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "config",
+      "endpoint",
+      "instance",
+      "job",
+      "lifecycle",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service",
+      "static"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "rest_client_exec_plugin_certificate_rotation_age",
+    "type": "histogram",
+    "help": "[ALPHA] Histogram of the number of seconds the last auth exec plugin client certificate lived before being rotated. If auth exec plugin client certificates are unused, histogram will contain no data.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "authentication_token_cache_request_total",
+    "type": "counter",
+    "help": "[ALPHA] ",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service",
+      "status"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "cardinality_enforcement_unexpected_categorizations_total",
+    "type": "counter",
+    "help": "[ALPHA] The count of unexpected categorizations during cardinality enforcement.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_info",
+    "type": "gauge",
+    "help": "Information about the Go environment.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service",
+      "version"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "authentication_token_cache_fetch_total",
+    "type": "counter",
+    "help": "[ALPHA] ",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service",
+      "status"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_cpu_manager_pinning_errors_total",
+    "type": "counter",
+    "help": "[ALPHA] The number of cpu core allocations which required pinning failed.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_duration_seconds",
+    "type": "summary",
+    "help": "A summary of the pause duration of garbage collection cycles.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "quantile",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_goroutines",
+    "type": "gauge",
+    "help": "Number of goroutines that currently exist.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_frees_total",
+    "type": "counter",
+    "help": "Total number of frees.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "process_resident_memory_bytes",
+    "type": "gauge",
+    "help": "Resident memory size in bytes.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "disabled_metrics_total",
+    "type": "counter",
+    "help": "[BETA] The count of disabled metrics.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memory_classes_metadata_mcache_inuse_bytes",
+    "type": "gauge",
+    "help": "Memory that is occupied by runtime mcache structures that are currently being used.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_cpu_classes_gc_pause_cpu_seconds_total",
+    "type": "counter",
+    "help": "Estimated total CPU time spent with the application paused by the GC. Even if only one thread is running during the pause, this is computed as GOMAXPROCS times the pause latency because nothing else can be executing. This is the exact sum of samples in /sched/pauses/total/gc:seconds if each sample is multiplied by GOMAXPROCS at the time it is taken. This metric is an overestimate, and not directly comparable to system CPU time measurements. Compare only with other /cpu/classes metrics.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_cycles_automatic_gc_cycles_total",
+    "type": "counter",
+    "help": "Count of completed GC cycles generated by the Go runtime.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_graceful_shutdown_start_time_seconds",
+    "type": "gauge",
+    "help": "[ALPHA] Last graceful shutdown start time since unix epoch in seconds",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_volume_stats_inodes_free",
+    "type": "gauge",
+    "help": "[ALPHA] Number of free inodes in the volume",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "persistentvolumeclaim",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "apiserver_envelope_encryption_dek_cache_fill_percent",
+    "type": "gauge",
+    "help": "[ALPHA] Percent of the cache slots currently occupied by cached DEKs.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "volume_manager_selinux_container_errors_total",
+    "type": "gauge",
+    "help": "[ALPHA] Number of errors when kubelet cannot compute SELinux context for a container. Kubelet can't start such a Pod then and it will retry, therefore value of this metric may not represent the actual nr. of containers.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_heap_objects_objects",
+    "type": "gauge",
+    "help": "Number of objects, live or unswept, occupying heap memory.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_gocachehash_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the cmd/go package due to a non-default GODEBUG=gocachehash=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_running_pods",
+    "type": "gauge",
+    "help": "[ALPHA] Number of pods that have a running pod sandbox",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_installgoroot_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the go/build package due to a non-default GODEBUG=installgoroot=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_heap_frees_objects_total",
+    "type": "counter",
+    "help": "Cumulative count of heap allocations whose storage was freed by the garbage collector. Note that this does not include tiny objects as defined by /gc/heap/tiny/allocs:objects, only tiny blocks.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_heap_idle_bytes",
+    "type": "gauge",
+    "help": "Number of heap bytes waiting to be used.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_next_gc_bytes",
+    "type": "gauge",
+    "help": "Number of heap bytes when next garbage collection will take place.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "rest_client_rate_limiter_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Client side rate limiter latency in seconds. Broken down by verb, and host.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "workqueue_queue_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] How long in seconds an item stays in workqueue before being requested.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_buck_hash_sys_bytes",
+    "type": "gauge",
+    "help": "Number of bytes used by the profiling bucket hash table.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_topology_manager_admission_duration_ms",
+    "type": "histogram",
+    "help": "[ALPHA] Duration in milliseconds to serve a pod admission request.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_graceful_shutdown_end_time_seconds",
+    "type": "gauge",
+    "help": "[ALPHA] Last graceful shutdown start time since unix epoch in seconds",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_heap_alloc_bytes",
+    "type": "gauge",
+    "help": "Number of heap bytes allocated and still in use.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_active_pods",
+    "type": "gauge",
+    "help": "[ALPHA] The number of pods the kubelet considers active and which are being considered when admitting new pods. static is true if the pod is not from the apiserver.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service",
+      "static"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "apiserver_storage_envelope_transformation_cache_misses_total",
+    "type": "counter",
+    "help": "[ALPHA] Total number of cache misses while accessing key decryption key(KEK).",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_heap_inuse_bytes",
+    "type": "gauge",
+    "help": "Number of heap bytes that are in use.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_threads",
+    "type": "gauge",
+    "help": "Number of OS threads created.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_heap_allocs_bytes_total",
+    "type": "counter",
+    "help": "Cumulative sum of memory allocated to the heap by the application.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "rest_client_transport_cache_entries",
+    "type": "gauge",
+    "help": "[ALPHA] Number of transport entries in the internal cache.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "storage_operation_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Storage operation duration",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "process_start_time_seconds",
+    "type": "gauge",
+    "help": "Start time of the process since unix epoch in seconds.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "workqueue_work_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] How long in seconds processing an item from workqueue takes.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_heap_released_bytes",
+    "type": "gauge",
+    "help": "Number of heap bytes released to OS.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_gocacheverify_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the cmd/go package due to a non-default GODEBUG=gocacheverify=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_lookups_total",
+    "type": "counter",
+    "help": "Total number of pointer lookups.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "authentication_token_cache_active_fetch_count",
+    "type": "gauge",
+    "help": "[ALPHA] ",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service",
+      "status"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memory_classes_other_bytes",
+    "type": "gauge",
+    "help": "Memory used by execution trace buffers, structures for debugging the runtime, finalizer and profiler specials, and more.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_sync_mutex_wait_total_seconds_total",
+    "type": "counter",
+    "help": "Approximate cumulative time goroutines have spent blocked on a sync.Mutex, sync.RWMutex, or runtime-internal lock. This metric is useful for identifying global changes in lock contention. Collect a mutex or block profile using the runtime/pprof package for more detailed contention data.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_started_containers_total",
+    "type": "counter",
+    "help": "[ALPHA] Cumulative number of containers started",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container_type",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "rest_client_response_size_bytes",
+    "type": "histogram",
+    "help": "[ALPHA] Response size in bytes. Broken down by verb and host.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memory_classes_metadata_mspan_inuse_bytes",
+    "type": "gauge",
+    "help": "Memory that is occupied by runtime mspan structures that are currently being used.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "rest_client_request_size_bytes",
+    "type": "histogram",
+    "help": "[ALPHA] Request size in bytes. Broken down by verb and host.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_sys_bytes",
+    "type": "gauge",
+    "help": "Number of bytes obtained from system.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_http_requests_total",
+    "type": "counter",
+    "help": "[ALPHA] Number of the http requests received since the server started",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "long_running",
+      "method",
+      "metrics_path",
+      "namespace",
+      "node",
+      "path",
+      "server_type",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_node_startup_registration_duration_seconds",
+    "type": "gauge",
+    "help": "[ALPHA] Duration in seconds of node startup during registration.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_run_podsandbox_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Duration in seconds of the run_podsandbox operations. Broken down by RuntimeClass.Handler.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "aggregator_discovery_aggregation_count_total",
+    "type": "counter",
+    "help": "[ALPHA] Counter of number of times discovery was aggregated",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "process_virtual_memory_bytes",
+    "type": "gauge",
+    "help": "Virtual memory size in bytes.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_x509usefallbackroots_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the crypto/x509 package due to a non-default GODEBUG=x509usefallbackroots=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_orphan_pod_cleaned_volumes",
+    "type": "gauge",
+    "help": "[ALPHA] The total number of orphaned Pods whose volumes were cleaned in the last periodic sweep.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_pod_start_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Duration in seconds from kubelet seeing a pod for the first time to the pod starting to run",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "process_virtual_memory_max_bytes",
+    "type": "gauge",
+    "help": "Maximum amount of virtual memory available in bytes.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "rest_client_transport_create_calls_total",
+    "type": "counter",
+    "help": "[ALPHA] Number of calls to get a new transport, partitioned by the result of the operation hit: obtained from the cache, miss: created and added to the cache, uncacheable: created and not cached",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "result",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_container_log_filesystem_used_bytes",
+    "type": "gauge",
+    "help": "[ALPHA] Bytes used by the container's logs on the filesystem.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service",
+      "uid"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "volume_manager_selinux_container_warnings_total",
+    "type": "gauge",
+    "help": "[ALPHA] Number of errors when kubelet cannot compute SELinux context for a container that are ignored. They will become real errors when SELinuxMountReadWriteOncePod feature is expanded to all volume access modes.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_lifecycle_handler_http_fallbacks_total",
+    "type": "counter",
+    "help": "[ALPHA] The number of times lifecycle handlers successfully fell back to http from https.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_cpu_classes_scavenge_assist_cpu_seconds_total",
+    "type": "counter",
+    "help": "Estimated total CPU time spent returning unused memory to the underlying platform in response eagerly in response to memory pressure. This metric is an overestimate, and not directly comparable to system CPU time measurements. Compare only with other /cpu/classes metrics.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_mspan_inuse_bytes",
+    "type": "gauge",
+    "help": "Number of bytes in use by mspan structures.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_node_startup_pre_kubelet_duration_seconds",
+    "type": "gauge",
+    "help": "[ALPHA] Duration in seconds of node startup before kubelet starts.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_server_expiration_renew_errors",
+    "type": "counter",
+    "help": "[ALPHA] Counter of certificate renewal errors.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "force_cleaned_failed_volume_operation_errors_total",
+    "type": "counter",
+    "help": "[ALPHA] The number of volumes that failed force cleanup after their reconstruction failed during kubelet startup.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memory_classes_heap_free_bytes",
+    "type": "gauge",
+    "help": "Memory that is completely free and eligible to be returned to the underlying system, but has not been. This metric is the runtime's estimate of free address space that is backed by physical memory.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_cycles_total_gc_cycles_total",
+    "type": "counter",
+    "help": "Count of all completed GC cycles.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_pauses_seconds",
+    "type": "histogram",
+    "help": "Deprecated. Prefer the identical /sched/pauses/total/gc:seconds.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_scan_stack_bytes",
+    "type": "gauge",
+    "help": "The number of bytes of stack that were scanned last GC cycle.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memstats_stack_sys_bytes",
+    "type": "gauge",
+    "help": "Number of bytes obtained from system for stack allocator.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_managed_ephemeral_containers",
+    "type": "gauge",
+    "help": "[ALPHA] Current number of ephemeral containers in pods managed by this kubelet.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_cpu_classes_gc_mark_idle_cpu_seconds_total",
+    "type": "counter",
+    "help": "Estimated total CPU time spent performing GC tasks on spare CPU resources that the Go scheduler could not otherwise find a use for. This should be subtracted from the total GC CPU time to obtain a measure of compulsory GC CPU time. This metric is an overestimate, and not directly comparable to system CPU time measurements. Compare only with other /cpu/classes metrics.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_tlsunsafeekm_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the crypto/tls package due to a non-default GODEBUG=tlsunsafeekm=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_mirror_pods",
+    "type": "gauge",
+    "help": "[ALPHA] The number of mirror pods the kubelet will try to create (one per admitted static pod)",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_cpu_classes_gc_mark_assist_cpu_seconds_total",
+    "type": "counter",
+    "help": "Estimated total CPU time goroutines spent performing GC tasks to assist the GC and prevent it from falling behind the application. This metric is an overestimate, and not directly comparable to system CPU time measurements. Compare only with other /cpu/classes metrics.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_gc_scan_heap_bytes",
+    "type": "gauge",
+    "help": "The total amount of heap space that is scannable.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_cpu_classes_total_cpu_seconds_total",
+    "type": "counter",
+    "help": "Estimated total available CPU time for user Go code or the Go runtime, as defined by GOMAXPROCS. In other words, GOMAXPROCS integrated over the wall-clock duration this process has been executing for. This metric is an overestimate, and not directly comparable to system CPU time measurements. Compare only with other /cpu/classes metrics. Sum of all metrics in /cpu/classes.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_cpu_classes_scavenge_background_cpu_seconds_total",
+    "type": "counter",
+    "help": "Estimated total CPU time spent performing background tasks to return unused memory to the underlying platform. This metric is an overestimate, and not directly comparable to system CPU time measurements. Compare only with other /cpu/classes metrics.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_http_inflight_requests",
+    "type": "gauge",
+    "help": "[ALPHA] Number of the inflight http requests",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "long_running",
+      "method",
+      "metrics_path",
+      "namespace",
+      "node",
+      "path",
+      "server_type",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_runtime_operations_total",
+    "type": "counter",
+    "help": "[ALPHA] Cumulative number of runtime operations by operation type.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "operation_type",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "reconstruct_volume_operations_total",
+    "type": "counter",
+    "help": "[ALPHA] The number of volumes that were attempted to be reconstructed from the operating system during kubelet startup. This includes both successful and failed reconstruction.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "force_cleaned_failed_volume_operations_total",
+    "type": "counter",
+    "help": "[ALPHA] The number of volumes that were force cleaned after their reconstruction failed during kubelet startup. This includes both successful and failed cleanups.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_pod_worker_start_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Duration in seconds from kubelet seeing a pod to starting a worker.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_sched_pauses_total_gc_seconds",
+    "type": "histogram",
+    "help": "Distribution of individual GC-related stop-the-world pause latencies. This is the time from deciding to stop the world until the world is started again. Some of this time is spent getting all threads to stop (this is measured directly in /sched/pauses/stopping/gc:seconds), during which some threads may still be running. Bucket counts increase monotonically.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_evented_pleg_connection_success_count",
+    "type": "counter",
+    "help": "[ALPHA] The number of times a streaming client was obtained to receive CRI Events.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_node_startup_post_registration_duration_seconds",
+    "type": "gauge",
+    "help": "[ALPHA] Duration in seconds of node startup after registration.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_godebug_non_default_behavior_multipartmaxheaders_events_total",
+    "type": "counter",
+    "help": "The number of non-default behaviors executed by the mime/multipart package due to a non-default GODEBUG=multipartmaxheaders=... setting.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_containers_per_pod_count",
+    "type": "histogram",
+    "help": "[ALPHA] The number of containers per pod.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_node_startup_pre_registration_duration_seconds",
+    "type": "gauge",
+    "help": "[ALPHA] Duration in seconds of node startup before registration.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "kubelet_volume_metric_collection_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Duration in seconds to calculate volume stats",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "go_memory_classes_os_stacks_bytes",
+    "type": "gauge",
+    "help": "Stack memory allocated by the underlying operating system. In non-cgo programs this metric is currently zero. This may change in the future.In cgo programs this metric includes OS thread stacks allocated directly from the OS. Currently, this only accounts for one stack in c-shared and c-archive build modes, and other sources of stacks from the OS are not measured. This too may change in the future.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/probes",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "prober_probe_duration_seconds",
+    "type": "histogram",
+    "help": "[ALPHA] Duration in seconds for a probe response.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/probes",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "prober_probe_total",
+    "type": "counter",
+    "help": "[ALPHA] Cumulative number of a liveness, readiness or startup probe for a container by result.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "pod_uid",
+      "probe_type",
+      "result",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/probes",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "process_start_time_seconds",
+    "type": "gauge",
+    "help": "[ALPHA] Start time of the process since unix epoch in seconds.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "machine_swap_bytes",
+    "type": "gauge",
+    "help": "Amount of swap memory available on the machine.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "boot_id",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "cadvisor_version_info",
+    "type": "gauge",
+    "help": "A metric with a constant '1' value labeled by kernel version, OS version, docker version, cadvisor version & cadvisor revision.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "kernelVersion",
+      "metrics_path",
+      "namespace",
+      "node",
+      "osVersion",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_memory_mapped_file",
+    "type": "gauge",
+    "help": "Size of memory mapped files in bytes.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_processes",
+    "type": "gauge",
+    "help": "Number of processes running inside the container.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_spec_cpu_quota",
+    "type": "gauge",
+    "help": "CPU quota of the container.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_spec_memory_swap_limit_bytes",
+    "type": "gauge",
+    "help": "Memory swap limit for the container.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_fs_read_seconds_total",
+    "type": "counter",
+    "help": "Cumulative count of seconds spent reading",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_memory_rss",
+    "type": "gauge",
+    "help": "Size of RSS in bytes.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_cpu_usage_seconds_total",
+    "type": "counter",
+    "help": "Cumulative cpu time consumed in seconds.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "cpu",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_threads_max",
+    "type": "gauge",
+    "help": "Maximum number of threads allowed inside the container, infinity if value is zero",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_fs_reads_bytes_total",
+    "type": "counter",
+    "help": "Cumulative count of bytes read",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "device",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_fs_write_seconds_total",
+    "type": "counter",
+    "help": "Cumulative count of seconds spent writing",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_file_descriptors",
+    "type": "gauge",
+    "help": "Number of open file descriptors for the container.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "machine_cpu_physical_cores",
+    "type": "gauge",
+    "help": "Number of physical CPU cores.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "boot_id",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "machine_nvm_avg_power_budget_watts",
+    "type": "gauge",
+    "help": "NVM power budget.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "boot_id",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_cpu_cfs_throttled_periods_total",
+    "type": "counter",
+    "help": "Number of throttled period intervals.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_cpu_load_average_10s",
+    "type": "gauge",
+    "help": "Value of container cpu load average over the last 10 seconds.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_fs_sector_writes_total",
+    "type": "counter",
+    "help": "Cumulative count of sector writes completed",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_memory_cache",
+    "type": "gauge",
+    "help": "Number of bytes of page cache memory.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_scrape_error",
+    "type": "gauge",
+    "help": "1 if there was an error while getting container metrics, 0 otherwise",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_spec_cpu_period",
+    "type": "gauge",
+    "help": "CPU period of the container.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_spec_memory_limit_bytes",
+    "type": "gauge",
+    "help": "Memory limit for the container.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_blkio_device_usage_total",
+    "type": "counter",
+    "help": "Blkio Device bytes usage",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "device",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "major",
+      "metrics_path",
+      "minor",
+      "name",
+      "namespace",
+      "node",
+      "operation",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_cpu_cfs_throttled_seconds_total",
+    "type": "counter",
+    "help": "Total time duration the container has been throttled.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_cpu_system_seconds_total",
+    "type": "counter",
+    "help": "Cumulative system cpu time consumed in seconds.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_fs_limit_bytes",
+    "type": "gauge",
+    "help": "Number of bytes that can be consumed by the container on this filesystem.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_oom_events_total",
+    "type": "counter",
+    "help": "Count of out of memory events observed for the container",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_fs_writes_bytes_total",
+    "type": "counter",
+    "help": "Cumulative count of bytes written",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "device",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_network_transmit_packets_dropped_total",
+    "type": "counter",
+    "help": "Cumulative count of packets dropped while transmitting",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "interface",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_spec_cpu_shares",
+    "type": "gauge",
+    "help": "CPU share of the container.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "machine_cpu_cores",
+    "type": "gauge",
+    "help": "Number of logical CPU cores.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "boot_id",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_network_receive_errors_total",
+    "type": "counter",
+    "help": "Cumulative count of errors encountered while receiving",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "interface",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_tasks_state",
+    "type": "gauge",
+    "help": "Number of tasks in given state",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_threads",
+    "type": "gauge",
+    "help": "Number of threads running inside the container",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_fs_inodes_total",
+    "type": "gauge",
+    "help": "Number of Inodes",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_fs_sector_reads_total",
+    "type": "counter",
+    "help": "Cumulative count of sector reads completed",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_fs_usage_bytes",
+    "type": "gauge",
+    "help": "Number of bytes that are consumed by the container on this filesystem.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_last_seen",
+    "type": "gauge",
+    "help": "Last time a container was seen by the exporter",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_memory_failcnt",
+    "type": "counter",
+    "help": "Number of memory usage hits limits",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "machine_cpu_sockets",
+    "type": "gauge",
+    "help": "Number of CPU sockets.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "boot_id",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "machine_memory_bytes",
+    "type": "gauge",
+    "help": "Amount of memory installed on the machine.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "boot_id",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "machine_scrape_error",
+    "type": "gauge",
+    "help": "1 if there was an error while getting machine metrics, 0 otherwise.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "instance",
+      "job",
+      "metrics_path",
+      "namespace",
+      "node",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_fs_io_time_seconds_total",
+    "type": "counter",
+    "help": "Cumulative count of seconds spent doing I/Os",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_network_receive_bytes_total",
+    "type": "counter",
+    "help": "Cumulative count of bytes received",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "interface",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_spec_memory_reservation_limit_bytes",
+    "type": "gauge",
+    "help": "Memory reservation limit for the container.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_memory_usage_bytes",
+    "type": "gauge",
+    "help": "Current memory usage in bytes, including all memory regardless of when it was accessed",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_network_transmit_bytes_total",
+    "type": "counter",
+    "help": "Cumulative count of bytes transmitted",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "interface",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_fs_io_time_weighted_seconds_total",
+    "type": "counter",
+    "help": "Cumulative weighted I/O time in seconds",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_fs_reads_merged_total",
+    "type": "counter",
+    "help": "Cumulative count of reads merged",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_fs_reads_total",
+    "type": "counter",
+    "help": "Cumulative count of reads completed",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "device",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_fs_writes_total",
+    "type": "counter",
+    "help": "Cumulative count of writes completed",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "device",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_memory_max_usage_bytes",
+    "type": "gauge",
+    "help": "Maximum memory usage recorded in bytes",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_fs_io_current",
+    "type": "gauge",
+    "help": "Number of I/Os currently in progress",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_memory_working_set_bytes",
+    "type": "gauge",
+    "help": "Current working set in bytes.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_network_receive_packets_dropped_total",
+    "type": "counter",
+    "help": "Cumulative count of packets dropped while receiving",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "interface",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_network_transmit_packets_total",
+    "type": "counter",
+    "help": "Cumulative count of packets transmitted",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "interface",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "machine_nvm_capacity",
+    "type": "gauge",
+    "help": "NVM capacity value labeled by NVM mode (memory mode or app direct mode).",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "boot_id",
+      "endpoint",
+      "instance",
+      "job",
+      "machine_id",
+      "metrics_path",
+      "mode",
+      "namespace",
+      "node",
+      "service",
+      "system_uuid"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_cpu_cfs_periods_total",
+    "type": "counter",
+    "help": "Number of elapsed enforcement period intervals.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_memory_failures_total",
+    "type": "counter",
+    "help": "Cumulative count of memory allocation failures.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "failure_type",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "scope",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_network_transmit_errors_total",
+    "type": "counter",
+    "help": "Cumulative count of errors encountered while transmitting",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "interface",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_sockets",
+    "type": "gauge",
+    "help": "Number of open sockets for the container.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_ulimits_soft",
+    "type": "gauge",
+    "help": "Soft ulimit values for the container root process. Unlimited if -1, except priority and nice",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service",
+      "ulimit"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_memory_kernel_usage",
+    "type": "gauge",
+    "help": "Size of kernel memory allocated in bytes.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_memory_swap",
+    "type": "gauge",
+    "help": "Container swap usage in bytes.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_network_receive_packets_total",
+    "type": "counter",
+    "help": "Cumulative count of packets received",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "interface",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_start_time_seconds",
+    "type": "gauge",
+    "help": "Start time of the container since unix epoch in seconds.",
+    "unit": "",
+    "labels": [
+      "__name__",
+      "container",
+      "endpoint",
+      "id",
+      "image",
+      "instance",
+      "job",
+      "metrics_path",
+      "name",
+      "namespace",
+      "node",
+      "pod",
+      "service"
+    ]
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_cpu_user_seconds_total",
+    "type": "counter",
+    "help": "Cumulative user cpu time consumed in seconds.",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_fs_inodes_free",
+    "type": "gauge",
+    "help": "Number of available Inodes",
+    "unit": "",
+    "labels": []
+  },
+  {
+    "target": {
+      "endpoint": "https-metrics",
+      "job": "kubelet",
+      "metrics_path": "/metrics/cadvisor",
+      "namespace": "kube-system",
+      "node": "ip-172-31-34-3.ec2.internal",
+      "service": "prometheus-kube-prometheus-kubelet"
+    },
+    "metric": "container_fs_writes_merged_total",
+    "type": "counter",
+    "help": "Cumulative count of writes merged",
+    "unit": "",
+    "labels": []
+  }
+]

@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  E18: SNS subscription filter rejects all messages.
+  User complaint: "We publish messages to SNS topic 'e18-order-events' and our SQS queue
+  'e18-fulfillment-queue' is subscribed, but the queue never receives any messages.
+  We can confirm messages are being published successfully to the topic."
+  Root cause: The SNS subscription has a FilterPolicy that requires
+  eventType='order.shipped' but the publisher sends eventType='order_shipped'
+  (underscore vs dot). The filter silently drops all messages.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = Filter expects 'order.shipped' but publisher sends 'order_shipped'.
+      Fixed = Filter matches 'order_shipped' correctly.
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  OrderEventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: e18-order-events
+      Tags:
+        - Key: Name
+          Value: e18-order-events
+        - Key: Environment
+          Value: production
+        - Key: Application
+          Value: order-fulfillment
+
+  FulfillmentQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: e18-fulfillment-queue
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 345600
+      Tags:
+        - Key: Name
+          Value: e18-fulfillment-queue
+        - Key: Environment
+          Value: production
+
+  QueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref FulfillmentQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sns.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt FulfillmentQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref OrderEventsTopic
+
+  # THE BUG: FilterPolicy uses 'order.shipped' but publisher sends 'order_shipped'
+  FulfillmentSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref OrderEventsTopic
+      Protocol: sqs
+      Endpoint: !GetAtt FulfillmentQueue.Arn
+      RawMessageDelivery: true
+      FilterPolicy: !If
+        - IsFixed
+        - eventType:
+            - order_shipped
+            - order_delivered
+            - order_returned
+        - eventType:
+            - order.shipped
+            - order.delivered
+            - order.returned
+
+Outputs:
+  TopicArn:
+    Description: SNS Topic ARN
+    Value: !Ref OrderEventsTopic
+  QueueUrl:
+    Description: SQS Queue URL
+    Value: !Ref FulfillmentQueue
+  QueueArn:
+    Description: SQS Queue ARN
+    Value: !GetAtt FulfillmentQueue.Arn
+  FilterPolicy:
+    Description: Subscription filter policy (broken uses dots, publisher uses underscores)
+    Value: !If
+      - IsFixed
+      - 'eventType: [order_shipped, order_delivered, order_returned]'
+      - 'eventType: [order.shipped, order.delivered, order.returned]'
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode

@@ -1,0 +1,18 @@
+user_prompt: "Why is there high latency with the customer-orders deployment in namespace bench-07?"
+expected_output:
+  - High latency in the `customer-orders` deployment is due to slow database calls
+  - Database operations are taking between 5 to 10 seconds to complete
+before_test: |
+  kubectl create namespace bench-07 || true
+  kubectl label namespace bench-07 benchmark=true --overwrite || true
+  kubectl apply -f ./helm/manifest.yaml -n bench-07
+after_test: |
+  kubectl delete -f ./helm/manifest.yaml -n bench-07 --ignore-not-found
+  kubectl delete namespace bench-07 --ignore-not-found
+evaluation:
+  correctness: 1
+tags:
+  - kubernetes
+  - chain-of-causation
+  - database
+  - medium

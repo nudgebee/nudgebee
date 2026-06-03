@@ -1,0 +1,8 @@
+user_prompt: What is the SQL query to find events associated with cloud account 'acc-xyz'?
+expected_output:
+- SELECT id, title, starts_at, status, priority, subject_name   FROM events   WHERE
+  cloud_account_id = 'acc-xyz';
+- SELECT * FROM events   WHERE cloud_account_id = 'acc-xyz';
+tags:
+- command
+- events

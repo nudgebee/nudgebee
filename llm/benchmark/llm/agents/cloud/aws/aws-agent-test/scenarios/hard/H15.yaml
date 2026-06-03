@@ -1,0 +1,192 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  H15: DynamoDB throttling → SQS backlog → Lambda error cascade.
+  User complaint: "Our order processing is backed up. SQS queue 'h15-orders' has 50K+
+  messages. Lambda 'h15-order-writer' shows high error rate. DynamoDB table
+  'h15-orders-table' seems slow. Everything was fine until traffic increased."
+  Root cause: DynamoDB table has provisioned capacity of 5 WCU. Lambda writes get
+  ProvisionedThroughputExceededException. Lambda returns error → SQS retries →
+  more Lambda invocations → more DynamoDB throttling → exponential backlog growth.
+  A cascading failure across three services caused by one undersized resource.
+
+Parameters:
+  ScenarioMode:
+    Type: String
+    AllowedValues:
+      - Broken
+      - Fixed
+    Default: Broken
+    Description: >
+      Broken = DynamoDB provisioned at 5 WCU (causes throttling cascade).
+      Fixed = DynamoDB on-demand (auto-scales to any traffic level).
+
+Conditions:
+  IsFixed: !Equals [!Ref ScenarioMode, Fixed]
+
+Resources:
+  # THE ROOT CAUSE: DynamoDB with very low provisioned capacity
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: h15-orders-table
+      BillingMode: !If [IsFixed, 'PAY_PER_REQUEST', 'PROVISIONED']
+      ProvisionedThroughput: !If
+        - IsFixed
+        - !Ref 'AWS::NoValue'
+        - ReadCapacityUnits: 5
+          WriteCapacityUnits: 5
+      AttributeDefinitions:
+        - AttributeName: orderId
+          AttributeType: S
+        - AttributeName: customerId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: orderId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: CustomerIndex
+          KeySchema:
+            - AttributeName: customerId
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+          ProvisionedThroughput: !If
+            - IsFixed
+            - !Ref 'AWS::NoValue'
+            - ReadCapacityUnits: 5
+              WriteCapacityUnits: 5
+      Tags:
+        - Key: Name
+          Value: h15-orders-table
+        - Key: Environment
+          Value: production
+
+  OrdersDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: h15-orders-dlq
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: Name
+          Value: h15-orders-dlq
+
+  OrdersQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: h15-orders
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 345600
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OrdersDLQ.Arn
+        maxReceiveCount: 5
+      Tags:
+        - Key: Name
+          Value: h15-orders
+
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: h15-order-writer-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: dynamodb-sqs-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource:
+                  - !GetAtt OrdersTable.Arn
+                  - !Sub '${OrdersTable.Arn}/index/*'
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - !GetAtt OrdersQueue.Arn
+
+  OrderWriterFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: h15-order-writer
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt LambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          TABLE_NAME: h15-orders-table
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import os
+          from datetime import datetime
+
+          dynamodb = boto3.resource('dynamodb')
+          table = dynamodb.Table(os.environ['TABLE_NAME'])
+
+          def handler(event, context):
+              errors = []
+              for record in event['Records']:
+                  body = json.loads(record['body'])
+                  try:
+                      table.put_item(Item={
+                          'orderId': body['orderId'],
+                          'customerId': body['customerId'],
+                          'amount': str(body['amount']),
+                          'status': 'processing',
+                          'timestamp': datetime.utcnow().isoformat()
+                      })
+                  except Exception as e:
+                      print(f"ERROR writing order {body.get('orderId')}: {e}")
+                      errors.append(str(e))
+              if errors:
+                  raise Exception(f"Failed to write {len(errors)} orders: {errors[0]}")
+              return {'statusCode': 200}
+      Tags:
+        - Key: Name
+          Value: h15-order-writer
+        - Key: Environment
+          Value: production
+
+  EventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt OrdersQueue.Arn
+      FunctionName: !Ref OrderWriterFunction
+      BatchSize: 10
+      Enabled: true
+
+Outputs:
+  TableName:
+    Description: DynamoDB Table
+    Value: !Ref OrdersTable
+  TableBillingMode:
+    Description: DynamoDB billing mode
+    Value: !If [IsFixed, 'PAY_PER_REQUEST (on-demand)', 'PROVISIONED (5 WCU — too low)']
+  QueueUrl:
+    Description: Orders SQS Queue
+    Value: !Ref OrdersQueue
+  DLQUrl:
+    Description: Dead Letter Queue
+    Value: !Ref OrdersDLQ
+  FunctionName:
+    Description: Order Writer Lambda
+    Value: !Ref OrderWriterFunction
+  ScenarioMode:
+    Description: Current scenario mode
+    Value: !Ref ScenarioMode
