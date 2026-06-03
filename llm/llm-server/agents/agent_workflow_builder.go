@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
+	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
@@ -1319,6 +1320,11 @@ func (a *WorkflowBuilderAgent) finalizeWithAutoSave(ctx *security.RequestContext
 // `/workflow/[workflowId]` and `WorkflowBuilderNotebook` reads `accountId` from
 // `router.query`, so the link MUST include a non-empty `accountId`.
 //
+// The URL is absolute (prefixed with config.BaseUrl) because Slack mrkdwn only
+// renders `<URL|label>` as a clickable hyperlink when URL has an http(s)
+// scheme; a path-only URL appears as raw text. Runbook-server uses the same
+// convention for its workflow links.
+//
 // Returns "" if accountId cannot be determined — callers MUST fall back to a
 // no-link summary rather than emit a URL with an empty `accountId=` value,
 // which would land the user on the editor page with no tenant context.
@@ -1335,7 +1341,8 @@ func (a *WorkflowBuilderAgent) buildWorkflowEditorLink(request core.NBAgentReque
 	if request.SessionId != "" {
 		q.Set("session_id", request.SessionId)
 	}
-	return fmt.Sprintf("/workflow/%s?%s#editor", url.PathEscape(workflowId), q.Encode())
+	base := strings.TrimRight(config.Config.BaseUrl, "/")
+	return fmt.Sprintf("%s/workflow/%s?%s#editor", base, url.PathEscape(workflowId), q.Encode())
 }
 
 // truncateSaveError returns a short, user-facing rendition of the save error.
