@@ -60,7 +60,7 @@ func ExecuteSLO(accountId string) error {
 		return err
 	}
 
-	rows, err := dbms.Db.Queryx(`SELECT id, name, description, window, goal, schedule, created_by, updated_by, method,
+	rows, err := dbms.Db.Queryx(`SELECT id, "name", description, "window", goal, schedule, created_by, updated_by, "method",
 			histogram_query, filter_good_query, filter_bad_query, filter_valid_query, start_time,
 			end_time, threshold, created_at, updated_at, cloud_account_id, tenant_id, enabled,
 			workload_name, workload_namespace, workload_id
