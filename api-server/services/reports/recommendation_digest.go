@@ -202,7 +202,7 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 		for i, rec := range recs {
 			recIDs[i] = rec.ID
 		}
-		_, err = dbms.Db.Exec(`UPDATE recommendation SET last_nudged_at = now() WHERE id = ANY($1::text[])`, pq.Array(recIDs))
+		_, err = dbms.Db.Exec(`UPDATE recommendation SET last_nudged_at = now() WHERE id = ANY($1::uuid[])`, pq.Array(recIDs))
 		if err != nil {
 			ctx.GetLogger().Error("recommendation digest: error updating last_nudged_at", "error", err, "tenant", t.Id)
 		}
