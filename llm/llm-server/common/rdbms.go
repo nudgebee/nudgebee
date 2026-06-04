@@ -20,6 +20,13 @@ import (
 	_ "github.com/lib/pq"
 )
 
+var (
+	// Pre-compiled regexes for MaskDBConnectionString — avoids recompilation on every call.
+	maskKeywordPasswordRegex = regexp.MustCompile(`(?i)(password\s*=\s*)("[^"]*"|[^\s]+)`)
+	maskURLPasswordRegex     = regexp.MustCompile(`://([^:]*):([^/?#]*)@`)
+	connectTimeoutRegex      = regexp.MustCompile(`[?&]connect_timeout=`)
+)
+
 type DatabaseManager struct {
 	// eventually hide this and expose only wrapper apis which will be used by the services
 	// handle rebind in the wrappers so that the services do not have to worry about it and can use the same query for both clickhouse and postgres
@@ -284,8 +291,7 @@ func MaskDBConnectionString(dbUrl string) string {
 	// password would otherwise be logged in plain text. Detect by absence of
 	// the URL scheme delimiter and mask via regex on the `password=` token.
 	if !strings.Contains(dbUrl, "://") {
-		re := regexp.MustCompile(`(?i)(password\s*=\s*)("[^"]*"|[^\s]+)`)
-		return re.ReplaceAllString(dbUrl, "${1}xxxxx")
+		return maskKeywordPasswordRegex.ReplaceAllString(dbUrl, "${1}xxxxx")
 	}
 
 	u, err := url.Parse(dbUrl)
@@ -294,8 +300,7 @@ func MaskDBConnectionString(dbUrl string) string {
 		// to a regex that stops at the first `/`, `?`, or `#` rather than the
 		// first `@`, so that a password containing `@` doesn't leave its
 		// suffix (and downstream user/host fragments) unmasked.
-		re := regexp.MustCompile(`://([^:]*):([^/?#]*)@`)
-		return re.ReplaceAllString(dbUrl, "://$1:xxxxx@")
+		return maskURLPasswordRegex.ReplaceAllString(dbUrl, "://$1:xxxxx@")
 	}
 
 	if u.User != nil {
@@ -309,8 +314,8 @@ func MaskDBConnectionString(dbUrl string) string {
 func newPostgresDatabaseManager() (*DatabaseManager, error) {
 	dbUrl := config.Config.LlmServerDBUrl
 	// Add connect_timeout if not present to help lib/pq handle hangs during connection
-	if !regexp.MustCompile(`[?&]connect_timeout=`).MatchString(dbUrl) {
-		if regexp.MustCompile(`\?`).MatchString(dbUrl) {
+	if !connectTimeoutRegex.MatchString(dbUrl) {
+		if strings.Contains(dbUrl, "?") {
 			dbUrl += "&connect_timeout=10"
 		} else {
 			dbUrl += "?connect_timeout=10"

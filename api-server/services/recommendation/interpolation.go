@@ -5,7 +5,10 @@ import (
 	"regexp"
 )
 
-var templateVarRegex = regexp.MustCompile(`\{\{(\w+(?:\.\w+)*)\}\}`)
+var (
+	templateVarRegex   = regexp.MustCompile(`\{\{(\w+(?:\.\w+)*)\}\}`)
+	resourceGroupRegex = regexp.MustCompile(`(?i)/resourceGroups/([^/]+)(?:/|$)`)
+)
 
 // InterpolateMitigationsJson interpolates template variables in a Json array of mitigations.
 func InterpolateMitigationsJson(mitigations models.Json, vars map[string]string) models.Json {
@@ -42,8 +45,7 @@ func BuildVariableMap(recommendationData map[string]any, resourceId string, reso
 		vars["resource_region"] = resourceRegion
 	}
 	if resourceId != "" {
-		rgRegex := regexp.MustCompile(`(?i)/resourceGroups/([^/]+)/`)
-		if m := rgRegex.FindStringSubmatch(resourceId); len(m) > 1 {
+		if m := resourceGroupRegex.FindStringSubmatch(resourceId); len(m) > 1 {
 			vars["resource_group"] = m[1]
 		}
 	}
