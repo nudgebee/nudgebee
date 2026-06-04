@@ -1946,10 +1946,10 @@ const Home = () => {
                     sx={{
                       fontSize: 'var(--ds-text-title)',
                       fontWeight: 'var(--ds-font-weight-semibold)',
-                      color: 'var(--ds-brand-600)',
+                      color: '#6366f1',
                     }}
                   >
-                    Hi {(getUserSession()?.user?.name || '')?.split(' ')[0]}, Nice to have you here.
+                    Hi {(getUserSession()?.user?.name || '')?.split(' ')[0]}, Nice to have you here in sandbox!
                   </Typography>
                 }
               >
@@ -1983,11 +1983,11 @@ const Home = () => {
                               sx={{
                                 fontSize: 'var(--ds-text-title)',
                                 fontWeight: 'var(--ds-font-weight-semibold)',
-                                color: 'var(--ds-brand-600)',
+                                color: '#6366f1',
                                 mb: 'var(--ds-space-1)',
                               }}
                             >
-                              Hi {getUserSession()?.user?.name?.split(' ')[0]}, Nice to have you here.
+                              Hi {getUserSession()?.user?.name?.split(' ')[0]}, Nice to have you here in sandbox!
                             </Typography>
                           )}
                           <Typography
