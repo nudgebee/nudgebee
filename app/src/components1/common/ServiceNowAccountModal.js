@@ -119,77 +119,61 @@ const ServiceNowAccountModal = ({ openModal, handleClose, editConfig = null }) =
     handleClose(trigger);
   };
 
-  const submitForm = (data, cloud_provider) => {
-    setHasAttemptedSubmit(true);
+  const isDuplicateName = (toolConfList, name) => toolConfList.some((config) => config.name === name && (!isEdit || config.id !== editConfig.id));
 
+  // Saved via ticket-server (AddTicketConfiguration), which rehydrates the stored
+  // password + auth_type when the form omits them on edit. sync_knowledge_base is a
+  // non-reserved config value, read back by the KB-sync consumers (llm-server
+  // knowledgebase_sync, rag-server) from integration_config_values.
+  const buildIntegrationPayload = (data) => {
+    const realPassword = passwordForSubmit();
+    return {
+      ...(isEdit && editConfig?.id && { id: editConfig.id }),
+      name: data.accountName,
+      url: data.accountUrl,
+      username: data.accountUsername,
+      auth_type: 'token',
+      // Empty password on edit is intentional — ticket-server rehydrates the
+      // stored value before validation, so we omit the key rather than send "".
+      ...(realPassword ? { password: realPassword } : {}),
+      tool: 'servicenow',
+      config_values: [{ name: 'sync_knowledge_base', value: String(data.syncKnowledgeBase) }],
+    };
+  };
+
+  const handleSubmitResponse = async (res, cloud_provider) => {
+    const fallbackError = `Failed to ${isEdit ? 'Update' : 'Add'} ServiceNow Account`;
+    const responseData = res?.data;
+    const successId = responseData?.data?.ticket_integration_create_config?.id;
+    if (successId) {
+      await apiTicketIntegrations.listTicketConfigurations({}, true);
+      snackbar.success(isEdit ? 'ServiceNow account updated successfully' : getAccountCreationSuccessMsg(cloud_provider));
+      handleAccountClose(true);
+      return;
+    }
+    snackbar.error(responseData?.errors?.[0]?.message || fallbackError);
+  };
+
+  const submitForm = async (data, cloud_provider) => {
+    setHasAttemptedSubmit(true);
     if (!validateForm()) {
       return;
     }
-
     setIsSubmitting(true);
 
-    // Prepare data for modern integrations API. On edit we pass `integration_id`
-    // so api-server upserts the existing row instead of failing on the
-    // duplicate-name check.
-    const integrationData = {
-      ...(isEdit && editConfig?.id && { integration_id: editConfig.id }),
-      integration_name: 'servicenow',
-      integration_config_name: data.accountName,
-      account_ids: [],
-      integration_config_values: [
-        { name: 'url', value: data.accountUrl },
-        { name: 'username', value: data.accountUsername },
-        { name: 'password', value: passwordForSubmit() },
-        { name: 'auth_type', value: 'token' },
-        { name: 'sync_knowledge_base', value: data.syncKnowledgeBase ? 'true' : 'false' },
-      ],
-    };
-
-    apiIntegrations
-      .listTicketConfigurationsByTool({
-        tool: 'servicenow',
-      })
-      .then((res) => {
-        const toolConfList = res?.data || [];
-        const duplicateExists = toolConfList.some(
-          (config) => config.name === integrationData.integration_config_name && (!isEdit || config.id !== editConfig.id)
-        );
-        if (duplicateExists) {
-          setValidationError({
-            name: `${integrationData.integration_config_name} already exists. Please choose a different name.`,
-          });
-          setIsSubmitting(false);
-          return;
-        }
-        apiIntegrations
-          .addIntegrations(integrationData)
-          .then((res) => {
-            const { data } = res;
-            if (data?.data?.integrations_create_config) {
-              const message = isEdit ? 'ServiceNow account updated successfully' : getAccountCreationSuccessMsg(cloud_provider);
-              apiTicketIntegrations.listTicketConfigurations({}, true);
-              snackbar.success(message);
-              handleAccountClose(true);
-            } else if (data?.errors && data?.errors.length > 0) {
-              snackbar.error(data.errors[0]?.message || `Failed to ${isEdit ? 'Update' : 'Add'} ServiceNow Account`);
-              handleAccountClose();
-            } else {
-              handleAccountClose();
-            }
-          })
-          .catch((error) => {
-            const errorMessage = error?.response?.data?.errors?.[0]?.message || `Failed to ${isEdit ? 'Update' : 'Add'} ServiceNow Account`;
-            snackbar.error(errorMessage);
-            handleAccountClose();
-          })
-          .finally(() => {
-            setIsSubmitting(false);
-          });
-      })
-      .catch(() => {
-        setIsSubmitting(false);
-        handleAccountClose();
-      });
+    try {
+      const configRes = await apiIntegrations.listTicketConfigurationsByTool({ tool: 'servicenow' });
+      if (isDuplicateName(configRes?.data || [], data.accountName)) {
+        setValidationError({ name: `${data.accountName} already exists. Please choose a different name.` });
+        return;
+      }
+      const res = await apiIntegrations.createTicketIntegration(buildIntegrationPayload(data));
+      await handleSubmitResponse(res, cloud_provider);
+    } catch (error) {
+      snackbar.error(error?.response?.data?.errors?.[0]?.message || `Failed to ${isEdit ? 'Update' : 'Add'} ServiceNow Account`);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -344,6 +328,7 @@ ServiceNowAccountModal.propTypes = {
     name: PropTypes.string,
     url: PropTypes.string,
     username: PropTypes.string,
+    sync_knowledge_base: PropTypes.bool,
   }),
 };
 
