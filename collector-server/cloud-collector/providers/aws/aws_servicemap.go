@@ -1,7 +1,6 @@
 package aws
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +13,26 @@ import (
 	"github.com/aws/smithy-go"
 	"go.uber.org/multierr"
 )
+
+// sanitizeConfigExpression prepares a user-supplied value for safe interpolation
+// into an AWS Config SelectResourceConfig expression. The expression is a SQL-like
+// DSL whose only string-literal delimiter is the single quote; doubling embedded
+// quotes (single-quote -> two single-quotes) keeps the entire value contained
+// within the quoted literal, blocking the only injection vector available in the
+// DSL. A 2048-char cap caps payload size sent to AWS.
+//
+// We intentionally do NOT regex-validate the ARN format. AWS resource ARNs have
+// many legitimate variations (e.g. AWS-managed IAM policies `arn:aws:iam::aws:...`
+// have `aws` in the account-id position; Lambda aliases like `:$LATEST` carry
+// `$`; S3 object ARNs can contain spaces and percent-encoding) — a strict regex
+// rejects real ARNs and breaks service-map queries against them without adding
+// any safety beyond the quote-escape above.
+func sanitizeConfigExpression(value string) (string, error) {
+	if len(value) > 2048 {
+		return "", fmt.Errorf("ARN exceeds maximum length of 2048 characters")
+	}
+	return strings.ReplaceAll(value, "'", "''"), nil
+}
 
 // serviceNameFromResourceType extracts a simplified service name from a full AWS resource type string.
 // For example, "AWS::EC2::Instance" becomes "ec2".
@@ -68,21 +87,25 @@ func (a *awsProvider) queryServiceMapWithConfig(ctx providers.CloudProviderConte
 		go func(res providers.QueryServiceMapResourceRequest) {
 			defer wg.Done()
 
-			resourceArn := res.Resource // Assuming this is an ARN
+			resourceArn := res.Resource
 
-			// Upstream query - find resources that have relationships pointing to this resource
-			upstreamExpression := fmt.Sprintf("SELECT resourceId, resourceType, awsRegion, accountId, tags WHERE relationships.resourceId = '%s'", resourceArn)
+			sanitizedArn, err := sanitizeConfigExpression(resourceArn)
+			if err != nil {
+				errChan <- fmt.Errorf("invalid resource ARN %q: %w", resourceArn, err)
+				return
+			}
+
+			upstreamExpression := fmt.Sprintf("SELECT resourceId, resourceType, awsRegion, accountId, tags WHERE relationships.resourceId = '%s'", sanitizedArn)
 			upstreamInput := &configservice.SelectResourceConfigInput{Expression: aws.String(upstreamExpression)}
-			upstreamOutput, err := cfgSvc.SelectResourceConfig(context.TODO(), upstreamInput)
+			upstreamOutput, err := cfgSvc.SelectResourceConfig(ctx.GetContext(), upstreamInput)
 			if err != nil {
 				errChan <- fmt.Errorf("failed to query upstream dependencies for %s: %w", resourceArn, err)
 				return
 			}
 
-			// Downstream query - get the resource itself with its relationships
-			downstreamExpression := fmt.Sprintf("SELECT resourceId, resourceType, awsRegion, accountId, relationships, tags WHERE resourceId = '%s'", resourceArn)
+			downstreamExpression := fmt.Sprintf("SELECT resourceId, resourceType, awsRegion, accountId, relationships, tags WHERE resourceId = '%s'", sanitizedArn)
 			downstreamInput := &configservice.SelectResourceConfigInput{Expression: aws.String(downstreamExpression)}
-			downstreamOutput, err := cfgSvc.SelectResourceConfig(context.TODO(), downstreamInput)
+			downstreamOutput, err := cfgSvc.SelectResourceConfig(ctx.GetContext(), downstreamInput)
 			if err != nil {
 				errChan <- fmt.Errorf("failed to query downstream dependencies for %s: %w", resourceArn, err)
 				return
