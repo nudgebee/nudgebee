@@ -786,7 +786,7 @@ pygments==2.20.0
     # via
     #   pytest
     #   rich
-pyjwt==2.10.1
+pyjwt==2.13.0
     # via
     #   benchmark (pyproject.toml)
     #   gotrue
@@ -837,7 +837,7 @@ pytz==2026.1.post1
     # via
     #   benchmark (pyproject.toml)
     #   pandas
-pyyaml==6.0.2
+pyyaml==6.0.3
     # via
     #   benchmark (pyproject.toml)
     #   datasets
