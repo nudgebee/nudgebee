@@ -95,6 +95,14 @@ const IntegrationDynamicFormModal = ({
       setIsLoadingSchema(true);
       const fetchData = async (configs) => {
         const updatedConfig = { ...configs };
+        // Webhook integrations route incoming alerts to any account (a cloud
+        // account is a valid target), so they list every account. Relay/agent
+        // integrations target a K8s cluster — cloud accounts have no relay
+        // agent and fail at save time — so they exclude cloud accounts.
+        // Prefer the backend-provided category; fall back to the integration
+        // name (every webhook integration is named *_webhook) so this works
+        // even before the backend that surfaces `category` is deployed.
+        const showAllAccounts = configs.category === 'incident_webhook' || (integrationName || '').toLowerCase().includes('webhook');
         for (const key in updatedConfig.properties) {
           const field = updatedConfig.properties[key];
           if (field.auto_generate_func && field.auto_generate_func === 'listAccounts') {
@@ -102,7 +110,14 @@ const IntegrationDynamicFormModal = ({
               setLoadingOptions((prev) => ({ ...prev, [key]: true }));
               const res = await apiUser.listAccounts();
               if (res.length > 0) {
-                const cloudAccounts = res.map((account) => ({ label: account.account_name, value: account.id }));
+                // For relay/agent integrations drop cloud accounts (no relay
+                // agent → fails at save time); mirrors the relay-eligibility
+                // rule in the backend's agent_service. Webhook integrations keep
+                // the full list (see showAllAccounts above).
+                const accounts = showAllAccounts
+                  ? res
+                  : res.filter((account) => !['AWS', 'Azure', 'GCP', 'CloudFoundry'].includes(account.cloud_provider));
+                const cloudAccounts = accounts.map((account) => ({ label: account.account_name, value: account.id }));
                 updatedConfig.properties[key].possible_values = cloudAccounts;
                 // Forcing default=[] makes the renderer pick the multi-select
                 // branch. Skip when the schema marks the field single_select.
