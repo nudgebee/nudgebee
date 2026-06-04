@@ -8,7 +8,6 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/relay"
-	"strings"
 	"time"
 )
 
@@ -205,34 +204,29 @@ func (a *argoCDHistoryAction) Execute(ctx PlaybookActionContext, rawParams map[s
 	}
 
 	// Fetch ArgoCD integration config from database
-	secretName, serverURL, authTokenKeyInSecret, integrationName, insecure, err := fetchArgoCDIntegration(params.AccountId, params.IntegrationName)
+	secretName, serverKeyInSecret, authTokenKeyInSecret, integrationName, insecure, err := fetchArgoCDIntegration(params.AccountId, params.IntegrationName)
 	if err != nil {
 		return nil, err
 	}
 
-	// Build the argocd CLI command to fetch ArgoCD application details
-	// Using argocd CLI instead of curl for better JSON handling
-	// Strip protocol from serverURL as argocd CLI expects hostname only
-	serverHost := strings.TrimPrefix(serverURL, "https://")
-	serverHost = strings.TrimPrefix(serverHost, "http://")
-
-	// ArgoCD CLI automatically uses ARGOCD_AUTH_TOKEN environment variable
-	// We don't pass --auth-token flag to avoid exposing the token in process list
+	// Build the argocd CLI command to fetch ArgoCD application details.
+	// The server URL and auth token both live in the k8s secret; the argocd CLI
+	// reads them from $ARGOCD_SERVER / $ARGOCD_AUTH_TOKEN, so neither is exposed
+	// in the process list and there is a single source of truth (the secret).
 	insecureFlag := ""
 	if insecure {
 		insecureFlag = " --insecure"
 	}
 	argoCDCmd := fmt.Sprintf(
-		`argocd app get %s --server %s%s --grpc-web --output json`,
+		`argocd app get %s --server "$ARGOCD_SERVER"%s --grpc-web --output json`,
 		params.ApplicationName,
-		serverHost,
 		insecureFlag,
 	)
 
-	// Execute via relay server using CommandExecutor
-	// Map the secret key to ARGOCD_AUTH_TOKEN env var for ArgoCD CLI
+	// Map the configured secret keys to the env vars the ArgoCD CLI expects.
 	envFromSecret := map[string]string{
 		"ARGOCD_AUTH_TOKEN": authTokenKeyInSecret,
+		"ARGOCD_SERVER":     serverKeyInSecret,
 	}
 
 	resp, err := relay.CommandExecutor(params.AccountId, argoCDCmd, secretName, envFromSecret)
@@ -382,15 +376,18 @@ func (a *argoCDHistoryAction) Execute(ctx PlaybookActionContext, rawParams map[s
 		})
 	}
 
+	// argocd_url/argocd_server are intentionally empty: the server URL now lives in
+	// the k8s secret, which api-server cannot read in plaintext. Consumers that need
+	// a link should resolve it from the integration's secret.
 	metadata := map[string]any{
 		"query-result-version": "1.0",
 		"query":                rawParams,
-		"argocd_url":           serverURL,
+		"argocd_url":           "",
 		"integration_name":     integrationName,
 	}
 
 	additionalInfo := map[string]any{
-		"argocd_server": serverURL,
+		"argocd_server": "",
 		"integration":   integrationName,
 	}
 
@@ -421,7 +418,7 @@ func (a *argoCDHistoryAction) Execute(ctx PlaybookActionContext, rawParams map[s
 }
 
 // fetchArgoCDIntegration queries the database for ArgoCD integration config
-func fetchArgoCDIntegration(accountId, integrationName string) (secretName, serverURL, authTokenKeyInSecret, foundIntegrationName string, insecure bool, err error) {
+func fetchArgoCDIntegration(accountId, integrationName string) (secretName, serverKeyInSecret, authTokenKeyInSecret, foundIntegrationName string, insecure bool, err error) {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return "", "", "", "", false, fmt.Errorf("failed to get database manager: %w", err)
@@ -486,9 +483,10 @@ func fetchArgoCDIntegration(accountId, integrationName string) (secretName, serv
 		}
 	}
 
-	// Extract required config values
+	// Extract required config values. The server URL lives in the k8s secret
+	// (ARGOCD_SERVER key); only the key *name* is configurable here.
 	secretName = configs["k8s_secret"]
-	serverURL = configs["server"]
+	serverKeyInSecret = configs["server_key_in_secret"]
 	authTokenKeyInSecret = configs["auth_token_key_in_secret"]
 
 	// Extract optional insecure flag - defaults to false (secure) if not set
@@ -499,16 +497,15 @@ func fetchArgoCDIntegration(accountId, integrationName string) (secretName, serv
 	if authTokenKeyInSecret == "" {
 		authTokenKeyInSecret = "ARGOCD_AUTH_TOKEN"
 	}
+	if serverKeyInSecret == "" {
+		serverKeyInSecret = "ARGOCD_SERVER"
+	}
 
 	if secretName == "" {
 		return "", "", "", "", false, errors.New("k8s_secret not found in argocd integration config")
 	}
 
-	if serverURL == "" {
-		return "", "", "", "", false, errors.New("server URL not found in argocd integration config")
-	}
-
-	return secretName, serverURL, authTokenKeyInSecret, name, insecure, nil
+	return secretName, serverKeyInSecret, authTokenKeyInSecret, name, insecure, nil
 }
 
 // Helper function to format duration in a human-readable way

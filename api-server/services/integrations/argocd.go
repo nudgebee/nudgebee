@@ -11,6 +11,7 @@ import (
 const (
 	ArgoCDConfigServer               = "server"
 	ArgoCDConfigInsecure             = "insecure"
+	ArgoCDConfigGrpcWeb              = "grpc_web"
 	ArgoCDConfigTimeout              = "timeout"
 	ArgoCDConfigK8sSecret            = "k8s_secret"
 	ArgoCDConfigServerKeyInSecret    = "server_key_in_secret"
@@ -41,7 +42,7 @@ func (m ArgoCD) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,
 		Testable: true,
-		Required: []string{ArgoCDConfigK8sSecret, ArgoCDConfigServer},
+		Required: []string{ArgoCDConfigK8sSecret},
 		Properties: map[string]core.IntegrationSchemaProperty{
 			"integration_config_name": {
 				Type:        core.ToolSchemaTypeString,
@@ -49,16 +50,10 @@ func (m ArgoCD) ConfigSchema() core.IntegrationSchema {
 				Default:     "",
 				Priority:    100,
 			},
-			ArgoCDConfigServer: {
-				Type:        core.ToolSchemaTypeString,
-				Description: "ArgoCD Server URL (e.g., https://argocd.example.com)",
-				Priority:    90,
-				IsTestable:  true,
-			},
 			ArgoCDConfigK8sSecret: {
 				Type:        core.ToolSchemaTypeString,
-				Description: "ArgoCD Secret in k8s. Required Keys: ARGOCD_SERVER and either ARGOCD_AUTH_TOKEN (token auth) or ARGOCD_USERNAME + ARGOCD_PASSWORD (password auth)",
-				Priority:    85,
+				Description: "ArgoCD Secret in k8s. Required Keys: ARGOCD_SERVER (server URL) and either ARGOCD_AUTH_TOKEN (token auth) or ARGOCD_USERNAME + ARGOCD_PASSWORD (password auth)",
+				Priority:    90,
 				IsTestable:  true,
 			},
 			"account_id": {
@@ -118,6 +113,14 @@ func (m ArgoCD) ConfigSchema() core.IntegrationSchema {
 				Priority:    20,
 				IsTestable:  true,
 			},
+			ArgoCDConfigGrpcWeb: {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Use gRPC-Web protocol — required when the ArgoCD server is reached through an HTTP/1.1 ingress/proxy (the usual case). Set false only for a direct gRPC endpoint.",
+				Default:     "true",
+				Enum:        []any{"true", "false"},
+				Priority:    15,
+				IsTestable:  true,
+			},
 			ArgoCDConfigTimeout: {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Command timeout in seconds",
@@ -129,73 +132,66 @@ func (m ArgoCD) ConfigSchema() core.IntegrationSchema {
 }
 
 func (m ArgoCD) ValidateConfig(securityContext *security.SecurityContext, configs []core.IntegrationConfigValue, accountId string) []error {
-
-	secretName := ""
-	serverKey := "ARGOCD_SERVER"
-	authTokenKey := "ARGOCD_AUTH_TOKEN"
-	usernameKey := "ARGOCD_USERNAME"
-	passwordKey := "ARGOCD_PASSWORD"
-	authMethod := "password"
-	insecure := "false"
-
-	// Extract configuration values
-	for _, config := range configs {
-		switch config.Name {
-		case ArgoCDConfigK8sSecret:
-			secretName = config.Value
-		case ArgoCDConfigServerKeyInSecret:
-			if config.Value != "" {
-				serverKey = config.Value
-			}
-		case ArgoCDConfigAuthTokenKeyInSecret:
-			if config.Value != "" {
-				authTokenKey = config.Value
-			}
-		case ArgoCDConfigUsernameKeyInSecret:
-			if config.Value != "" {
-				usernameKey = config.Value
-			}
-		case ArgoCDConfigPasswordKeyInSecret:
-			if config.Value != "" {
-				passwordKey = config.Value
-			}
-		case ArgoCDConfigAuthMethod:
-			if config.Value != "" {
-				authMethod = config.Value
-			}
-		case ArgoCDConfigInsecure:
-			if config.Value != "" {
-				insecure = config.Value
-			}
-		}
+	configMap := make(map[string]string, len(configs))
+	for _, c := range configs {
+		configMap[c.Name] = c.Value
 	}
+
+	secretName := configMap[ArgoCDConfigK8sSecret]
+	authMethod := firstNonEmpty(configMap[ArgoCDConfigAuthMethod], "token")
+	insecure := firstNonEmpty(configMap[ArgoCDConfigInsecure], "false")
+	grpcWeb := firstNonEmpty(configMap[ArgoCDConfigGrpcWeb], "true")
+	serverKey := firstNonEmpty(configMap[ArgoCDConfigServerKeyInSecret], "ARGOCD_SERVER")
+	authTokenKey := firstNonEmpty(configMap[ArgoCDConfigAuthTokenKeyInSecret], "ARGOCD_AUTH_TOKEN")
+	usernameKey := firstNonEmpty(configMap[ArgoCDConfigUsernameKeyInSecret], "ARGOCD_USERNAME")
+	passwordKey := firstNonEmpty(configMap[ArgoCDConfigPasswordKeyInSecret], "ARGOCD_PASSWORD")
 
 	if secretName == "" {
 		return []error{fmt.Errorf("k8s_secret is required")}
 	}
 
-	// Build environment variables map
-	envFromSecret := make(map[string]string)
-	envFromSecret[serverKey] = serverKey
+	// The ArgoCD server URL is sourced from the k8s secret (ARGOCD_SERVER key),
+	// not a separate config field — the probe and the runtime playbook both read
+	// it from the secret so there is a single source of truth.
+	envFromSecret := map[string]string{serverKey: serverKey}
 
-	if authMethod == "password" {
+	switch authMethod {
+	case "token":
+		envFromSecret[authTokenKey] = authTokenKey
+	case "password":
 		envFromSecret[usernameKey] = usernameKey
 		envFromSecret[passwordKey] = passwordKey
-	} else {
-		envFromSecret[authTokenKey] = authTokenKey
+	default:
+		return []error{fmt.Errorf("invalid auth_method %q: must be 'token' or 'password'", authMethod)}
 	}
 
-	// Build argocd command with appropriate flags
-	var argoCDCmd strings.Builder
-	argoCDCmd.WriteString("argocd version --client")
-
-	if insecure == "true" {
-		argoCDCmd.WriteString(" --insecure")
+	// gRPC-Web is required when the server is fronted by an HTTP/1.1 ingress/proxy
+	// (the common deployment). It is opt-out via the grpc_web field for the rare
+	// direct-gRPC endpoint, where forcing --grpc-web would break the handshake.
+	flags := ""
+	if !strings.EqualFold(grpcWeb, "false") {
+		flags += " --grpc-web"
+	}
+	if strings.EqualFold(insecure, "true") {
+		flags += " --insecure"
 	}
 
-	// Execute the command to validate connection
-	resp, err := relay.CommandExecutor(accountId, argoCDCmd.String(), secretName, envFromSecret)
+	var cmd string
+	switch authMethod {
+	case "token":
+		cmd = fmt.Sprintf(
+			`argocd account get-user-info%s --server "$%s" --auth-token "$%s" --output json`,
+			flags, serverKey, authTokenKey,
+		)
+	case "password":
+		cmd = fmt.Sprintf(
+			`argocd login "$%s"%s --username "$%s" --password "$%s" && `+
+				`argocd account get-user-info%s --server "$%s" --output json`,
+			serverKey, flags, usernameKey, passwordKey, flags, serverKey,
+		)
+	}
 
+	resp, err := relay.CommandExecutor(accountId, cmd, secretName, envFromSecret)
 	if err != nil {
 		return core.HandleRelayTimeoutError(err)
 	}
@@ -205,10 +201,44 @@ func (m ArgoCD) ValidateConfig(securityContext *security.SecurityContext, config
 		return []error{fmt.Errorf("unexpected response format from argocd server: %v", resp)}
 	}
 
-	// Check if the response contains the expected ArgoCD version format
-	if !strings.Contains(respStr, "argocd: v") || !strings.Contains(respStr, "BuildDate:") {
-		return []error{fmt.Errorf("validation failed: expected ArgoCD version information not found in response")}
+	if strings.Contains(respStr, `"loggedIn":true`) || strings.Contains(respStr, `"loggedIn": true`) {
+		return nil
 	}
 
-	return []error{}
+	if errMsg := detectArgoCDAuthError(respStr); errMsg != "" {
+		return []error{fmt.Errorf("argocd validation failed: %s", errMsg)}
+	}
+
+	return []error{fmt.Errorf("argocd validation failed: unexpected response: %s", strings.TrimSpace(respStr))}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func detectArgoCDAuthError(resp string) string {
+	lower := strings.ToLower(resp)
+	patterns := []string{
+		"unauthenticated",
+		"unauthorized",
+		"permission denied",
+		"invalid username or password",
+		"failed to establish connection",
+		"x509: certificate",
+		"no such host",
+		"connection refused",
+		"rpc error",
+		"fata[",
+	}
+	for _, p := range patterns {
+		if strings.Contains(lower, p) {
+			return strings.TrimSpace(resp)
+		}
+	}
+	return ""
 }
