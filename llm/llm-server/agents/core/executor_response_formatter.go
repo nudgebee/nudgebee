@@ -18,6 +18,19 @@ var slackIDRegex = regexp.MustCompile(`^[CUW][A-Z0-9]{8,}`)
 // (e.g. "```markdown\n"), which Slack mrkdwn renders as a literal first line.
 var fenceLanguageRegex = regexp.MustCompile("^```[ \\t]*[A-Za-z][A-Za-z0-9_+#.-]*[ \\t]*\\r?\\n")
 
+// Pre-compiled markdown-to-Slack conversion patterns — avoids recompiling on every agent response.
+var (
+	reCodeBlock     = regexp.MustCompile("(?s)```(.*?)```")
+	reInlineCode    = regexp.MustCompile("`([^`]+)`")
+	reBoldItalic    = regexp.MustCompile(`\*\*\*(.+?)\*\*\*`)
+	reBold          = regexp.MustCompile(`\*\*(.+?)\*\*`)
+	reItalic        = regexp.MustCompile(`\*(.+?)\*`)
+	reHeader        = regexp.MustCompile(`(?m)^#+\s+(.*)$`)
+	reUnderlineBold = regexp.MustCompile(`__(.*?)__`)
+	reLink          = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
+	reStrikethrough = regexp.MustCompile(`~~(.*?)~~`)
+)
+
 // isSlackRequest checks if the request originated from Slack by checking if the session ID
 // matches a common Slack ID pattern (e.g., starting with C, U, or W).
 func isSlackRequest(request NBAgentRequest) bool {
@@ -32,8 +45,6 @@ func convertMarkdownToSlackMarkdown(response string) string {
 	codeBlocks := make(map[string]string)
 	i := 0
 
-	// 1. Protect code blocks
-	reCodeBlock := regexp.MustCompile("(?s)```(.*?)```")
 	response = reCodeBlock.ReplaceAllStringFunc(response, func(match string) string {
 		match = fenceLanguageRegex.ReplaceAllString(match, "```\n")
 		placeholder := fmt.Sprintf("||CODE_BLOCK_%d||", i)
@@ -42,7 +53,6 @@ func convertMarkdownToSlackMarkdown(response string) string {
 		return placeholder
 	})
 
-	reInlineCode := regexp.MustCompile("`([^`]+)`")
 	response = reInlineCode.ReplaceAllStringFunc(response, func(match string) string {
 		placeholder := fmt.Sprintf("||CODE_BLOCK_%d||", i)
 		codeBlocks[placeholder] = match
@@ -50,28 +60,13 @@ func convertMarkdownToSlackMarkdown(response string) string {
 		return placeholder
 	})
 
-	// 2. Handle asterisk-based markdown first by converting to placeholders
-	re := regexp.MustCompile(`\*\*\*(.+?)\*\*\*`)
-	response = re.ReplaceAllString(response, "||BI_S||$1||BI_E||")
-
-	re = regexp.MustCompile(`\*\*(.+?)\*\*`)
-	response = re.ReplaceAllString(response, "||B_S||$1||B_E||")
-
-	re = regexp.MustCompile(`\*(.+?)\*`)
-	response = re.ReplaceAllString(response, "||I_S||$1||I_E||")
-
-	// 3. Now, convert other markdown
-	re = regexp.MustCompile(`(?m)^#+\s+(.*)$`)
-	response = re.ReplaceAllString(response, "*$1*")
-
-	re = regexp.MustCompile(`__(.*?)__`)
-	response = re.ReplaceAllString(response, "*$1*")
-
-	re = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
-	response = re.ReplaceAllString(response, "<$2|$1>")
-
-	re = regexp.MustCompile(`~~(.*?)~~`)
-	response = re.ReplaceAllString(response, "~$1~")
+	response = reBoldItalic.ReplaceAllString(response, "||BI_S||$1||BI_E||")
+	response = reBold.ReplaceAllString(response, "||B_S||$1||B_E||")
+	response = reItalic.ReplaceAllString(response, "||I_S||$1||I_E||")
+	response = reHeader.ReplaceAllString(response, "*$1*")
+	response = reUnderlineBold.ReplaceAllString(response, "*$1*")
+	response = reLink.ReplaceAllString(response, "<$2|$1>")
+	response = reStrikethrough.ReplaceAllString(response, "~$1~")
 
 	// 4. Replace placeholders with final Slack markup
 	response = strings.ReplaceAll(response, "||BI_S||", "_*")
