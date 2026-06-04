@@ -89,6 +89,39 @@ func sanitizeErrorForUser(err error) string {
 	return errStr
 }
 
+// applyAgentModelTier returns a context whose ContextKeyModelTier reflects the
+// agent's declared model category — and explicitly RESETS it to "" when the
+// agent declares none.
+//
+// The reset matters because sub-agents are invoked with the parent's context
+// (see factory_agent.go), which may already carry the parent investigation's
+// Reasoning tier. A naive "set only when declared" would let a category-less
+// tool agent (kubectl, logs, postgres, …) inherit that tier and silently run on
+// the expensive Reasoning-tier (pro) model. Always setting the value — to ""
+// when undeclared — makes modelTierFromContext report no tier → normal
+// global-default resolution, confining the pro tier to agents/steps that
+// explicitly opt in.
+func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent) *security.RequestContext {
+	if ctx == nil {
+		return nil
+	}
+	// A zero-value security.RequestContext has a nil internal context.Context
+	// (e.g., tests that build planner stubs with `&security.RequestContext{}`).
+	// Guard so context.WithValue never gets a nil parent — mirrors the same
+	// defensive check in modelTierFromContext (llm_config.go).
+	goCtx := ctx.GetContext()
+	if goCtx == nil {
+		goCtx = context.Background()
+	}
+	return security.NewRequestContext(
+		context.WithValue(goCtx, ContextKeyModelTier, agentModelCategory(agent)),
+		ctx.GetSecurityContext(),
+		ctx.GetLogger(),
+		ctx.GetTracer(),
+		ctx.GetMeter(),
+	)
+}
+
 func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest) (NBAgentResponse, error) {
 	// --- Metrics: record start time
 	start := time.Now()
@@ -143,16 +176,9 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 
 	// Stamp the agent's declared model category onto the context so every LLM
 	// call it makes resolves the category-specific model. Sub-operations may
-	// override per call. An agent that declares no category → normal flow.
-	if cat := agentModelCategory(agent); cat != "" {
-		ctx = security.NewRequestContext(
-			context.WithValue(ctx.GetContext(), ContextKeyModelTier, cat),
-			ctx.GetSecurityContext(),
-			ctx.GetLogger(),
-			ctx.GetTracer(),
-			ctx.GetMeter(),
-		)
-	}
+	// override per call. See applyAgentModelTier for why a category-less agent
+	// must RESET (not inherit) the tier.
+	ctx = applyAgentModelTier(ctx, agent)
 
 	// get history and use it as context - PARALLELIZED
 	var messageHistoryFomatter []prompts.MessageFormatter

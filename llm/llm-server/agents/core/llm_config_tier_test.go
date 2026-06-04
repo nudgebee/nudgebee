@@ -52,6 +52,81 @@ func TestAgentModelCategory(t *testing.T) {
 	assert.Equal(t, ModelTier(""), agentModelCategory(catTestCategorisedAgent{category: ""}))
 }
 
+// applyAgentModelTier must RESET an inherited tier for a category-less agent,
+// so a tool sub-agent invoked under a Reasoning-tier parent (its context already
+// carries ModelTierReasoning) does not silently run on the pro model. A
+// categorised agent must still stamp its own tier.
+func TestApplyAgentModelTier_ResetsInheritedTier(t *testing.T) {
+	// Simulate a sub-agent invoked with the parent investigation's context,
+	// which already carries the Reasoning tier.
+	parentCtx := security.NewRequestContext(
+		context.WithValue(context.Background(), ContextKeyModelTier, ModelTierReasoning),
+		nil, slog.Default(), nil, nil,
+	)
+	assert.Equal(t, ModelTierReasoning, modelTierFromContext(parentCtx),
+		"precondition: parent context carries the Reasoning tier")
+
+	// A category-less tool agent must NOT inherit the parent's Reasoning tier.
+	resetCtx := applyAgentModelTier(parentCtx, catTestAgent{})
+	assert.Equal(t, ModelTier(""), modelTierFromContext(resetCtx),
+		"category-less agent must reset the inherited tier → global-default resolution")
+
+	// A categorised agent stamps its own tier even over an inherited one.
+	for _, tier := range []ModelTier{ModelTierReasoning, ModelTierRetrieval, ModelTierSummary} {
+		got := applyAgentModelTier(parentCtx, catTestCategorisedAgent{category: tier})
+		assert.Equal(t, tier, modelTierFromContext(got),
+			"declared category %s must be stamped onto the context", tier)
+	}
+
+	// Defensive guards: must not panic on a nil ctx or a zero-value
+	// RequestContext whose internal context.Context is nil (e.g. planner stubs).
+	assert.NotPanics(t, func() {
+		assert.Nil(t, applyAgentModelTier(nil, catTestAgent{}))
+		zero := applyAgentModelTier(&security.RequestContext{}, catTestCategorisedAgent{category: ModelTierReasoning})
+		assert.Equal(t, ModelTierReasoning, modelTierFromContext(zero),
+			"zero-value ctx falls back to context.Background() and still stamps the tier")
+	})
+}
+
+// End-to-end through the real resolver: with the deployed tier config
+// (global default = flash, reasoning tier = pro), a category-less sub-agent
+// invoked under a Reasoning-tier parent must resolve the GLOBAL model (flash),
+// not the inherited pro model. This exercises the full ResolveLLMConfig layered
+// resolution — the same path that picks the model written to
+// llm_conversation_token_usage at runtime.
+func TestApplyAgentModelTier_E2E_CategoryLessResolvesGlobalNotPro(t *testing.T) {
+	// Mirror the deployed config that produced the bug.
+	pinGlobalModel(t, "googleai", "gemini-3-flash-preview")
+	setEnvKey(t, "llm_tier_model_reasoning", "gemini-3.1-pro-preview")
+	setEnvKey(t, "llm_tier_provider_reasoning", "googleai")
+
+	// A sub-agent is invoked with the parent investigation's context, which
+	// already carries the Reasoning tier (set when the parent agent declared it).
+	parentCtx := newCtxWithKVs(ContextKeyModelTier, ModelTierReasoning)
+
+	// Baseline (the bug): inheriting the parent's Reasoning tier resolves pro.
+	resInherited, err := ResolveLLMConfig(parentCtx, "", "kubectl", "")
+	assert.NoError(t, err)
+	assert.Equal(t, "gemini-3.1-pro-preview", resInherited.Model,
+		"baseline: a category-less agent that inherits the parent Reasoning tier resolves the pro model")
+
+	// The fix: a category-less agent resets the tier → resolves the global default.
+	fixedCtx := applyAgentModelTier(parentCtx, catTestAgent{})
+	resFixed, err := ResolveLLMConfig(fixedCtx, "", "kubectl", "")
+	assert.NoError(t, err)
+	assert.Equal(t, "gemini-3-flash-preview", resFixed.Model,
+		"fix: a category-less sub-agent resolves the global default (flash), not the inherited pro model")
+	assert.NotEqual(t, "gemini-3.1-pro-preview", resFixed.Model)
+
+	// A genuinely reasoning-tier agent still opts into pro — the fix does not
+	// downgrade agents that declare the category.
+	catCtx := applyAgentModelTier(parentCtx, catTestCategorisedAgent{category: ModelTierReasoning})
+	resCat, err := ResolveLLMConfig(catCtx, "", "kubectl", "")
+	assert.NoError(t, err)
+	assert.Equal(t, "gemini-3.1-pro-preview", resCat.Model,
+		"a reasoning-category agent still resolves the pro model")
+}
+
 // pinGlobalFallback sets the ENV-global fallback chain for the test.
 func pinGlobalFallback(t *testing.T, value string) {
 	t.Helper()
