@@ -944,15 +944,19 @@ func UpdateUserProfile(ctx *security.RequestContext, request UserUpdateProfileRe
 		NewData:       map[string]any{"username": request.Username, "display_name": request.DisplayName, "status": request.Status},
 	})
 
-	// Always sync the tenant role. Empty role means "remove the user's direct
-	// tenant role" — UpsertTenantUserRole's empty branch DELETEs the row.
-	_, err = tenant.UpsertTenantUserRole(ctx, tenant.TenantUserRoleUpsertRequest{
-		Username: request.Username,
-		Role:     request.Role,
-	})
-	if err != nil {
-		ctx.GetLogger().Error("Error updating user role", "error", err)
-		return UserUpdateProfileResponse{}, common.ErrorInternal("Error updating user role")
+	// Sync the tenant role only when the caller actually sent the field. A nil
+	// pointer means "role omitted — leave it untouched" (partial update); an
+	// explicit empty string means "remove the user's direct tenant role" —
+	// UpsertTenantUserRole's empty branch DELETEs the row.
+	if request.Role != nil {
+		_, err = tenant.UpsertTenantUserRole(ctx, tenant.TenantUserRoleUpsertRequest{
+			Username: request.Username,
+			Role:     *request.Role,
+		})
+		if err != nil {
+			ctx.GetLogger().Error("Error updating user role", "error", err)
+			return UserUpdateProfileResponse{}, common.ErrorInternal("Error updating user role")
+		}
 	}
 
 	return UserUpdateProfileResponse{

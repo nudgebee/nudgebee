@@ -1739,6 +1739,16 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     }
   };
 
+  // handleSaveWorkflow is a plain function reborn every render, closing over the
+  // latest nodes/edges/workflowData. Memoized callers (e.g. handleConfirmPublish)
+  // would otherwise capture the instance from the render where their deps last
+  // changed — once the canvas is dirty, hasUnsavedChanges stops toggling, so the
+  // captured closure freezes on stale canvas state and publishes the wrong draft.
+  // Mirror the freshest function into a ref so memoized callers always invoke the
+  // current closure without having to list handleSaveWorkflow's many deps.
+  const handleSaveWorkflowRef = useRef(handleSaveWorkflow);
+  handleSaveWorkflowRef.current = handleSaveWorkflow;
+
   const openHistoryDrawer = useCallback(async () => {
     if (!workflowId || isNewWorkflow || !accountId) {
       return;
@@ -1866,7 +1876,10 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
       // draft, NOT what the user is staring at. Run handleSaveWorkflow first
       // and abort the publish if it failed so the version never lies.
       if (hasUnsavedChanges) {
-        const saved = await handleSaveWorkflow();
+        // Call through the ref so we always run the latest handleSaveWorkflow
+        // closure (current nodes/edges), not the one frozen when this memoized
+        // callback was last recreated.
+        const saved = await handleSaveWorkflowRef.current();
         if (!saved) {
           return;
         }
@@ -1904,11 +1917,10 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     } finally {
       setPublishing(false);
     }
-    // handleSaveWorkflow is intentionally NOT in the deps list — it's a plain
-    // function (not useCallback), reborn every render, and adding it would
-    // re-create handleConfirmPublish every render. Closure over the latest
-    // version is fine because handleConfirmPublish is only ever called from a
-    // user click, not held across renders.
+    // handleSaveWorkflow is reached via handleSaveWorkflowRef (a stable ref kept
+    // in sync with the latest closure every render), so it is intentionally NOT
+    // a dependency here — the ref guarantees we never publish stale canvas state
+    // without re-creating this callback on every edit.
   }, [accountId, hasUnsavedChanges, publishDescription, publishName, publishSetLive, publishStatus, refreshVersions, workflowId]);
 
   // Per-version status mutation, fired from the dropdown next to each row in

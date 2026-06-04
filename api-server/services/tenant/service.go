@@ -1706,15 +1706,19 @@ func UpdateUserGroup(ctx *security.RequestContext, request UserGroupUpdateReques
 		NewData:       map[string]any{"id": request.Id, "name": request.Name, "description": request.Description},
 	})
 
-	// Always sync the tenant role. Empty role means "remove the group's tenant
-	// role" — UpsertTenantGroupRole's empty branch DELETEs the row.
-	_, err = UpsertTenantGroupRole(ctx, TenantGroupRoleUpsertRequest{
-		GroupId: request.Id,
-		Role:    request.Role,
-	})
-	if err != nil {
-		ctx.GetLogger().Error("Error updating group role", "error", err)
-		return UserGroupUpdateResponse{}, common.ErrorInternal("Error updating group role")
+	// Sync the tenant role only when the caller actually sent the field. A nil
+	// pointer means "role omitted — leave it untouched" (partial update); an
+	// explicit empty string means "remove the group's tenant role" —
+	// UpsertTenantGroupRole's empty branch DELETEs the row.
+	if request.Role != nil {
+		_, err = UpsertTenantGroupRole(ctx, TenantGroupRoleUpsertRequest{
+			GroupId: request.Id,
+			Role:    *request.Role,
+		})
+		if err != nil {
+			ctx.GetLogger().Error("Error updating group role", "error", err)
+			return UserGroupUpdateResponse{}, common.ErrorInternal("Error updating group role")
+		}
 	}
 
 	return UserGroupUpdateResponse{
