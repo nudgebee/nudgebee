@@ -725,7 +725,7 @@ func (r *FilterRepository) softDeleteRemovedAccounts(tenantID string, removedAcc
 	nodeRes, err := r.dbManager.Exec(`
 		UPDATE knowledge_graph_node
 		SET is_active = false
-		WHERE tenant_id = $1 AND cloud_account_id = ANY($2::text[]) AND is_active = true
+		WHERE tenant_id = $1 AND cloud_account_id = ANY($2::uuid[]) AND is_active = true
 	`, tenantID, pq.Array(removedAccounts))
 	if err != nil {
 		return fmt.Errorf("failed to deactivate nodes for accounts %v: %w", removedAccounts, err)
@@ -734,7 +734,7 @@ func (r *FilterRepository) softDeleteRemovedAccounts(tenantID string, removedAcc
 	edgeRes, err := r.dbManager.Exec(`
 		UPDATE knowledge_graph_edge
 		SET is_active = false
-		WHERE tenant_id = $1 AND cloud_account_id = ANY($2::text[]) AND is_active = true
+		WHERE tenant_id = $1 AND cloud_account_id = ANY($2::uuid[]) AND is_active = true
 	`, tenantID, pq.Array(removedAccounts))
 	if err != nil {
 		return fmt.Errorf("failed to deactivate edges for accounts %v: %w", removedAccounts, err)
