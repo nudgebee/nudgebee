@@ -121,6 +121,8 @@ const KubernetesGroupedApplications: React.FC<KubernetesGroupedApplicationsProps
       .getEventFilterValues({
         accountId,
         filterTypes: ['aggregation_key'],
+        startTime: new Date(selectedDateRange.startDate).toISOString(),
+        endTime: new Date(selectedDateRange.endDate).toISOString(),
       })
       .then((res: any) => {
         let selectedKeys: any[] = [];
@@ -150,7 +152,7 @@ const KubernetesGroupedApplications: React.FC<KubernetesGroupedApplicationsProps
         setIsAggregationKeyReady(true);
       })
       .catch((error) => console.error(error));
-  }, [accountId]);
+  }, [accountId, selectedDateRange.startDate, selectedDateRange.endDate]);
 
   useEffect(() => {
     if (!accountId || !isAggregationKeyReady) return;

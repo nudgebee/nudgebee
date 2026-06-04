@@ -443,6 +443,8 @@ const KubernetesEventsTable = ({
       disabledFilters,
       resource_ids,
       selectedNamespace,
+      startTime: new Date(selectedDateRange.startDate).toISOString(),
+      endTime: new Date(selectedDateRange.endDate).toISOString(),
     });
 
   // Cloud Filters Hook
@@ -450,9 +452,11 @@ const KubernetesEventsTable = ({
     serviceNamesFilter,
     eventNamesFilter,
     isOptionsLoading: cloudOptionsLoading,
-  } = useEventCloudFilter(selectedAccountId[0] ?? '', {
-    subjectNamespace: selectedServiceName,
-  });
+  } = useEventCloudFilter(
+    selectedAccountId[0] ?? '',
+    { subjectNamespace: selectedServiceName },
+    { startTime: new Date(selectedDateRange.startDate).toISOString(), endTime: new Date(selectedDateRange.endDate).toISOString() }
+  );
 
   const areFiltersDisabled = isTroubleshootPage && !selectedAccountId.length;
 
