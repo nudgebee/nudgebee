@@ -1,6 +1,7 @@
 package vertex
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -184,7 +185,7 @@ func TestConvertParts(t *testing.T) { //nolint:funlen // comprehensive test //no
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := convertParts(tt.parts)
+			result, err := convertParts(context.Background(), tt.parts)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("convertParts() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -277,7 +278,7 @@ func TestConvertContent(t *testing.T) { //nolint:funlen // comprehensive test //
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := convertContent(tt.content)
+			result, err := convertContent(context.Background(), tt.content)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("convertContent() error = %v, wantErr %v", err, tt.wantErr)
 				return

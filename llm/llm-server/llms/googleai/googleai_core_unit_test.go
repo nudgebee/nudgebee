@@ -1,6 +1,7 @@
 package googleai
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -93,7 +94,7 @@ func TestConvertParts(t *testing.T) { //nolint:funlen // comprehensive test
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := convertParts(tt.parts)
+			result, err := convertParts(context.Background(), tt.parts)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -206,7 +207,7 @@ func TestConvertContent(t *testing.T) { //nolint:funlen // comprehensive test
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := convertContent(tt.content)
+			result, err := convertContent(context.Background(), tt.content)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -502,7 +503,7 @@ func TestRoleMapping(t *testing.T) {
 				Parts: []llms.ContentPart{llms.TextContent{Text: "test"}},
 			}
 
-			result, err := convertContent(content)
+			result, err := convertContent(context.Background(), content)
 
 			if !tt.supported {
 				assert.Error(t, err)
@@ -533,7 +534,7 @@ func TestFunctionCallConversion(t *testing.T) {
 			},
 		}
 
-		result, err := convertParts([]llms.ContentPart{part})
+		result, err := convertParts(context.Background(), []llms.ContentPart{part})
 		assert.NoError(t, err)
 		assert.Len(t, result, 1)
 
@@ -549,7 +550,7 @@ func TestFunctionCallConversion(t *testing.T) {
 			Content: "It's 20°C and sunny",
 		}
 
-		result, err := convertParts([]llms.ContentPart{part})
+		result, err := convertParts(context.Background(), []llms.ContentPart{part})
 		assert.NoError(t, err)
 		assert.Len(t, result, 1)
 

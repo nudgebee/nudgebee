@@ -131,6 +131,7 @@ func main() {
 	}()
 
 	slog.SetDefault(logger)
+	config.LogSecurityWarnings()
 	tp, mp, err := initOtel()
 	if err != nil {
 		slog.Error(err.Error())
