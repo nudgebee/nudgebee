@@ -718,6 +718,14 @@ func UpsertTenantGroupRole(ctx *security.RequestContext, request TenantGroupRole
 			ctx.GetLogger().Error("Error deleting group role", "error", err)
 			return TenantGroupRoleUpsertResponse{}, common.ErrorInternal("Error updating group role")
 		}
+		audit.LogChange(ctx, audit.ChangeInput{
+			EventCategory: audit.EventCategoryRole,
+			EventType:     audit.EventTypeRoleGroupDelete,
+			EventAction:   audit.EventActionDelete,
+			TargetID:      request.GroupId,
+			TableName:     "group_roles",
+			OldData:       map[string]any{"group_id": request.GroupId, "entity_type": "tenant"},
+		})
 		return TenantGroupRoleUpsertResponse{
 			Status:  "success",
 			Message: "Group role updated successfully",
@@ -1698,16 +1706,15 @@ func UpdateUserGroup(ctx *security.RequestContext, request UserGroupUpdateReques
 		NewData:       map[string]any{"id": request.Id, "name": request.Name, "description": request.Description},
 	})
 
-	// Update role if provided
-	if request.Role != "" {
-		_, err = UpsertTenantGroupRole(ctx, TenantGroupRoleUpsertRequest{
-			GroupId: request.Id,
-			Role:    request.Role,
-		})
-		if err != nil {
-			ctx.GetLogger().Error("Error updating group role", "error", err)
-			return UserGroupUpdateResponse{}, common.ErrorInternal("Error updating group role")
-		}
+	// Always sync the tenant role. Empty role means "remove the group's tenant
+	// role" — UpsertTenantGroupRole's empty branch DELETEs the row.
+	_, err = UpsertTenantGroupRole(ctx, TenantGroupRoleUpsertRequest{
+		GroupId: request.Id,
+		Role:    request.Role,
+	})
+	if err != nil {
+		ctx.GetLogger().Error("Error updating group role", "error", err)
+		return UserGroupUpdateResponse{}, common.ErrorInternal("Error updating group role")
 	}
 
 	return UserGroupUpdateResponse{

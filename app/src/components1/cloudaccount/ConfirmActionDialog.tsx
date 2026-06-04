@@ -41,7 +41,7 @@ const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
     <Box>
       {isStrict ? (
         <>
-          <Typography sx={{ mb: ds.space[4] }}>
+          <Typography sx={{ mb: ds.space[4], mt: ds.space[3] }}>
             You are about to <strong>{action.label.toLowerCase()}</strong> resource <strong>{resourceName}</strong>. This is a destructive action.
           </Typography>
           <Typography sx={{ mb: ds.space[2] }}>
@@ -52,7 +52,7 @@ const ConfirmActionDialog: React.FC<ConfirmActionDialogProps> = ({
           </Box>
         </>
       ) : (
-        <Typography>{action.confirmationMessage}</Typography>
+        <Typography sx={{ mt: ds.space[3] }}>{action.confirmationMessage}</Typography>
       )}
 
       {action.requiresArgs &&

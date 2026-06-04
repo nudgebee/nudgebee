@@ -118,6 +118,7 @@ const MCPConfigList = () => {
         <Banner
           tone='info'
           surface='section'
+          actionsPlacement='inline'
           message={
             <>
               This view is read-only. Manage <strong>MCP Servers</strong> from <strong>Admin → Integrations → MCP</strong>.
@@ -127,7 +128,6 @@ const MCPConfigList = () => {
             {
               label: 'Manage in Admin',
               onClick: () => router.push('/accounts/account-form?cloudProvider=mcp'),
-              tone: 'link',
             },
           ]}
         />

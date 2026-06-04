@@ -25,65 +25,6 @@ const STATUS_OPTIONS = [
   { value: 'suspended', label: 'Suspended', dotColor: ds.red[600], helper: 'Sign-in blocked. Active sessions revoked immediately.' },
 ];
 
-function RoleTile({ name, description, selected, onClick, dataTestId }) {
-  return (
-    <Box
-      component='button'
-      type='button'
-      role='radio'
-      aria-checked={selected}
-      onClick={onClick}
-      data-testid={dataTestId}
-      sx={{
-        position: 'relative',
-        textAlign: 'left',
-        cursor: 'pointer',
-        background: selected ? ds.blue[100] : ds.background[100],
-        border: `1.5px solid ${selected ? ds.blue[600] : ds.gray[200]}`,
-        borderRadius: 'var(--ds-radius-lg)',
-        padding: 'var(--ds-space-3)',
-        transition: 'all 0.15s',
-        '&:hover': { borderColor: selected ? ds.blue[600] : ds.blue[300] },
-      }}
-    >
-      <Box
-        sx={{
-          position: 'absolute',
-          top: ds.space[2],
-          right: ds.space[2],
-          width: ds.space[4],
-          height: ds.space[4],
-          borderRadius: 'var(--ds-radius-pill)',
-          border: `1.5px solid ${selected ? ds.blue[600] : ds.gray[300]}`,
-          background: selected ? ds.blue[600] : ds.background[100],
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          '&::after': selected
-            ? {
-                content: '""',
-                width: ds.space.mul(0, 3),
-                height: ds.space.mul(0, 3),
-                borderRadius: 'var(--ds-radius-pill)',
-                background: ds.background[100],
-              }
-            : {},
-        }}
-      />
-      <Box sx={{ font: "600 13px/1.2 'Roboto'", color: ds.gray[700], mb: 'var(--ds-space-1)', pr: 'var(--ds-space-4)' }}>{name}</Box>
-      <Box sx={{ font: "400 11.5px/1.4 'Roboto'", color: ds.gray[600] }}>{description}</Box>
-    </Box>
-  );
-}
-
-RoleTile.propTypes = {
-  name: PropTypes.string,
-  description: PropTypes.string,
-  selected: PropTypes.bool,
-  onClick: PropTypes.func,
-  dataTestId: PropTypes.string,
-};
-
 function StatusSegmented({ value, onChange }) {
   return (
     <Box
@@ -186,11 +127,7 @@ function UserModal({ open, handleClose, handleSnackBarData, mode, userData }) {
   useEffect(() => {
     if (open) {
       apiUserManagement.getAllRoles().then((res) => {
-        const list = res || [];
-        setRolesList(list);
-        if (isAddMode && list.length > 0) {
-          setUserRole((prev) => prev || list[0].value);
-        }
+        setRolesList(res || []);
       });
       apiUserManagement.listUserGroups().then((res) => {
         if (res?.data?.usergroups_list?.rows?.length > 0) {
@@ -433,12 +370,6 @@ function UserModal({ open, handleClose, handleSnackBarData, mode, userData }) {
     handleClose();
   };
 
-  const roleTiles = (rolesList || []).map((r) => ({
-    id: r.value,
-    name: r.display_name || r.value,
-    description: ROLE_DESCRIPTIONS[r.value] || '',
-  }));
-
   const fieldLabel = (text, required) => (
     <Box component='label' sx={{ display: 'block', font: "500 12px/1.2 'Roboto'", color: ds.gray[700], mb: 'var(--ds-space-1)' }}>
       {text}
@@ -551,35 +482,19 @@ function UserModal({ open, handleClose, handleSnackBarData, mode, userData }) {
           />
         </Box>
 
-        {/* Tenant role tiles */}
-        {roleTiles.length > 0 && (
+        {/* Tenant role */}
+        {rolesList.length > 0 && (
           <Box data-testid='user-modal-tenant-role'>
-            {fieldLabel('Tenant role', true)}
-            <Box
-              role='radiogroup'
-              aria-label='Tenant role'
-              // Stable id retained for e2e — old impl used FilterDropdownButton with id
-              // `auto-complete-user-modal-tenant-role` (see usersLocators.ts). The redesign
-              // moved to per-role tiles; e2e tests should target `user-modal-role-<roleId>`.
+            <Select
               id='user-modal-tenant-role'
-              sx={{
-                display: 'grid',
-                gridTemplateColumns: roleTiles.length === 1 ? '1fr' : '1fr 1fr',
-                gap: 'var(--ds-space-2)',
-                '& > *': { minWidth: 0 },
-              }}
-            >
-              {roleTiles.map((r) => (
-                <RoleTile
-                  key={r.id}
-                  name={r.name}
-                  description={r.description}
-                  selected={userRole === r.id}
-                  onClick={() => setUserRole(r.id)}
-                  dataTestId={`user-modal-role-${r.id}`}
-                />
-              ))}
-            </Box>
+              label='Tenant role'
+              value={userRole || ''}
+              options={rolesList.map((r) => ({ value: r.value, label: r.display_name || r.value }))}
+              onChange={(next) => setUserRole(next)}
+              placeholder='Select tenant role'
+              help={userRole ? ROLE_DESCRIPTIONS[userRole] : 'Leave empty if no tenant-level role is needed.'}
+              minWidth='100%'
+            />
           </Box>
         )}
 

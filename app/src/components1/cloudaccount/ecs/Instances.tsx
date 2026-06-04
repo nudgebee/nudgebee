@@ -656,17 +656,7 @@ const ECSServiceEvent = ({ ecsDetails }: ECSServiceEventProps) => {
     return row;
   });
 
-  return (
-    <CustomTable2
-      id={SERVICE_EVENT_TABLE_ID}
-      headers={SERVICE_EVENT_HEADERS}
-      tableData={tableData}
-      totalRows={tableData.length}
-      rowsPerPage={Math.max(10, tableData.length)}
-      onPageChange={() => false}
-      loading={false}
-    />
-  );
+  return <CustomTable2 id={SERVICE_EVENT_TABLE_ID} headers={SERVICE_EVENT_HEADERS} tableData={tableData} loading={false} />;
 };
 
 interface AwsvpcConfiguration {

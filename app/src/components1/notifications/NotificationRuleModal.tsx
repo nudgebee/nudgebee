@@ -132,6 +132,13 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
   const [activeChannel, setActiveChannel] = useState<string | null>(null);
   const showEmail = basedOnValue === 'daily_recap';
 
+  const visibleConfigured = [
+    basedOnValue !== 'daily_recap' && slackToggle && 'Slack',
+    basedOnValue !== 'daily_recap' && teamsToggle && 'MS Teams',
+    basedOnValue !== 'daily_recap' && gChatToggle && 'Google Chat',
+    basedOnValue === 'daily_recap' && emailToggle && 'Email',
+  ].filter(Boolean) as string[];
+
   const [errors, setErrors] = useState<any>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -224,6 +231,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
         fetchDailyHighlightsData();
       }
     }
+    setActiveChannel(basedOnValue === 'daily_recap' ? 'email' : null);
   }, [basedOnValue]);
 
   const getClustersData = async () => {
@@ -1348,13 +1356,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
           }}
         >
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
-            <SafeIcon
-              src={suppressed ? troubleshootIconBlack : troubleshootIcon1}
-              alt='notification-icon'
-              width={18}
-              height={18}
-              style={{ opacity: suppressed ? 0.5 : 1 }}
-            />
+            <SafeIcon src={troubleshootIconBlack} alt='notification-icon' width={18} height={18} style={{ opacity: suppressed ? 0.5 : 1 }} />
             <Box>
               <Typography
                 sx={{
@@ -1734,7 +1736,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
           )}
 
           {/* Summary when no badge is active */}
-          {!activeChannel && (slackToggle || teamsToggle || gChatToggle || emailToggle) && (
+          {!activeChannel && visibleConfigured.length > 0 && (
             <Box
               sx={{
                 display: 'flex',
@@ -1748,14 +1750,13 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
             >
               <CheckCircleOutlineIcon sx={{ fontSize: 16, color: 'var(--ds-green-500)' }} />
               <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-green-700)' }}>
-                {[slackToggle && 'Slack', teamsToggle && 'MS Teams', gChatToggle && 'Google Chat', emailToggle && 'Email'].filter(Boolean).join(', ')}{' '}
-                configured
+                {visibleConfigured.join(', ')} configured
               </Typography>
             </Box>
           )}
 
           {/* Empty state */}
-          {!activeChannel && !slackToggle && !teamsToggle && !gChatToggle && !emailToggle && (
+          {!activeChannel && visibleConfigured.length === 0 && (
             <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[600], pl: ds.space[1] }}>
               Click a channel badge above to configure it
             </Typography>
@@ -1805,9 +1806,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
         }}
       >
         <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[600] }}>
-          {suppressed
-            ? 'Notifications will be suppressed for this scope'
-            : `${[slackToggle, teamsToggle, gChatToggle, emailToggle].filter(Boolean).length} channel(s) selected`}
+          {suppressed ? 'Notifications will be suppressed for this scope' : `${visibleConfigured.length} channel(s) selected`}
         </Typography>
         <Box display='flex' alignItems='center' gap={ds.space[3]}>
           <DsButton id='cancel' size='md' tone='secondary' onClick={clearAllAndClose} disabled={isSubmitting}>
