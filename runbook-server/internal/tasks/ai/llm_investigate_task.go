@@ -62,6 +62,9 @@ func (t *LLMInvestigateTask) Execute(taskCtx types.TaskContext, params map[strin
 		Tools:        tools,
 		LlmProvider:  modelProvider,
 		LlmModelName: modelName,
+		// Forward the workflow definition id so a PR raised by the code agent
+		// can link back to this workflow (/workflow/<id>).
+		WorkflowId: taskCtx.GetWorkflowID(),
 	})
 
 	if err != nil {

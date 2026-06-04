@@ -26,6 +26,7 @@ type SessionContext struct {
 	Scratchpad       string                           // Accumulates thoughts, tool calls, and discoveries from each agent
 	EventID          string                           // Event ID for linking back to NudgeBee event investigation
 	RecommendationID string                           // Recommendation ID for linking back to NudgeBee recommendation
+	WorkflowID       string                           // Workflow definition ID for linking a raised PR back to the originating workflow
 	AccountID        string                           // Account ID for constructing recommendation URLs
 	BuildConfig      *BuildConfig                     // Optional custom build/lint/test commands for verification
 	Mode             string                           // "explore" (read-only) or "fix"; templates render mode-specific instructions

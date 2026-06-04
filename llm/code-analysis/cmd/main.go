@@ -69,6 +69,7 @@ func main() {
 		agent            = flag.String("agent", "code_agent", "Agent to use (default: code_agent)")
 		eventId          = flag.String("eventid", "", "Event ID for tracking (optional)")
 		recommendationId = flag.String("recommendationid", "", "Recommendation ID for tracking (optional)")
+		workflowId       = flag.String("workflowid", "", "Workflow definition ID for linking a raised PR back to the workflow (optional)")
 		accountId        = flag.String("accountid", "", "Account ID for recommendation link (optional)")
 		health           = flag.Bool("health", false, "Health check")
 		version          = flag.Bool("version", false, "Show version")
@@ -130,7 +131,7 @@ func main() {
 			}
 		}
 
-		runCLIAnalysis(cfg, *repoURL, logsValue, *branch, *token, promptValue, *agent, *eventId, *recommendationId, *accountId, raisePR, *conversationId, *gitProvider)
+		runCLIAnalysis(cfg, *repoURL, logsValue, *branch, *token, promptValue, *agent, *eventId, *recommendationId, *workflowId, *accountId, raisePR, *conversationId, *gitProvider)
 		return
 	}
 
@@ -428,7 +429,7 @@ func redactArgs(args []string) []string {
 	return safe
 }
 
-func runCLIAnalysis(cfg *config.Config, repoURL, logs, branch, token, prompt, agent, eventId, recommendationId, accountId string, raisePR bool, conversationId, gitProvider string) {
+func runCLIAnalysis(cfg *config.Config, repoURL, logs, branch, token, prompt, agent, eventId, recommendationId, workflowId, accountId string, raisePR bool, conversationId, gitProvider string) {
 	// Make logs optional for code correlation scenarios
 	if logs == "" && prompt == "Analyze the logs for errors" {
 		log.Fatal("Logs are required (--logs) for log analysis, or provide a specific --prompt for code correlation")
@@ -538,6 +539,7 @@ func runCLIAnalysis(cfg *config.Config, repoURL, logs, branch, token, prompt, ag
 		RaisePR:          raisePR,
 		EventId:          eventId,
 		RecommendationId: recommendationId,
+		WorkflowId:       workflowId,
 		AccountId:        accountId,
 		ConversationId:   conversationId,
 	}
