@@ -79,6 +79,13 @@ postgresql:
   auth:
     existingSecret: 'postgresql'
     database: 'postgres'
+  # Bitnami postgresql chart 13.2.25 defaults primary.persistence.size to 8Gi
+  # (see charts/postgresql-13.2.25.tgz values.yaml). 8Gi fills quickly under
+  # real workloads; bump the default PVC request to 50Gi. Note: resizing an
+  # already-bound PVC requires the underlying StorageClass to allow expansion.
+  primary:
+    persistence:
+      size: 50Gi
   # Pin to the GHCR mirror of bitnami/postgresql:16.1.0-debian-11-r16.
   # Same tag the bitnami chart 13.2.25 already defaults to, but the original
   # docker.io/bitnami/postgresql path was deprecated in Bitnami's mid-2025
