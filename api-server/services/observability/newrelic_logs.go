@@ -118,13 +118,16 @@ func (s *NewRelicLogSource) QueryLabelValues(ctx *security.RequestContext, req F
 	if mapped, ok := newRelicLogLabelMapping[labelName]; ok {
 		labelName = mapped
 	}
+	if labelName == "" {
+		return nil, fmt.Errorf("label name must not be empty")
+	}
 
 	// Build time range
 	startTime, endTime := s.getTimeRangeSeconds(req.StartTime, req.EndTime)
 
-	// Use uniques() to get distinct values
-	nrqlQuery := fmt.Sprintf("SELECT uniques(`%s`, 100) FROM Log SINCE %d UNTIL %d",
-		labelName, startTime, endTime)
+	// escapeNRQLField prevents NRQL injection via backtick breakout in user-supplied label names
+	nrqlQuery := fmt.Sprintf("SELECT uniques(%s, 100) FROM Log SINCE %d UNTIL %d",
+		escapeNRQLField(labelName), startTime, endTime)
 
 	results, err := integrations.ExecuteNRQL(apiKey, nrAccountId, region, nrqlQuery)
 	if err != nil {

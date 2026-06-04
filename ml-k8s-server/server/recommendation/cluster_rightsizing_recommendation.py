@@ -242,8 +242,6 @@ class ClusterRightSizingRecommendation:
                         provider, location, instance_type, cpu, memory, cost, network_performance, d["attributes"]
                     )
                 )
-                conn.commit()
-                conn.close()
         return instances
 
     @staticmethod
@@ -306,8 +304,6 @@ class ClusterRightSizingRecommendation:
                         total_cpu_request += self.parse_cpu(container["resources"].get("requests").get("cpu"))
                         total_memory_request += self.parse_mem(container.get("resources").get("requests").get("memory"))
 
-            conn.commit()
-            conn.close()
         return total_cpu_request, total_memory_request
 
     def get_historical_pod_allocation(self):
@@ -386,8 +382,6 @@ class ClusterRightSizingRecommendation:
                     total_cpu_request += self.parse_cpu(requests.get("cpu"))
                     total_memory_request += self.parse_mem(requests.get("memory"))
 
-            conn.commit()
-            conn.close()
         # convert total memory to GB
         return total_cpu_request, total_memory_request
 
@@ -398,8 +392,6 @@ class ClusterRightSizingRecommendation:
         with self.engine.connect() as conn:
             data = conn.execute(query, {"account_id": self.account_id})
             result_data = data.fetchall()
-            conn.commit()
-            conn.close()
             if len(result_data) == 0 or not result_data[0]:
                 raise ValueError("Cloud Provider not found")
             provider = result_data[0][0]
@@ -413,8 +405,6 @@ class ClusterRightSizingRecommendation:
         with self.engine.connect() as conn:
             data = conn.execute(query, {"account_id": self.account_id})
             result_data = data.fetchall()
-            conn.commit()
-            conn.close()
             if len(result_data) == 0 or not result_data[0]:
                 raise ValueError("Cloud Region not found")
         return result_data[0][0]

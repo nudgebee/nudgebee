@@ -34,14 +34,21 @@ func validateURL(rawURL string) error {
 		host = u.Host
 	}
 
-	// Resolve IP address
+	if host == "" {
+		return fmt.Errorf("empty hostname")
+	}
+
+	// Resolve IP address — fail-closed: if we can't verify the IP is safe, reject the URL.
 	ips, err := net.LookupIP(host)
 	if err != nil {
-		return nil // Could be a valid external domain that doesn't resolve in this env
+		return fmt.Errorf("unable to resolve host %q: %w", host, err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("host %q resolved to zero addresses", host)
 	}
 
 	for _, ip := range ips {
-		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsPrivate() {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
 			return fmt.Errorf("URL resolves to a restricted IP: %s", ip.String())
 		}
 	}
@@ -613,6 +620,42 @@ func (m CrawlExecuteTool) Call(nbRequestContext core.NbToolContext, input core.N
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("crawl: unable to add init script", "error", err.Error())
 		return core.NBToolResponse{}, err
+	}
+
+	// SSRF defense-in-depth: validateURL above only checks the entry URL. Playwright follows
+	// redirects and loads subresources (iframes, images, fetch/XHR) — any of which could
+	// resolve to an internal IP. Intercept every request and validate it before letting the
+	// browser fetch it. Cache validation results per host (within this crawl) so we don't
+	// hammer the DNS resolver on pages with hundreds of subresources.
+	hostCheckCache := make(map[string]bool)
+	if routeErr := page.Route("**", func(route playwright.Route) {
+		reqURL := route.Request().URL()
+		u, parseErr := url.Parse(reqURL)
+		if parseErr != nil {
+			_ = route.Abort("failed")
+			return
+		}
+		host := u.Hostname()
+		if cached, seen := hostCheckCache[host]; seen {
+			if cached {
+				_ = route.Continue()
+			} else {
+				nbRequestContext.Ctx.GetLogger().Warn("crawl: blocked subresource to restricted IP", "url", reqURL)
+				_ = route.Abort("addressunreachable")
+			}
+			return
+		}
+		if err := validateURL(reqURL); err != nil {
+			hostCheckCache[host] = false
+			nbRequestContext.Ctx.GetLogger().Warn("crawl: blocked subresource", "url", reqURL, "error", err.Error())
+			_ = route.Abort("addressunreachable")
+			return
+		}
+		hostCheckCache[host] = true
+		_ = route.Continue()
+	}); routeErr != nil {
+		nbRequestContext.Ctx.GetLogger().Error("crawl: unable to install SSRF route handler", "error", routeErr.Error())
+		return core.NBToolResponse{}, fmt.Errorf("crawl: unable to install SSRF route handler: %w", routeErr)
 	}
 
 	resp, err := page.Goto(command)

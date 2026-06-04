@@ -40,6 +40,11 @@ type NBQueryConfig struct {
 	ExecutionId        string         `json:"execution_id,omitempty"`
 	WorkflowDefinition map[string]any `json:"workflow_definition,omitempty"`
 
+	// Current cluster/cloud-account the user is viewing when starting an automation-builder chat.
+	// Lets the builder default to it instead of asking which account/cluster to target (#30162).
+	CurrentCluster   string `json:"current_cluster,omitempty"`    // display name
+	CurrentClusterId string `json:"current_cluster_id,omitempty"` // cloud-account UUID
+
 	// Query filtering labels (e.g. nb_cloud_account_id for AWS timeseries)
 	Labels map[string]any `json:"labels,omitempty"`
 
@@ -65,6 +70,7 @@ func (q NBQueryConfig) IsEmpty() bool {
 	return q.EventId == "" && q.RecommendationId == "" && q.Namespace == "" &&
 		q.Workload == "" && q.GitRepo == "" && q.AccountId == "" &&
 		q.WorkflowId == "" && q.ExecutionId == "" && len(q.WorkflowDefinition) == 0 && len(q.Labels) == 0 &&
+		q.CurrentCluster == "" && q.CurrentClusterId == "" &&
 		q.LlmProvider == "" && q.LlmModelName == "" && len(q.ToolConfigs) == 0 &&
 		len(q.ClientTools) == 0 && len(q.Capabilities) == 0 && len(q.ToolConfirmations) == 0 &&
 		len(q.ToolConfigMetadata) == 0
@@ -99,6 +105,12 @@ func (q *NBQueryConfig) MergeFrom(src NBQueryConfig) {
 	}
 	if q.WorkflowDefinition == nil {
 		q.WorkflowDefinition = src.WorkflowDefinition
+	}
+	if q.CurrentCluster == "" {
+		q.CurrentCluster = src.CurrentCluster
+	}
+	if q.CurrentClusterId == "" {
+		q.CurrentClusterId = src.CurrentClusterId
 	}
 	if src.Labels != nil {
 		q.Labels = lo.Assign(src.Labels, q.Labels)

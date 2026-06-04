@@ -1852,7 +1852,9 @@ func IntegrationConfigs(context *security.RequestContext, integrationName string
 		return IntegrationSchema{}, errors.New("integrations: not found")
 	}
 
-	return integration.ConfigSchema(), nil
+	schema := integration.ConfigSchema()
+	schema.Category = integration.Category()
+	return schema, nil
 }
 
 func GetIntegrationByConfigNameValues(

@@ -78,7 +78,10 @@ RUN ARCH=$(uname -m) && \
         tar -xf google-cloud-cli-linux-arm.tar.gz && \
         rm google-cloud-cli-linux-arm.tar.gz; \
     fi && \
-    ./google-cloud-sdk/install.sh --quiet --usage-reporting false --path-update false --command-completion false
+    ./google-cloud-sdk/install.sh --quiet --usage-reporting false --path-update false --command-completion false && \
+    ./google-cloud-sdk/bin/gcloud components install beta alpha --quiet && \
+    rm -rf ./google-cloud-sdk/.install/.backup ./google-cloud-sdk/.install/.download && \
+    rm -rf /root/.config/gcloud
 ENV PATH=/home/appuser/.local/bin:/home/appuser/bin:/app/google-cloud-sdk/bin:$PATH
 
 # Install Azure CLI in a venv to isolate its dependencies (e.g. urllib3 2.x)

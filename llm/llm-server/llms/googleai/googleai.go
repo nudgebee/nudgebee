@@ -8,9 +8,9 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"time"
 
 	"nudgebee/llm/common"
-	"nudgebee/llm/llms/googleai/internal/imageutil"
 
 	"github.com/tmc/langchaingo/llms"
 	"google.golang.org/genai"
@@ -330,7 +330,7 @@ func convertCandidates(modelName string, candidates []*genai.Candidate, usage *g
 }
 
 // convertParts converts between a sequence of langchain parts and genai parts.
-func convertParts(parts []llms.ContentPart) ([]*genai.Part, error) {
+func convertParts(ctx context.Context, parts []llms.ContentPart) ([]*genai.Part, error) {
 	convertedParts := make([]*genai.Part, 0, len(parts))
 	for _, part := range parts {
 		var out *genai.Part
@@ -344,11 +344,14 @@ func convertParts(parts []llms.ContentPart) ([]*genai.Part, error) {
 		case llms.BinaryContent:
 			out = &genai.Part{InlineData: &genai.Blob{MIMEType: p.MIMEType, Data: p.Data}}
 		case llms.ImageURLContent:
-			typ, data, err := imageutil.DownloadImageData(p.URL)
+			mimeType, data, err := common.FetchImageSafely(ctx, p.URL, common.SafeFetchOptions{
+				MaxSizeBytes: 20 * 1024 * 1024,
+				Timeout:      30 * time.Second,
+			})
 			if err != nil {
 				return nil, err
 			}
-			out = &genai.Part{InlineData: &genai.Blob{MIMEType: typ, Data: data}}
+			out = &genai.Part{InlineData: &genai.Blob{MIMEType: mimeType, Data: data}}
 		case llms.ToolCall:
 			fc := p.FunctionCall
 			var argsMap map[string]any
@@ -382,8 +385,8 @@ func convertParts(parts []llms.ContentPart) ([]*genai.Part, error) {
 }
 
 // convertContent converts between a langchain MessageContent and genai content.
-func convertContent(content llms.MessageContent) (*genai.Content, error) {
-	parts, err := convertParts(content.Parts)
+func convertContent(ctx context.Context, content llms.MessageContent) (*genai.Content, error) {
+	parts, err := convertParts(ctx, content.Parts)
 	if err != nil {
 		return nil, err
 	}
@@ -421,7 +424,7 @@ func generateFromSingleMessage(
 	cfg *genai.GenerateContentConfig,
 	opts *llms.CallOptions,
 ) (*llms.ContentResponse, error) {
-	convertedParts, err := convertParts(parts)
+	convertedParts, err := convertParts(ctx, parts)
 	if err != nil {
 		return nil, err
 	}
@@ -458,7 +461,7 @@ func generateFromMessages(
 	// must have their parts concatenated, not overwritten.
 	var systemParts []*genai.Part
 	for _, mc := range messages {
-		content, err := convertContent(mc)
+		content, err := convertContent(ctx, mc)
 		if err != nil {
 			return nil, err
 		}

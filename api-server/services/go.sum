@@ -169,8 +169,8 @@ github.com/andybalholm/brotli v1.2.0/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUS
 github.com/andygrunwald/go-jira v1.17.0 h1:bbu5H676l6MaNcV6A7VDIAjIOQVgzNGEhNAwNI/Cjgo=
 github.com/andygrunwald/go-jira v1.17.0/go.mod h1:tiZsPUu9824bwcI2BUXatE4hJbs9rUOif0nv1lkq1hQ=
 github.com/antihax/optional v1.0.0/go.mod h1:uupD/76wgC+ih3iEmQUL+0Ugr19nfwCT1kdvxnR2qWY=
-github.com/apache/thrift v0.22.0 h1:r7mTJdj51TMDe6RtcmNdQxgn9XcyfGDOzegMDRg47uc=
-github.com/apache/thrift v0.22.0/go.mod h1:1e7J/O1Ae6ZQMTYdy9xa3w9k+XHWPfRvdPyJeynQ+/g=
+github.com/apache/thrift v0.23.0 h1:wKR6YnefQSEnxpEfmgTPuJibNG4bF0p2TK34tHLWi3s=
+github.com/apache/thrift v0.23.0/go.mod h1:zPt6WxgvTOM6hF92y8C+MkEM5LMxZuk4JcQOiU4Esvs=
 github.com/armon/circbuf v0.0.0-20150827004946-bbbad097214e/go.mod h1:3U/XgcO3hCbHZ8TKRvWD2dDTCfh9M9ya+I9JpbB7O8o=
 github.com/armon/consul-api v0.0.0-20180202201655-eb2c6b5be1b6/go.mod h1:grANhF5doyWs3UAsr3K4I6qtAmlQcZDesFNEHPZAzj8=
 github.com/armon/go-metrics v0.0.0-20180917152333-f0300d1749da/go.mod h1:Q73ZrmVTwzkszR9V5SSuryQ31EELlFMUz1kKyl939pY=
@@ -990,8 +990,8 @@ github.com/michaeldcanady/servicenow-sdk-go v1.7.1 h1:za1W0LoFbbrdlrTuKK28ovDlq4
 github.com/michaeldcanady/servicenow-sdk-go v1.7.1/go.mod h1:RZ/ObjIzDau/o+tLGe9/zssw9fexFhjdLqBK16alOEE=
 github.com/microsoft/kiota-abstractions-go v1.9.2 h1:3U5VgN2YGe3lsu1pyuS0t5jxv1llxX2ophwX8ewE6wQ=
 github.com/microsoft/kiota-abstractions-go v1.9.2/go.mod h1:f06pl3qSyvUHEfVNkiRpXPkafx7khZqQEb71hN/pmuU=
-github.com/microsoft/kiota-http-go v1.5.3 h1:l5LfdREjYhYWvGUGCqI0kesJqE/v/LzXyJ3//McB3us=
-github.com/microsoft/kiota-http-go v1.5.3/go.mod h1:L+5Ri+SzwELnUcNA0cpbFKp/pBbvypLh3Cd1PR6sjx0=
+github.com/microsoft/kiota-http-go v1.5.5 h1:K+jC3lq0kejeUETmh/C7TSIV+vdLuw1LT7NPPoNCxAE=
+github.com/microsoft/kiota-http-go v1.5.5/go.mod h1:L+5Ri+SzwELnUcNA0cpbFKp/pBbvypLh3Cd1PR6sjx0=
 github.com/microsoft/kiota-serialization-form-go v1.1.2 h1:SD6MATqNw+Dc5beILlsb/D87C36HKC/Zw7l+N9+HY2A=
 github.com/microsoft/kiota-serialization-form-go v1.1.2/go.mod h1:m4tY2JT42jAZmgbqFwPy3zGDF+NPJACuyzmjNXeuHio=
 github.com/microsoft/kiota-serialization-json-go v1.1.2 h1:eJrPWeQ665nbjO0gsHWJ0Bw6V/ZHHU1OfFPaYfRG39k=

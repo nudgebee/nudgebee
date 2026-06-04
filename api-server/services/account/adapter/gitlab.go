@@ -846,7 +846,17 @@ func (g *gitlabAdapter) GetRecommendationResolutionStatus(ctx AccountAdapterCont
 	}
 
 	if applyRequestPayloadMap["provider_config"] == nil {
-		return GetRecommendationResolutionStatusResponse{}, common.ErrorNotFound("error: provider config not found")
+		// Missing provider_config means we lack the credentials to query the
+		// MR's state — not evidence the MR failed. The status-sync cron maps any
+		// error to Failed and re-opens the recommendation, so returning an error
+		// here would flip a successfully-raised MR to Failed every tick. Keep it
+		// InProgress instead (mirrors the github adapter).
+		ctx.GetLogger().Warn("recommendation_resolution: provider_config missing; cannot verify MR status, keeping InProgress",
+			"mr_url", resolutionReferenceId)
+		return GetRecommendationResolutionStatusResponse{
+			Status:        RecommendationResolutionStatusInProgress,
+			StatusMessage: "MR raised; status verification pending (provider config unavailable)",
+		}, nil
 	}
 
 	providerConfigMap, ok := applyRequestPayloadMap["provider_config"].(map[string]any)

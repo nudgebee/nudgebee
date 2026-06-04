@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/url"
 	"nudgebee/services/account"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
@@ -176,7 +177,7 @@ func azureEventGridWebhookHandler(tracer *trace.Tracer, meter *metric.Meter, log
 		relayFailed := false
 		for _, rawEvent := range events {
 			relayURL := fmt.Sprintf("%s/v1/cloud/process_azure_eventgrid_events?token=%s",
-				config.Config.CloudCollectorServerUrl, token)
+				config.Config.CloudCollectorServerUrl, url.QueryEscape(token))
 
 			resp, err := common.HttpPost(relayURL,
 				common.HttpWithHeaders(map[string]string{
@@ -338,7 +339,8 @@ func githubWebhookHandler(tracer *trace.Tracer, meter *metric.Meter, logger *slo
 //   - interesting: true if we should attempt to dispatch.
 //
 // Events we ignore (return interesting=false) include push, PR open/edit/
-// label, ping, and any unknown type. The cron remains the backstop.
+// label, ping, bot-authored comments, and any unknown type. The cron remains
+// the backstop.
 func extractGithubPRSignal(event any) (prURL, action string, terminal, interesting bool) {
 	switch e := event.(type) {
 	case *github.CheckRunEvent:
@@ -389,6 +391,27 @@ func extractGithubPRSignal(event any) (prURL, action string, terminal, interesti
 			return "", e.GetAction(), false, false
 		}
 		return e.GetPullRequest().GetHTMLURL(), e.GetAction(), false, true
+
+	case *github.IssueCommentEvent:
+		// Plain PR conversation comments arrive as issue_comment (not
+		// pull_request_review_comment, which is only for inline diff comments).
+		if e.GetAction() != "created" {
+			return "", e.GetAction(), false, false
+		}
+		// issue_comment fires for both issues and PRs; we only handle PRs.
+		// GetPullRequestLinks is nil-safe (IsPullRequest has a value receiver
+		// and would panic on a nil *Issue); non-nil links ⇒ it's a PR.
+		if e.GetIssue().GetPullRequestLinks() == nil {
+			return "", e.GetAction(), false, false
+		}
+		// Skip comments authored by a bot — most importantly our own GitHub
+		// App, whose followup replies are posted as a bot. Without this guard
+		// the agent's reply would itself fire issue_comment.created and loop.
+		if e.GetComment().GetUser().GetType() == "Bot" {
+			return "", e.GetAction(), false, false
+		}
+		// For a PR, Issue.HTMLURL is the canonical .../pull/<n> URL we store.
+		return e.GetIssue().GetHTMLURL(), e.GetAction(), false, true
 
 	case *github.PullRequestEvent:
 		if e.GetAction() != "closed" {

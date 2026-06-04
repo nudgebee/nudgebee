@@ -14,6 +14,8 @@ var (
 	credentialURLRegex = regexp.MustCompile(`https?://[^\s"')]*(?:key|token|secret|password|credential)[^\s"')]*`)
 	// Matches XML/HTML-like tags (opening, closing, self-closing) to prevent prompt injection
 	xmlTagRegex = regexp.MustCompile(`</?[a-zA-Z][a-zA-Z0-9_-]*[^>]*>`)
+	// Matches characters unsafe for file paths — used by SanitizePath
+	unsafePathCharRegex = regexp.MustCompile(`[^a-zA-Z0-9/._-]`)
 )
 
 // SanitizeErrorMessage strips API keys, tokens, and credential URLs from error messages
@@ -54,7 +56,5 @@ func SanitizePath(path string) string {
 		path = path[1:]
 	}
 
-	// Keep only safe characters: a-z, A-Z, 0-9, /, ., _, -
-	reg := regexp.MustCompile(`[^a-zA-Z0-9/._-]`)
-	return reg.ReplaceAllString(path, "_")
+	return unsafePathCharRegex.ReplaceAllString(path, "_")
 }

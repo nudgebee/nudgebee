@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"nudgebee/llm/agents/core"
+	"nudgebee/llm/config"
 	toolcore "nudgebee/llm/tools/core"
 	"strings"
 	"testing"
@@ -1300,6 +1301,13 @@ func TestWorkflowBuilder_BuildWorkflowEditorLink(t *testing.T) {
 	sess := "6d00bee9-10fc-4898-9010-522935e85c99"
 	wfId := "ee47d1bd-4cc5-4dcd-a910-473c159f1e66"
 
+	// Pin BaseUrl so expected values are deterministic regardless of the test
+	// runner's environment. A trailing slash is included to verify it's trimmed.
+	prevBaseUrl := config.Config.BaseUrl
+	config.Config.BaseUrl = "https://app.example.com/"
+	t.Cleanup(func() { config.Config.BaseUrl = prevBaseUrl })
+	const base = "https://app.example.com"
+
 	tests := []struct {
 		name        string
 		agentAcct   string
@@ -1314,7 +1322,7 @@ func TestWorkflowBuilder_BuildWorkflowEditorLink(t *testing.T) {
 			requestAcct: acct,
 			sessionId:   sess,
 			workflowId:  wfId,
-			want:        "/workflow/" + wfId + "?accountId=" + acct + "&session_id=" + sess + "#editor",
+			want:        base + "/workflow/" + wfId + "?accountId=" + acct + "&session_id=" + sess + "#editor",
 		},
 		{
 			name:        "agent accountId empty, fallback to request",
@@ -1322,7 +1330,7 @@ func TestWorkflowBuilder_BuildWorkflowEditorLink(t *testing.T) {
 			requestAcct: otherAcct,
 			sessionId:   sess,
 			workflowId:  wfId,
-			want:        "/workflow/" + wfId + "?accountId=" + otherAcct + "&session_id=" + sess + "#editor",
+			want:        base + "/workflow/" + wfId + "?accountId=" + otherAcct + "&session_id=" + sess + "#editor",
 		},
 		{
 			name:        "session id empty omits session_id param",
@@ -1330,7 +1338,7 @@ func TestWorkflowBuilder_BuildWorkflowEditorLink(t *testing.T) {
 			requestAcct: acct,
 			sessionId:   "",
 			workflowId:  wfId,
-			want:        "/workflow/" + wfId + "?accountId=" + acct + "#editor",
+			want:        base + "/workflow/" + wfId + "?accountId=" + acct + "#editor",
 		},
 		{
 			name:        "both account ids empty returns empty",
@@ -1354,7 +1362,7 @@ func TestWorkflowBuilder_BuildWorkflowEditorLink(t *testing.T) {
 			requestAcct: acct,
 			sessionId:   "",
 			workflowId:  "wf with space",
-			want:        "/workflow/wf%20with%20space?accountId=" + acct + "#editor",
+			want:        base + "/workflow/wf%20with%20space?accountId=" + acct + "#editor",
 		},
 	}
 
@@ -1482,6 +1490,30 @@ func TestWorkflowBuilder_ReadOnlyClassification(t *testing.T) {
 	for _, c := range cases {
 		assert.Equal(t, c.want, isReadOnlyClassification(c.answer), "answer %q", c.answer)
 	}
+}
+
+// TestWorkflowBuilder_CurrentContextSection verifies the current-cluster context block (#30162):
+// emitted with a "do not ask which account/cluster" instruction when a context is set, empty otherwise.
+func TestWorkflowBuilder_CurrentContextSection(t *testing.T) {
+	// No context → empty.
+	a := newWorkflowBuilderAgent("acct")
+	assert.Equal(t, "", a.currentContextSection())
+
+	// Name + id → names both and instructs not to ask.
+	a.currentCluster = "prod-eks"
+	a.currentClusterId = "11111111-2222-3333-4444-555555555555"
+	got := a.currentContextSection()
+	assert.Contains(t, got, "CURRENT CONTEXT")
+	assert.Contains(t, got, "prod-eks")
+	assert.Contains(t, got, "account_id=11111111-2222-3333-4444-555555555555")
+	assert.Contains(t, got, "Do NOT ask")
+
+	// Id only (no display name) → falls back to the id as the label, still non-empty.
+	a2 := newWorkflowBuilderAgent("acct")
+	a2.currentClusterId = "abc"
+	got2 := a2.currentContextSection()
+	assert.Contains(t, got2, "CURRENT CONTEXT")
+	assert.Contains(t, got2, "abc")
 }
 
 // TestWorkflowBuilder_BuildPromptHasTriggerPayloadAccess asserts the build

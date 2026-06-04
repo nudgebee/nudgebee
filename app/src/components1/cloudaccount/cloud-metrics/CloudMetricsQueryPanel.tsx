@@ -32,6 +32,10 @@ interface UseCloudMetricsQueryPanelResult {
 
 const STATISTIC_OPTIONS = ['Average', 'Sum', 'Maximum', 'Minimum'].map((s) => ({ label: s, value: s }));
 
+const SERVICE_TO_RESOURCE_TYPES: Record<string, string> = {
+  AmazonEC2: 'compute-instance',
+};
+
 export function useCloudMetricsQueryPanel({
   provider: _provider,
   accountId,
@@ -123,11 +127,13 @@ export function useCloudMetricsQueryPanel({
     const fetchResources = async () => {
       setResourcesLoading(true);
       try {
+        const resourceType = SERVICE_TO_RESOURCE_TYPES[selectedServiceName];
         const resp = await apiCloudAccount.getCloudResource({
           account_id: accountId,
           serviceName: selectedServiceName,
           region: selectedRegion,
           status: 'Active',
+          ...(resourceType ? { type: resourceType } : {}),
         });
         const allResources = resp?.data?.data?.cloud_resourses || [];
         setResources(allResources);

@@ -76,6 +76,13 @@ type IntegrationSchemaProperty struct {
 
 type IntegrationSchema struct {
 	Type IntegrationSchemaType `json:"type"`
+	// Category mirrors the owning integration's Category(). Surfaced to the
+	// frontend so the account_id dropdown can pick the right account list:
+	// webhook integrations (incident_webhook) route alerts to any account and
+	// show all of them, while relay/agent integrations target a K8s cluster and
+	// must exclude cloud accounts. Populated in IntegrationConfigs, not by each
+	// ConfigSchema().
+	Category IntegrationCategory `json:"category,omitempty"`
 	// Description is an optional schema-level notice rendered as a banner
 	// above the form. Useful for integration-specific prerequisites the user
 	// must satisfy (e.g. "the source table must be time-partitioned").

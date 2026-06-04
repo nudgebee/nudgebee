@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"reflect"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +18,13 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
+)
+
+var (
+	// Pre-compiled regexes for MaskDBConnectionString — avoids recompilation on every call.
+	maskKeywordPasswordRegex = regexp.MustCompile(`(?i)(password\s*=\s*)("[^"]*"|[^\s]+)`)
+	maskURLPasswordRegex     = regexp.MustCompile(`://([^:]*):([^/?#]*)@`)
+	connectTimeoutRegex      = regexp.MustCompile(`[?&]connect_timeout=`)
 )
 
 type DatabaseManager struct {
@@ -276,25 +285,44 @@ func (d *DatabaseManager) PrepareInQuery(queryBase string, argSlice any) (string
 	return reboundQuery, args, nil
 }
 
+func MaskDBConnectionString(dbUrl string) string {
+	// Keyword-value form (e.g. "host=localhost user=postgres password=secret"):
+	// url.Parse swallows this without error and leaves u.User == nil, so the
+	// password would otherwise be logged in plain text. Detect by absence of
+	// the URL scheme delimiter and mask via regex on the `password=` token.
+	if !strings.Contains(dbUrl, "://") {
+		return maskKeywordPasswordRegex.ReplaceAllString(dbUrl, "${1}xxxxx")
+	}
+
+	u, err := url.Parse(dbUrl)
+	if err != nil {
+		// URL parse failure (e.g. an unescaped '%' in the password). Fall back
+		// to a regex that stops at the first `/`, `?`, or `#` rather than the
+		// first `@`, so that a password containing `@` doesn't leave its
+		// suffix (and downstream user/host fragments) unmasked.
+		return maskURLPasswordRegex.ReplaceAllString(dbUrl, "://$1:xxxxx@")
+	}
+
+	if u.User != nil {
+		if _, hasPassword := u.User.Password(); hasPassword {
+			u.User = url.UserPassword(u.User.Username(), "xxxxx")
+		}
+	}
+	return u.String()
+}
+
 func newPostgresDatabaseManager() (*DatabaseManager, error) {
 	dbUrl := config.Config.LlmServerDBUrl
 	// Add connect_timeout if not present to help lib/pq handle hangs during connection
-	if !regexp.MustCompile(`[?&]connect_timeout=`).MatchString(dbUrl) {
-		if regexp.MustCompile(`\?`).MatchString(dbUrl) {
+	if !connectTimeoutRegex.MatchString(dbUrl) {
+		if strings.Contains(dbUrl, "?") {
 			dbUrl += "&connect_timeout=10"
 		} else {
 			dbUrl += "?connect_timeout=10"
 		}
 	}
 
-	// Basic masking of password in URL for logging
-	maskedUrl := dbUrl
-	re := regexp.MustCompile(`:(//.*:)(.*)@`)
-	if re.MatchString(dbUrl) {
-		maskedUrl = re.ReplaceAllString(dbUrl, ":$1****@")
-	}
-
-	slog.Info("dbms: opening postgres connection", "url", maskedUrl)
+	slog.Info("dbms: opening postgres connection", "url", MaskDBConnectionString(dbUrl))
 	db, err := sqlx.Open("postgres", dbUrl)
 	if err != nil {
 		slog.Error("dbms: error opening postgres", "error", err)

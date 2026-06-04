@@ -189,7 +189,7 @@ func init() {
 	viper.SetDefault("rabbit_mq_event_investigate_completed_queue", "runbook_server_event_investigate_completed")
 	viper.SetDefault("rabbit_mq_event_investigate_completed_routing_key", "llm_server_event_investigate_completed")
 
-	viper.SetDefault("LLM_SERVER_TOOL_SHELL_IMAGE", "ghcr.io/nudgebee/nudgebee-debug:0.3.10")
+	viper.SetDefault("LLM_SERVER_TOOL_SHELL_IMAGE", "ghcr.io/nudgebee/nudgebee-debug:0.3.12")
 	viper.SetDefault("SCRIPT_EXECUTOR_NODE_IMAGE", "node:22-alpine")
 	viper.SetDefault("SCRIPT_EXECUTOR_POWERSHELL_IMAGE", "mcr.microsoft.com/powershell:lts-alpine-3.17")
 

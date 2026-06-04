@@ -545,7 +545,7 @@ export const useLLMInvestigationControl = (accountId) => {
   );
 
   const handleWorkflowGeneration = useCallback(
-    async (finalQuery, llmSessionId, workflowId, workflowDefinition, onSuccess) => {
+    async (finalQuery, llmSessionId, workflowId, workflowDefinition, currentCluster, onSuccess) => {
       const sessionKey = currentSessionRef.current;
       const userSession = getUserSession();
       const config = {
@@ -555,6 +555,10 @@ export const useLLMInvestigationControl = (accountId) => {
         }),
         ...(workflowId && { workflow_id: workflowId }),
         ...(!workflowId && workflowDefinition && { workflow_definition: workflowDefinition }),
+        // Default the automation to the cluster/account the user is currently viewing so the
+        // builder doesn't ask which account/cluster to target (#30162).
+        ...(currentCluster?.value && { current_cluster_id: currentCluster.value }),
+        ...(currentCluster?.label && { current_cluster: currentCluster.label }),
       };
 
       const res = await apiWorkflow.aiGenerateWorkflow(
@@ -654,6 +658,7 @@ export const useLLMInvestigationControl = (accountId) => {
       apiMode = 'investigate',
       workflowId,
       workflowDefinition,
+      currentCluster,
       categorySource,
       images,
       onSuccess,
@@ -670,7 +675,7 @@ export const useLLMInvestigationControl = (accountId) => {
 
       try {
         if (apiMode === 'workflow') {
-          await handleWorkflowGeneration(finalQuery, llmSessionId, workflowId, workflowDefinition, onSuccess);
+          await handleWorkflowGeneration(finalQuery, llmSessionId, workflowId, workflowDefinition, currentCluster, onSuccess);
         } else {
           await handleInvestigationGeneration(finalQuery, llmSessionId, onSuccess, categorySource, images);
         }

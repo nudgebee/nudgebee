@@ -426,8 +426,11 @@ class DBScan(AnomalyAlgoAbstract):
         if data.empty:
             raise ValueError("Input data is empty. Please provide a valid time series data.")
 
+        # Clean data: handle infinity and NaNs
+        data = data.replace([np.inf, -np.inf], np.nan).fillna(0)
+
         # Check for constant values (StandardScaler will fail)
-        if data.std() == 0:
+        if data.nunique() <= 1:
             logger.warning(
                 "Constant data detected, returning no anomalies",
                 extra={**self.log_context, "data_std": 0, "data_points": len(data)},

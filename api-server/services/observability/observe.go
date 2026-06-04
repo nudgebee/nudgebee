@@ -48,6 +48,128 @@ type ObserveLog struct {
 
 	// Uppercase FIELDS variant (some logs use uppercase)
 	FieldsUppercase map[string]any `json:"FIELDS"`
+
+	// RawFields holds the full JSON map from parse time, avoiding a
+	// marshal+unmarshal round-trip when extracting unknown fields.
+	RawFields map[string]interface{} `json:"-"`
+
+	// TypeMismatches accumulates fields whose JSON type didn't match the struct's
+	// expected type during UnmarshalJSON (e.g. number instead of string). Populated
+	// per-line; QueryLogs aggregates across a batch and logs a summary so producer
+	// bugs are discoverable instead of silently dropped.
+	TypeMismatches []ObserveTypeMismatch `json:"-"`
+}
+
+// ObserveTypeMismatch records one field whose JSON value didn't match the
+// expected typed-struct shape. Sample is a short string rendering of the value
+// so an operator can grep producer logs for the offending pattern.
+type ObserveTypeMismatch struct {
+	Field   string
+	GotType string
+	Sample  string
+}
+
+// jsonTypeOf returns a human-readable name for the underlying JSON kind of a
+// decoded interface{} value, used in TypeMismatch.GotType.
+func jsonTypeOf(v interface{}) string {
+	switch v.(type) {
+	case nil:
+		return "null"
+	case bool:
+		return "bool"
+	case float64:
+		return "number"
+	case string:
+		return "string"
+	case []interface{}:
+		return "array"
+	case map[string]interface{}:
+		return "object"
+	default:
+		return fmt.Sprintf("%T", v)
+	}
+}
+
+// observeMismatchSampleMax caps the per-mismatch Sample length so a giant
+// stringified payload can't dominate a log line.
+const observeMismatchSampleMax = 80
+
+// UnmarshalJSON parses the JSON payload once into a map and extracts the typed
+// fields from it, instead of unmarshaling the same bytes twice (once into the
+// typed struct and once into a map). Avoids ~2x JSON parse cost on a hot log
+// ingest path. Type mismatches on individual fields are tolerated (field stays
+// zero-valued) and recorded in TypeMismatches so the caller can surface them.
+func (o *ObserveLog) UnmarshalJSON(data []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	o.RawFields = raw
+
+	recordMismatch := func(field string, v interface{}) {
+		sample := fmt.Sprintf("%v", v)
+		if len(sample) > observeMismatchSampleMax {
+			sample = sample[:observeMismatchSampleMax] + "..."
+		}
+		o.TypeMismatches = append(o.TypeMismatches, ObserveTypeMismatch{
+			Field:   field,
+			GotType: jsonTypeOf(v),
+			Sample:  sample,
+		})
+	}
+
+	getStr := func(key string) string {
+		v, present := raw[key]
+		if !present || v == nil {
+			return ""
+		}
+		if s, ok := v.(string); ok {
+			return s
+		}
+		recordMismatch(key, v)
+		return ""
+	}
+	getMap := func(key string) map[string]any {
+		v, present := raw[key]
+		if !present || v == nil {
+			return nil
+		}
+		if m, ok := v.(map[string]any); ok {
+			return m
+		}
+		recordMismatch(key, v)
+		return nil
+	}
+
+	o.Body = getStr("body")
+	o.Cluster = getStr("cluster")
+	o.Attributes = getMap("attributes")
+	o.Container = getStr("container")
+	o.Fields = getMap("fields")
+	o.Meta = getMap("meta")
+	o.Namespace = getStr("namespace")
+	o.Node = getStr("node")
+	o.Pod = getStr("pod")
+	o.ResourceAttributes = getMap("resource_attributes")
+	o.Stream = getStr("stream")
+	o.Timestamp = getStr("timestamp")
+	o.Level = getStr("level")
+	o.Message = getStr("message")
+	o.LoggerName = getStr("loggerName")
+	o.SleuthSpanId = getStr("sleuthSpanId")
+	o.SleuthTraceId = getStr("sleuthTraceId")
+	o.ApplicationName = getStr("applicationName")
+	o.Host = getStr("host")
+	o.Tags = raw["tags"]
+	o.Thread = getStr("thread")
+	o.UserId = getStr("userId")
+	o.TenantId = getStr("tenantId")
+	o.DataStream = getMap("data_stream")
+	o.Thrown = getMap("thrown")
+	o.ExtraData = getStr("extraData")
+	o.FieldsUppercase = getMap("FIELDS")
+
+	return nil
 }
 
 // ObserveSource is a LogSource implementation for Observe.
@@ -260,23 +382,33 @@ func (s *ObserveSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest 
 	scanner := bufio.NewScanner(res.Body)
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 10*1024*1024) // max token size 10 MB
+	// Aggregate type mismatches across the batch. Keyed by (field, got_type) so
+	// repeated patterns coalesce; one Sample is retained per pattern for grepping.
+	type mismatchKey struct{ field, gotType string }
+	mismatchCounts := map[mismatchKey]int{}
+	mismatchSamples := map[mismatchKey]string{}
 	for scanner.Scan() {
 		data := scanner.Bytes()
 
 		var obj ObserveLog
+		// ObserveLog.UnmarshalJSON does a single map-unmarshal then extracts
+		// typed fields from it, populating RawFields as a side effect.
 		if err := json.Unmarshal(data, &obj); err != nil {
 			ctx.GetLogger().Warn("failed to unmarshal ObserveLog", "error", err)
 			continue
 		}
-		if obj.Timestamp == "" {
-			var message map[string]any
-			if err := json.Unmarshal(data, &message); err != nil {
-				ctx.GetLogger().Warn("failed to parse potential error response", "error", err)
-				continue
+		for _, m := range obj.TypeMismatches {
+			k := mismatchKey{m.Field, m.GotType}
+			if _, seen := mismatchSamples[k]; !seen {
+				mismatchSamples[k] = m.Sample
 			}
+			mismatchCounts[k]++
+		}
+		obj.TypeMismatches = nil // don't carry per-line slice into results
 
-			if ok, hasOk := message["ok"].(bool); hasOk && !ok {
-				if msg, hasMsg := message["message"].(string); hasMsg {
+		if obj.Timestamp == "" {
+			if ok, hasOk := obj.RawFields["ok"].(bool); hasOk && !ok {
+				if msg, hasMsg := obj.RawFields["message"].(string); hasMsg {
 					return nil, fmt.Errorf("API error: %s", msg)
 				}
 				return nil, errors.New("API returned error without message")
@@ -284,6 +416,20 @@ func (s *ObserveSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest 
 			continue
 		}
 		results = append(results, obj)
+	}
+	if len(mismatchCounts) > 0 {
+		// One log line per distinct (field, got_type) pair, with count + sample —
+		// enough to identify the producer pattern without spamming per-line.
+		summary := make([]map[string]any, 0, len(mismatchCounts))
+		for k, count := range mismatchCounts {
+			summary = append(summary, map[string]any{
+				"field":    k.field,
+				"got_type": k.gotType,
+				"count":    count,
+				"sample":   mismatchSamples[k],
+			})
+		}
+		ctx.GetLogger().Warn("observe: type mismatches in log batch (silently coerced to zero values)", "mismatches", summary)
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("scanner error: %w", err)
@@ -406,21 +552,13 @@ func (s *ObserveSource) convertObserveToOutputLogs(observeLog []ObserveLog) ([]O
 	for _, log := range observeLog {
 		labels := make(map[string]interface{})
 
-		// Dynamically extract ALL fields from the raw log
-		logBytes, err := json.Marshal(log)
-		if err == nil {
-			var allFields map[string]interface{}
-			if err := json.Unmarshal(logBytes, &allFields); err == nil {
-				// Add unknown fields as labels
-				for key, value := range allFields {
-					if !knownFields[key] && value != nil {
-						// Skip empty values
-						if strVal, ok := value.(string); ok && strVal == "" {
-							continue
-						}
-						labels[key] = value
-					}
+		// Extract unknown fields from the raw map captured at parse time
+		for key, value := range log.RawFields {
+			if !knownFields[key] && value != nil {
+				if strVal, ok := value.(string); ok && strVal == "" {
+					continue
 				}
+				labels[key] = value
 			}
 		}
 

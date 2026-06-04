@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/common"
+	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/services_server"
 	"nudgebee/llm/tools"
@@ -88,6 +89,12 @@ type WorkflowBuilderAgent struct {
 	accountId       string
 	state           WorkflowBuilderState
 	cachedTaskTypes string // Cached task type registry JSON for schema-driven validation
+
+	// Transient per-request context (set at the top of Execute, not persisted in state): the
+	// cluster/cloud-account the user is currently viewing, so prompts can default to it instead
+	// of asking which account/cluster to target (#30162).
+	currentCluster   string
+	currentClusterId string
 }
 
 func newWorkflowBuilderAgent(accountId string) *WorkflowBuilderAgent {
@@ -262,6 +269,10 @@ func getWorkflowSchema() string {
 }
 
 func (a *WorkflowBuilderAgent) Execute(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
+	// Capture the current viewing context for this turn so the env block can default to it (#30162).
+	a.currentCluster = strings.TrimSpace(request.QueryConfig.CurrentCluster)
+	a.currentClusterId = strings.TrimSpace(request.QueryConfig.CurrentClusterId)
+
 	switch a.state.Stage {
 	case "clarification":
 		return a.handleClarificationResponse(ctx, request)
@@ -613,7 +624,7 @@ YOUR JOB:
    - VAGUE: The core purpose, trigger type, or key actions are missing or ambiguous (e.g., "create a workflow", "automate something for my cluster", "set up monitoring").
    - SPECIFIC: The user described what the automation should do, even if minor details are missing.
 3. For VAGUE requests: Ask about the fundamentals — what should the automation do? What trigger? What key actions? These are critical questions, not optional.
-4. For ALL requests (including SPECIFIC): Cross-reference the tasks the automation needs against the ACCOUNT ENVIRONMENT above. If the automation requires an external service (database, notification, cloud CLI, etc.) and there are multiple configured integrations of that type, ask which one to use. If only one exists, infer it.
+4. For ALL requests (including SPECIFIC): Cross-reference the tasks the automation needs against the ACCOUNT ENVIRONMENT above. If the automation requires an external service (database, notification, cloud CLI, etc.) and there are multiple configured integrations of that type, ask which one to use. If only one exists, infer it. EXCEPTION: if a CURRENT CONTEXT account/cluster is given above, never ask which account, cluster, or workspace to run against — use the CURRENT CONTEXT one.
 5. If the trigger type is not explicitly stated, ask — do not silently default to "manual".
 
 QUESTION PRIORITY (ask in this order of importance):
@@ -1319,6 +1330,11 @@ func (a *WorkflowBuilderAgent) finalizeWithAutoSave(ctx *security.RequestContext
 // `/workflow/[workflowId]` and `WorkflowBuilderNotebook` reads `accountId` from
 // `router.query`, so the link MUST include a non-empty `accountId`.
 //
+// The URL is absolute (prefixed with config.BaseUrl) because Slack mrkdwn only
+// renders `<URL|label>` as a clickable hyperlink when URL has an http(s)
+// scheme; a path-only URL appears as raw text. Runbook-server uses the same
+// convention for its workflow links.
+//
 // Returns "" if accountId cannot be determined — callers MUST fall back to a
 // no-link summary rather than emit a URL with an empty `accountId=` value,
 // which would land the user on the editor page with no tenant context.
@@ -1335,7 +1351,8 @@ func (a *WorkflowBuilderAgent) buildWorkflowEditorLink(request core.NBAgentReque
 	if request.SessionId != "" {
 		q.Set("session_id", request.SessionId)
 	}
-	return fmt.Sprintf("/workflow/%s?%s#editor", url.PathEscape(workflowId), q.Encode())
+	base := strings.TrimRight(config.Config.BaseUrl, "/")
+	return fmt.Sprintf("%s/workflow/%s?%s#editor", base, url.PathEscape(workflowId), q.Encode())
 }
 
 // truncateSaveError returns a short, user-facing rendition of the save error.
@@ -1606,14 +1623,42 @@ func (a *WorkflowBuilderAgent) buildEnvironmentContext(ctx *security.RequestCont
 		parts = append(parts, "Default metrics provider: "+metricProvider.Provider+" (use observability.metrics)")
 	}
 
+	currentContext := a.currentContextSection()
 	if len(parts) == 0 {
-		return ""
+		return currentContext
 	}
 
 	return "\nACCOUNT ENVIRONMENT (configured integrations and cloud accounts on this account):\n" + strings.Join(parts, "\n") +
 		"\n\nWhen the user references an integration by name (e.g., 'query dev-pg'), match it to the configured integration above and use {{ Configs.<name>_integration_id }} to reference it." +
 		"\nWhen a task requires `account_id` (k8s.cli, cloud.aws.cli, cloud.gcp.cli, cloud.azure.cli, etc.), use the UUID `id=` value shown for that cloud account above — NEVER the display name. The runbook server validates `account_id` as a UUID and rejects names." +
-		"\nIf a task REQUIRES an integration NOT listed above, warn the user that it is not currently configured."
+		"\nIf a task REQUIRES an integration NOT listed above, warn the user that it is not currently configured." +
+		currentContext
+}
+
+// currentContextSection returns a prompt block naming the cluster/cloud-account the user is
+// currently viewing, instructing prompts to default to it instead of asking which account/cluster
+// to target (#30162). Returns "" when no current context was supplied (behavior then unchanged).
+func (a *WorkflowBuilderAgent) currentContextSection() string {
+	if a.currentCluster == "" && a.currentClusterId == "" {
+		return ""
+	}
+
+	label := a.currentCluster
+	if label == "" {
+		label = a.currentClusterId
+	}
+	idSuffix := ""
+	if a.currentClusterId != "" {
+		idSuffix = fmt.Sprintf(" (account_id=%s)", a.currentClusterId)
+	}
+
+	return fmt.Sprintf(
+		"\n\nCURRENT CONTEXT: The user is already working inside the cluster/account \"%s\"%s. "+
+			"Do NOT ask the user which account, cluster, or workspace to use. "+
+			"For a task that needs an `account_id` (k8s.cli, cloud.*.cli), default to THIS account/cluster when it fits the task's provider; "+
+			"otherwise pick the appropriate configured account from the ACCOUNT ENVIRONMENT above without asking. "+
+			"Only ask if no suitable account is configured.",
+		label, idSuffix)
 }
 
 // fetchTaskTypeNames fetches registered task type names from the runbook server.

@@ -614,7 +614,7 @@ func init() {
 
 	viper.SetDefault("LLM_SERVER_TOOL_CRAWL_DEVTOOL_WEBSOCKET_URL", "")
 
-	viper.SetDefault("LLM_SERVER_TOOL_SHELL_IMAGE", "ghcr.io/nudgebee/nudgebee-debug:0.3.10")
+	viper.SetDefault("LLM_SERVER_TOOL_SHELL_IMAGE", "ghcr.io/nudgebee/nudgebee-debug:0.3.12")
 
 	viper.SetDefault("llm_server_async_api_timeout_seconds", 15)
 	viper.SetDefault("llm_server_async_operation_timeout_seconds", 5)
@@ -822,5 +822,27 @@ func init() {
 
 	if Config.LlmServerRewooToReact3Enabled {
 		Config.LlmServerReActCritiqueEnabled = true
+	}
+}
+
+const insecureJWTSecret = "default-jwt-secret"
+
+// LogSecurityWarnings emits warnings for insecure config defaults that operators
+// should override before deploying. Intentionally non-blocking: existing
+// deployments that inherited defaults must keep starting while ops act on the
+// warnings. Tighten to a hard fail in a future release once dashboards confirm
+// the warning is no longer fired.
+//
+// Call from main() at startup — not from init(), to avoid noise in test
+// processes.
+func LogSecurityWarnings() {
+	if Config.LlmServerJwtSecret == insecureJWTSecret {
+		if Config.LlmServerSecurityMode == "local" {
+			slog.Warn("config: llm_server_jwt_secret is set to the insecure default — acceptable for local dev only")
+			return
+		}
+		slog.Warn("config: SECURITY — llm_server_jwt_secret is set to the publicly known default value; " +
+			"any attacker who knows this default can forge workspace JWTs and execute commands in the workspace pod. " +
+			"Set LLM_SERVER_JWT_SECRET to a strong random value before deploying.")
 	}
 }

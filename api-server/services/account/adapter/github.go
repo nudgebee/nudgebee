@@ -1690,7 +1690,19 @@ func (k *githubAdapter) GetRecommendationResolutionStatus(ctx AccountAdapterCont
 		return GetRecommendationResolutionStatusResponse{}, errors.New("error getting apply request payload")
 	}
 	if applyRequestPayloadMap["provider_config"] == nil {
-		return GetRecommendationResolutionStatusResponse{}, common.ErrorNotFound("error: provider config not found")
+		// Missing provider_config means we lack the credentials to query the
+		// PR's state — but that is NOT evidence the PR failed. The caller
+		// (recommendation status-sync cron) maps any error to Failed and
+		// re-opens the recommendation, so returning an error here flips a
+		// successfully-raised PR to Failed on every tick. Keep it InProgress.
+		// (Going forward, ApplyRecommendationUsingCodeAgent merges rather than
+		// overwrites data so provider_config is no longer dropped.)
+		ctx.GetLogger().Warn("recommendation_resolution: provider_config missing; cannot verify PR status, keeping InProgress",
+			"pr_url", resolutionReferenceId)
+		return GetRecommendationResolutionStatusResponse{
+			Status:        RecommendationResolutionStatusInProgress,
+			StatusMessage: "PR raised; status verification pending (provider config unavailable)",
+		}, nil
 	}
 	providerConfigMap, ok := applyRequestPayloadMap["provider_config"].(map[string]any)
 	if !ok {
@@ -2050,7 +2062,13 @@ Make minimal, precise changes only.`,
 			prMetaJSON, marshalErr := common.MarshalJson(prMeta)
 			if marshalErr == nil {
 				_, _ = dbms.Db.ExecContext(context.Background(),
-					fmt.Sprintf(`UPDATE %s SET data = $1 WHERE id = $2`, tableName),
+					// Merge (jsonb ||) rather than overwrite: the original apply payload
+					// carries provider_config, which GetRecommendationResolutionStatus
+					// requires. A blind `data = $1` drops it and flips the
+					// (successfully raised) PR's resolution to Failed on the next
+					// status sync. prMeta keys win on conflict; provider_config and
+					// any other prior keys survive.
+					fmt.Sprintf(`UPDATE %s SET data = COALESCE(data, '{}'::jsonb) || $1::jsonb WHERE id = $2`, tableName),
 					string(prMetaJSON), recommendResolutionId)
 			}
 		} else if executionStatus == "success" {
@@ -2325,7 +2343,13 @@ When creating the PR, ensure the description includes:
 			prMetaJSON, marshalErr := common.MarshalJson(prMeta)
 			if marshalErr == nil {
 				_, _ = dbms.Db.ExecContext(context.Background(),
-					fmt.Sprintf(`UPDATE %s SET data = $1 WHERE id = $2`, tableName),
+					// Merge (jsonb ||) rather than overwrite: the original apply payload
+					// carries provider_config, which GetRecommendationResolutionStatus
+					// requires. A blind `data = $1` drops it and flips the
+					// (successfully raised) PR's resolution to Failed on the next
+					// status sync. prMeta keys win on conflict; provider_config and
+					// any other prior keys survive.
+					fmt.Sprintf(`UPDATE %s SET data = COALESCE(data, '{}'::jsonb) || $1::jsonb WHERE id = $2`, tableName),
 					string(prMetaJSON), recommendResolutionId)
 			}
 		} else if executionStatus == "success" {

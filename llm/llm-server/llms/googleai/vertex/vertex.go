@@ -11,9 +11,10 @@ import (
 	"io"
 	"strings"
 
+	"time"
+
 	"nudgebee/llm/common"
 	googleai "nudgebee/llm/llms/googleai"
-	"nudgebee/llm/llms/googleai/internal/imageutil"
 
 	"cloud.google.com/go/vertexai/genai"
 	"github.com/tmc/langchaingo/llms"
@@ -183,7 +184,7 @@ func convertCandidates(candidates []*genai.Candidate, usage *genai.UsageMetadata
 }
 
 // convertParts converts between a sequence of langchain parts and genai parts.
-func convertParts(parts []llms.ContentPart) ([]genai.Part, error) {
+func convertParts(ctx context.Context, parts []llms.ContentPart) ([]genai.Part, error) {
 	convertedParts := make([]genai.Part, 0, len(parts))
 	for _, part := range parts {
 		var out genai.Part
@@ -194,11 +195,18 @@ func convertParts(parts []llms.ContentPart) ([]genai.Part, error) {
 		case llms.BinaryContent:
 			out = genai.Blob{MIMEType: p.MIMEType, Data: p.Data}
 		case llms.ImageURLContent:
-			typ, data, err := imageutil.DownloadImageData(p.URL)
+			mimeType, data, err := common.FetchImageSafely(ctx, p.URL, common.SafeFetchOptions{
+				MaxSizeBytes: 20 * 1024 * 1024,
+				Timeout:      30 * time.Second,
+			})
 			if err != nil {
 				return nil, err
 			}
-			out = genai.ImageData(typ, data)
+			imgType := mimeType
+			if parts := strings.SplitN(mimeType, "/", 2); len(parts) == 2 {
+				imgType = parts[1]
+			}
+			out = genai.ImageData(imgType, data)
 		case llms.ToolCall:
 			fc := p.FunctionCall
 			var argsMap map[string]any
@@ -224,8 +232,8 @@ func convertParts(parts []llms.ContentPart) ([]genai.Part, error) {
 }
 
 // convertContent converts between a langchain MessageContent and genai content.
-func convertContent(content llms.MessageContent) (*genai.Content, error) {
-	parts, err := convertParts(content.Parts)
+func convertContent(ctx context.Context, content llms.MessageContent) (*genai.Content, error) {
+	parts, err := convertParts(ctx, content.Parts)
 	if err != nil {
 		return nil, err
 	}
@@ -262,7 +270,7 @@ func generateFromSingleMessage(
 	parts []llms.ContentPart,
 	opts *llms.CallOptions,
 ) (*llms.ContentResponse, error) {
-	convertedParts, err := convertParts(parts)
+	convertedParts, err := convertParts(ctx, parts)
 	if err != nil {
 		return nil, err
 	}
@@ -292,7 +300,7 @@ func generateFromMessages(
 ) (*llms.ContentResponse, error) {
 	history := make([]*genai.Content, 0, len(messages))
 	for _, mc := range messages {
-		content, err := convertContent(mc)
+		content, err := convertContent(ctx, mc)
 		if err != nil {
 			return nil, err
 		}

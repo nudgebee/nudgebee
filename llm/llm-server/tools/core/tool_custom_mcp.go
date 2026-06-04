@@ -3,7 +3,11 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
+	"net/url"
 	"nudgebee/llm/common"
 	"time"
 
@@ -11,6 +15,15 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 )
+
+// noRedirectMCPClient disables HTTP redirects so the MCP server can't redirect
+// the client to an internal/private URL after the initial validateMCPURL check.
+// Any 3xx response is surfaced to the caller instead of followed.
+var noRedirectMCPClient = &http.Client{
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
+}
 
 const ToolCustomMcpServerType = "mcp_server_type"
 const ToolCustomMcpServerTypeCli = "cli"
@@ -122,6 +135,37 @@ func (m nbCustomMCPTool) GetSubCommands() ([]NBToolCommand, error) {
 	return commands, nil
 }
 
+// validateMCPURL prevents SSRF by rejecting URLs that resolve to internal/private networks.
+func validateMCPURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("unsupported scheme %q: only http and https are allowed", u.Scheme)
+	}
+	host, _, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		host = u.Host
+	}
+	if host == "" {
+		return fmt.Errorf("empty hostname")
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return fmt.Errorf("unable to resolve host %q: %w", host, err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("host %q resolved to zero addresses", host)
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+			return fmt.Errorf("URL resolves to a restricted IP address: %s", ip.String())
+		}
+	}
+	return nil
+}
+
 func (m nbCustomMCPTool) getMcpClient() (*client.Client, error) {
 	mcperverType := m.tool.Config[ToolCustomMcpServerType]
 	if mcperverType == nil {
@@ -203,6 +247,10 @@ func (m nbCustomMCPTool) getMcpClient() (*client.Client, error) {
 			return mcpClient, errors.New("invalid config for mcp")
 		}
 
+		if err := validateMCPURL(httpUrlStr); err != nil {
+			return mcpClient, fmt.Errorf("mcp: blocked HTTP URL: %w", err)
+		}
+
 		httpHeaders := map[string]string{}
 
 		toolCustomMcpServerHttpHeadersAny := config[ToolCustomMcpServerHttpHeaders]
@@ -229,6 +277,7 @@ func (m nbCustomMCPTool) getMcpClient() (*client.Client, error) {
 		mcpClient, err = client.NewStreamableHttpClient(
 			httpUrlStr,
 			transport.WithHTTPHeaders(httpHeaders),
+			transport.WithHTTPBasicClient(noRedirectMCPClient),
 		)
 		if err != nil {
 			slog.Error("mcp: unable to create client", "error", err)

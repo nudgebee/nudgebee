@@ -334,6 +334,9 @@ const KubernetesLLMResponseGenerator = ({
         apiMode,
         workflowId,
         workflowDefinition,
+        // Current cluster/account the user is viewing — lets the builder default to it instead of
+        // asking which account/cluster to target (#30162). Only consumed in workflow mode.
+        currentCluster: selectedCluster,
         categorySource,
         images,
         popup,
@@ -366,6 +369,7 @@ const KubernetesLLMResponseGenerator = ({
       apiMode,
       workflowId,
       workflowDefinition,
+      selectedCluster,
       categorySource,
       popup,
       router,

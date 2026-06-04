@@ -226,23 +226,32 @@ func (sc *SecurityContext) ListAccountIds() []string {
 		return sc.accountIds
 	}
 
-	if slices.Contains(sc.roles, AUTH_ACCOUNT_ADMIN_ROLE) {
-		return sc.scopedEntityIds[AUTH_ACCOUNT_ADMIN_ROLE]
+	// A user can hold several scoped roles at once (e.g. account_admin on
+	// one account and account_admin_readonly on another). Return the union
+	// of every scoped role's accounts, not just the first one that matches —
+	// otherwise the lower-priority roles' accounts become invisible.
+	// Write-vs-read enforcement stays in HasAccountAccess, which checks the
+	// specific scoped role per account.
+	accountIds := []string{}
+	seen := map[string]bool{}
+	for _, role := range []string{
+		AUTH_ACCOUNT_ADMIN_ROLE,
+		AUTH_ACCOUNT_READ_ADMIN_ROLE,
+		AUTH_K8S_NAMESPACE_ADMIN_ROLE,
+		AUTH_K8S_NAMESPACE_READ_ADMIN_ROLE,
+	} {
+		if !slices.Contains(sc.roles, role) {
+			continue
+		}
+		for _, accountId := range sc.scopedEntityIds[role] {
+			if !seen[accountId] {
+				seen[accountId] = true
+				accountIds = append(accountIds, accountId)
+			}
+		}
 	}
 
-	if slices.Contains(sc.roles, AUTH_ACCOUNT_READ_ADMIN_ROLE) {
-		return sc.scopedEntityIds[AUTH_ACCOUNT_READ_ADMIN_ROLE]
-	}
-
-	if slices.Contains(sc.roles, AUTH_K8S_NAMESPACE_ADMIN_ROLE) {
-		return sc.scopedEntityIds[AUTH_K8S_NAMESPACE_ADMIN_ROLE]
-	}
-
-	if slices.Contains(sc.roles, AUTH_K8S_NAMESPACE_READ_ADMIN_ROLE) {
-		return sc.scopedEntityIds[AUTH_K8S_NAMESPACE_READ_ADMIN_ROLE]
-	}
-
-	return []string{}
+	return accountIds
 }
 
 func (sc *SecurityContext) GetK8sUserAndGroup(accountId string) (string, []string) {

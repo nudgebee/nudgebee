@@ -280,19 +280,24 @@ class OllamaEmbeddings(Embeddings):
         self._base_url = base_url.rstrip("/")
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        # Ollama /api/embed accepts a list of strings as "input" and returns all
+        # embeddings in a single response, avoiding N sequential HTTP roundtrips.
         import requests
 
-        results = []
-        for text in texts:
-            resp = requests.post(
-                f"{self._base_url}/api/embed",
-                json={"model": self.model, "input": text},
-                timeout=120,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            results.append(data["embeddings"][0] if "embeddings" in data else data["embedding"])
-        return results
+        if not texts:
+            return []
+
+        resp = requests.post(
+            f"{self._base_url}/api/embed",
+            json={"model": self.model, "input": texts},
+            timeout=120,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        # Some Ollama configurations / gateways return a 200 with an error field.
+        if "error" in data:
+            raise ValueError(f"Ollama embedding error: {data['error']}")
+        return data["embeddings"]
 
     def embed_query(self, text: str) -> List[float]:
         return self.embed_documents([text])[0]

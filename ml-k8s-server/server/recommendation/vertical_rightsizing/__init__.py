@@ -646,7 +646,6 @@ def store_krr_recommendations_to_db(
                     # Convert to list format for database insertion - same as collector-server
                     recommendations_list = list(recommendations_to_insert.values())
 
-                    # Use individual INSERT statements with ON CONFLICT handling
                     insert_query = text("""
                         INSERT INTO recommendation (
                             cloud_account_id, tenant_id, resource_id, recommendation,
@@ -664,9 +663,10 @@ def store_krr_recommendations_to_db(
                             status = EXCLUDED.status
                     """)
 
+                    # Batch execute: pass entire list so SQLAlchemy sends one
+                    # multi-row statement instead of N round-trips.
                     with engine.connect() as conn:
-                        for rec in recommendations_list:
-                            conn.execute(insert_query, rec)
+                        conn.execute(insert_query, recommendations_list)
                         conn.commit()
 
                     insert_span.set_attribute("krr.inserted_recommendations", len(recommendations_list))

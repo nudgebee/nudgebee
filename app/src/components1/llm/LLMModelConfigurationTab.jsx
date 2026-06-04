@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Box } from '@mui/material';
-import { Tabs } from '@components1/ds/Tabs';
+import { ToggleGroup } from '@components1/ds/ToggleGroup';
 import LLMConfigList from '@components1/llm/LLMConfigList';
 import MCPConfigList from '@components1/llm/MCPConfigList';
 
@@ -19,14 +19,14 @@ const LLMModelConfigurationTab = () => {
   return (
     <Box sx={{ py: 2 }}>
       <Box sx={{ mb: 2 }}>
-        <Tabs
-          tabs={[
-            { id: 'models', label: 'LLM Providers' },
-            { id: 'mcp', label: 'MCP Servers' },
+        <ToggleGroup
+          selection='single'
+          options={[
+            { value: 'models', label: 'LLM Providers' },
+            { value: 'mcp', label: 'MCP Servers' },
           ]}
           value={activeSubTab}
           onChange={(next) => setActiveSubTab(next)}
-          visual='segmented'
           size='sm'
           ariaLabel='LLM Configuration'
         />

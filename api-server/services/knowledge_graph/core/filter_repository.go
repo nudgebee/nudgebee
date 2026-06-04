@@ -13,6 +13,7 @@ import (
 	"nudgebee/services/security"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
 // FilterRepository handles knowledge graph filter operations
@@ -712,34 +713,40 @@ func (r *FilterRepository) UpsertDefaultFilterForTenant(
 
 // softDeleteRemovedAccounts flips is_active=false on every node and edge whose
 // cloud_account_id matches one of the removed accounts, scoped to this tenant.
+// Uses batch UPDATE with ANY() to avoid N+1 round-trips (2 queries instead of 2*N).
 func (r *FilterRepository) softDeleteRemovedAccounts(tenantID string, removedAccounts []string) error {
-	for _, accountID := range removedAccounts {
-		nodeRes, err := r.dbManager.Exec(`
-			UPDATE knowledge_graph_node
-			SET is_active = false
-			WHERE tenant_id = $1 AND cloud_account_id = $2 AND is_active = true
-		`, tenantID, accountID)
-		if err != nil {
-			return fmt.Errorf("failed to deactivate nodes for account %s: %w", accountID, err)
-		}
-
-		edgeRes, err := r.dbManager.Exec(`
-			UPDATE knowledge_graph_edge
-			SET is_active = false
-			WHERE tenant_id = $1 AND cloud_account_id = $2 AND is_active = true
-		`, tenantID, accountID)
-		if err != nil {
-			return fmt.Errorf("failed to deactivate edges for account %s: %w", accountID, err)
-		}
-
-		nodeRows, _ := nodeRes.RowsAffected()
-		edgeRows, _ := edgeRes.RowsAffected()
-		r.logger.Info("kg: deactivated nodes/edges for removed account",
-			"tenant_id", tenantID,
-			"account_id", accountID,
-			"nodes", nodeRows,
-			"edges", edgeRows)
+	if tenantID == "" {
+		return fmt.Errorf("softDeleteRemovedAccounts: tenantID cannot be empty")
 	}
+	if len(removedAccounts) == 0 {
+		return nil
+	}
+
+	nodeRes, err := r.dbManager.Exec(`
+		UPDATE knowledge_graph_node
+		SET is_active = false
+		WHERE tenant_id = $1 AND cloud_account_id = ANY($2::uuid[]) AND is_active = true
+	`, tenantID, pq.Array(removedAccounts))
+	if err != nil {
+		return fmt.Errorf("failed to deactivate nodes for accounts %v: %w", removedAccounts, err)
+	}
+
+	edgeRes, err := r.dbManager.Exec(`
+		UPDATE knowledge_graph_edge
+		SET is_active = false
+		WHERE tenant_id = $1 AND cloud_account_id = ANY($2::uuid[]) AND is_active = true
+	`, tenantID, pq.Array(removedAccounts))
+	if err != nil {
+		return fmt.Errorf("failed to deactivate edges for accounts %v: %w", removedAccounts, err)
+	}
+
+	nodeRows, _ := nodeRes.RowsAffected()
+	edgeRows, _ := edgeRes.RowsAffected()
+	r.logger.Info("kg: deactivated nodes/edges for removed accounts",
+		"tenant_id", tenantID,
+		"accounts", removedAccounts,
+		"nodes", nodeRows,
+		"edges", edgeRows)
 	return nil
 }
 
@@ -747,24 +754,30 @@ func (r *FilterRepository) softDeleteRemovedAccounts(tenantID string, removedAcc
 // removed flow_source. Flow sources tag edges in properties.created_by_flow_source
 // (see base_flow_source.go CreateEdge), since the edge table has no top-level
 // `source` column.
+// Uses batch UPDATE with ANY() to avoid N round-trips (1 query instead of N).
 func (r *FilterRepository) softDeleteRemovedFlowSources(tenantID string, removedFlowSources []string) error {
-	for _, flowSource := range removedFlowSources {
-		res, err := r.dbManager.Exec(`
-			UPDATE knowledge_graph_edge
-			SET is_active = false
-			WHERE tenant_id = $1
-			  AND properties->>'created_by_flow_source' = $2
-			  AND is_active = true
-		`, tenantID, flowSource)
-		if err != nil {
-			return fmt.Errorf("failed to deactivate edges for flow_source %s: %w", flowSource, err)
-		}
-		rows, _ := res.RowsAffected()
-		r.logger.Info("kg: deactivated edges for removed flow_source",
-			"tenant_id", tenantID,
-			"flow_source", flowSource,
-			"edges", rows)
+	if tenantID == "" {
+		return fmt.Errorf("softDeleteRemovedFlowSources: tenantID cannot be empty")
 	}
+	if len(removedFlowSources) == 0 {
+		return nil
+	}
+
+	res, err := r.dbManager.Exec(`
+		UPDATE knowledge_graph_edge
+		SET is_active = false
+		WHERE tenant_id = $1
+		  AND properties->>'created_by_flow_source' = ANY($2::text[])
+		  AND is_active = true
+	`, tenantID, pq.Array(removedFlowSources))
+	if err != nil {
+		return fmt.Errorf("failed to deactivate edges for flow_sources %v: %w", removedFlowSources, err)
+	}
+	rows, _ := res.RowsAffected()
+	r.logger.Info("kg: deactivated edges for removed flow_sources",
+		"tenant_id", tenantID,
+		"flow_sources", removedFlowSources,
+		"edges", rows)
 	return nil
 }
 

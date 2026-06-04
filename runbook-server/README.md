@@ -394,7 +394,7 @@ All config is read by Viper from environment variables (and an optional `.env` f
 | `runbook_server_llm_initial_backoff_seconds` | `5` | |
 | `server_heartbeat_frequency_second` | `15` | Worker heartbeat frequency. |
 | `server_heartbeat_timeout_second` | `30` | |
-| `llm_server_tool_shell_image` | `ghcr.io/nudgebee/nudgebee-debug:0.3.10` | Image for shell tasks. |
+| `llm_server_tool_shell_image` | `ghcr.io/nudgebee/nudgebee-debug:0.3.12` | Image for shell tasks. |
 | `script_executor_node_image` | `node:22-alpine` | |
 | `script_executor_powershell_image` | `mcr.microsoft.com/powershell:lts-alpine-3.17` | |
 

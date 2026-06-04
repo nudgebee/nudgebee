@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -77,6 +78,10 @@ func (h *FileHandler) getWorkspaceDir(conversationID string) string {
 // resolvePath resolves the requested path relative to the workspace directory
 // and ensures it doesn't escape the workspace
 func (h *FileHandler) resolvePath(requestedPath, conversationID string) (string, error) {
+	if conversationID != "" && !safePathRe.MatchString(conversationID) {
+		return "", fmt.Errorf("invalid conversation ID format")
+	}
+
 	workspaceDir := h.getWorkspaceDir(conversationID)
 
 	// Clean the requested path
@@ -103,6 +108,21 @@ func (h *FileHandler) resolvePath(requestedPath, conversationID string) (string,
 	}
 	if strings.HasPrefix(rel, "..") || strings.HasPrefix(rel, "/") {
 		return "", fmt.Errorf("path outside workspace")
+	}
+
+	// Defense in depth against symlink-based traversal: filepath.Rel is purely lexical,
+	// so a symlink inside workspaceDir that points outside would bypass the check above.
+	// Resolve symlinks and re-check containment. Tolerate ENOENT for paths that don't yet
+	// exist (callers like file-create rely on resolving the parent only).
+	if resolved, evalErr := filepath.EvalSymlinks(fullPath); evalErr == nil {
+		resolvedWorkspace, wsErr := filepath.EvalSymlinks(workspaceDir)
+		if wsErr != nil {
+			resolvedWorkspace = workspaceDir
+		}
+		relResolved, relErr := filepath.Rel(resolvedWorkspace, resolved)
+		if relErr != nil || strings.HasPrefix(relResolved, "..") || strings.HasPrefix(relResolved, "/") {
+			return "", fmt.Errorf("path outside workspace")
+		}
 	}
 
 	return fullPath, nil
@@ -142,7 +162,8 @@ func (h *FileHandler) HandleListFiles(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "Directory not found"})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		slog.Error("file_handler: failed to access path", "path", fullPath, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to access directory"})
 		return
 	}
 
@@ -205,7 +226,8 @@ func (h *FileHandler) HandleListFiles(c *gin.Context) {
 			return nil
 		})
 	} else {
-		entries, err := os.ReadDir(fullPath)
+		var entries []os.DirEntry
+		entries, err = os.ReadDir(fullPath)
 		if err == nil {
 			for _, entry := range entries {
 				// Filter by regex if pattern provided
@@ -239,7 +261,8 @@ func (h *FileHandler) HandleListFiles(c *gin.Context) {
 	}
 
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		slog.Error("file_handler: failed to list directory", "path", fullPath, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list directory contents"})
 		return
 	}
 
@@ -271,13 +294,15 @@ func (h *FileHandler) HandleSaveFile(c *gin.Context) {
 	// Ensure directory exists
 	dir := filepath.Dir(fullPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create directory: %v", err)})
+		slog.Error("file_handler: failed to create directory", "path", dir, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create directory"})
 		return
 	}
 
 	// Write file
 	if err := os.WriteFile(fullPath, []byte(req.Content), 0644); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to write file: %v", err)})
+		slog.Error("file_handler: failed to write file", "path", fullPath, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to write file"})
 		return
 	}
 
@@ -306,7 +331,8 @@ func (h *FileHandler) HandleDeleteFile(c *gin.Context) {
 	}
 
 	if err := os.RemoveAll(fullPath); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to delete: %v", err)})
+		slog.Error("file_handler: failed to delete path", "path", fullPath, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete path"})
 		return
 	}
 
@@ -334,14 +360,16 @@ func (h *FileHandler) HandleGetFile(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "File not found"})
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		slog.Error("file_handler: failed to open file", "path", fullPath, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to open file"})
 		return
 	}
 	defer func() { _ = file.Close() }()
 
 	info, err := file.Stat()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		slog.Error("file_handler: failed to read file info", "path", fullPath, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read file info"})
 		return
 	}
 
@@ -357,7 +385,7 @@ func (h *FileHandler) HandleGetFile(c *gin.Context) {
 	_, err = io.Copy(c.Writer, file)
 	if err != nil {
 		// Cannot write JSON error if streaming started, but good to log
-		fmt.Printf("Error streaming file: %v\n", err)
+		slog.Error("file_handler: failed to stream file", "error", err)
 	}
 }
 
@@ -388,7 +416,8 @@ func (h *FileHandler) HandleBatchReadFile(c *gin.Context) {
 			if os.IsNotExist(err) {
 				result.Error = "File not found"
 			} else {
-				result.Error = err.Error()
+				slog.Error("file_handler: failed to access file", "path", fullPath, "error", err)
+				result.Error = "Failed to access file"
 			}
 			results = append(results, result)
 			continue
@@ -409,7 +438,8 @@ func (h *FileHandler) HandleBatchReadFile(c *gin.Context) {
 
 		content, err := os.ReadFile(fullPath)
 		if err != nil {
-			result.Error = err.Error()
+			slog.Error("file_handler: failed to read file", "path", fullPath, "error", err)
+			result.Error = "Failed to read file"
 			results = append(results, result)
 			continue
 		}

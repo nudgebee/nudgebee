@@ -364,17 +364,19 @@ func (s *AWSSource) fetchAWSResources(ctx context.Context, req *core.SourceBuild
 
 // NodeLookup provides efficient lookup of nodes by various identifiers
 type NodeLookup struct {
-	byResourceID map[string]*core.DbNode // resource_id -> node
-	byNodeType   map[core.NodeType][]*core.DbNode
-	byARN        map[string]*core.DbNode // arn -> node
+	byResourceID      map[string]*core.DbNode                     // resource_id -> node
+	byNodeType        map[core.NodeType][]*core.DbNode            // nodeType -> nodes
+	byARN             map[string]*core.DbNode                     // arn -> node
+	byNodeTypeAndName map[core.NodeType]map[string][]*core.DbNode // (nodeType, name) -> nodes — O(1) name lookup
 }
 
 // newNodeLookup creates lookup maps from a list of nodes
 func newNodeLookup(nodes []*core.DbNode) *NodeLookup {
 	lookup := &NodeLookup{
-		byResourceID: make(map[string]*core.DbNode),
-		byNodeType:   make(map[core.NodeType][]*core.DbNode),
-		byARN:        make(map[string]*core.DbNode),
+		byResourceID:      make(map[string]*core.DbNode),
+		byNodeType:        make(map[core.NodeType][]*core.DbNode),
+		byARN:             make(map[string]*core.DbNode),
+		byNodeTypeAndName: make(map[core.NodeType]map[string][]*core.DbNode),
 	}
 
 	for _, node := range nodes {
@@ -390,9 +392,25 @@ func newNodeLookup(nodes []*core.DbNode) *NodeLookup {
 		if arn, ok := node.Properties["arn"].(string); ok && arn != "" {
 			lookup.byARN[arn] = node
 		}
+
+		// Index by (nodeType, name) for O(1) name-based lookups
+		if name, ok := node.Properties["name"].(string); ok && name != "" {
+			if lookup.byNodeTypeAndName[node.NodeType] == nil {
+				lookup.byNodeTypeAndName[node.NodeType] = make(map[string][]*core.DbNode)
+			}
+			lookup.byNodeTypeAndName[node.NodeType][name] = append(lookup.byNodeTypeAndName[node.NodeType][name], node)
+		}
 	}
 
 	return lookup
+}
+
+// getNodesByTypeAndName returns nodes of a given type with a matching "name" property, in O(1).
+func (l *NodeLookup) getNodesByTypeAndName(nodeType core.NodeType, name string) []*core.DbNode {
+	if nameMap, ok := l.byNodeTypeAndName[nodeType]; ok {
+		return nameMap[name]
+	}
+	return nil
 }
 
 // shouldIncludeResource checks if a resource should be included based on ServiceTypeFilter
@@ -2606,15 +2624,13 @@ func (s *AWSSource) createEC2Edges(nodes []*core.DbNode, lookup *NodeLookup, req
 			}
 
 			if eksClusterName != "" {
-				for _, eksNode := range lookup.byNodeType[core.NodeTypeManagedCluster] {
-					if clusterName, ok := getStringProperty(eksNode, "name"); ok && clusterName == eksClusterName {
-						edges = append(edges, s.createEdge(node, eksNode, core.RelationshipRunsOn,
-							map[string]interface{}{
-								"connection_type": "eks_node",
-								"cluster_name":    eksClusterName,
-							}, req))
-						break
-					}
+				for _, eksNode := range lookup.getNodesByTypeAndName(core.NodeTypeManagedCluster, eksClusterName) {
+					edges = append(edges, s.createEdge(node, eksNode, core.RelationshipRunsOn,
+						map[string]interface{}{
+							"connection_type": "eks_node",
+							"cluster_name":    eksClusterName,
+						}, req))
+					break
 				}
 			}
 		}
@@ -3577,31 +3593,18 @@ func (s *AWSSource) createECSServiceEdges(nodes []*core.DbNode, lookup *NodeLook
 			continue
 		}
 
-		// Find the ECS cluster node by name
 		clusterFound := false
-		for _, clusterNode := range lookup.byNodeType[core.NodeTypeManagedCluster] {
-			// Check if this is an ECS cluster (not EKS)
-			clusterServiceName, ok := getStringProperty(clusterNode, "service_name")
-			if !ok || clusterServiceName != "AmazonECS" {
+		for _, clusterNode := range lookup.getNodesByTypeAndName(core.NodeTypeManagedCluster, clusterName) {
+			if svcName, ok := getStringProperty(clusterNode, "service_name"); !ok || svcName != "AmazonECS" {
 				continue
 			}
-
-			// Match by cluster name
-			clusterNodeName, ok := getStringProperty(clusterNode, "name")
-			if !ok {
-				continue
-			}
-
-			if clusterNodeName == clusterName {
-				// Create ECS Service → ECS Cluster relationship
-				clusterFound = true
-				edges = append(edges, s.createEdge(node, clusterNode, core.RelationshipRunsIn,
-					map[string]interface{}{
-						"connection_type": "ecs_cluster",
-						"cluster_name":    clusterName,
-					}, req))
-				break
-			}
+			clusterFound = true
+			edges = append(edges, s.createEdge(node, clusterNode, core.RelationshipRunsIn,
+				map[string]interface{}{
+					"connection_type": "ecs_cluster",
+					"cluster_name":    clusterName,
+				}, req))
+			break
 		}
 		if !clusterFound {
 			s.logger.Warn("ECS service cluster node not found; edge skipped",
@@ -5546,10 +5549,8 @@ func (s *AWSSource) createCloudTrailEdges(nodes []*core.DbNode, lookup *NodeLook
 
 		// 1. CloudTrail -> S3 Bucket (PUBLISHES_TO)
 		if s3BucketName, ok := node.Properties["s3_bucket_name"].(string); ok && s3BucketName != "" {
-			for _, storageNode := range lookup.byNodeType[core.NodeTypeStorage] {
-				storageName, _ := storageNode.Properties["name"].(string)
-				storageServiceName, _ := storageNode.Properties["service_name"].(string)
-				if storageName == s3BucketName && storageServiceName == "AmazonS3" {
+			for _, storageNode := range lookup.getNodesByTypeAndName(core.NodeTypeStorage, s3BucketName) {
+				if storageServiceName, ok := getStringProperty(storageNode, "service_name"); ok && storageServiceName == "AmazonS3" {
 					edges = append(edges, s.createEdge(node, storageNode, core.RelationshipPublishesTo,
 						map[string]interface{}{"connection_type": "cloudtrail_log_destination"}, req))
 					s.logger.Debug("Created CloudTrail to S3 edge",
@@ -5677,17 +5678,14 @@ func (s *AWSSource) createVPCFlowLogEdges(reqCtx *security.RequestContext, vpcFl
 
 		// 2. VPC Flow Log → CloudWatch Log Group (if destination is CloudWatch Logs)
 		if flowLogInfo.LogDestinationType == "cloud-watch-logs" && flowLogInfo.LogGroupName != "" {
-			// Try to find the CloudWatch Log Group node
-			for _, cwNode := range lookup.byNodeType[core.NodeTypeLogAggregator] {
+			for _, cwNode := range lookup.getNodesByTypeAndName(core.NodeTypeLogAggregator, flowLogInfo.LogGroupName) {
 				if nodeType, ok := cwNode.Properties["type"].(string); ok && nodeType == "log-group" {
-					if logGroupName, ok := getStringProperty(cwNode, "name"); ok && logGroupName == flowLogInfo.LogGroupName {
-						edges = append(edges, s.createEdge(node, cwNode, core.RelationshipPublishesTo,
-							map[string]interface{}{
-								"connection_type":  "flow_log_destination",
-								"destination_type": "cloud-watch-logs",
-							}, req))
-						break
-					}
+					edges = append(edges, s.createEdge(node, cwNode, core.RelationshipPublishesTo,
+						map[string]interface{}{
+							"connection_type":  "flow_log_destination",
+							"destination_type": "cloud-watch-logs",
+						}, req))
+					break
 				}
 			}
 		}
@@ -5779,22 +5777,14 @@ func (s *AWSSource) parseLogGroupName(logGroupName string, lookup *NodeLookup) [
 				logType = parts[5]
 			}
 
-			// Find RDS instance by name
-			for _, dbNode := range lookup.byNodeType[core.NodeTypeDatabase] {
-				if name, ok := getStringProperty(dbNode, "name"); ok {
-					if name == instanceName {
-						// Verify it's RDS (not DynamoDB)
-						if serviceName, ok := getStringProperty(dbNode, "service_name"); ok {
-							if serviceName == "AmazonRDS" {
-								results = append(results, MonitoredResource{
-									node:    dbNode,
-									logType: logType,
-									pattern: "rds_instance",
-								})
-								break
-							}
-						}
-					}
+			for _, dbNode := range lookup.getNodesByTypeAndName(core.NodeTypeDatabase, instanceName) {
+				if serviceName, ok := getStringProperty(dbNode, "service_name"); ok && serviceName == "AmazonRDS" {
+					results = append(results, MonitoredResource{
+						node:    dbNode,
+						logType: logType,
+						pattern: "rds_instance",
+					})
+					break
 				}
 			}
 		}
@@ -5811,22 +5801,14 @@ func (s *AWSSource) parseLogGroupName(logGroupName string, lookup *NodeLookup) [
 				logType = parts[5]
 			}
 
-			// Find RDS cluster by name
-			for _, dbNode := range lookup.byNodeType[core.NodeTypeDatabase] {
-				if name, ok := getStringProperty(dbNode, "name"); ok {
-					if name == clusterName {
-						// Verify it's RDS
-						if serviceName, ok := getStringProperty(dbNode, "service_name"); ok {
-							if serviceName == "AmazonRDS" {
-								results = append(results, MonitoredResource{
-									node:    dbNode,
-									logType: logType,
-									pattern: "rds_cluster",
-								})
-								break
-							}
-						}
-					}
+			for _, dbNode := range lookup.getNodesByTypeAndName(core.NodeTypeDatabase, clusterName) {
+				if serviceName, ok := getStringProperty(dbNode, "service_name"); ok && serviceName == "AmazonRDS" {
+					results = append(results, MonitoredResource{
+						node:    dbNode,
+						logType: logType,
+						pattern: "rds_cluster",
+					})
+					break
 				}
 			}
 		}
@@ -5857,18 +5839,13 @@ func (s *AWSSource) parseLogGroupName(logGroupName string, lookup *NodeLookup) [
 	if strings.HasPrefix(logGroupName, "/aws/lambda/") {
 		functionName := strings.TrimPrefix(logGroupName, "/aws/lambda/")
 
-		// Find Lambda function by name
-		for _, lambdaNode := range lookup.byNodeType[core.NodeTypeServerlessFunction] {
-			if name, ok := getStringProperty(lambdaNode, "name"); ok {
-				if name == functionName {
-					results = append(results, MonitoredResource{
-						node:    lambdaNode,
-						logType: "function_logs",
-						pattern: "lambda_function",
-					})
-					break
-				}
-			}
+		for _, lambdaNode := range lookup.getNodesByTypeAndName(core.NodeTypeServerlessFunction, functionName) {
+			results = append(results, MonitoredResource{
+				node:    lambdaNode,
+				logType: "function_logs",
+				pattern: "lambda_function",
+			})
+			break
 		}
 	}
 
@@ -5883,21 +5860,14 @@ func (s *AWSSource) parseLogGroupName(logGroupName string, lookup *NodeLookup) [
 			resourceName = strings.TrimPrefix(logGroupName, "/ecs/")
 		}
 
-		// Try to find ECS cluster/service (ECS nodes are mapped to CloudResource)
-		for _, cloudNode := range lookup.byNodeType[core.NodeTypeManagedCluster] {
-			// Filter for AmazonECS resources only
+		for _, cloudNode := range lookup.getNodesByTypeAndName(core.NodeTypeManagedCluster, resourceName) {
 			if serviceName, ok := getStringProperty(cloudNode, "service_name"); ok && serviceName == "AmazonECS" {
-				if name, ok := getStringProperty(cloudNode, "name"); ok {
-					// Use exact matching to avoid false positives
-					if name == resourceName {
-						results = append(results, MonitoredResource{
-							node:    cloudNode,
-							logType: "container_logs",
-							pattern: "ecs_container",
-						})
-						break
-					}
-				}
+				results = append(results, MonitoredResource{
+					node:    cloudNode,
+					logType: "container_logs",
+					pattern: "ecs_container",
+				})
+				break
 			}
 		}
 	}
@@ -5929,18 +5899,13 @@ func (s *AWSSource) parseLogGroupName(logGroupName string, lookup *NodeLookup) [
 	if strings.HasPrefix(logGroupName, "/aws/elasticache/") {
 		clusterName := strings.TrimPrefix(logGroupName, "/aws/elasticache/")
 
-		// Find ElastiCache cluster by name
-		for _, cacheNode := range lookup.byNodeType[core.NodeTypeCache] {
-			if name, ok := getStringProperty(cacheNode, "name"); ok {
-				if name == clusterName {
-					results = append(results, MonitoredResource{
-						node:    cacheNode,
-						logType: "slow_log",
-						pattern: "elasticache_cluster",
-					})
-					break
-				}
-			}
+		for _, cacheNode := range lookup.getNodesByTypeAndName(core.NodeTypeCache, clusterName) {
+			results = append(results, MonitoredResource{
+				node:    cacheNode,
+				logType: "slow_log",
+				pattern: "elasticache_cluster",
+			})
+			break
 		}
 	}
 
@@ -5950,15 +5915,13 @@ func (s *AWSSource) parseLogGroupName(logGroupName string, lookup *NodeLookup) [
 		withoutPrefix := strings.TrimPrefix(logGroupName, "/aws/eks/")
 		clusterName := strings.TrimSuffix(withoutPrefix, "/cluster")
 
-		for _, clusterNode := range lookup.byNodeType[core.NodeTypeManagedCluster] {
-			if name, ok := getStringProperty(clusterNode, "name"); ok && name == clusterName {
-				results = append(results, MonitoredResource{
-					node:    clusterNode,
-					logType: "cluster_logs",
-					pattern: "eks_cluster",
-				})
-				break
-			}
+		for _, clusterNode := range lookup.getNodesByTypeAndName(core.NodeTypeManagedCluster, clusterName) {
+			results = append(results, MonitoredResource{
+				node:    clusterNode,
+				logType: "cluster_logs",
+				pattern: "eks_cluster",
+			})
+			break
 		}
 	}
 

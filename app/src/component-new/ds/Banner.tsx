@@ -40,6 +40,8 @@ export interface BannerAction {
   tone?: 'secondary' | 'link';
 }
 
+export type BannerActionsPlacement = 'inline' | 'below';
+
 export interface BannerProps {
   tone: BannerTone;
   /** Optional title rendered in semibold above the message. */
@@ -47,6 +49,12 @@ export interface BannerProps {
   message: React.ReactNode;
   /** Up to 2 actions per spec. Three or more renders an internal warning in dev. */
   actions?: BannerAction[];
+  /**
+   * `below` (default) stacks actions under the message in the content column.
+   * `inline` pulls them out as a row-level sibling on the right — use for
+   * single-CTA banners where the action reads more naturally beside the text.
+   */
+  actionsPlacement?: BannerActionsPlacement;
   dismissible?: boolean;
   onDismiss?: () => void;
   surface?: BannerSurface;
@@ -103,7 +111,18 @@ const SURFACE_TOKENS: Record<BannerSurface, { padding: string; radius: string; m
   section: { padding: 'var(--ds-space-2) var(--ds-space-3)', radius: 'var(--ds-radius-sm)', marginBottom: 'var(--ds-space-3)' },
 };
 
-export function Banner({ tone, title, message, actions, dismissible, onDismiss, surface = 'page', className, id }: BannerProps) {
+export function Banner({
+  tone,
+  title,
+  message,
+  actions,
+  actionsPlacement = 'below',
+  dismissible,
+  onDismiss,
+  surface = 'page',
+  className,
+  id,
+}: BannerProps) {
   const cfg = TONE_TOKENS[tone];
   const surf = SURFACE_TOKENS[surface];
   const Icon = cfg.Icon;
@@ -115,6 +134,52 @@ export function Banner({ tone, title, message, actions, dismissible, onDismiss, 
   }
 
   const role = tone === 'critical' || tone === 'warning' ? 'alert' : 'status';
+
+  const actionsNode =
+    actions && actions.length > 0 ? (
+      <Box
+        sx={{
+          display: 'flex',
+          gap: 'var(--ds-space-2)',
+          flexShrink: 0,
+          ...(actionsPlacement === 'below' ? { marginTop: 'var(--ds-space-2)' } : null),
+        }}
+      >
+        {actions.map((a, i) => (
+          <ButtonBase
+            key={i}
+            type='button'
+            onClick={a.onClick}
+            sx={
+              a.tone === 'link'
+                ? {
+                    fontSize: 'var(--ds-text-small)',
+                    fontWeight: 'var(--ds-font-weight-medium)',
+                    color: cfg.titleColor,
+                    textDecoration: 'underline',
+                    padding: 0,
+                    '&:hover': { textDecoration: 'none' },
+                    '&.Mui-focusVisible': { outline: '2px solid var(--ds-blue-500)', outlineOffset: '2px' },
+                  }
+                : {
+                    height: '24px',
+                    padding: '0 10px',
+                    fontSize: 'var(--ds-text-caption)',
+                    fontWeight: 'var(--ds-font-weight-medium)',
+                    color: cfg.titleColor,
+                    backgroundColor: 'var(--ds-background-100)',
+                    border: `1px solid ${cfg.border}`,
+                    borderRadius: 'var(--ds-radius-sm)',
+                    '&:hover': { backgroundColor: 'var(--ds-background-200)' },
+                    '&.Mui-focusVisible': { outline: '2px solid var(--ds-blue-500)', outlineOffset: '1px' },
+                  }
+            }
+          >
+            {a.label}
+          </ButtonBase>
+        ))}
+      </Box>
+    ) : null;
 
   return (
     <Box
@@ -150,44 +215,9 @@ export function Banner({ tone, title, message, actions, dismissible, onDismiss, 
         <Box component='span' sx={{ fontSize: 'var(--ds-text-small)', lineHeight: 1.5 }}>
           {message}
         </Box>
-        {actions && actions.length > 0 && (
-          <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', marginTop: 'var(--ds-space-2)' }}>
-            {actions.map((a, i) => (
-              <ButtonBase
-                key={i}
-                type='button'
-                onClick={a.onClick}
-                sx={
-                  a.tone === 'link'
-                    ? {
-                        fontSize: 'var(--ds-text-small)',
-                        fontWeight: 'var(--ds-font-weight-medium)',
-                        color: cfg.titleColor,
-                        textDecoration: 'underline',
-                        padding: 0,
-                        '&:hover': { textDecoration: 'none' },
-                        '&.Mui-focusVisible': { outline: '2px solid var(--ds-blue-500)', outlineOffset: '2px' },
-                      }
-                    : {
-                        height: '24px',
-                        padding: '0 10px',
-                        fontSize: 'var(--ds-text-caption)',
-                        fontWeight: 'var(--ds-font-weight-medium)',
-                        color: cfg.titleColor,
-                        backgroundColor: 'var(--ds-background-100)',
-                        border: `1px solid ${cfg.border}`,
-                        borderRadius: 'var(--ds-radius-sm)',
-                        '&:hover': { backgroundColor: 'var(--ds-background-200)' },
-                        '&.Mui-focusVisible': { outline: '2px solid var(--ds-blue-500)', outlineOffset: '1px' },
-                      }
-                }
-              >
-                {a.label}
-              </ButtonBase>
-            ))}
-          </Box>
-        )}
+        {actionsPlacement === 'below' && actionsNode}
       </Box>
+      {actionsPlacement === 'inline' && actionsNode}
       {dismissible && (
         <ButtonBase
           aria-label='Dismiss'

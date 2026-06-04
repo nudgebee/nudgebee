@@ -117,6 +117,7 @@ const LLMConfigList = () => {
         <Banner
           tone='info'
           surface='section'
+          actionsPlacement='inline'
           message={
             <>
               This view is read-only. Manage <strong>LLM Providers</strong> from <strong>Admin → Integrations → LLM</strong>.
@@ -126,7 +127,6 @@ const LLMConfigList = () => {
             {
               label: 'Manage in Admin',
               onClick: () => router.push('/accounts/account-form?cloudProvider=llm'),
-              tone: 'link',
             },
           ]}
         />

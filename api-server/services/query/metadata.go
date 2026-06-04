@@ -6195,10 +6195,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"get_cloud_accounts_v2": {
-		Type:               Normal,
-		Source:             database.Metastore,
-		TenantIdColumnName: "tenant_id",
-		Name:               "get_cloud_accounts_v2",
+		Type:                Normal,
+		Source:              database.Metastore,
+		TenantIdColumnName:  "tenant_id",
+		AccountIdColumnName: "id",
+		Name:                "get_cloud_accounts_v2",
 		Def: `(
 			SELECT
 				ca.account_name,
