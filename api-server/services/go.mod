@@ -22,7 +22,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/marketplacemetering v1.34.1
 	github.com/aws/aws-sdk-go-v2/service/pricing v1.41.1
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.42.25
-	github.com/aws/aws-sdk-go-v2/service/sts v1.41.9
+	github.com/beltran/gohive v1.8.1
 	github.com/eko/gocache/lib/v4 v4.2.3
 	github.com/eko/gocache/store/bigcache/v4 v4.2.4
 	github.com/eko/gocache/store/redis/v4 v4.2.6
@@ -43,6 +43,7 @@ require (
 	github.com/nudgebee/logparser v0.0.0-20251218094028-bf4256a63b22
 	github.com/prometheus/prometheus v0.35.0
 	github.com/redis/go-redis/v9 v9.13.0
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.53.0
 	github.com/samber/slog-formatter v1.3.0
 	github.com/samber/slog-gin v1.21.0
@@ -87,7 +88,7 @@ require (
 	github.com/PuerkitoBio/purell v1.1.1 // indirect
 	github.com/PuerkitoBio/urlesc v0.0.0-20170810143723-de5bf2ad4578 // indirect
 	github.com/alecthomas/repr v0.5.1 // indirect
-	github.com/apache/thrift v0.22.0 // indirect
+	github.com/apache/thrift v0.23.0 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.17 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.22 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.22 // indirect
@@ -97,8 +98,8 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/signin v1.0.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.30.9 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.13 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sts v1.41.9 // indirect
 	github.com/aws/smithy-go v1.25.0 // indirect
-	github.com/beltran/gohive v1.8.1 // indirect
 	github.com/beltran/gosasl v1.0.0 // indirect
 	github.com/beltran/gssapi v0.0.0-20200324152954-d86554db4bab // indirect
 	github.com/bytedance/sonic/loader v0.1.1 // indirect
@@ -122,7 +123,7 @@ require (
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/microsoft/kiota-abstractions-go v1.9.2 // indirect
-	github.com/microsoft/kiota-http-go v1.5.3 // indirect
+	github.com/microsoft/kiota-http-go v1.5.5 // indirect
 	github.com/microsoft/kiota-serialization-form-go v1.1.2 // indirect
 	github.com/microsoft/kiota-serialization-json-go v1.1.2 // indirect
 	github.com/microsoft/kiota-serialization-multipart-go v1.1.2 // indirect
@@ -132,7 +133,6 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/richardlehane/mscfb v1.0.4 // indirect
 	github.com/richardlehane/msoleps v1.0.4 // indirect
-	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/samber/slog-common v0.21.0 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/std-uritemplate/std-uritemplate/go/v2 v2.0.3 // indirect
