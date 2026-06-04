@@ -614,7 +614,7 @@ func init() {
 
 	viper.SetDefault("LLM_SERVER_TOOL_CRAWL_DEVTOOL_WEBSOCKET_URL", "")
 
-	viper.SetDefault("LLM_SERVER_TOOL_SHELL_IMAGE", "ghcr.io/nudgebee/nudgebee-debug:0.3.11")
+	viper.SetDefault("LLM_SERVER_TOOL_SHELL_IMAGE", "ghcr.io/nudgebee/nudgebee-debug:0.3.12")
 
 	viper.SetDefault("llm_server_async_api_timeout_seconds", 15)
 	viper.SetDefault("llm_server_async_operation_timeout_seconds", 5)

@@ -329,7 +329,7 @@ func init() {
 	viper.SetDefault("feature_event_auto_ai_summary_enabled", true)
 	viper.SetDefault("webhook_async_execution", true)
 
-	viper.SetDefault("LLM_SERVER_TOOL_SHELL_IMAGE", "ghcr.io/nudgebee/nudgebee-debug:0.3.11")
+	viper.SetDefault("LLM_SERVER_TOOL_SHELL_IMAGE", "ghcr.io/nudgebee/nudgebee-debug:0.3.12")
 
 	viper.SetDefault("services_server_relay_command_execution_timeout_seconds", 60)
 

@@ -55,6 +55,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY pdb-node-drain.py .
 RUN curl https://sdk.cloud.google.com | bash
 ENV PATH=/root/google-cloud-sdk/bin:$PATH
+RUN gcloud components install beta alpha --quiet && rm -rf /root/google-cloud-sdk/.install/.backup
 RUN pip install --no-cache-dir azure-cli
 
 RUN ARCH=$([ "$(uname -m)" = "x86_64" ] && echo "amd64" || echo "arm64") && \
