@@ -15,6 +15,7 @@ import (
 	aiTasks "nudgebee/runbook/internal/tasks/ai"
 	"nudgebee/runbook/internal/tasks/testutils"
 	"nudgebee/runbook/internal/tasks/types"
+	"nudgebee/runbook/services/audit"
 	"nudgebee/runbook/services/cloud"
 	configSvc "nudgebee/runbook/services/config"
 	"nudgebee/runbook/services/integrations"
@@ -536,6 +537,11 @@ func (s *Service) CreateWorkflow(ctx *security.RequestContext, accountId string,
 	if err != nil {
 		return storedId, "", err
 	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookCreate, audit.EventActionCreate, audit.EventStatusSuccess,
+		storedId, nil, workflowAuditSnapshot(&wf), nil,
+	)
 	return storedId, token, nil
 }
 
@@ -1014,6 +1020,15 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 	if err != nil {
 		return "", err
 	}
+	if triggerType == model.WorkflowTriggerManual {
+		emitWorkflowAudit(
+			ctx, accountId,
+			audit.EventTypeAutorunbookManualRun, audit.EventActionCreate, audit.EventStatusSuccess,
+			id, nil,
+			map[string]any{"workflow_id": id, "workflow_name": wf.Name},
+			map[string]any{"execution_id": we.GetRunID(), "trigger_type": string(triggerType)},
+		)
+	}
 	return we.GetRunID(), nil // Return the actual Temporal Run ID
 }
 
@@ -1259,6 +1274,13 @@ func (s *Service) RetriggerWorkflowExecution(ctx *security.RequestContext, accou
 	if err != nil {
 		return "", err
 	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookManualRun, audit.EventActionCreate, audit.EventStatusSuccess,
+		workflowId, nil,
+		map[string]any{"workflow_id": workflowId, "workflow_name": wf.Name},
+		map[string]any{"execution_id": we.GetRunID(), "replay_of": executionId, "trigger_type": "manual"},
+	)
 	return we.GetRunID(), nil
 }
 
@@ -1733,7 +1755,25 @@ func (s *Service) GetWorkflow(ctx *security.RequestContext, accountId, id string
 }
 
 func (s *Service) UpdateWorkflow(ctx *security.RequestContext, accountId, id string, workflow model.Workflow) (model.Workflow, error) {
-	return s.updateWorkflowInternal(ctx, accountId, id, workflow)
+	// Snapshot the pre-edit state for the audit row. Tolerate a lookup miss
+	// (sql.ErrNoRows) — updateWorkflowInternal will surface the real error;
+	// we only need prevSnap for the audit and a nil snapshot is fine if the
+	// workflow is missing.
+	var prevSnap map[string]any
+	if existing, err := s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id); err == nil {
+		prevSnap = workflowAuditSnapshot(existing)
+	}
+	updated, err := s.updateWorkflowInternal(ctx, accountId, id, workflow)
+	if err != nil {
+		return updated, err
+	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, prevSnap, workflowAuditSnapshot(&updated),
+		map[string]any{"action": "edit"},
+	)
+	return updated, nil
 }
 
 // updateWorkflowInternal is the shared update path for user saves and version
@@ -1879,6 +1919,11 @@ func (s *Service) updateWorkflowInternal(ctx *security.RequestContext, accountId
 		workflow.Definition.Version = "v1"
 	}
 
+	// Audit emit is the caller's responsibility — UpdateWorkflow tags it as a
+	// user "edit", RestoreWorkflowVersion tags it as a "restore_version", and
+	// any future caller (e.g. a system-driven status flip) tags its own intent.
+	// Emitting here would double-fire on restores and lose the action context
+	// every other caller needs.
 	return workflow, nil
 }
 
@@ -2030,6 +2075,11 @@ func (s *Service) DeleteWorkflow(ctx *security.RequestContext, accountId, id str
 		}
 	}
 
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookDelete, audit.EventActionDelete, audit.EventStatusSuccess,
+		id, workflowAuditSnapshot(wf), nil, nil,
+	)
 	return nil
 }
 
@@ -2072,7 +2122,16 @@ func (s *Service) UpdateWorkflowStatus(ctx *security.RequestContext, accountId, 
 	}
 
 	// Finally, update the status in the database.
-	return s.store.UpdateWorkflowStatus(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id, status)
+	if err := s.store.UpdateWorkflowStatus(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id, status); err != nil {
+		return err
+	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, map[string]any{"status": string(wf.Status)}, map[string]any{"status": string(status)},
+		map[string]any{"action": "status_update"},
+	)
+	return nil
 }
 
 func mapTemporalStatusToModelStatus(status enums.WorkflowExecutionStatus) model.WorkflowExecutionStatus {
@@ -2652,6 +2711,19 @@ func (s *Service) CompleteApprovalTask(ctx *security.RequestContext, token, stat
 		}
 		return err
 	}
+	// Compound-token path (Slack / MS Teams approval URLs) carries the
+	// workflow/execution/task triple. Plain hex-token path (len(parts) == 1)
+	// has no audit context here — CompleteApprovalTaskFromUI emits for the
+	// UI path with the fields it already has.
+	if accountID != "" && workflowID != "" && runID != "" && taskID != "" {
+		emitWorkflowAudit(
+			ctx, accountID,
+			audit.EventTypeAutorunbookTaskManualRun, audit.EventActionUpdate, audit.EventStatusSuccess,
+			workflowID, nil,
+			map[string]any{"workflow_id": workflowID, "execution_id": runID, "task_id": taskID, "status": status},
+			map[string]any{"source": "compound_token"},
+		)
+	}
 	return nil
 }
 
@@ -2695,7 +2767,17 @@ func (s *Service) CompleteApprovalTaskFromUI(ctx *security.RequestContext, accou
 	if comments != "" {
 		result["comments"] = comments
 	}
-	return s.CompleteApprovalTask(ctx, token, status, result)
+	if err := s.CompleteApprovalTask(ctx, token, status, result); err != nil {
+		return err
+	}
+	emitWorkflowAudit(
+		ctx, accountID,
+		audit.EventTypeAutorunbookTaskManualRun, audit.EventActionUpdate, audit.EventStatusSuccess,
+		workflowID, nil,
+		map[string]any{"workflow_id": workflowID, "execution_id": executionID, "task_id": taskID, "status": status},
+		map[string]any{"source": "ui"},
+	)
+	return nil
 }
 
 // fetchApprovalIMContext reads the IM thread coordinates the approval activity
@@ -2733,7 +2815,17 @@ func (s *Service) CancelWorkflowExecution(ctx *security.RequestContext, accountI
 	if err != nil {
 		return err
 	}
-	return s.temporalClient.CancelWorkflow(ctx.GetContext(), temporalId, executionId)
+	if err := s.temporalClient.CancelWorkflow(ctx.GetContext(), temporalId, executionId); err != nil {
+		return err
+	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		workflowId, nil,
+		map[string]any{"workflow_id": workflowId, "execution_id": executionId},
+		map[string]any{"action": "cancel_execution"},
+	)
+	return nil
 }
 
 func (s *Service) PauseWorkflow(ctx *security.RequestContext, accountId, id string) error {
@@ -2763,7 +2855,17 @@ func (s *Service) PauseWorkflow(ctx *security.RequestContext, accountId, id stri
 		}
 	}
 
-	return s.applyStatusToLiveVersion(ctx, accountId, id, model.WorkflowStatusPaused)
+	if err := s.applyStatusToLiveVersion(ctx, accountId, id, model.WorkflowStatusPaused); err != nil {
+		return err
+	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, nil,
+		map[string]any{"status": string(model.WorkflowStatusPaused)},
+		map[string]any{"action": "pause"},
+	)
+	return nil
 }
 
 func (s *Service) ResumeWorkflow(ctx *security.RequestContext, accountId, id string) error {
@@ -2792,7 +2894,17 @@ func (s *Service) ResumeWorkflow(ctx *security.RequestContext, accountId, id str
 		}
 	}
 
-	return s.applyStatusToLiveVersion(ctx, accountId, id, model.WorkflowStatusActive)
+	if err := s.applyStatusToLiveVersion(ctx, accountId, id, model.WorkflowStatusActive); err != nil {
+		return err
+	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, nil,
+		map[string]any{"status": string(model.WorkflowStatusActive)},
+		map[string]any{"action": "resume"},
+	)
+	return nil
 }
 
 // applyStatusToLiveVersion is the canonical "set this workflow's status"
@@ -3970,6 +4082,16 @@ func (s *Service) RestoreWorkflowVersion(ctx *security.RequestContext, accountId
 	} else {
 		updated.DraftVersionName = nil
 	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, workflowAuditSnapshot(current), workflowAuditSnapshot(&updated),
+		map[string]any{
+			"action":         "restore_version",
+			"version_number": versionNumber,
+			"version_id":     target.ID,
+		},
+	)
 	return updated, nil
 }
 
@@ -4036,6 +4158,24 @@ func (s *Service) PublishWorkflow(ctx *security.RequestContext, accountId, id st
 			return nil, fmt.Errorf("failed to register triggers on publish: %w", err)
 		}
 	}
+	publishAttrs := map[string]any{
+		"action":         "publish_version",
+		"version_number": v.VersionNumber,
+		"version_id":     v.ID,
+		"set_live":       setLive,
+		"status":         string(status),
+	}
+	if name != nil {
+		publishAttrs["name"] = *name
+	}
+	if description != nil {
+		publishAttrs["description"] = *description
+	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, nil, workflowAuditSnapshot(wf), publishAttrs,
+	)
 	return v, nil
 }
 
@@ -4062,7 +4202,21 @@ func (s *Service) SetLiveWorkflowVersion(ctx *security.RequestContext, accountId
 		}
 		return nil, fmt.Errorf("failed to set live workflow version: %w", err)
 	}
-	return s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id)
+	wf, err := s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id)
+	if err != nil {
+		return wf, err
+	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, nil, workflowAuditSnapshot(wf),
+		map[string]any{
+			"action":         "set_live_version",
+			"version_number": versionNumber,
+			"version_id":     target.ID,
+		},
+	)
+	return wf, nil
 }
 
 // UpdateWorkflowVersionMetadata patches the mutable metadata fields (name,
@@ -4088,6 +4242,24 @@ func (s *Service) UpdateWorkflowVersionMetadata(ctx *security.RequestContext, ac
 		}
 		return nil, err
 	}
+	metaAttrs := map[string]any{
+		"action":         "update_version_metadata",
+		"version_number": versionNumber,
+		"version_id":     v.ID,
+	}
+	if name != nil {
+		metaAttrs["name"] = *name
+	}
+	if description != nil {
+		metaAttrs["description"] = *description
+	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, nil,
+		map[string]any{"version_number": v.VersionNumber, "version_id": v.ID, "name": v.Name, "description": v.Description},
+		metaAttrs,
+	)
 	return v, nil
 }
 
@@ -4137,5 +4309,12 @@ func (s *Service) UpdateWorkflowVersionStatus(ctx *security.RequestContext, acco
 	}
 	target.Status = status
 	target.IsLive = wasLive
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, nil,
+		map[string]any{"version_number": versionNumber, "version_id": target.ID, "status": string(status), "is_live": wasLive},
+		map[string]any{"action": "update_version_status"},
+	)
 	return target, nil
 }
