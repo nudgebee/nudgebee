@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import NextAuth, { type NextAuthOptions, type Account, type Session } from 'next-auth';
 import type { AdapterUser, AdapterSession, VerificationToken, AdapterAccount } from 'next-auth/adapters';
 import GoogleProvider from 'next-auth/providers/google';
@@ -393,7 +394,9 @@ export function GQLAdapter() {
       return null;
     }
 
-    if (authEntry.credential === params.token) {
+    const credBuf = Buffer.from(authEntry.credential ?? '');
+    const tokenBuf = Buffer.from(params.token ?? '');
+    if (credBuf.length === tokenBuf.length && crypto.timingSafeEqual(credBuf, tokenBuf)) {
       //delete existing auth (remove one-time token for security)
       await deleteUserAuth(authEntry.id);
 
@@ -734,7 +737,9 @@ if (process.env.NEXTAUTH_DUMMY_CREDS_ENABLED == 'true') {
           throw Error('Invalid Username');
         }
         const normalizedUsername = credentials.username.toLowerCase();
-        if (credentials?.password !== process.env.NEXTAUTH_DUMMY_CREDS_PASSWORD) {
+        const pwdBuf = Buffer.from(credentials?.password ?? '');
+        const expectedBuf = Buffer.from(process.env.NEXTAUTH_DUMMY_CREDS_PASSWORD ?? '');
+        if (pwdBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(pwdBuf, expectedBuf)) {
           throw Error('Invalid Passsword');
         }
         return await getOrCreateBootstrapAdminUser(normalizedUsername);
