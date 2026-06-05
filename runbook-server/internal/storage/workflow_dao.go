@@ -433,6 +433,38 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 	return &wf, nil
 }
 
+func (s *WorkflowDao) GetWorkflowNames(ctx context.Context, tenantID, accountID string, ids []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	if tenantID == "" || accountID == "" {
+		return nil, fmt.Errorf("tenantID and accountID are required")
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id::text, name FROM workflows WHERE tenant_id = $1 AND account_id = $2 AND id = ANY($3::uuid[])`,
+		tenantID, accountID, pq.Array(ids))
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch workflow names: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			log.Printf("workflow_dao: failed to close rows: %v", cerr)
+		}
+	}()
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, fmt.Errorf("failed to scan workflow name row: %w", err)
+		}
+		out[id] = name
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed iterating workflow name rows: %w", err)
+	}
+	return out, nil
+}
+
 // applyVersionRefs copies the joined live + draft version columns onto wf if
 // present. Centralized so List / Find / FindByName / FindByIntegrationName stay
 // consistent. liveStatus is mirrored to workflows.status by the DAO, but kept as

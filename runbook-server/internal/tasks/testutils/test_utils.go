@@ -159,6 +159,9 @@ func (m *MockWorkflowStore) SetLastExecutionStatus(ctx context.Context, tenantID
 func (m *MockWorkflowStore) CountWorkflows(ctx context.Context, tenantID, accountID string, status model.WorkflowStatus, triggerType string) (int64, error) {
 	return 0, nil
 }
+func (m *MockWorkflowStore) GetWorkflowNames(ctx context.Context, tenantID, accountID string, ids []string) (map[string]string, error) {
+	return map[string]string{}, nil
+}
 func (m *MockWorkflowStore) ListWorkflowVersions(ctx context.Context, workflowID string, limit int) ([]model.WorkflowVersion, error) {
 	return nil, nil
 }

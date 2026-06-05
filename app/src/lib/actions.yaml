@@ -4106,6 +4106,19 @@ actions:
       - role: tenant_admin
       - role: k8s_namespace_admin_readonly
       - role: k8s_namespace_admin
+  - name: workflow_list_executions_for_event
+    definition:
+      kind: "synchronous"
+      handler: '{{WORKFLOW_SERVER_URL}}/rpc'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: WORKFLOW_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
       - role: account_admin_readonly
       - role: account_admin
   - name: workflow_list_taskdefinitions

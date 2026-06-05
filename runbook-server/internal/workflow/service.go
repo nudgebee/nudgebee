@@ -51,6 +51,7 @@ type WorkflowService interface {
 	ListWorkflowCallers(ctx *security.RequestContext, accountId, id string) (model.ListWorkflowCallersResponse, error)
 	UpdateWorkflowStatus(ctx *security.RequestContext, accountId, id string, status model.WorkflowStatus) error
 	ListWorkflowExecutions(ctx *security.RequestContext, accountId, workflowId string, request model.ListWorkflowExecutionRequest) (model.ListWorkflowExecutionResponse, error)
+	ListWorkflowExecutionsForEvent(ctx *security.RequestContext, accountId, eventId string) (model.ListWorkflowExecutionResponse, error)
 	GetDetailedWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string) (*model.WorkflowExecutionDetails, error)
 	UpdateWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string, inputs map[string]any) error
 	CompleteApprovalTask(ctx *security.RequestContext, token, status string, result any) error
@@ -2301,6 +2302,90 @@ func (s *Service) ListWorkflowExecutions(ctx *security.RequestContext, accountId
 
 	if summaries == nil {
 		summaries = []model.WorkflowExecutionSummary{}
+	}
+
+	return model.ListWorkflowExecutionResponse{
+		Executions:    summaries,
+		NextPageToken: string(resp.NextPageToken),
+	}, nil
+}
+
+func (s *Service) ListWorkflowExecutionsForEvent(ctx *security.RequestContext, accountId, eventId string) (model.ListWorkflowExecutionResponse, error) {
+	if accountId == "" || eventId == "" {
+		return model.ListWorkflowExecutionResponse{}, fmt.Errorf("accountId and eventId are required")
+	}
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+		return model.ListWorkflowExecutionResponse{}, common.ErrorUnauthorized("account not accessible")
+	}
+
+	tenantID := ctx.GetSecurityContext().GetTenantId()
+	if tenantID == "" {
+		return model.ListWorkflowExecutionResponse{}, fmt.Errorf("tenantID is required")
+	}
+	query := fmt.Sprintf("%s='%s' and %s='%s' and %s='%s'",
+		model.SearchAttrTenantID, escapeTemporalString(tenantID),
+		model.SearchAttrAccountID, escapeTemporalString(accountId),
+		model.SearchAttrEventID, escapeTemporalString(eventId))
+
+	resp, err := s.temporalClient.ListWorkflow(ctx.GetContext(), &workflowservice.ListWorkflowExecutionsRequest{
+		Query:    query,
+		PageSize: 50,
+	})
+	if err != nil {
+		return model.ListWorkflowExecutionResponse{}, err
+	}
+
+	summaries := make([]model.WorkflowExecutionSummary, 0, len(resp.Executions))
+	idSet := map[string]struct{}{}
+	for _, info := range resp.Executions {
+		summary := model.WorkflowExecutionSummary{
+			TemporalWorkflowID: info.Execution.GetWorkflowId(),
+			ID:                 info.Execution.GetRunId(),
+			Status:             mapTemporalStatusToModelStatus(info.GetStatus()),
+			StartTime:          timestampPBToTimestamp(info.StartTime),
+			CloseTime:          timestampPBToTimestamp(info.CloseTime),
+		}
+		if info.SearchAttributes != nil {
+			if sa, ok := info.SearchAttributes.GetIndexedFields()[model.SearchAttrWorkflowID]; ok {
+				var wfID string
+				if err := s.dataConverter.FromPayload(sa, &wfID); err == nil {
+					summary.WorkflowID = wfID
+					if wfID != "" {
+						idSet[wfID] = struct{}{}
+					}
+				}
+			}
+			if sa, ok := info.SearchAttributes.GetIndexedFields()[model.SearchAttrTriggeredBy]; ok {
+				var triggeredBy string
+				if err := s.dataConverter.FromPayload(sa, &triggeredBy); err == nil {
+					summary.TriggeredBy = triggeredBy
+				}
+			}
+			if sa, ok := info.SearchAttributes.GetIndexedFields()[model.SearchAttrWorkflowTrigger]; ok {
+				var triggerType string
+				if err := s.dataConverter.FromPayload(sa, &triggerType); err == nil {
+					summary.TriggerType = triggerType
+				}
+			}
+		}
+		summaries = append(summaries, summary)
+	}
+
+	if len(idSet) > 0 {
+		ids := make([]string, 0, len(idSet))
+		for id := range idSet {
+			ids = append(ids, id)
+		}
+		names, nameErr := s.store.GetWorkflowNames(ctx.GetContext(), tenantID, accountId, ids)
+		if nameErr != nil {
+			ctx.GetLogger().Error("failed to get workflow names for executions", "error", nameErr)
+		} else {
+			for i := range summaries {
+				if name, ok := names[summaries[i].WorkflowID]; ok {
+					summaries[i].WorkflowName = name
+				}
+			}
+		}
 	}
 
 	return model.ListWorkflowExecutionResponse{

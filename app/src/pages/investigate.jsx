@@ -1,7 +1,6 @@
 import { Box, Typography, Tooltip, Tabs, Tab, Avatar, CircularProgress } from '@mui/material';
 import { useRouter } from 'next/router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { DropdownMenu } from '@components1/ds/DropdownMenu';
 import { ds } from 'src/utils/colors';
 import apiKubernetes from '@api1/kubernetes';
 import CollapsableCard from '@common-new/widgets/CollapsableCard';
@@ -13,7 +12,6 @@ import TicketCreatePopupForm from '@components1/tickets/TicketCreatePopupForm';
 import TicketIcon from '@assets/TicketIcon';
 import Text from '@common-new/format/Text';
 import { Modal } from '@components1/ds/Modal';
-import WorkflowIcon from '@assets/WorkflowIcon';
 import WorkflowTemplatesModal from '@components1/workflow/components/WorkflowTemplatesModal';
 import AiGenerateWorkflowModal from '@components1/workflow/components/AiGenerateWorkflowModal';
 import RunAutomationMenu from '@components1/workflow/components/RunAutomationMenu';
@@ -38,7 +36,7 @@ import { hasWriteAccess, hasFeatureAccess } from '@lib/auth';
 import InvestigateResolution from '@components1/k8s/investigate/InvestigateResolution';
 import CustomBorderCard from '@components1/ds/CustomBorderCard';
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded';
-import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import ThreeDotsMenu from '@common-new/ThreeDotsMenu';
 import PropTypes from 'prop-types';
 import { Divider } from '@components1/ds/Divider';
@@ -385,6 +383,7 @@ const Investigate = () => {
   const [isClassifyModalOpen, setIsClassifyModalOpen] = useState(false);
   const [recurrenceInfo, setRecurrenceInfo] = useState(null);
   const [eventResolutions, setEventResolutions] = useState([]);
+  const [triggeredExecutions, setTriggeredExecutions] = useState([]);
   const [knowledgeBase, setKnowledgeBase] = useState([]);
   const [kbLoading, setKbLoading] = useState(false);
   const [showTemplatesModal, setShowTemplatesModal] = useState(false);
@@ -876,6 +875,11 @@ const Investigate = () => {
     apiRecommendations.listEventResolutions(id).then((resolutions) => {
       if (!cancelled && isMountedRef.current) setEventResolutions(resolutions);
     });
+    if (router.query.accountId) {
+      apiWorkflow.listExecutionsForEvent(router.query.accountId, id).then((resp) => {
+        if (!cancelled && isMountedRef.current) setTriggeredExecutions(resp?.data?.executions || []);
+      });
+    }
     return () => {
       cancelled = true;
     };
@@ -1397,6 +1401,7 @@ const Investigate = () => {
     setCollapsedObj([]);
     setGenerateRcaVisible(false);
     setEventResolutions([]);
+    setTriggeredExecutions([]);
   };
 
   const getResolutionForCard = (cardId) => {
@@ -2451,27 +2456,19 @@ const Investigate = () => {
                                   Continue With Analysis
                                 </Button>
                                 {hasWriteAccess(router.query.accountId) && (
-                                  <DropdownMenu
-                                    trigger={
-                                      <Button
-                                        tone='secondary'
-                                        size='sm'
-                                        composition='icon-only'
-                                        icon={<KeyboardArrowDownIcon fontSize='small' />}
-                                        aria-label='More analysis options'
-                                        data-testid='analysis-options-dropdown-btn'
-                                      />
-                                    }
-                                    items={[
-                                      {
-                                        label: 'Refresh Investigation',
-                                        onSelect: () => {
-                                          const askAiCard = matchedOptions.find((o) => o.id === 'AskAiCard');
-                                          askAiCard?.refreshInvestigation?.();
-                                        },
-                                        disabled: !matchedOptions.find((o) => o.id === 'AskAiCard')?.isCompleted(),
-                                      },
-                                    ]}
+                                  <Button
+                                    tone='secondary'
+                                    size='sm'
+                                    composition='icon-only'
+                                    icon={<RefreshIcon fontSize='small' />}
+                                    aria-label='Refresh investigation'
+                                    tooltip='Refresh investigation'
+                                    data-testid='refresh-investigation-btn'
+                                    disabled={!matchedOptions.find((o) => o.id === 'AskAiCard')?.isCompleted()}
+                                    onClick={() => {
+                                      const askAiCard = matchedOptions.find((o) => o.id === 'AskAiCard');
+                                      askAiCard?.refreshInvestigation?.();
+                                    }}
                                   />
                                 )}
                               </Box>
@@ -2482,7 +2479,13 @@ const Investigate = () => {
                             const askAiCard = matchedOptions.find((option) => option?.id === 'AskAiCard');
                             if (!row?.id || !askAiCard || askAiCard.errorMessage) return null;
                             if (!hasWriteAccess(automationAccountId)) return null;
-                            return <RunAutomationMenu accountId={automationAccountId} />;
+                            return (
+                              <RunAutomationMenu
+                                accountId={automationAccountId}
+                                triggeredExecutions={triggeredExecutions}
+                                onCreateAutomation={() => setShowTemplatesModal(true)}
+                              />
+                            );
                           })()}
                           {/* Generate RCA */}
                           {hasWriteAccess(router.query.accountId) && hasRcaFeatureAccess && generateRcaVisible ? (
@@ -2512,37 +2515,6 @@ const Investigate = () => {
                               </Button>
                             </Box>
                           ) : null}
-                          {/* Workflow Resolution Status (shown when a workflow has been linked to this event) */}
-                          {(() => {
-                            const res = eventResolutions.find((r) => r.type === 'WorkflowExecution');
-                            if (!res) return null;
-                            const statusColor = res.status === 'Success' ? ds.green[600] : res.status === 'InProgress' ? ds.amber[500] : ds.red[500];
-                            const statusLabel =
-                              res.status === 'Success'
-                                ? 'Resolved via Workflow'
-                                : res.status === 'InProgress'
-                                ? 'Workflow Running...'
-                                : 'Workflow Failed';
-                            return (
-                              <Box sx={{ pr: '8px' }}>
-                                <Button
-                                  tone='secondary'
-                                  size='xs'
-                                  composition='icon+text'
-                                  icon={<WorkflowIcon iconColor={statusColor} iconStyle={{ cursor: 'pointer', width: '14px', height: '14px' }} />}
-                                  data-testid='workflow-resolution-btn'
-                                  onClick={() => {
-                                    const parts = (res.type_reference_id || '').split(':');
-                                    if (parts.length === 2) {
-                                      router.push(`/workflow/${parts[0]}?tab=executions&executionId=${parts[1]}&accountId=${router.query.accountId}`);
-                                    }
-                                  }}
-                                >
-                                  <Typography sx={{ fontSize: '12px', fontWeight: 500, color: statusColor }}>{statusLabel}</Typography>
-                                </Button>
-                              </Box>
-                            );
-                          })()}
                           {/* Linked Ticket (shown inline when ticket exists) */}
                           {hasWriteAccess(router.query.accountId) && ticketData?.ticket_id ? (
                             <Box sx={{ pr: '8px' }}>
@@ -2604,15 +2576,6 @@ const Investigate = () => {
                                     },
                                   ]
                                 : []),
-                              ...(hasWriteAccess(router.query.accountId)
-                                ? [
-                                    {
-                                      label: 'Create Automation',
-                                      reactIcon: <WorkflowIcon iconColor={ds.gray[700]} iconStyle={{ width: '18px', height: '18px' }} />,
-                                      action: 'create-automation',
-                                    },
-                                  ]
-                                : []),
                             ]}
                             onMenuClick={(item) => {
                               switch (item.action) {
@@ -2630,9 +2593,6 @@ const Investigate = () => {
                                   break;
                                 case 'update-event':
                                   setIsUpdateEvent(true);
-                                  break;
-                                case 'create-automation':
-                                  setShowTemplatesModal(true);
                                   break;
                               }
                             }}

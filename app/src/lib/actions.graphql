@@ -2131,6 +2131,12 @@ type Query {
 }
 
 type Query {
+  workflow_list_executions_for_event(
+    request: WorkflowExecutionListForEventRequest!
+  ): WorkflowExecutionListResponse
+}
+
+type Query {
   workflow_list_taskdefinitions(
     params: WorkflowTaskDefinitionListRequest!
   ): WorkflowTaskDefinitionListResponse
@@ -4600,6 +4606,11 @@ input WorkflowExecutionListRequest {
   next_page_token: String
   status: String
   trigger_type: String
+}
+
+input WorkflowExecutionListForEventRequest {
+  account_id: String!
+  event_id: String!
 }
 
 input WorkflowExecutionGetRequest {
@@ -8276,6 +8287,7 @@ type WorkflowExecutionSummary {
   triggered_by: String
   trigger_type: String
   parent_workflow_id: String
+  workflow_name: String
 }
 
 type WorkflowUpdateResponse {

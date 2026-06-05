@@ -81,6 +81,12 @@ func (m *MockWorkflowService) ListWorkflowExecutions(ctx *security.RequestContex
 	return args.Get(0).(model.ListWorkflowExecutionResponse), args.Error(1)
 }
 
+func (m *MockWorkflowService) ListWorkflowExecutionsForEvent(ctx *security.RequestContext, accountId, eventId string) (model.ListWorkflowExecutionResponse, error) {
+	args := m.Called(ctx, accountId, eventId)
+	res, _ := args.Get(0).(model.ListWorkflowExecutionResponse)
+	return res, args.Error(1)
+}
+
 func (m *MockWorkflowService) GetWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string) (*workflowservice.DescribeWorkflowExecutionResponse, error) {
 	args := m.Called(ctx, accountId, workflowId, executionId)
 	return args.Get(0).(*workflowservice.DescribeWorkflowExecutionResponse), args.Error(1)

@@ -383,6 +383,23 @@ query listWorkflowExecutions($accountId:String!, $id:String!, $limit:Int, $next_
 }
 `;
 
+export const LIST_WORKFLOW_EXECUTIONS_FOR_EVENT = `
+query listWorkflowExecutionsForEvent($accountId: String!, $eventId: String!) {
+  workflow_list_executions_for_event(request: {account_id: $accountId, event_id: $eventId}) {
+    executions {
+      workflow_id
+      workflow_name
+      id
+      status
+      start_time
+      close_time
+      triggered_by
+      trigger_type
+    }
+  }
+}
+`;
+
 export const GET_WORKFLOW_EXECUTION = `
 query getWorkflowExecution($request: WorkflowExecutionGetRequest!) {
   workflow_get_execution(request: $request) {
@@ -817,6 +834,16 @@ const apiWorkflow = {
       };
     } catch (error) {
       return error;
+    }
+  },
+  async listExecutionsForEvent(accountId: string, eventId: string) {
+    if (accountId === 'demo' || !accountId || !eventId) return { data: { executions: [] }, errors: null };
+    try {
+      const response = await queryGraphQL(LIST_WORKFLOW_EXECUTIONS_FOR_EVENT, 'listWorkflowExecutionsForEvent', { accountId, eventId });
+      const executions = response?.data?.data?.workflow_list_executions_for_event?.executions || [];
+      return { data: { executions }, errors: response?.data?.errors };
+    } catch (error) {
+      return { data: { executions: [] }, errors: [error] };
     }
   },
   async getWorkflowExecution(accountId: string, workflowId: string, executionId: string) {
