@@ -36,6 +36,16 @@ func ErrorActionInternal(message string) ErrorAction {
 	}
 }
 
+// ErrorActionForbidden returns a RPC action error shape intended for 403
+// responses (the caller's role is valid but it lacks access to the
+// requested account). Payload format matches ErrorActionBadRequest; the
+// helper name matches the HTTP status so call sites read correctly.
+func ErrorActionForbidden(message string) ErrorAction {
+	return ErrorAction{
+		Message: message,
+	}
+}
+
 func ErrorUnauthorized(message string) Error {
 	return Error{
 		Message: message,

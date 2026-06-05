@@ -1721,8 +1721,6 @@ actions:
           value_from_env: ACTION_API_SERVER_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
       - role: account_admin_readonly
       - role: account_admin
       - role: tenant_admin_readonly
@@ -1948,8 +1946,6 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
       - role: account_admin_readonly
       - role: account_admin
       - role: tenant_admin_readonly
@@ -2638,8 +2634,6 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
       - role: account_admin_readonly
       - role: account_admin
       - role: tenant_admin_readonly
@@ -2669,6 +2663,9 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
       - role: tenant_admin
   - name: metrics_list_labels
     definition:
@@ -2679,6 +2676,8 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
+      - role: account_admin_readonly
+      - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
   - name: metrics_list
@@ -2690,6 +2689,8 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
+      - role: account_admin_readonly
+      - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
   - name: metrics_aggregate_utilisation
@@ -2701,6 +2702,8 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
+      - role: account_admin_readonly
+      - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
   - name: metrics_get_query
@@ -2712,6 +2715,8 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
+      - role: account_admin_readonly
+      - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
     comment: metrics_get_query
@@ -2740,8 +2745,6 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
       - role: account_admin_readonly
       - role: account_admin
       - role: tenant_admin_readonly
@@ -3093,8 +3096,6 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
       - role: account_admin_readonly
       - role: account_admin
       - role: tenant_admin_readonly

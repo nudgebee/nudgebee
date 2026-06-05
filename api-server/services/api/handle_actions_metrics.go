@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"nudgebee/services/common"
 	"nudgebee/services/observability"
+	"nudgebee/services/security"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/metric"
@@ -33,6 +34,15 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			return
 		}
 
+		if request.AccountId == "" {
+			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
+			return
+		}
+		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
+			return
+		}
+
 		resp, err := observability.FetchMetricsQuery(ctx, request)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -53,6 +63,15 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 		err = common.ValidateStruct(request)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		if request.AccountId == "" {
+			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
+			return
+		}
+		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
 
@@ -79,6 +98,15 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			return
 		}
 
+		if request.AccountId == "" {
+			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
+			return
+		}
+		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
+			return
+		}
+
 		resp, err := observability.FetchMetricLabelsList(ctx, request)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -98,6 +126,15 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 		err = common.ValidateStruct(request)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+
+		if request.AccountId == "" {
+			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
+			return
+		}
+		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
 
@@ -127,6 +164,15 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			return
 		}
 
+		if request.AccountId == "" {
+			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
+			return
+		}
+		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
+			return
+		}
+
 		resp, err := observability.FetchMetricUtilisation(ctx, request)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -153,6 +199,14 @@ func handleMetricsAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 		err = common.ValidateStruct(request)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		if request.AccountId == "" {
+			c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
+			return
+		}
+		if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeRead) {
+			c.JSON(403, common.ErrorActionForbidden("access denied for account: "+request.AccountId))
 			return
 		}
 		resp, err := observability.GetMetricsQuery(ctx, request)
