@@ -24,10 +24,10 @@ func TestArgoCD_ConfigSchema(t *testing.T) {
 
 	// k8s_secret is the only required field — server URL lives inside the secret.
 	assert.Contains(t, schema.Required, ArgoCDConfigK8sSecret)
-	assert.NotContains(t, schema.Required, ArgoCDConfigServer)
+	assert.NotContains(t, schema.Required, "server")
 
 	assert.Contains(t, schema.Properties, ArgoCDConfigK8sSecret)
-	assert.NotContains(t, schema.Properties, ArgoCDConfigServer)
+	assert.NotContains(t, schema.Properties, "server")
 	assert.Contains(t, schema.Properties, ArgoCDConfigTimeout)
 	assert.Contains(t, schema.Properties, ArgoCDConfigInsecure)
 	assert.Contains(t, schema.Properties, ArgoCDConfigGrpcWeb)
@@ -57,6 +57,13 @@ func TestArgoCD_ValidateConfig_FormatChecks(t *testing.T) {
 			name:    "empty config rejects with k8s_secret required",
 			configs: []core.IntegrationConfigValue{},
 			errMsg:  "k8s_secret is required",
+		},
+		{
+			name: "shell-metachar secret name rejects",
+			configs: []core.IntegrationConfigValue{
+				{Name: ArgoCDConfigK8sSecret, Value: "argocd-secret; rm -rf /"},
+			},
+			errMsg: "invalid k8s_secret name",
 		},
 		{
 			name: "invalid auth_method rejects",
@@ -93,6 +100,17 @@ func TestArgoCD_DetectAuthError(t *testing.T) {
 		} else {
 			assert.Empty(t, got, "expected no auth error for: %s", resp)
 		}
+	}
+}
+
+func TestArgoCD_IsValidSecretName(t *testing.T) {
+	valid := []string{"argocd-secret", "argocd_secret", "argocd.secret", "argocd/argocd-secret", "ABC123"}
+	invalid := []string{"", "argocd-secret; rm -rf /", "secret name", "ns/sec/extra", "$(whoami)", "secret`id`", "a&&b", "sec|cat"}
+	for _, v := range valid {
+		assert.True(t, isValidSecretName(v), "expected valid: %q", v)
+	}
+	for _, v := range invalid {
+		assert.False(t, isValidSecretName(v), "expected invalid: %q", v)
 	}
 }
 

@@ -46,3 +46,26 @@ func TestArgoCDHistoryAction(t *testing.T) {
 		assert.Equal(t, "json", response.GetFormatName())
 	}
 }
+
+func TestArgoCD_AppNameRegex(t *testing.T) {
+	valid := []string{"my-app", "my_app", "app.v2", "namespace/my-app", "App123"}
+	invalid := []string{"", "app; rm -rf /", "app name", "$(whoami)", "a|b", "ns/app/extra", "app`id`", "a&&b"}
+	for _, v := range valid {
+		assert.True(t, argoCDAppNameRegex.MatchString(v), "expected valid: %q", v)
+	}
+	for _, v := range invalid {
+		assert.False(t, argoCDAppNameRegex.MatchString(v), "expected invalid: %q", v)
+	}
+}
+
+func TestArgoCDHistoryAction_RejectsUnsafeApplicationName(t *testing.T) {
+	// Unsafe application_name must be rejected before any DB/relay call, so this
+	// runs without test-env credentials.
+	action := &argoCDHistoryAction{}
+	ctx := NewPlaybookActionContext("", "acct-1", nil, PlaybookEvent{})
+	for _, name := range []string{"app; rm -rf /", "app$(whoami)", "app name", "app|cat", "ns/app/extra"} {
+		_, err := action.Execute(ctx, map[string]any{"application_name": name, "account_id": "acct-1"})
+		assert.Error(t, err, "for %q", name)
+		assert.Contains(t, err.Error(), "invalid application_name", "for %q", name)
+	}
+}

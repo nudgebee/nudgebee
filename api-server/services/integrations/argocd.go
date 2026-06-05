@@ -5,20 +5,37 @@ import (
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
+	"regexp"
 	"strings"
 )
 
+// argoCDSecretNameRegex bounds the k8s secret name that gets handed to the relay
+// agent (optionally namespaced as "namespace/name"). The auth/server env-var keys
+// are no longer user-controlled — they are fixed constants — so the only
+// user-supplied value reaching the relay is the secret name; keep it to k8s-safe
+// characters as defense-in-depth.
+var argoCDSecretNameRegex = regexp.MustCompile(`^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)?$`)
+
+func isValidSecretName(name string) bool {
+	return argoCDSecretNameRegex.MatchString(name)
+}
+
 const (
-	ArgoCDConfigServer               = "server"
-	ArgoCDConfigInsecure             = "insecure"
-	ArgoCDConfigGrpcWeb              = "grpc_web"
-	ArgoCDConfigTimeout              = "timeout"
-	ArgoCDConfigK8sSecret            = "k8s_secret"
-	ArgoCDConfigServerKeyInSecret    = "server_key_in_secret"
-	ArgoCDConfigAuthTokenKeyInSecret = "auth_token_key_in_secret"
-	ArgoCDConfigUsernameKeyInSecret  = "username_key_in_secret"
-	ArgoCDConfigPasswordKeyInSecret  = "password_key_in_secret"
-	ArgoCDConfigAuthMethod           = "auth_method"
+	ArgoCDConfigInsecure   = "insecure"
+	ArgoCDConfigGrpcWeb    = "grpc_web"
+	ArgoCDConfigTimeout    = "timeout"
+	ArgoCDConfigK8sSecret  = "k8s_secret"
+	ArgoCDConfigAuthMethod = "auth_method"
+)
+
+// Standard ArgoCD CLI env-var keys expected inside the k8s secret. They are not
+// configurable: the argocd CLI reads exactly these names, so a "key name" config
+// field would only let a user point at a key the CLI can't consume.
+const (
+	argoCDSecretKeyServer    = "ARGOCD_SERVER"
+	argoCDSecretKeyAuthToken = "ARGOCD_AUTH_TOKEN"
+	argoCDSecretKeyUsername  = "ARGOCD_USERNAME"
+	argoCDSecretKeyPassword  = "ARGOCD_PASSWORD"
 )
 
 func init() {
@@ -71,40 +88,6 @@ func (m ArgoCD) ConfigSchema() core.IntegrationSchema {
 				Priority:    80,
 				IsTestable:  true,
 			},
-			ArgoCDConfigAuthTokenKeyInSecret: {
-				Type:         core.ToolSchemaTypeString,
-				Description:  "Key name for auth token in the secret",
-				Default:      "ARGOCD_AUTH_TOKEN",
-				Priority:     75,
-				ShowWhen:     map[string]any{ArgoCDConfigAuthMethod: []any{"token"}},
-				RequiredWhen: map[string]any{ArgoCDConfigAuthMethod: []any{"token"}},
-				IsTestable:   true,
-			},
-			ArgoCDConfigUsernameKeyInSecret: {
-				Type:         core.ToolSchemaTypeString,
-				Description:  "Key name for username in the secret",
-				Default:      "ARGOCD_USERNAME",
-				Priority:     75,
-				ShowWhen:     map[string]any{ArgoCDConfigAuthMethod: []any{"password"}},
-				RequiredWhen: map[string]any{ArgoCDConfigAuthMethod: []any{"password"}},
-				IsTestable:   true,
-			},
-			ArgoCDConfigPasswordKeyInSecret: {
-				Type:         core.ToolSchemaTypeString,
-				Description:  "Key name for password in the secret",
-				Default:      "ARGOCD_PASSWORD",
-				Priority:     70,
-				ShowWhen:     map[string]any{ArgoCDConfigAuthMethod: []any{"password"}},
-				RequiredWhen: map[string]any{ArgoCDConfigAuthMethod: []any{"password"}},
-				IsTestable:   true,
-			},
-			ArgoCDConfigServerKeyInSecret: {
-				Type:        core.ToolSchemaTypeString,
-				Description: "Key name for server URL in the secret",
-				Default:     "ARGOCD_SERVER",
-				Priority:    65,
-				IsTestable:  true,
-			},
 			ArgoCDConfigInsecure: {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Skip TLS certificate verification (true/false)",
@@ -141,26 +124,25 @@ func (m ArgoCD) ValidateConfig(securityContext *security.SecurityContext, config
 	authMethod := firstNonEmpty(configMap[ArgoCDConfigAuthMethod], "token")
 	insecure := firstNonEmpty(configMap[ArgoCDConfigInsecure], "false")
 	grpcWeb := firstNonEmpty(configMap[ArgoCDConfigGrpcWeb], "true")
-	serverKey := firstNonEmpty(configMap[ArgoCDConfigServerKeyInSecret], "ARGOCD_SERVER")
-	authTokenKey := firstNonEmpty(configMap[ArgoCDConfigAuthTokenKeyInSecret], "ARGOCD_AUTH_TOKEN")
-	usernameKey := firstNonEmpty(configMap[ArgoCDConfigUsernameKeyInSecret], "ARGOCD_USERNAME")
-	passwordKey := firstNonEmpty(configMap[ArgoCDConfigPasswordKeyInSecret], "ARGOCD_PASSWORD")
 
 	if secretName == "" {
 		return []error{fmt.Errorf("k8s_secret is required")}
 	}
+	if !isValidSecretName(secretName) {
+		return []error{fmt.Errorf("invalid k8s_secret name %q: must contain only alphanumeric characters, dashes, dots, underscores, or a single slash", secretName)}
+	}
 
-	// The ArgoCD server URL is sourced from the k8s secret (ARGOCD_SERVER key),
-	// not a separate config field — the probe and the runtime playbook both read
-	// it from the secret so there is a single source of truth.
-	envFromSecret := map[string]string{serverKey: serverKey}
+	// Server URL and credentials are all read from the k8s secret under the
+	// standard ArgoCD CLI env-var keys — a single source of truth. The CLI reads
+	// $ARGOCD_SERVER for --server.
+	envFromSecret := map[string]string{argoCDSecretKeyServer: argoCDSecretKeyServer}
 
 	switch authMethod {
 	case "token":
-		envFromSecret[authTokenKey] = authTokenKey
+		envFromSecret[argoCDSecretKeyAuthToken] = argoCDSecretKeyAuthToken
 	case "password":
-		envFromSecret[usernameKey] = usernameKey
-		envFromSecret[passwordKey] = passwordKey
+		envFromSecret[argoCDSecretKeyUsername] = argoCDSecretKeyUsername
+		envFromSecret[argoCDSecretKeyPassword] = argoCDSecretKeyPassword
 	default:
 		return []error{fmt.Errorf("invalid auth_method %q: must be 'token' or 'password'", authMethod)}
 	}
@@ -180,14 +162,14 @@ func (m ArgoCD) ValidateConfig(securityContext *security.SecurityContext, config
 	switch authMethod {
 	case "token":
 		cmd = fmt.Sprintf(
-			`argocd account get-user-info%s --server "$%s" --auth-token "$%s" --output json`,
-			flags, serverKey, authTokenKey,
+			`argocd account get-user-info%s --server "$ARGOCD_SERVER" --auth-token "$ARGOCD_AUTH_TOKEN" --output json`,
+			flags,
 		)
 	case "password":
 		cmd = fmt.Sprintf(
-			`argocd login "$%s"%s --username "$%s" --password "$%s" && `+
-				`argocd account get-user-info%s --server "$%s" --output json`,
-			serverKey, flags, usernameKey, passwordKey, flags, serverKey,
+			`argocd login "$ARGOCD_SERVER"%s --username "$ARGOCD_USERNAME" --password "$ARGOCD_PASSWORD" && `+
+				`argocd account get-user-info%s --server "$ARGOCD_SERVER" --output json`,
+			flags, flags,
 		)
 	}
 
