@@ -99,10 +99,15 @@ const WorkflowHeader: React.FC<WorkflowHeaderProps> = ({
   const router = useRouter();
 
   const handleBack = () => {
-    // Check for returnUrl query param first (for navigation from investigate pages)
+    // Check for returnUrl query param first (for navigation from investigate pages).
+    // Only same-origin paths (start with "/", no "//" or "\" scheme tricks) are
+    // accepted — anything else falls through to the default to prevent open
+    // redirects / javascript: URI execution via decodeURIComponent.
     const { returnUrl } = router.query;
-    if (returnUrl) {
-      router.push(decodeURIComponent(returnUrl as string));
+    const candidate = typeof returnUrl === 'string' ? decodeURIComponent(returnUrl) : '';
+    const isSameOriginPath = candidate.startsWith('/') && !candidate.startsWith('//') && !candidate.startsWith('/\\');
+    if (isSameOriginPath) {
+      router.push(candidate);
     } else {
       const backButtonPath = `/auto-pilot?accountId=${accountId}#workflow`;
       router.push(backButtonPath);

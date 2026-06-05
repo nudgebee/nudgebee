@@ -92,9 +92,17 @@ func (c *cloudLogs) QueryLogs(ctx *security.RequestContext, fetchLogRequest Fetc
 		}
 	}
 
+	// Cap the limit to protect cloud-provider log handlers (AWS/GCP/Azure) from
+	// pre-allocating large result slices when callers pass an unbounded Limit.
+	// 50000 is well above any observed legitimate use (highest internal default
+	// is 1000) but keeps per-request pre-allocation in single-digit MB.
+	const maxCloudLogLimit = 50000
 	limit := int64(100)
 	if fetchLogRequest.Limit != 0 {
 		limit = int64(fetchLogRequest.Limit)
+	}
+	if limit > maxCloudLogLimit {
+		limit = maxCloudLogLimit
 	}
 
 	resp, err := cloud.QueryLogs(ctx, cloud.QueryLogsRequest{

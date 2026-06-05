@@ -51,6 +51,12 @@ mutation CreateIntegration($object: ticket_integration_create_config_input!) {
 `;
 
 async function fetchInstallation(installationId: string) {
+  // installationId arrives from the OAuth callback query string. Validate it
+  // is a positive integer before interpolating into the GitHub API URL —
+  // anything else (path traversal, scheme tricks) cannot reach api.github.com.
+  if (!/^\d+$/.test(installationId)) {
+    throw new Error(`Invalid installation_id: ${installationId}`);
+  }
   const jwt = generateGithubAppJwt();
   const res = await fetch(`https://api.github.com/app/installations/${installationId}`, {
     headers: {
