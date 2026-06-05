@@ -286,7 +286,13 @@ def prometheus_instant_query(endpoint: str, promql_query: str, account_id: str) 
 
     try:
         response = requests.post(endpoint, headers=headers_with_context, data=payload, timeout=10)
-        response.raise_for_status()
+        if response.status_code != 200:
+            if response.status_code == 400 and "agent not connected" in response.text:
+                logger.warning(f"Agent not connected for account {account_id}. Returning empty results.")
+                return []
+            msg = f"Failed to fetch metrics from server. status: {response.status_code}: response: {response.text}"
+            logger.error(msg)
+            raise ValueError(msg)
 
         response_json = response.json()
         logger.debug(f"Raw response for instant query: {promql_query[:100]}... - Status: {response.status_code}")
@@ -363,7 +369,13 @@ def prometheus_range_query(
 
     try:
         response = requests.post(endpoint, headers=headers_with_context, data=payload, timeout=60)
-        response.raise_for_status()
+        if response.status_code != 200:
+            if response.status_code == 400 and "agent not connected" in response.text:
+                logger.warning(f"Agent not connected for account {account_id}. Returning empty results.")
+                return []
+            msg = f"Failed to fetch metrics from server. status: {response.status_code}: response: {response.text}"
+            logger.error(msg)
+            raise ValueError(msg)
 
         response_json = response.json()
         logger.debug(f"Raw response for query: {promql_query[:100]}... - Status: {response.status_code}")
