@@ -73,15 +73,7 @@ const ThreeDotsMenu = ({
       items={dsItems}
       disablePortal={false}
       trigger={
-        <DsButton
-          id={id || 'three-dot-menu'}
-          tone='secondary'
-          size='xs'
-          composition='icon-only'
-          icon={<MoreVert />}
-          aria-label='More actions'
-          tooltip='More actions'
-        />
+        <DsButton id={id || 'three-dot-menu'} tone='secondary' size='xs' composition='icon-only' icon={<MoreVert />} aria-label='More actions' />
       }
     />
   );
