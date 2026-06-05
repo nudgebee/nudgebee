@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"nudgebee/runbook/common"
+	"nudgebee/runbook/internal/tasks/safehttp"
 	"os"
 	"strings"
 	"time"
@@ -22,6 +23,17 @@ import (
 // For GitHub App authentication, the password field contains the installation_id.
 // apiUrl parameter supports GitHub Enterprise installations (e.g., "https://github.mycompany.com/api/v3")
 func CreateGithubClient(ctx context.Context, apiUrl, authType, username, password string) (*github.Client, error) {
+	// SSRF defense: apiUrl is workflow-supplied (for GitHub Enterprise). Empty
+	// is fine — go-github defaults to api.github.com. Non-empty must resolve to
+	// a public IP. The direct HTTP call in GetGithubAppInstallationToken below
+	// also wires a safe transport for DNS-rebinding defense; calls made via the
+	// go-github library still inherit the validation here (URL-shape only).
+	if apiUrl != "" {
+		if err := safehttp.ValidateURL(apiUrl); err != nil {
+			return nil, fmt.Errorf("github apiUrl failed safety validation: %w", err)
+		}
+	}
+
 	var client *github.Client
 	var err error
 
@@ -65,6 +77,14 @@ func CreateGithubClient(ctx context.Context, apiUrl, authType, username, passwor
 // CreateGithubClientWithInstallationToken creates a GitHub client using GitHub App installation token.
 // apiUrl parameter supports GitHub Enterprise installations.
 func CreateGithubClientWithInstallationToken(ctx context.Context, apiUrl string, installationID int64) (*github.Client, error) {
+	// SSRF defense — also enforced in GetGithubAppInstallationToken below; this
+	// is a second gate for callers that bypass CreateGithubClient.
+	if apiUrl != "" {
+		if err := safehttp.ValidateURL(apiUrl); err != nil {
+			return nil, fmt.Errorf("github apiUrl failed safety validation: %w", err)
+		}
+	}
+
 	token, err := GetGithubAppInstallationToken(ctx, apiUrl, installationID)
 	if err != nil {
 		return nil, err
@@ -128,8 +148,14 @@ func GetGithubAppInstallationToken(ctx context.Context, apiUrl string, installat
 		return "", fmt.Errorf("failed to sign JWT: %w", err)
 	}
 
-	// Build installation token URL (supports GitHub Enterprise)
+	// Build installation token URL (supports GitHub Enterprise).
+	// SSRF defense: validate the constructed URL so even callers that skipped
+	// the entry-point checks are gated, and DNS-rebinding is closed via the
+	// transport DialContext below.
 	installationTokenURL := buildInstallationTokenURL(apiUrl, installationID)
+	if err := safehttp.ValidateURL(installationTokenURL); err != nil {
+		return "", fmt.Errorf("github installation token url failed safety validation: %w", err)
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", installationTokenURL, nil)
 	if err != nil {
@@ -141,6 +167,10 @@ func GetGithubAppInstallationToken(ctx context.Context, apiUrl string, installat
 
 	client := &http.Client{
 		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			DialContext: safehttp.NewSafeDialContext(30 * time.Second),
+		},
+		CheckRedirect: safehttp.SafeCheckRedirect,
 	}
 	resp, err := client.Do(req)
 	if err != nil {
