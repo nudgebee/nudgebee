@@ -255,8 +255,18 @@ Strategy:
 			}
 
 			for _, v := range variations {
-				toolCalls = append(toolCalls, ToolCall{Tool: tools.ToolResourceSearch, Input: json.RawMessage(fmt.Sprintf(`{"resource_name": "%s", "search_type": "suggestions"}`, v))})
-				toolCalls = append(toolCalls, ToolCall{Tool: tools.ToolCloudResourceSearch, Input: json.RawMessage(fmt.Sprintf(`{"resource_name": "%s"}`, v))})
+				rsInput, err := json.Marshal(map[string]string{"resource_name": v, "search_type": "suggestions"})
+				if err != nil {
+					ctx.GetLogger().Warn("resource_search: failed to marshal resource_search input", "error", err, "resource_name", v)
+					continue
+				}
+				crsInput, err := json.Marshal(map[string]string{"resource_name": v})
+				if err != nil {
+					ctx.GetLogger().Warn("resource_search: failed to marshal cloud_resource_search input", "error", err, "resource_name", v)
+					continue
+				}
+				toolCalls = append(toolCalls, ToolCall{Tool: tools.ToolResourceSearch, Input: json.RawMessage(rsInput)})
+				toolCalls = append(toolCalls, ToolCall{Tool: tools.ToolCloudResourceSearch, Input: json.RawMessage(crsInput)})
 			}
 		}
 	}
