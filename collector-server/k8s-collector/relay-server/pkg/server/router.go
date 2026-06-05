@@ -29,7 +29,6 @@ func SetupRouter(cfg *config.Config, tracer *trace.Tracer, meter *metric.Meter, 
 	// 1) Create Gin
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	pprof.Register(r)
 	r.Use(gin.Recovery())
 	r.Use(sloggin.NewWithFilters(logger, sloggin.IgnorePath("/status")))
 	r.Use(OtelMiddlewareWithIgnorePaths(config.SERVICE_NAME, []string{"/status"}))
@@ -46,6 +45,16 @@ func SetupRouter(cfg *config.Config, tracer *trace.Tracer, meter *metric.Meter, 
 		},
 	})
 	r.Use(corsOpts)
+	// Gate pprof behind the same X-SECRET-KEY auth as the proxy routes.
+	// pprof endpoints leak heap / goroutine state that can include
+	// in-flight secrets and tokens, so they must not be reachable
+	// unauthenticated even on internal-only ingress. SRE / profiling
+	// workflows need to send X-SECRET-KEY to pull profiles.
+	// Registered AFTER the global r.Use(...) calls above so the pprof
+	// group inherits Recovery / slog / OTel / CORS — gin only snapshots
+	// the parent middleware chain at Group() time, not retroactively.
+	pprofGroup := r.Group("/debug/pprof", middleware.ClientAuthMiddleware(cfg.Security.SecretKey))
+	pprof.RouteRegister(pprofGroup, "")
 	// 2) Initialize shared services
 	wsCache, err := cache.NewCache(cfg, logger)
 	if err != nil {

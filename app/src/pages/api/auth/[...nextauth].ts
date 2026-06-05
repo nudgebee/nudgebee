@@ -719,6 +719,18 @@ async function getOrCreateBootstrapAdminUser(email: string) {
 }
 
 if (process.env.NEXTAUTH_DUMMY_CREDS_ENABLED == 'true') {
+  // The dummy-credentials provider is required to bootstrap the very first
+  // tenant admin (no other login method works before the admin exists).
+  // It MUST be turned off as soon as that bootstrap is done — otherwise
+  // anyone who learns the configured NEXTAUTH_DUMMY_CREDS_PASSWORD can sign
+  // in as ANY email address, bypassing OAuth / LDAP / SSO and impersonating
+  // any user. Make the configuration loud so a forgotten flag shows up in
+  // pod logs at every boot.
+  console.warn(
+    '[Security] NEXTAUTH_DUMMY_CREDS_ENABLED=true. The any-email/password provider is active. ' +
+      'Anyone who knows the configured NEXTAUTH_DUMMY_CREDS_PASSWORD can sign in as ANY email, bypassing OAuth / LDAP / SSO. ' +
+      'Disable this immediately after creating your first admin user.'
+  );
   providers.push(
     Credentials({
       credentials: {
@@ -742,6 +754,11 @@ if (process.env.NEXTAUTH_DUMMY_CREDS_ENABLED == 'true') {
         if (pwdBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(pwdBuf, expectedBuf)) {
           throw Error('Invalid Passsword');
         }
+        console.warn(
+          '[Security] dummy-creds login succeeded for',
+          normalizedUsername,
+          '— this provider accepts ANY email with the configured password and bypasses OAuth / LDAP / SSO. Disable NEXTAUTH_DUMMY_CREDS_ENABLED if this is a production deployment.'
+        );
         return await getOrCreateBootstrapAdminUser(normalizedUsername);
       },
     })
@@ -749,6 +766,19 @@ if (process.env.NEXTAUTH_DUMMY_CREDS_ENABLED == 'true') {
 }
 
 if (process.env.NEXTAUTH_LDAP_URI) {
+  // Operators configure the LDAP URI themselves; `ldap://` is sometimes
+  // acceptable on a private VPC where the app pod and LDAP server share a
+  // trusted network. On SaaS or anywhere the connection crosses a public /
+  // peered boundary, the bind credentials and every user's password travel
+  // in cleartext. Log a warning if `ldap://` is used so the choice is
+  // visible at boot; we don't block it because some legitimate corporate
+  // deployments still use it.
+  if (process.env.NEXTAUTH_LDAP_URI.startsWith('ldap://')) {
+    console.warn(
+      '[Security] NEXTAUTH_LDAP_URI uses unencrypted ldap://. Bind credentials and end-user passwords will travel in cleartext between the app pod and the LDAP server. ' +
+        'Switch to ldaps:// unless the LDAP server is reachable only over a trusted private network.'
+    );
+  }
   providers.push(
     Credentials({
       id: 'ldap',
