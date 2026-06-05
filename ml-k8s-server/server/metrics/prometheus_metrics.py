@@ -92,7 +92,14 @@ def fetch_metrics(
                     "POST", endpoint, headers=headers_with_context, data=payload, timeout=60
                 )
                 if response.status_code != 200:
-                    if response.status_code == 400 and "agent not connected" in response.text:
+                    try:
+                        response_json = response.json()
+                        if any(err.get("message") == "agent not connected" for err in response_json.get("errors", [])):
+                            logger.warning(f"Agent not connected for account {account_id}. Returning empty results.")
+                            return []
+                    except Exception as e:
+                        logger.debug(f"Failed to parse JSON response: {e}")
+                    if "agent not connected" in response.text:
                         logger.warning(f"Agent not connected for account {account_id}. Returning empty results.")
                         return []
                     msg = f"""Failed to fetch metrics from server.
@@ -128,19 +135,24 @@ def fetch_metrics(
                     raise ValueError("Failed to fetch metrics from server. response data is empty")
 
                 data_list = []
-                if data and len(data) > 0 and "data" in data[0] and isinstance(data[0]["data"], str):
+                if not data or len(data) == 0:
+                    if raw:
+                        return []
+                    logger.error(f"Failed to fetch metrics from server. data: {data}")
+                    raise ValueError("Failed to fetch metrics from server. data list is empty")
+
+                if "data" in data[0] and isinstance(data[0]["data"], str):
                     raise Exception("prometheus query error: " + data[0]["data"])
+
                 if (
-                    data
-                    and len(data) > 0
-                    and "data" in data[0]
+                    "data" in data[0]
                     and data[0]["data"]["result_type"] == "vector"
                     and "vector_result" in data[0]["data"]
                 ):
                     data_list = data[0]["data"]["vector_result"]
                     if raw:
                         return data_list
-                elif data and len(data) > 0 and "data" in data[0] and "series_list_result" in data[0]["data"]:
+                elif "data" in data[0] and "series_list_result" in data[0]["data"]:
                     if raw:
                         return cast(list, data[0]["data"]["series_list_result"])
                     data_list = [MetricsInput(**i) for i in data[0]["data"]["series_list_result"]]
