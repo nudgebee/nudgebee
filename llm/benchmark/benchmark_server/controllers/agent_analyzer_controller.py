@@ -26,20 +26,36 @@ def get_filters(account_id: Optional[str] = Query(None)):
     """Return distinct agent names and statuses for the filter dropdowns."""
     db = _get_db_or_raise()
     try:
-        base_clause = "parent_agent_id = :null_parent"
+        # Avoid f-string-built WHERE clauses: pick the full SQL up-front so a
+        # future edit can't accidentally drop a bind param and re-introduce
+        # injection through the dynamic predicate.
         params = {"null_parent": NULL_PARENT}
         if account_id:
-            base_clause += " AND account_id = :account_id"
+            agents_sql = (
+                "SELECT DISTINCT agent_name FROM llm_conversation_agent "
+                "WHERE parent_agent_id = :null_parent AND account_id = :account_id "
+                "ORDER BY agent_name"
+            )
+            statuses_sql = (
+                "SELECT DISTINCT status FROM llm_conversation_agent "
+                "WHERE parent_agent_id = :null_parent AND account_id = :account_id "
+                "ORDER BY status"
+            )
             params["account_id"] = account_id
+        else:
+            agents_sql = (
+                "SELECT DISTINCT agent_name FROM llm_conversation_agent "
+                "WHERE parent_agent_id = :null_parent "
+                "ORDER BY agent_name"
+            )
+            statuses_sql = (
+                "SELECT DISTINCT status FROM llm_conversation_agent "
+                "WHERE parent_agent_id = :null_parent "
+                "ORDER BY status"
+            )
 
-        agents = db.execute(
-            text(f"SELECT DISTINCT agent_name FROM llm_conversation_agent WHERE {base_clause} ORDER BY agent_name"),
-            params,
-        ).fetchall()
-        statuses = db.execute(
-            text(f"SELECT DISTINCT status FROM llm_conversation_agent WHERE {base_clause} ORDER BY status"),
-            params,
-        ).fetchall()
+        agents = db.execute(text(agents_sql), params).fetchall()
+        statuses = db.execute(text(statuses_sql), params).fetchall()
         return {
             "agent_names": [r[0] for r in agents if r[0]],
             "statuses": [r[0] for r in statuses if r[0]],
@@ -149,7 +165,9 @@ def list_tool_calls(
     conversation_id: Optional[str] = Query(None),
 ):
     if not agent_id and not conversation_id:
-        raise HTTPException(status_code=400, detail="agent_id or conversation_id required")
+        raise HTTPException(
+            status_code=400, detail="agent_id or conversation_id required"
+        )
 
     db = _get_db_or_raise()
     try:

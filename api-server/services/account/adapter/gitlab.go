@@ -1046,10 +1046,7 @@ func ApplyRightsizingRecommendationUsingCodeAgentGitLab(ctx AccountAdapterContex
 				// Try to update database status to Failed
 				dbms, err := database.GetDatabaseManager(database.Metastore)
 				if err == nil {
-					tableName := "recommendation_resolution"
-					if request.IsEventResolution {
-						tableName = "event_resolution"
-					}
+					tableName := resolutionTableIdent(request.IsEventResolution)
 					_, _ = dbms.Db.ExecContext(
 						context.Background(),
 						fmt.Sprintf(`UPDATE %s SET status = $1, updated_at = $2, status_message = $3 WHERE id = $4`, tableName),
@@ -1069,10 +1066,7 @@ func ApplyRightsizingRecommendationUsingCodeAgentGitLab(ctx AccountAdapterContex
 			return
 		}
 
-		tableName := "recommendation_resolution"
-		if request.IsEventResolution {
-			tableName = "event_resolution"
-		}
+		tableName := resolutionTableIdent(request.IsEventResolution)
 
 		// Helper function to update database status
 		updateStatus := func(status models.RecommendationResolutionStatus, statusMessage string, mrURL string) {

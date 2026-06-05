@@ -27,6 +27,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// resolutionTableIdent returns the SQL identifier (already double-quoted)
+// for the table that holds a resolution row. PostgreSQL placeholders ($N)
+// cannot bind identifiers, so any fmt.Sprintf that interpolates the table
+// name must source it from a closed set. Returning a pre-quoted literal
+// keeps the call-site Sprintf calls byte-equivalent in behavior
+// (Postgres treats "recommendation_resolution" identically to the
+// unquoted form for lowercase identifiers) while making the allowlist
+// explicit and unreachable from any string input.
+func resolutionTableIdent(isEventResolution bool) string {
+	if isEventResolution {
+		return `"event_resolution"`
+	}
+	return `"recommendation_resolution"`
+}
+
 // Annotations the workload sets so we can locate its helm config when
 // generating a recommendation PR. `<domain>` defaults to `nudgebee.com`
 // and is overridable via ANNOTATION_DOMAIN — see internal/annotations
@@ -1542,10 +1557,7 @@ func commitCodeGithub(ctx AccountAdapterContext, request ApplyRecommendationRequ
 		}
 		// checkout code repo
 		dir, err := checkoutCodeRepo(ctx, request, gitDetail)
-		tableName := "recommendation_resolution"
-		if request.IsEventResolution {
-			tableName = "event_resolution"
-		}
+		tableName := resolutionTableIdent(request.IsEventResolution)
 		if err != nil {
 			ctx.GetLogger().Error("Error doing checkout", "error", err)
 			_, err = dbms.Db.Exec(fmt.Sprintf(`UPDATE %s SET status = $1, updated_at = $2, status_message = $4 WHERE id = $3`, tableName),
@@ -1600,8 +1612,12 @@ func commitCodeGithub(ctx AccountAdapterContext, request ApplyRecommendationRequ
 		err = common.UnmarshalJson([]byte(resp), &prResponse)
 		if err != nil {
 			ctx.GetLogger().Error("Error unmarshalling PR response", "error", err)
-			_, err = dbms.Db.Exec(`UPDATE $5 SET status = $1, updated_at = $2, status_message = $4 WHERE id = $3`,
-				models.RecommendationResolutionStatusFailed, time.Now(), recommendResolutionId, "Failed at unmarshalling PR Response", tableName)
+			// Postgres placeholders ($N) cannot bind identifiers, so the
+			// previous `UPDATE $5 ... tableName` form raised a syntax error
+			// every time this branch was reached. Interpolate tableName
+			// safely the same way the surrounding sites do.
+			_, err = dbms.Db.Exec(fmt.Sprintf(`UPDATE %s SET status = $1, updated_at = $2, status_message = $4 WHERE id = $3`, tableName),
+				models.RecommendationResolutionStatusFailed, time.Now(), recommendResolutionId, "Failed at unmarshalling PR Response")
 			if err != nil {
 				ctx.GetLogger().Error("error updating recommendation resolution", "error", err)
 			}
@@ -1850,10 +1866,7 @@ func ApplyRightsizingRecommendationUsingCodeAgent(ctx AccountAdapterContext, req
 				// Try to update database status to Failed
 				dbms, err := database.GetDatabaseManager(database.Metastore)
 				if err == nil {
-					tableName := "recommendation_resolution"
-					if request.IsEventResolution {
-						tableName = "event_resolution"
-					}
+					tableName := resolutionTableIdent(request.IsEventResolution)
 					_, _ = dbms.Db.ExecContext(
 						context.Background(),
 						fmt.Sprintf(`UPDATE %s SET status = $1, updated_at = $2, status_message = $3 WHERE id = $4`, tableName),
@@ -1873,10 +1886,7 @@ func ApplyRightsizingRecommendationUsingCodeAgent(ctx AccountAdapterContext, req
 			return
 		}
 
-		tableName := "recommendation_resolution"
-		if request.IsEventResolution {
-			tableName = "event_resolution"
-		}
+		tableName := resolutionTableIdent(request.IsEventResolution)
 
 		// Helper function to update database status
 		updateStatus := func(status models.RecommendationResolutionStatus, statusMessage string, prUrl string) {
@@ -2110,10 +2120,7 @@ func ApplySecurityRecommendationUsingCodeAgent(ctx AccountAdapterContext, reques
 				// Try to update database status to Failed
 				dbms, err := database.GetDatabaseManager(database.Metastore)
 				if err == nil {
-					tableName := "recommendation_resolution"
-					if request.IsEventResolution {
-						tableName = "event_resolution"
-					}
+					tableName := resolutionTableIdent(request.IsEventResolution)
 					_, _ = dbms.Db.ExecContext(
 						context.Background(),
 						fmt.Sprintf(`UPDATE %s SET status = $1, updated_at = $2, status_message = $3 WHERE id = $4`, tableName),
@@ -2133,10 +2140,7 @@ func ApplySecurityRecommendationUsingCodeAgent(ctx AccountAdapterContext, reques
 			return
 		}
 
-		tableName := "recommendation_resolution"
-		if request.IsEventResolution {
-			tableName = "event_resolution"
-		}
+		tableName := resolutionTableIdent(request.IsEventResolution)
 
 		// Helper function to update database status
 		updateStatus := func(status models.RecommendationResolutionStatus, statusMessage string, prUrl string) {

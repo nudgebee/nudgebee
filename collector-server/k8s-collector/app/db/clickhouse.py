@@ -53,6 +53,11 @@ def create_db_connection_pool() -> Client:
 
 
 def select_data(table_name: str, columns: List[str] = [], conditions: Dict[str, Any] = {}) -> QueryResult:
+    # SECURITY: table_name, column entries, and condition keys are inlined
+    # into the SQL string — ClickHouse has no parameter binding for
+    # identifiers. Mirror the Postgres sister helper (db/database.py): pass
+    # static literals only; do NOT pass user-supplied strings without an
+    # explicit allowlist. Condition values are parameter-bound and safe.
     if Configs.CLICKHOUSE_ENABLED is False:
         return QueryResult()
     conn = None
@@ -101,6 +106,11 @@ def escape_string(string: str) -> str:
 
 
 def dict_to_insert_query(table_name: str, data: List[Dict[str, Any]], on_conflict: str = "") -> str:
+    # SECURITY: table_name and column names (data[*].keys()) are inlined into
+    # the SQL string. Values are inline-escaped via escape_string() below,
+    # which is unsafe for untrusted input. ClickHouse has no parameter
+    # binding for identifiers, so callers must pass static literals only and
+    # restrict use to internally-generated data.
     columns = list(data[0].keys())
     if on_conflict is None:
         on_conflict = ""
