@@ -1,6 +1,0 @@
--- Intentional no-op. The V741 backfill inserts source='create', version_number=1
--- rows — which is exactly the shape natively-created workflows also use for their
--- initial version. A value-based reversal cannot distinguish backfilled-legacy
--- rows from natively-created ones, so deleting them would destroy real data.
--- The backfill is therefore treated as irreversible; a code rollback leaves the
--- backfilled live versions in place (harmless — they are valid version rows).

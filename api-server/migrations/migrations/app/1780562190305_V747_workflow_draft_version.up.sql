@@ -1,4 +1,4 @@
--- Migration: V757 — Track which version the current draft is based on
+-- Migration: V747 — Track which version the current draft is based on
 -- Description: Adds workflows.draft_version_id so the editor can show accurate
 -- lineage ("Draft based on v2, Live is v3") after a user restores an older
 -- version. Previously the strip computed "ahead of Live vX" by hashing

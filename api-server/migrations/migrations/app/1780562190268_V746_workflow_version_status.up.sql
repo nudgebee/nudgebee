@@ -1,4 +1,4 @@
--- Migration: V756 — Per-version status (Active / Paused / Inactive)
+-- Migration: V746 — Per-version status (Active / Paused / Inactive)
 -- Description: Move the runtime gate from workflows.status onto each
 -- workflow_versions row so a user can publish a new version directly into a
 -- Paused state (the previous model auto-activated). workflows.status is kept
