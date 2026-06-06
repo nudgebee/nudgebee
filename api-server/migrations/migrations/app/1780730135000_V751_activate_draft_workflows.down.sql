@@ -1,5 +1,0 @@
--- Intentional no-op. The DRAFT -> ACTIVE promotion is a value-based flip and is
--- not reversible: once applied, formerly-DRAFT rows are indistinguishable from
--- natively-ACTIVE ones, so a down migration cannot safely restore DRAFT.
--- A code rollback after this migration leaves those workflows ACTIVE (and
--- firing) — call this out in the PR description.
