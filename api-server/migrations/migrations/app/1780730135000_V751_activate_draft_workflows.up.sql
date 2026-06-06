@@ -1,4 +1,4 @@
--- V742: Remove the DRAFT workflow status. DRAFT was an enablement state that
+-- V751: Remove the DRAFT workflow status. DRAFT was an enablement state that
 -- silently blocked all scheduled/event execution, which confused users who
 -- published or saved a workflow and saw nothing run. The status is being
 -- removed entirely; every existing DRAFT workflow is moved to INACTIVE so the
