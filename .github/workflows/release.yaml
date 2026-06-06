@@ -113,7 +113,9 @@ jobs:
           # ---------- amd64-only (ML-base-derived: CUDA/conda) ----------
           - { image: llm-server,              context: llm/llm-server,                                   platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
           - { image: rag-server,              context: llm/rag-server,                                   platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
-          - { image: benchmark-server,        context: llm/benchmark,                                    platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          # benchmark-server image is intentionally not published to GHCR (OSS skip);
+          # the source lives under llm/benchmark for local use, and benchmark-server.yaml
+          # CI still tests the code. Re-add this line if/when publishing resumes.
           - { image: ml-k8s-server,           context: ml-k8s-server,                                    platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
     steps:
       # Move Docker's data-root to /mnt (~80 GB free) so large image
@@ -197,7 +199,7 @@ jobs:
           - { image: workflow-server,         archs: "amd64 arm64" }
           - { image: llm-server,              archs: "amd64" }
           - { image: rag-server,              archs: "amd64" }
-          - { image: benchmark-server,        archs: "amd64" }
+          # benchmark-server intentionally not published to GHCR (see build matrix above).
           - { image: ml-k8s-server,           archs: "amd64" }
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
@@ -280,7 +282,6 @@ jobs:
             "ticket-server:ticket-server"
             "llm-server:llm-server"
             "rag-server:rag-server"
-            "benchmark-server:benchmark-server"
             "ml-k8s-server:ml-k8s-server"
             "notifications:notifications"
             "k8s-collector:k8s-collector"
@@ -340,7 +341,7 @@ jobs:
 
           first_party=(
             services-server migrations app ticket-server
-            llm-server rag-server benchmark-server ml-k8s-server
+            llm-server rag-server ml-k8s-server
             notifications k8s-collector cloud-collector-server
             relay-server workflow-server
           )
@@ -431,7 +432,7 @@ jobs:
           mkdir -p dist/subcharts
           subcharts=(
             services-server migrations app ticket-server
-            llm-server rag-server benchmark-server ml-k8s-server
+            llm-server rag-server ml-k8s-server
             notifications k8s-collector cloud-collector-server
             relay-server workflow-server
           )
