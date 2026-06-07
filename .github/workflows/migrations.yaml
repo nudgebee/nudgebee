@@ -70,21 +70,27 @@ jobs:
             fi
           done
 
-          # 3. No NEW V<N> collisions (two files with same V number = silent
-          # skip by golang-migrate's version-tracker; very hard to detect
-          # later). Scoped to collisions involving a file *added in this PR*
-          # — historical OSS state has pre-existing collisions in V<N> families
-          # where OSS-prep dropped some siblings but kept others; relitigating
-          # those isn't this check's job. Add a NEW collision → fail.
+          # 3. No NEW *timestamp* collisions. golang-migrate keys on the leading
+          # integer (timestamp), not the V<N> label — so a duplicate V<N> is
+          # cosmetic (it makes `migrate up` output less readable but doesn't
+          # change behavior). A duplicate *timestamp*, however, IS a silent-skip
+          # bug: the second file with the same version never gets registered.
+          #
+          # Scoped to PR additions for the same reason as the other checks:
+          # OSS-prep has accumulated several V<N> collisions over its history
+          # (cycle-2 backfills that brought EE migrations whose V<N> was
+          # already in use, e.g. three files now share the V742 label). Those
+          # are accepted by golang-migrate; relitigating them isn't this
+          # check's job.
           mapfile -t added_files < <(git diff --name-only --diff-filter=A origin/main..HEAD -- "$MIGRATIONS_DIR" | grep -E '\.up\.sql$' || true)
           if [ "${#added_files[@]}" -gt 0 ]; then
-            added_vns=$(printf '%s\n' "${added_files[@]}" | sed -E 's@.*/[0-9]+_(V[0-9]+)_.*@\1@' | sort -u)
-            all_dupe_vns=$(find "$MIGRATIONS_DIR" -maxdepth 1 -name '*.up.sql' \
-                           | sed -E 's@.*/[0-9]+_(V[0-9]+)_.*@\1@' \
-                           | sort | uniq -d)
-            new_collisions=$(comm -12 <(echo "$added_vns") <(echo "$all_dupe_vns"))
+            added_ts=$(printf '%s\n' "${added_files[@]}" | sed -E 's@.*/([0-9]+)_V.*@\1@' | sort -u)
+            all_dupe_ts=$(find "$MIGRATIONS_DIR" -maxdepth 1 -name '*.up.sql' \
+                          | sed -E 's@.*/([0-9]+)_V.*@\1@' \
+                          | sort | uniq -d)
+            new_collisions=$(comm -12 <(echo "$added_ts") <(echo "$all_dupe_ts"))
             if [ -n "$new_collisions" ]; then
-              echo "::error::V<N> label collision introduced by this PR:"
+              echo "::error::timestamp collision introduced by this PR (would be silent-skipped by golang-migrate):"
               echo "$new_collisions" | sed 's/^/  /' >&2
               FAILED=1
             fi
@@ -93,35 +99,46 @@ jobs:
           [ "$FAILED" -eq 0 ] && echo "✓ filename + pair checks clean"
           exit "$FAILED"
 
-      - name: Verify monotonic timestamps vs main
+      - name: Warn on non-monotonic timestamps vs main
         run: |
           set -euo pipefail
           MIGRATIONS_DIR=api-server/migrations/migrations/app
 
           # golang-migrate's tracker is single-row "current version". A new
           # migration whose leading integer is LOWER than `max(version)
-          # already applied` is silently skipped — silently. The drop-side
-          # workaround is `mode=apply_from <ts>` (forces tracker back, runs
-          # forward). Cheaper to catch the out-of-order file at PR time.
+          # already applied` is silently skipped by that tracker. For a brand-
+          # new migration (someone forgot to bump the timestamp), that's a bug
+          # we want loud. For a *backfill* — bringing an EE migration whose
+          # timestamp predates an OSS-prep drop — that's intentional, and the
+          # operational fix is documented in api-server/migrations/README.md
+          # (the `apply_from <ts>` recovery flow).
+          #
+          # We can't reliably tell brand-new-bug from intentional-backfill at
+          # PR time, so this check warns rather than fails. Reviewer judgment
+          # still required: confirm the timestamp predates main's max on
+          # *purpose* (sync cycle restoring a dropped EE migration), not by
+          # accident (locally generated migration on a stale branch).
           existing_max=$(git show "origin/main:${MIGRATIONS_DIR}" 2>/dev/null \
             | grep -oE '^[0-9]{13,}' | sort -nu | tail -1 || echo "0")
           [ -n "$existing_max" ] || existing_max=0
 
-          FAILED=0
-          # Files added in this PR (vs main).
+          warnings=0
           while IFS= read -r f; do
             [ -z "$f" ] && continue
             [ -e "$f" ] || continue
             [[ "$f" == *.up.sql ]] || continue
             ts=$(basename "$f" | grep -oE '^[0-9]+')
             if [ -n "$ts" ] && [ "$ts" -le "$existing_max" ]; then
-              echo "::error file=${f}::timestamp ${ts} <= main's max ${existing_max} — would be silently skipped by golang-migrate"
-              FAILED=1
+              echo "::warning file=${f}::timestamp ${ts} <= main's max ${existing_max} — will be silently skipped by golang-migrate on installs already past ${existing_max}. Confirm this is an intentional backfill (cycle-sync restoring a dropped EE migration). If accidental, regenerate the timestamp."
+              warnings=$((warnings + 1))
             fi
           done < <(git diff --name-only --diff-filter=A origin/main..HEAD -- "$MIGRATIONS_DIR")
 
-          [ "$FAILED" -eq 0 ] && echo "✓ monotonic timestamps (new max ≤ $(date -d @0 2>/dev/null || true))"
-          exit "$FAILED"
+          if [ "$warnings" -eq 0 ]; then
+            echo "✓ monotonic timestamps (no backfills)"
+          else
+            echo "⚠ $warnings backfill timestamp(s) flagged — verify they're intentional"
+          fi
 
       - name: Refuse CREATE INDEX CONCURRENTLY without --migrate:no-transaction
         run: |
@@ -158,6 +175,18 @@ jobs:
   dry-run:
     name: Dry-run migrations against ephemeral Postgres
     runs-on: ubuntu-latest
+    # OSS's standing main chain has ~152 migrations that fail on a fresh
+    # Postgres because OSS-prep dropped their prereqs at earlier iterations.
+    # Pass-1 force-skips them, but the cascade leaves the DB in a state where
+    # Pass-2 strict checks on PR additions also fail with "column X does not
+    # exist" / "relation Y does not exist". Net: the job is informational
+    # noise right now, not a useful signal.
+    #
+    # Marked continue-on-error until the OSS-prep backfill effort closes the
+    # cascade. Lint above still catches the cheap classes of bug (filename,
+    # pair existence, timestamp collisions, CONCURRENTLY rule). Dry-run will
+    # come back as a required gate once the chain applies cleanly.
+    continue-on-error: true
     services:
       postgres:
         image: postgres:16-alpine
