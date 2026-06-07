@@ -175,24 +175,23 @@ jobs:
   dry-run:
     name: Dry-run migrations against ephemeral Postgres
     runs-on: ubuntu-latest
-    # OSS's standing main chain has ~152 migrations that fail on a fresh
-    # Postgres because OSS-prep dropped their prereqs at earlier iterations.
-    # Pass-1 force-skips them, but the cascade leaves the DB in a state where
-    # Pass-2 strict checks on PR additions also fail with "column X does not
-    # exist" / "relation Y does not exist". Net: the job is informational
-    # noise right now, not a useful signal.
-    #
-    # Marked continue-on-error until the OSS-prep backfill effort closes the
-    # cascade. Lint above still catches the cheap classes of bug (filename,
-    # pair existence, timestamp collisions, CONCURRENTLY rule). Dry-run will
-    # come back as a required gate once the chain applies cleanly.
-    continue-on-error: true
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16
         env:
-          POSTGRES_USER: nudgebee
-          POSTGRES_PASSWORD: nudgebee
+          # User MUST be 'postgres' (not 'nudgebee') to match production.
+          # Reason: V173/V174 mix qualified DROPs (`"public"."matview"`) with
+          # unqualified CREATEs (`create materialized view matview`). The
+          # default search_path is `"$user", public`. If a schema named
+          # `$user` exists (which 'nudgebee' does, because we create it for
+          # the migration tracker), unqualified CREATEs land in `nudgebee`,
+          # then qualified DROPs look in `public` and fail.
+          # Production runs as `postgres` user with no `postgres` schema, so
+          # search_path resolves to public only and the pattern works.
+          # See the comment in api-server/migrations/run-migrations.sh
+          # mentioning V174's "qualified-vs-unqualified DROP/CREATE pair".
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
           POSTGRES_DB: nudgebee_test
         ports: ['5432:5432']
         options: >-
@@ -202,7 +201,7 @@ jobs:
           --health-retries 10
     env:
       # Matches the URL shape that run-migrations.sh consumes in production.
-      APP_DATABASE_URL: postgres://nudgebee:nudgebee@localhost:5432/nudgebee_test?sslmode=disable
+      APP_DATABASE_URL: postgres://postgres:postgres@localhost:5432/nudgebee_test?sslmode=disable
       GOLANG_MIGRATE_VERSION: v4.17.0
     steps:
       - uses: actions/checkout@v4
@@ -232,50 +231,15 @@ jobs:
         run: |
           psql "$APP_DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS nudgebee;"
 
-      - name: migrate up (tolerant on main's chain, strict on PR additions)
+      - name: migrate up
         run: |
           set -euo pipefail
-          # Same URL shape as run-migrations.sh — tracker in nudgebee schema,
-          # quoted-table feature on.
+          # Single `migrate up`, same as production's run-migrations.sh.
+          # Service-container user/schema setup (POSTGRES_USER=postgres) is what
+          # makes V173/V174's qualified-DROP + unqualified-CREATE pattern apply
+          # cleanly — see the comment on the service container above.
           MIGRATE_URL="${APP_DATABASE_URL}&x-migrations-table=%22nudgebee%22.%22schema_migrations%22&x-migrations-table-quoted=true"
-          MIGRATIONS_DIR=api-server/migrations/migrations/app
-
-          # Need main for diffing.
-          git fetch --no-tags --depth=1 origin main 2>/dev/null || true
-
-          # The highest timestamp present on origin/main — everything above
-          # that came from this PR.
-          MAIN_MAX_TS=$(git show origin/main:"$MIGRATIONS_DIR" 2>/dev/null \
-            | grep -oE '^[0-9]{13,}' | sort -nu | tail -1 || echo "0")
-          echo "main's max migration timestamp: $MAIN_MAX_TS"
-
-          # Pass 1 — apply main's chain best-effort. OSS-prep dropped some
-          # migrations leaving pre-existing failures on a fresh DB (e.g. views
-          # whose creator-migration was removed). We accept those: log, force
-          # the tracker past them, continue. Goal here is to get the DB into
-          # the closest-to-main state possible so the PR's additions can be
-          # tested against a realistic base.
-          tolerated_failures=0
-          while IFS= read -r f; do
-            ts=$(basename "$f" | grep -oE '^[0-9]+')
-            [ -z "$ts" ] && continue
-            if [ "$ts" -gt "$MAIN_MAX_TS" ]; then
-              # PR-added — handled in pass 2.
-              continue
-            fi
-            if migrate -path "$MIGRATIONS_DIR" -database "$MIGRATE_URL" goto "$ts" 2>/dev/null; then
-              :
-            else
-              echo "::warning file=${f}::pre-existing main migration failed on fresh DB; force-advancing tracker"
-              migrate -path "$MIGRATIONS_DIR" -database "$MIGRATE_URL" force "$ts"
-              tolerated_failures=$((tolerated_failures + 1))
-            fi
-          done < <(find "$MIGRATIONS_DIR" -maxdepth 1 -name '*.up.sql' | sort)
-          echo "main chain applied (tolerated $tolerated_failures pre-existing failures)"
-
-          # Pass 2 — apply PR additions strictly. These are the regressions
-          # we care about; any error here fails the build.
-          migrate -path "$MIGRATIONS_DIR" -database "$MIGRATE_URL" up
+          migrate -path api-server/migrations/migrations/app -database "$MIGRATE_URL" up
 
       - name: Show applied tracker state
         run: |
