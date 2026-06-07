@@ -790,7 +790,7 @@ func UpdateResolutionStatus(ctx *security.RequestContext) error {
 	}
 
 	// Open recommendations that are in progress and have failed resolutions
-	_, err = dbms.Db.Exec(fmt.Sprintf("update recommendation set status = '%s' where status = '%s' and id in (select recommendation_id from recommendation_resolution where status = '%s')", models.RecommendationStatusOpen, models.RecommendationStatusInProgress, models.RecommendationResolutionStatusFailed))
+	_, err = dbms.Db.Exec("update recommendation set status = $1 where status = $2 and id in (select recommendation_id from recommendation_resolution where status = $3)", models.RecommendationStatusOpen, models.RecommendationStatusInProgress, models.RecommendationResolutionStatusFailed)
 	if err != nil {
 		ctx.GetLogger().Error("error updating recommendation status", "error", err)
 	}

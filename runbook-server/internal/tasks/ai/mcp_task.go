@@ -13,6 +13,7 @@ import (
 	"nudgebee/runbook/services/relay"
 
 	"nudgebee/runbook/internal/tasks/integrations"
+	"nudgebee/runbook/internal/tasks/safehttp"
 	"nudgebee/runbook/internal/tasks/types"
 	"strings"
 	"time"
@@ -267,6 +268,12 @@ func (t *MCPTask) Execute(taskCtx types.TaskContext, params map[string]any) (any
 		return nil, fmt.Errorf("url is required (or provide integration_id)")
 	}
 
+	// SSRF defense: reject MCP URLs that resolve to internal IPs (loopback,
+	// RFC1918, link-local). DialContext below provides DNS-rebinding defense.
+	if err := safehttp.ValidateURL(urlStr); err != nil {
+		return nil, fmt.Errorf("url failed safety validation: %w", err)
+	}
+
 	toolName, ok := params["tool_name"].(string)
 	if !ok || toolName == "" {
 		return nil, fmt.Errorf("tool_name is required")
@@ -318,8 +325,14 @@ func (t *MCPTask) Execute(taskCtx types.TaskContext, params map[string]any) (any
 		timeout = remaining
 	}
 
+	// DialContext closes the DNS rebinding window between ValidateURL above and
+	// the actual TCP dial. CheckRedirect validates each redirect target.
 	client := &http.Client{
 		Timeout: timeout,
+		Transport: &http.Transport{
+			DialContext: safehttp.NewSafeDialContext(timeout),
+		},
+		CheckRedirect: safehttp.SafeCheckRedirect,
 	}
 
 	// Session state

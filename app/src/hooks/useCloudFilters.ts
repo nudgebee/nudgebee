@@ -24,7 +24,7 @@ const useCloudFilter = (accountId: string) => {
   };
 };
 
-const useEventCloudFilter = (accountId: string | string[], data: any = {}) => {
+const useEventCloudFilter = (accountId: string | string[], data: any = {}, timeRange?: { startTime?: string; endTime?: string }) => {
   const [serviceNamesFilter, setServiceNamesFilter] = useState([]);
   const [severityFilterType] = useState(RECOMMENDATION_SERVERITY);
   const [eventNamesFilter, setEventNamesFilter] = useState([]);
@@ -71,7 +71,11 @@ const useEventCloudFilter = (accountId: string | string[], data: any = {}) => {
     }
 
     setIsOptionsLoading((prev) => ({ ...prev, namespace: true, aggregationKey: true, source: true }));
-    Promise.all(accountIds.map((id) => k8sApi.getEventFilterValues({ accountId: id, filterTypes })))
+    Promise.all(
+      accountIds.map((id) =>
+        k8sApi.getEventFilterValues({ accountId: id, filterTypes, startTime: timeRange?.startTime, endTime: timeRange?.endTime })
+      )
+    )
       .then((responses: any[]) => {
         const valueMap = new Map<string, Set<string>>();
         responses.forEach((res) => {
@@ -95,7 +99,7 @@ const useEventCloudFilter = (accountId: string | string[], data: any = {}) => {
       .finally(() => {
         setIsOptionsLoading((prev) => ({ ...prev, namespace: false, aggregationKey: false, source: false }));
       });
-  }, [accountId]);
+  }, [accountId, timeRange?.startTime, timeRange?.endTime]);
 
   return {
     serviceNamesFilter,
@@ -111,7 +115,7 @@ const useEventCloudFilter = (accountId: string | string[], data: any = {}) => {
   };
 };
 
-const useMetricCloudFilter = (accountId: string, data: any = {}) => {
+const useMetricCloudFilter = (accountId: string, data: any = {}, timeRange?: { startTime?: string; endTime?: string }) => {
   const [serviceNamesFilter, setServiceNamesFilter] = useState([]);
   const [severityFilterType] = useState(RECOMMENDATION_SERVERITY);
   const [eventNamesFilter, setEventNamesFilter] = useState([]);
@@ -145,7 +149,7 @@ const useMetricCloudFilter = (accountId: string, data: any = {}) => {
 
     setIsOptionsLoading((prev) => ({ ...prev, namespace: true, aggregationKey: true, source: true }));
     k8sApi
-      .getEventFilterValues({ accountId, filterTypes })
+      .getEventFilterValues({ accountId, filterTypes, startTime: timeRange?.startTime, endTime: timeRange?.endTime })
       .then((res: any) => {
         const filters = res?.data?.filters || [];
 
@@ -171,7 +175,7 @@ const useMetricCloudFilter = (accountId: string, data: any = {}) => {
       .finally(() => {
         setIsOptionsLoading((prev) => ({ ...prev, namespace: false, aggregationKey: false, source: false }));
       });
-  }, [accountId]);
+  }, [accountId, timeRange?.startTime, timeRange?.endTime]);
 
   return {
     serviceNamesFilter,

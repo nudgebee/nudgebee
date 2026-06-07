@@ -284,6 +284,27 @@ func handleCloudApplyCommand(actionPayload *ActionRequest, c *gin.Context, ctx *
 		return
 	}
 
+	if request.AccountId == "" {
+		c.JSON(400, []common.Error{
+			{
+				Message: "account_id is required",
+			},
+		})
+		return
+	}
+
+	// Gate on access to the target account. tenant_admin passes for any
+	// account in the tenant; account_admin only for its assigned accounts.
+	// Required because callers now include account_admin (actions.yaml).
+	if !ctx.GetSecurityContext().HasAccountAccess(request.AccountId, security.SecurityAccessTypeUpdate) {
+		c.JSON(403, []common.Error{
+			{
+				Message: "access denied for account: " + request.AccountId,
+			},
+		})
+		return
+	}
+
 	// Get database manager
 	databaseManager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {

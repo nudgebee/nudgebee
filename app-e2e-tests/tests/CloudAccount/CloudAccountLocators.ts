@@ -1,6 +1,6 @@
 import { Page, Locator, test } from "@playwright/test";
 import { CommonLocators } from "../GlobalLocators";
-import axios from "axios";
+import { checkIntegrationWithCache } from "../utils/IntegrationStatusCache";
 
 export class CloudAccountLocators extends CommonLocators {
   // Sidenav
@@ -111,7 +111,7 @@ export class CloudAccountLocators extends CommonLocators {
     this.CloudStorageEvents = page.locator("#dropdown-events");
 
     // Services drilldown tabs (expand arrow + tab buttons inside the collapsed row)
-    this.ServicesRowExpandButton = page.locator('img[alt="arrow"]').first();
+    this.ServicesRowExpandButton = page.getByRole("button", { name: "Expand row" }).first();
     this.ServicesDrilldownTabResources = page.getByRole("tab", { name: "Resources" });
     this.ServicesDrilldownTabCostTrend = page.getByRole("tab", { name: "Cost Trend" });
     this.ServicesDrilldownTabRecommendations = page.getByRole("tab", { name: "Recommendations" });
@@ -121,7 +121,7 @@ export class CloudAccountLocators extends CommonLocators {
   getResourceRowExpandButton() {
     return this.page
       .locator("#service-resource-listing-table")
-      .locator('img[alt="arrow"]')
+      .getByRole("button", { name: "Expand row" })
       .first();
   }
 
@@ -133,63 +133,38 @@ export class CloudAccountLocators extends CommonLocators {
   async checkGCPIntegration(): Promise<boolean> {
     console.log("Checking GCP integration status via Admin > Integrations...");
 
-    // Open Admin section
     await this.adminBtn.click();
+
+    const navigated = await this.page.waitForURL(/user-management/, { timeout: 15000 })
+      .then(() => true)
+      .catch(() => false);
+
+    if (!navigated) {
+      console.log("Admin nav click did not navigate — falling back to direct URL");
+      await this.page.goto("/user-management");
+    }
+
     await this.page.waitForLoadState("networkidle");
 
-    // Click the Integrations anchor tab
     const integrationsTab = this.page.locator("#anchor-tab-Integrations");
-    await integrationsTab.waitFor({ state: "visible", timeout: 10000 });
+    await integrationsTab.waitFor({ state: "visible", timeout: 20000 });
     await integrationsTab.click();
     await this.page.waitForLoadState("networkidle");
 
-    // The GCP AccountCard (id="Gcp-section-card") shows "Active" text only
-    // when at least one GCP cloud account has status="active" — exactly what
-    // integration.jsx's generateSectionData / AccountCard renders.
     const gcpCard = this.page.locator("#Gcp-section-card");
     await gcpCard.waitFor({ state: "visible", timeout: 10000 });
 
-    const isActive = await gcpCard
-      .getByText("Active", { exact: true })
-      .isVisible({ timeout: 5000 })
-      .catch(() => false);
+    const cardText = await gcpCard.innerText().catch(() => "");
+    const isActive = /\bActive\s+[1-9]\d*/i.test(cardText);
 
     console.log(`GCP integration status: ${isActive ? "Active ✅" : "Not Active ❌"}`);
     return isActive;
   }
 
-  // ── Slack Notification ────────────────────────────────────────────────────
-  async sendSlackNotification(message: string): Promise<void> {
-    const webhookUrl = process.env.SLACK_WEBHOOK_URL;
-    if (!webhookUrl) {
-      console.warn("[CloudAccountLocators] SLACK_WEBHOOK_URL not set, skipping notification");
-      return;
-    }
-    try {
-      await axios.post(webhookUrl, { text: message });
-      console.log(`[CloudAccountLocators] Slack notification sent: ${message}`);
-    } catch (error) {
-      console.warn(`[CloudAccountLocators] Failed to send Slack notification: ${error}`);
-    }
-  }
-
-  // ── GCP Cloud Account Navigation (with integration pre-check) ─────────────
-  // 1. Checks GCP integration via Admin → Integrations UI.
-  // 2. If not Active: sends Slack message and skips the test.
-  // 3. If Active: clicks Cloud sidenav — /cloud-account auto-redirects to
-  //    /cloud-account/details/{first active cloud account}.
-  // 4. Types "iteration-gcp" in autocomplete to select the GCP cloud account.
-  //    - If already on GCP account (same ID): Header Case 4 is a no-op but
-  //      waitForURL resolves immediately since the URL already matches.
-  //    - If on a different cloud account: Header Case 4 navigates to GCP.
   async openGCPCloudAccountFromConfig() {
-    // 1. UI-based GCP integration check via Admin → Integrations
-    const isActive = await this.checkGCPIntegration();
+    const isActive = await checkIntegrationWithCache("gcp", () => this.checkGCPIntegration());
 
     if (!isActive) {
-      await this.sendSlackNotification(
-        "Please integrate GCP first, then I will start the testing."
-      );
       test.skip(true, "GCP integration is not Active — Slack notification sent");
       return;
     }

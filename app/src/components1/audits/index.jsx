@@ -141,7 +141,15 @@ export const AuditsTable = () => {
           <Text sx={{ color: 'inherit' }} value={displayName} showAutoEllipsis />
         </Link>
       );
+    } else if (item.event_category == 'AUTOMATION') {
+      return (
+        <Link href={`/workflow/${item.event_target}?accountId=${item.account_id}`}>
+          <Text sx={{ color: 'inherit' }} value={item.event_target} showAutoEllipsis />
+        </Link>
+      );
     } else if (item.event_category == 'AUTO_RUNBOOK') {
+      // Legacy category — historical rows from the auto-pilot Python service.
+      // New automation audits use the 'AUTOMATION' branch above.
       return (
         <Link href={`/auto-pilot/auto-playbook/task/${item.event_target}?accountId=${item.account_id}`}>
           <Text sx={{ color: 'inherit' }} value={item.event_target} showAutoEllipsis />

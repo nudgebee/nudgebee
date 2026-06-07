@@ -150,18 +150,26 @@ const KnowledgeBaseCard = ({ knowledgeBase, onEdit, onDelete, onRetrigger, onVie
               </Typography>
             </Box>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space.mul(0, 3), flexShrink: 0 }}>
-              <Label
-                text={knowledgeBase.status}
-                tone={
-                  knowledgeBase.status === 'active'
-                    ? 'success'
-                    : knowledgeBase.status === 'processing'
-                    ? 'warning'
-                    : knowledgeBase.status === 'error'
-                    ? 'critical'
-                    : 'neutral'
-                }
-              />
+              {knowledgeBase.status === 'error' && knowledgeBase.error_message ? (
+                <Tooltip title={knowledgeBase.error_message} placement='top'>
+                  <Box component='span' sx={{ display: 'inline-flex', cursor: 'help' }}>
+                    <Label text={knowledgeBase.status} tone='critical' />
+                  </Box>
+                </Tooltip>
+              ) : (
+                <Label
+                  text={knowledgeBase.status}
+                  tone={
+                    knowledgeBase.status === 'active'
+                      ? 'success'
+                      : knowledgeBase.status === 'processing'
+                      ? 'warning'
+                      : knowledgeBase.status === 'error'
+                      ? 'critical'
+                      : 'neutral'
+                  }
+                />
+              )}
               {hasAccess && knowledgeBase.kb_type === 'manual' && (
                 <Button
                   tone='ghost'
@@ -268,6 +276,30 @@ const KnowledgeBaseCard = ({ knowledgeBase, onEdit, onDelete, onRetrigger, onVie
               </Box>
             );
           })()}
+
+          {/* Failure reason — keep the *why* visible on the card (and after an
+              edit) so users don't have to open Load History to diagnose. */}
+          {knowledgeBase.status === 'error' && knowledgeBase.error_message && (
+            <Alert
+              severity='error'
+              sx={{
+                mt: ds.space[2],
+                py: 0,
+                px: ds.space[2],
+                fontSize: 'var(--ds-text-small)',
+                alignItems: 'center',
+                '& .MuiAlert-message': {
+                  display: '-webkit-box',
+                  WebkitLineClamp: 3,
+                  WebkitBoxOrient: 'vertical',
+                  overflow: 'hidden',
+                  wordBreak: 'break-word',
+                },
+              }}
+            >
+              {knowledgeBase.error_message}
+            </Alert>
+          )}
         </Box>
         {/* Footer: Updated (primary) + Created (secondary) */}
         <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mt: ds.space[4], width: '100%' }}>

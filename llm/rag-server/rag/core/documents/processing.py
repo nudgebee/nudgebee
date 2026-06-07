@@ -40,12 +40,18 @@ def _get_kb_engine():
     return _kb_engine
 
 
-def update_kb_load_result(knowledgebase_id: str, status: str, document_count: Optional[int] = None) -> None:
+def update_kb_load_result(
+    knowledgebase_id: str,
+    status: str,
+    document_count: Optional[int] = None,
+    error_message: Optional[str] = None,
+) -> None:
     """Record a load's outcome on a single llm_knowledgebases row (by id).
 
     On success the caller passes the final document_count — status flips to
-    'active' and last_loaded_at is bumped. On failure document_count is None
-    and only the status (→ 'error') changes. Used for manual KBs.
+    'active', last_loaded_at is bumped, and error_message is cleared. On failure
+    document_count is None, status → 'error', and error_message holds the reason
+    so the UI can show *why*. Used for manual KBs.
     """
     try:
         engine = _get_kb_engine()
@@ -56,28 +62,35 @@ def update_kb_load_result(knowledgebase_id: str, status: str, document_count: Op
                         sql_text(
                             "UPDATE llm_knowledgebases SET status = :status, "
                             "document_count = :doc_count, last_loaded_at = NOW(), "
-                            "updated_at = NOW() WHERE id = :kb_id"
+                            "error_message = NULL, updated_at = NOW() WHERE id = :kb_id"
                         ),
                         {"status": status, "doc_count": document_count, "kb_id": knowledgebase_id},
                     )
                 else:
                     connection.execute(
                         sql_text(
-                            "UPDATE llm_knowledgebases SET status = :status, " "updated_at = NOW() WHERE id = :kb_id"
+                            "UPDATE llm_knowledgebases SET status = :status, "
+                            "error_message = :error_message, updated_at = NOW() WHERE id = :kb_id"
                         ),
-                        {"status": status, "kb_id": knowledgebase_id},
+                        {"status": status, "error_message": error_message, "kb_id": knowledgebase_id},
                     )
         logger.info(f"[KB] Load result for KB {knowledgebase_id}: status={status}, document_count={document_count}")
     except Exception as e:
         logger.error(f"[KB] Failed to update load result for KB {knowledgebase_id}: {e}")
 
 
-def update_integration_kb_load_result(integration_id: str, status: str, document_count: Optional[int] = None) -> None:
+def update_integration_kb_load_result(
+    integration_id: str,
+    status: str,
+    document_count: Optional[int] = None,
+    error_message: Optional[str] = None,
+) -> None:
     """Record a load's outcome on every integration KB row for an integration.
 
     An integration can have one KB row per cloud account in its tenant, all
     backed by the same vector collection — so the update keys on integration_id
-    rather than a single KB id.
+    rather than a single KB id. On failure error_message holds the reason; on
+    success it is cleared.
     """
     try:
         engine = _get_kb_engine()
@@ -88,7 +101,8 @@ def update_integration_kb_load_result(integration_id: str, status: str, document
                         sql_text(
                             "UPDATE llm_knowledgebases SET status = :status, "
                             "document_count = :doc_count, last_loaded_at = NOW(), "
-                            "updated_at = NOW() WHERE integration_id = :iid AND kb_type = 'integration'"
+                            "error_message = NULL, updated_at = NOW() "
+                            "WHERE integration_id = :iid AND kb_type = 'integration'"
                         ),
                         {"status": status, "doc_count": document_count, "iid": integration_id},
                     )
@@ -96,9 +110,10 @@ def update_integration_kb_load_result(integration_id: str, status: str, document
                     connection.execute(
                         sql_text(
                             "UPDATE llm_knowledgebases SET status = :status, "
-                            "updated_at = NOW() WHERE integration_id = :iid AND kb_type = 'integration'"
+                            "error_message = :error_message, updated_at = NOW() "
+                            "WHERE integration_id = :iid AND kb_type = 'integration'"
                         ),
-                        {"status": status, "iid": integration_id},
+                        {"status": status, "error_message": error_message, "iid": integration_id},
                     )
         logger.info(
             f"[KB] Load result for integration {integration_id}: status={status}, document_count={document_count}"
@@ -521,13 +536,13 @@ def process_documents(
         logger.error(f"Error running event loop: {e}")
         tracker.persist(status="failure", error_message=str(e))
         if knowledgebase_id:
-            update_kb_load_result(knowledgebase_id, "error")
+            update_kb_load_result(knowledgebase_id, "error", error_message=str(e))
         return collection_name, []
     except Exception as e:
         logger.error(f"Unexpected error during document processing: {str(e)}")
         tracker.persist(status="failure", error_message=str(e))
         if knowledgebase_id:
-            update_kb_load_result(knowledgebase_id, "error")
+            update_kb_load_result(knowledgebase_id, "error", error_message=str(e))
         return collection_name, []
 
     # Persist all tracked records

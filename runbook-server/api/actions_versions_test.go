@@ -233,7 +233,7 @@ func (s *ActionsVersionsHandlerTestSuite) TestPublishVersionAction() {
 	name := "rel-x"
 	desc := "first"
 	v := &model.WorkflowVersion{ID: "v-2", WorkflowID: "wf-1", VersionNumber: 2, Source: model.WorkflowVersionSourcePublish, Name: &name, Description: &desc, IsLive: true}
-	s.workflowService.On("PublishWorkflow", mock.Anything, "test-account", "wf-1", &name, &desc, true).Return(v, nil)
+	s.workflowService.On("PublishWorkflow", mock.Anything, "test-account", "wf-1", &name, &desc, true, model.WorkflowStatus("")).Return(v, nil)
 
 	w, req := s.makeActionRequest("workflows_create_version", map[string]any{
 		"account_id":  "test-account",
@@ -251,7 +251,7 @@ func (s *ActionsVersionsHandlerTestSuite) TestPublishVersionActionDefaultsSetLiv
 	t := s.T()
 
 	v := &model.WorkflowVersion{ID: "v-2", WorkflowID: "wf-1", VersionNumber: 2, Source: model.WorkflowVersionSourcePublish, IsLive: true}
-	s.workflowService.On("PublishWorkflow", mock.Anything, "test-account", "wf-1", (*string)(nil), (*string)(nil), true).Return(v, nil)
+	s.workflowService.On("PublishWorkflow", mock.Anything, "test-account", "wf-1", (*string)(nil), (*string)(nil), true, model.WorkflowStatus("")).Return(v, nil)
 
 	w, req := s.makeActionRequest("workflows_create_version", map[string]any{
 		"account_id": "test-account",

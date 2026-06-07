@@ -396,34 +396,60 @@ func processImageScanner(ctx *security.RequestContext, accountId string, dbms *d
 		return nil
 	}
 
+	// Close the first result set before reassigning `rows`: the deferred close
+	// above captures `rows` by reference, so without this the first result set
+	// would leak when the enable-scan loop breaks early.
+	_ = rows.Close()
+
+	// Anti-join against already-scanned images. The previous form materialised
+	// every image_scan recommendation row for the account (~427k for the largest
+	// tenant) into an `excluded_images` CTE and then `NOT IN`-ed against it,
+	// forcing a full seq scan of the 7GB recommendation table per run (~85s).
+	//
+	// Instead: collapse the running container images to a small distinct set in a
+	// MATERIALIZED CTE first (the MATERIALIZED is load-bearing — it gives the
+	// planner a concrete small row count instead of jsonb_array_elements' default
+	// 100-rows-per-pod estimate, which is what previously pushed it toward
+	// hash/merge anti-joins that scan all of recommendation). Then a per-image
+	// NOT EXISTS rides idx_recommendation_security_account_image_name
+	// (cloud_account_id, tenant_id, recommendation->>'image_name') as a 3-column
+	// nested-loop index probe, and LIMIT 5 short-circuits after the first few
+	// unscanned images. tenant_id is carried from the pod row (cloud_account_id
+	// maps to a single tenant, so it drops no valid match). ~85s -> ~0.1s.
 	rows, err = dbms.Db.Queryx(`
-		WITH excluded_images AS (
-			SELECT r.recommendation->>'image_name'::text AS image_name
-			FROM recommendation r
-			WHERE r.cloud_account_id = $1
-			  AND r.category = 'Security' AND r.rule_name = 'image_scan'
-			  AND r.account_object_id IS NOT NULL
-			UNION
-			SELECT at2.payload->'action_params'->>'image_name'
+		WITH running_images AS MATERIALIZED (
+			SELECT DISTINCT ON (container->>'image')
+				container->>'image' as image,
+				cr.cloud_account_id,
+				cr.tenant_id,
+				cr.name,
+				cr.meta->>'namespace' as namespace,
+				cr.workload_type as kind
+			FROM k8s_pods cr
+			CROSS JOIN LATERAL jsonb_array_elements(cr.meta->'config'->'containers') as container
+			WHERE cr.is_active IS NOT FALSE
+				AND cr.cloud_account_id = $1
+				AND cr.status = 'Running'
+				AND cr.meta->>'namespace' NOT IN ('kube-system', 'nudgebee-agent')
+				AND cr.workload_type != 'Job'
+		),
+		scanned_tasks AS (
+			SELECT at2.payload->'action_params'->>'image_name' AS image_name
 			FROM agent_task at2
 			WHERE at2.cloud_account_id = $1
 			  AND at2.payload->>'action_name' = 'image_scanner'
 		)
-		SELECT DISTINCT ON (container->>'image')
-			container->>'image' as image,
-			cr.cloud_account_id,
-			cr.tenant_id,
-			cr.name,
-			cr.meta->>'namespace' as namespace,
-			cr.workload_type as kind
-		FROM k8s_pods cr
-		CROSS JOIN LATERAL jsonb_array_elements(cr.meta->'config'->'containers') as container
-		WHERE cr.is_active IS NOT FALSE
-			AND cr.cloud_account_id = $1
-			AND cr.status = 'Running'
-			AND cr.meta->>'namespace' NOT IN ('kube-system', 'nudgebee-agent')
-			AND cr.workload_type != 'Job'
-			AND container->>'image' NOT IN (SELECT image_name FROM excluded_images WHERE image_name IS NOT NULL)
+		SELECT ri.image, ri.cloud_account_id, ri.tenant_id, ri.name, ri.namespace, ri.kind
+		FROM running_images ri
+		WHERE NOT EXISTS (
+				SELECT 1 FROM recommendation r
+				WHERE r.cloud_account_id = $1
+				  AND r.tenant_id = ri.tenant_id
+				  AND r.category = 'Security' AND r.rule_name = 'image_scan'
+				  AND r.account_object_id IS NOT NULL
+				  AND r.recommendation->>'image_name' = ri.image
+			)
+			AND ri.image NOT IN (SELECT image_name FROM scanned_tasks WHERE image_name IS NOT NULL)
 		LIMIT 5
 	`, accountId)
 
@@ -517,40 +543,50 @@ const imageScanMaxConcurrent = 2
 // crosses tenant boundaries must filter on tenant_id (or `tenant` for the
 // legacy agent_task table).
 func runImageScannerServerOrchestrated(ctx *security.RequestContext, accountId, tenantId string, dbms *database.DatabaseManager) error {
-	if tenantId == "" {
-		return fmt.Errorf("image_scanner: tenantId is required for scoping")
+	if tenantId == "" || accountId == "" {
+		return fmt.Errorf("image_scanner: tenantId and accountId are required for scoping")
 	}
+	// Same anti-join rewrite as processImageScanner (see the comment there):
+	// MATERIALIZED running_images collapses candidates to a small distinct set so
+	// the per-image NOT EXISTS rides idx_recommendation_security_account_image_name
+	// as a nested-loop 3-column index probe instead of seq scanning the whole
+	// recommendation table. Here tenant_id is an explicit parameter on every clause.
 	rows, err := dbms.Db.Queryx(`
-		WITH excluded_images AS (
-			SELECT r.recommendation->>'image_name'::text AS image_name
-			FROM recommendation r
-			WHERE r.cloud_account_id = $1
-			  AND r.tenant_id = $2
-			  AND r.category = 'Security' AND r.rule_name = 'image_scan'
-			  AND r.account_object_id IS NOT NULL
-			UNION
-			SELECT at2.payload->'action_params'->>'image_name'
+		WITH running_images AS MATERIALIZED (
+			SELECT DISTINCT ON (container->>'image')
+				container->>'image' as image,
+				cr.cloud_account_id,
+				cr.tenant_id,
+				cr.name,
+				cr.meta->>'namespace' as namespace,
+				cr.workload_type as kind
+			FROM k8s_pods cr
+			CROSS JOIN LATERAL jsonb_array_elements(cr.meta->'config'->'containers') as container
+			WHERE cr.is_active IS NOT FALSE
+				AND cr.cloud_account_id = $1
+				AND cr.tenant_id = $2
+				AND cr.status = 'Running'
+				AND cr.meta->>'namespace' NOT IN ('kube-system', 'nudgebee-agent')
+				AND cr.workload_type != 'Job'
+		),
+		scanned_tasks AS (
+			SELECT at2.payload->'action_params'->>'image_name' AS image_name
 			FROM agent_task at2
 			WHERE at2.cloud_account_id = $1
 			  AND at2.tenant = $2
 			  AND at2.payload->>'action_name' = 'image_scanner'
 		)
-		SELECT DISTINCT ON (container->>'image')
-			container->>'image' as image,
-			cr.cloud_account_id,
-			cr.tenant_id,
-			cr.name,
-			cr.meta->>'namespace' as namespace,
-			cr.workload_type as kind
-		FROM k8s_pods cr
-		CROSS JOIN LATERAL jsonb_array_elements(cr.meta->'config'->'containers') as container
-		WHERE cr.is_active IS NOT FALSE
-			AND cr.cloud_account_id = $1
-			AND cr.tenant_id = $2
-			AND cr.status = 'Running'
-			AND cr.meta->>'namespace' NOT IN ('kube-system', 'nudgebee-agent')
-			AND cr.workload_type != 'Job'
-			AND container->>'image' NOT IN (SELECT image_name FROM excluded_images WHERE image_name IS NOT NULL)
+		SELECT ri.image, ri.cloud_account_id, ri.tenant_id, ri.name, ri.namespace, ri.kind
+		FROM running_images ri
+		WHERE NOT EXISTS (
+				SELECT 1 FROM recommendation r
+				WHERE r.cloud_account_id = $1
+				  AND r.tenant_id = $2
+				  AND r.category = 'Security' AND r.rule_name = 'image_scan'
+				  AND r.account_object_id IS NOT NULL
+				  AND r.recommendation->>'image_name' = ri.image
+			)
+			AND ri.image NOT IN (SELECT image_name FROM scanned_tasks WHERE image_name IS NOT NULL)
 		LIMIT 5
 	`, accountId, tenantId)
 	if err != nil {

@@ -81,6 +81,8 @@ interface BaseButtonProps {
   tooltip?: React.ReactNode;
   /** Tooltip placement. Default 'top'. */
   tooltipPlacement?: ButtonTooltipPlacement;
+  /** Disable tooltip flip so it stays on the requested side and shifts instead. */
+  tooltipDisableFlip?: boolean;
   loading?: boolean;
   disabled?: boolean;
   fullWidth?: boolean;
@@ -220,6 +222,7 @@ export function Button({
   trailingAccent,
   tooltip,
   tooltipPlacement = 'top',
+  tooltipDisableFlip = false,
   loading = false,
   disabled = false,
   fullWidth = false,
@@ -392,7 +395,7 @@ export function Button({
   // doesn't fire MUI's hover events on its own).
   if (tooltip) {
     return (
-      <Tooltip title={tooltip} placement={tooltipPlacement}>
+      <Tooltip title={tooltip} placement={tooltipPlacement} disableFlip={tooltipDisableFlip}>
         <Box component='span' sx={{ display: 'inline-flex' }}>
           {buttonNode}
         </Box>

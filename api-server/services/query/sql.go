@@ -34,12 +34,39 @@ func getDialect(source database.DatabaseManagerType) sqlDialect {
 	return nil
 }
 
-// TODO
-// fix sql injection related issues
-// support for filtering on aggregates
-// support for joins for handling nested objects
-// refactor for better query generation using common interfaces instead of using if/else etc
-// more functions/expression support
+// SQL injection safety contract for this package
+// ------------------------------------------------
+// Every untrusted entry on a QueryRequest is gated before it can reach SQL:
+//
+//   - request.Table        — caller (service.go:ExecuteQuery) rejects the
+//                            request unless GetTableMetadata returns a hit.
+//   - request.Columns[]    — generateSelectColumnsClause errors if a name
+//                            isn't in tableDef.Columns (hardcoded schema).
+//   - request.GroupBy[]    — generateGroupClause errors if a name isn't in
+//                            tableDef.Columns.
+//   - request.OrderBy[]    — generateOrderByClause errors if Column isn't in
+//                            tableDef.Columns; Order is a closed enum switch
+//                            with default→error.
+//   - request.Where        — generateWhereClause errors if the Binary column
+//                            key isn't in tableDef.Columns; the operator
+//                            (BinaryWhereClauseType) is a closed enum switch
+//                            with default→error.
+//   - WHERE/HAVING values  — passed through dialect.QuoteLiteral for strings
+//                            (single-quote-escaped) or writeSafeValue for
+//                            typed numerics. *F operators route the value
+//                            back through the column-allowlist.
+//   - request.Limit/Offset — fmt.Fprintf("%d") on int — type-safe.
+//
+// Identifiers cannot be bound via $N placeholders in Postgres, so the
+// allowlist (tableDef.Columns + table-metadata registry) is the canonical
+// defense and must stay authoritative. See sql_security_test.go for
+// regression coverage of value-injection and identifier-allowlist paths.
+//
+// Outstanding non-security TODOs that previously lived here:
+//   - support for filtering on aggregates
+//   - support for joins for handling nested objects
+//   - refactor for better query generation using common interfaces
+//   - more functions/expression support
 
 func generateColumnExpression(columnDef ColumnDefinition, column QueryColumn, tableDef TableDefinition, accountId string, ctx *security.RequestContext) string {
 	dialect := getDialect(tableDef.Source)
@@ -124,7 +151,12 @@ func generateSelectColumnsClause(request QueryRequest, tableDef TableDefinition,
 	return selectBuilder.String(), nil
 }
 
-// TODO review for sql injection
+// generateWhereClauseColumn resolves a column reference for the WHERE/HAVING
+// clause. The `column` arg must already be a key of tableDef.Columns —
+// callers (generateWhereClause and the *F binary operators) validate this
+// before invoking, and this function re-checks at line entry. The returned
+// string is either columnDef.WhereDef, columnDef.Def, or the raw column
+// name, all sourced from the in-code TableDefinition (never user input).
 func generateWhereClauseColumn(column string, tableDef TableDefinition, isHavingArgs ...bool) (string, error) {
 	isHaving := len(isHavingArgs) > 0 && isHavingArgs[0]
 	columnDef, ok := tableDef.Columns[column]
@@ -176,7 +208,17 @@ func writeSafeValue(w *strings.Builder, v any, d sqlDialect) error {
 	return nil
 }
 
-// TODO review for sql injection
+// generateWhereClause builds the WHERE (or HAVING, when isHaving=true) SQL
+// fragment from a QueryWhereClause. Safety invariants enforced inline:
+//   - Binary column keys must be in tableDef.Columns (allowlist).
+//   - The operator (BinaryWhereClauseType) is dispatched via a closed switch;
+//     unknown operators return an error.
+//   - String values flow through dialect.QuoteLiteral (escapes single
+//     quotes); numeric/typed values flow through writeSafeValue.
+//   - *F operators (EqF, LtF, etc.) interpret the value as a column
+//     reference and re-validate it via generateWhereClauseColumn.
+//
+// See the package-level contract above for the full input-trust model.
 func generateWhereClause(whereClause QueryWhereClause, tableDef TableDefinition, isHavingArgs ...bool) (string, error) {
 	isHaving := len(isHavingArgs) > 0 && isHavingArgs[0]
 	dialect := getDialect(tableDef.Source)

@@ -30,8 +30,12 @@ func TestPauseResumeWorkflow_MissingSchedule(t *testing.T) {
 	sc := security.NewRequestContextForTenantAccountAdmin("test-tenant", "test-user", []string{"test-account"})
 	workflowID := "wf-no-schedule"
 
-	// Pause/Resume no longer load the workflow (the former DRAFT guard that
-	// needed it was removed); they operate directly on the schedule handles.
+	// Pause/Resume now route DB writes through applyStatusToLiveVersion which
+	// looks up the workflow to decide between UpdateVersionStatus (when a live
+	// version exists) and UpdateWorkflowStatus (legacy fallback). The fixtures
+	// here intentionally leave LiveVersionID nil so the fallback runs and the
+	// expected DB write is the legacy UpdateWorkflowStatus call.
+	wfNoLive := &model.Workflow{ID: workflowID, TenantID: "test-tenant", AccountID: "test-account"}
 
 	t.Run("PauseWorkflow updates DB only for non-scheduled workflow", func(t *testing.T) {
 		// Mock Legacy Schedule Check (Expect NotFound)
@@ -41,7 +45,8 @@ func TestPauseResumeWorkflow_MissingSchedule(t *testing.T) {
 		// The loop starts with index 0
 		mockTemporalClient.On("Describe", "workflow-schedule-"+workflowID+"-0").Return(nil, serviceerror.NewNotFound("schedule not found"))
 
-		// Expect DB update
+		// Expect lookup + DB update via the legacy fallback path.
+		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", workflowID).Return(wfNoLive, nil)
 		mockStore.On("UpdateWorkflowStatus", mock.Anything, "test-tenant", "test-account", workflowID, model.WorkflowStatusPaused).Return(nil)
 
 		err := service.PauseWorkflow(sc, "test-account", workflowID)
@@ -64,7 +69,8 @@ func TestPauseResumeWorkflow_MissingSchedule(t *testing.T) {
 		// Mock Indexed Schedule Check (Expect loop break on NotFound)
 		mockTemporalClient.On("Describe", "workflow-schedule-"+workflowID+"-0").Return(nil, serviceerror.NewNotFound("schedule not found"))
 
-		// Expect DB update
+		// Expect lookup + DB update via the legacy fallback path.
+		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", workflowID).Return(wfNoLive, nil)
 		mockStore.On("UpdateWorkflowStatus", mock.Anything, "test-tenant", "test-account", workflowID, model.WorkflowStatusActive).Return(nil)
 
 		err := service.ResumeWorkflow(sc, "test-account", workflowID)
@@ -103,7 +109,9 @@ func TestPauseResumeWorkflow_ScheduleExists(t *testing.T) {
 	}
 
 	t.Run("PauseWorkflow pauses schedule", func(t *testing.T) {
-		// Mock Store Find
+		// Mock Store Find — used both by the legacy guard and (now) by
+		// applyStatusToLiveVersion's branch on LiveVersionID. The fixture leaves
+		// LiveVersionID nil so the fallback UpdateWorkflowStatus path runs.
 		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", workflowID).Return(scheduleWf, nil)
 
 		// Mock Legacy Schedule Check (Found)
@@ -119,7 +127,7 @@ func TestPauseResumeWorkflow_ScheduleExists(t *testing.T) {
 		mockTemporalClient.On("Pause", scheduleID, mock.Anything).Return(nil)
 		mockTemporalClient.On("Pause", scheduleID+"-0", mock.Anything).Return(nil)
 
-		// Expect DB update
+		// Expect DB update via the legacy UpdateWorkflowStatus fallback path.
 		mockStore.On("UpdateWorkflowStatus", mock.Anything, "test-tenant", "test-account", workflowID, model.WorkflowStatusPaused).Return(nil)
 
 		err := service.PauseWorkflow(sc, "test-account", workflowID)
@@ -131,7 +139,7 @@ func TestPauseResumeWorkflow_ScheduleExists(t *testing.T) {
 		mockTemporalClient.ExpectedCalls = nil
 		mockStore.ExpectedCalls = nil
 
-		// Mock Store Find
+		// Mock Store Find — see comment above on applyStatusToLiveVersion routing.
 		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", workflowID).Return(scheduleWf, nil)
 
 		// Mock Legacy Schedule Check (Found)

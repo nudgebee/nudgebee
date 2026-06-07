@@ -1,6 +1,5 @@
 import { Typography, Box, Stack } from '@mui/material';
 import { Chip } from '@components1/ds/Chip';
-import Tooltip from '@components1/ds/Tooltip';
 import Datetime from '@common-new/format/Datetime';
 import Text from '@common-new/format/Text';
 import RefreshIcon from '@mui/icons-material/Refresh';
@@ -215,19 +214,18 @@ const AwsOrgDashboard = () => {
                   Regenerate Token
                 </Button>
               )}
-              <Tooltip title='Refresh status'>
-                <span>
-                  <Button
-                    tone='secondary'
-                    size='md'
-                    composition='icon-only'
-                    icon={<RefreshIcon fontSize='small' />}
-                    aria-label='Refresh status'
-                    onClick={fetchOrgStatus}
-                    data-testid='refresh-status-btn'
-                  />
-                </span>
-              </Tooltip>
+              <Button
+                tone='secondary'
+                size='md'
+                tooltip='Refresh status'
+                tooltipPlacement='top'
+                tooltipDisableFlip
+                composition='icon-only'
+                icon={<RefreshIcon fontSize='small' />}
+                aria-label='Refresh status'
+                onClick={fetchOrgStatus}
+                data-testid='refresh-status-btn'
+              />
             </Stack>
           }
         >

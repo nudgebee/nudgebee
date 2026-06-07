@@ -152,6 +152,43 @@ func extractResourceGroup(id string) (string, error) {
 	return "", fmt.Errorf("could not extract resource group from ID: %s", id)
 }
 
+// parseAzureResourceIDSegments splits an Azure ARM resource ID into a
+// case-insensitive lookup of segment-name → following-value.
+//
+// Azure resource IDs are case-insensitive, and the collector stores them
+// lowercased (account/etl_resources.go lowercases item.Id for Azure). So an
+// ApplyCommand resource ID arriving from the UI looks like
+// ".../resourcegroups/<rg>/providers/microsoft.sql/servers/<srv>/databases/<db>"
+// — matching segment keys case-sensitively (e.g. "resourceGroups",
+// "flexibleServers") silently fails, leaving an empty resource group / server
+// name. That surfaced to users as the "invalid resource ID" error when
+// pausing/stopping a database (issue #31091).
+//
+// Keys are lowercased; callers look up with lowercase names, e.g.
+// seg["resourcegroups"], seg["flexibleservers"], seg["databases"].
+func parseAzureResourceIDSegments(resourceID string) map[string]string {
+	// Azure resource IDs strictly alternate type/name (e.g.
+	// resourceGroups/<rg>/providers/<ns>/servers/<srv>/databases/<db>), so the
+	// type segments sit at even indices and their names at the following odd
+	// index. Drop empty segments (leading "/", doubled separators) first, then
+	// step by 2 keying only on the type segments. Mapping every segment to its
+	// successor instead would also insert names as keys — and a resource named
+	// like a well-known type (e.g. a resource group named "servers") would then
+	// clobber the real type's value.
+	rawParts := strings.Split(resourceID, "/")
+	parts := make([]string, 0, len(rawParts))
+	for _, part := range rawParts {
+		if part != "" {
+			parts = append(parts, part)
+		}
+	}
+	segments := make(map[string]string, len(parts)/2)
+	for i := 0; i+1 < len(parts); i += 2 {
+		segments[strings.ToLower(parts[i])] = parts[i+1]
+	}
+	return segments
+}
+
 var azureRegionMap = map[string]string{
 	"useast":         "eastus",
 	"useast2":        "eastus2",

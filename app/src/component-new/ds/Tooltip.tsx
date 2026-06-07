@@ -221,6 +221,13 @@ interface CustomTooltipProps extends Omit<TooltipProps, 'children' | 'title' | '
   // Props for "interactive" variant
   linkUrl?: string;
   linkText?: string;
+  /**
+   * Disable the flip modifier so the tooltip stays on the requested side even
+   * near viewport edges. `preventOverflow` still slides it along the axis to
+   * keep it fully visible, and the arrow tracks the reference element.
+   * Useful for tooltips on buttons that sit at the top/bottom of the viewport.
+   */
+  disableFlip?: boolean;
 }
 
 // Extract plain text length from React nodes (handles JSX with string children)
@@ -245,7 +252,22 @@ const getAutoMaxWidth = (title: React.ReactNode, desc: React.ReactNode): string 
 };
 
 const CustomTooltip = React.forwardRef<HTMLDivElement, CustomTooltipProps>(
-  ({ title, desc, children, variant = 'default', placement = 'top', tooltipStyle = {}, tooltipClassName = '', linkUrl, linkText, ...rest }, ref) => {
+  (
+    {
+      title,
+      desc,
+      children,
+      variant = 'default',
+      placement = 'top',
+      tooltipStyle = {},
+      tooltipClassName = '',
+      linkUrl,
+      linkText,
+      disableFlip = false,
+      ...rest
+    },
+    ref
+  ) => {
     const [open, setOpen] = useState(false);
 
     if (!React.isValidElement(children)) {
@@ -277,7 +299,7 @@ const CustomTooltip = React.forwardRef<HTMLDivElement, CustomTooltipProps>(
         modifiers: [
           {
             name: 'flip',
-            enabled: true,
+            enabled: !disableFlip,
             options: {
               fallbackPlacements: ['bottom', 'right', 'left'],
             },

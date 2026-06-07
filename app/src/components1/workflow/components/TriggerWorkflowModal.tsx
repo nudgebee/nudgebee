@@ -19,6 +19,19 @@ interface TriggerWorkflowModalProps {
   }>;
   onTrigger: (inputs: any) => Promise<void>;
   loading?: boolean;
+  // Live version label so users opening this from the listing know which
+  // published snapshot the manual run will execute. Optional — workflows
+  // with no live version yet just hide the chip.
+  liveVersionNumber?: number;
+  liveVersionName?: string;
+  // Checked-out (draft) version. Drives the "Draft based on vN" lineage in
+  // the modal header when runVariant === 'current'. Editor flow only.
+  draftVersionNumber?: number;
+  // Which definition the trigger will actually run:
+  //   'live'    — published live version (workflow_execute uses live_version_id)
+  //   'current' — on-screen draft (TriggerWorkflowFromDraft, "Run current")
+  // The listing flow always runs live, so this defaults to 'live'.
+  runVariant?: 'live' | 'current';
 }
 
 const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
@@ -30,6 +43,10 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
   inputSchema = [],
   onTrigger,
   loading = false,
+  liveVersionNumber,
+  liveVersionName,
+  draftVersionNumber,
+  runVariant = 'live',
 }) => {
   const [inputsJson, setInputsJson] = useState<string>('{}');
   const [jsonError, setJsonError] = useState<string>('');
@@ -166,6 +183,52 @@ const TriggerWorkflowModal: React.FC<TriggerWorkflowModalProps> = ({
           >
             <strong>Trigger Type:</strong> {triggerType?.charAt(0).toUpperCase() + triggerType?.slice(1)}
           </Typography>
+          {/* Header line tells the user exactly which definition will execute.
+              "Run current" (variant='current') runs the on-screen draft and
+              labels accordingly so the user does NOT see "Live version: vN"
+              for a draft run. "Run live" / listing-triggered runs label
+              "Live version: vN" to distinguish from the draft chip elsewhere. */}
+          {runVariant === 'current' ? (
+            <Typography
+              sx={{
+                fontSize: 'var(--ds-text-body-lg)',
+                color: colors.text.secondaryDark,
+                mb: 1,
+              }}
+              data-testid='trigger-modal-run-target'
+            >
+              <strong>Running:</strong> Draft{draftVersionNumber !== undefined ? ` (based on v${draftVersionNumber})` : ''}
+            </Typography>
+          ) : (
+            liveVersionNumber !== undefined && (
+              <Typography
+                sx={{
+                  fontSize: 'var(--ds-text-body-lg)',
+                  color: colors.text.secondaryDark,
+                  mb: 1,
+                }}
+                data-testid='trigger-modal-run-target'
+              >
+                <strong>Running:</strong> Live version: v{liveVersionNumber}
+                {liveVersionName ? ` — ${liveVersionName}` : ''}
+              </Typography>
+            )
+          )}
+          {runVariant === 'live' &&
+            draftVersionNumber !== undefined &&
+            liveVersionNumber !== undefined &&
+            draftVersionNumber !== liveVersionNumber && (
+              <Typography
+                sx={{
+                  fontSize: 'var(--ds-text-small)',
+                  color: colors.text.secondaryDark,
+                  mb: 1,
+                  fontStyle: 'italic',
+                }}
+              >
+                Your checked-out v{draftVersionNumber} won&apos;t run — manual run executes Live.
+              </Typography>
+            )}
           <Typography
             sx={{
               fontSize: 'var(--ds-text-body-lg)',

@@ -117,6 +117,90 @@ func TestGenerateWhereClause_SQLInjection(t *testing.T) {
 	})
 }
 
+// --- Identifier-allowlist regression tests ---
+// These lock in the column-allowlist defense: every SQL identifier slot
+// (column in SELECT/WHERE/GROUP BY/ORDER BY, plus the WHERE operator)
+// must be rejected when the caller passes something not in tableDef.
+
+func TestGenerateOrderByClause_RejectsUnknownColumn(t *testing.T) {
+	td := TableDefinition{
+		Type:    Normal,
+		Source:  database.Metastore,
+		Name:    "test_table",
+		Columns: map[string]ColumnDefinition{"id": {Type: ColumnDefinitionTypeString}},
+	}
+	req := QueryRequest{
+		Table: "test_table",
+		OrderBy: []QueryOrderBy{
+			{Column: "id; DROP TABLE users", Order: Asc},
+		},
+	}
+	sql, err := generateOrderByClause(req, td)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+	assert.Empty(t, sql)
+}
+
+func TestGenerateGroupClause_RejectsUnknownColumn(t *testing.T) {
+	// Aggregate table type — bypasses the Normal-table early-return so the
+	// GroupBy allowlist check actually fires.
+	td := TableDefinition{
+		Type:   Aggregate,
+		Source: database.Metastore,
+		Name:   "test_table",
+		Columns: map[string]ColumnDefinition{
+			"id":  {Type: ColumnDefinitionTypeString},
+			"agg": {Type: ColumnDefinitionTypeInt, Def: "count(*)", IsAggregated: true},
+		},
+	}
+	req := QueryRequest{
+		Table:   "test_table",
+		GroupBy: []string{"id; DROP TABLE users"},
+		Columns: []QueryColumn{{Name: "agg"}},
+	}
+	_, err := generateGroupClause(req, td, "", superAdminCtx())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestGenerateWhereClause_RejectsUnknownColumn(t *testing.T) {
+	td := TableDefinition{
+		Type:    Normal,
+		Source:  database.Metastore,
+		Name:    "test_table",
+		Columns: map[string]ColumnDefinition{"id": {Type: ColumnDefinitionTypeString}},
+	}
+	where := QueryWhereClause{
+		Binary: BinaryWhereClause{
+			"id; DROP TABLE users": {Eq: "x"},
+		},
+	}
+	sql, err := generateWhereClause(where, td)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+	assert.Empty(t, sql)
+}
+
+func TestGenerateWhereClause_RejectsUnknownOperator(t *testing.T) {
+	td := TableDefinition{
+		Type:    Normal,
+		Source:  database.Metastore,
+		Name:    "test_table",
+		Columns: map[string]ColumnDefinition{"id": {Type: ColumnDefinitionTypeString}},
+	}
+	where := QueryWhereClause{
+		Binary: BinaryWhereClause{
+			"id": {
+				BinaryWhereClauseType("_evil; DROP TABLE users"): "x",
+			},
+		},
+	}
+	sql, err := generateWhereClause(where, td)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported")
+	assert.Empty(t, sql)
+}
+
 func TestGenerateWhereClause_NilDialect(t *testing.T) {
 	// Setup a table definition with an invalid/unknown source
 	tableDef := TableDefinition{

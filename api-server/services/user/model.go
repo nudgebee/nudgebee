@@ -155,10 +155,10 @@ type UserUpdateDefaultTenantResponse struct {
 }
 
 type UserUpdateProfileRequest struct {
-	Username    string `json:"username" mapstructure:"username" validate:"required"`
-	DisplayName string `json:"display_name" mapstructure:"display_name"`
-	Status      string `json:"status" mapstructure:"status"`
-	Role        string `json:"role" mapstructure:"role"`
+	Username    string  `json:"username" mapstructure:"username" validate:"required"`
+	DisplayName string  `json:"display_name" mapstructure:"display_name"`
+	Status      string  `json:"status" mapstructure:"status"`
+	Role        *string `json:"role" mapstructure:"role"`
 }
 
 type UserUpdateProfileResponse struct {

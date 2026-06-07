@@ -43,13 +43,20 @@ type WorkflowStore interface {
 	DeleteExpiredState(ctx context.Context, limit int) (int64, error)
 	SetLastExecutionStatus(ctx context.Context, tenantID, accountID, id string, status WorkflowExecutionStatus, executionTime time.Time, statusMessage string) error
 	CountWorkflows(ctx context.Context, tenantID, accountID string, status WorkflowStatus, triggerType string) (int64, error)
+	GetWorkflowNames(ctx context.Context, tenantID, accountID string, ids []string) (map[string]string, error)
 	ListWorkflowVersions(ctx context.Context, workflowID string, limit int) ([]WorkflowVersion, error)
 	GetWorkflowVersion(ctx context.Context, workflowID string, versionNumber int) (*WorkflowVersion, error)
 	GetWorkflowVersionByID(ctx context.Context, versionID string) (*WorkflowVersion, error)
 	GetLiveWorkflowVersion(ctx context.Context, workflowID string) (*WorkflowVersion, error)
-	PublishVersion(ctx context.Context, workflowID, createdBy string, source WorkflowVersionSource, name, description *string, restoredFromVersion *int) (*WorkflowVersion, error)
+	PublishVersion(ctx context.Context, workflowID, createdBy string, source WorkflowVersionSource, name, description *string, restoredFromVersion *int, status WorkflowStatus) (*WorkflowVersion, error)
 	SetLiveVersion(ctx context.Context, tenantID, accountID, workflowID, versionID string) error
+	SetDraftVersionID(ctx context.Context, tenantID, accountID, workflowID, versionID string) error
 	UpdateVersionMetadata(ctx context.Context, workflowID string, versionNumber int, name, description *string) (*WorkflowVersion, error)
+	// UpdateVersionStatus writes a new status onto a single workflow_versions row
+	// and, when the target is the live version, mirrors workflows.status in the
+	// same transaction. Returns wasLive so the service layer can decide whether
+	// to re-register schedule/webhook triggers.
+	UpdateVersionStatus(ctx context.Context, tenantID, accountID, workflowID, versionID string, status WorkflowStatus) (wasLive bool, err error)
 }
 
 // WorkflowTemplateStore defines the interface for storing and retrieving global workflow templates.

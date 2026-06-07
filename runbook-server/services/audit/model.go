@@ -12,12 +12,15 @@ const (
 	EventCategoryAccount        EventCategory = "ACCOUNTS"
 	EventCategoryRecommendation EventCategory = "RECOMMENDATIONS"
 	EventCategoryAutopilot      EventCategory = "AUTO_PILOT"
-	EventCategoryAutorunbook    EventCategory = "AUTO_RUNBOOK"
-	EventCategoryTickets        EventCategory = "TICKETS"
-	EventCategoryNotifications  EventCategory = "NOTIFICATIONS"
-	EventCategoryK8sAgent       EventCategory = "K8S_AGENT"
-	EventCategoryK8sRelay       EventCategory = "K8S_RELAY"
-	EventAlertManagerRelay      EventCategory = "ALERT_MANAGER"
+	// Deprecated: use EventCategoryAutomation. Retained for historical rows
+	// already written under "AUTO_RUNBOOK"; new emissions must use AUTOMATION.
+	EventCategoryAutorunbook   EventCategory = "AUTO_RUNBOOK"
+	EventCategoryAutomation    EventCategory = "AUTOMATION"
+	EventCategoryTickets       EventCategory = "TICKETS"
+	EventCategoryNotifications EventCategory = "NOTIFICATIONS"
+	EventCategoryK8sAgent      EventCategory = "K8S_AGENT"
+	EventCategoryK8sRelay      EventCategory = "K8S_RELAY"
+	EventAlertManagerRelay     EventCategory = "ALERT_MANAGER"
 )
 
 type EventType string

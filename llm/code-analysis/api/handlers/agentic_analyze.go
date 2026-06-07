@@ -106,14 +106,17 @@ type AgenticAnalyzeRequest struct {
 	// Mode controls whether the agent is allowed to mutate code. "explore"
 	// (default) is read-only Q&A / RCA; "fix" enables the CodeFixerAgent and
 	// PR creation. When unset, RaisePR is used as a back-compat fallback.
-	Mode             string               `json:"mode,omitempty"`
-	RaisePR          bool                 `json:"raise_pr,omitempty"`
-	EventId          string               `json:"event_id,omitempty"`
-	RecommendationId string               `json:"recommendation_id,omitempty"`
-	AccountId        string               `json:"account_id,omitempty"`
-	ConversationId   string               `json:"conversation_id,omitempty"`
-	MessageId        string               `json:"message_id,omitempty"`
-	BuildConfig      *session.BuildConfig `json:"build_config,omitempty"`
+	Mode             string `json:"mode,omitempty"`
+	RaisePR          bool   `json:"raise_pr,omitempty"`
+	EventId          string `json:"event_id,omitempty"`
+	RecommendationId string `json:"recommendation_id,omitempty"`
+	// WorkflowId is the originating workflow definition id. When set, the PR
+	// description links back to the workflow (/workflow/<id>).
+	WorkflowId     string               `json:"workflow_id,omitempty"`
+	AccountId      string               `json:"account_id,omitempty"`
+	ConversationId string               `json:"conversation_id,omitempty"`
+	MessageId      string               `json:"message_id,omitempty"`
+	BuildConfig    *session.BuildConfig `json:"build_config,omitempty"`
 	// Skills is a pre-rendered <skills> block of operator-authored skills mapped
 	// to the code agent. Resolved and forwarded by llm-server (which owns the
 	// skills DB); injected verbatim into the internal agent prompts.
@@ -1120,6 +1123,9 @@ func (ah *AgenticAnalyzeHandler) createQueryConfigWithPath(req AgenticAnalyzeReq
 	// Add recommendation metadata if provided
 	if req.RecommendationId != "" {
 		config["recommendation_id"] = req.RecommendationId
+	}
+	if req.WorkflowId != "" {
+		config["workflow_id"] = req.WorkflowId
 	}
 	if req.AccountId != "" {
 		config["account_id"] = req.AccountId

@@ -62,7 +62,7 @@ func CheckAndFollowupOpenPRs(ctx *security.RequestContext) error {
 	ctx.GetLogger().Info("pr_lifecycle: found open PRs to check", "count", len(rows))
 
 	for _, row := range rows {
-		if err := processResolution(ctx, dbms, row); err != nil {
+		if err := processResolution(ctx, dbms, row, maxRedispatchChain); err != nil {
 			ctx.GetLogger().Error("pr_lifecycle: failed to process resolution",
 				"id", row.ID, "table", row.TableName, "error", err)
 			continue
@@ -86,7 +86,23 @@ const (
 	followupCooldown          = "60 minutes"
 	followupRecoveryInterval  = "6 hours"
 	followupRecoveryHardLimit = 20
+	// maxRedispatchChain bounds how many times a single completion can chain a
+	// re-dispatch for signals that arrived mid-run (pr_followup_pending). Each
+	// link is a fresh full run, so this caps a worst-case "signal during every
+	// run" loop; beyond it the cron remains the backstop. Coalescing (a single
+	// boolean, not a queue) already collapses N concurrent signals into one
+	// re-run, so this only bites pathological continuous-signal sources.
+	maxRedispatchChain = 5
 )
+
+// prDBOpTimeout bounds the small claim / finalize / terminal UPDATEs. They run
+// on an independent context.Background() (NOT the caller's request context) on
+// purpose: the finalize is a must-complete write — if it inherited the dispatch
+// goroutine's cancellation (e.g. the 35-min LLM bound expiring, or a webhook
+// handler returning), a canceled run would fail to record its outcome and leave
+// the row stuck in 'addressing' forever. The timeout still prevents an
+// unresponsive DB from hanging/leaking the goroutine.
+const prDBOpTimeout = 10 * time.Second
 
 func queryOpenPRResolutions(dbms *database.DatabaseManager) ([]prResolutionRow, error) {
 	var results []prResolutionRow
@@ -230,6 +246,23 @@ func ProcessOpenPRResolution(ctx *security.RequestContext, resolutionID, tableNa
 		return fmt.Errorf("failed to get database connection: %w", err)
 	}
 
+	row, err := fetchResolutionRow(dbms, resolutionID, tableName)
+	if err != nil {
+		return fmt.Errorf("failed to fetch %s row %s: %w", tableName, resolutionID, err)
+	}
+
+	// State / cap / race gating is no longer a read-then-check here: the atomic
+	// claim-or-mark inside processResolution decides, under a row lock, whether
+	// to claim (created/needs_followup → addressing), mark pending (addressing →
+	// re-dispatch after the in-flight run), or skip (terminal / capped). This
+	// closes the lost-update window where an event arriving during 'addressing'
+	// was silently dropped.
+	return processResolution(ctx, dbms, row, maxRedispatchChain)
+}
+
+// fetchResolutionRow loads the metadata a followup needs (data, iteration count,
+// lifecycle state, tenant) for one resolution row in either table.
+func fetchResolutionRow(dbms *database.DatabaseManager, resolutionID, tableName string) (prResolutionRow, error) {
 	var row prResolutionRow
 	row.TableName = tableName
 
@@ -254,32 +287,114 @@ func ProcessOpenPRResolution(ctx *security.RequestContext, resolutionID, tableNa
 	}
 
 	if err := dbms.Db.QueryRowx(query, resolutionID).StructScan(&row); err != nil {
-		return fmt.Errorf("failed to fetch %s row %s: %w", tableName, resolutionID, err)
+		return row, err
 	}
-
-	// Apply the same gates as the cron's base path. Webhooks should never:
-	//   - reopen a terminal state (unresolvable / merged / closed),
-	//   - race with an in-flight goroutine (addressing — a previous webhook or
-	//     cron tick is already dispatching),
-	//   - bypass the iteration cap (let the 6 h recovery sweep handle late
-	//     events on capped PRs so flaky CI cannot loop infinitely).
-	if row.PRLifecycleState != "created" && row.PRLifecycleState != "needs_followup" {
-		ctx.GetLogger().Info("pr_lifecycle: skipping webhook dispatch, state not actionable",
-			"id", row.ID, "state", row.PRLifecycleState)
-		return nil
-	}
-	if row.PRIterationCount >= followupIterationCap {
-		ctx.GetLogger().Info("pr_lifecycle: skipping webhook dispatch, iteration cap reached",
-			"id", row.ID, "iteration_count", row.PRIterationCount)
-		return nil
-	}
-
-	return processResolution(ctx, dbms, row)
+	return row, nil
 }
 
-func processResolution(ctx *security.RequestContext, dbms *database.DatabaseManager, row prResolutionRow) error {
+// MarkPRResolutionTerminal retires a resolution when its PR is closed or merged,
+// so the cron and future webhooks stop dispatching followups against a PR that
+// can no longer receive them. Only open/active rows are transitioned — terminal
+// or unresolvable rows are left untouched, and the WHERE clause means a close
+// event landing mid-run leaves the in-flight finalize free to no-op (it
+// preserves terminal states; see applyFollowupOutcome).
+func MarkPRResolutionTerminal(ctx *security.RequestContext, resolutionID, tableName string, merged bool) error {
+	if tableName != "event_resolution" && tableName != "recommendation_resolution" {
+		return fmt.Errorf("invalid table name: %s", tableName)
+	}
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return fmt.Errorf("failed to get database connection: %w", err)
+	}
+
+	state, msg := "closed", "PR closed without merge — no further followup"
+	if merged {
+		state, msg = "merged", "PR merged — followup complete"
+	}
+
+	dbCtx, cancel := context.WithTimeout(context.Background(), prDBOpTimeout)
+	defer cancel()
+	_, err = dbms.Db.ExecContext(dbCtx,
+		fmt.Sprintf(`UPDATE %s SET pr_lifecycle_state = $1, status_message = $2,
+			pr_followup_pending = false, last_pr_check_at = $3
+			WHERE id = $4 AND pr_lifecycle_state IN ('created', 'needs_followup', 'addressing')`, tableName),
+		state, msg, time.Now(), resolutionID)
+	if err != nil {
+		return fmt.Errorf("failed to mark resolution terminal: %w", err)
+	}
+	ctx.GetLogger().Info("pr_lifecycle: marked resolution terminal",
+		"id", resolutionID, "table", tableName, "merged", merged, "state", state)
+	return nil
+}
+
+// claimOrMarkResolution performs the atomic claim-or-mark and returns the row's
+// state and iteration count as they were BEFORE the statement, so the caller can
+// tell what happened:
+//   - created/needs_followup & under cap -> claimed (row is now 'addressing'); run it.
+//   - addressing                          -> a run is in flight; pr_followup_pending was set
+//     so that run re-dispatches for this newer signal.
+//   - created/needs_followup & at cap      -> nothing changed; caller skips (recovery sweep handles it).
+//   - terminal/unresolvable                -> nothing changed; caller skips.
+//
+// It is a single statement against the live row under a per-row lock (FOR UPDATE),
+// so it linearizes with applyFollowupOutcome's finalize: no interleaving can both
+// miss the re-dispatch and skip the claim, so a signal arriving any time during a
+// run is never lost and the pending flag is never orphaned.
+func claimOrMarkResolution(dbms *database.DatabaseManager, tableName, id string) (oldState string, oldIters int, err error) {
+	query := fmt.Sprintf(`
+		WITH cur AS (
+			SELECT pr_lifecycle_state AS old_state, pr_iteration_count AS old_iters
+			FROM %s WHERE id = $1 FOR UPDATE
+		),
+		upd AS (
+			UPDATE %s t SET
+				pr_lifecycle_state = CASE
+					WHEN cur.old_state IN ('created', 'needs_followup') AND cur.old_iters < $2
+						THEN 'addressing'
+					ELSE t.pr_lifecycle_state END,
+				pr_followup_pending = CASE
+					WHEN cur.old_state = 'addressing' THEN true
+					ELSE t.pr_followup_pending END,
+				last_pr_check_at = $3
+			FROM cur WHERE t.id = $1
+			RETURNING cur.old_state, cur.old_iters
+		)
+		SELECT old_state, old_iters FROM upd`, tableName, tableName)
+	dbCtx, cancel := context.WithTimeout(context.Background(), prDBOpTimeout)
+	defer cancel()
+	err = dbms.Db.QueryRowContext(dbCtx, query, id, followupIterationCap, time.Now()).
+		Scan(&oldState, &oldIters)
+	return oldState, oldIters, err
+}
+
+func processResolution(ctx *security.RequestContext, dbms *database.DatabaseManager, row prResolutionRow, redispatchBudget int) error {
+	oldState, oldIters, err := claimOrMarkResolution(dbms, row.TableName, row.ID)
+	if err != nil {
+		return fmt.Errorf("failed to claim resolution row: %w", err)
+	}
+
+	claimed := (oldState == "created" || oldState == "needs_followup") && oldIters < followupIterationCap
+	if !claimed {
+		switch oldState {
+		case "addressing":
+			ctx.GetLogger().Info("pr_lifecycle: followup in flight, marked pending for re-dispatch",
+				"id", row.ID, "table", row.TableName)
+		case "created", "needs_followup":
+			// reached here only when !claimed, i.e. iteration cap hit.
+			ctx.GetLogger().Info("pr_lifecycle: skipping, iteration cap reached",
+				"id", row.ID, "iteration_count", oldIters)
+		default:
+			ctx.GetLogger().Info("pr_lifecycle: skipping, state not actionable",
+				"id", row.ID, "state", oldState)
+		}
+		return nil
+	}
+
+	// Claimed. From here on the row is 'addressing'; on any early return below we
+	// retire it via markFollowupUnresolvable so it can't get stuck addressing.
 	var meta prMetadata
 	if err := json.Unmarshal(row.Data, &meta); err != nil {
+		markFollowupUnresolvable(ctx, dbms, row, "bad_metadata")
 		return fmt.Errorf("failed to parse PR metadata: %w", err)
 	}
 
@@ -316,26 +431,8 @@ func processResolution(ctx *security.RequestContext, dbms *database.DatabaseMana
 		return fmt.Errorf("failed to get git token: %w", err)
 	}
 
-	// Claim the row atomically. The condition on pr_lifecycle_state means
-	// only one worker can win the transition into 'addressing' — concurrent
-	// webhooks or a webhook racing the cron will see RowsAffected=0 and
-	// bail without dispatching a duplicate LLM run. Cheaper than a txn +
-	// SELECT…FOR UPDATE and uses PG's per-row write lock.
-	result, err := dbms.Db.ExecContext(context.Background(),
-		fmt.Sprintf(`UPDATE %s SET pr_lifecycle_state = $1, last_pr_check_at = $2
-			WHERE id = $3 AND pr_lifecycle_state IN ('created', 'needs_followup')`, row.TableName),
-		"addressing", time.Now(), row.ID)
-	if err != nil {
-		return fmt.Errorf("failed to update lifecycle state: %w", err)
-	}
-	if n, _ := result.RowsAffected(); n == 0 {
-		ctx.GetLogger().Info("pr_lifecycle: lost race claiming row, another worker won",
-			"id", row.ID, "table", row.TableName)
-		return nil
-	}
-
 	ctx.GetLogger().Info("pr_lifecycle: triggering followup for PR",
-		"id", row.ID, "pr_url", meta.PRURL, "current_iteration_count", row.PRIterationCount)
+		"id", row.ID, "pr_url", meta.PRURL, "current_iteration_count", oldIters)
 
 	prBranch := meta.PRBranch
 	if prBranch == "" {
@@ -388,21 +485,36 @@ func processResolution(ctx *security.RequestContext, dbms *database.DatabaseMana
 			tenantCtx.GetLogger(), tenantCtx.GetTracer(), tenantCtx.GetMeter())
 
 		response, err := llm.ChatCompletion(boundedCtx, chatRequest)
+		var outcome followupOutcome
 		if err != nil {
 			tenantCtx.GetLogger().Error("pr_lifecycle: followup failed", "id", row.ID, "error", err)
-			applyFollowupOutcome(tenantCtx, dbms, row, followupOutcomeFailed)
-			return
+			outcome = followupOutcomeFailed
+		} else {
+			outcome = classifyFollowupOutcome(response.Response)
+			tenantCtx.GetLogger().Info("pr_lifecycle: followup completed",
+				"id", row.ID,
+				"response_status", response.Status,
+				"outcome", outcome.name,
+				"new_state", outcome.newState)
 		}
 
-		outcome := classifyFollowupOutcome(response.Response)
-
-		tenantCtx.GetLogger().Info("pr_lifecycle: followup completed",
-			"id", row.ID,
-			"response_status", response.Status,
-			"outcome", outcome.name,
-			"new_state", outcome.newState)
-
-		applyFollowupOutcome(tenantCtx, dbms, row, outcome)
+		// Finalize atomically and learn whether a new actionable signal arrived
+		// while this run was in flight (pr_followup_pending). If so, re-dispatch
+		// once for it rather than waiting up to a full cron cooldown. Bounded by
+		// redispatchBudget so a continuous-signal source can't loop forever.
+		wasPending := applyFollowupOutcome(tenantCtx, dbms, row, outcome)
+		if wasPending && redispatchBudget > 0 {
+			tenantCtx.GetLogger().Info("pr_lifecycle: signal arrived during run, re-dispatching",
+				"id", row.ID, "remaining_budget", redispatchBudget-1)
+			next, ferr := fetchResolutionRow(dbms, row.ID, row.TableName)
+			if ferr != nil {
+				tenantCtx.GetLogger().Error("pr_lifecycle: re-dispatch fetch failed", "id", row.ID, "error", ferr)
+				return
+			}
+			if perr := processResolution(tenantCtx, dbms, next, redispatchBudget-1); perr != nil {
+				tenantCtx.GetLogger().Error("pr_lifecycle: re-dispatch failed", "id", row.ID, "error", perr)
+			}
+		}
 	}()
 
 	return nil
@@ -432,20 +544,48 @@ var (
 	followupOutcomeNoOp    = followupOutcome{name: "no_op", newState: "needs_followup", counterDelta: 0}
 )
 
-func applyFollowupOutcome(ctx *security.RequestContext, dbms *database.DatabaseManager, row prResolutionRow, outcome followupOutcome) {
-	var query string
-	var args []any
+// applyFollowupOutcome writes the run's terminal effect on the row and returns
+// whether a new actionable signal arrived mid-run (pr_followup_pending was set).
+// It does both in ONE row-locked statement so it linearizes with a concurrent
+// claim-or-mark in processResolution: either the mark commits first (we read
+// was_pending=true and the caller re-dispatches) or this finalize commits first
+// (the concurrent dispatch then sees a non-addressing state and claims directly)
+// — no interleaving loses the signal or orphans the flag. The terminal guard
+// stops a PR-close that landed mid-run from being overwritten back to an open
+// state.
+func applyFollowupOutcome(ctx *security.RequestContext, dbms *database.DatabaseManager, row prResolutionRow, outcome followupOutcome) (wasPending bool) {
+	// counterExpr is built from our own constant outcome (delta 0/1), never user
+	// input — no injection surface.
+	counterExpr := fmt.Sprintf("pr_iteration_count + %d", outcome.counterDelta)
 	if outcome.resetCounter {
-		query = fmt.Sprintf(`UPDATE %s SET pr_lifecycle_state = $1, pr_iteration_count = 0, last_pr_check_at = $2 WHERE id = $3`, row.TableName)
-		args = []any{outcome.newState, time.Now(), row.ID}
-	} else {
-		query = fmt.Sprintf(`UPDATE %s SET pr_lifecycle_state = $1, pr_iteration_count = pr_iteration_count + $2, last_pr_check_at = $3 WHERE id = $4`, row.TableName)
-		args = []any{outcome.newState, outcome.counterDelta, time.Now(), row.ID}
+		counterExpr = "0"
 	}
-	if _, err := dbms.Db.ExecContext(context.Background(), query, args...); err != nil {
+	query := fmt.Sprintf(`
+		WITH cur AS (
+			SELECT pr_followup_pending AS was_pending, pr_lifecycle_state AS st
+			FROM %s WHERE id = $1 FOR UPDATE
+		),
+		upd AS (
+			UPDATE %s t SET
+				pr_lifecycle_state = CASE WHEN cur.st IN ('closed', 'merged', 'unresolvable')
+					THEN t.pr_lifecycle_state ELSE $2 END,
+				pr_iteration_count = CASE WHEN cur.st IN ('closed', 'merged', 'unresolvable')
+					THEN t.pr_iteration_count ELSE %s END,
+				last_pr_check_at = $3,
+				pr_followup_pending = false
+			FROM cur WHERE t.id = $1
+			RETURNING cur.was_pending
+		)
+		SELECT was_pending FROM upd`, row.TableName, row.TableName, counterExpr)
+	dbCtx, cancel := context.WithTimeout(context.Background(), prDBOpTimeout)
+	defer cancel()
+	if err := dbms.Db.QueryRowContext(dbCtx, query, row.ID, outcome.newState, time.Now()).
+		Scan(&wasPending); err != nil {
 		ctx.GetLogger().Error("pr_lifecycle: failed to apply outcome",
 			"id", row.ID, "outcome", outcome.name, "error", err)
+		return false
 	}
+	return wasPending
 }
 
 // classifyFollowupOutcome reads the agent response and decides how to advance

@@ -23,10 +23,14 @@ interface WorkflowHeaderProps {
   // State strip (top-right): definition layers + live version + actions.
   showStateStrip?: boolean;
   hasUnsavedChanges?: boolean;
+  /** Draft has changed since the last publish (saved or unsaved). */
   draftAheadOfLive?: boolean;
   liveVersionNumber?: number | null;
   liveVersionName?: string | null;
   liveVersionId?: string | null;
+  draftVersionNumber?: number | null;
+  draftVersionName?: string | null;
+  draftVersionId?: string | null;
   isNewWorkflow?: boolean;
   onPublish?: () => void;
   onHistory?: () => void;
@@ -48,6 +52,9 @@ const WorkflowHeader: React.FC<WorkflowHeaderProps> = ({
   liveVersionNumber,
   liveVersionName,
   liveVersionId,
+  draftVersionNumber,
+  draftVersionName,
+  draftVersionId,
   isNewWorkflow = false,
   onPublish,
   onHistory,
@@ -92,10 +99,15 @@ const WorkflowHeader: React.FC<WorkflowHeaderProps> = ({
   const router = useRouter();
 
   const handleBack = () => {
-    // Check for returnUrl query param first (for navigation from investigate pages)
+    // Check for returnUrl query param first (for navigation from investigate pages).
+    // Only same-origin paths (start with "/", no "//" or "\" scheme tricks) are
+    // accepted — anything else falls through to the default to prevent open
+    // redirects / javascript: URI execution via decodeURIComponent.
     const { returnUrl } = router.query;
-    if (returnUrl) {
-      router.push(decodeURIComponent(returnUrl as string));
+    const candidate = typeof returnUrl === 'string' ? decodeURIComponent(returnUrl) : '';
+    const isSameOriginPath = candidate.startsWith('/') && !candidate.startsWith('//') && !candidate.startsWith('/\\');
+    if (isSameOriginPath) {
+      router.push(candidate);
     } else {
       const backButtonPath = `/auto-pilot?accountId=${accountId}#workflow`;
       router.push(backButtonPath);
@@ -196,6 +208,9 @@ const WorkflowHeader: React.FC<WorkflowHeaderProps> = ({
             liveVersionNumber={liveVersionNumber}
             liveVersionName={liveVersionName}
             liveVersionId={liveVersionId}
+            draftVersionNumber={draftVersionNumber}
+            draftVersionName={draftVersionName}
+            draftVersionId={draftVersionId}
             isNewWorkflow={isNewWorkflow}
             onPublish={onPublish}
             onHistory={onHistory}

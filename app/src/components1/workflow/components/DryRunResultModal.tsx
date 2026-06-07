@@ -7,9 +7,13 @@ interface DryRunResultModalProps {
   open: boolean;
   onClose: () => void;
   result: WorkflowDryRunResponse | null;
+  // The draft was run against an inline definition, not the published live
+  // version. When provided, the modal shows "Dry run of draft based on vN" so
+  // users know exactly what they tested.
+  draftVersionNumber?: number;
 }
 
-const DryRunResultModal: React.FC<DryRunResultModalProps> = ({ open, onClose, result }) => {
+const DryRunResultModal: React.FC<DryRunResultModalProps> = ({ open, onClose, result, draftVersionNumber }) => {
   if (!result) {
     return null;
   }
@@ -20,6 +24,13 @@ const DryRunResultModal: React.FC<DryRunResultModalProps> = ({ open, onClose, re
   return (
     <Modal open={open} handleClose={onClose} title='Dry Run Result' width='lg' maxHeight='80vh'>
       <Box sx={{ padding: 'var(--ds-space-4) 0' }}>
+        {/* Header is always rendered so users know they're looking at a draft
+            run — never the live version — even before the workflow has a
+            draft_version_id (legacy rows / pre-V747 backfill quirks). The "based
+            on vN" qualifier appears only when the lineage is known. */}
+        <Typography variant='body2' sx={{ mb: 2, color: 'var(--ds-gray-600)', fontStyle: 'italic' }} data-testid='dry-run-result-version'>
+          Dry run of draft{draftVersionNumber !== undefined ? ` based on v${draftVersionNumber}` : ''}
+        </Typography>
         {/* Status Badge */}
         <Box sx={{ mb: 3, display: 'flex', alignItems: 'center', gap: 2 }}>
           <Typography variant='subtitle2' sx={{ fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-500)' }}>

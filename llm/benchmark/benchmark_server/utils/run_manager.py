@@ -110,7 +110,9 @@ def recover_orphaned_runs():
     # parallel batches when the executor is still dequeueing the next
     # workers' tests). 5 min covers worst-case per-test runtime on the
     # cluster's slowest cases.
-    fresh_cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=5)
+    fresh_cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+        minutes=5
+    )
     try:
         for run_id in orphan_ids:
             run = _get_run(db, run_id)
@@ -155,7 +157,9 @@ def recover_orphaned_runs():
             run.phase = RunPhase.DONE
             run.completed_at = datetime.now()
             if run.started_at:
-                run.duration_seconds = round((datetime.now() - run.started_at).total_seconds(), 2)
+                run.duration_seconds = round(
+                    (datetime.now() - run.started_at).total_seconds(), 2
+                )
             errors = list(run.errors or [])
             errors.append(
                 {
@@ -164,7 +168,9 @@ def recover_orphaned_runs():
                 }
             )
             run.errors = errors
-            _mark_running_tests(db, run.run_id, "error", "Server restarted — run was orphaned")
+            _mark_running_tests(
+                db, run.run_id, "error", "Server restarted — run was orphaned"
+            )
             logger.warning(
                 "Orphan recovery: marked run %s FAILED (%d waiting, %d running)",
                 run_id,
@@ -306,9 +312,13 @@ def reconcile_waiting_tests(run_id: str, nudge_complete: bool = True) -> dict:
         prefetched = {}
         to_fetch = [(tr, cid) for tr, cid in fetch_targets if cid]
         if to_fetch:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(10, len(to_fetch))) as pool:
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(10, len(to_fetch))
+            ) as pool:
                 futures = {
-                    pool.submit(fetch_conversation, cid, account_id, tenant_id, user_id): tr.id
+                    pool.submit(
+                        fetch_conversation, cid, account_id, tenant_id, user_id
+                    ): tr.id
                     for tr, cid in to_fetch
                 }
                 for fut in concurrent.futures.as_completed(futures):
@@ -348,7 +358,9 @@ def reconcile_waiting_tests(run_id: str, nudge_complete: bool = True) -> dict:
                 tr.actual_answer = answer or tr.actual_answer or ""
                 tr.followup_request = None
                 if not answer:
-                    tr.error_message = tr.error_message or "Empty response after reconciliation"
+                    tr.error_message = (
+                        tr.error_message or "Empty response after reconciliation"
+                    )
                     tr.error_category = tr.error_category or "empty_response"
                 outcome["completed"] += 1
                 _fevent(
@@ -486,7 +498,9 @@ def remove_submitted_followup(
         db.commit()
     except Exception:
         db.rollback()
-        logger.exception("remove_submitted_followup failed run=%s test=%d", run_id, test_index)
+        logger.exception(
+            "remove_submitted_followup failed run=%s test=%d", run_id, test_index
+        )
     finally:
         db.close()
 
@@ -556,7 +570,9 @@ def _run_has_all_terminal_tests(run_id: str) -> bool:
         if non_terminal > 0:
             return False
         total_rows = (
-            db.query(BenchmarkTestResult).filter(BenchmarkTestResult.run_id == run_id).count()
+            db.query(BenchmarkTestResult)
+            .filter(BenchmarkTestResult.run_id == run_id)
+            .count()
         )
         return total_rows >= planned_total
     finally:
@@ -604,7 +620,9 @@ def _sweeper_loop():
             if db:
                 try:
                     active = (
-                        db.query(BenchmarkRun).filter(BenchmarkRun.state == RunState.RUNNING).all()
+                        db.query(BenchmarkRun)
+                        .filter(BenchmarkRun.state == RunState.RUNNING)
+                        .all()
                     )
                     active_ids = [r.run_id for r in active]
                 finally:
@@ -729,7 +747,9 @@ def stop_run(run_id: str):
         run.phase = RunPhase.DONE
         run.completed_at = datetime.now()
         if run.started_at:
-            run.duration_seconds = round((datetime.now() - run.started_at).total_seconds(), 2)
+            run.duration_seconds = round(
+                (datetime.now() - run.started_at).total_seconds(), 2
+            )
         # Mark any in-flight tests as stopped
         _mark_running_tests(db, run_id, "stopped", "Run stopped by user")
         db.commit()
@@ -756,7 +776,9 @@ def fail_run(run_id: str, error: str = ""):
         run.phase = RunPhase.DONE
         run.completed_at = datetime.now()
         if run.started_at:
-            run.duration_seconds = round((datetime.now() - run.started_at).total_seconds(), 2)
+            run.duration_seconds = round(
+                (datetime.now() - run.started_at).total_seconds(), 2
+            )
         if error:
             errors = list(run.errors or [])
             errors.append({"time": datetime.now().isoformat(), "message": error})
@@ -827,7 +849,9 @@ def complete_run(run_id: str) -> bool:
         planned_total = run.progress_total or 0
         if planned_total > 0:
             total_rows = (
-                db.query(BenchmarkTestResult).filter(BenchmarkTestResult.run_id == run_id).count()
+                db.query(BenchmarkTestResult)
+                .filter(BenchmarkTestResult.run_id == run_id)
+                .count()
             )
             if total_rows < planned_total:
                 logger.info(
@@ -845,7 +869,9 @@ def complete_run(run_id: str) -> bool:
         run.completed_at = datetime.now()
         run.errors = []  # Clear any stale errors (e.g. from orphan recovery race)
         if run.started_at:
-            run.duration_seconds = round((datetime.now() - run.started_at).total_seconds(), 2)
+            run.duration_seconds = round(
+                (datetime.now() - run.started_at).total_seconds(), 2
+            )
 
         # Assemble report from test results
         report = _assemble_report(db, run)
@@ -901,7 +927,9 @@ def finalize_stuck_runs(stale_minutes: int = 5) -> int:
         # other paths in this module (most call `datetime.now()` and the
         # benchmark server runs in UTC). A naive local-time `datetime.now()`
         # here would skew the staleness cutoff by the API server's TZ offset.
-        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=stale_minutes)
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+            minutes=stale_minutes
+        )
 
         # Quarantine tests whose subprocess clearly died: status=running but
         # updated_at older than the cutoff. Without this, a single retry
@@ -957,7 +985,9 @@ def finalize_stuck_runs(stale_minutes: int = 5) -> int:
             .group_by(BenchmarkTestResult.run_id)
             .all()
         )
-        recoverable = [r.run_id for r in candidates if non_terminal_counts.get(r.run_id, 0) == 0]
+        recoverable = [
+            r.run_id for r in candidates if non_terminal_counts.get(r.run_id, 0) == 0
+        ]
     except Exception:
         logger.exception("finalize_stuck_runs: failed to query candidates")
         return 0
@@ -1027,7 +1057,9 @@ def rerun_run(run_id: str) -> dict:
         _validate_rerunnable(run, allow_completed=True)
 
         # Clear old test results
-        db.query(BenchmarkTestResult).filter(BenchmarkTestResult.run_id == run_id).delete()
+        db.query(BenchmarkTestResult).filter(
+            BenchmarkTestResult.run_id == run_id
+        ).delete()
 
         # Reset run state
         run.state = RunState.RUNNING
@@ -1094,7 +1126,9 @@ def rerun_tests(run_id: str, test_indices: list[int]) -> dict:
         found = {r.test_index for r in existing}
         missing = set(test_indices) - found
         if missing:
-            raise ValueError(f"Test indices {sorted(missing)} not found in run {run_id}")
+            raise ValueError(
+                f"Test indices {sorted(missing)} not found in run {run_id}"
+            )
 
         # Reset requested test rows so store_test_result can overwrite them
         db.query(BenchmarkTestResult).filter(
@@ -1278,12 +1312,15 @@ def _resolve_name_cached(entity_type: str, entity_id: str) -> str:
 
         if not db_engine:
             return ""
-        table = "tenant" if entity_type == "tenant" else "cloud_accounts"
-        col = "name" if entity_type == "tenant" else "account_name"
+        # Pick the full SQL up-front rather than f-string-building it from
+        # `table`/`col`. Identifiers can't be bound via :params, so the only
+        # safe pattern is a closed set of fully-literal queries.
+        if entity_type == "tenant":
+            query = text("SELECT name FROM tenant WHERE id = :id")
+        else:
+            query = text("SELECT account_name FROM cloud_accounts WHERE id = :id")
         with db_engine.connect() as conn:
-            row = conn.execute(
-                text(f"SELECT {col} FROM {table} WHERE id = :id"), {"id": entity_id}
-            ).fetchone()
+            row = conn.execute(query, {"id": entity_id}).fetchone()
             name = str(row[0]) if row else ""
     except Exception:
         name = ""
@@ -1328,7 +1365,11 @@ def _run_to_status(run: BenchmarkRun) -> dict:
     # progress bar reaches 100% on a completed run that had filtered-out
     # tests. (Without ``skipped`` here, the bar stalls at <100%
     # indefinitely on every run that uses index/tag filters.)
-    done = sum(1 for r in results if r.status in ("pass", "fail", "error", "stopped", "skipped"))
+    done = sum(
+        1
+        for r in results
+        if r.status in ("pass", "fail", "error", "stopped", "skipped")
+    )
 
     return {
         "run_id": run.run_id,
@@ -1405,11 +1446,14 @@ def _get_test_summary(run: BenchmarkRun) -> dict:
         r
         for r in results
         if r.status not in ("skipped",)
-        and not (r.status == "error" and (r.error_category or "") in INFRA_ERROR_CATEGORIES)
+        and not (
+            r.status == "error" and (r.error_category or "") in INFRA_ERROR_CATEGORIES
+        )
     ]
     avg_similarity = (
         round(
-            sum(r.answer_similarity or 0 for r in scorable_results) / len(scorable_results),
+            sum(r.answer_similarity or 0 for r in scorable_results)
+            / len(scorable_results),
             2,
         )
         if scorable_results
@@ -1417,7 +1461,8 @@ def _get_test_summary(run: BenchmarkRun) -> dict:
     )
     avg_relevancy = (
         round(
-            sum(r.answer_relevancy or 0 for r in scorable_results) / len(scorable_results),
+            sum(r.answer_relevancy or 0 for r in scorable_results)
+            / len(scorable_results),
             2,
         )
         if scorable_results
@@ -1425,13 +1470,16 @@ def _get_test_summary(run: BenchmarkRun) -> dict:
     )
     avg_planner = (
         round(
-            sum(r.planner_relevancy or 0 for r in scorable_results) / len(scorable_results),
+            sum(r.planner_relevancy or 0 for r in scorable_results)
+            / len(scorable_results),
             2,
         )
         if scorable_results
         else 0
     )
-    overall_accuracy = round((avg_similarity + avg_relevancy) / 2, 2) if scorable_results else 0
+    overall_accuracy = (
+        round((avg_similarity + avg_relevancy) / 2, 2) if scorable_results else 0
+    )
     return {
         "total": total,
         "success": success,
@@ -1466,7 +1514,9 @@ def _get_test_results_list(run: BenchmarkRun) -> list:
         # TZ offset (e.g. 5h30m off on IST hosts). Tag the value as UTC
         # before emitting so the browser sees the correct absolute instant.
         last_ts = getattr(r, "updated_at", None) or getattr(r, "created_at", None)
-        last_ts_iso = last_ts.replace(tzinfo=timezone.utc).isoformat() if last_ts else None
+        last_ts_iso = (
+            last_ts.replace(tzinfo=timezone.utc).isoformat() if last_ts else None
+        )
         rows.append(
             {
                 "test_id": r.test_id,
@@ -1483,7 +1533,9 @@ def _get_test_results_list(run: BenchmarkRun) -> list:
                 "tool_calls_total": r.tool_calls_total or 0,
                 "model_names": r.model_names or [],
                 "error_message": (r.error_message or "")[:200],
-                "followup_request": (r.followup_request if r.status == "waiting" else None),
+                "followup_request": (
+                    r.followup_request if r.status == "waiting" else None
+                ),
                 "conversation_id": r.conversation_id or "",
                 # session_id from the LLM server. UI displays this as the
                 # primary debug handle because it's what token-usage/metrics
@@ -1554,7 +1606,9 @@ def store_test_result(run_id: str, result: dict):
             tr.output_tokens = result.get("output_tokens", tr.output_tokens)
             tr.cache_read_tokens = result.get("cache_read_tokens", tr.cache_read_tokens)
             tr.tool_calls_total = result.get("tool_calls_total", tr.tool_calls_total)
-            tr.tool_calls_successful = result.get("tool_calls_successful", tr.tool_calls_successful)
+            tr.tool_calls_successful = result.get(
+                "tool_calls_successful", tr.tool_calls_successful
+            )
             tr.tool_names = result.get("tool_names", tr.tool_names)
             tr.model_names = result.get("model_names", tr.model_names)
             tr.model_providers = result.get("model_providers", tr.model_providers)
@@ -1743,7 +1797,9 @@ def update_test_result_scores(
             )
     except Exception:
         db.rollback()
-        logger.exception("Failed to update scores for run %s index %d", run_id, test_index)
+        logger.exception(
+            "Failed to update scores for run %s index %d", run_id, test_index
+        )
     finally:
         db.close()
 
@@ -1840,7 +1896,9 @@ def _assemble_report(db, run: BenchmarkRun) -> dict:
         r
         for r in results
         if r.status != "skipped"
-        and not (r.status == "error" and (r.error_category or "") in INFRA_ERROR_CATEGORIES)
+        and not (
+            r.status == "error" and (r.error_category or "") in INFRA_ERROR_CATEGORIES
+        )
     ]
     n = len(scorable_results) or 1  # avoid division by zero
 
@@ -1875,14 +1933,20 @@ def _assemble_report(db, run: BenchmarkRun) -> dict:
         "answer_relevancy": avg_rel,
         "planner_relevancy": avg_planner,
         "latency": {
-            "total_seconds": round(sum(r.duration_seconds or 0 for r in scorable_results), 2),
-            "avg_seconds": round(sum(r.duration_seconds or 0 for r in scorable_results) / n, 2),
+            "total_seconds": round(
+                sum(r.duration_seconds or 0 for r in scorable_results), 2
+            ),
+            "avg_seconds": round(
+                sum(r.duration_seconds or 0 for r in scorable_results) / n, 2
+            ),
             "p50_seconds": round(percentile(sorted_durations, 50), 2),
             "p95_seconds": round(percentile(sorted_durations, 95), 2),
             "p99_seconds": round(percentile(sorted_durations, 99), 2),
             "max_seconds": round(max(sorted_durations), 2) if sorted_durations else 0.0,
             # LLM-only latency (excludes setup/teardown)
-            "llm_avg_seconds": round(sum(r.llm_duration or 0 for r in scorable_results) / n, 2),
+            "llm_avg_seconds": round(
+                sum(r.llm_duration or 0 for r in scorable_results) / n, 2
+            ),
             "llm_p50_seconds": round(
                 percentile(sorted(r.llm_duration or 0 for r in scorable_results), 50), 2
             ),
@@ -1893,12 +1957,16 @@ def _assemble_report(db, run: BenchmarkRun) -> dict:
                 max((r.llm_duration or 0 for r in scorable_results), default=0.0), 2
             ),
             # Setup overhead
-            "setup_avg_seconds": round(sum(r.setup_duration or 0 for r in scorable_results) / n, 2),
+            "setup_avg_seconds": round(
+                sum(r.setup_duration or 0 for r in scorable_results) / n, 2
+            ),
         },
         "tool_calls": {
             "total": sum(r.tool_calls_total or 0 for r in scorable_results),
             "successful": sum(r.tool_calls_successful or 0 for r in scorable_results),
-            "avg_per_query": round(sum(r.tool_calls_total or 0 for r in scorable_results) / n, 1),
+            "avg_per_query": round(
+                sum(r.tool_calls_total or 0 for r in scorable_results) / n, 1
+            ),
             "success_rate": (
                 round(
                     sum(r.tool_calls_successful or 0 for r in scorable_results)
@@ -1912,7 +1980,9 @@ def _assemble_report(db, run: BenchmarkRun) -> dict:
         },
         "cost": {
             "total_usd": round(sum(r.cost or 0 for r in scorable_results), 6),
-            "avg_per_query_usd": round(sum(r.cost or 0 for r in scorable_results) / n, 6),
+            "avg_per_query_usd": round(
+                sum(r.cost or 0 for r in scorable_results) / n, 6
+            ),
             "accuracy_per_dollar": (
                 round(overall_acc / sum(r.cost or 0 for r in scorable_results), 2)
                 if sum(r.cost or 0 for r in scorable_results) > 0
@@ -1931,15 +2001,21 @@ def _assemble_report(db, run: BenchmarkRun) -> dict:
         tc = len(tag_details)
         tag_sim = round(sum(d["answer_similarity"] for d in tag_details) / tc, 2)
         tag_rel = round(sum(d["answer_relevancy"] for d in tag_details) / tc, 2)
-        tag_planner = round(sum(d.get("planner_relevancy", 0) for d in tag_details) / tc, 2)
+        tag_planner = round(
+            sum(d.get("planner_relevancy", 0) for d in tag_details) / tc, 2
+        )
         by_tag[tag] = {
             "count": tc,
             "overall_accuracy": round((tag_sim + tag_rel) / 2, 2),
             "answer_similarity": tag_sim,
             "answer_relevancy": tag_rel,
             "planner_relevancy": tag_planner,
-            "avg_duration_seconds": round(sum(d["duration_seconds"] for d in tag_details) / tc, 2),
-            "avg_tool_calls": round(sum(d["tool_calls_total"] for d in tag_details) / tc, 1),
+            "avg_duration_seconds": round(
+                sum(d["duration_seconds"] for d in tag_details) / tc, 2
+            ),
+            "avg_tool_calls": round(
+                sum(d["tool_calls_total"] for d in tag_details) / tc, 1
+            ),
             "avg_cost_usd": round(sum(d["cost"] for d in tag_details) / tc, 6),
         }
 
@@ -1953,7 +2029,9 @@ def _assemble_report(db, run: BenchmarkRun) -> dict:
             "model_providers": sorted(all_model_providers),
             "triggered_by": _get_user_email(run.user_id),
             "timestamp": (
-                run.completed_at.isoformat() if run.completed_at else datetime.now().isoformat()
+                run.completed_at.isoformat()
+                if run.completed_at
+                else datetime.now().isoformat()
             ),
         },
         "summary": summary,
@@ -2199,7 +2277,8 @@ def get_test_results_for_eval(run_id: str) -> tuple:
                 "test_id": r.test_id,
                 "test_index": r.test_index,
                 "conversation_id": r.conversation_id or "",
-                "polling_conversation_id": getattr(r, "polling_conversation_id", "") or "",
+                "polling_conversation_id": getattr(r, "polling_conversation_id", "")
+                or "",
                 "query": r.query or "",
                 "expected_answer": r.expected_answer or "",
                 "actual_answer": r.actual_answer or "",
@@ -2373,7 +2452,9 @@ def start_gathered_run(run_id: str) -> dict:
                 f"Cannot start run {run_id}: state is '{run.state}' (must be 'gathered')"
             )
         # Clear pending test results — they'll be re-created during execution
-        db.query(BenchmarkTestResult).filter(BenchmarkTestResult.run_id == run_id).delete()
+        db.query(BenchmarkTestResult).filter(
+            BenchmarkTestResult.run_id == run_id
+        ).delete()
         run.state = RunState.RUNNING
         run.phase = RunPhase.INITIALIZING
         run.started_at = datetime.now()
@@ -2414,7 +2495,9 @@ def set_test_running(run_id: str, test_index: int) -> dict:
         if not run:
             raise ValueError(f"Run {run_id} not found")
         if run.state not in _ALLOWED:
-            raise ValueError(f"Cannot run test for run {run_id}: state is '{run.state}'")
+            raise ValueError(
+                f"Cannot run test for run {run_id}: state is '{run.state}'"
+            )
 
         tr = (
             db.query(BenchmarkTestResult)
@@ -2496,9 +2579,15 @@ def finish_single_test(run_id: str, prev_state: str = None):
         if not run:
             return
 
-        results = db.query(BenchmarkTestResult).filter(BenchmarkTestResult.run_id == run_id).all()
+        results = (
+            db.query(BenchmarkTestResult)
+            .filter(BenchmarkTestResult.run_id == run_id)
+            .all()
+        )
         total = len(results)
-        done = sum(1 for r in results if r.status in ("pass", "fail", "error", "stopped"))
+        done = sum(
+            1 for r in results if r.status in ("pass", "fail", "error", "stopped")
+        )
         waiting = sum(1 for r in results if r.status == "waiting")
         still_running = sum(1 for r in results if r.status == "running")
         pending = sum(1 for r in results if r.status == "pending")
@@ -2549,14 +2638,18 @@ def finish_single_test(run_id: str, prev_state: str = None):
             if not run.completed_at:
                 run.completed_at = datetime.now()
             if run.started_at:
-                run.duration_seconds = round((datetime.now() - run.started_at).total_seconds(), 2)
+                run.duration_seconds = round(
+                    (datetime.now() - run.started_at).total_seconds(), 2
+                )
             logger.info("All tests complete for run %s", run_id)
         elif prev_state in (RunState.COMPLETED, RunState.FAILED, RunState.STOPPED):
             # Old terminal run — restore to previous state with updated report
             run.state = prev_state
             run.phase = RunPhase.DONE
             run.current_query = ""
-            logger.info("Run %s: test re-run complete, restored to %s", run_id, prev_state)
+            logger.info(
+                "Run %s: test re-run complete, restored to %s", run_id, prev_state
+            )
         elif waiting > 0 and pending == 0:
             # All tests executed but some waiting for followup — keep running
             run.state = RunState.RUNNING
@@ -2654,7 +2747,9 @@ def list_runs(
             # Find user_ids whose email matches (from cache first, DB fallback)
             user_lower = user.lower()
             matching_ids = [
-                uid for uid, email in _user_email_cache.items() if user_lower in email.lower()
+                uid
+                for uid, email in _user_email_cache.items()
+                if user_lower in email.lower()
             ]
             if not matching_ids:
                 from benchmark_server.utils.db_utils import search_user_ids_by_email
@@ -2756,7 +2851,9 @@ def cleanup_completed_runs(tenant_ids: Optional[list[str]] = None) -> int:
         return 0
     try:
         query = db.query(BenchmarkRun).filter(
-            BenchmarkRun.state.in_([RunState.COMPLETED, RunState.STOPPED, RunState.FAILED])
+            BenchmarkRun.state.in_(
+                [RunState.COMPLETED, RunState.STOPPED, RunState.FAILED]
+            )
         )
         if tenant_ids is not None:
             if not tenant_ids:

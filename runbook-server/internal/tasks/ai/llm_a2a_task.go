@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"nudgebee/runbook/internal/tasks/safehttp"
 	"nudgebee/runbook/internal/tasks/types"
 	"time"
 
@@ -41,6 +42,12 @@ func (t *LLMA2ATask) Execute(taskCtx types.TaskContext, params map[string]any) (
 	urlVal, ok := params["url"].(string)
 	if !ok || urlVal == "" {
 		return nil, errors.New("url is required")
+	}
+
+	// SSRF defense: reject URLs that resolve to internal IPs (loopback, RFC1918,
+	// link-local). Defense in depth via the transport's DialContext below.
+	if err := safehttp.ValidateURL(urlVal); err != nil {
+		return nil, fmt.Errorf("url failed safety validation: %w", err)
 	}
 
 	methodVal, ok := params["method"].(string)
@@ -88,12 +95,17 @@ func (t *LLMA2ATask) Execute(taskCtx types.TaskContext, params map[string]any) (
 		}
 	}
 
-	// Configure Client
+	// Configure Client. DialContext re-validates each dialed IP to close the
+	// DNS rebinding TOCTOU window between ValidateURL above and this dial.
+	// CheckRedirect validates each redirect target to catch a server that 302s
+	// to an internal IP.
 	httpClient := &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+			DialContext:     safehttp.NewSafeDialContext(30 * time.Second),
 		},
+		CheckRedirect: safehttp.SafeCheckRedirect,
 	}
 
 	// Execute Request

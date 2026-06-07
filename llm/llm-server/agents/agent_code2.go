@@ -128,6 +128,10 @@ func evaluateCodeUsingCli(ctx *security.RequestContext, request CodeAgent2Reques
 		args = append(args, "--accountid", request.AccountId)
 	}
 
+	if request.WorkflowId != "" {
+		args = append(args, "--workflowid", request.WorkflowId)
+	}
+
 	if request.RaisePr {
 		args = append(args, "--raisepr", "true")
 	}
@@ -289,6 +293,10 @@ func evaluateCodeUsingPod(ctx *security.RequestContext, agentRequest core.NBAgen
 
 	if request.AccountId != "" {
 		args = append(args, "--accountid", request.AccountId)
+	}
+
+	if request.WorkflowId != "" {
+		args = append(args, "--workflowid", request.WorkflowId)
 	}
 
 	if request.GitRepo == "" && request.Agent == "" {
@@ -619,6 +627,7 @@ func evaluateCodeUsingWorkspace(ctx *security.RequestContext, agentRequest core.
 		"raise_pr":          request.RaisePr,
 		"event_id":          request.EventId,
 		"recommendation_id": request.RecommendationId,
+		"workflow_id":       request.WorkflowId,
 		"account_id":        request.AccountId,
 		"conversation_id":   agentRequest.SessionId,
 		"message_id":        agentRequest.MessageId,
@@ -1010,6 +1019,7 @@ type CodeAgent2Request struct {
 	RaisePr          bool             `json:"raise_pr"`
 	EventId          string           `json:"event_id"`
 	RecommendationId string           `json:"recommendation_id"`
+	WorkflowId       string           `json:"workflow_id"` // Originating workflow definition id; forwarded so a raised PR links back to the workflow.
 	AccountId        string           `json:"account_id"`
 	Namespace        string           `json:"namespace"`
 	Workload         string           `json:"workload"`
@@ -1070,9 +1080,10 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 		return l.executeFollowup(ctx, query, codeAgentRequest)
 	}
 
-	// Extract event_id, recommendation_id, account_id, and git_repo from QueryConfig
+	// Extract event_id, recommendation_id, workflow_id, account_id, and git_repo from QueryConfig
 	eventId := query.QueryConfig.EventId
 	recommendationId := query.QueryConfig.RecommendationId
+	workflowId := query.QueryConfig.WorkflowId
 	accountId := query.QueryConfig.AccountId
 
 	// RaisePr is intentionally NOT hardcoded here. The entrypoint that built
@@ -1279,6 +1290,7 @@ func (l CodeAgent2) Execute(ctx *security.RequestContext, query core.NBAgentRequ
 	// Assign extracted IDs to request
 	codeAgentRequest.EventId = eventId
 	codeAgentRequest.RecommendationId = recommendationId
+	codeAgentRequest.WorkflowId = workflowId
 	codeAgentRequest.AccountId = accountId
 
 	var creds []GitCredentials

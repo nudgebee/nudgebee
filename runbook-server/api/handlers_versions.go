@@ -10,15 +10,19 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"nudgebee/runbook/common"
+	"nudgebee/runbook/internal/model"
 )
 
 // publishVersionRequest is the body for POST /workflows/:id/publish.
 // All fields optional. setLive defaults to true so the common case
-// (publish + immediately use it) needs no body.
+// (publish + immediately use it) needs no body. Status defaults at the
+// service layer to PAUSED so an old client that omits it doesn't accidentally
+// auto-activate a freshly-published version.
 type publishVersionRequest struct {
-	Name        *string `json:"name,omitempty"`
-	Description *string `json:"description,omitempty"`
-	SetLive     *bool   `json:"set_live,omitempty"`
+	Name        *string              `json:"name,omitempty"`
+	Description *string              `json:"description,omitempty"`
+	SetLive     *bool                `json:"set_live,omitempty"`
+	Status      model.WorkflowStatus `json:"status,omitempty"`
 }
 
 // updateVersionMetadataRequest is the body for PATCH /workflows/:id/versions/:n.
@@ -139,7 +143,7 @@ func (s *Server) publishWorkflowVersion(c *gin.Context) {
 		setLive = *req.SetLive
 	}
 
-	v, err := s.workflowService.PublishWorkflow(sc, accountID, id, req.Name, req.Description, setLive)
+	v, err := s.workflowService.PublishWorkflow(sc, accountID, id, req.Name, req.Description, setLive, req.Status)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})

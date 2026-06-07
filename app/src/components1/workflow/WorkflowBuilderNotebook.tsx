@@ -19,11 +19,7 @@ import {
   Box,
   Typography,
   CircularProgress,
-  TextField,
   Drawer,
-  List,
-  ListItem,
-  ListItemText,
   Tooltip,
   Divider,
   FormControlLabel,
@@ -34,6 +30,7 @@ import {
   ListItemText as MuiListItemText,
 } from '@mui/material';
 import { Input } from '@components1/ds/Input';
+import { Select } from '@components1/ds/Select';
 import { Chip as DsChip } from '@components1/ds/Chip';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
@@ -54,6 +51,10 @@ type WorkflowVersionEntry = {
   name?: string | null;
   description?: string | null;
   is_live?: boolean;
+  // Per-version gate (V746). When this row is live, workflows.status mirrors
+  // this value. Surfaced in the version-history drawer so users can toggle
+  // any version's status from a single place (one dropdown per row).
+  status?: 'ACTIVE' | 'PAUSED' | 'INACTIVE';
   created_by?: string;
   created_by_user?: { id: string; display_name: string } | null;
   created_at: string;
@@ -61,7 +62,7 @@ type WorkflowVersionEntry = {
 import WorkflowHeader from './WorkflowHeader';
 import NodeCategoriesSidebar from './modals/NodeCategoriesSidebar';
 import TriggerSelectorPopup from './modals/TriggerSelectorPopup';
-import { colors } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 
 // Extracted components (lightweight, always visible)
 import { TriggerWarningMessage, ExecutionStatusBar } from './components';
@@ -91,7 +92,7 @@ import { useExecutionData } from './hooks/useExecutionData';
 import { useWorkflowInteractions } from './hooks/useWorkflowInteractions';
 import { validateTaskData } from './hooks/useTaskValidation';
 import apiWorkflow from '@api1/workflow';
-import { snackbar } from '@components1/common/snackbarService';
+import { toast as snackbar } from '@components1/ds/Toast';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
 import { Button } from '@components1/ds/Button';
 import {
@@ -110,8 +111,6 @@ import { useWorkflowHistory } from './hooks/useWorkflowHistory';
 import { useWorkflowClipboard } from './hooks/useWorkflowClipboard';
 import { useWorkflowShortcuts } from './hooks/useWorkflowShortcuts';
 import SafeIcon from '@components1/common/SafeIcon';
-import CustomDropdown from '@components1/common/CustomDropdown';
-import CustomLabels from '@components1/common/widgets/CustomLabels';
 import { hasFeatureAccess, hasWriteAccess } from '@lib/auth';
 import { Modal } from '@components1/ds/Modal';
 import { Text } from '@components1/common';
@@ -152,6 +151,12 @@ interface WorkflowData {
   live_version_id?: string | null;
   live_version_number?: number | null;
   live_version_name?: string | null;
+  live_version_status?: WorkflowStatus | null;
+  // V747: workflow_versions row the current draft was branched off. Drives the
+  // editor's lineage chip ("Draft based on vN") and the publish dialog hint.
+  draft_version_id?: string | null;
+  draft_version_number?: number | null;
+  draft_version_name?: string | null;
 }
 
 /** Filter tasks to only those in the included set and clean up dangling depends_on references. */
@@ -469,6 +474,12 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   const [publishName, setPublishName] = useState('');
   const [publishDescription, setPublishDescription] = useState('');
   const [publishSetLive, setPublishSetLive] = useState(true);
+  // Initial status the published version (and the workflow row, when
+  // setLive=true) lands in. Default PAUSED matches the backend default so the
+  // user must opt in to ACTIVE — V746 contract. The version-history drawer's
+  // per-row dropdown is the long-term knob, but offering the initial value
+  // here saves a round-trip when the user already knows what they want.
+  const [publishStatus, setPublishStatus] = useState<'ACTIVE' | 'PAUSED' | 'INACTIVE'>('PAUSED');
   const [publishing, setPublishing] = useState(false);
   const [confirmLiveVersion, setConfirmLiveVersion] = useState<WorkflowVersionEntry | null>(null);
   const [settingLive, setSettingLive] = useState(false);
@@ -1367,6 +1378,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     hasUnsavedChanges, // Surfaced in the top-right state strip (canvas vs saved draft)
     showUnsavedChangesDialog,
     setShowUnsavedChangesDialog: _setShowUnsavedChangesDialog, // Exposed for manual control if needed
+    exitVariant,
     handleConfirmNavigation,
     handleCancelNavigation,
     updateSavedSnapshot: _updateSavedSnapshot,
@@ -1381,14 +1393,6 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     isInitialized,
     enabled: canEdit,
     hasUnpublishedChanges: draftAheadOfLive,
-    onUnpublishedExit: () =>
-      snackbar.info(
-        `Heads up: you have unpublished changes${
-          workflowDataRef.current?.live_version_number
-            ? ` — scheduled & event triggers still run Live v${workflowDataRef.current.live_version_number}`
-            : ''
-        }. Publish to make them live.`
-      ),
   });
 
   // Once the user diverges from the saved draft, the saved draft will be ahead
@@ -1505,25 +1509,28 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     setAutoFitViewport(viewport || null);
   }, [nodes, edges, workflowData, taskDefinitions]);
 
-  const handleSaveWorkflow = async () => {
+  // Returns true when the save (create or update) was actually persisted.
+  // false signals an early bail or backend failure so callers like the
+  // Publish-confirm path can abort instead of snapshotting a stale draft.
+  const handleSaveWorkflow = async (): Promise<boolean> => {
     try {
       // Block if on JSON tab with invalid JSON
       if (currentMode === 'json' && !jsonValid) {
         snackbar.error('Cannot save: JSON is invalid. Please fix errors or switch to Editor tab.');
-        return;
+        return false;
       }
 
       // Block if on JSON tab with unsaved changes
       if (currentMode === 'json' && jsonHasUnsavedChanges) {
         snackbar.error('Cannot save: You have unapplied JSON changes. Click "Apply" first.');
-        return;
+        return false;
       }
 
       // Validate workflow
       const validationErrors = validateWorkflowForSave(workflowData, nodes, (nodes: Node[]) => extractTasksFromWorkflowNodes(nodes, edges));
       if (validationErrors.length > 0) {
         snackbar.error(`Cannot save automation: ${validationErrors.join(', ')}`);
-        return;
+        return false;
       }
 
       // Validate that sum of task timeouts does not exceed workflow timeout
@@ -1539,7 +1546,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
             snackbar.error(
               'Cannot save: Sum of all task timeouts exceeds the automation timeout. Reduce task timeouts or increase the automation timeout.'
             );
-            return;
+            return false;
           }
         }
       }
@@ -1577,7 +1584,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
         if (errorMessage) {
           snackbar.error(errorMessage);
           console.error('Workflow creation error:', response.errors);
-          return;
+          return false;
         }
 
         const newWorkflowId = response.data?.workflow_create?.id;
@@ -1649,6 +1656,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
           }, 500); // Small delay to ensure router update completes
         } else {
           snackbar.error('Failed to get new automation ID');
+          return false;
         }
       } else {
         // Update existing workflow using utility function
@@ -1668,7 +1676,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
           console.error('Workflow update error:', response.errors);
           console.error('Full error details:', JSON.stringify(response.errors, null, 2));
           console.error('Workflow definition being sent:', workflowDefinition);
-          return;
+          return false;
         }
 
         const updateStatus = response.data?.workflow_update?.definition;
@@ -1720,13 +1728,26 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
           }
         } else {
           snackbar.error('Failed to update automation - no success status returned');
+          return false;
         }
       }
+      return true;
     } catch (error) {
       console.error('Error saving workflow:', error);
       snackbar.error('Error saving automation. Check console for details.');
+      return false;
     }
   };
+
+  // handleSaveWorkflow is a plain function reborn every render, closing over the
+  // latest nodes/edges/workflowData. Memoized callers (e.g. handleConfirmPublish)
+  // would otherwise capture the instance from the render where their deps last
+  // changed — once the canvas is dirty, hasUnsavedChanges stops toggling, so the
+  // captured closure freezes on stale canvas state and publishes the wrong draft.
+  // Mirror the freshest function into a ref so memoized callers always invoke the
+  // current closure without having to list handleSaveWorkflow's many deps.
+  const handleSaveWorkflowRef = useRef(handleSaveWorkflow);
+  handleSaveWorkflowRef.current = handleSaveWorkflow;
 
   const openHistoryDrawer = useCallback(async () => {
     if (!workflowId || isNewWorkflow || !accountId) {
@@ -1839,6 +1860,8 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     setPublishName('');
     setPublishDescription('');
     setPublishSetLive(true);
+    // Reset to PAUSED each open so the safer default always wins.
+    setPublishStatus('PAUSED');
     setPublishDialogOpen(true);
   }, []);
 
@@ -1846,10 +1869,26 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     if (!accountId || !workflowId) return;
     setPublishing(true);
     try {
+      // Publish always implies "save + publish". The backend's PublishVersion
+      // snapshots workflows.definition (the saved draft) into a new
+      // workflow_versions row — if the canvas has unsaved edits and we skip
+      // the save here, the published snapshot would be the previous saved
+      // draft, NOT what the user is staring at. Run handleSaveWorkflow first
+      // and abort the publish if it failed so the version never lies.
+      if (hasUnsavedChanges) {
+        // Call through the ref so we always run the latest handleSaveWorkflow
+        // closure (current nodes/edges), not the one frozen when this memoized
+        // callback was last recreated.
+        const saved = await handleSaveWorkflowRef.current();
+        if (!saved) {
+          return;
+        }
+      }
       const response: any = await apiWorkflow.publishWorkflowVersion(accountId, workflowId, {
         name: publishName.trim() || null,
         description: publishDescription.trim() || null,
         setLive: publishSetLive,
+        status: publishStatus,
       });
       const errMsg = parseHttpResponseBodyMessage(response);
       if (errMsg) {
@@ -1878,7 +1917,49 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     } finally {
       setPublishing(false);
     }
-  }, [accountId, publishDescription, publishName, publishSetLive, refreshVersions, workflowId]);
+    // handleSaveWorkflow is reached via handleSaveWorkflowRef (a stable ref kept
+    // in sync with the latest closure every render), so it is intentionally NOT
+    // a dependency here — the ref guarantees we never publish stale canvas state
+    // without re-creating this callback on every edit.
+  }, [accountId, hasUnsavedChanges, publishDescription, publishName, publishSetLive, publishStatus, refreshVersions, workflowId]);
+
+  // Per-version status mutation, fired from the dropdown next to each row in
+  // the version-history drawer. Tracks which version is currently being
+  // mutated so we can disable the matching control while the request is in
+  // flight; this keeps the UI responsive for non-target rows.
+  const [statusUpdatingVersionNumber, setStatusUpdatingVersionNumber] = useState<number | null>(null);
+  const handleChangeVersionStatus = useCallback(
+    async (versionNumber: number, status: 'ACTIVE' | 'PAUSED' | 'INACTIVE') => {
+      if (!accountId || !workflowId) return;
+      setStatusUpdatingVersionNumber(versionNumber);
+      try {
+        const response: any = await apiWorkflow.updateWorkflowVersionStatus(accountId, workflowId, versionNumber, status);
+        const errMsg = parseHttpResponseBodyMessage(response);
+        if (errMsg) {
+          snackbar.error(errMsg);
+          return;
+        }
+        snackbar.success(`v${versionNumber} → ${status.toLowerCase()}.`);
+        await refreshVersions();
+        // If the mutated version was live, workflows.status mirrored — reload
+        // workflowData so the strip reflects the new state without a manual
+        // refresh.
+        try {
+          const reload: any = await apiWorkflow.getWorkflowById(accountId, workflowId);
+          const reloaded = reload?.data?.workflow_get;
+          if (reloaded) setWorkflowData(reloaded);
+        } catch {
+          /* non-fatal: workflow data refresh failure */
+        }
+      } catch (err) {
+        console.error('Failed to update workflow version status:', err);
+        snackbar.error('Failed to update version status.');
+      } finally {
+        setStatusUpdatingVersionNumber(null);
+      }
+    },
+    [accountId, refreshVersions, workflowId]
+  );
 
   const handleConfirmMakeLive = useCallback(async () => {
     if (!confirmLiveVersion || !accountId || !workflowId) return;
@@ -2081,8 +2162,17 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
 
           // Update URL to reflect the new workflow ID
           router.replace(`/workflow/${currentWorkflowId}?accountId=${accountId}`);
-        } else {
-          // Update existing workflow first
+        } else if (variant === 'current' && hasUnsavedChanges) {
+          // "Run current" runs the on-screen draft, so we must persist the
+          // draft first or the backend would execute a stale snapshot.
+          // Critically, we ONLY save when hasUnsavedChanges is true — otherwise
+          // every click of Run was silently writing the draft back and bumping
+          // updated_by on the workflow row, corrupting the "last edited by"
+          // audit trail for a user who never actually edited anything.
+          //
+          // "Run live" never needs this branch: it executes the published live
+          // version (workflow_versions row), so workflows.definition is
+          // irrelevant to the run.
           const updateRequest = createWorkflowUpdateRequest(
             accountId,
             currentWorkflowId,
@@ -2110,7 +2200,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
         snackbar.error('Failed to save automation');
       }
     },
-    [validateBeforeExecution, edges, workflowId, accountId, isNewWorkflow, router, workflowSettings]
+    [validateBeforeExecution, edges, workflowId, accountId, isNewWorkflow, router, workflowSettings, hasUnsavedChanges]
   );
 
   // Dry Run button click: validate, then open trigger input modal
@@ -3128,6 +3218,9 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
         liveVersionNumber={workflowData?.live_version_number}
         liveVersionName={workflowData?.live_version_name}
         liveVersionId={workflowData?.live_version_id}
+        draftVersionNumber={workflowData?.draft_version_number}
+        draftVersionName={workflowData?.draft_version_name}
+        draftVersionId={workflowData?.draft_version_id}
         isNewWorkflow={isNewWorkflow}
         onPublish={openPublishDialog}
         onHistory={openHistoryDrawer}
@@ -3311,7 +3404,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                       height: '100%',
                       width: `${nubiChatWindowWidth}px`,
                       borderRight: '1px solid rgb(226, 226, 227)',
-                      backgroundColor: colors.background.white,
+                      backgroundColor: ds.background[100],
                       overflow: 'hidden',
                       transition: isResizingRef.current ? 'none' : 'left 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
                       zIndex: 20,
@@ -3386,9 +3479,9 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                       transform: 'translateY(-50%) rotate(-90deg)',
                       transformOrigin: 'center',
                       zIndex: 30,
-                      backgroundColor: colors.background.white,
-                      border: `1px solid ${colors.border.secondary}`,
-                      borderLeft: showNubiChat ? `1px solid ${colors.border.secondary}` : 'none',
+                      backgroundColor: ds.background[100],
+                      border: `1px solid ${ds.brand[200]}`,
+                      borderLeft: showNubiChat ? `1px solid ${ds.brand[200]}` : 'none',
                       borderTopLeftRadius: 0,
                       borderBottomLeftRadius: '8px',
                       borderTopRightRadius: 0,
@@ -3406,15 +3499,15 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                     }}
                   >
                     {showNubiChat ? (
-                      <ChevronLeftIcon fontSize='small' sx={{ color: colors.text.secondary, transform: 'rotate(90deg)' }} />
+                      <ChevronLeftIcon fontSize='small' sx={{ color: ds.gray[700], transform: 'rotate(90deg)' }} />
                     ) : (
-                      <ChevronRightIcon fontSize='small' sx={{ color: colors.text.secondary, transform: 'rotate(90deg)' }} />
+                      <ChevronRightIcon fontSize='small' sx={{ color: ds.gray[700], transform: 'rotate(90deg)' }} />
                     )}
                     <Typography
                       sx={{
                         fontSize: 'var(--ds-text-small)',
                         fontWeight: 'var(--ds-font-weight-medium)',
-                        color: colors.text.secondary,
+                        color: ds.gray[700],
                         whiteSpace: 'nowrap',
                       }}
                     >
@@ -3533,7 +3626,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                             zIndex: 15,
                           }}
                         >
-                          <Typography variant='h6' sx={{ color: colors.text.secondary, mb: 2 }}>
+                          <Typography variant='h6' sx={{ color: ds.gray[700], mb: 2 }}>
                             Loading AI-generated workflow...
                           </Typography>
                           <Box sx={{ display: 'flex', justifyContent: 'center' }}>
@@ -3603,7 +3696,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                             <Typography
                               variant='h5'
                               sx={{
-                                color: colors.text.secondary,
+                                color: ds.gray[700],
                                 fontWeight: 'var(--ds-font-weight-semibold)',
                                 fontSize: 'var(--ds-text-heading)',
                                 fontFamily: 'poppins',
@@ -3614,7 +3707,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                             </Typography>
                             <Typography
                               variant='body1'
-                              sx={{ color: colors.text.secondaryDark, mb: 3, fontSize: 'var(--ds-text-body-lg)', mt: 'var(--ds-space-1)' }}
+                              sx={{ color: ds.gray[400], mb: 3, fontSize: 'var(--ds-text-body-lg)', mt: 'var(--ds-space-1)' }}
                             >
                               Pick a trigger to kick things off. You can always change it later
                             </Typography>
@@ -3712,7 +3805,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                                     sx={{
                                       fontSize: 'var(--ds-text-body)',
                                       fontWeight: 'var(--ds-font-weight-semibold)',
-                                      color: colors.text.secondary,
+                                      color: ds.gray[700],
                                       fontFamily: 'poppins',
                                       lineHeight: 1.3,
                                     }}
@@ -3774,8 +3867,8 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                             left: '50%',
                             transform: 'translateX(-50%)',
                             zIndex: 100,
-                            backgroundColor: colors.background.white,
-                            border: `1px solid ${colors.border.secondaryLight}`,
+                            backgroundColor: ds.background[100],
+                            border: `1px solid ${ds.gray[200]}`,
                             borderRadius: 'var(--ds-radius-xl)',
                             padding: 'var(--ds-space-2) var(--ds-space-2)',
                             boxShadow: '0 -2px 16px rgba(0, 0, 0, 0.08)',
@@ -3800,20 +3893,34 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                           )}
 
                           {/* Divider */}
-                          {canEdit && <Box sx={{ width: '1px', height: '28px', backgroundColor: colors.border.secondary }} />}
+                          {canEdit && <Box sx={{ width: '1px', height: '28px', backgroundColor: ds.brand[200] }} />}
 
-                          {/* Save draft Button - draft only (does not snapshot/publish a version) */}
+                          {/* Save draft / Publish Button.
+                              - Create mode (isNewWorkflow=true): the first "save"
+                                actually creates the workflow row AND snapshots v1,
+                                so calling it "Save draft" misled users into
+                                thinking nothing was being published. Show "Publish".
+                              - Edit mode: keeps "Save draft" — the action only
+                                persists the on-screen draft and does NOT snapshot
+                                a new version; the explicit Publish button in the
+                                top-right state strip is what produces a version. */}
                           {canEdit && (
-                            <Tooltip title='Saves your edits as a draft. Publish to make them the live version that scheduled & event triggers run.'>
+                            <Tooltip
+                              title={
+                                isNewWorkflow
+                                  ? 'Creates the workflow and saves v1 as a Paused live version. Activate it from the version status control once you are ready.'
+                                  : 'Saves your edits as a draft. Publish to make them the live version that all triggers run.'
+                              }
+                            >
                               <span>
                                 <Button
                                   id='workflow-save-btn'
                                   tone='secondary'
                                   size='sm'
-                                  icon={<SafeIcon src={SaveIconOutline} alt='Save draft' width={16} height={16} />}
+                                  icon={<SafeIcon src={SaveIconOutline} alt={isNewWorkflow ? 'Publish' : 'Save draft'} width={16} height={16} />}
                                   onClick={handleSaveWorkflow}
                                 >
-                                  Save draft
+                                  {isNewWorkflow ? 'Publish' : 'Save draft'}
                                 </Button>
                               </span>
                             </Tooltip>
@@ -3822,7 +3929,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                           {/* Publish + History moved to the top-right state strip (WorkflowStateStrip). */}
 
                           {/* Divider */}
-                          <Box sx={{ width: '1px', height: '28px', backgroundColor: colors.border.secondary }} />
+                          <Box sx={{ width: '1px', height: '28px', backgroundColor: ds.brand[200] }} />
 
                           {/* Run split button: primary = "Run current" (draft snapshot, stays on editor).
                               Chevron menu = "Run live version" (jumps to executions tab on success). */}
@@ -3938,7 +4045,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                           )}
 
                           {/* Divider */}
-                          <Box sx={{ width: '1px', height: '28px', backgroundColor: colors.border.secondary }} />
+                          <Box sx={{ width: '1px', height: '28px', backgroundColor: ds.brand[200] }} />
 
                           {/* NuBi AI Chat Button */}
                           {nubiChatFeatureEnabled && (
@@ -3980,107 +4087,14 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                             onClick={handlePrettifyLayout}
                           />
 
-                          {!isNewWorkflow && workflowSettings?.status && (
-                            <CustomDropdown
-                              value={workflowSettings.status}
-                              onChange={(event: any) => {
-                                if (setWorkflowSettings && workflowSettings) {
-                                  setWorkflowSettings({
-                                    ...workflowSettings,
-                                    status: event.target.value,
-                                  });
-                                }
-                              }}
-                              options={[
-                                { label: 'ACTIVE', value: 'ACTIVE' },
-                                { label: 'INACTIVE', value: 'INACTIVE' },
-                                { label: 'PAUSED', value: 'PAUSED' },
-                              ]}
-                              minWidth='120px'
-                              disableClearable
-                              label=''
-                              noBorder
-                              customStyle={{
-                                minHeight: '36px',
-                                '& .MuiOutlinedInput-root': {
-                                  height: '36px',
-                                  fontSize: 'var(--ds-text-body)',
-                                  fontWeight: 'var(--ds-font-weight-medium)',
-                                  padding: 'var(--ds-space-1) var(--ds-space-3)',
-                                  backgroundColor: 'var(--ds-background-100)',
-                                  color: 'var(--ds-brand-500)',
-                                  transition: 'all 0.15s ease-in-out',
-                                  '&:hover': {
-                                    backgroundColor: 'var(--ds-background-200)',
-                                  },
-                                  '& .MuiSelect-select': {
-                                    padding: '0px',
-                                  },
-                                },
-                                '& .MuiOutlinedInput-notchedOutline': {
-                                  border: 'none',
-                                },
-                              }}
-                              additionalAutoCompleteProps={{
-                                renderInput: (params: any) => (
-                                  <Box sx={{ position: 'relative', width: '100%' }}>
-                                    <TextField
-                                      {...params}
-                                      margin='none'
-                                      sx={{
-                                        margin: '0px',
-                                        '& .MuiInputBase-input': {
-                                          opacity: 0,
-                                          position: 'absolute',
-                                        },
-                                      }}
-                                    />
-                                    <Box
-                                      sx={{
-                                        position: 'absolute',
-                                        top: '50%',
-                                        left: '12px',
-                                        transform: 'translateY(-50%)',
-                                        pointerEvents: 'none',
-                                        zIndex: 1,
-                                      }}
-                                    >
-                                      <CustomLabels
-                                        text={workflowSettings.status}
-                                        variant={
-                                          workflowSettings.status === 'ACTIVE'
-                                            ? 'green'
-                                            : workflowSettings.status === 'PAUSED'
-                                            ? 'orange'
-                                            : workflowSettings.status === 'INACTIVE'
-                                            ? 'red'
-                                            : 'grey'
-                                        }
-                                        textTransform='none'
-                                      />
-                                    </Box>
-                                  </Box>
-                                ),
-                                renderOption: (props: any, option: any) => (
-                                  <Box component='li' {...props} sx={{ padding: 'var(--ds-space-2) var(--ds-space-3)' }}>
-                                    <CustomLabels
-                                      text={option.label}
-                                      variant={
-                                        option.value === 'ACTIVE'
-                                          ? 'green'
-                                          : option.value === 'PAUSED'
-                                          ? 'orange'
-                                          : option.value === 'INACTIVE'
-                                          ? 'red'
-                                          : 'grey'
-                                      }
-                                      textTransform='none'
-                                    />
-                                  </Box>
-                                ),
-                              }}
-                            />
-                          )}
+                          {/* The workflow-row status dropdown that used to live
+                              here was removed in the V746 rollout. Status now
+                              lives on workflow_versions.status (per-row toggle
+                              in the version-history drawer + initial value in
+                              the Publish dialog). workflows.status is a derived
+                              mirror of the live version's status, so editing it
+                              from the toolbar would either drift from the live
+                              version or fight the same field two ways. */}
                         </Box>
                       )}
                     </>
@@ -4098,9 +4112,9 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                     transform: 'translateY(-50%) rotate(90deg)',
                     transformOrigin: 'center',
                     zIndex: 30,
-                    backgroundColor: colors.background.white,
-                    border: `1px solid ${colors.border.secondary}`,
-                    borderRight: jsonPanelVisible ? `1px solid ${colors.border.secondary}` : 'none',
+                    backgroundColor: ds.background[100],
+                    border: `1px solid ${ds.brand[200]}`,
+                    borderRight: jsonPanelVisible ? `1px solid ${ds.brand[200]}` : 'none',
                     borderBottomLeftRadius: '8px',
                     borderTopRightRadius: 0,
                     borderBottomRightRadius: '8px',
@@ -4120,16 +4134,16 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                     sx={{
                       fontSize: 'var(--ds-text-small)',
                       fontWeight: 'var(--ds-font-weight-medium)',
-                      color: colors.text.secondary,
+                      color: ds.gray[700],
                       whiteSpace: 'nowrap',
                     }}
                   >
                     JSON
                   </Typography>
                   {jsonPanelVisible ? (
-                    <ChevronRightIcon fontSize='small' sx={{ color: colors.text.secondary, transform: 'rotate(-90deg)' }} />
+                    <ChevronRightIcon fontSize='small' sx={{ color: ds.gray[700], transform: 'rotate(-90deg)' }} />
                   ) : (
-                    <ChevronLeftIcon fontSize='small' sx={{ color: colors.text.secondary, transform: 'rotate(-90deg)' }} />
+                    <ChevronLeftIcon fontSize='small' sx={{ color: ds.gray[700], transform: 'rotate(-90deg)' }} />
                   )}
                 </Box>
                 {/* Right Side: JSON Editor (sliding panel) */}
@@ -4288,7 +4302,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                 }
               >
                 <Box padding='24px'>
-                  <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', color: colors.text.secondary }}>
+                  <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', color: ds.gray[700] }}>
                     Save your edits to this action, or discard them and keep the previous configuration?
                   </Typography>
                 </Box>
@@ -4360,7 +4374,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                 }
               >
                 <Box padding='24px'>
-                  <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', color: colors.text.secondary }}>
+                  <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', color: ds.gray[700] }}>
                     Save your edits to this trigger, or discard them and keep the previous configuration?
                   </Typography>
                 </Box>
@@ -4383,7 +4397,12 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
           {/* Dry Run Result Modal (lazy-loaded) */}
           {showDryRunModal && (
             <Suspense fallback={null}>
-              <DryRunResultModal open={showDryRunModal} onClose={() => setShowDryRunModal(false)} result={dryRunResult} />
+              <DryRunResultModal
+                open={showDryRunModal}
+                onClose={() => setShowDryRunModal(false)}
+                result={dryRunResult}
+                draftVersionNumber={workflowData?.draft_version_number ?? undefined}
+              />
             </Suspense>
           )}
 
@@ -4402,6 +4421,10 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                 inputSchema={getInputSchema()}
                 onTrigger={handleTriggerFromModal}
                 loading={triggerModalLoading}
+                liveVersionNumber={workflowData?.live_version_number ?? undefined}
+                liveVersionName={workflowData?.live_version_name ?? undefined}
+                draftVersionNumber={workflowData?.draft_version_number ?? undefined}
+                runVariant={runVariant}
               />
             </Suspense>
           )}
@@ -4448,79 +4471,111 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                     </Typography>
                   </Box>
                 ) : (
-                  <List dense>
-                    {versions.map((v) => {
+                  // Row layout replaced MUI ListItem + secondaryAction because
+                  // secondaryAction is positioned absolutely on the right and
+                  // its vertical extent does not contribute to the parent row
+                  // height. With the Select + Make Live + Checkout stack, the
+                  // actions overflowed downward into the next row visually
+                  // (see V8RiiM/iNeTAh screenshots). Switching to an explicit
+                  // two-column Box flex layout makes the actions column size
+                  // the row, so each row's height = max(text, actions) and
+                  // adjacent rows can't collide.
+                  <Box>
+                    {versions.map((v, idx) => {
                       const author = v.created_by_user?.display_name || v.created_by || 'unknown';
                       const when = v.created_at ? new Date(v.created_at).toLocaleString() : '';
                       const sourceLabel = v.source === 'restore' && v.restored_from_version ? `restored from v${v.restored_from_version}` : v.source;
                       return (
-                        <ListItem
+                        <Box
                           key={v.id}
-                          divider
-                          secondaryAction={
-                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-                              {!v.is_live && (
-                                <Button
-                                  id={`workflow-make-live-v${v.version_number}-btn`}
-                                  tone='primary'
-                                  size='sm'
-                                  onClick={() => setConfirmLiveVersion(v)}
-                                  disabled={settingLive}
-                                >
-                                  Make Live
-                                </Button>
-                              )}
-                              <Button
-                                id={`workflow-restore-v${v.version_number}-btn`}
-                                tone='secondary'
-                                size='sm'
-                                onClick={() => setConfirmRestoreVersion(v)}
-                                disabled={restoring}
-                              >
-                                Checkout
-                              </Button>
-                            </Box>
-                          }
+                          sx={{
+                            display: 'flex',
+                            alignItems: 'flex-start',
+                            justifyContent: 'space-between',
+                            gap: 2,
+                            px: 2,
+                            py: 2,
+                            borderBottom: idx === versions.length - 1 ? 'none' : '1px solid var(--ds-brand-150)',
+                          }}
                         >
-                          <ListItemText
-                            primary={
-                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-                                <DsChip size='xs' variant='tag' tone='neutral'>{`v${v.version_number}`}</DsChip>
-                                {v.is_live && (
-                                  <DsChip size='xs' variant='status' tone='success'>
-                                    Live
-                                  </DsChip>
-                                )}
-                                {v.name && (
-                                  <DsChip size='xs' variant='tag' tone='neutral'>
-                                    {v.name}
-                                  </DsChip>
-                                )}
-                                <DsChip size='xs' variant='tag' tone='info'>
-                                  {sourceLabel}
+                          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, minWidth: 0, flex: 1 }}>
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                              <DsChip size='xs' variant='tag' tone='neutral'>{`v${v.version_number}`}</DsChip>
+                              {v.is_live && (
+                                <DsChip size='xs' variant='status' tone='success'>
+                                  Live
                                 </DsChip>
-                              </Box>
-                            }
-                            secondary={
-                              <>
-                                {v.description && (
-                                  <Typography variant='caption' component='span' display='block' sx={{ fontStyle: 'italic' }}>
-                                    {v.description}
-                                  </Typography>
-                                )}
-                                <Typography variant='caption' component='span' display='block'>
-                                  {when}
-                                </Typography>
-                                <Typography variant='caption' component='span' color='text.secondary'>
-                                  by {author}
-                                </Typography>
-                              </>
-                            }
-                          />
-                        </ListItem>
+                              )}
+                              {v.name && (
+                                <DsChip size='xs' variant='tag' tone='neutral'>
+                                  {v.name}
+                                </DsChip>
+                              )}
+                              <DsChip size='xs' variant='tag' tone='info'>
+                                {sourceLabel}
+                              </DsChip>
+                            </Box>
+                            {v.description && (
+                              <Typography variant='caption' sx={{ fontStyle: 'italic', color: 'var(--ds-gray-700)' }}>
+                                {v.description}
+                              </Typography>
+                            )}
+                            <Typography variant='caption' sx={{ color: 'var(--ds-gray-700)' }}>
+                              {when}
+                            </Typography>
+                            <Typography variant='caption' sx={{ color: 'var(--ds-gray-600)' }}>
+                              by {author}
+                            </Typography>
+                          </Box>
+                          <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, alignItems: 'stretch', flexShrink: 0, minWidth: 130 }}>
+                            {/* Per-version status dropdown (DS Select). Mutating
+                                any version updates workflow_versions.status; if
+                                the row is live the DAO also mirrors it onto
+                                workflows.status in the same tx. clearable=false
+                                because status must always have a value — DS
+                                Select otherwise renders an inline clear (✕). */}
+                            {/* All three row controls (Select, Make Live, Checkout)
+                                cross-disable on any of the three in-flight markers.
+                                Each mutation reloads workflow data or live pointer,
+                                so concurrent clicks would race on stale UI state. */}
+                            <Select
+                              size='sm'
+                              value={v.status ?? 'PAUSED'}
+                              onChange={(next) => handleChangeVersionStatus(v.version_number, next as 'ACTIVE' | 'PAUSED' | 'INACTIVE')}
+                              disabled={statusUpdatingVersionNumber !== null || settingLive || restoring}
+                              clearable={false}
+                              options={[
+                                { value: 'ACTIVE', label: 'Active' },
+                                { value: 'PAUSED', label: 'Paused' },
+                                { value: 'INACTIVE', label: 'Inactive' },
+                              ]}
+                              data-testid={`workflow-version-status-select-v${v.version_number}`}
+                            />
+                            {!v.is_live && (
+                              <Button
+                                id={`workflow-make-live-v${v.version_number}-btn`}
+                                tone='primary'
+                                size='sm'
+                                onClick={() => setConfirmLiveVersion(v)}
+                                disabled={statusUpdatingVersionNumber !== null || settingLive || restoring}
+                              >
+                                Make Live
+                              </Button>
+                            )}
+                            <Button
+                              id={`workflow-restore-v${v.version_number}-btn`}
+                              tone='secondary'
+                              size='sm'
+                              onClick={() => setConfirmRestoreVersion(v)}
+                              disabled={statusUpdatingVersionNumber !== null || settingLive || restoring}
+                            >
+                              Checkout
+                            </Button>
+                          </Box>
+                        </Box>
                       );
                     })}
-                  </List>
+                  </Box>
                 )}
               </Box>
             </Box>
@@ -4551,7 +4606,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
             }
           >
             <Box sx={{ p: 'var(--ds-space-4) 0' }}>
-              <Typography variant='body2' sx={{ color: colors.text.secondary }}>
+              <Typography variant='body2' sx={{ color: ds.gray[700] }}>
                 Your current draft will be replaced with the contents of v{confirmRestoreVersion?.version_number}. The live version that runs
                 executions is NOT changed. Publish again to snapshot the restored draft as a new version.
               </Typography>
@@ -4583,7 +4638,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
             }
           >
             <Box sx={{ p: 'var(--ds-space-4) 0' }}>
-              <Typography variant='body2' sx={{ mb: 2, color: colors.text.secondary }}>
+              <Typography variant='body2' sx={{ mb: 2, color: ds.gray[700] }}>
                 Snapshot the current draft as a new immutable version. Optionally give it a label and a short changelog. New executions will run this
                 version if you mark it live.
               </Typography>
@@ -4609,7 +4664,30 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                   minRows={2}
                 />
               </Box>
+              {/* Per-version status (V746). Default PAUSED so the user has to
+                  actively choose ACTIVE — matches the backend default and
+                  prevents surprise auto-fires on publish. When setLive is on,
+                  the chosen status also mirrors onto workflows.status via
+                  DAO.SetLiveVersion in a single tx. The version-history drawer
+                  exposes the same Select per row for after-the-fact changes. */}
+              <Box data-testid='workflow-publish-status-select' sx={{ mt: 1.5 }}>
+                <Select
+                  size='sm'
+                  label='Version status'
+                  help='Active = all triggers fire. Paused = manual only. Inactive = blocked. Change later from the version history drawer.'
+                  value={publishStatus}
+                  onChange={(next) => setPublishStatus(next as 'ACTIVE' | 'PAUSED' | 'INACTIVE')}
+                  disabled={publishing}
+                  clearable={false}
+                  options={[
+                    { value: 'ACTIVE', label: 'Active' },
+                    { value: 'PAUSED', label: 'Paused' },
+                    { value: 'INACTIVE', label: 'Inactive' },
+                  ]}
+                />
+              </Box>
               <FormControlLabel
+                sx={{ mt: 1 }}
                 control={
                   <Checkbox
                     checked={publishSetLive}
@@ -4648,21 +4726,25 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
             }
           >
             <Box sx={{ p: 'var(--ds-space-4) 0' }}>
-              <Typography variant='body2' sx={{ color: colors.text.secondary }}>
+              <Typography variant='body2' sx={{ color: ds.gray[700] }}>
                 New executions will run v{confirmLiveVersion?.version_number}. Your current draft is preserved and remains separate — switching the
                 live pointer does not modify what you&apos;re editing.
               </Typography>
             </Box>
           </Modal>
 
-          {/* Unsaved Changes Confirmation Dialog */}
+          {/* Exit-confirmation modal. Two variants share the same component so
+              the user reads copy that matches what they're actually about to
+              lose. The unpublished variant replaces the previous opt-in
+              snackbar that users often missed; the unsaved variant is the
+              legacy canvas-edits warning. */}
           <Modal
             open={showUnsavedChangesDialog}
-            title='Unsaved Changes'
+            title={exitVariant === 'unpublished' ? 'Unpublished changes' : 'Unsaved changes'}
             actionButtons={
               <Box sx={{ display: 'flex', gap: 2, justifyContent: 'flex-end', p: 2 }}>
                 <Button id='workflow-unsaved-cancel-btn' tone='secondary' size='md' onClick={handleCancelNavigation} disabled={loading}>
-                  Cancel
+                  Stay
                 </Button>
                 <Button id='workflow-unsaved-leave-btn' tone='primary' size='md' onClick={handleConfirmNavigation} disabled={loading}>
                   Leave page
@@ -4672,7 +4754,17 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
             handleClose={handleCancelNavigation}
           >
             <Box padding={'24px'}>
-              <Text value={'You have unsaved changes. Are you sure you want to leave? Your changes will be lost.'} />
+              {exitVariant === 'unpublished' ? (
+                <Text
+                  value={
+                    workflowDataRef.current?.live_version_number
+                      ? `Your draft is saved but not published. All triggers will keep running Live version: v${workflowDataRef.current.live_version_number}, not your draft. Leave anyway?`
+                      : 'Your draft is saved but not published. All triggers will keep running the current live version, not your draft. Leave anyway?'
+                  }
+                />
+              ) : (
+                <Text value={'You have unsaved canvas edits. Leaving will lose them. Are you sure you want to leave?'} />
+              )}
             </Box>
           </Modal>
         </Box>

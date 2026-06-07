@@ -55,6 +55,11 @@ def create_db_connection_pool() -> psycopg2.pool.AbstractConnectionPool:
 def select_data(
     table_name: str, columns: List[str] = [], conditions: Dict[str, Any] = {}, cursor_factory=None
 ) -> List[Any]:
+    # NOTE: columns and condition keys are intentionally passed through as raw
+    # SQL fragments — callers in this collector legitimately pass JSON-extract
+    # expressions like "(meta ->> 'name' :: text)" (see handlers/transformer.py).
+    # All callers in this module use static literals; do NOT pass user-supplied
+    # strings as columns/conditions/table_name without an allowlist.
     conn = None
     try:
         conn = create_db_connection_pool().getconn()
@@ -142,6 +147,11 @@ def dict_to_insert_query(table_name: str, data: List[Dict[str, Any]], on_conflic
     :param data: List of dictionaries, where keys are column names and values are the data to insert.
     :param on_conflict: The ON CONFLICT clause for handling duplicates (optional).
     :return: A tuple containing the query string and the parameters as a list of tuples.
+
+    SECURITY: table_name, column names (data[*].keys()), and on_conflict are
+    inlined into the SQL string, not bound via %s. All callers in this module
+    pass static literals; do NOT pass user-supplied strings without an
+    allowlist. Values inside the dicts are parameter-bound and safe.
     """
     if not data:
         raise ValueError("Data list cannot be empty.")

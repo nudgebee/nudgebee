@@ -758,10 +758,10 @@ const CustomTable = ({
               [`&:nth-last-of-type(${isExpandableRows ? 2 : 1})`]: {
                 td: {
                   '&:nth-of-type(1)': {
-                    borderRadius: '0 0 0 var(--ds-radius-lg)',
+                    borderRadius: '0',
                   },
                   '&:nth-last-of-type(1)': {
-                    borderRadius: '0 0 var(--ds-radius-lg) 0',
+                    borderRadius: '0',
                   },
                 },
               },

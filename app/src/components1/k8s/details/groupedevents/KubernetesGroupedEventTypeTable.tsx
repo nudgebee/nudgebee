@@ -130,6 +130,8 @@ const KubernetesGroupedEventTypeTable: React.FC<KubernetesGroupedEventTypeTableP
       .getEventFilterValues({
         accountId,
         filterTypes: ['aggregation_key'],
+        startTime: new Date(selectedDateRange.startDate).toISOString(),
+        endTime: new Date(selectedDateRange.endDate).toISOString(),
       })
       .then((res: any) => {
         const aggregationFilter = res?.data?.filters?.find((f: any) => f.filter_type === 'aggregation_key');
@@ -140,7 +142,7 @@ const KubernetesGroupedEventTypeTable: React.FC<KubernetesGroupedEventTypeTableP
           }))
         );
       });
-  }, [accountId]);
+  }, [accountId, selectedDateRange.startDate, selectedDateRange.endDate]);
 
   const handleDateRangeChange = (passedSelectedDateTime: any) => {
     setSelectedDateRange({

@@ -1,6 +1,6 @@
 import { Page, Locator, test } from "@playwright/test";
 import { CommonLocators } from "../../GlobalLocators";
-import axios from "axios";
+import { checkIntegrationWithCache } from "../../utils/IntegrationStatusCache";
 
 export class AWSLocators extends CommonLocators {
   // Cloud Account Details - common anchor tabs
@@ -119,7 +119,7 @@ export class AWSLocators extends CommonLocators {
     this.ECSEvents = page.locator("#dropdown-events");
 
     // Services drilldown tabs (expand arrow + tab buttons inside the collapsed row)
-    this.ServicesRowExpandButton = page.locator('img[alt="arrow"]').first();
+    this.ServicesRowExpandButton = page.getByRole("button", { name: "Expand row" }).first();
     this.ServicesDrilldownTabResources = page.getByRole("tab", { name: "Resources" });
     this.ServicesDrilldownTabCostTrend = page.getByRole("tab", { name: "Cost Trend" });
     this.ServicesDrilldownTabRecommendations = page.getByRole("tab", { name: "Recommendations" });
@@ -130,7 +130,7 @@ export class AWSLocators extends CommonLocators {
   getResourceRowExpandButton() {
     return this.page
       .locator("#service-resource-listing-table")
-      .locator('img[alt="arrow"]')
+      .getByRole("button", { name: "Expand row" })
       .first();
   }
 
@@ -138,46 +138,37 @@ export class AWSLocators extends CommonLocators {
     console.log("Checking AWS integration status via Admin > Integrations...");
 
     await this.adminBtn.click();
+
+    const navigated = await this.page.waitForURL(/user-management/, { timeout: 15000 })
+      .then(() => true)
+      .catch(() => false);
+
+    if (!navigated) {
+      console.log("Admin nav click did not navigate — falling back to direct URL");
+      await this.page.goto("/user-management");
+    }
+
     await this.page.waitForLoadState("networkidle");
 
     const integrationsTab = this.page.locator("#anchor-tab-Integrations");
-    await integrationsTab.waitFor({ state: "visible", timeout: 10000 });
+    await integrationsTab.waitFor({ state: "visible", timeout: 20000 });
     await integrationsTab.click();
     await this.page.waitForLoadState("networkidle");
 
     const awsCard = this.page.locator("#Aws-section-card");
     await awsCard.waitFor({ state: "visible", timeout: 10000 });
 
-    const isActive = await awsCard
-      .getByText("Active", { exact: true })
-      .isVisible({ timeout: 5000 })
-      .catch(() => false);
+    const cardText = await awsCard.innerText().catch(() => "");
+    const isActive = /\bActive\s+[1-9]\d*/i.test(cardText);
 
     console.log(`AWS integration status: ${isActive ? "Active ✅" : "Not Active ❌"}`);
     return isActive;
   }
 
-  async sendSlackNotification(message: string): Promise<void> {
-    const webhookUrl = process.env.SLACK_WEBHOOK_URL;
-    if (!webhookUrl) {
-      console.warn("[AWSLocators] SLACK_WEBHOOK_URL not set, skipping notification");
-      return;
-    }
-    try {
-      await axios.post(webhookUrl, { text: message });
-      console.log(`[AWSLocators] Slack notification sent: ${message}`);
-    } catch (error) {
-      console.warn(`[AWSLocators] Failed to send Slack notification: ${error}`);
-    }
-  }
-
   async openAWSCloudAccountFromConfig() {
-    const isActive = await this.checkAWSIntegration();
+    const isActive = await checkIntegrationWithCache("aws", () => this.checkAWSIntegration());
 
     if (!isActive) {
-      await this.sendSlackNotification(
-        "Please integrate AWS first, then I will start the testing."
-      );
       test.skip(true, "AWS integration is not Active — Slack notification sent");
       return;
     }

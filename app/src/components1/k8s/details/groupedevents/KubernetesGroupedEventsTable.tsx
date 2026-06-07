@@ -383,11 +383,15 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     disabledFilters: ['subjectType', ...(isTroubleshootPage && !selectedAccountId.length ? ['workload', 'namespace'] : [])],
     resource_ids: [],
     selectedNamespace,
+    startTime: new Date(selectedDateRange.startDate).toISOString(),
+    endTime: new Date(selectedDateRange.endDate).toISOString(),
   });
 
-  const { serviceNamesFilter, isOptionsLoading: cloudOptionsLoading } = useEventCloudFilter(selectedAccountId, {
-    subjectNamespace: selectedServiceName,
-  });
+  const { serviceNamesFilter, isOptionsLoading: cloudOptionsLoading } = useEventCloudFilter(
+    selectedAccountId,
+    { subjectNamespace: selectedServiceName },
+    { startTime: new Date(selectedDateRange.startDate).toISOString(), endTime: new Date(selectedDateRange.endDate).toISOString() }
+  );
 
   useEffect(() => {
     const raw = accountId || (router.query.accountId as string);

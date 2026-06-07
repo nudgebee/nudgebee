@@ -103,6 +103,9 @@ export const CategoryListing: string[] = [
   'ACCOUNTS',
   'ALERT_MANAGER',
   'AUTO_PILOT',
+  'AUTOMATION',
+  // Deprecated: kept so historical rows tagged 'AUTO_RUNBOOK' remain filterable.
+  // New automation audits use 'AUTOMATION' (renders as "Automation").
   'AUTO_RUNBOOK',
   'CHAT_ACTIONS',
   'GROUPS',

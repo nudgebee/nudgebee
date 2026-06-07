@@ -673,16 +673,21 @@ func CreateIntegrationConfig(
 		}
 
 		// handle default provider flags in integrations_cloud_accounts
-		if v.Name == DefaultLogProvider || v.Name == DefaultTraceProvider || v.Name == DefaultMetricsProvider {
-			var column string
-			switch v.Name {
-			case DefaultLogProvider:
-				column = "default_log_provider"
-			case DefaultTraceProvider:
-				column = "default_traces_provider"
-			case DefaultMetricsProvider:
-				column = "default_metrics_provider"
-			}
+		// Allowlist via switch: v.Name -> physical column. Identifiers can't
+		// be bound via $N placeholders, so the only safe interpolation source
+		// is the closed set of literals enumerated here. Switch is preferred
+		// over a map literal so the allowlist allocates nothing per loop
+		// iteration.
+		var column string
+		switch v.Name {
+		case DefaultLogProvider:
+			column = "default_log_provider"
+		case DefaultTraceProvider:
+			column = "default_traces_provider"
+		case DefaultMetricsProvider:
+			column = "default_metrics_provider"
+		}
+		if column != "" {
 
 			// Check if value is a per-account JSON map (e.g. {"acc-id-1":"true","acc-id-2":"false"})
 			perAccountValues := map[string]string{}

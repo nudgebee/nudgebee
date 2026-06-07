@@ -429,12 +429,17 @@ export default class SlackReporter implements Reporter {
     const testId = this.getTestId(test);
     if (!webhookUrl) return;
     if (this.skipAlertSent.has(testId)) return;
-    this.skipAlertSent.add(testId);
 
     const skipReason =
       result.errors?.[0]?.message ||
       test.annotations.find((a) => a.type === "skip")?.description ||
       "No reason provided";
+
+    // Integration-not-active skips are handled by a single @qa alert sent by
+    // IntegrationStatusCache — suppress per-test spam for these.
+    if (/integration is not Active/i.test(skipReason)) return;
+
+    this.skipAlertSent.add(testId);
 
     const cleanReason = this.truncate(
       this.stripAnsi(skipReason),

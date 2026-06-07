@@ -101,6 +101,21 @@ type Workflow struct {
 	LiveVersionNumber *int `json:"live_version_number,omitempty" yaml:"live_version_number,omitempty"`
 	// LiveVersionName is the optional user-facing label for the live version.
 	LiveVersionName *string `json:"live_version_name,omitempty" yaml:"live_version_name,omitempty"`
+	// DraftVersionID is the workflow_versions.id the current draft (workflows.definition)
+	// was last branched off — set on create, on publish (= new version), and on restore.
+	// Plain draft edits (Update) do NOT mutate it. The editor uses this for accurate
+	// lineage rendering ("Draft based on v2, Live is v3") so the strip no longer lies
+	// when the user has rolled back to an older version.
+	DraftVersionID *string `json:"draft_version_id,omitempty" yaml:"draft_version_id,omitempty"`
+	// DraftVersionNumber / DraftVersionName are denormalized projections of the
+	// version DraftVersionID points at, surfaced so the editor can render badges
+	// without a second roundtrip.
+	DraftVersionNumber *int    `json:"draft_version_number,omitempty" yaml:"draft_version_number,omitempty"`
+	DraftVersionName   *string `json:"draft_version_name,omitempty" yaml:"draft_version_name,omitempty"`
+	// LiveVersionStatus mirrors workflow_versions.status for the live version.
+	// Surfaced so the listing / editor can render the per-version state without a
+	// second query. Kept in lockstep with workflows.status by the DAO.
+	LiveVersionStatus WorkflowStatus `json:"live_version_status,omitempty" yaml:"live_version_status,omitempty"`
 }
 
 // TriggerInfo holds dynamic, non-persisted information about a workflow's triggers.
@@ -134,9 +149,13 @@ type WorkflowVersion struct {
 	Name                *string               `json:"name,omitempty"`
 	Description         *string               `json:"description,omitempty"`
 	IsLive              bool                  `json:"is_live"`
-	CreatedBy           string                `json:"created_by,omitempty"`
-	CreatedByUser       *WorkflowUser         `json:"created_by_user,omitempty"`
-	CreatedAt           time.Time             `json:"created_at"`
+	// Status is the per-version runtime gate (ACTIVE / PAUSED / INACTIVE). When this
+	// version is live, workflows.status mirrors it. Defaults to PAUSED on insert so a
+	// brand-new workflow does not silently start firing scheduled / event triggers.
+	Status        WorkflowStatus `json:"status,omitempty"`
+	CreatedBy     string         `json:"created_by,omitempty"`
+	CreatedByUser *WorkflowUser  `json:"created_by_user,omitempty"`
+	CreatedAt     time.Time      `json:"created_at"`
 }
 
 // WorkflowStatus defines the administrative status of a workflow definition.
@@ -607,6 +626,7 @@ type WorkflowExecutionSummary struct {
 	TriggeredBy        string                  `json:"triggered_by,omitempty"`
 	TriggerType        string                  `json:"trigger_type,omitempty"`
 	ParentWorkflowID   string                  `json:"parent_workflow_id,omitempty"`
+	WorkflowName       string                  `json:"workflow_name,omitempty"`
 }
 
 // ListWorkflowExecutionResponse contains a list of workflow executions.

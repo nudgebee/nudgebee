@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"nudgebee/runbook/common"
@@ -75,10 +76,17 @@ func (s *WorkflowDao) CreateWorkflowWithInitialVersion(ctx context.Context, tena
 	if wf.CreatedFromSessionID != nil && *wf.CreatedFromSessionID != "" {
 		createdFromSessionID = sql.NullString{String: *wf.CreatedFromSessionID, Valid: true}
 	}
+	// Initial state for a brand-new workflow is PAUSED at both the workflow row
+	// and v1. Service layer overrides only when an explicit non-default status is
+	// supplied (currently unused — the API does not let callers pre-activate).
+	status := wf.Status
+	if status == "" {
+		status = model.WorkflowStatusPaused
+	}
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO workflows (id, tenant_id, account_id, name, definition, tags, status, created_by, updated_by, created_from_session_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-	`, id, tenantID, accountID, wf.Name, wfBytes, tagBytes, wf.Status, wf.CreatedBy, wf.UpdatedBy, createdFromSessionID)
+	`, id, tenantID, accountID, wf.Name, wfBytes, tagBytes, status, wf.CreatedBy, wf.UpdatedBy, createdFromSessionID)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to save workflow: %w", err)
 	}
@@ -90,16 +98,19 @@ func (s *WorkflowDao) CreateWorkflowWithInitialVersion(ctx context.Context, tena
 	var versionID string
 	var createdAt time.Time
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO workflow_versions (workflow_id, version_number, definition, source, created_by)
-		VALUES ($1, 1, $2, $3, $4)
+		INSERT INTO workflow_versions (workflow_id, version_number, definition, source, status, created_by)
+		VALUES ($1, 1, $2, $3, $4, $5)
 		RETURNING id::text, created_at
-	`, id, wfBytes, string(model.WorkflowVersionSourceCreate), createdByVal).Scan(&versionID, &createdAt)
+	`, id, wfBytes, string(model.WorkflowVersionSourceCreate), status, createdByVal).Scan(&versionID, &createdAt)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to insert initial workflow version: %w", err)
 	}
 
-	if _, err = tx.ExecContext(ctx, `UPDATE workflows SET live_version_id = $1 WHERE id = $2`, versionID, id); err != nil {
-		return "", nil, fmt.Errorf("failed to set initial live version: %w", err)
+	// Point both live_version_id and draft_version_id at the just-created v1.
+	// Doing this in the same tx as the inserts guarantees the workflow is never
+	// observable in a half-set state (live but no draft, or vice versa).
+	if _, err = tx.ExecContext(ctx, `UPDATE workflows SET live_version_id = $1, draft_version_id = $1 WHERE id = $2`, versionID, id); err != nil {
+		return "", nil, fmt.Errorf("failed to set initial live/draft version: %w", err)
 	}
 
 	version = &model.WorkflowVersion{
@@ -108,6 +119,7 @@ func (s *WorkflowDao) CreateWorkflowWithInitialVersion(ctx context.Context, tena
 		VersionNumber: 1,
 		Definition:    wf.Definition,
 		Source:        model.WorkflowVersionSourceCreate,
+		Status:        status,
 		IsLive:        true,
 		CreatedBy:     wf.CreatedBy,
 		CreatedAt:     createdAt,
@@ -226,11 +238,13 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 		SELECT w.id::text, w.name, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
 			cu.id::text as created_by_user_id, cu.display_name as created_by_display_name,
 			uu.id::text as updated_by_user_id, uu.display_name as updated_by_display_name,
-			w.live_version_id::text, lv.version_number, lv.name
+			w.live_version_id::text, lv.version_number, lv.name, lv.status,
+			w.draft_version_id::text, dv.version_number, dv.name
 		FROM workflows w
 		LEFT JOIN users cu ON w.created_by = cu.id
 		LEFT JOIN users uu ON w.updated_by = uu.id
-		LEFT JOIN workflow_versions lv ON lv.id = w.live_version_id ` + whereClauseWithAlias + ` order by w.created_at DESC`
+		LEFT JOIN workflow_versions lv ON lv.id = w.live_version_id
+		LEFT JOIN workflow_versions dv ON dv.id = w.draft_version_id ` + whereClauseWithAlias + ` order by w.created_at DESC`
 
 	// Copy baseArgs for main query and add LIMIT/OFFSET
 	mainArgs := make([]any, len(baseArgs))
@@ -280,10 +294,15 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 		var liveVersionID sql.NullString
 		var liveVersionNumber sql.NullInt64
 		var liveVersionName sql.NullString
+		var liveVersionStatus sql.NullString
+		var draftVersionID sql.NullString
+		var draftVersionNumber sql.NullInt64
+		var draftVersionName sql.NullString
 
 		if err := rows.Scan(&wfID, &wfName, &wfBytes, &tagBytes, &status, &lastExecutionStatus, &lastExecutionStatusMessage, &lastExecutionTime, &createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
 			&createdByUserID, &createdByDisplayName, &updatedByUserID, &updatedByDisplayName,
-			&liveVersionID, &liveVersionNumber, &liveVersionName); err != nil {
+			&liveVersionID, &liveVersionNumber, &liveVersionName, &liveVersionStatus,
+			&draftVersionID, &draftVersionNumber, &draftVersionName); err != nil {
 			return nil, 0, fmt.Errorf("failed to scan workflow: %w", err)
 		}
 
@@ -329,7 +348,9 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 				DisplayName: updatedByDisplayName.String,
 			}
 		}
-		applyLiveVersion(&wf, liveVersionID, liveVersionNumber, liveVersionName)
+		applyVersionRefs(&wf,
+			liveVersionID, liveVersionNumber, liveVersionName, liveVersionStatus,
+			draftVersionID, draftVersionNumber, draftVersionName)
 
 		workflows = append(workflows, wf)
 	}
@@ -352,19 +373,26 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 	var liveVersionID sql.NullString
 	var liveVersionNumber sql.NullInt64
 	var liveVersionName sql.NullString
+	var liveVersionStatus sql.NullString
+	var draftVersionID sql.NullString
+	var draftVersionNumber sql.NullInt64
+	var draftVersionName sql.NullString
 
 	query := `
 		SELECT w.id::text, w.name, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
-		       w.live_version_id::text, lv.version_number, lv.name
+		       w.live_version_id::text, lv.version_number, lv.name, lv.status,
+		       w.draft_version_id::text, dv.version_number, dv.name
 		FROM workflows w
 		LEFT JOIN workflow_versions lv ON lv.id = w.live_version_id
+		LEFT JOIN workflow_versions dv ON dv.id = w.draft_version_id
 		WHERE w.tenant_id = $1 AND w.account_id = $2 AND w.id = $3
 	`
 	err := s.db.QueryRowContext(ctx, query, tenantID, accountID, id).Scan(
 		&wfID, &wfName, &wfBytes, &tagBytes, &status,
 		&lastExecutionStatus, &lastExecutionStatusMessage, &lastExecutionTime,
 		&createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
-		&liveVersionID, &liveVersionNumber, &liveVersionName,
+		&liveVersionID, &liveVersionNumber, &liveVersionName, &liveVersionStatus,
+		&draftVersionID, &draftVersionNumber, &draftVersionName,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve workflow: %w", err)
@@ -398,25 +426,81 @@ func (s *WorkflowDao) Find(ctx context.Context, tenantID, accountID string, id s
 	if createdFromSessionID.Valid {
 		wf.CreatedFromSessionID = &createdFromSessionID.String
 	}
-	applyLiveVersion(&wf, liveVersionID, liveVersionNumber, liveVersionName)
+	applyVersionRefs(&wf,
+		liveVersionID, liveVersionNumber, liveVersionName, liveVersionStatus,
+		draftVersionID, draftVersionNumber, draftVersionName)
 
 	return &wf, nil
 }
 
-// applyLiveVersion copies the joined live_version columns onto wf if present.
-// Centralized so List / Find / FindByName / FindByIntegrationName stay consistent.
-func applyLiveVersion(wf *model.Workflow, id sql.NullString, number sql.NullInt64, name sql.NullString) {
-	if id.Valid && id.String != "" {
-		s := id.String
+func (s *WorkflowDao) GetWorkflowNames(ctx context.Context, tenantID, accountID string, ids []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	if tenantID == "" || accountID == "" {
+		return nil, fmt.Errorf("tenantID and accountID are required")
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id::text, name FROM workflows WHERE tenant_id = $1 AND account_id = $2 AND id = ANY($3::uuid[])`,
+		tenantID, accountID, pq.Array(ids))
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch workflow names: %w", err)
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil {
+			log.Printf("workflow_dao: failed to close rows: %v", cerr)
+		}
+	}()
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, fmt.Errorf("failed to scan workflow name row: %w", err)
+		}
+		out[id] = name
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed iterating workflow name rows: %w", err)
+	}
+	return out, nil
+}
+
+// applyVersionRefs copies the joined live + draft version columns onto wf if
+// present. Centralized so List / Find / FindByName / FindByIntegrationName stay
+// consistent. liveStatus is mirrored to workflows.status by the DAO, but kept as
+// a separate field so the UI can render the per-version state without re-reading
+// the workflow row.
+func applyVersionRefs(
+	wf *model.Workflow,
+	liveID sql.NullString, liveNumber sql.NullInt64, liveName sql.NullString, liveStatus sql.NullString,
+	draftID sql.NullString, draftNumber sql.NullInt64, draftName sql.NullString,
+) {
+	if liveID.Valid && liveID.String != "" {
+		s := liveID.String
 		wf.LiveVersionID = &s
 	}
-	if number.Valid {
-		n := int(number.Int64)
+	if liveNumber.Valid {
+		n := int(liveNumber.Int64)
 		wf.LiveVersionNumber = &n
 	}
-	if name.Valid && name.String != "" {
-		s := name.String
+	if liveName.Valid && liveName.String != "" {
+		s := liveName.String
 		wf.LiveVersionName = &s
+	}
+	if liveStatus.Valid && liveStatus.String != "" {
+		wf.LiveVersionStatus = model.WorkflowStatus(liveStatus.String)
+	}
+	if draftID.Valid && draftID.String != "" {
+		s := draftID.String
+		wf.DraftVersionID = &s
+	}
+	if draftNumber.Valid {
+		n := int(draftNumber.Int64)
+		wf.DraftVersionNumber = &n
+	}
+	if draftName.Valid && draftName.String != "" {
+		s := draftName.String
+		wf.DraftVersionName = &s
 	}
 }
 
@@ -435,19 +519,26 @@ func (s *WorkflowDao) FindByName(ctx context.Context, tenantID, accountID, name 
 	var liveVersionID sql.NullString
 	var liveVersionNumber sql.NullInt64
 	var liveVersionName sql.NullString
+	var liveVersionStatus sql.NullString
+	var draftVersionID sql.NullString
+	var draftVersionNumber sql.NullInt64
+	var draftVersionName sql.NullString
 
 	query := `
 		SELECT w.id::text, w.name, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_status_message, w.last_execution_time, w.created_by, w.updated_by, w.created_at, w.updated_at, w.created_from_session_id,
-		       w.live_version_id::text, lv.version_number, lv.name
+		       w.live_version_id::text, lv.version_number, lv.name, lv.status,
+		       w.draft_version_id::text, dv.version_number, dv.name
 		FROM workflows w
 		LEFT JOIN workflow_versions lv ON lv.id = w.live_version_id
+		LEFT JOIN workflow_versions dv ON dv.id = w.draft_version_id
 		WHERE w.tenant_id = $1 AND w.account_id = $2 AND w.name = $3
 	`
 	err := s.db.QueryRowContext(ctx, query, tenantID, accountID, name).Scan(
 		&id, &wfName, &wfBytes, &tagBytes, &status,
 		&lastExecutionStatus, &lastExecutionStatusMessage, &lastExecutionTime,
 		&createdBy, &updatedBy, &createdAt, &updatedAt, &createdFromSessionID,
-		&liveVersionID, &liveVersionNumber, &liveVersionName,
+		&liveVersionID, &liveVersionNumber, &liveVersionName, &liveVersionStatus,
+		&draftVersionID, &draftVersionNumber, &draftVersionName,
 	)
 	if err != nil {
 		return nil, err // sql.ErrNoRows will be returned here if not found
@@ -481,7 +572,9 @@ func (s *WorkflowDao) FindByName(ctx context.Context, tenantID, accountID, name 
 	if createdFromSessionID.Valid {
 		wf.CreatedFromSessionID = &createdFromSessionID.String
 	}
-	applyLiveVersion(&wf, liveVersionID, liveVersionNumber, liveVersionName)
+	applyVersionRefs(&wf,
+		liveVersionID, liveVersionNumber, liveVersionName, liveVersionStatus,
+		draftVersionID, draftVersionNumber, draftVersionName)
 
 	return &wf, nil
 }
@@ -882,14 +975,20 @@ func (s *WorkflowDao) FindByIntegrationName(ctx context.Context, tenantID, accou
 	var liveVersionID sql.NullString
 	var liveVersionNumber sql.NullInt64
 	var liveVersionName sql.NullString
+	var liveVersionStatus sql.NullString
+	var draftVersionID sql.NullString
+	var draftVersionNumber sql.NullInt64
+	var draftVersionName sql.NullString
 
 	// Query to find a workflow that has a webhook trigger with the specific integration_name
 	// Assuming definition is JSONB
 	query := `
 		SELECT w.id::text, w.name, w.definition, w.tags, w.status, w.last_execution_status, w.last_execution_time, w.created_by, w.updated_by, w.created_at, w.updated_at,
-		       w.live_version_id::text, lv.version_number, lv.name
+		       w.live_version_id::text, lv.version_number, lv.name, lv.status,
+		       w.draft_version_id::text, dv.version_number, dv.name
 		FROM workflows w
 		LEFT JOIN workflow_versions lv ON lv.id = w.live_version_id
+		LEFT JOIN workflow_versions dv ON dv.id = w.draft_version_id
 		WHERE w.tenant_id = $1 AND w.account_id = $2
 		AND EXISTS (
 			SELECT 1 FROM jsonb_array_elements(w.definition->'triggers') AS trigger
@@ -902,7 +1001,8 @@ func (s *WorkflowDao) FindByIntegrationName(ctx context.Context, tenantID, accou
 		&id, &wfName, &wfBytes, &tagBytes, &status,
 		&lastExecutionStatus, &lastExecutionTime,
 		&createdBy, &updatedBy, &createdAt, &updatedAt,
-		&liveVersionID, &liveVersionNumber, &liveVersionName,
+		&liveVersionID, &liveVersionNumber, &liveVersionName, &liveVersionStatus,
+		&draftVersionID, &draftVersionNumber, &draftVersionName,
 	)
 	if err != nil {
 		return nil, err
@@ -930,7 +1030,9 @@ func (s *WorkflowDao) FindByIntegrationName(ctx context.Context, tenantID, accou
 	wf.UpdatedBy = updatedBy
 	wf.CreatedAt = createdAt
 	wf.UpdatedAt = updatedAt
-	applyLiveVersion(&wf, liveVersionID, liveVersionNumber, liveVersionName)
+	applyVersionRefs(&wf,
+		liveVersionID, liveVersionNumber, liveVersionName, liveVersionStatus,
+		draftVersionID, draftVersionNumber, draftVersionName)
 
 	return &wf, nil
 }
@@ -1130,7 +1232,7 @@ func (s *WorkflowDao) CountWorkflows(ctx context.Context, tenantID, accountID st
 // Named returns (v, err) are required so the deferred tx.Commit() error is
 // propagated — assigning to a non-named err inside the defer would not change
 // the returned value, making a commit failure silent.
-func (s *WorkflowDao) PublishVersion(ctx context.Context, workflowID, createdBy string, source model.WorkflowVersionSource, name, description *string, restoredFromVersion *int) (v *model.WorkflowVersion, err error) {
+func (s *WorkflowDao) PublishVersion(ctx context.Context, workflowID, createdBy string, source model.WorkflowVersionSource, name, description *string, restoredFromVersion *int, status model.WorkflowStatus) (v *model.WorkflowVersion, err error) {
 	tx, err := s.db.BeginTxx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
@@ -1174,15 +1276,29 @@ func (s *WorkflowDao) PublishVersion(ctx context.Context, workflowID, createdBy 
 		descVal = sql.NullString{String: *description, Valid: true}
 	}
 
+	// Default new versions to PAUSED so a publish (or a restore that snapshots
+	// the older definition into a new version) never silently auto-activates.
+	// Service layer picks the status; this is just the safety net.
+	if status == "" {
+		status = model.WorkflowStatusPaused
+	}
+
 	var versionID string
 	var createdAt time.Time
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO workflow_versions (workflow_id, version_number, definition, source, restored_from_version, created_by, name, description)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO workflow_versions (workflow_id, version_number, definition, source, restored_from_version, status, created_by, name, description)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id::text, created_at
-	`, workflowID, next, defBytes, string(source), restoredFrom, createdByVal, nameVal, descVal).Scan(&versionID, &createdAt)
+	`, workflowID, next, defBytes, string(source), restoredFrom, status, createdByVal, nameVal, descVal).Scan(&versionID, &createdAt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert workflow version: %w", err)
+	}
+
+	// The draft is now identical to what we just snapshotted, so advance
+	// draft_version_id to match. Keeps the editor's "Draft based on vN" chip
+	// accurate without a second roundtrip from the caller.
+	if _, err = tx.ExecContext(ctx, `UPDATE workflows SET draft_version_id = $1 WHERE id = $2`, versionID, workflowID); err != nil {
+		return nil, fmt.Errorf("failed to advance draft_version_id: %w", err)
 	}
 
 	if err = pruneVersionsTx(ctx, tx, workflowID, model.MaxWorkflowVersionsPerWorkflow); err != nil {
@@ -1195,6 +1311,7 @@ func (s *WorkflowDao) PublishVersion(ctx context.Context, workflowID, createdBy 
 		VersionNumber:       next,
 		Source:              source,
 		RestoredFromVersion: restoredFromVersion,
+		Status:              status,
 		CreatedBy:           createdBy,
 		CreatedAt:           createdAt,
 		Name:                strPtrIfNonEmpty(name),
@@ -1206,27 +1323,41 @@ func (s *WorkflowDao) PublishVersion(ctx context.Context, workflowID, createdBy 
 	return v, nil
 }
 
-// SetLiveVersion is a pointer flip. It updates workflows.live_version_id and
-// MUST NOT touch workflows.definition (the draft) or workflows.status. This
-// is the invariant that protects unpublished edits during a rollback.
+// SetLiveVersion flips workflows.live_version_id and mirrors the target
+// version's status onto workflows.status in the same UPDATE. The draft
+// (workflows.definition) and draft_version_id are NOT touched — that invariant
+// protects unpublished edits during a rollback.
+//
+// The mirror step is what makes workflows.status a true derived view of the
+// live version: every other write path (UpdateVersionStatus on the live
+// version, publish-with-setLive) re-enters this method or replicates the same
+// mirror so listing-level filters stay consistent without a separate sweep job.
 //
 // The version must already exist for this workflow. Returns sql.ErrNoRows if
 // the version isn't found.
 func (s *WorkflowDao) SetLiveVersion(ctx context.Context, tenantID, accountID, workflowID, versionID string) error {
-	var exists bool
-	if err := s.db.QueryRowContext(ctx, `
-		SELECT EXISTS(SELECT 1 FROM workflow_versions WHERE id = $1 AND workflow_id = $2)
-	`, versionID, workflowID).Scan(&exists); err != nil {
-		return fmt.Errorf("failed to check version existence: %w", err)
+	// Multi-tenant fail-fast: blank scoping IDs would collapse the WHERE clause
+	// on the UPDATE below to "WHERE … AND tenant_id = '' AND account_id = ''"
+	// — which legitimately matches no production row but is a noisy footgun in
+	// tests / fixtures and a real risk if a caller forgets to populate them.
+	if tenantID == "" || accountID == "" {
+		return fmt.Errorf("tenantID and accountID must not be empty")
 	}
-	if !exists {
-		return sql.ErrNoRows
+	var versionStatus model.WorkflowStatus
+	err := s.db.QueryRowContext(ctx, `
+		SELECT status FROM workflow_versions WHERE id = $1 AND workflow_id = $2
+	`, versionID, workflowID).Scan(&versionStatus)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return sql.ErrNoRows
+		}
+		return fmt.Errorf("failed to load version status: %w", err)
 	}
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE workflows
-		SET live_version_id = $1
-		WHERE id = $2 AND tenant_id = $3 AND account_id = $4
-	`, versionID, workflowID, tenantID, accountID)
+		SET live_version_id = $1, status = $2
+		WHERE id = $3 AND tenant_id = $4 AND account_id = $5
+	`, versionID, versionStatus, workflowID, tenantID, accountID)
 	if err != nil {
 		return fmt.Errorf("failed to set live version: %w", err)
 	}
@@ -1235,6 +1366,110 @@ func (s *WorkflowDao) SetLiveVersion(ctx context.Context, tenantID, accountID, w
 		return sql.ErrNoRows
 	}
 	return nil
+}
+
+// SetDraftVersionID points workflows.draft_version_id at versionID without
+// touching definition / status / live pointer. Used by the Restore service
+// path after the draft definition has been overwritten with a target version's
+// content so the editor's lineage chip ("Draft based on v2") tracks the user's
+// branch instead of last-known live.
+//
+// Verifies the version belongs to the workflow to fail loudly on a foreign-key
+// mismatch caller bug (ON DELETE SET NULL handles the deletion race).
+func (s *WorkflowDao) SetDraftVersionID(ctx context.Context, tenantID, accountID, workflowID, versionID string) error {
+	if tenantID == "" || accountID == "" {
+		return fmt.Errorf("tenantID and accountID must not be empty")
+	}
+	var belongs bool
+	if err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS(SELECT 1 FROM workflow_versions WHERE id = $1 AND workflow_id = $2)
+	`, versionID, workflowID).Scan(&belongs); err != nil {
+		return fmt.Errorf("failed to check version existence: %w", err)
+	}
+	if !belongs {
+		return sql.ErrNoRows
+	}
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE workflows
+		SET draft_version_id = $1
+		WHERE id = $2 AND tenant_id = $3 AND account_id = $4
+	`, versionID, workflowID, tenantID, accountID)
+	if err != nil {
+		return fmt.Errorf("failed to set draft_version_id: %w", err)
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// UpdateVersionStatus writes a new status onto a single workflow_versions row.
+// When versionID happens to be the live version, workflows.status is mirrored
+// in the same transaction so listing-level filters stay consistent.
+//
+// Returns wasLive so the caller (service layer) knows whether to re-register
+// scheduled / webhook triggers — the runtime gate uses live_version.status, so
+// flipping the live version's status is what makes triggers (un)register.
+func (s *WorkflowDao) UpdateVersionStatus(ctx context.Context, tenantID, accountID, workflowID, versionID string, status model.WorkflowStatus) (wasLive bool, err error) {
+	if tenantID == "" || accountID == "" {
+		return false, fmt.Errorf("tenantID and accountID must not be empty")
+	}
+	tx, err := s.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			_ = tx.Rollback()
+			log.Printf("panic in UpdateVersionStatus: %v", p)
+			err = fmt.Errorf("failed to update version status due to an unexpected error")
+		} else if err != nil {
+			_ = tx.Rollback()
+		} else {
+			err = tx.Commit()
+		}
+	}()
+
+	// workflow_versions has no tenant_id / account_id columns; scoping lives on
+	// the parent workflows row. JOIN here so the multi-tenant guard runs at the
+	// UPDATE itself — a mismatched tenant/account never locks the version row
+	// and never leaves the tx implicitly relying on the live-check SELECT
+	// below to fail and trigger rollback.
+	res, err := tx.ExecContext(ctx, `
+		UPDATE workflow_versions wv
+		SET status = $1
+		FROM workflows w
+		WHERE wv.id = $2
+		  AND wv.workflow_id = $3
+		  AND wv.workflow_id = w.id
+		  AND w.tenant_id = $4
+		  AND w.account_id = $5
+	`, status, versionID, workflowID, tenantID, accountID)
+	if err != nil {
+		return false, fmt.Errorf("failed to update workflow version status: %w", err)
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return false, sql.ErrNoRows
+	}
+
+	// COALESCE so a workflow with NULL live_version_id (defensive — CreateWorkflow
+	// always sets one, but legacy / corrupted rows could exist) scans as FALSE
+	// instead of failing with `converting NULL to bool is incompatible`.
+	if err = tx.QueryRowContext(ctx, `
+		SELECT COALESCE(live_version_id = $1, FALSE) FROM workflows WHERE id = $2 AND tenant_id = $3 AND account_id = $4
+	`, versionID, workflowID, tenantID, accountID).Scan(&wasLive); err != nil {
+		return false, fmt.Errorf("failed to check live-version match: %w", err)
+	}
+	if wasLive {
+		if _, err = tx.ExecContext(ctx, `
+			UPDATE workflows SET status = $1 WHERE id = $2 AND tenant_id = $3 AND account_id = $4
+		`, status, workflowID, tenantID, accountID); err != nil {
+			return false, fmt.Errorf("failed to mirror status onto workflow row: %w", err)
+		}
+	}
+	return wasLive, nil
 }
 
 // UpdateVersionMetadata patches the mutable metadata fields (name, description)
@@ -1283,9 +1518,12 @@ func (s *WorkflowDao) UpdateVersionMetadata(ctx context.Context, workflowID stri
 }
 
 // pruneVersionsTx keeps only the most recent `keep` versions per workflow,
-// always preserving whichever row is currently live (workflows.live_version_id).
-// The boolean sort key wins for the live row regardless of its version_number,
-// so an older live version still survives when N newer non-live versions exist.
+// always preserving the rows pointed at by workflows.live_version_id and
+// workflows.draft_version_id. The boolean sort key wins for both pinned rows
+// regardless of version_number, so a long-running draft branched off a much
+// older live version still survives when N newer non-live, non-draft versions
+// exist. ON DELETE SET NULL on the FKs is a backstop, but pinning here keeps
+// the lineage chip and rollback story coherent.
 func pruneVersionsTx(ctx context.Context, tx *sqlx.Tx, workflowID string, keep int) error {
 	if keep <= 0 {
 		return nil
@@ -1297,6 +1535,7 @@ func pruneVersionsTx(ctx context.Context, tx *sqlx.Tx, workflowID string, keep i
 		    SELECT id FROM workflow_versions
 		    WHERE workflow_id = $1
 		    ORDER BY (id = (SELECT live_version_id FROM workflows WHERE id = $1)) DESC,
+		             (id = (SELECT draft_version_id FROM workflows WHERE id = $1)) DESC,
 		             version_number DESC
 		    LIMIT $2
 		  )
@@ -1314,6 +1553,7 @@ func (s *WorkflowDao) ListWorkflowVersions(ctx context.Context, workflowID strin
 		SELECT v.id::text, v.workflow_id::text, v.version_number, v.definition,
 		       v.source, v.restored_from_version, v.name, v.description,
 		       (v.id = w.live_version_id) AS is_live,
+		       v.status,
 		       COALESCE(v.created_by::text, '') AS created_by,
 		       u.id::text AS created_by_user_id, u.display_name AS created_by_display_name,
 		       v.created_at
@@ -1359,6 +1599,7 @@ func (s *WorkflowDao) GetWorkflowVersion(ctx context.Context, workflowID string,
 		SELECT v.id::text, v.workflow_id::text, v.version_number, v.definition,
 		       v.source, v.restored_from_version, v.name, v.description,
 		       (v.id = w.live_version_id) AS is_live,
+		       v.status,
 		       COALESCE(v.created_by::text, '') AS created_by,
 		       u.id::text AS created_by_user_id, u.display_name AS created_by_display_name,
 		       v.created_at
@@ -1379,6 +1620,7 @@ func (s *WorkflowDao) GetWorkflowVersionByID(ctx context.Context, versionID stri
 		SELECT v.id::text, v.workflow_id::text, v.version_number, v.definition,
 		       v.source, v.restored_from_version, v.name, v.description,
 		       (v.id = w.live_version_id) AS is_live,
+		       v.status,
 		       COALESCE(v.created_by::text, '') AS created_by,
 		       u.id::text AS created_by_user_id, u.display_name AS created_by_display_name,
 		       v.created_at
@@ -1400,6 +1642,7 @@ func (s *WorkflowDao) GetLiveWorkflowVersion(ctx context.Context, workflowID str
 		SELECT v.id::text, v.workflow_id::text, v.version_number, v.definition,
 		       v.source, v.restored_from_version, v.name, v.description,
 		       TRUE AS is_live,
+		       v.status,
 		       COALESCE(v.created_by::text, '') AS created_by,
 		       u.id::text AS created_by_user_id, u.display_name AS created_by_display_name,
 		       v.created_at
@@ -1421,11 +1664,12 @@ func scanWorkflowVersion(r rowScanner) (*model.WorkflowVersion, error) {
 		restoredFrom                          sql.NullInt64
 		name, description                     sql.NullString
 		isLive                                bool
+		status                                model.WorkflowStatus
 		createdBy                             string
 		createdByUserID, createdByDisplayName sql.NullString
 		createdAt                             time.Time
 	)
-	if err := r.Scan(&id, &workflowID, &versionNumber, &defBytes, &source, &restoredFrom, &name, &description, &isLive, &createdBy, &createdByUserID, &createdByDisplayName, &createdAt); err != nil {
+	if err := r.Scan(&id, &workflowID, &versionNumber, &defBytes, &source, &restoredFrom, &name, &description, &isLive, &status, &createdBy, &createdByUserID, &createdByDisplayName, &createdAt); err != nil {
 		return nil, err
 	}
 	v := model.WorkflowVersion{
@@ -1434,6 +1678,7 @@ func scanWorkflowVersion(r rowScanner) (*model.WorkflowVersion, error) {
 		VersionNumber: versionNumber,
 		Source:        model.WorkflowVersionSource(source),
 		IsLive:        isLive,
+		Status:        status,
 		CreatedBy:     createdBy,
 		CreatedAt:     createdAt,
 	}

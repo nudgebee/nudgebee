@@ -20,6 +20,7 @@ interface KnowledgeBaseOutput {
   updated_at?: string;
   document_count?: number;
   last_loaded_at?: string;
+  error_message?: string;
 }
 
 interface CreateKnowledgeBasePayload {
@@ -87,6 +88,7 @@ const apiKnowledgeBase = {
             updated_at
             document_count
             last_loaded_at
+            error_message
           }
           errors {
             message
@@ -121,6 +123,7 @@ const apiKnowledgeBase = {
           updated_by: kb.updated_by ? { display_name: kb.updated_by } : null,
           document_count: kb.document_count,
           last_loaded_at: kb.last_loaded_at,
+          error_message: kb.error_message,
         }));
         return { data: transformedData, errors: result.errors || [] };
       }
@@ -159,6 +162,7 @@ const apiKnowledgeBase = {
             updated_by
             created_at
             updated_at
+            error_message
           }
           errors {
             message
@@ -191,6 +195,7 @@ const apiKnowledgeBase = {
             updated_at: kb.updated_at,
             created_by: kb.created_by ? { display_name: kb.created_by } : null,
             updated_by: kb.updated_by ? { display_name: kb.updated_by } : null,
+            error_message: kb.error_message,
           };
           return { data: transformedData, errors: result.errors || [] };
         }

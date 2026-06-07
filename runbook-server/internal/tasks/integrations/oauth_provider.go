@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"nudgebee/runbook/internal/tasks/safehttp"
 	"strings"
 	"time"
 )
@@ -21,6 +22,12 @@ type oauthTokenResponse struct {
 // FetchOAuthToken performs an OAuth 2.0 client_credentials grant and returns
 // the access token. A fresh token is fetched on every call (no caching).
 func FetchOAuthToken(tokenURL, clientID, clientSecret, scope, audience string) (string, error) {
+	// SSRF defense: reject token URLs that resolve to internal IPs. The
+	// DialContext below also re-validates each dial.
+	if err := safehttp.ValidateURL(tokenURL); err != nil {
+		return "", fmt.Errorf("oauth token url failed safety validation: %w", err)
+	}
+
 	form := url.Values{}
 	form.Set("grant_type", "client_credentials")
 	if scope != "" {
@@ -39,7 +46,13 @@ func FetchOAuthToken(tokenURL, clientID, clientSecret, scope, audience string) (
 	req.Header.Set("Accept", "application/json")
 	req.SetBasicAuth(clientID, clientSecret)
 
-	httpClient := &http.Client{Timeout: 30 * time.Second}
+	httpClient := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			DialContext: safehttp.NewSafeDialContext(30 * time.Second),
+		},
+		CheckRedirect: safehttp.SafeCheckRedirect,
+	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("OAuth token request failed: %w", err)

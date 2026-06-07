@@ -210,10 +210,10 @@ type UserGroupCreateResponse struct {
 }
 
 type UserGroupUpdateRequest struct {
-	Id          string `json:"id" mapstructure:"id" validate:"required"`
-	Name        string `json:"name" mapstructure:"name"`
-	Description string `json:"description" mapstructure:"description"`
-	Role        string `json:"role" mapstructure:"role"`
+	Id          string  `json:"id" mapstructure:"id" validate:"required"`
+	Name        string  `json:"name" mapstructure:"name"`
+	Description string  `json:"description" mapstructure:"description"`
+	Role        *string `json:"role" mapstructure:"role"`
 }
 
 type UserGroupUpdateResponse struct {

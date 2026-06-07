@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"nudgebee/services/common"
 	"nudgebee/services/observability"
+	"nudgebee/services/security"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/metric"
@@ -14,6 +15,25 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 	ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
 	if err != nil {
 		c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+		return
+	}
+
+	// Every logs action is an account-scoped read carrying account_id in the
+	// request payload; enforce account access once up front. tenant_admin
+	// passes for any account in the tenant; account_admin only for its
+	// assigned accounts.
+	reqInput, ok := actionPayload.Input["request"].(map[string]interface{})
+	if !ok {
+		c.JSON(400, common.ErrorActionBadRequest("missing or invalid request input"))
+		return
+	}
+	accountId, _ := reqInput["account_id"].(string)
+	if accountId == "" {
+		c.JSON(400, common.ErrorActionBadRequest("account_id is required"))
+		return
+	}
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+		c.JSON(403, common.ErrorActionForbidden("access denied for account: "+accountId))
 		return
 	}
 
@@ -124,6 +144,7 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
+
 		resp, err := observability.FetchLogLabelValues(ctx, request)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
@@ -148,6 +169,7 @@ func handleLogsAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
+
 		resp, err := observability.FetchLogGroup(ctx, request)
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))

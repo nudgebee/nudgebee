@@ -158,7 +158,7 @@ func (s *VersionsRESTHandlerTestSuite) TestRestoreVersionInternalError() {
 func (s *VersionsRESTHandlerTestSuite) TestPublishVersionSuccessNoBody() {
 	t := s.T()
 	v := &model.WorkflowVersion{ID: "v-2", WorkflowID: "wf-1", VersionNumber: 2, Source: model.WorkflowVersionSourcePublish, IsLive: true}
-	s.workflowService.On("PublishWorkflow", mock.Anything, "test-account", "wf-1", (*string)(nil), (*string)(nil), true).Return(v, nil)
+	s.workflowService.On("PublishWorkflow", mock.Anything, "test-account", "wf-1", (*string)(nil), (*string)(nil), true, model.WorkflowStatus("")).Return(v, nil)
 
 	w := s.doRequest(http.MethodPost, "/workflows/wf-1/publish")
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -169,7 +169,7 @@ func (s *VersionsRESTHandlerTestSuite) TestPublishVersionWithMetadata() {
 	name := "release-x"
 	desc := "first release"
 	v := &model.WorkflowVersion{ID: "v-3", WorkflowID: "wf-1", VersionNumber: 3, Source: model.WorkflowVersionSourcePublish, Name: &name, Description: &desc, IsLive: false}
-	s.workflowService.On("PublishWorkflow", mock.Anything, "test-account", "wf-1", &name, &desc, false).Return(v, nil)
+	s.workflowService.On("PublishWorkflow", mock.Anything, "test-account", "wf-1", &name, &desc, false, model.WorkflowStatus("")).Return(v, nil)
 
 	w := s.doRequestWithBody(http.MethodPost, "/workflows/wf-1/publish", map[string]any{
 		"name":        name,

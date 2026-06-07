@@ -1213,11 +1213,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
                   <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' }}>
                     <Label text={workflow.status?.toLowerCase() || 'Unknown'} textTransform='capitalize' />
                     {workflow.live_version_id ? (
-                      <Tooltip
-                        title={`Scheduled and event triggers run the live version${
-                          workflow.live_version_name ? ` (“${workflow.live_version_name}”)` : ''
-                        }.`}
-                      >
+                      <Tooltip title={`All triggers run the live version${workflow.live_version_name ? ` (“${workflow.live_version_name}”)` : ''}.`}>
                         <Box>
                           <Text
                             value={`Live v${workflow.live_version_number ?? '?'}`}
@@ -1606,6 +1602,8 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
         inputSchema={getWorkflowInputSchema(selectedWorkflow)}
         onTrigger={handleTriggerWorkflow}
         loading={triggerLoading}
+        liveVersionNumber={selectedWorkflow.live_version_number}
+        liveVersionName={selectedWorkflow.live_version_name}
       />
 
       <AiGenerateWorkflowModal

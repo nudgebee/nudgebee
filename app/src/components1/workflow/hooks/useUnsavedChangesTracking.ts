@@ -36,14 +36,22 @@ interface UseUnsavedChangesTrackingProps {
   enabled?: boolean;
   /** Saved draft is ahead of the published live version (saved but not published). */
   hasUnpublishedChanges?: boolean;
-  /** Called on navigation away when there are saved-but-unpublished changes (and no unsaved canvas edits). Non-blocking — a subtle reminder. */
-  onUnpublishedExit?: () => void;
 }
+
+// What kind of state was unsaved when navigation was attempted. Drives the
+// modal copy so the user reads the warning that actually applies to them.
+//   'unsaved'     — canvas edits not yet persisted to the saved draft
+//   'unpublished' — draft is saved but is not the live version (scheduled
+//                   triggers will keep running the old live version)
+//   null          — no pending state; navigation was allowed
+export type UnsavedExitVariant = 'unsaved' | 'unpublished' | null;
 
 interface UseUnsavedChangesTrackingReturn {
   hasUnsavedChanges: boolean;
   showUnsavedChangesDialog: boolean;
   setShowUnsavedChangesDialog: React.Dispatch<React.SetStateAction<boolean>>;
+  /** Which warning to show in the exit modal. */
+  exitVariant: UnsavedExitVariant;
   handleConfirmNavigation: () => void;
   handleCancelNavigation: () => void;
   updateSavedSnapshot: () => void;
@@ -72,7 +80,6 @@ export function useUnsavedChangesTracking({
   isInitialized,
   enabled = true,
   hasUnpublishedChanges = false,
-  onUnpublishedExit,
 }: UseUnsavedChangesTrackingProps): UseUnsavedChangesTrackingReturn {
   const router = useRouter();
 
@@ -80,6 +87,7 @@ export function useUnsavedChangesTracking({
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [savedStateSnapshot, setSavedStateSnapshot] = useState<string>('');
   const [showUnsavedChangesDialog, setShowUnsavedChangesDialog] = useState(false);
+  const [exitVariant, setExitVariant] = useState<UnsavedExitVariant>(null);
   const [pendingNavigation, setPendingNavigation] = useState<string | null>(null);
 
   // Ref to track if we should allow navigation (after user confirms)
@@ -205,6 +213,7 @@ export function useUnsavedChangesTracking({
   const handleConfirmNavigation = useCallback(() => {
     allowNavigationRef.current = true;
     setShowUnsavedChangesDialog(false);
+    setExitVariant(null);
 
     if (pendingNavigation) {
       router.push(pendingNavigation);
@@ -218,6 +227,7 @@ export function useUnsavedChangesTracking({
   const handleCancelNavigation = useCallback(() => {
     setShowUnsavedChangesDialog(false);
     setPendingNavigation(null);
+    setExitVariant(null);
   }, []);
 
   // Initialize saved snapshot when workflow is fully loaded and not loading
@@ -300,22 +310,29 @@ export function useUnsavedChangesTracking({
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [hasUnsavedChanges]);
 
-  // Next.js route change handler - intercepts navigation attempts
+  // Next.js route change handler — block navigation with a modal whenever there
+  // are unsaved canvas edits OR saved-but-unpublished edits. Previously the
+  // unpublished case escaped via a non-blocking snackbar (`onUnpublishedExit`)
+  // which users frequently missed, so they'd leave assuming their saved
+  // changes were already live. Now both cases force a confirmation; the
+  // `exitVariant` state lets the modal pick copy specific to which thing the
+  // user is about to lose.
   useEffect(() => {
     const handleRouteChangeStart = (url: string) => {
-      // Allow navigation if user already confirmed or no unsaved canvas edits.
-      if (allowNavigationRef.current || !hasUnsavedChanges) {
-        const wasAllowed = allowNavigationRef.current;
+      // Allow navigation if user already confirmed it.
+      if (allowNavigationRef.current) {
         allowNavigationRef.current = false;
-        // Subtle, non-blocking reminder: navigating away with saved-but-unpublished
-        // changes. We don't block — just nudge so the user knows their edits aren't live.
-        if (!wasAllowed && !hasUnsavedChanges && hasUnpublishedChanges) {
-          onUnpublishedExit?.();
-        }
         return;
       }
 
-      // Block navigation and show confirmation dialog
+      // Decide whether this navigation needs a block, and with what copy.
+      const variant: UnsavedExitVariant = hasUnsavedChanges ? 'unsaved' : hasUnpublishedChanges ? 'unpublished' : null;
+      if (!variant) {
+        return; // nothing pending — let Next.js navigate freely
+      }
+
+      // Block navigation and show confirmation dialog with the right variant.
+      setExitVariant(variant);
       setPendingNavigation(url);
       setShowUnsavedChangesDialog(true);
 
@@ -326,12 +343,13 @@ export function useUnsavedChangesTracking({
 
     router.events.on('routeChangeStart', handleRouteChangeStart);
     return () => router.events.off('routeChangeStart', handleRouteChangeStart);
-  }, [hasUnsavedChanges, hasUnpublishedChanges, onUnpublishedExit, router]);
+  }, [hasUnsavedChanges, hasUnpublishedChanges, router]);
 
   return {
     hasUnsavedChanges,
     showUnsavedChangesDialog,
     setShowUnsavedChangesDialog,
+    exitVariant,
     handleConfirmNavigation,
     handleCancelNavigation,
     updateSavedSnapshot,

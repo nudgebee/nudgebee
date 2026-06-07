@@ -1396,6 +1396,7 @@ actions:
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
       - role: tenant_admin
+      - role: account_admin
   - name: accounts_create
     definition:
       kind: synchronous
@@ -1429,6 +1430,7 @@ actions:
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
       - role: tenant_admin
+      - role: account_admin
     comment: Upsert cloud resource attributes
   - name: config_delete
     definition:
@@ -1539,6 +1541,7 @@ actions:
       timeout: 300
     permissions:
       - role: tenant_admin
+      - role: account_admin
     comment: Execute inline actions on cloud resources (start/stop/restart/reboot/pause/resume/scale/redeploy/run_command)
   - name: events_update_classification
     definition:
@@ -1721,8 +1724,6 @@ actions:
           value_from_env: ACTION_API_SERVER_TOKEN
       timeout: 60
     permissions:
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
       - role: account_admin_readonly
       - role: account_admin
       - role: tenant_admin_readonly
@@ -1939,6 +1940,8 @@ actions:
     permissions:
       - role: tenant_admin
       - role: tenant_admin_readonly
+      - role: account_admin
+      - role: account_admin_readonly
   - name: accounts_list
     definition:
       kind: "synchronous"
@@ -1948,8 +1951,6 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
       - role: account_admin_readonly
       - role: account_admin
       - role: tenant_admin_readonly
@@ -2638,8 +2639,6 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
       - role: account_admin_readonly
       - role: account_admin
       - role: tenant_admin_readonly
@@ -2669,6 +2668,9 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
+      - role: account_admin_readonly
+      - role: account_admin
+      - role: tenant_admin_readonly
       - role: tenant_admin
   - name: metrics_list_labels
     definition:
@@ -2679,6 +2681,8 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
+      - role: account_admin_readonly
+      - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
   - name: metrics_list
@@ -2690,6 +2694,8 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
+      - role: account_admin_readonly
+      - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
   - name: metrics_aggregate_utilisation
@@ -2701,6 +2707,8 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
+      - role: account_admin_readonly
+      - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
   - name: metrics_get_query
@@ -2712,6 +2720,8 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
+      - role: account_admin_readonly
+      - role: account_admin
       - role: tenant_admin_readonly
       - role: tenant_admin
     comment: metrics_get_query
@@ -2740,8 +2750,6 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
       - role: account_admin_readonly
       - role: account_admin
       - role: tenant_admin_readonly
@@ -3093,8 +3101,6 @@ actions:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
     permissions:
-      - role: k8s_namespace_admin
-      - role: k8s_namespace_admin_readonly
       - role: account_admin_readonly
       - role: account_admin
       - role: tenant_admin_readonly
@@ -4100,6 +4106,19 @@ actions:
       - role: tenant_admin
       - role: k8s_namespace_admin_readonly
       - role: k8s_namespace_admin
+  - name: workflow_list_executions_for_event
+    definition:
+      kind: "synchronous"
+      handler: '{{WORKFLOW_SERVER_URL}}/rpc'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: WORKFLOW_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+      - role: k8s_namespace_admin_readonly
+      - role: k8s_namespace_admin
       - role: account_admin_readonly
       - role: account_admin
   - name: workflow_list_taskdefinitions
@@ -4327,6 +4346,17 @@ actions:
       - role: tenant_admin
       - role: account_admin
   - name: workflows_update_version_metadata
+    definition:
+      kind: synchronous
+      handler: '{{WORKFLOW_SERVER_URL}}/rpc'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: WORKFLOW_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+  - name: workflows_update_version_status
     definition:
       kind: synchronous
       handler: '{{WORKFLOW_SERVER_URL}}/rpc'

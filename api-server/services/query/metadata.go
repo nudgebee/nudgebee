@@ -6321,10 +6321,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"get_cloud_accounts_grouping_v2": {
-		Type:               Aggregate,
-		Source:             database.Metastore,
-		TenantIdColumnName: "tenant_id",
-		Name:               "get_cloud_accounts_grouping_v2",
+		Type:                Aggregate,
+		Source:              database.Metastore,
+		TenantIdColumnName:  "tenant_id",
+		AccountIdColumnName: "id",
+		Name:                "get_cloud_accounts_grouping_v2",
 		Def: `(
 			SELECT
 				ca.id::text AS id,
@@ -6392,11 +6393,12 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"user_account_ids_by_tenant_v2": {
-		Type:               Normal,
-		Source:             database.Metastore,
-		Name:               "user_account_ids_by_tenant_v2",
-		Def:                "cloud_accounts",
-		TenantIdColumnName: "tenant",
+		Type:                Normal,
+		Source:              database.Metastore,
+		Name:                "user_account_ids_by_tenant_v2",
+		Def:                 "cloud_accounts",
+		TenantIdColumnName:  "tenant",
+		AccountIdColumnName: "id",
 		Columns: map[string]ColumnDefinition{
 			"id":     {Type: ColumnDefinitionTypeString, Def: "id"},
 			"tenant": {Type: ColumnDefinitionTypeString, Def: "tenant"},
@@ -6597,10 +6599,11 @@ var table_metadata = map[string]TableDefinition{
 		},
 	},
 	"get_agent_health_v2": {
-		Type:               Normal,
-		Source:             database.Metastore,
-		Name:               "get_agent_health_v2",
-		TenantIdColumnName: "tenant_id",
+		Type:                Normal,
+		Source:              database.Metastore,
+		Name:                "get_agent_health_v2",
+		TenantIdColumnName:  "tenant_id",
+		AccountIdColumnName: "cloud_account_id",
 		Def: `(
 			SELECT
 				id::text as id,

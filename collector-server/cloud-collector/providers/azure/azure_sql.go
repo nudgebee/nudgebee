@@ -1013,22 +1013,12 @@ func (s *sqlDatabaseService) ApplyCommand(ctx providers.CloudProviderContext, ac
 
 	// Extract subscription ID, resource group, server name and database name from resource ID
 	// Format: /subscriptions/{subscriptionId}/resourceGroups/{resourceGroup}/providers/Microsoft.Sql/servers/{serverName}/databases/{databaseName}
-	parts := strings.Split(command.ResourceId, "/")
-	var subscriptionID, resourceGroup, serverName, databaseName string
-	for i, part := range parts {
-		if part == "subscriptions" && i+1 < len(parts) {
-			subscriptionID = parts[i+1]
-		}
-		if part == "resourceGroups" && i+1 < len(parts) {
-			resourceGroup = parts[i+1]
-		}
-		if part == "servers" && i+1 < len(parts) {
-			serverName = parts[i+1]
-		}
-		if part == "databases" && i+1 < len(parts) {
-			databaseName = parts[i+1]
-		}
-	}
+	// Parsed case-insensitively: stored Azure IDs are lowercased (see parseAzureResourceIDSegments).
+	segments := parseAzureResourceIDSegments(command.ResourceId)
+	subscriptionID := segments["subscriptions"]
+	resourceGroup := segments["resourcegroups"]
+	serverName := segments["servers"]
+	databaseName := segments["databases"]
 
 	if subscriptionID == "" {
 		subscriptionID = session.SubscriptionID

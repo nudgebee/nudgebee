@@ -24,3 +24,10 @@ func FindOpenPRResolutionByURL(prURL string) (resolutionID, tableName string, er
 func ProcessOpenPRResolution(ctx *security.RequestContext, resolutionID, tableName string) error {
 	return adapter.ProcessOpenPRResolution(ctx, resolutionID, tableName)
 }
+
+// MarkPRResolutionTerminal retires a resolution when its PR is closed or merged,
+// so the cron and future webhooks stop dispatching followups for it. Delegates
+// to adapter.MarkPRResolutionTerminal.
+func MarkPRResolutionTerminal(ctx *security.RequestContext, resolutionID, tableName string, merged bool) error {
+	return adapter.MarkPRResolutionTerminal(ctx, resolutionID, tableName, merged)
+}

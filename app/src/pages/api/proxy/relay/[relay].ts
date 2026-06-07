@@ -4,63 +4,12 @@ import type { NextApiRequest, NextApiResponse } from 'next';
 import { authOptions } from '@pages/api/auth/[...nextauth]';
 import { decrypt, decodeSessionJWT } from '@lib/internal';
 import { queryGraphQL } from '@lib/HttpService';
+import { hasAccountAccess } from '@lib/accountAccess';
 import crypto from 'crypto';
 import { context, propagation, trace, SpanStatusCode } from '@opentelemetry/api';
 
 const relayEndpoint = process.env.RELAY_SERVER_ENDPOINT ?? 'http://localhost:52832';
-const auditEndpoint = process.env.SERVICE_API_SERVER_URL ?? 'http://localhost:8000';
 const secretKey = process.env.RELAY_SERVER_SECRET_KEY ?? '';
-const servicesServerToken = process.env.ACTION_API_SERVER_TOKEN ?? '';
-
-async function hasAccountAccess(userId: string, tenantId: string, accountId: string, traceParent: string): Promise<boolean> {
-  const tracer = trace.getTracer('relay-api');
-  const span = tracer.startSpan('hasAccountAccess');
-
-  try {
-    const authResp = await fetch(auditEndpoint + '/v1/authz/validate_access', {
-      headers: {
-        'Content-Type': 'application/json',
-        traceparent: traceParent,
-        'X-Request-ID': traceParent,
-        'X-ACTION-TOKEN': servicesServerToken,
-      },
-      body: JSON.stringify({
-        user_id: userId,
-        access: [
-          {
-            tenant_id: tenantId,
-            permission: 'read',
-            category: 'ACCOUNTS',
-            args: { account_id: accountId },
-          },
-        ],
-      }),
-      method: 'post',
-    });
-
-    if (authResp.ok) {
-      const responseJson = await authResp.json();
-      const allowed = responseJson?.access && responseJson.access?.length > 0 && responseJson.access[0]?.allowed;
-      if (allowed) {
-        span.setStatus({ code: SpanStatusCode.OK });
-      } else {
-        span.setStatus({ code: SpanStatusCode.ERROR, message: 'Access denied' });
-      }
-      return allowed;
-    }
-
-    span.setStatus({
-      code: SpanStatusCode.ERROR,
-      message: `Access API returned ${authResp.status}`,
-    });
-  } catch (e: any) {
-    span.recordException(e);
-    span.setStatus({ code: SpanStatusCode.ERROR, message: e.message });
-  } finally {
-    span.end();
-  }
-  return false;
-}
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const tracer = trace.getTracer('relay-api');
@@ -136,7 +85,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
 
       // --- Step 2: Account Access Validation ---
-      if (!(await hasAccountAccess(userDetails.userId, userDetails.tenantId, req.body.body?.account_id, traceParent))) {
+      // The relay's /request handler reads body.account_id first then falls back to
+      // top-level account_id (relay-server request.go:60-63). Mirror that here so
+      // callers using either shape (e.g. XtermTerminal sends flat) are properly
+      // authz-checked; otherwise hasAccountAccess's empty-id guard 403s the
+      // top-level-shape callers that previously slipped through.
+      const accountId = req.body?.body?.account_id ?? req.body?.account_id;
+      if (!(await hasAccountAccess(userDetails.userId, userDetails.tenantId, accountId, traceParent))) {
         span.setStatus({ code: SpanStatusCode.ERROR, message: 'Access denied' });
         res.status(403).json({ error: 'forbidden', description: 'Access denied' });
         return;

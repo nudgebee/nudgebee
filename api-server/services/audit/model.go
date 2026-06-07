@@ -5,14 +5,17 @@ import "time"
 type EventCategory string
 
 const (
-	EventCategoryUser              EventCategory = "USERS"
-	EventCategoryGroup             EventCategory = "GROUPS"
-	EventCategoryRole              EventCategory = "ROLES"
-	EventCategoryTenant            EventCategory = "TENANTS"
-	EventCategoryAccount           EventCategory = "ACCOUNTS"
-	EventCategoryRecommendation    EventCategory = "RECOMMENDATIONS"
-	EventCategoryAutopilot         EventCategory = "AUTO_PILOT"
+	EventCategoryUser           EventCategory = "USERS"
+	EventCategoryGroup          EventCategory = "GROUPS"
+	EventCategoryRole           EventCategory = "ROLES"
+	EventCategoryTenant         EventCategory = "TENANTS"
+	EventCategoryAccount        EventCategory = "ACCOUNTS"
+	EventCategoryRecommendation EventCategory = "RECOMMENDATIONS"
+	EventCategoryAutopilot      EventCategory = "AUTO_PILOT"
+	// Deprecated: use EventCategoryAutomation. Retained for historical rows
+	// already written under "AUTO_RUNBOOK"; new emissions must use AUTOMATION.
 	EventCategoryAutorunbook       EventCategory = "AUTO_RUNBOOK"
+	EventCategoryAutomation        EventCategory = "AUTOMATION"
 	EventCategoryTickets           EventCategory = "TICKETS"
 	EventCategoryNotifications     EventCategory = "NOTIFICATIONS"
 	EventCategoryK8sAgent          EventCategory = "K8S_AGENT"

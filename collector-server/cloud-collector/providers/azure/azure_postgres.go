@@ -103,20 +103,12 @@ func (s *postgresService) ApplyCommand(ctx providers.CloudProviderContext, accou
 		}, err
 	}
 
-	// Extract subscription ID, resource group and server name from resource ID
-	parts := strings.Split(command.ResourceId, "/")
-	var subscriptionID, resourceGroup, serverName string
-	for i, part := range parts {
-		if part == "subscriptions" && i+1 < len(parts) {
-			subscriptionID = parts[i+1]
-		}
-		if part == "resourceGroups" && i+1 < len(parts) {
-			resourceGroup = parts[i+1]
-		}
-		if part == "flexibleServers" && i+1 < len(parts) {
-			serverName = parts[i+1]
-		}
-	}
+	// Extract subscription ID, resource group and server name from resource ID.
+	// Parsed case-insensitively: stored Azure IDs are lowercased (see parseAzureResourceIDSegments).
+	segments := parseAzureResourceIDSegments(command.ResourceId)
+	subscriptionID := segments["subscriptions"]
+	resourceGroup := segments["resourcegroups"]
+	serverName := segments["flexibleservers"]
 
 	if subscriptionID == "" {
 		subscriptionID = session.SubscriptionID

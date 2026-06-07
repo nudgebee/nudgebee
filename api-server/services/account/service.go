@@ -2465,6 +2465,14 @@ func UpdateAccountByAction(context *security.RequestContext, request AccountUpda
 		return AccountUpdateResponse{}, fmt.Errorf("unauthorized: missing tenant")
 	}
 
+	// Gate on access to the target account. tenant_admin passes for any
+	// account in the tenant; account_admin only for its assigned accounts.
+	// Required because callers now include per-account roles (actions.yaml)
+	// and the UPDATE below is scoped by tenant only.
+	if !context.GetSecurityContext().HasAccountAccess(request.Id, security.SecurityAccessTypeUpdate) {
+		return AccountUpdateResponse{}, common.ErrorUnauthorized("Not Allowed")
+	}
+
 	if request.Status == "" && request.AccountName == "" && len(request.Data) == 0 {
 		return AccountUpdateResponse{}, fmt.Errorf("at least one of status, account_name, or data must be provided")
 	}

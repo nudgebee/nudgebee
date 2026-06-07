@@ -111,6 +111,10 @@ query GetWorkflowById($accountId:String!, $workflowId:String!) {
     live_version_id
     live_version_number
     live_version_name
+    live_version_status
+    draft_version_id
+    draft_version_number
+    draft_version_name
     tags
     tenant_id
     updated_at
@@ -140,6 +144,10 @@ query ListWorkflows($accountId:String!, $status:String, $last_execution_status:S
       live_version_id
       live_version_number
       live_version_name
+      live_version_status
+      draft_version_id
+      draft_version_number
+      draft_version_name
       tags
       tenant_id
       updated_at
@@ -234,6 +242,7 @@ query ListWorkflowVersions($accountId: String!, $workflowId: String!) {
       name
       description
       is_live
+      status
       created_by
       created_by_user {
         id
@@ -241,6 +250,18 @@ query ListWorkflowVersions($accountId: String!, $workflowId: String!) {
       }
       created_at
     }
+  }
+}
+`;
+
+export const UPDATE_WORKFLOW_VERSION_STATUS = `
+mutation UpdateWorkflowVersionStatus($accountId: String!, $workflowId: String!, $versionNumber: Int!, $status: String!) {
+  workflows_update_version_status(request: {account_id: $accountId, id: $workflowId, version_number: $versionNumber, status: $status}) {
+    id
+    workflow_id
+    version_number
+    is_live
+    status
   }
 }
 `;
@@ -283,13 +304,17 @@ mutation RestoreWorkflowVersion($accountId: String!, $workflowId: String!, $vers
     live_version_id
     live_version_number
     live_version_name
+    live_version_status
+    draft_version_id
+    draft_version_number
+    draft_version_name
   }
 }
 `;
 
 export const PUBLISH_WORKFLOW_VERSION = `
-mutation PublishWorkflowVersion($accountId: String!, $workflowId: String!, $name: String, $description: String, $setLive: Boolean) {
-  workflows_create_version(request: {account_id: $accountId, id: $workflowId, name: $name, description: $description, set_live: $setLive}) {
+mutation PublishWorkflowVersion($accountId: String!, $workflowId: String!, $name: String, $description: String, $setLive: Boolean, $status: String) {
+  workflows_create_version(request: {account_id: $accountId, id: $workflowId, name: $name, description: $description, set_live: $setLive, status: $status}) {
     id
     workflow_id
     version_number
@@ -297,6 +322,7 @@ mutation PublishWorkflowVersion($accountId: String!, $workflowId: String!, $name
     name
     description
     is_live
+    status
     created_by
     created_by_user {
       id
@@ -317,6 +343,10 @@ mutation MakeWorkflowVersionLive($accountId: String!, $workflowId: String!, $ver
     live_version_id
     live_version_number
     live_version_name
+    live_version_status
+    draft_version_id
+    draft_version_number
+    draft_version_name
     updated_at
   }
 }
@@ -348,6 +378,23 @@ query listWorkflowExecutions($accountId:String!, $id:String!, $limit:Int, $next_
       trigger_type
       triggered_by
       workflow_id
+    }
+  }
+}
+`;
+
+export const LIST_WORKFLOW_EXECUTIONS_FOR_EVENT = `
+query listWorkflowExecutionsForEvent($accountId: String!, $eventId: String!) {
+  workflow_list_executions_for_event(request: {account_id: $accountId, event_id: $eventId}) {
+    executions {
+      workflow_id
+      workflow_name
+      id
+      status
+      start_time
+      close_time
+      triggered_by
+      trigger_type
     }
   }
 }
@@ -789,6 +836,16 @@ const apiWorkflow = {
       return error;
     }
   },
+  async listExecutionsForEvent(accountId: string, eventId: string) {
+    if (accountId === 'demo' || !accountId || !eventId) return { data: { executions: [] }, errors: null };
+    try {
+      const response = await queryGraphQL(LIST_WORKFLOW_EXECUTIONS_FOR_EVENT, 'listWorkflowExecutionsForEvent', { accountId, eventId });
+      const executions = response?.data?.data?.workflow_list_executions_for_event?.executions || [];
+      return { data: { executions }, errors: response?.data?.errors };
+    } catch (error) {
+      return { data: { executions: [] }, errors: [error] };
+    }
+  },
   async getWorkflowExecution(accountId: string, workflowId: string, executionId: string) {
     if (accountId === 'demo') return { data: null, errors: null };
     try {
@@ -1220,6 +1277,23 @@ const apiWorkflow = {
       return { data: null, errors: [error] };
     }
   },
+  async updateWorkflowVersionStatus(accountId: string, workflowId: string, versionNumber: number, status: 'ACTIVE' | 'PAUSED' | 'INACTIVE') {
+    try {
+      const response = await queryGraphQL(UPDATE_WORKFLOW_VERSION_STATUS, 'UpdateWorkflowVersionStatus', {
+        accountId,
+        workflowId,
+        versionNumber,
+        status,
+      });
+      return {
+        data: response?.data?.data,
+        errors: response?.data?.errors,
+      };
+    } catch (error) {
+      console.error('Failed to update workflow version status:', error);
+      return { data: null, errors: [error] };
+    }
+  },
   async getWorkflowVersion(accountId: string, workflowId: string, versionNumber: number) {
     try {
       const response = await queryGraphQL(GET_WORKFLOW_VERSION, 'GetWorkflowVersion', {
@@ -1255,7 +1329,7 @@ const apiWorkflow = {
   async publishWorkflowVersion(
     accountId: string,
     workflowId: string,
-    options?: { name?: string | null; description?: string | null; setLive?: boolean }
+    options?: { name?: string | null; description?: string | null; setLive?: boolean; status?: 'ACTIVE' | 'PAUSED' | 'INACTIVE' | null }
   ) {
     try {
       const response = await queryGraphQL(PUBLISH_WORKFLOW_VERSION, 'PublishWorkflowVersion', {
@@ -1264,6 +1338,9 @@ const apiWorkflow = {
         name: options?.name ?? null,
         description: options?.description ?? null,
         setLive: options?.setLive ?? true,
+        // Backend defaults to PAUSED when status is empty/missing; we pass null
+        // when caller didn't specify so the backend default applies.
+        status: options?.status ?? null,
       });
       return {
         data: response?.data?.data,

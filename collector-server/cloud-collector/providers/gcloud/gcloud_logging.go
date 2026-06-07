@@ -14,6 +14,7 @@ import (
 
 const (
 	defaultLogLimit    = 1000
+	maxLogLimit        = 50000
 	defaultLogDuration = 1 * time.Hour
 )
 
@@ -70,6 +71,12 @@ func queryGcloudLogs(ctx providers.CloudProviderContext, account providers.Accou
 	limit := defaultLogLimit
 	if query.Limit != nil && *query.Limit > 0 {
 		limit = int(*query.Limit)
+	}
+	// Defense-in-depth cap (api-server side already caps for cloud paths). Keeps
+	// the upfront make() allocation bounded if a future caller bypasses the
+	// outer cap.
+	if limit > maxLogLimit {
+		limit = maxLogLimit
 	}
 
 	logger.Info("querying GCP logs", "projectId", session.ProjectId, "filter", filter, "limit", limit)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"nudgebee/runbook/internal/tasks/safehttp"
 	"nudgebee/runbook/internal/tasks/types"
 	"regexp"
 	"strings"
@@ -14,18 +15,6 @@ import (
 // validWhoisServer matches valid hostnames/IPs for WHOIS servers.
 // Limits to alphanumerics, dots, colons (IPv6), and hyphens.
 var validWhoisServer = regexp.MustCompile(`^[a-zA-Z0-9.:-]+$`)
-
-// isRestrictedIP reports whether the given IP must never be the target of an
-// outbound connection originating from a runbook task. It covers loopback,
-// RFC1918 private ranges, link-local, multicast, unspecified, and
-// interface-local multicast addresses — anything that is not a routable
-// public address and could be abused for SSRF against internal services or
-// cloud metadata endpoints.
-func isRestrictedIP(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() ||
-		ip.IsInterfaceLocalMulticast()
-}
 
 // validateWhoisServer ensures the given WHOIS server host is safe to connect
 // to, and returns the specific IP address to dial. Returning the resolved IP
@@ -50,7 +39,7 @@ func validateWhoisServer(ctx context.Context, server string) (string, error) {
 	// If the caller already gave us a literal IP, validate it directly — no
 	// DNS resolution needed, and no rebinding window to worry about.
 	if ip := net.ParseIP(server); ip != nil {
-		if isRestrictedIP(ip) {
+		if safehttp.IsRestrictedIP(ip) {
 			return "", fmt.Errorf("whois server %q is a restricted IP", server)
 		}
 		return ip.String(), nil
@@ -65,7 +54,7 @@ func validateWhoisServer(ctx context.Context, server string) (string, error) {
 		return "", fmt.Errorf("whois server %q did not resolve to any IP", server)
 	}
 	for _, ip := range ips {
-		if isRestrictedIP(ip) {
+		if safehttp.IsRestrictedIP(ip) {
 			return "", fmt.Errorf("whois server %q resolves to a restricted IP (%s)", server, ip.String())
 		}
 	}

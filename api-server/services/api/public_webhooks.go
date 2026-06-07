@@ -287,6 +287,39 @@ func githubWebhookHandler(tracer *trace.Tracer, meter *metric.Meter, logger *slo
 			return
 		}
 
+		// Terminal events (PR closed / merged) retire the resolution instead of
+		// dispatching a pointless followup against a PR that can no longer take
+		// one. We read `merged` straight off the parsed event — no need to thread
+		// it through extractGithubPRSignal.
+		if terminal {
+			merged := false
+			if pre, ok := event.(*github.PullRequestEvent); ok {
+				merged = pre.GetPullRequest().GetMerged()
+			}
+			logger.Info("github webhook: PR terminal, retiring resolution",
+				"pr_url", prURL, "event_type", eventType, "action", action,
+				"merged", merged, "resolution_id", resolutionID, "table", tableName)
+			sc := security.NewRequestContextForSuperAdmin(logger, tracer, meter)
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logger.Error("github webhook: panic in terminal goroutine",
+							"resolution_id", resolutionID, "recover", r)
+					}
+				}()
+				bgCtx, cancel := context.WithTimeout(context.Background(), githubWebhookDispatchTimeout)
+				defer cancel()
+				boundedSc := security.NewRequestContext(bgCtx, sc.GetSecurityContext(),
+					sc.GetLogger(), sc.GetTracer(), sc.GetMeter())
+				if err := account.MarkPRResolutionTerminal(boundedSc, resolutionID, tableName, merged); err != nil {
+					logger.Error("github webhook: MarkPRResolutionTerminal failed",
+						"resolution_id", resolutionID, "table", tableName, "error", err)
+				}
+			}()
+			c.JSON(200, map[string]any{"status": "terminal", "resolution_id": resolutionID})
+			return
+		}
+
 		logger.Info("github webhook: dispatching followup",
 			"pr_url", prURL,
 			"event_type", eventType,

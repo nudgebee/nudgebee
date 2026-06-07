@@ -62,6 +62,13 @@ type Knowledgebase struct {
 	UpdatedAt     time.Time  `json:"updated_at" db:"updated_at"`
 	DocumentCount *int       `json:"document_count,omitempty" db:"document_count"`
 	LastLoadedAt  *time.Time `json:"last_loaded_at,omitempty" db:"last_loaded_at"`
+	// ErrorMessage carries the reason for the most recent failed load when
+	// Status == "error", letting the card show *why* a KB failed. Persisted on
+	// the KB row (set wherever status flips to error, cleared on
+	// processing/active) rather than derived from rag_embedding_token_usage, so
+	// it covers llm-server-side failures that never reach the rag-server and
+	// thus leave no token-usage row. Nil for non-error KBs.
+	ErrorMessage *string `json:"error_message,omitempty" db:"error_message"`
 }
 
 // KBLoadHistoryEntry represents a single load history record from rag_embedding_token_usage.
@@ -347,7 +354,8 @@ func GetKnowledgebase(sc *security.RequestContext, accountId, kbId string) (Know
 		       kb.created_at, kb.updated_at,
 		       kb.document_count, kb.last_loaded_at,
 		       COALESCE(cu.display_name, '') as created_by,
-		       COALESCE(uu.display_name, '') as updated_by
+		       COALESCE(uu.display_name, '') as updated_by,
+		       kb.error_message
 		FROM llm_knowledgebases kb
 		LEFT JOIN users cu ON kb.created_by = cu.id
 		LEFT JOIN users uu ON kb.updated_by = uu.id
@@ -390,7 +398,8 @@ func ListKnowledgebases(sc *security.RequestContext, accountId string) ([]Knowle
 		       kb.created_at, kb.updated_at,
 		       kb.document_count, kb.last_loaded_at,
 		       COALESCE(cu.display_name, '') as created_by,
-		       COALESCE(uu.display_name, '') as updated_by
+		       COALESCE(uu.display_name, '') as updated_by,
+		       kb.error_message
 		FROM llm_knowledgebases kb
 		LEFT JOIN users cu ON kb.created_by = cu.id
 		LEFT JOIN users uu ON kb.updated_by = uu.id
@@ -516,9 +525,10 @@ func UpdateKnowledgebase(sc *security.RequestContext, accountId, kbId string, up
 			updates.DataSizeBytes, nullableUpdatedBy,
 		}
 
-		// Only update status if data changed
+		// Only update status if data changed. Re-processing clears any prior
+		// error_message so a recovered KB stops showing a stale reason.
 		if dataChanged {
-			query += `, status = $8 WHERE id = $9 AND account_id = $10`
+			query += `, status = $8, error_message = NULL WHERE id = $9 AND account_id = $10`
 			args = append(args, nullableStatus, kbId, accountId)
 		} else {
 			query += ` WHERE id = $8 AND account_id = $9`
@@ -701,8 +711,21 @@ func DeleteKnowledgebase(sc *security.RequestContext, accountId, kbId string) er
 }
 
 // Helper function to update KB status
+// updateKBStatus sets a non-error status and clears any stale error_message, so
+// a KB that recovers (processing/active) or is archived stops showing an old
+// reason. Use updateKBStatusError to move a KB into the error state with a
+// reason attached.
 func updateKBStatus(dbms *common.DatabaseManager, kbId string, status string) error {
-	_, err := dbms.Db.Exec("UPDATE llm_knowledgebases SET status = $1, updated_at = NOW() WHERE id = $2", status, kbId)
+	_, err := dbms.Db.Exec("UPDATE llm_knowledgebases SET status = $1, error_message = NULL, updated_at = NOW() WHERE id = $2", status, kbId)
+	return err
+}
+
+// updateKBStatusError flips a KB to the error state and records why, so the UI
+// can surface the reason. msg is best-effort; an empty msg still sets the
+// status (the card falls back to the bare "error" label).
+func updateKBStatusError(dbms *common.DatabaseManager, kbId string, msg string) error {
+	nullableMsg := sql.NullString{String: msg, Valid: msg != ""}
+	_, err := dbms.Db.Exec("UPDATE llm_knowledgebases SET status = $1, error_message = $2, updated_at = NOW() WHERE id = $3", string(KBStatusError), nullableMsg, kbId)
 	return err
 }
 
@@ -821,14 +844,14 @@ func RetriggerKnowledgebase(sc *security.RequestContext, accountId, kbId string)
 		// is empty for integration KBs — their content lives in the
 		// integration's own vector collection.
 		if existingKB.IntegrationID == nil || existingKB.KBSource == nil {
-			_ = updateKBStatus(dbms, kbId, string(KBStatusError))
+			_ = updateKBStatusError(dbms, kbId, "integration knowledgebase is missing its integration reference")
 			return errors.New("kb: integration knowledgebase is missing its integration reference")
 		}
 		retriggerCtx, cancel := context.WithTimeout(context.Background(), time.Duration(config.Config.AsyncOperationTimeoutSeconds)*time.Second)
 		err := triggerIntegrationKBSync(retriggerCtx, accountId, *existingKB.IntegrationID, *existingKB.KBSource, sc.GetSecurityContext().GetUserId())
 		cancel()
 		if err != nil {
-			_ = updateKBStatus(dbms, kbId, string(KBStatusError))
+			_ = updateKBStatusError(dbms, kbId, fmt.Sprintf("failed to trigger integration sync: %v", err))
 			return fmt.Errorf("kb: failed to trigger integration sync: %w", err)
 		}
 	} else {
@@ -838,7 +861,7 @@ func RetriggerKnowledgebase(sc *security.RequestContext, accountId, kbId string)
 		if err := kbEmbeddingWorkerPool.Submit(submissionCtx, func() {
 			processKBUpdateEmbeddingsAsync(sc, accountId, kbId, existingKB.Data, existingKB.DataFormat, "user_retrigger")
 		}); err != nil {
-			_ = updateKBStatus(dbms, kbId, string(KBStatusError))
+			_ = updateKBStatusError(dbms, kbId, fmt.Sprintf("failed to submit retrigger task: %v", err))
 			return fmt.Errorf("kb: failed to submit retrigger task: %w", err)
 		}
 	}
@@ -882,8 +905,8 @@ func processKBEmbeddingsAsync(sc *security.RequestContext, accountId, kbId, data
 	docCount, err := createKBVectorCollection(accountId, kbId, data, format, triggeredBy, "user_create")
 	if err != nil {
 		slog.Error("kb: async - failed to create vector collection", "error", err, "kb_id", kbId)
-		// Update status to error
-		_ = updateKBStatus(dbms, kbId, string(KBStatusError))
+		// Update status to error, capturing the reason for the UI.
+		_ = updateKBStatusError(dbms, kbId, fmt.Sprintf("failed to create embeddings: %v", err))
 
 		// Create audit entry for failure
 		auditReq := &audit.AuditRequest{
@@ -957,7 +980,7 @@ func processKBUpdateEmbeddingsAsync(sc *security.RequestContext, accountId, kbId
 	docCount, err := createKBVectorCollection(accountId, kbId, data, format, triggeredBy, triggerType)
 	if err != nil {
 		slog.Error("kb: async update - failed to create vector collection", "error", err, "kb_id", kbId)
-		_ = updateKBStatus(dbms, kbId, string(KBStatusError))
+		_ = updateKBStatusError(dbms, kbId, fmt.Sprintf("failed to create embeddings: %v", err))
 
 		auditReq := &audit.AuditRequest{
 			Audits: []audit.Audit{

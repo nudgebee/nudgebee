@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lib/pq"
 
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
@@ -304,7 +305,10 @@ func SqlUpdateQueryWithAccountIdFilter(ctx *security.RequestContext, query strin
 	// referencing the raw table after the first occurrence is wrapped. Each
 	// replacement gets a unique alias to avoid SQL "duplicate alias" errors.
 	accountColumnName := "cloud_account_id"
+	// accountId is UUID-validated above; defense-in-depth via pq.QuoteLiteral
+	// keeps CodeQL happy and protects against future callers that skip the gate.
+	quotedAccountId := pq.QuoteLiteral(accountId)
 	return replaceAllMatches(query, tableName, func(idx int) string {
-		return fmt.Sprintf("(select * from %s where %s = '%s') q%d", tableName, accountColumnName, accountId, idx)
+		return fmt.Sprintf("(select * from %s where %s = %s) q%d", tableName, accountColumnName, quotedAccountId, idx)
 	}), nil
 }

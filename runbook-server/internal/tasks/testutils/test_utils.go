@@ -159,6 +159,9 @@ func (m *MockWorkflowStore) SetLastExecutionStatus(ctx context.Context, tenantID
 func (m *MockWorkflowStore) CountWorkflows(ctx context.Context, tenantID, accountID string, status model.WorkflowStatus, triggerType string) (int64, error) {
 	return 0, nil
 }
+func (m *MockWorkflowStore) GetWorkflowNames(ctx context.Context, tenantID, accountID string, ids []string) (map[string]string, error) {
+	return map[string]string{}, nil
+}
 func (m *MockWorkflowStore) ListWorkflowVersions(ctx context.Context, workflowID string, limit int) ([]model.WorkflowVersion, error) {
 	return nil, nil
 }
@@ -171,12 +174,18 @@ func (m *MockWorkflowStore) GetWorkflowVersionByID(ctx context.Context, versionI
 func (m *MockWorkflowStore) GetLiveWorkflowVersion(ctx context.Context, workflowID string) (*model.WorkflowVersion, error) {
 	return nil, nil
 }
-func (m *MockWorkflowStore) PublishVersion(ctx context.Context, workflowID, createdBy string, source model.WorkflowVersionSource, name, description *string, restoredFromVersion *int) (*model.WorkflowVersion, error) {
-	return &model.WorkflowVersion{ID: "mock-version-id", WorkflowID: workflowID, VersionNumber: 1, Source: source}, nil
+func (m *MockWorkflowStore) PublishVersion(ctx context.Context, workflowID, createdBy string, source model.WorkflowVersionSource, name, description *string, restoredFromVersion *int, status model.WorkflowStatus) (*model.WorkflowVersion, error) {
+	return &model.WorkflowVersion{ID: "mock-version-id", WorkflowID: workflowID, VersionNumber: 1, Source: source, Status: status}, nil
 }
 func (m *MockWorkflowStore) SetLiveVersion(ctx context.Context, tenantID, accountID, workflowID, versionID string) error {
 	return nil
 }
+func (m *MockWorkflowStore) SetDraftVersionID(ctx context.Context, tenantID, accountID, workflowID, versionID string) error {
+	return nil
+}
 func (m *MockWorkflowStore) UpdateVersionMetadata(ctx context.Context, workflowID string, versionNumber int, name, description *string) (*model.WorkflowVersion, error) {
 	return nil, nil
+}
+func (m *MockWorkflowStore) UpdateVersionStatus(ctx context.Context, tenantID, accountID, workflowID, versionID string, status model.WorkflowStatus) (bool, error) {
+	return false, nil
 }

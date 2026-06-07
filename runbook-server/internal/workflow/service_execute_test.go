@@ -130,7 +130,7 @@ func TestTriggerWorkflowFromDraftRunsDraftNoVersion(t *testing.T) {
 	assert.Equal(t, "test-run-id", runID)
 	// Critical invariants: no version row written, live pointer untouched, and we
 	// must not have asked for the live snapshot.
-	mockStore.AssertNotCalled(t, "PublishVersion", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	mockStore.AssertNotCalled(t, "PublishVersion", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	mockStore.AssertNotCalled(t, "SetLiveVersion", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	mockStore.AssertNotCalled(t, "GetLiveWorkflowVersion", mock.Anything, mock.Anything)
 	mockTemporal.AssertExpectations(t)
@@ -153,7 +153,7 @@ func TestTriggerWorkflowFromDraftRejectsInactiveStatus(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not runnable")
 	// Must short-circuit before any version write.
-	mockStore.AssertNotCalled(t, "PublishVersion", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	mockStore.AssertNotCalled(t, "PublishVersion", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
 // TestTriggerWorkflowFromDraftAuth verifies the account-access gate. Without
@@ -169,7 +169,7 @@ func TestTriggerWorkflowFromDraftAuth(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "account not accessible")
 	mockStore.AssertNotCalled(t, "Find", mock.Anything, mock.Anything, mock.Anything, mock.Anything)
-	mockStore.AssertNotCalled(t, "PublishVersion", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	mockStore.AssertNotCalled(t, "PublishVersion", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
 // newExecuteTestService wires up a Service with mock store + temporal so the
@@ -193,48 +193,55 @@ func newExecuteTestService() (*Service, *MockTemporalClient, *MockWorkflowStore,
 	return service, mockTemporal, mockStore, sc
 }
 
-// TestCreateWorkflowDefaultsActive verifies a workflow created with no explicit
-// status is stored as ACTIVE (DRAFT default removed) and that its schedule is
-// registered immediately as a side effect.
-func TestCreateWorkflowDefaultsActive(t *testing.T) {
+// TestCreateWorkflowDefaultsPaused verifies a workflow created with no explicit
+// status now defaults to PAUSED (V746 moved the runtime gate to per-version
+// status; workflows opt in via the publish dialog). The schedule is still
+// registered so the worker has a handle, but it is created paused — see
+// handleWorkflowTrigger's `paused := wf.Status == WorkflowStatusPaused`.
+func TestCreateWorkflowDefaultsPaused(t *testing.T) {
 	service, mockTemporal, mockStore, sc := newExecuteTestService()
 
 	wf := model.Workflow{
-		Name: "wf-default-active",
+		Name: "wf-default-paused",
 		Definition: model.WorkflowDefinition{
 			Triggers: []model.Trigger{{Type: model.WorkflowTriggerSchedule, Params: map[string]any{"cron": "0 * * * *"}}},
 			Tasks:    []model.Task{{ID: "task1", Type: "scripting.run_script", Params: map[string]any{"script": "echo"}}},
 		},
-		// Status intentionally empty -> must default to ACTIVE.
+		// Status intentionally empty -> must default to PAUSED.
 	}
 
 	mockStore.On("FindByName", mock.Anything, "test-tenant", "test-account", wf.Name).Return(nil, sql.ErrNoRows)
 	mockStore.On("CreateWorkflowWithInitialVersion", mock.Anything, "test-tenant", "test-account", mock.MatchedBy(func(w model.Workflow) bool {
-		return w.Status == model.WorkflowStatusActive
-	})).Return("wf-da", &model.WorkflowVersion{ID: "v1", VersionNumber: 1, Source: model.WorkflowVersionSourceCreate, IsLive: true}, nil)
+		return w.Status == model.WorkflowStatusPaused
+	})).Return("wf-dp", &model.WorkflowVersion{ID: "v1", VersionNumber: 1, Source: model.WorkflowVersionSourceCreate, IsLive: true, Status: model.WorkflowStatusPaused}, nil)
 
-	// ACTIVE status registers the schedule.
-	mockTemporal.On("Describe", "workflow-schedule-wf-da-0").Return(nil, serviceerror.NewNotFound("not found"))
+	// PAUSED status still creates the schedule handle so the temporal worker
+	// knows the workflow exists; the schedule is just created in a paused
+	// state and won't fire until the user activates.
+	mockTemporal.On("Describe", "workflow-schedule-wf-dp-0").Return(nil, serviceerror.NewNotFound("not found"))
 	mockTemporal.On("Create", mock.Anything, mock.MatchedBy(func(opts client.ScheduleOptions) bool {
-		return opts.ID == "workflow-schedule-wf-da-0"
+		return opts.ID == "workflow-schedule-wf-dp-0"
 	})).Return(&MockScheduleHandle{}, nil)
-	mockTemporal.On("Describe", "workflow-schedule-wf-da").Return(nil, serviceerror.NewNotFound("not found"))
+	mockTemporal.On("Describe", "workflow-schedule-wf-dp").Return(nil, serviceerror.NewNotFound("not found"))
 	mockTemporal.On("List", mock.Anything, mock.Anything).Return(&MockScheduleListIterator{Schedules: []*client.ScheduleListEntry{}}, nil)
 
 	_, _, err := service.CreateWorkflow(sc, "test-account", wf)
 	assert.NoError(t, err)
 	mockStore.AssertCalled(t, "CreateWorkflowWithInitialVersion", mock.Anything, "test-tenant", "test-account", mock.MatchedBy(func(w model.Workflow) bool {
-		return w.Status == model.WorkflowStatusActive
+		return w.Status == model.WorkflowStatusPaused
 	}))
 	mockTemporal.AssertCalled(t, "Create", mock.Anything, mock.MatchedBy(func(opts client.ScheduleOptions) bool {
-		return opts.ID == "workflow-schedule-wf-da-0"
+		return opts.ID == "workflow-schedule-wf-dp-0"
 	}))
 }
 
-// TestPublishWorkflowForcesActive locks in the rule that publishing always
-// activates: a PAUSED workflow flips to ACTIVE on publish and its triggers are
-// re-registered. This is the silent-non-execution guard.
-func TestPublishWorkflowForcesActive(t *testing.T) {
+// TestPublishWorkflowWithExplicitActiveStatus locks in the new contract: the
+// caller picks the version's status at publish time (ACTIVE here). SetLiveVersion
+// mirrors that status onto workflows.status in the same UPDATE, so the service
+// no longer needs a separate UpdateWorkflowStatus call. Triggers are still
+// (re)registered on every publish so a newly added schedule/webhook trigger
+// in the published definition takes effect immediately.
+func TestPublishWorkflowWithExplicitActiveStatus(t *testing.T) {
 	service, mockTemporal, mockStore, sc := newExecuteTestService()
 
 	wf := &model.Workflow{
@@ -246,15 +253,13 @@ func TestPublishWorkflowForcesActive(t *testing.T) {
 			Tasks:    []model.Task{{ID: "task1", Type: "scripting.run_script", Params: map[string]any{"script": "echo"}}},
 		},
 	}
-	publishedVersion := &model.WorkflowVersion{ID: "v-pub-2", WorkflowID: "wf-pub", VersionNumber: 2, Source: model.WorkflowVersionSourcePublish}
+	publishedVersion := &model.WorkflowVersion{ID: "v-pub-2", WorkflowID: "wf-pub", VersionNumber: 2, Source: model.WorkflowVersionSourcePublish, Status: model.WorkflowStatusActive}
 
 	mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-pub").Return(wf, nil)
-	mockStore.On("PublishVersion", mock.Anything, "wf-pub", "test-user", model.WorkflowVersionSourcePublish, (*string)(nil), (*string)(nil), (*int)(nil)).
+	mockStore.On("PublishVersion", mock.Anything, "wf-pub", "test-user", model.WorkflowVersionSourcePublish, (*string)(nil), (*string)(nil), (*int)(nil), model.WorkflowStatusActive).
 		Return(publishedVersion, nil).Once()
 	mockStore.On("SetLiveVersion", mock.Anything, "test-tenant", "test-account", "wf-pub", "v-pub-2").Return(nil).Once()
-	mockStore.On("UpdateWorkflowStatus", mock.Anything, "test-tenant", "test-account", "wf-pub", model.WorkflowStatusActive).Return(nil).Once()
 
-	// handleWorkflowTrigger registers the schedule now that status is ACTIVE.
 	mockTemporal.On("Describe", "workflow-schedule-wf-pub-0").Return(nil, serviceerror.NewNotFound("not found"))
 	mockTemporal.On("Create", mock.Anything, mock.MatchedBy(func(opts client.ScheduleOptions) bool {
 		return opts.ID == "workflow-schedule-wf-pub-0"
@@ -262,17 +267,19 @@ func TestPublishWorkflowForcesActive(t *testing.T) {
 	mockTemporal.On("Describe", "workflow-schedule-wf-pub").Return(nil, serviceerror.NewNotFound("not found"))
 	mockTemporal.On("List", mock.Anything, mock.Anything).Return(&MockScheduleListIterator{Schedules: []*client.ScheduleListEntry{}}, nil)
 
-	v, err := service.PublishWorkflow(sc, "test-account", "wf-pub", nil, nil, true)
+	v, err := service.PublishWorkflow(sc, "test-account", "wf-pub", nil, nil, true, model.WorkflowStatusActive)
 	assert.NoError(t, err)
 	assert.Equal(t, "v-pub-2", v.ID)
 	assert.True(t, v.IsLive)
-	mockStore.AssertCalled(t, "UpdateWorkflowStatus", mock.Anything, "test-tenant", "test-account", "wf-pub", model.WorkflowStatusActive)
+	// The dedicated UpdateWorkflowStatus call is gone — SetLiveVersion now
+	// mirrors the version's status onto the workflow row atomically.
+	mockStore.AssertNotCalled(t, "UpdateWorkflowStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
 // TestPublishWorkflowRegistersTriggersWhenAlreadyActive locks in the recovery
-// path: when the workflow is already ACTIVE (e.g. a prior publish set the status
-// but failed to register triggers and is being retried), publish must NOT skip
-// trigger registration just because the status flip is a no-op.
+// path: when the workflow is already ACTIVE (e.g. a prior publish failed to
+// register triggers and is being retried), publish must still re-register the
+// triggers — registration is unconditional, not gated on a status flip.
 func TestPublishWorkflowRegistersTriggersWhenAlreadyActive(t *testing.T) {
 	service, mockTemporal, mockStore, sc := newExecuteTestService()
 
@@ -285,10 +292,10 @@ func TestPublishWorkflowRegistersTriggersWhenAlreadyActive(t *testing.T) {
 			Tasks:    []model.Task{{ID: "task1", Type: "scripting.run_script", Params: map[string]any{"script": "echo"}}},
 		},
 	}
-	publishedVersion := &model.WorkflowVersion{ID: "v-active-3", WorkflowID: "wf-active", VersionNumber: 3, Source: model.WorkflowVersionSourcePublish}
+	publishedVersion := &model.WorkflowVersion{ID: "v-active-3", WorkflowID: "wf-active", VersionNumber: 3, Source: model.WorkflowVersionSourcePublish, Status: model.WorkflowStatusActive}
 
 	mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-active").Return(wf, nil)
-	mockStore.On("PublishVersion", mock.Anything, "wf-active", "test-user", model.WorkflowVersionSourcePublish, (*string)(nil), (*string)(nil), (*int)(nil)).
+	mockStore.On("PublishVersion", mock.Anything, "wf-active", "test-user", model.WorkflowVersionSourcePublish, (*string)(nil), (*string)(nil), (*int)(nil), model.WorkflowStatusActive).
 		Return(publishedVersion, nil).Once()
 	mockStore.On("SetLiveVersion", mock.Anything, "test-tenant", "test-account", "wf-active", "v-active-3").Return(nil).Once()
 
@@ -300,10 +307,11 @@ func TestPublishWorkflowRegistersTriggersWhenAlreadyActive(t *testing.T) {
 	mockTemporal.On("Describe", "workflow-schedule-wf-active").Return(nil, serviceerror.NewNotFound("not found"))
 	mockTemporal.On("List", mock.Anything, mock.Anything).Return(&MockScheduleListIterator{Schedules: []*client.ScheduleListEntry{}}, nil)
 
-	v, err := service.PublishWorkflow(sc, "test-account", "wf-active", nil, nil, true)
+	v, err := service.PublishWorkflow(sc, "test-account", "wf-active", nil, nil, true, model.WorkflowStatusActive)
 	assert.NoError(t, err)
 	assert.True(t, v.IsLive)
-	// Status was already ACTIVE: no redundant status write...
+	// Status mirror happens inside SetLiveVersion now, so there's no separate
+	// UpdateWorkflowStatus call to assert on.
 	mockStore.AssertNotCalled(t, "UpdateWorkflowStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	// ...but triggers were registered regardless (the recovery guarantee).
 	mockTemporal.AssertCalled(t, "Create", mock.Anything, mock.MatchedBy(func(opts client.ScheduleOptions) bool {

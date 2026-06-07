@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useRouter } from 'next/router';
 import { Alert, Box, Typography, Select, MenuItem, FormControl } from '@mui/material';
 import { Button } from '@components1/ds/Button';
 import {
@@ -192,6 +193,17 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
   pendingExecutionId,
   onPendingExecutionConsumed,
 }) => {
+  const router = useRouter();
+  // One-shot consumer of `?executionId=…` deep-link. `router.query` is empty on
+  // first render in Next.js (hydration / static optimization), so we track the
+  // id in state and capture it via effect once the query is populated. Cleared
+  // after we consume it so later list refreshes don't override manual clicks.
+  const [deepLinkExecutionId, setDeepLinkExecutionId] = useState<string | null>(null);
+  useEffect(() => {
+    if (typeof router.query.executionId === 'string' && router.query.executionId) {
+      setDeepLinkExecutionId(router.query.executionId);
+    }
+  }, [router.query.executionId]);
   const [selectedExecution, setSelectedExecution] = useState<ExecutionData | null>(null);
   const [selectedTask, setSelectedTask] = useState<string | null>(null);
   const [executionTasks, setExecutionTasks] = useState<WorkflowExecutionTaskResponse[]>([]);
@@ -312,6 +324,18 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
         onPendingExecutionConsumed?.();
       }
 
+      // One-shot deep-link via `?executionId=...` from the Investigate page.
+      if (deepLinkExecutionId) {
+        const target = executions.find((exec) => exec.id === deepLinkExecutionId);
+        if (target) {
+          setDeepLinkExecutionId(null);
+          setSelectedExecution(target);
+          setHighlightedExecutionId(target.id);
+          setSelectedTask(null);
+          return;
+        }
+      }
+
       // Default: select first if none selected or current not in list
       if (!selectedExecution || !executions.find((exec) => exec.id === selectedExecution.id)) {
         setSelectedExecution(executions[0]);
@@ -324,7 +348,8 @@ const ExecutionsView: React.FC<ExecutionsViewProps> = ({
       setLoadedExecutionId(null);
       pendingSelectionRef.current = null;
     }
-  }, [executions]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [executions, deepLinkExecutionId]);
 
   // Clear highlight animation after 2.5 seconds
   useEffect(() => {

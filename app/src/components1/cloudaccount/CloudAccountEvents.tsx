@@ -188,9 +188,11 @@ const CloudAccountEvents = (props: {
   const cloudAccountEventsTable = 'cloudaccount-events';
   const _showEllipsis = true;
 
-  const { severityFilterType, eventNamesFilter, sourceFilter, statusFilter, nbStatusFilter } = useEventCloudFilter(props.accountId as string, {
-    subjectNamespace: props?.serviceName,
-  });
+  const { severityFilterType, eventNamesFilter, sourceFilter, statusFilter, nbStatusFilter } = useEventCloudFilter(
+    props.accountId as string,
+    { subjectNamespace: props?.serviceName },
+    { startTime: new Date(selectedDateRange.startDate).toISOString(), endTime: new Date(selectedDateRange.endDate).toISOString() }
+  );
 
   const [selectedNbStatus, setSelectedNbStatus] = useState<Array<{ value: string }>>([]);
 

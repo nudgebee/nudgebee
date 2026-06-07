@@ -3,6 +3,8 @@ package playbooks
 import (
 	"encoding/base64"
 	"fmt"
+	"net"
+	"net/url"
 	"nudgebee/services/common"
 	"nudgebee/services/relay"
 	"unicode/utf8"
@@ -20,6 +22,37 @@ type proxyHTTPRequestParams struct {
 	AccountID    string            `json:"account_id,omitempty"`
 }
 
+// validateProxyURL prevents SSRF from the api-server's perspective.
+// The actual HTTP request is made by the relay inside the customer's cluster,
+// so private RFC1918 IPs are legitimate targets. We only block addresses that
+// would be dangerous from the api-server's own network: loopback (api-server
+// services), link-local (cloud metadata like 169.254.169.254), and unspecified.
+// DNS failures are allowed through because the relay may resolve cluster-internal
+// names that the api-server cannot.
+func validateProxyURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("unsupported scheme %q: only http and https are allowed", u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("missing host in URL")
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return nil // relay may resolve cluster-internal DNS that api-server cannot
+	}
+	for _, ip := range ips {
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
+			return fmt.Errorf("URL resolves to restricted IP %s", ip)
+		}
+	}
+	return nil
+}
+
 func (a *proxyHTTPRequestAction) Execute(ctx PlaybookActionContext, rawParams map[string]any) (PlaybookActionResponse, error) {
 	var params proxyHTTPRequestParams
 	if err := common.UnmarshalMapToStruct(rawParams, &params); err != nil {
@@ -31,6 +64,9 @@ func (a *proxyHTTPRequestAction) Execute(ctx PlaybookActionContext, rawParams ma
 	}
 	if params.URL == "" {
 		return nil, fmt.Errorf("url is required")
+	}
+	if err := validateProxyURL(params.URL); err != nil {
+		return nil, fmt.Errorf("URL validation failed: %w", err)
 	}
 
 	accountID := params.AccountID

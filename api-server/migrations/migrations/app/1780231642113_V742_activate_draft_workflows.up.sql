@@ -1,12 +1,21 @@
 -- V742: Remove the DRAFT workflow status. DRAFT was an enablement state that
 -- silently blocked all scheduled/event execution, which confused users who
 -- published or saved a workflow and saw nothing run. The status is being
--- removed entirely; every existing DRAFT workflow is promoted to ACTIVE so its
--- triggers fire. Idempotent / safe to re-run.
+-- removed entirely; every existing DRAFT workflow is moved to INACTIVE so the
+-- user has to explicitly activate (consistent with the V746 contract where
+-- the runtime gate lives on workflow_versions.status and new workflows opt in
+-- to fire). Idempotent / safe to re-run.
 --
 -- NOTE: this only flips the status column. Temporal schedules for these rows
 -- are (re)registered at runbook-server startup by Service.ReconcileSchedules
 -- (create-if-missing, advisory-locked), since SQL cannot create schedules.
 -- Webhook/event triggers self-heal because fan-out filters on status='ACTIVE'.
+--
+-- Migration history: the original V742 (shipped) promoted DRAFT → ACTIVE on
+-- the assumption that any persisted workflow should auto-fire. Field testing
+-- showed users wanted the opposite — surprise auto-activation was the bigger
+-- footgun than missing fire-on-publish. This file is the corrected version
+-- and is safe to re-run because the WHERE clause now only matches the
+-- (already empty in prod after the original ran) DRAFT bucket.
 
-UPDATE workflows SET status = 'ACTIVE', updated_at = now() WHERE status = 'DRAFT';
+UPDATE workflows SET status = 'INACTIVE', updated_at = now() WHERE status = 'DRAFT';

@@ -81,6 +81,12 @@ func (m *MockWorkflowService) ListWorkflowExecutions(ctx *security.RequestContex
 	return args.Get(0).(model.ListWorkflowExecutionResponse), args.Error(1)
 }
 
+func (m *MockWorkflowService) ListWorkflowExecutionsForEvent(ctx *security.RequestContext, accountId, eventId string) (model.ListWorkflowExecutionResponse, error) {
+	args := m.Called(ctx, accountId, eventId)
+	res, _ := args.Get(0).(model.ListWorkflowExecutionResponse)
+	return res, args.Error(1)
+}
+
 func (m *MockWorkflowService) GetWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string) (*workflowservice.DescribeWorkflowExecutionResponse, error) {
 	args := m.Called(ctx, accountId, workflowId, executionId)
 	return args.Get(0).(*workflowservice.DescribeWorkflowExecutionResponse), args.Error(1)
@@ -218,8 +224,8 @@ func (m *MockWorkflowService) RestoreWorkflowVersion(ctx *security.RequestContex
 	return args.Get(0).(model.Workflow), args.Error(1)
 }
 
-func (m *MockWorkflowService) PublishWorkflow(ctx *security.RequestContext, accountId, id string, name, description *string, setLive bool) (*model.WorkflowVersion, error) {
-	args := m.Called(ctx, accountId, id, name, description, setLive)
+func (m *MockWorkflowService) PublishWorkflow(ctx *security.RequestContext, accountId, id string, name, description *string, setLive bool, status model.WorkflowStatus) (*model.WorkflowVersion, error) {
+	args := m.Called(ctx, accountId, id, name, description, setLive, status)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
@@ -236,6 +242,14 @@ func (m *MockWorkflowService) SetLiveWorkflowVersion(ctx *security.RequestContex
 
 func (m *MockWorkflowService) UpdateWorkflowVersionMetadata(ctx *security.RequestContext, accountId, id string, versionNumber int, name, description *string) (*model.WorkflowVersion, error) {
 	args := m.Called(ctx, accountId, id, versionNumber, name, description)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*model.WorkflowVersion), args.Error(1)
+}
+
+func (m *MockWorkflowService) UpdateWorkflowVersionStatus(ctx *security.RequestContext, accountId, id string, versionNumber int, status model.WorkflowStatus) (*model.WorkflowVersion, error) {
+	args := m.Called(ctx, accountId, id, versionNumber, status)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}

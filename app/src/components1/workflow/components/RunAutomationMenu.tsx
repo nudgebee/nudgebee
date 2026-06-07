@@ -1,14 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
-import { Box, CircularProgress, Typography } from '@mui/material';
+import { Badge, Box, CircularProgress, Typography } from '@mui/material';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import SettingsIcon from '@mui/icons-material/Settings';
+import AddIcon from '@mui/icons-material/Add';
 import { Button } from '@components1/ds/Button';
 import { DropdownMenu, type DropdownMenuItem } from '@components1/ds/DropdownMenu';
 import apiWorkflow from '@api1/workflow';
 import { snackbar } from '@components1/common/snackbarService';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
-import { colors } from 'src/utils/colors';
+import { colors, ds } from 'src/utils/colors';
 import { manualTriggerIcon } from '@assets';
 import SafeIcon from '@components1/common/SafeIcon';
 import Datetime from '@components1/common/format/Datetime';
@@ -16,9 +17,20 @@ import CustomLabels from '@components1/common/widgets/CustomLabels';
 import TriggerWorkflowModal from './TriggerWorkflowModal';
 import { getDefaultTriggerInputs, getPrimaryTriggerType, getWorkflowInputSchema, hasManualTrigger } from '../utils/workflowTriggerHelpers';
 
+export interface TriggeredExecution {
+  workflow_id: string;
+  workflow_name?: string;
+  id: string;
+  status: string;
+  start_time?: string;
+  close_time?: string;
+}
+
 interface RunAutomationMenuProps {
   accountId: string;
   disabled?: boolean;
+  triggeredExecutions?: TriggeredExecution[];
+  onCreateAutomation?: () => void;
 }
 
 interface WorkflowListItem {
@@ -93,7 +105,39 @@ const WorkflowRow: React.FC<{ workflow: WorkflowListItem }> = ({ workflow }) => 
   );
 };
 
-const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({ accountId, disabled = false }) => {
+const TriggeredExecutionRow: React.FC<{ ex: TriggeredExecution }> = ({ ex }) => {
+  const name = ex.workflow_name || `${ex.workflow_id.slice(0, 8)}…`;
+  return (
+    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1.5, minWidth: 0, py: 0.25, width: '100%' }}>
+      <Typography
+        sx={{
+          fontSize: 'var(--ds-text-body)',
+          fontWeight: 'var(--ds-font-weight-medium)',
+          color: colors.text.primary,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          flex: 1,
+        }}
+      >
+        {name}
+      </Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, flexShrink: 0 }}>
+        <CustomLabels text={ex.status.toLowerCase()} textTransform='capitalize' />
+        {(ex.close_time || ex.start_time) && (
+          <Datetime
+            baseDate={new Date()}
+            value={ex.close_time || ex.start_time || ''}
+            sxSuffix={{ fontSize: 'var(--ds-text-caption)', color: colors.text.tertiary }}
+            sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondary }}
+          />
+        )}
+      </Box>
+    </Box>
+  );
+};
+
+const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({ accountId, disabled = false, triggeredExecutions = [], onCreateAutomation }) => {
   const router = useRouter();
   const [workflows, setWorkflows] = useState<WorkflowListItem[]>([]);
   const [loadState, setLoadState] = useState<LoadState>('idle');
@@ -182,9 +226,48 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({ accountId, disabl
     router.push(`/auto-pilot?accountId=${accountId}#workflow`);
   };
 
+  const goToExecution = useCallback(
+    (ex: TriggeredExecution) => {
+      router.push(`/workflow/${ex.workflow_id}?accountId=${accountId}&executionId=${ex.id}#executions`);
+    },
+    [router, accountId]
+  );
+
+  const validTriggered = useMemo(() => triggeredExecutions.filter((ex) => ex?.workflow_id && ex?.id), [triggeredExecutions]);
+  const triggeredCount = validTriggered.length;
+
+  const triggeredItems: DropdownMenuItem[] = useMemo(() => {
+    const valid = validTriggered;
+    if (valid.length === 0) return [];
+    return [
+      { type: 'section' as const, label: 'Triggered for this event' },
+      ...valid.map((ex) => ({
+        label: <TriggeredExecutionRow ex={ex} />,
+        onSelect: () => goToExecution(ex),
+        id: `triggered-execution-${ex.id}`,
+        searchText: ex.workflow_name || ex.workflow_id,
+      })),
+      { type: 'separator' as const },
+    ];
+  }, [validTriggered, goToExecution]);
+
   const items: DropdownMenuItem[] = useMemo(() => {
+    const runHeader: DropdownMenuItem[] = triggeredItems.length > 0 ? [{ type: 'section' as const, label: 'Run automation' }] : [];
+    const createItem: DropdownMenuItem[] = onCreateAutomation
+      ? [
+          {
+            label: 'Create automation',
+            icon: <AddIcon fontSize='small' />,
+            onSelect: onCreateAutomation,
+            id: 'run-automation-create',
+          },
+        ]
+      : [];
     if (loadState === 'loading') {
       return [
+        ...triggeredItems,
+        ...runHeader,
+        ...createItem,
         {
           label: (
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -199,6 +282,9 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({ accountId, disabl
     }
     if (loadState === 'error') {
       return [
+        ...triggeredItems,
+        ...runHeader,
+        ...createItem,
         {
           label: (
             <Typography sx={{ fontSize: 'var(--ds-text-body)', color: colors.error }}>{errorMessage || 'Failed to load automations'}</Typography>
@@ -210,6 +296,9 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({ accountId, disabl
     }
     if (loadState === 'loaded' && workflows.length === 0) {
       return [
+        ...triggeredItems,
+        ...runHeader,
+        ...createItem,
         {
           label: <Typography sx={{ fontSize: 'var(--ds-text-body)', color: colors.text.secondaryDark }}>No automations configured</Typography>,
           disabled: true,
@@ -224,18 +313,23 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({ accountId, disabl
         },
       ];
     }
-    return workflows.map((w) => ({
-      label: <WorkflowRow workflow={w} />,
-      icon: <SafeIcon src={manualTriggerIcon} alt='manual trigger' height={14} width={14} />,
-      onSelect: () => handleSelect(w),
-      id: `run-automation-item-${w.id}`,
-      searchText: w.name,
-    }));
+    return [
+      ...triggeredItems,
+      ...runHeader,
+      ...createItem,
+      ...workflows.map((w) => ({
+        label: <WorkflowRow workflow={w} />,
+        icon: <SafeIcon src={manualTriggerIcon} alt='manual trigger' height={14} width={14} />,
+        onSelect: () => handleSelect(w),
+        id: `run-automation-item-${w.id}`,
+        searchText: w.name,
+      })),
+    ];
     // handleSelect / goToWorkflowsPage are stable for the lifetime of the
     // dropdown's open state — recomputing items on each change of selected
     // workflow would force the menu to remount and close.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadState, workflows, errorMessage]);
+  }, [loadState, workflows, errorMessage, triggeredItems, onCreateAutomation]);
 
   return (
     <>
@@ -251,19 +345,37 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({ accountId, disabl
           onRefresh={fetchWorkflows}
           refreshLabel='Refresh list'
           trigger={
-            <Button
-              id='run-automation-btn'
-              data-testid='run-automation-btn'
-              tone='secondary'
-              size='sm'
-              composition='text+icon'
-              iconPlacement='end'
-              icon={<KeyboardArrowDownIcon sx={{ fontSize: 16 }} />}
-              tooltip='Run an automation'
-              disabled={disabled || !accountId}
+            <Badge
+              badgeContent={triggeredCount}
+              overlap='rectangular'
+              data-testid='run-automation-triggered-badge'
+              sx={{
+                '& .MuiBadge-badge': {
+                  top: 4,
+                  right: 6,
+                  height: 16,
+                  minWidth: 16,
+                  fontSize: 10,
+                  padding: '0 4px',
+                  backgroundColor: ds.brand[600],
+                  color: ds.background[100],
+                },
+              }}
             >
-              Automations
-            </Button>
+              <Button
+                id='run-automation-btn'
+                data-testid='run-automation-btn'
+                tone='secondary'
+                size='sm'
+                composition='text+icon'
+                iconPlacement='end'
+                icon={<KeyboardArrowDownIcon sx={{ fontSize: 16 }} />}
+                tooltip={triggeredCount > 0 ? `${triggeredCount} triggered for this event` : 'Run an automation'}
+                disabled={disabled || !accountId}
+              >
+                Automations
+              </Button>
+            </Badge>
           }
           items={items}
         />

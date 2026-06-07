@@ -190,13 +190,15 @@ def _process_integration(integration, tenant_id, embeddings, trigger_type="syste
                 # ids — a non-empty scrape that embedded nothing is a failed
                 # load, not a healthy 'active' one.
                 logger.error(f"Embedding produced no documents for Confluence integration {integration_id}")
-                update_integration_kb_load_result(integration_id, "error")
+                update_integration_kb_load_result(
+                    integration_id, "error", error_message="Embedding produced no documents from the Confluence scrape"
+                )
                 return []
         update_integration_kb_load_result(integration_id, "active", len(document_ids))
         return document_ids
     except Exception as e:
         logger.error(f"Failed to process Confluence integration {integration_id}: {e}")
-        update_integration_kb_load_result(integration_id, "error")
+        update_integration_kb_load_result(integration_id, "error", error_message=str(e))
         return []
 
 
@@ -485,7 +487,9 @@ def _process_servicenow_integration(
 
     if not all([instance_url, username, password]):
         logger.error(f"Missing ServiceNow config for integration {integration_id}")
-        update_integration_kb_load_result(integration_id, "error")
+        update_integration_kb_load_result(
+            integration_id, "error", error_message="Missing ServiceNow connection config (url, username, or password)"
+        )
         return []
 
     try:
@@ -514,14 +518,16 @@ def _process_servicenow_integration(
                 # ids — a non-empty scrape that embedded nothing is a failed
                 # load, not a healthy 'active' one.
                 logger.error(f"Embedding produced no documents for ServiceNow integration {integration_id}")
-                update_integration_kb_load_result(integration_id, "error")
+                update_integration_kb_load_result(
+                    integration_id, "error", error_message="Embedding produced no documents from the ServiceNow scrape"
+                )
                 return []
         update_integration_kb_load_result(integration_id, "active", len(document_ids))
         return document_ids
 
     except Exception as e:
         logger.error(f"Failed to process ServiceNow KB integration {integration_id}: {e}")
-        update_integration_kb_load_result(integration_id, "error")
+        update_integration_kb_load_result(integration_id, "error", error_message=str(e))
         return []
 
 

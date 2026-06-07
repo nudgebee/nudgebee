@@ -4,7 +4,7 @@ import { getServerSession } from 'next-auth/next';
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 import { authOptions } from '@pages/api/auth/[...nextauth]';
-import { decrypt } from '@lib/internal';
+import { hasAccountAccess } from '@lib/accountAccess';
 import crypto from 'crypto';
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -26,42 +26,41 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   try {
-    const authenticate = true;
-
-    let token: string | null = null;
-    // check if token is available as bearer token then use it
+    // Reject bearer auth at proxy endpoints: bearer tokens are intended for
+    // /rpc/* and /graphql only. Allowing them here would let any bearer-bearing
+    // caller pivot across tenants by claiming an arbitrary X-NB-ACCOUNT-ID in
+    // the URL path (the relay grafana handler routes by that header without
+    // re-checking per-user authz).
     if (req.headers.authorization) {
-      const splits = req.headers.authorization.split(' ');
-      if (splits.length > 1) {
-        token = await decrypt(splits[1]);
-      }
+      res.status(401).json({
+        error: 'auth_method_not_allowed',
+        description: 'Bearer auth is for /rpc and /graphql endpoints only; use the session cookie for proxy endpoints',
+      });
+      return;
     }
 
+    let token: string | null = null;
     const userDetails = {
       userId: '',
       tenantId: '',
     };
 
-    if (!token) {
-      const session = await getServerSession(req, res, authOptions);
-      if (session && session?.user) {
-        const jwtToken = await getToken({ req });
-        if (jwtToken) {
-          userDetails.userId = jwtToken?.sub as string;
-          userDetails.tenantId = (jwtToken?.tenant as any)?.id as string;
-        }
-        token = (jwtToken?.idToken as string) || null;
+    const session = await getServerSession(req, res, authOptions);
+    if (session && session?.user) {
+      const jwtToken = await getToken({ req });
+      if (jwtToken) {
+        userDetails.userId = jwtToken?.sub as string;
+        userDetails.tenantId = (jwtToken?.tenant as any)?.id as string;
       }
+      token = (jwtToken?.idToken as string) || null;
     }
 
-    if (authenticate) {
-      if (!token) {
-        res.status(401).json({
-          error: 'not_authenticated',
-          description: 'The user does not have an active session or is not authenticated',
-        });
-        return;
-      }
+    if (!token || !userDetails.userId || !userDetails.tenantId) {
+      res.status(401).json({
+        error: 'not_authenticated',
+        description: 'The user does not have an active session or is not authenticated',
+      });
+      return;
     }
     const relayEndpoint = process.env.RELAY_SERVER_ENDPOINT ?? 'http://localhost:52832';
     const secretKey = process.env.RELAY_SERVER_SECRET_KEY ?? '';
@@ -99,6 +98,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
             } else {
               endpoint = grafana;
             }
+          }
+
+          // Per-tenant account-level authz. The relay's /grafana/* handler
+          // routes by X-NB-ACCOUNT-ID without re-checking the calling user's
+          // access; without this gate, a tenant-A user could request
+          // `/api/proxy/grafana/gr-<tenant-B-account>/...` and receive
+          // tenant B's grafana data. Mirrors the check in [relay].ts.
+          if (!accountId || !(await hasAccountAccess(userDetails.userId, userDetails.tenantId, accountId, traceParent))) {
+            res.status(403).json({ error: 'forbidden', description: 'Access denied' });
+            return;
           }
 
           headers['X-NB-ACCOUNT-ID'] = accountId;

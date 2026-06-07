@@ -30,6 +30,11 @@ type LLMRequest struct {
 	// in agents/core/conversation.go.
 	LlmProvider  string `json:"llm_provider,omitempty"`
 	LlmModelName string `json:"llm_model_name,omitempty"`
+	// WorkflowId is the originating workflow definition id. Forwarded into
+	// NBQueryConfig.WorkflowId on llm-server so downstream agents (e.g. the code
+	// agent raising a PR) can link the result back to the workflow. Empty for
+	// non-workflow callers.
+	WorkflowId string `json:"workflow_id,omitempty"`
 }
 
 type LLMEventRequest struct {
@@ -116,13 +121,16 @@ func ProcessRequest(ctx *security.RequestContext, request LLMRequest) (LLMRespon
 	}
 
 	var configOverride map[string]any
-	if request.LlmProvider != "" || request.LlmModelName != "" {
+	if request.LlmProvider != "" || request.LlmModelName != "" || request.WorkflowId != "" {
 		configOverride = map[string]any{}
 		if request.LlmProvider != "" {
 			configOverride["llm_provider"] = request.LlmProvider
 		}
 		if request.LlmModelName != "" {
 			configOverride["llm_model_name"] = request.LlmModelName
+		}
+		if request.WorkflowId != "" {
+			configOverride["workflow_id"] = request.WorkflowId
 		}
 	}
 

@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"encoding/json"
 	"fmt"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/security"
@@ -55,7 +56,11 @@ func (l AgentEventRCAReport) Execute(ctx *security.RequestContext, request core.
 
 func (m AgentEventRCAReport) getEvidenceAnalysis(ctx *security.RequestContext, request core.NBAgentRequest) (string, error) {
 	// nbRequestContext.Ctx.GetLogger().Info("RCA analyzer: analysing event data for event id", event_id)
-	eventEvidenceToolInput := fmt.Sprintf(`{"event_id":"%s","timeseries_only":false}`, request.Query)
+	payload, err := json.Marshal(map[string]any{"event_id": request.Query, "timeseries_only": false})
+	if err != nil {
+		return "", fmt.Errorf("getEvidenceAnalysis: marshal evidence tool input: %w", err)
+	}
+	eventEvidenceToolInput := string(payload)
 	eventAnalysisTool := EvidenceInsightsTool{}
 	toolCtx := toolcore.NewNbToolContext(ctx, eventAnalysisTool, request.AccountId, ctx.GetSecurityContext().GetUserId(), request.ConversationId, request.MessageId, request.ParentAgentId, eventEvidenceToolInput, []llms.MessageContent{}, "", toolcore.NBQueryConfig{}, "")
 	data, err := eventAnalysisTool.Call(toolCtx, toolcore.NBToolCallRequest{

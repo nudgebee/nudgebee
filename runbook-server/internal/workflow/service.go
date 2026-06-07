@@ -15,6 +15,7 @@ import (
 	aiTasks "nudgebee/runbook/internal/tasks/ai"
 	"nudgebee/runbook/internal/tasks/testutils"
 	"nudgebee/runbook/internal/tasks/types"
+	"nudgebee/runbook/services/audit"
 	"nudgebee/runbook/services/cloud"
 	configSvc "nudgebee/runbook/services/config"
 	"nudgebee/runbook/services/integrations"
@@ -50,6 +51,7 @@ type WorkflowService interface {
 	ListWorkflowCallers(ctx *security.RequestContext, accountId, id string) (model.ListWorkflowCallersResponse, error)
 	UpdateWorkflowStatus(ctx *security.RequestContext, accountId, id string, status model.WorkflowStatus) error
 	ListWorkflowExecutions(ctx *security.RequestContext, accountId, workflowId string, request model.ListWorkflowExecutionRequest) (model.ListWorkflowExecutionResponse, error)
+	ListWorkflowExecutionsForEvent(ctx *security.RequestContext, accountId, eventId string) (model.ListWorkflowExecutionResponse, error)
 	GetDetailedWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string) (*model.WorkflowExecutionDetails, error)
 	UpdateWorkflowExecution(ctx *security.RequestContext, accountId, workflowId, executionId string, inputs map[string]any) error
 	CompleteApprovalTask(ctx *security.RequestContext, token, status string, result any) error
@@ -77,7 +79,8 @@ type WorkflowService interface {
 	ListWorkflowVersions(ctx *security.RequestContext, accountId, id string) ([]model.WorkflowVersion, error)
 	GetWorkflowVersion(ctx *security.RequestContext, accountId, id string, versionNumber int) (*model.WorkflowVersion, error)
 	RestoreWorkflowVersion(ctx *security.RequestContext, accountId, id string, versionNumber int) (model.Workflow, error)
-	PublishWorkflow(ctx *security.RequestContext, accountId, id string, name, description *string, setLive bool) (*model.WorkflowVersion, error)
+	PublishWorkflow(ctx *security.RequestContext, accountId, id string, name, description *string, setLive bool, status model.WorkflowStatus) (*model.WorkflowVersion, error)
+	UpdateWorkflowVersionStatus(ctx *security.RequestContext, accountId, id string, versionNumber int, status model.WorkflowStatus) (*model.WorkflowVersion, error)
 	SetLiveWorkflowVersion(ctx *security.RequestContext, accountId, id string, versionNumber int) (*model.Workflow, error)
 	UpdateWorkflowVersionMetadata(ctx *security.RequestContext, accountId, id string, versionNumber int, name, description *string) (*model.WorkflowVersion, error)
 }
@@ -471,10 +474,14 @@ func (s *Service) CreateWorkflow(ctx *security.RequestContext, accountId string,
 		}
 	}
 	if wf.Status == "" || !isValidStatus {
-		// New workflows start ACTIVE so their triggers (schedule/event) fire
-		// immediately. The old DRAFT resting state silently blocked execution
-		// and confused users; it has been removed.
-		wf.Status = model.WorkflowStatusActive
+		// New workflows now land PAUSED so the user opts in before scheduled /
+		// event triggers fire. With status moved onto each workflow_versions row
+		// (V746) and workflow.status acting as a derived mirror of the live
+		// version's status, a paused v1 keeps the workflow runnable via manual
+		// triggers while preventing surprise auto-execution after create —
+		// reversing the V742 auto-activate decision that confused users who
+		// wanted to inspect their workflow before letting it loose.
+		wf.Status = model.WorkflowStatusPaused
 	}
 
 	if wf.Definition.Version == "" {
@@ -531,6 +538,11 @@ func (s *Service) CreateWorkflow(ctx *security.RequestContext, accountId string,
 	if err != nil {
 		return storedId, "", err
 	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookCreate, audit.EventActionCreate, audit.EventStatusSuccess,
+		storedId, nil, workflowAuditSnapshot(&wf), nil,
+	)
 	return storedId, token, nil
 }
 
@@ -1009,6 +1021,15 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 	if err != nil {
 		return "", err
 	}
+	if triggerType == model.WorkflowTriggerManual {
+		emitWorkflowAudit(
+			ctx, accountId,
+			audit.EventTypeAutorunbookManualRun, audit.EventActionCreate, audit.EventStatusSuccess,
+			id, nil,
+			map[string]any{"workflow_id": id, "workflow_name": wf.Name},
+			map[string]any{"execution_id": we.GetRunID(), "trigger_type": string(triggerType)},
+		)
+	}
 	return we.GetRunID(), nil // Return the actual Temporal Run ID
 }
 
@@ -1254,6 +1275,13 @@ func (s *Service) RetriggerWorkflowExecution(ctx *security.RequestContext, accou
 	if err != nil {
 		return "", err
 	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookManualRun, audit.EventActionCreate, audit.EventStatusSuccess,
+		workflowId, nil,
+		map[string]any{"workflow_id": workflowId, "workflow_name": wf.Name},
+		map[string]any{"execution_id": we.GetRunID(), "replay_of": executionId, "trigger_type": "manual"},
+	)
 	return we.GetRunID(), nil
 }
 
@@ -1728,7 +1756,25 @@ func (s *Service) GetWorkflow(ctx *security.RequestContext, accountId, id string
 }
 
 func (s *Service) UpdateWorkflow(ctx *security.RequestContext, accountId, id string, workflow model.Workflow) (model.Workflow, error) {
-	return s.updateWorkflowInternal(ctx, accountId, id, workflow)
+	// Snapshot the pre-edit state for the audit row. Tolerate a lookup miss
+	// (sql.ErrNoRows) — updateWorkflowInternal will surface the real error;
+	// we only need prevSnap for the audit and a nil snapshot is fine if the
+	// workflow is missing.
+	var prevSnap map[string]any
+	if existing, err := s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id); err == nil {
+		prevSnap = workflowAuditSnapshot(existing)
+	}
+	updated, err := s.updateWorkflowInternal(ctx, accountId, id, workflow)
+	if err != nil {
+		return updated, err
+	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, prevSnap, workflowAuditSnapshot(&updated),
+		map[string]any{"action": "edit"},
+	)
+	return updated, nil
 }
 
 // updateWorkflowInternal is the shared update path for user saves and version
@@ -1874,6 +1920,11 @@ func (s *Service) updateWorkflowInternal(ctx *security.RequestContext, accountId
 		workflow.Definition.Version = "v1"
 	}
 
+	// Audit emit is the caller's responsibility — UpdateWorkflow tags it as a
+	// user "edit", RestoreWorkflowVersion tags it as a "restore_version", and
+	// any future caller (e.g. a system-driven status flip) tags its own intent.
+	// Emitting here would double-fire on restores and lose the action context
+	// every other caller needs.
 	return workflow, nil
 }
 
@@ -2025,6 +2076,11 @@ func (s *Service) DeleteWorkflow(ctx *security.RequestContext, accountId, id str
 		}
 	}
 
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookDelete, audit.EventActionDelete, audit.EventStatusSuccess,
+		id, workflowAuditSnapshot(wf), nil, nil,
+	)
 	return nil
 }
 
@@ -2067,7 +2123,16 @@ func (s *Service) UpdateWorkflowStatus(ctx *security.RequestContext, accountId, 
 	}
 
 	// Finally, update the status in the database.
-	return s.store.UpdateWorkflowStatus(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id, status)
+	if err := s.store.UpdateWorkflowStatus(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id, status); err != nil {
+		return err
+	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, map[string]any{"status": string(wf.Status)}, map[string]any{"status": string(status)},
+		map[string]any{"action": "status_update"},
+	)
+	return nil
 }
 
 func mapTemporalStatusToModelStatus(status enums.WorkflowExecutionStatus) model.WorkflowExecutionStatus {
@@ -2237,6 +2302,90 @@ func (s *Service) ListWorkflowExecutions(ctx *security.RequestContext, accountId
 
 	if summaries == nil {
 		summaries = []model.WorkflowExecutionSummary{}
+	}
+
+	return model.ListWorkflowExecutionResponse{
+		Executions:    summaries,
+		NextPageToken: string(resp.NextPageToken),
+	}, nil
+}
+
+func (s *Service) ListWorkflowExecutionsForEvent(ctx *security.RequestContext, accountId, eventId string) (model.ListWorkflowExecutionResponse, error) {
+	if accountId == "" || eventId == "" {
+		return model.ListWorkflowExecutionResponse{}, fmt.Errorf("accountId and eventId are required")
+	}
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeRead) {
+		return model.ListWorkflowExecutionResponse{}, common.ErrorUnauthorized("account not accessible")
+	}
+
+	tenantID := ctx.GetSecurityContext().GetTenantId()
+	if tenantID == "" {
+		return model.ListWorkflowExecutionResponse{}, fmt.Errorf("tenantID is required")
+	}
+	query := fmt.Sprintf("%s='%s' and %s='%s' and %s='%s'",
+		model.SearchAttrTenantID, escapeTemporalString(tenantID),
+		model.SearchAttrAccountID, escapeTemporalString(accountId),
+		model.SearchAttrEventID, escapeTemporalString(eventId))
+
+	resp, err := s.temporalClient.ListWorkflow(ctx.GetContext(), &workflowservice.ListWorkflowExecutionsRequest{
+		Query:    query,
+		PageSize: 50,
+	})
+	if err != nil {
+		return model.ListWorkflowExecutionResponse{}, err
+	}
+
+	summaries := make([]model.WorkflowExecutionSummary, 0, len(resp.Executions))
+	idSet := map[string]struct{}{}
+	for _, info := range resp.Executions {
+		summary := model.WorkflowExecutionSummary{
+			TemporalWorkflowID: info.Execution.GetWorkflowId(),
+			ID:                 info.Execution.GetRunId(),
+			Status:             mapTemporalStatusToModelStatus(info.GetStatus()),
+			StartTime:          timestampPBToTimestamp(info.StartTime),
+			CloseTime:          timestampPBToTimestamp(info.CloseTime),
+		}
+		if info.SearchAttributes != nil {
+			if sa, ok := info.SearchAttributes.GetIndexedFields()[model.SearchAttrWorkflowID]; ok {
+				var wfID string
+				if err := s.dataConverter.FromPayload(sa, &wfID); err == nil {
+					summary.WorkflowID = wfID
+					if wfID != "" {
+						idSet[wfID] = struct{}{}
+					}
+				}
+			}
+			if sa, ok := info.SearchAttributes.GetIndexedFields()[model.SearchAttrTriggeredBy]; ok {
+				var triggeredBy string
+				if err := s.dataConverter.FromPayload(sa, &triggeredBy); err == nil {
+					summary.TriggeredBy = triggeredBy
+				}
+			}
+			if sa, ok := info.SearchAttributes.GetIndexedFields()[model.SearchAttrWorkflowTrigger]; ok {
+				var triggerType string
+				if err := s.dataConverter.FromPayload(sa, &triggerType); err == nil {
+					summary.TriggerType = triggerType
+				}
+			}
+		}
+		summaries = append(summaries, summary)
+	}
+
+	if len(idSet) > 0 {
+		ids := make([]string, 0, len(idSet))
+		for id := range idSet {
+			ids = append(ids, id)
+		}
+		names, nameErr := s.store.GetWorkflowNames(ctx.GetContext(), tenantID, accountId, ids)
+		if nameErr != nil {
+			ctx.GetLogger().Error("failed to get workflow names for executions", "error", nameErr)
+		} else {
+			for i := range summaries {
+				if name, ok := names[summaries[i].WorkflowID]; ok {
+					summaries[i].WorkflowName = name
+				}
+			}
+		}
 	}
 
 	return model.ListWorkflowExecutionResponse{
@@ -2647,6 +2796,19 @@ func (s *Service) CompleteApprovalTask(ctx *security.RequestContext, token, stat
 		}
 		return err
 	}
+	// Compound-token path (Slack / MS Teams approval URLs) carries the
+	// workflow/execution/task triple. Plain hex-token path (len(parts) == 1)
+	// has no audit context here — CompleteApprovalTaskFromUI emits for the
+	// UI path with the fields it already has.
+	if accountID != "" && workflowID != "" && runID != "" && taskID != "" {
+		emitWorkflowAudit(
+			ctx, accountID,
+			audit.EventTypeAutorunbookTaskManualRun, audit.EventActionUpdate, audit.EventStatusSuccess,
+			workflowID, nil,
+			map[string]any{"workflow_id": workflowID, "execution_id": runID, "task_id": taskID, "status": status},
+			map[string]any{"source": "compound_token"},
+		)
+	}
 	return nil
 }
 
@@ -2690,7 +2852,17 @@ func (s *Service) CompleteApprovalTaskFromUI(ctx *security.RequestContext, accou
 	if comments != "" {
 		result["comments"] = comments
 	}
-	return s.CompleteApprovalTask(ctx, token, status, result)
+	if err := s.CompleteApprovalTask(ctx, token, status, result); err != nil {
+		return err
+	}
+	emitWorkflowAudit(
+		ctx, accountID,
+		audit.EventTypeAutorunbookTaskManualRun, audit.EventActionUpdate, audit.EventStatusSuccess,
+		workflowID, nil,
+		map[string]any{"workflow_id": workflowID, "execution_id": executionID, "task_id": taskID, "status": status},
+		map[string]any{"source": "ui"},
+	)
+	return nil
 }
 
 // fetchApprovalIMContext reads the IM thread coordinates the approval activity
@@ -2728,7 +2900,17 @@ func (s *Service) CancelWorkflowExecution(ctx *security.RequestContext, accountI
 	if err != nil {
 		return err
 	}
-	return s.temporalClient.CancelWorkflow(ctx.GetContext(), temporalId, executionId)
+	if err := s.temporalClient.CancelWorkflow(ctx.GetContext(), temporalId, executionId); err != nil {
+		return err
+	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		workflowId, nil,
+		map[string]any{"workflow_id": workflowId, "execution_id": executionId},
+		map[string]any{"action": "cancel_execution"},
+	)
+	return nil
 }
 
 func (s *Service) PauseWorkflow(ctx *security.RequestContext, accountId, id string) error {
@@ -2758,7 +2940,17 @@ func (s *Service) PauseWorkflow(ctx *security.RequestContext, accountId, id stri
 		}
 	}
 
-	return s.store.UpdateWorkflowStatus(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id, model.WorkflowStatusPaused)
+	if err := s.applyStatusToLiveVersion(ctx, accountId, id, model.WorkflowStatusPaused); err != nil {
+		return err
+	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, nil,
+		map[string]any{"status": string(model.WorkflowStatusPaused)},
+		map[string]any{"action": "pause"},
+	)
+	return nil
 }
 
 func (s *Service) ResumeWorkflow(ctx *security.RequestContext, accountId, id string) error {
@@ -2787,7 +2979,46 @@ func (s *Service) ResumeWorkflow(ctx *security.RequestContext, accountId, id str
 		}
 	}
 
-	return s.store.UpdateWorkflowStatus(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id, model.WorkflowStatusActive)
+	if err := s.applyStatusToLiveVersion(ctx, accountId, id, model.WorkflowStatusActive); err != nil {
+		return err
+	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, nil,
+		map[string]any{"status": string(model.WorkflowStatusActive)},
+		map[string]any{"action": "resume"},
+	)
+	return nil
+}
+
+// applyStatusToLiveVersion is the canonical "set this workflow's status"
+// helper post-V746. It writes status onto workflows.live_version row and the
+// DAO mirrors it onto workflows.status in the same tx. Falls back to the
+// pre-versioning UpdateWorkflowStatus path when a workflow somehow has no
+// live version (defensive — CreateWorkflow always sets one). Both branches
+// fail fast on missing access checks because callers already validated above.
+func (s *Service) applyStatusToLiveVersion(ctx *security.RequestContext, accountId, id string, status model.WorkflowStatus) error {
+	tenantId := ctx.GetSecurityContext().GetTenantId()
+	wf, err := s.store.Find(ctx.GetContext(), tenantId, accountId, id)
+	if err != nil {
+		// Propagate sql.ErrNoRows up so the HTTP handler can return 404 instead
+		// of silently 200ing a pause/resume call on a deleted or wrong-tenant
+		// workflow. The legacy UpdateWorkflowStatus path swallowed ErrNoRows
+		// for idempotency, but PauseWorkflow / ResumeWorkflow are explicit
+		// state-machine transitions and a missing target is a client error.
+		if errors.Is(err, sql.ErrNoRows) {
+			return sql.ErrNoRows
+		}
+		return fmt.Errorf("failed to load workflow for status change: %w", err)
+	}
+	if wf.LiveVersionID == nil || *wf.LiveVersionID == "" {
+		return s.store.UpdateWorkflowStatus(ctx.GetContext(), tenantId, accountId, id, status)
+	}
+	if _, err := s.store.UpdateVersionStatus(ctx.GetContext(), tenantId, accountId, id, *wf.LiveVersionID, status); err != nil {
+		return fmt.Errorf("failed to update live version status: %w", err)
+	}
+	return nil
 }
 
 func convertSchemaPropertiesToMapAny(properties map[string]types.Property) map[string]any {
@@ -3916,19 +4147,66 @@ func (s *Service) RestoreWorkflowVersion(ctx *security.RequestContext, accountId
 	// updateWorkflowInternal handles updated_by, validation, webhook side-effects.
 	toApply := *current
 	toApply.Definition = target.Definition
-	return s.updateWorkflowInternal(ctx, accountId, id, toApply)
+	updated, err := s.updateWorkflowInternal(ctx, accountId, id, toApply)
+	if err != nil {
+		return updated, err
+	}
+
+	// Lineage bookkeeping: the draft now mirrors `target`, so point
+	// draft_version_id at it. Done after the definition write succeeds so a
+	// validation failure above leaves the existing draft_version_id intact.
+	if err := s.store.SetDraftVersionID(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id, target.ID); err != nil {
+		return updated, fmt.Errorf("failed to update draft_version_id after restore: %w", err)
+	}
+	updated.DraftVersionID = &target.ID
+	n := target.VersionNumber
+	updated.DraftVersionNumber = &n
+	if target.Name != nil {
+		nm := *target.Name
+		updated.DraftVersionName = &nm
+	} else {
+		updated.DraftVersionName = nil
+	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, workflowAuditSnapshot(current), workflowAuditSnapshot(&updated),
+		map[string]any{
+			"action":         "restore_version",
+			"version_number": versionNumber,
+			"version_id":     target.ID,
+		},
+	)
+	return updated, nil
 }
 
 // PublishWorkflow snapshots the current draft (workflows.definition) as a new
 // workflow_versions row. If setLive is true the new version is also marked
 // live so future executions run it; otherwise the existing live pointer is
 // unchanged. Either way the draft itself is preserved untouched.
-func (s *Service) PublishWorkflow(ctx *security.RequestContext, accountId, id string, name, description *string, setLive bool) (*model.WorkflowVersion, error) {
+//
+// status decides what state the new version (and, when setLive=true, the
+// workflow row mirror) lands in. Empty defaults to PAUSED — see the
+// CreateWorkflow comment for the reasoning behind opt-in activation. This is
+// the only path that lets a user publish directly into ACTIVE / PAUSED /
+// INACTIVE; the publish action no longer silently force-activates.
+func (s *Service) PublishWorkflow(ctx *security.RequestContext, accountId, id string, name, description *string, setLive bool, status model.WorkflowStatus) (*model.WorkflowVersion, error) {
 	if accountId == "" || id == "" {
 		return nil, fmt.Errorf("accountId and id are required")
 	}
 	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
 		return nil, common.ErrorUnauthorized("account not accessible")
+	}
+	if status == "" {
+		status = model.WorkflowStatusPaused
+	}
+	validStatuses := map[model.WorkflowStatus]struct{}{
+		model.WorkflowStatusActive:   {},
+		model.WorkflowStatusPaused:   {},
+		model.WorkflowStatusInactive: {},
+	}
+	if _, ok := validStatuses[status]; !ok {
+		return nil, common.ErrorBadRequest(fmt.Sprintf("invalid status %q for publish", status))
 	}
 	wf, err := s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id)
 	if err != nil {
@@ -3938,37 +4216,51 @@ func (s *Service) PublishWorkflow(ctx *security.RequestContext, accountId, id st
 		return nil, err
 	}
 	userID := ctx.GetSecurityContext().GetUserId()
-	v, err := s.store.PublishVersion(ctx.GetContext(), id, userID, model.WorkflowVersionSourcePublish, name, description, nil)
+	v, err := s.store.PublishVersion(ctx.GetContext(), id, userID, model.WorkflowVersionSourcePublish, name, description, nil, status)
 	if err != nil {
 		return nil, fmt.Errorf("failed to publish workflow version: %w", err)
 	}
 	if setLive {
+		// SetLiveVersion mirrors the new live version's status onto
+		// workflows.status in the same UPDATE, so the workflow row's
+		// administrative state always matches what the live version says.
 		if err := s.store.SetLiveVersion(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id, v.ID); err != nil {
 			return nil, fmt.Errorf("failed to mark new version live: %w", err)
 		}
 		v.IsLive = true
+		wf.Status = status
+		wf.LiveVersionStatus = status
 
-		// Publishing always activates the workflow. A published-but-not-running
-		// workflow is the exact silent-failure we are eliminating: the user
-		// would have no signal as to why it isn't executing.
+		// (Re)register triggers for the just-published definition. Re-registering
+		// on every publish (rather than only on status flips) keeps the system
+		// resilient: schedule / webhook triggers may have been added or removed
+		// in the new definition, and handleWorkflowTrigger re-syncs them.
+		// handleWorkflowTrigger itself looks at wf.Status to decide whether the
+		// scheduled job should be left paused or running, so flipping
+		// wf.Status above is the single decision point.
 		tenantId := ctx.GetSecurityContext().GetTenantId()
-		if wf.Status != model.WorkflowStatusActive {
-			if err := s.store.UpdateWorkflowStatus(ctx.GetContext(), tenantId, accountId, id, model.WorkflowStatusActive); err != nil {
-				return nil, fmt.Errorf("failed to activate workflow on publish: %w", err)
-			}
-			wf.Status = model.WorkflowStatusActive
-		}
-		// (Re)register triggers for the just-published definition UNCONDITIONALLY,
-		// not only when the status flips. This keeps two things correct:
-		//   1. Recovery: if a prior publish set status=ACTIVE but failed here
-		//      (transient Temporal error), a retry — where status is already
-		//      ACTIVE — must still register the triggers rather than skip them.
-		//   2. Freshness: the new definition may have added/removed schedule or
-		//      webhook triggers; handleWorkflowTrigger re-syncs them either way.
 		if _, _, err := s.handleWorkflowTrigger(ctx, id, tenantId, accountId, wf); err != nil {
 			return nil, fmt.Errorf("failed to register triggers on publish: %w", err)
 		}
 	}
+	publishAttrs := map[string]any{
+		"action":         "publish_version",
+		"version_number": v.VersionNumber,
+		"version_id":     v.ID,
+		"set_live":       setLive,
+		"status":         string(status),
+	}
+	if name != nil {
+		publishAttrs["name"] = *name
+	}
+	if description != nil {
+		publishAttrs["description"] = *description
+	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, nil, workflowAuditSnapshot(wf), publishAttrs,
+	)
 	return v, nil
 }
 
@@ -3995,7 +4287,21 @@ func (s *Service) SetLiveWorkflowVersion(ctx *security.RequestContext, accountId
 		}
 		return nil, fmt.Errorf("failed to set live workflow version: %w", err)
 	}
-	return s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id)
+	wf, err := s.store.Find(ctx.GetContext(), ctx.GetSecurityContext().GetTenantId(), accountId, id)
+	if err != nil {
+		return wf, err
+	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, nil, workflowAuditSnapshot(wf),
+		map[string]any{
+			"action":         "set_live_version",
+			"version_number": versionNumber,
+			"version_id":     target.ID,
+		},
+	)
+	return wf, nil
 }
 
 // UpdateWorkflowVersionMetadata patches the mutable metadata fields (name,
@@ -4021,5 +4327,79 @@ func (s *Service) UpdateWorkflowVersionMetadata(ctx *security.RequestContext, ac
 		}
 		return nil, err
 	}
+	metaAttrs := map[string]any{
+		"action":         "update_version_metadata",
+		"version_number": versionNumber,
+		"version_id":     v.ID,
+	}
+	if name != nil {
+		metaAttrs["name"] = *name
+	}
+	if description != nil {
+		metaAttrs["description"] = *description
+	}
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, nil,
+		map[string]any{"version_number": v.VersionNumber, "version_id": v.ID, "name": v.Name, "description": v.Description},
+		metaAttrs,
+	)
 	return v, nil
+}
+
+// UpdateWorkflowVersionStatus flips a single version's runtime gate
+// (Active / Paused / Inactive). When the target is the live version the DAO
+// mirrors status onto workflows.status in the same transaction, so listing
+// filters stay consistent. Triggers are re-synced after a live-version status
+// change so Temporal schedule jobs / webhook subscriptions follow the gate.
+func (s *Service) UpdateWorkflowVersionStatus(ctx *security.RequestContext, accountId, id string, versionNumber int, status model.WorkflowStatus) (*model.WorkflowVersion, error) {
+	if accountId == "" || id == "" || versionNumber <= 0 {
+		return nil, fmt.Errorf("accountId, id, version_number are required")
+	}
+	if !ctx.GetSecurityContext().HasAccountAccess(accountId, security.SecurityAccessTypeUpdate) {
+		return nil, common.ErrorUnauthorized("account not accessible")
+	}
+	validStatuses := map[model.WorkflowStatus]struct{}{
+		model.WorkflowStatusActive:   {},
+		model.WorkflowStatusPaused:   {},
+		model.WorkflowStatusInactive: {},
+	}
+	if _, ok := validStatuses[status]; !ok {
+		return nil, common.ErrorBadRequest(fmt.Sprintf("invalid status %q", status))
+	}
+	tenantId := ctx.GetSecurityContext().GetTenantId()
+	target, err := s.store.GetWorkflowVersion(ctx.GetContext(), id, versionNumber)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("version %d of workflow %s not found: %w", versionNumber, id, sql.ErrNoRows)
+		}
+		return nil, err
+	}
+	wasLive, err := s.store.UpdateVersionStatus(ctx.GetContext(), tenantId, accountId, id, target.ID, status)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update version status: %w", err)
+	}
+	// Mutating a non-live version is just a metadata change — no Temporal
+	// schedules to (re)wire. Mutating the live version flips the runtime gate,
+	// so re-run handleWorkflowTrigger to register / unregister downstream.
+	if wasLive {
+		wf, err := s.store.Find(ctx.GetContext(), tenantId, accountId, id)
+		if err != nil {
+			return nil, fmt.Errorf("failed to reload workflow after status change: %w", err)
+		}
+		if _, _, err := s.handleWorkflowTrigger(ctx, id, tenantId, accountId, wf); err != nil {
+			return nil, fmt.Errorf("failed to resync triggers after status change: %w", err)
+		}
+	}
+	target.Status = status
+	target.IsLive = wasLive
+	emitWorkflowAudit(
+		ctx, accountId,
+		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, nil,
+		map[string]any{"version_number": versionNumber, "version_id": target.ID, "status": string(status), "is_live": wasLive},
+		map[string]any{"action": "update_version_status"},
+	)
+	return target, nil
 }

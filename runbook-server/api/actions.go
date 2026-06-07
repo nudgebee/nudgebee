@@ -62,6 +62,8 @@ func (s *Server) handleAction(c *gin.Context) {
 		s.handleRetriggerWorkflowExecution(c, sc, args)
 	case "workflow_list_executions":
 		s.handleListWorkflowExecutions(c, sc, args)
+	case "workflow_list_executions_for_event":
+		s.handleListWorkflowExecutionsForEvent(c, sc, args)
 	case "workflow_get_execution":
 		s.handleGetWorkflowExecution(c, sc, args)
 	case "workflow_cancel_execution":
@@ -114,6 +116,8 @@ func (s *Server) handleAction(c *gin.Context) {
 		s.handleMakeWorkflowVersionLive(c, sc, args)
 	case "workflows_update_version_metadata":
 		s.handleUpdateWorkflowVersionMetadata(c, sc, args)
+	case "workflows_update_version_status":
+		s.handleUpdateWorkflowVersionStatus(c, sc, args)
 	default:
 		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{fmt.Errorf("action '%s' not supported", actionReq.Action.Name)}))
 	}
@@ -500,6 +504,28 @@ func (s *Server) handleListWorkflowExecutions(c *gin.Context, sc *security.Reque
 	if err != nil {
 		s.logger.Error("failed to list workflow executions via RPC", "workflowID", workflowID, "error", err)
 		c.JSON(http.StatusBadRequest, common.ErrorActionInternal("failed to list workflow executions"))
+		return
+	}
+
+	c.JSON(http.StatusOK, executions)
+}
+
+func (s *Server) handleListWorkflowExecutionsForEvent(c *gin.Context, sc *security.RequestContext, args map[string]any) {
+	accountID, ok := args["account_id"].(string)
+	if !ok || accountID == "" {
+		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{fmt.Errorf("account_id is required")}))
+		return
+	}
+	eventID, ok := args["event_id"].(string)
+	if !ok || eventID == "" {
+		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{fmt.Errorf("event_id is required")}))
+		return
+	}
+
+	executions, err := s.workflowService.ListWorkflowExecutionsForEvent(sc, accountID, eventID)
+	if err != nil {
+		s.logger.Error("failed to list workflow executions for event via RPC", "eventID", eventID, "error", err)
+		c.JSON(http.StatusBadRequest, common.ErrorActionInternal("failed to list workflow executions for event"))
 		return
 	}
 

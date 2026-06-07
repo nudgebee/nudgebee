@@ -700,6 +700,12 @@ func (m *MockWorkflowStore) CountWorkflows(ctx context.Context, tenantID, accoun
 	return args.Get(0).(int64), args.Error(1)
 }
 
+func (m *MockWorkflowStore) GetWorkflowNames(ctx context.Context, tenantID, accountID string, ids []string) (map[string]string, error) {
+	args := m.Called(ctx, tenantID, accountID, ids)
+	res, _ := args.Get(0).(map[string]string)
+	return res, args.Error(1)
+}
+
 func (m *MockWorkflowStore) ListWorkflowVersions(ctx context.Context, workflowID string, limit int) ([]model.WorkflowVersion, error) {
 	args := m.Called(ctx, workflowID, limit)
 	if args.Get(0) == nil {
@@ -732,8 +738,8 @@ func (m *MockWorkflowStore) GetLiveWorkflowVersion(ctx context.Context, workflow
 	return args.Get(0).(*model.WorkflowVersion), args.Error(1)
 }
 
-func (m *MockWorkflowStore) PublishVersion(ctx context.Context, workflowID, createdBy string, source model.WorkflowVersionSource, name, description *string, restoredFromVersion *int) (*model.WorkflowVersion, error) {
-	args := m.Called(ctx, workflowID, createdBy, source, name, description, restoredFromVersion)
+func (m *MockWorkflowStore) PublishVersion(ctx context.Context, workflowID, createdBy string, source model.WorkflowVersionSource, name, description *string, restoredFromVersion *int, status model.WorkflowStatus) (*model.WorkflowVersion, error) {
+	args := m.Called(ctx, workflowID, createdBy, source, name, description, restoredFromVersion, status)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
@@ -745,12 +751,22 @@ func (m *MockWorkflowStore) SetLiveVersion(ctx context.Context, tenantID, accoun
 	return args.Error(0)
 }
 
+func (m *MockWorkflowStore) SetDraftVersionID(ctx context.Context, tenantID, accountID, workflowID, versionID string) error {
+	args := m.Called(ctx, tenantID, accountID, workflowID, versionID)
+	return args.Error(0)
+}
+
 func (m *MockWorkflowStore) UpdateVersionMetadata(ctx context.Context, workflowID string, versionNumber int, name, description *string) (*model.WorkflowVersion, error) {
 	args := m.Called(ctx, workflowID, versionNumber, name, description)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*model.WorkflowVersion), args.Error(1)
+}
+
+func (m *MockWorkflowStore) UpdateVersionStatus(ctx context.Context, tenantID, accountID, workflowID, versionID string, status model.WorkflowStatus) (bool, error) {
+	args := m.Called(ctx, tenantID, accountID, workflowID, versionID, status)
+	return args.Bool(0), args.Error(1)
 }
 
 func TestValidateTaskTypes(t *testing.T) {
@@ -1452,6 +1468,10 @@ func TestRestoreWorkflowVersion(t *testing.T) {
 			assert.Equal(t, "test-user", updated.UpdatedBy, "updated_by set by service")
 			assert.Equal(t, "old-task", updated.Definition.Tasks[0].ID, "definition swapped into draft from target version")
 		})
+		// V747: restore also points draft_version_id at the just-restored
+		// version so the editor's "Draft based on vN" chip reflects the new
+		// branch instead of last-known live.
+		mockStore.On("SetDraftVersionID", mock.Anything, "test-tenant", "test-account", wfID, "v-1").Return(nil)
 		mockTemporalClient.On("Describe", mock.Anything).Return(nil, serviceerror.NewNotFound("schedule not found"))
 		mockTemporalClient.On("List", mock.Anything, mock.MatchedBy(func(opts client.ScheduleListOptions) bool {
 			return opts.Query == "nb_workflow_id = '"+wfID+"'"

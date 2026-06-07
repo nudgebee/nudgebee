@@ -123,8 +123,15 @@ func (s *Server) handlePublishWorkflowVersion(c *gin.Context, sc *security.Reque
 	if v, ok := args["set_live"].(bool); ok {
 		setLive = v
 	}
+	// status decides what state the new version (and, when setLive=true, the
+	// workflow row) lands in. Empty / missing falls through to the service
+	// default (PAUSED) so older clients that omit the arg continue to work.
+	var status model.WorkflowStatus
+	if s, ok := args["status"].(string); ok && s != "" {
+		status = model.WorkflowStatus(s)
+	}
 
-	v, err := s.workflowService.PublishWorkflow(sc, accountID, workflowID, name, description, setLive)
+	v, err := s.workflowService.PublishWorkflow(sc, accountID, workflowID, name, description, setLive, status)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			c.JSON(http.StatusNotFound, buildApiResponse(nil, []error{errors.New("workflow not found")}))
@@ -174,6 +181,30 @@ func (s *Server) handleUpdateWorkflowVersionMetadata(c *gin.Context, sc *securit
 		}
 		s.logger.Error("failed to update workflow version metadata", "workflowID", workflowID, "versionNumber", versionNumber, "error", err)
 		handleServiceError(c, err, "failed to update workflow version metadata")
+		return
+	}
+	c.JSON(http.StatusOK, v)
+}
+
+func (s *Server) handleUpdateWorkflowVersionStatus(c *gin.Context, sc *security.RequestContext, args map[string]any) {
+	accountID, workflowID, versionNumber, err := parseVersionArgs(args)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{err}))
+		return
+	}
+	statusStr, ok := args["status"].(string)
+	if !ok || statusStr == "" {
+		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{fmt.Errorf("status is required")}))
+		return
+	}
+	v, err := s.workflowService.UpdateWorkflowVersionStatus(sc, accountID, workflowID, versionNumber, model.WorkflowStatus(statusStr))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, buildApiResponse(nil, []error{errors.New("workflow version not found")}))
+			return
+		}
+		s.logger.Error("failed to update workflow version status", "workflowID", workflowID, "versionNumber", versionNumber, "error", err)
+		handleServiceError(c, err, "failed to update workflow version status")
 		return
 	}
 	c.JSON(http.StatusOK, v)

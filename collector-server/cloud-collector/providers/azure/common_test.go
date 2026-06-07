@@ -52,3 +52,71 @@ func TestExtractResourceGroup(t *testing.T) {
 		})
 	}
 }
+
+// Regression for issue #31091: the collector lowercases Azure resource IDs
+// before storing them (account/etl_resources.go), so ApplyCommand resource IDs
+// arrive lowercased. parseAzureResourceIDSegments must match segment keys
+// case-insensitively, otherwise camelCase segments like "resourceGroups" and
+// "flexibleServers" never resolve and the DB handlers reject the call with
+// "invalid resource ID".
+func TestParseAzureResourceIDSegments(t *testing.T) {
+	tests := []struct {
+		name         string
+		resourceID   string
+		serverKey    string
+		wantRG       string
+		wantServer   string
+		wantDatabase string
+	}{
+		{
+			name:         "lowercased SQL database ID (as stored)",
+			resourceID:   "/subscriptions/sub-id/resourcegroups/my-rg/providers/microsoft.sql/servers/my-srv/databases/my-db",
+			serverKey:    "servers",
+			wantRG:       "my-rg",
+			wantServer:   "my-srv",
+			wantDatabase: "my-db",
+		},
+		{
+			name:       "lowercased Postgres flexible server ID (as stored)",
+			resourceID: "/subscriptions/sub-id/resourcegroups/my-rg/providers/microsoft.dbforpostgresql/flexibleservers/my-srv",
+			serverKey:  "flexibleservers",
+			wantRG:     "my-rg",
+			wantServer: "my-srv",
+		},
+		{
+			name:         "original camelCase ID still parses",
+			resourceID:   "/subscriptions/sub-id/resourceGroups/my-rg/providers/Microsoft.Sql/servers/my-srv/databases/my-db",
+			serverKey:    "servers",
+			wantRG:       "my-rg",
+			wantServer:   "my-srv",
+			wantDatabase: "my-db",
+		},
+		{
+			// A resource named like a well-known type must not pollute the
+			// keyspace: the rg here is literally named "databases", and this is a
+			// server-only ID, so the databases lookup must stay empty rather than
+			// pick up the segment following the rg name.
+			name:       "resource named like a type does not clobber lookups",
+			resourceID: "/subscriptions/sub-id/resourcegroups/databases/providers/microsoft.sql/servers/my-srv",
+			serverKey:  "servers",
+			wantRG:     "databases",
+			wantServer: "my-srv",
+			// wantDatabase intentionally empty (server-only ID).
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			seg := parseAzureResourceIDSegments(tt.resourceID)
+			assert.Equal(t, tt.wantRG, seg["resourcegroups"])
+			assert.Equal(t, tt.wantServer, seg[tt.serverKey])
+			assert.Equal(t, tt.wantDatabase, seg["databases"])
+		})
+	}
+
+	// A server-only ID has no databases segment, and an empty ID resolves
+	// nothing — both must leave the lookups empty so handlers still reject them.
+	seg := parseAzureResourceIDSegments("/subscriptions/sub-id/resourcegroups/my-rg/providers/microsoft.sql/servers/my-srv")
+	assert.Empty(t, seg["databases"])
+	assert.Empty(t, parseAzureResourceIDSegments(""))
+}

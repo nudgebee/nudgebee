@@ -1,6 +1,6 @@
 import { Page, Locator, test } from "@playwright/test";
 import { CommonLocators } from "../../GlobalLocators";
-import axios from "axios";
+import { checkIntegrationWithCache } from "../../utils/IntegrationStatusCache";
 
 export class AzureLocators extends CommonLocators {
   // Cloud Account Details - common anchor tabs
@@ -105,7 +105,7 @@ export class AzureLocators extends CommonLocators {
     this.BlobContainerEvents = page.locator("#dropdown-events");
 
     // Services drilldown tabs (expand arrow + tab buttons inside the collapsed row)
-    this.ServicesRowExpandButton = page.locator('img[alt="arrow"]').first();
+    this.ServicesRowExpandButton = page.getByRole("button", { name: "Expand row" }).first();
     this.ServicesDrilldownTabResources = page.getByRole("tab", { name: "Resources" });
     this.ServicesDrilldownTabCostTrend = page.getByRole("tab", { name: "Cost Trend" });
     this.ServicesDrilldownTabRecommendations = page.getByRole("tab", { name: "Recommendations" });
@@ -115,7 +115,7 @@ export class AzureLocators extends CommonLocators {
   getResourceRowExpandButton() {
     return this.page
       .locator("#service-resource-listing-table")
-      .locator('img[alt="arrow"]')
+      .getByRole("button", { name: "Expand row" })
       .first();
   }
 
@@ -143,36 +143,17 @@ export class AzureLocators extends CommonLocators {
     const azureCard = this.page.locator("#Azure-section-card");
     await azureCard.waitFor({ state: "visible", timeout: 10000 });
 
-    const isActive = await azureCard
-      .getByText("Active", { exact: true })
-      .isVisible({ timeout: 5000 })
-      .catch(() => false);
+    const cardText = await azureCard.innerText().catch(() => "");
+    const isActive = /\bActive\s+[1-9]\d*/i.test(cardText);
 
     console.log(`Azure integration status: ${isActive ? "Active ✅" : "Not Active ❌"}`);
     return isActive;
   }
 
-  async sendSlackNotification(message: string): Promise<void> {
-    const webhookUrl = process.env.SLACK_WEBHOOK_URL;
-    if (!webhookUrl) {
-      console.warn("[AzureLocators] SLACK_WEBHOOK_URL not set, skipping notification");
-      return;
-    }
-    try {
-      await axios.post(webhookUrl, { text: message });
-      console.log(`[AzureLocators] Slack notification sent: ${message}`);
-    } catch (error) {
-      console.warn(`[AzureLocators] Failed to send Slack notification: ${error}`);
-    }
-  }
-
   async openAzureCloudAccountFromConfig() {
-    const isActive = await this.checkAzureIntegration();
+    const isActive = await checkIntegrationWithCache("azure", () => this.checkAzureIntegration());
 
     if (!isActive) {
-      await this.sendSlackNotification(
-        "Please integrate Azure first, then I will start the testing."
-      );
       test.skip(true, "Azure integration is not Active — Slack notification sent");
       return;
     }
