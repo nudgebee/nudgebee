@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+	"golang.org/x/sync/errgroup"
 )
 
 const dateTimeFormat = "2006-01-02 15:04:05"
@@ -505,50 +506,57 @@ func processSingleApplicationPrometheus(
 		return nil
 	}
 
+	// Fan the per-period relay fetches out concurrently — each period is an independent
+	// network round-trip to the agent (no shared state), so running them in parallel
+	// cuts wall time from sum(latencies) to ~max(latencies) per app.
+	var g errgroup.Group
 	for _, period := range referencePeriods {
-		historicalDataStartTime := endTime.AddDate(0, 0, -period)
-		rHistStartTime := historicalDataStartTime.Format("2006-01-02T15:04:05.000000Z")
-		rHistEndTime := endTime.Format("2006-01-02T15:04:05.000000Z") // Using 'now' as end for historical window
+		period := period
+		g.Go(func() error {
+			historicalDataStartTime := endTime.AddDate(0, 0, -period)
+			rHistStartTime := historicalDataStartTime.Format("2006-01-02T15:04:05.000000Z")
+			rHistEndTime := endTime.Format("2006-01-02T15:04:05.000000Z") // Using 'now' as end for historical window
 
-		applicationsFilterForHist := map[string]any{
-			app.Name: map[string]any{"namespace": app.K8sNamespace},
-		}
-		historicalAppStatsResponses, err := queryRelayServer(accountId, rHistStartTime, rHistEndTime, promQuery, queryName, applicationsFilterForHist)
-		if err != nil {
-			slog.Error("anomaly: failed to query historical relay server data for app", "error", err, "accountId", accountId, "app", app.Name, "period", period)
-			continue // Skip this period, try next
-		}
+			applicationsFilterForHist := map[string]any{
+				app.Name: map[string]any{"namespace": app.K8sNamespace},
+			}
+			historicalAppStatsResponses, err := queryRelayServer(accountId, rHistStartTime, rHistEndTime, promQuery, queryName, applicationsFilterForHist)
+			if err != nil {
+				// Match prior behavior: skip this period on relay error, don't fail the whole app.
+				slog.Error("anomaly: failed to query historical relay server data for app", "error", err, "accountId", accountId, "app", app.Name, "period", period)
+				return nil
+			}
 
-		if len(historicalAppStatsResponses) == 0 {
-			slog.Info("anomaly: no historical data from relay for app", "accountId", accountId, "app", app.Name, "period", period, "queryName", queryName)
-			continue
-		}
-		historicalAppMetricValue, foundHist := historicalAppStatsResponses[0].OtherMetrics[queryName]
-		if !foundHist || historicalAppMetricValue == 0 {
-			slog.Info("anomaly: historical metric not found or is zero for app", "metric", queryName, "app", app.Name, "period", period)
-			continue
-		}
+			if len(historicalAppStatsResponses) == 0 {
+				slog.Info("anomaly: no historical data from relay for app", "accountId", accountId, "app", app.Name, "period", period, "queryName", queryName)
+				return nil
+			}
+			historicalAppMetricValue, foundHist := historicalAppStatsResponses[0].OtherMetrics[queryName]
+			if !foundHist || historicalAppMetricValue == 0 {
+				slog.Info("anomaly: historical metric not found or is zero for app", "metric", queryName, "app", app.Name, "period", period)
+				return nil
+			}
 
-		var calculatedChangePerc float64
-		if historicalAppMetricValue != 0 {
-			calculatedChangePerc = ((currentAppMetricValue - historicalAppMetricValue) / historicalAppMetricValue) * 100.0
-		}
+			calculatedChangePerc := ((currentAppMetricValue - historicalAppMetricValue) / historicalAppMetricValue) * 100.0
 
-		isAnomaly := false
-		switch anomalyCfg.ChangeOperator {
-		case "GT":
-			isAnomaly = currentAppMetricValue > historicalAppMetricValue && calculatedChangePerc > anomalyCfg.BufferPercenatge
-		case "LT":
-			isAnomaly = currentAppMetricValue < historicalAppMetricValue && (-calculatedChangePerc) > anomalyCfg.BufferPercenatge
-		case "GTE":
-			isAnomaly = currentAppMetricValue >= historicalAppMetricValue && calculatedChangePerc >= anomalyCfg.BufferPercenatge
-		case "LTE":
-			isAnomaly = currentAppMetricValue <= historicalAppMetricValue && (-calculatedChangePerc) >= anomalyCfg.BufferPercenatge
-		default:
-			slog.Warn("anomaly: unknown change operator", "operator", anomalyCfg.ChangeOperator, "app", app.Name)
-		}
+			isAnomaly := false
+			switch anomalyCfg.ChangeOperator {
+			case "GT":
+				isAnomaly = currentAppMetricValue > historicalAppMetricValue && calculatedChangePerc > anomalyCfg.BufferPercenatge
+			case "LT":
+				isAnomaly = currentAppMetricValue < historicalAppMetricValue && (-calculatedChangePerc) > anomalyCfg.BufferPercenatge
+			case "GTE":
+				isAnomaly = currentAppMetricValue >= historicalAppMetricValue && calculatedChangePerc >= anomalyCfg.BufferPercenatge
+			case "LTE":
+				isAnomaly = currentAppMetricValue <= historicalAppMetricValue && (-calculatedChangePerc) >= anomalyCfg.BufferPercenatge
+			default:
+				slog.Warn("anomaly: unknown change operator", "operator", anomalyCfg.ChangeOperator, "app", app.Name)
+			}
 
-		if isAnomaly {
+			if !isAnomaly {
+				return nil
+			}
+
 			slog.Info("anomaly: Prometheus-based anomaly detected",
 				"accountId", accountId, "app", app.Name, "namespace", app.K8sNamespace, "type", anomalyCfg.AnomalyType,
 				"current", currentAppMetricValue, "historical", historicalAppMetricValue, "period", period)
@@ -571,13 +579,14 @@ func processSingleApplicationPrometheus(
 				EvaluatedAt:  &evalTime,
 			}
 			if err := insertAnomaly([]Anomaly{anomalyToInsert}); err != nil {
-				slog.Error("anomaly: failed to insert prometheus-based anomaly", "error", err, "accountId", accountId, "app", app.Name)
-				return err // If insert fails, return error for this work item
+				slog.Error("anomaly: failed to insert prometheus-based anomaly", "error", err, "accountId", accountId, "app", app.Name, "period", period)
+				return err
 			}
-		}
+			return nil
+		})
 	}
 
-	return nil
+	return g.Wait()
 }
 
 func queryRelayServer(accountId string, rStartTime string, rEndTime string, query string, queryName string, applicationsFilter map[string]any) ([]relay.ApplicationStatsResponse, error) {
