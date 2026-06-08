@@ -52,7 +52,7 @@ const integrationConnectionKey = {
   oracle: 'host',
   mongodb_proxy: 'host',
   redis: 'host',
-  rabbitmq: 'host',
+  rabbitmq: 'k8s_secret',
   ssh: 'host',
   jira: 'url',
   servicenow: 'url',

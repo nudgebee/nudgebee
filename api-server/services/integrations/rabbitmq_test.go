@@ -64,3 +64,16 @@ func TestRabbitmq_ValidateConfig(t *testing.T) {
 	assert.NotEmpty(t, errs)
 	assert.Equal(t, "k8s_secret is required", errs[0].Error())
 }
+
+// TestRabbitMq_ConfigSchema_NoHostField guards the removal of the redundant
+// "host" field: host/port/user/password all live in the k8s secret (RABBITMQ_*
+// keys), so a separate host config field was never read. k8s_secret is the only
+// required field. (Pure schema check — no test env needed.)
+func TestRabbitMq_ConfigSchema_NoHostField(t *testing.T) {
+	schema := RabbitMq{}.ConfigSchema()
+
+	assert.Equal(t, []string{"k8s_secret"}, schema.Required)
+	assert.NotContains(t, schema.Required, "host")
+	assert.Contains(t, schema.Properties, "k8s_secret")
+	assert.NotContains(t, schema.Properties, "host")
+}

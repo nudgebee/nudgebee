@@ -29,19 +29,13 @@ func (m RabbitMq) ConfigSchema() core.IntegrationSchema {
 	return core.IntegrationSchema{
 		Type:     core.ToolSchemaTypeObject,
 		Testable: true,
-		Required: []string{"k8s_secret", "host"},
+		Required: []string{"k8s_secret"},
 		Properties: map[string]core.IntegrationSchemaProperty{
 			"k8s_secret": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "Rabbitmq Secret in k8s, Required Keys, RABBITMQ_HOST, RABBITMQ_PASSWORD, RABBITMQ_PORT, RABBITMQ_USER",
 				IsTestable:  true,
 				Priority:    82,
-			},
-			"host": {
-				Type:        core.ToolSchemaTypeString,
-				Description: "rabbitmq host",
-				IsTestable:  true,
-				Priority:    80,
 			},
 			"account_id": {
 				Type:             core.ToolSchemaTypeArray,
