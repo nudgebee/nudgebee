@@ -16,7 +16,7 @@ import { useRouter } from 'next/router';
 import ThreeDotsMenu from '@common-new/ThreeDotsMenu';
 import { Modal } from '@components1/ds/Modal';
 import { toast as snackbar } from '@components1/ds/Toast';
-import { hasWriteAccess, hasFeatureAccess } from '@lib/auth';
+import { hasWriteAccess, hasFeatureAccess, getUserSession } from '@lib/auth';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
 import { action } from 'src/utils/actionStyles';
 import TriggerWorkflowModal from './components/TriggerWorkflowModal';
@@ -285,6 +285,13 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   const [selectedTags, setSelectedTags] = useState<string>((router?.query?.tags as string) || '');
   const [selectedCreatedBy, setSelectedCreatedBy] = useState<string>((router?.query?.created_by as string) || 'All');
   const [createdByOptions, setCreatedByOptions] = useState<string[]>(['All']);
+
+  // The "Created By" filter is sourced from the tenant user list
+  // (users_list_by_tenant), which only tenant-level roles can read. Hide it for
+  // everyone else (e.g. account_admin) instead of rendering an empty, broken
+  // filter — they'd otherwise just see "All".
+  const sessionRoles: string[] = getUserSession()?.roles || [];
+  const canFilterByCreatedBy = sessionRoles.includes('tenant_admin') || sessionRoles.includes('tenant_admin_readonly');
 
   // Committed search values — only update on Enter or Clear, not on every keystroke.
   const [committedSearchName, setCommittedSearchName] = useState<string>((router?.query?.name as string) || '');
@@ -1290,8 +1297,10 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
     setSelectedCreatedBy((created_by as string) || 'All');
   }, [router.query]);
 
-  // Fetch active users for the "Created By" filter
+  // Fetch active users for the "Created By" filter. Only tenant-level roles can
+  // read the tenant user list; skip the call for others to avoid a 403.
   useEffect(() => {
+    if (!canFilterByCreatedBy) return;
     const fetchActiveUsers = async () => {
       try {
         const response = await apiUser.listUsers({ status: 'active' });
@@ -1306,7 +1315,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
       }
     };
     fetchActiveUsers();
-  }, []);
+  }, [canFilterByCreatedBy]);
 
   // Trigger search when filters or debounced search values change
   useEffect(() => {
@@ -1689,16 +1698,18 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
             onEnterPress={onTagsEnterPress}
             onClear={onTagsClear}
           />
-          <FilterDropdown
-            id='workflow-filter-created-by'
-            label='Created By'
-            options={createdByOptions}
-            value={selectedCreatedBy}
-            onSelect={(e: React.ChangeEvent<HTMLInputElement>) => {
-              setSelectedCreatedBy(e?.target?.value);
-              applyFiltersOnRouter(router, { created_by: e?.target?.value });
-            }}
-          />
+          {canFilterByCreatedBy && (
+            <FilterDropdown
+              id='workflow-filter-created-by'
+              label='Created By'
+              options={createdByOptions}
+              value={selectedCreatedBy}
+              onSelect={(e: React.ChangeEvent<HTMLInputElement>) => {
+                setSelectedCreatedBy(e?.target?.value);
+                applyFiltersOnRouter(router, { created_by: e?.target?.value });
+              }}
+            />
+          )}
           <FilterDropdown
             id='workflow-filter-status'
             label='Status'
