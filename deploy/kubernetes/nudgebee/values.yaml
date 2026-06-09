@@ -232,8 +232,8 @@ rabbitmq:
           labels:
             severity: critical
           annotations:
-            summary: RabbitMQ too many ready messages
-            description: 'RabbitMQ too many ready messages'
+            summary: 'RabbitMQ queue {{`{{ $labels.queue }}`}} has too many ready messages'
+            description: 'Queue {{`{{ $labels.queue }}`}} in namespace {{`{{ $labels.namespace }}`}} (pod {{`{{ $labels.pod }}`}}) has more than 10 ready messages'
 
         - alert: RabbitmqTooManyUnackMessages
           expr: 'sum(rabbitmq_queue_messages_unacked{namespace="{{ .Release.Namespace }}"}) BY (queue, pod, namespace) > 10'
@@ -241,8 +241,8 @@ rabbitmq:
           labels:
             severity: critical
           annotations:
-            summary: RabbitMQ too many unack messages
-            description: 'Too many unacknowledged messages'
+            summary: 'RabbitMQ queue {{`{{ $labels.queue }}`}} has too many unacked messages'
+            description: 'Queue {{`{{ $labels.queue }}`}} in namespace {{`{{ $labels.namespace }}`}} (pod {{`{{ $labels.pod }}`}}) has more than 10 unacknowledged messages'
 
         - alert: RabbitmqTooManyConnections
           expr: 'rabbitmq_connections{namespace="{{ .Release.Namespace }}"} > 100'
@@ -259,8 +259,8 @@ rabbitmq:
           labels:
             severity: critical
           annotations:
-            summary: RabbitMQ no queue consumers
-            description: 'A queue has less than 1 consumer'
+            summary: 'RabbitMQ queue {{`{{ $labels.queue }}`}} has no consumers'
+            description: 'Queue {{`{{ $labels.queue }}`}} in namespace {{`{{ $labels.namespace }}`}} (pod {{`{{ $labels.pod }}`}}) has less than 1 consumer'
 
         - alert: RabbitmqUnroutableMessages
           expr: 'increase(rabbitmq_channel_messages_unroutable_returned_total{namespace="{{ .Release.Namespace }}"}[1m]) > 0 or increase(rabbitmq_channel_messages_unroutable_dropped_total{namespace="{{ .Release.Namespace }}"}[1m]) > 0'
