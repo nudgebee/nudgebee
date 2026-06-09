@@ -340,15 +340,18 @@ const KubernetesDetails = () => {
       const grafana = selectedCluster?.agent?.connection_status?.grafanaEnabled || false;
       const isJaeger = selectedCluster?.cloud_provider === 'jaeger';
       // Grafana embeds a full query/explore surface, so restrict it to users
-      // with write access on this cluster — read-only roles are blocked.
+      // with write access on this cluster — read-only roles get the tab hidden.
       const canAccessGrafana = grafana && hasWriteAccess(kubeId);
       setTabOptions((prevOptions) =>
         prevOptions.map((option) => {
-          if (option.name === 'Grafana') return { ...option, disabled: !canAccessGrafana };
           if (option.name === 'Monitoring') {
             return {
               ...option,
-              tabOptions: option.tabOptions.map((tab) => (tab.id === 'trace-grouping' ? { ...tab, hidden: isJaeger } : tab)),
+              tabOptions: option.tabOptions.map((tab) => {
+                if (tab.id === 'trace-grouping') return { ...tab, hidden: isJaeger };
+                if (tab.id === 'grafana') return { ...tab, hidden: !canAccessGrafana };
+                return tab;
+              }),
             };
           }
           return option;
