@@ -1284,13 +1284,8 @@ func (s *K8sSource) fetchKarpenterCRDForVersion(req *core.SourceBuildRequest, re
 				"group":         karpenterGroup,
 				"version":       version,
 				"resource_type": resourceType,
-				// NodePool / NodeClaim are cluster-scoped, but the relay agent's
-				// get_resource action requires all_namespaces=true to enumerate
-				// CRDs regardless of scope — it dispatches to a generic kubectl-get
-				// path that needs the flag set. With all_namespaces=false the
-				// agent returns ACTION_UNEXPECTED_ERROR (status_code 500 inside
-				// an HTTP 200 envelope). Verified via direct relay probe 2026-05-26.
-				"all_namespaces": true,
+				// NodePool / NodeClaim are cluster-scoped, so we pass all_namespaces=false.
+				"all_namespaces": false,
 			},
 		},
 	}

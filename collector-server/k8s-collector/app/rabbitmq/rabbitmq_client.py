@@ -378,7 +378,11 @@ class RabbitConsumer(ConsumerMixin):
 
         # Submit message processing to thread pool and return immediately
         # This keeps the consumer loop responsive for heartbeats
-        self._executor.submit(self._process_message_in_thread, body, message)
+        if not self.should_stop:
+            self._executor.submit(self._process_message_in_thread, body, message)
+        else:
+            logger.warning("Consumer is shutting down, rejecting message")
+            message.reject(requeue=True)
 
     def on_connection_error(self, exc, interval):
         """Handle connection errors - will retry indefinitely"""
