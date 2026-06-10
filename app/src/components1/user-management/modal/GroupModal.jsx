@@ -785,13 +785,13 @@ function GroupModal({ open, handleClose, groupData, handleSnackBarData }) {
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
                 <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 'var(--ds-space-2)' }}>
                   <Box sx={{ flex: 1, minWidth: 0 }}>
-                    {fieldLabel('Cloud account')}
+                    {fieldLabel('Account')}
                     <Select
                       id='group-account'
                       value={selectedAccount || ''}
                       options={accountOptions}
                       onChange={(next) => setSelectedAccount(next)}
-                      placeholder='Select cloud account'
+                      placeholder='Select Account'
                       minWidth='100%'
                     />
                   </Box>
