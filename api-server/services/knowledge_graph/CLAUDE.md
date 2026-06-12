@@ -42,9 +42,9 @@ knowledge_graph/
 - [api-server/services/api/actions_knowledge_graph.go](../api/actions_knowledge_graph.go) — HTTP entry points (`kg_*` actions)
 - [api-server/services/api/cron.go](../api/cron.go) — daily 23:30 UTC cron, fans out via queue
 - [api-server/services/traces/knowledge_graph_service.go](../traces/knowledge_graph_service.go) — trace→KG bridge
-- [collector-server/cloud-collector/account/kg_update.go](../../../../collector-server/cloud-collector/account/kg_update.go) — publishes update on cloud-resource change
-- [llm/llm-server/agents/agent_service_dependency_V2.go](../../../../llm/llm-server/agents/agent_service_dependency_V2.go) — KG-only SDG V2 agent
-- [llm/llm-server/tools/tool_kg_search.go](../../../../llm/llm-server/tools/tool_kg_search.go), [tool_kg_traverse.go](../../../../llm/llm-server/tools/tool_kg_traverse.go), [tool_kg_get_node.go](../../../../llm/llm-server/tools/tool_kg_get_node.go)
+- [collector-server/cloud-collector/account/kg_update.go](../../../collector-server/cloud-collector/account/kg_update.go) — publishes update on cloud-resource change
+- [llm/llm-server/agents/agent_service_dependency_V2.go](../../../llm/llm-server/agents/agent_service_dependency_V2.go) — KG-only SDG V2 agent
+- [llm/llm-server/tools/tool_kg_search.go](../../../llm/llm-server/tools/tool_kg_search.go), [tool_kg_traverse.go](../../../llm/llm-server/tools/tool_kg_traverse.go), [tool_kg_get_node.go](../../../llm/llm-server/tools/tool_kg_get_node.go)
 
 ---
 
@@ -147,7 +147,7 @@ V2 uses the **ReWOO** planner. V1 and V2 are **mutually exclusive at init time**
 | Add a cross-account rule | [core/default_relationships.json](core/default_relationships.json) → [core/cross_account_relationships.go](core/cross_account_relationships.go) for matcher behaviour |
 | Debug a missing edge | confirm both endpoint nodes exist with correct unique_key → check source priority in [flow_sources/edge_priority.go](flow_sources/edge_priority.go) → check tombstone state (`is_active`) |
 | Debug a stuck/slow build | [queue/consumer.go](queue/consumer.go) (lock state) → BuildGraphs phase logs in [core/service.go:570](core/service.go#L570) → batch sizes in SaveNodes/SaveEdges |
-| Work on the LLM SDG V2 agent | [llm/llm-server/agents/agent_service_dependency_V2.go](../../../../llm/llm-server/agents/agent_service_dependency_V2.go) → [tool_kg_traverse.go](../../../../llm/llm-server/tools/tool_kg_traverse.go) → [TraverseDirectional:3463](core/service.go#L3463) |
+| Work on the LLM SDG V2 agent | [llm/llm-server/agents/agent_service_dependency_V2.go](../../../llm/llm-server/agents/agent_service_dependency_V2.go) → [tool_kg_traverse.go](../../../llm/llm-server/tools/tool_kg_traverse.go) → [TraverseDirectional:3463](core/service.go#L3463) |
 
 ---
 

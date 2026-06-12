@@ -1,6 +1,9 @@
 blank_issues_enabled: false
 contact_links:
-  - name: "💬 General questions / contact"
+  - name: "💬 Discord — async help, contributor chat"
+    url: https://discord.gg/g2spbkGFC5
+    about: "Ask questions, get setup help, discuss design — usually faster than filing an issue."
+  - name: "📧 General questions / contact"
     url: mailto:contact@nudgebee.com
     about: "For general questions, partnership inquiries, or anything that doesn't fit the bug/feature/spike templates."
   - name: "🛠 Contribution / OSS questions"

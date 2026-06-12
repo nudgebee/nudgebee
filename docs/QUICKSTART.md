@@ -8,7 +8,7 @@ The full local-development walkthrough — clone, bring up infra with Docker Com
 
 ```bash
 git clone https://github.com/nudgebee/nudgebee.git && cd nudgebee
-docker compose up -d postgres rabbitmq redis qdrant temporal
+docker compose up -d postgres rabbitmq redis qdrant temporal migrations
 cp api-server/services/.env.example api-server/services/.env  # edit as needed
 cd api-server/services && make run
 # in another shell:

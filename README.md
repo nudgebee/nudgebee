@@ -4,7 +4,7 @@ Open-source SRE copilot — observability, FinOps, runbook automation, and incid
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
-[![Node](https://img.shields.io/badge/Node-22+-339933?logo=node.js&logoColor=white)](https://nodejs.org/en/download)
+[![Node](https://img.shields.io/badge/Node-25+-339933?logo=node.js&logoColor=white)](https://nodejs.org/en/download)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 [![GitHub Discussions](https://img.shields.io/github/discussions/nudgebee/nudgebee)](https://github.com/nudgebee/nudgebee/discussions)
 
@@ -29,7 +29,7 @@ The fastest way to run Nudgebee from source. **Infra in containers, backend and 
 
 - [Docker](https://www.docker.com/products/docker-desktop/) (with `docker compose`) **or** [Podman Desktop](https://podman-desktop.io/) (with `podman-compose`)
 - [Go 1.26+](https://go.dev/dl/)
-- [Node 22+ and npm](https://nodejs.org/en/download)
+- [Node 25+ and npm](https://nodejs.org/en/download)
 
 ### 1. Clone
 
@@ -189,6 +189,7 @@ The platform is live but empty. A quick tour that takes ~10 minutes:
 
 ### Stuck? Want to help?
 
+- **Want to chat?** Join us on [Discord](https://discord.gg/g2spbkGFC5) — async help, design discussions, contributor coordination.
 - **Hit a bug?** Open an issue using the [bug template](.github/ISSUE_TEMPLATE/BUG-REPORT.yml).
 - **Idea for a feature?** Use the [feature template](.github/ISSUE_TEMPLATE/FEATURE-REQUEST.yml).
 - **Want to contribute code?** Read [CONTRIBUTING.md](./CONTRIBUTING.md) — covers CLA, branch model, PR conventions, and local-dev debugging tips. Look for issues tagged [`good first issue`](https://github.com/nudgebee/nudgebee/labels/good%20first%20issue).

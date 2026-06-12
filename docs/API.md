@@ -1,6 +1,6 @@
 # API / RPC Reference
 
-Nudgebee's backend exposes its operations as **RPC actions** routed through a single in-app gateway. There is one source of truth for what actions exist and how they're authorized: **[`app/src/lib/actions.yaml`](../app/src/lib/actions.yaml)** — currently **368 actions across 62 modules**.
+Nudgebee's backend exposes its operations as **RPC actions** routed through a single in-app gateway. There is one source of truth for what actions exist and how they're authorized: **[`app/src/lib/actions.yaml`](../app/src/lib/actions.yaml)** — currently **~370 actions across 62 modules** (run `grep -c '^  - name:' app/src/lib/actions.yaml` for the exact count).
 
 This page explains *how to read that file* and *how to add a new action*. The YAML itself is the contract; this doc is the map.
 
