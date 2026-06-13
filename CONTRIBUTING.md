@@ -215,5 +215,6 @@ policy.
 
 ## Questions
 
-Open a GitHub Discussion or issue, or email **legal@nudgebee.com**
-for matters that are not appropriate for public discussion.
+Open a GitHub Discussion or issue, join us on [Discord](https://discord.gg/g2spbkGFC5),
+or email **legal@nudgebee.com** for matters that are not appropriate for public
+discussion.

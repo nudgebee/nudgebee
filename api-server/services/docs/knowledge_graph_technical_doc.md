@@ -64,7 +64,7 @@ The Knowledge Graph system is a multi-source graph database that builds a unifie
 
 ## Graph Building Pipeline (BuildGraphs)
 
-The `BuildGraphs()` method in [service.go](api-server/services/knowledge_graph/core/service.go) orchestrates the entire pipeline:
+The `BuildGraphs()` method in [service.go](../knowledge_graph/core/service.go) orchestrates the entire pipeline:
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -104,11 +104,11 @@ The `BuildGraphs()` method in [service.go](api-server/services/knowledge_graph/c
 
 | Phase | Description | Location |
 |-------|-------------|----------|
-| **Phase 1** | Build graphs from infrastructure sources (AWS, K8s) per account | [service.go:550-670](api-server/services/knowledge_graph/core/service.go#L550-L670) |
-| **Phase 2** | Build integration-specific graphs (Datadog) | [service.go:672-710](api-server/services/knowledge_graph/core/service.go#L672-L710) |
-| **Phase 2.1** | Run cross-source enrichers (LB → K8s) | [service.go:714-747](api-server/services/knowledge_graph/core/service.go#L714-L747) |
-| **Phase 2.5** | Build flow relationships from traces/eBPF | [service.go:749-788](api-server/services/knowledge_graph/core/service.go#L749-L788) |
-| **Phase 3** | Deduplicate and persist to database | [service.go:790-799](api-server/services/knowledge_graph/core/service.go#L790-L799) |
+| **Phase 1** | Build graphs from infrastructure sources (AWS, K8s) per account | [service.go:550-670](../knowledge_graph/core/service.go#L550-L670) |
+| **Phase 2** | Build integration-specific graphs (Datadog) | [service.go:672-710](../knowledge_graph/core/service.go#L672-L710) |
+| **Phase 2.1** | Run cross-source enrichers (LB → K8s) | [service.go:714-747](../knowledge_graph/core/service.go#L714-L747) |
+| **Phase 2.5** | Build flow relationships from traces/eBPF | [service.go:749-788](../knowledge_graph/core/service.go#L749-L788) |
+| **Phase 3** | Deduplicate and persist to database | [service.go:790-799](../knowledge_graph/core/service.go#L790-L799) |
 
 ---
 
@@ -500,17 +500,17 @@ When multiple sources create the same edge (same source node → dest node), pri
 
 | Component | File | Description |
 |-----------|------|-------------|
-| **Core Service** | [service.go](api-server/services/knowledge_graph/core/service.go) | Main service, BuildGraphs pipeline |
-| **Types** | [types.go](api-server/services/knowledge_graph/core/types.go) | NodeType, RelationshipType definitions |
-| **Helpers** | [helpers.go](api-server/services/knowledge_graph/core/helpers.go) | NewNode, NewEdge, deduplication |
-| **Unique Keys** | [unique_key_builder.go](api-server/services/knowledge_graph/core/unique_key_builder.go) | 6-part key format |
-| **AWS Source** | [aws_source.go](api-server/services/knowledge_graph/sources/aws_source.go) | AWS resource graph |
-| **K8s Source** | [k8s_source.go](api-server/services/knowledge_graph/sources/k8s_source.go) | Kubernetes resource graph |
-| **Registry** | [registry.go](api-server/services/knowledge_graph/sources/registry.go) | Global factory registry |
-| **LB Enricher** | [aws_lb_k8s_enricher.go](api-server/services/knowledge_graph/sources/aws_lb_k8s_enricher.go) | Cross-source enrichment |
-| **Flow Interface** | [interface.go](api-server/services/knowledge_graph/flow_sources/interface.go) | Flow source interface |
-| **Traces Flow** | [traces_flow_source.go](api-server/services/knowledge_graph/flow_sources/traces_flow_source.go) | Trace-based edges |
-| **eBPF Flow** | [ebpf_flow_source.go](api-server/services/knowledge_graph/flow_sources/ebpf_flow_source.go) | Network-level edges |
+| **Core Service** | [service.go](../knowledge_graph/core/service.go) | Main service, BuildGraphs pipeline |
+| **Types** | [types.go](../knowledge_graph/core/types.go) | NodeType, RelationshipType definitions |
+| **Helpers** | [helpers.go](../knowledge_graph/core/helpers.go) | NewNode, NewEdge, deduplication |
+| **Unique Keys** | [unique_key_builder.go](../knowledge_graph/core/unique_key_builder.go) | 6-part key format |
+| **AWS Source** | [aws_source.go](../knowledge_graph/sources/aws_source.go) | AWS resource graph |
+| **K8s Source** | [k8s_source.go](../knowledge_graph/sources/k8s_source.go) | Kubernetes resource graph |
+| **Registry** | [registry.go](../knowledge_graph/sources/registry.go) | Global factory registry |
+| **LB Enricher** | [aws_lb_k8s_enricher.go](../knowledge_graph/sources/aws_lb_k8s_enricher.go) | Cross-source enrichment |
+| **Flow Interface** | [interface.go](../knowledge_graph/flow_sources/interface.go) | Flow source interface |
+| **Traces Flow** | [traces_flow_source.go](../knowledge_graph/flow_sources/traces_flow_source.go) | Trace-based edges |
+| **eBPF Flow** | [ebpf_flow_source.go](../knowledge_graph/flow_sources/ebpf_flow_source.go) | Network-level edges |
 
 ---
 

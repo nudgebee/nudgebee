@@ -70,7 +70,7 @@ The migration job is a Helm `pre-install,pre-upgrade` hook. On every deploy, the
 4. If `CLICKHOUSE_ENABLED=true`: `migrate -path ./migrations/clickhouse ... up`.
 5. Waits for RabbitMQ, runs each `migrations/rabbitmq/*.sh`.
 
-CI in [`nudgebee-infra`](https://github.com/nudgebee/nudgebee-infra/blob/main/.github/workflows/migrations-dev-gke.yaml) builds + pushes the migration image and runs `helm upgrade ... --wait --wait-for-jobs`, which blocks until the Job exits 0.
+CI in `nudgebee-infra` (private) builds + pushes the migration image and runs `helm upgrade ... --wait --wait-for-jobs`, which blocks until the Job exits 0.
 
 **Tools in the image:**
 - golang-migrate `v4.17.0`
@@ -192,7 +192,7 @@ migrate -path ./migrations/app -database "$DB_URL_WITH_TRACKER" force <version>
 psql "$DEV_APP_DATABASE_URL" -c "SELECT version, dirty FROM nudgebee.schema_migrations;"
 ```
 
-Don't run `migrate up` against dev manually — the CI job in [nudgebee-infra](https://github.com/nudgebee/nudgebee-infra/blob/main/.github/workflows/migrations-dev-gke.yaml) does it on merge.
+Don't run `migrate up` against dev manually — the CI job in `nudgebee-infra` (private) does it on merge.
 
 ## CI/CD workflows
 
