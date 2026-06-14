@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 )
 
 // LoadDefaultRelationships loads default cross-account relationship rules from a JSON file
@@ -58,8 +59,31 @@ func MergeRelationships(defaults, apiProvided []CrossAccountRelationship) []Cros
 	}
 
 	// Convert back to slice
+	func MergeRelationships(defaults, apiProvided []CrossAccountRelationship) []CrossAccountRelationship {
+	// Create a map starting with defaults
+	mergedMap := make(map[string]CrossAccountRelationship)
+	for _, rel := range defaults {
+		mergedMap[rel.Name] = rel
+	}
+
+	// Override/add with API-provided relationships
+	for _, rel := range apiProvided {
+		mergedMap[rel.Name] = rel
+	}
+
+	// Collect and sort keys
+	keys := make([]string, 0, len(mergedMap))
+	for k := range mergedMap {
+		keys = append(keys, k)
+	}
+
+	sort.Strings(keys)
+
+	// Convert back to slice in deterministic order
 	merged := make([]CrossAccountRelationship, 0, len(mergedMap))
-	for _, rel := range mergedMap {
+	for _, k := range keys {
+		rel := mergedMap[k]
+
 		// Only include enabled relationships
 		if rel.Enabled {
 			merged = append(merged, rel)
