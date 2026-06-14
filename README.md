@@ -309,7 +309,7 @@ Each module has its own README with setup and development instructions.
 
 | Module                                         | Description                      | README                                                                                                         |
 | ---------------------------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `collector-server/cloud-collector/`            | AWS/cloud data collection        | [collector-server/cloud-collector/README.md](collector-server/cloud-collector/README.md)                       |
+| `collector-server/cloud-collector/`            | Cloud data collection (AWS / Azure / GCP) | [collector-server/cloud-collector/README.md](collector-server/cloud-collector/README.md)                       |
 | `collector-server/k8s-collector/app/`          | K8s metrics aggregation (Python) | [collector-server/k8s-collector/app/README.md](collector-server/k8s-collector/app/README.md)                   |
 | `collector-server/k8s-collector/relay-server/` | K8s relay gateway (WebSocket)    | [collector-server/k8s-collector/relay-server/README.md](collector-server/k8s-collector/relay-server/README.md) |
 
@@ -363,7 +363,7 @@ Nudgebee ships with **no telemetry or product analytics**. No data leaves your c
 
 ## Community & Support
 
-- **Questions and ideas** — [GitHub Discussions](https://github.com/nudgebee/nudgebee/discussions)
+- **Chat / questions / contributor coordination** — [Discord](https://discord.gg/C5d27ceTEv)
 - **Bugs and feature requests** — [GitHub Issues](https://github.com/nudgebee/nudgebee/issues)
 - **Security reports** — [SECURITY.md](./SECURITY.md)
 

@@ -75,11 +75,11 @@ audiences on the same pod:
   middleware (`AgentAuthMiddleware` at
   `relay-server/pkg/server/middleware/auth.go`) validates against it
   via `store.ValidateAgent`. There's a legacy v1 AES path retained for
-  dormant rows — see issue #31250 (B3) for the cleanup plan.
+  dormant rows; cleanup is tracked separately.
 - **Cloud-platform routes** (`/request`, `/grafana/*`,
   `/prometheus-v2/*`, `/api/proxy/*`): static `X-SECRET-KEY` header
   against `RELAY_SERVER_SECRET_KEY` (`ClientAuthMiddleware`,
-  constant-time compared with SHA-256 length-hiding since #31251).
+  constant-time compared with SHA-256 length-hiding).
   Only the BFF / cloud-control-plane is expected to call these.
 - **Prometheus legacy** (`/prometheus/api/v1/*`): `Authorization:
   Bearer <RELAY_SERVER_SECRET_KEY>` + `X-Scope-OrgID`.
@@ -124,7 +124,7 @@ the provider's signature before doing anything with the payload:
   Microsoft's JWKS; AWS uses a signed subscription token.
 - **Jira / PagerDuty / NewRelic** (`webhooks/{jira,pagerduty,newrelic}/`):
   currently stub endpoints; signature verification is required before
-  wiring forwarding logic — tracked in #31250.
+  wiring forwarding logic.
 
 These routes must **fail closed** when their signing secret is unset
 (do not accept HMAC over an empty key). Reuse the shared
@@ -138,7 +138,7 @@ from the upstream IdP / install flow. They must verify a signed
 `state` parameter (set at install-start, checked here) to prevent CSRF
 attachment of an attacker's integration to the victim's tenant. Same
 pattern across all OAuth providers; gaps in any of them are tracked
-in #31250.
+in the security backlog.
 
 ## NetworkPolicy expectations
 
@@ -233,4 +233,4 @@ The pieces of this trust model we know are imperfect today:
   audit.** Workspace pods execute tenant code, so the egress policy
   matters more there than anywhere else.
 
-See the security tracking issue for the full list and status.
+These items are tracked in the project's security backlog.
