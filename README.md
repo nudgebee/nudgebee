@@ -207,28 +207,32 @@ Nudgebee is a Kubernetes-native monorepo of Go, Python, and TypeScript services.
                                      ▼
                 ┌─────────────────────────────────────────────────┐
                 │  app (Next.js server) — RPC gateway + NextAuth  │
-                └────┬───────────────────┬──────────────────┬─────┘
-                     │                   │                  │
-                     ▼                   ▼                  ▼
-            ┌─────────────────┐  ┌──────────────┐  ┌──────────────┐
-            │ api-server      │  │ llm-server   │  │ ticket-server│
-            │ services        │◀─│ + rag-server │  │ notifications│
-            │ (Go / Gin)      │  │ + code-      │  │ runbook      │
-            └────────┬────────┘  │ analysis     │  └──────┬───────┘
-                     │           └──────┬───────┘         │
-                     │                  │                 │
-       ┌─────────────┼──────────────────┴─────────────────┘
-       ▼             ▼              ▼          ▼
-  Postgres  RabbitMQ events    Qdrant      Temporal
-  (state)   (cross-service)    (vectors)   (workflows)
-
-       ▲
-       │
-┌──────┴──────────────────────────────────┐
-│  Collectors                             │
-│  cloud-collector  k8s-collector  relay  │
-│  ml-k8s-server                          │
-└─────────────────────────────────────────┘
+                └──┬─────────────┬──────────────┬────────────┬────┘
+                   │             │              │            │
+                   ▼             ▼              ▼            ▼
+       ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+       │ api-server   │ │ llm-server   │ │ ticket-server│ │ ml-k8s-      │
+       │ services     │◀│ + rag-server │ │ notifications│ │  server      │
+       │ (Go / Gin)   │ │ + code-      │ │ runbook      │ │ (right-      │
+       │              │ │  analysis    │ │              │ │  sizing ML)  │
+       └─┬──────┬─────┘ └──────┬───────┘ └──────┬───────┘ └──────┬───────┘
+         │      │              │                │                │
+         │      └──────┬───────┴────────────────┴────────────────┘
+         │             ▼          ▼              ▼              ▼
+         │         Postgres  RabbitMQ events  Qdrant       Temporal
+         │         (state)   (cross-service)  (vectors)    (workflows)
+         │                        ▲
+         │ proxy /                │ publish + consume
+         │ control                │
+         ▼                  ┌─────┴──────────────────────┐
+    ┌──────────────┐        │ cloud-collector            │
+    │ relay-server │        │ k8s-collector              │
+    │ (in-cluster  │        └────────────────────────────┘
+    │  agent gw)   │
+    └──────┬───────┘
+           │ wss tunnels (also used by api-server / runbook to command agents)
+           ▼
+    in-cluster agents
 ```
 
 - **`app/`** — Next.js dashboard; in-process RPC gateway at `/api/graphql` forwards client calls to backend `/rpc/*` handlers.
