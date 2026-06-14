@@ -6,7 +6,7 @@ Open-source SRE copilot — observability, FinOps, runbook automation, and incid
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
 [![Node](https://img.shields.io/badge/Node-25+-339933?logo=node.js&logoColor=white)](https://nodejs.org/en/download)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
-[![GitHub Discussions](https://img.shields.io/github/discussions/nudgebee/nudgebee)](https://github.com/nudgebee/nudgebee/discussions)
+[![Discord](https://img.shields.io/discord/1514262994152980622?logo=discord&logoColor=white&label=Discord&color=5865F2)](https://discord.gg/C5d27ceTEv)
 
 ## What is Nudgebee?
 
@@ -189,7 +189,7 @@ The platform is live but empty. A quick tour that takes ~10 minutes:
 
 ### Stuck? Want to help?
 
-- **Want to chat?** Join us on [Discord](https://discord.gg/g2spbkGFC5) — async help, design discussions, contributor coordination.
+- **Want to chat?** Join us on [Discord](https://discord.gg/C5d27ceTEv) — async help, design discussions, contributor coordination.
 - **Hit a bug?** Open an issue using the [bug template](.github/ISSUE_TEMPLATE/BUG-REPORT.yml).
 - **Idea for a feature?** Use the [feature template](.github/ISSUE_TEMPLATE/FEATURE-REQUEST.yml).
 - **Want to contribute code?** Read [CONTRIBUTING.md](./CONTRIBUTING.md) — covers CLA, branch model, PR conventions, and local-dev debugging tips. Look for issues tagged [`good first issue`](https://github.com/nudgebee/nudgebee/labels/good%20first%20issue).
@@ -207,28 +207,32 @@ Nudgebee is a Kubernetes-native monorepo of Go, Python, and TypeScript services.
                                      ▼
                 ┌─────────────────────────────────────────────────┐
                 │  app (Next.js server) — RPC gateway + NextAuth  │
-                └────┬───────────────────┬──────────────────┬─────┘
-                     │                   │                  │
-                     ▼                   ▼                  ▼
-            ┌─────────────────┐  ┌──────────────┐  ┌──────────────┐
-            │ api-server      │  │ llm-server   │  │ ticket-server│
-            │ services        │◀─│ + rag-server │  │ notifications│
-            │ (Go / Gin)      │  │ + code-      │  │ runbook      │
-            └────────┬────────┘  │ analysis     │  └──────┬───────┘
-                     │           └──────┬───────┘         │
-                     │                  │                 │
-       ┌─────────────┼──────────────────┴─────────────────┘
-       ▼             ▼              ▼          ▼
-  Postgres  RabbitMQ events    Qdrant      Temporal
-  (state)   (cross-service)    (vectors)   (workflows)
-
-       ▲
-       │
-┌──────┴──────────────────────────────────┐
-│  Collectors                             │
-│  cloud-collector  k8s-collector  relay  │
-│  ml-k8s-server                          │
-└─────────────────────────────────────────┘
+                └──┬─────────────┬──────────────┬────────────┬────┘
+                   │             │              │            │
+                   ▼             ▼              ▼            ▼
+       ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+       │ api-server   │ │ llm-server   │ │ ticket-server│ │ ml-k8s-      │
+       │ services     │◀│ + rag-server │ │ notifications│ │  server      │
+       │ (Go / Gin)   │ │ + code-      │ │ runbook      │ │ (right-      │
+       │              │ │  analysis    │ │              │ │  sizing ML)  │
+       └─┬──────┬─────┘ └──────┬───────┘ └──────┬───────┘ └──────┬───────┘
+         │      │              │                │                │
+         │      └──────┬───────┴────────────────┴────────────────┘
+         │             ▼          ▼              ▼              ▼
+         │         Postgres  RabbitMQ events  Qdrant       Temporal
+         │         (state)   (cross-service)  (vectors)    (workflows)
+         │                        ▲
+         │ proxy /                │ publish + consume
+         │ control                │
+         ▼                  ┌─────┴──────────────────────┐
+    ┌──────────────┐        │ cloud-collector            │
+    │ relay-server │        │ k8s-collector              │
+    │ (in-cluster  │        └────────────────────────────┘
+    │  agent gw)   │
+    └──────┬───────┘
+           │ wss tunnels (also used by api-server / runbook to command agents)
+           ▼
+    in-cluster agents
 ```
 
 - **`app/`** — Next.js dashboard; in-process RPC gateway at `/api/graphql` forwards client calls to backend `/rpc/*` handlers.
@@ -309,7 +313,7 @@ Each module has its own README with setup and development instructions.
 
 | Module                                         | Description                      | README                                                                                                         |
 | ---------------------------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `collector-server/cloud-collector/`            | AWS/cloud data collection        | [collector-server/cloud-collector/README.md](collector-server/cloud-collector/README.md)                       |
+| `collector-server/cloud-collector/`            | Cloud data collection (AWS / Azure / GCP) | [collector-server/cloud-collector/README.md](collector-server/cloud-collector/README.md)                       |
 | `collector-server/k8s-collector/app/`          | K8s metrics aggregation (Python) | [collector-server/k8s-collector/app/README.md](collector-server/k8s-collector/app/README.md)                   |
 | `collector-server/k8s-collector/relay-server/` | K8s relay gateway (WebSocket)    | [collector-server/k8s-collector/relay-server/README.md](collector-server/k8s-collector/relay-server/README.md) |
 
@@ -363,7 +367,7 @@ Nudgebee ships with **no telemetry or product analytics**. No data leaves your c
 
 ## Community & Support
 
-- **Questions and ideas** — [GitHub Discussions](https://github.com/nudgebee/nudgebee/discussions)
+- **Chat / questions / contributor coordination** — [Discord](https://discord.gg/C5d27ceTEv)
 - **Bugs and feature requests** — [GitHub Issues](https://github.com/nudgebee/nudgebee/issues)
 - **Security reports** — [SECURITY.md](./SECURITY.md)
 
