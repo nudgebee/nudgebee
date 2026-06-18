@@ -1228,7 +1228,7 @@ func processPrometheusRuleForAccount(rule InsightRule, accountId string) (Insigh
 			slog.Error("Failed to process rule", "rule", rule.UniqueID, "recover", r, "accountId", accountId)
 		}
 	}()
-	startAt := time.Now().AddDate(0, 0, rule.Range)
+	startAt := time.Now().AddDate(0, 0, -rule.Range)
 	endsAt := time.Now()
 
 	rStartTime := startAt.Format("2006-01-02T15:04:05.000000Z")
