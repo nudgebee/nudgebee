@@ -226,6 +226,28 @@ func TestFormatKGGetNodeResponse(t *testing.T) {
 		assert.NotContains(t, out, "Properties:")
 	})
 
+	t.Run("node header and metadata fall back to properties", func(t *testing.T) {
+		out := formatKGGetNodeResponse(map[string]any{
+			"id":        testKGNodeID,
+			"node_type": "Workload",
+			"properties": map[string]any{
+				"name":      testKGTraverseSeedName,
+				"namespace": "nudgebee",
+				"cluster":   "k8s-dev",
+			},
+		})
+
+		assert.Equal(t, fmt.Sprintf(`**%s** (Workload) — id: %s
+- Namespace: nudgebee
+- Cluster: k8s-dev
+
+Properties:
+- cluster: k8s-dev
+- name: %s
+- namespace: nudgebee
+`, testKGTraverseSeedName, testKGNodeID, testKGTraverseSeedName), out)
+	})
+
 	t.Run("full node renders all sections with sorted keys and rendered nested JSON", func(t *testing.T) {
 		out := formatKGGetNodeResponse(map[string]any{
 			"id":               testKGNodeID,

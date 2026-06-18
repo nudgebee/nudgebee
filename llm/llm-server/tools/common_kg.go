@@ -449,6 +449,22 @@ func stringFromAny(v any) string {
 	return fmt.Sprintf("%v", v)
 }
 
+func kgNodeString(node map[string]any, key string) string {
+	if v := stringFromAny(node[key]); v != "" {
+		return v
+	}
+	switch key {
+	case "name", "namespace", "cluster":
+	default:
+		return ""
+	}
+	props, ok := node["properties"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	return stringFromAny(props[key])
+}
+
 func intFromAny(v any) int {
 	switch x := v.(type) {
 	case int:
@@ -489,7 +505,7 @@ func formatKGGetNodeResponse(node map[string]any) string {
 }
 
 func writeKGNodeHeader(b *strings.Builder, node map[string]any, id string) {
-	name := stringFromAny(node["name"])
+	name := kgNodeString(node, "name")
 	if name == "" {
 		name = "(unnamed)"
 	}
@@ -510,7 +526,7 @@ var kgNodeMetaPairs = []struct {
 
 func writeKGNodeMetadata(b *strings.Builder, node map[string]any) {
 	for _, p := range kgNodeMetaPairs {
-		v := stringFromAny(node[p.key])
+		v := kgNodeString(node, p.key)
 		if v != "" {
 			fmt.Fprintf(b, kgKVLineFmt, p.label, v)
 		}
