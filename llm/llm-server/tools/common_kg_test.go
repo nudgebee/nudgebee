@@ -248,6 +248,17 @@ Properties:
 `, testKGTraverseSeedName, testKGNodeID, testKGTraverseSeedName), out)
 	})
 
+	t.Run("nil properties map is ignored", func(t *testing.T) {
+		out := formatKGGetNodeResponse(map[string]any{
+			"id":         testKGNodeID,
+			"node_type":  "Workload",
+			"properties": map[string]any(nil),
+		})
+
+		assert.Contains(t, out, fmt.Sprintf("**(unnamed)** (Workload) â€” id: %s", testKGNodeID))
+		assert.NotContains(t, out, "Properties:")
+	})
+
 	t.Run("full node renders all sections with sorted keys and rendered nested JSON", func(t *testing.T) {
 		out := formatKGGetNodeResponse(map[string]any{
 			"id":               testKGNodeID,

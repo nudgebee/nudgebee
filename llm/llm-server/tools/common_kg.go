@@ -459,7 +459,7 @@ func kgNodeString(node map[string]any, key string) string {
 		return ""
 	}
 	props, ok := node["properties"].(map[string]any)
-	if !ok {
+	if !ok || props == nil {
 		return ""
 	}
 	return stringFromAny(props[key])
