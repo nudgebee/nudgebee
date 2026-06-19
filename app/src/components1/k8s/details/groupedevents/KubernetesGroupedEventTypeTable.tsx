@@ -17,6 +17,7 @@ import { Button } from '@components1/ds/Button';
 import FilterDropdown from '@components1/ds/FilterDropdown';
 import CustomDateTimeRangePicker from '@common-new/widgets/CustomDateTimeRangePicker';
 import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
+import { getGroupedAlertStatus } from './groupedAlertStatus';
 
 interface KubernetesGroupedEventTypeTableProps {
   accountId: string;
@@ -165,7 +166,7 @@ const KubernetesGroupedEventTypeTable: React.FC<KubernetesGroupedEventTypeTableP
     () =>
       eventGroupings.map((item: any) => {
         const severity = deriveSeverity(item.distinct_priority);
-        const status = item.distinct_status?.indexOf('FIRING') > 0 ? 'FIRING' : 'CLOSED';
+        const status = getGroupedAlertStatus(item.distinct_status);
 
         return [
           {
@@ -199,7 +200,7 @@ const KubernetesGroupedEventTypeTable: React.FC<KubernetesGroupedEventTypeTableP
     const headerNames = ['Event Type', 'Last Occurred', 'Event Count', 'Severity', 'Alert Status', 'Subjects'];
     const rows = eventGroupings.map((item: any) => {
       const severity = deriveSeverity(item.distinct_priority);
-      const status = item.distinct_status?.indexOf('FIRING') > 0 ? 'FIRING' : 'CLOSED';
+      const status = getGroupedAlertStatus(item.distinct_status);
       return [
         titleCaseForAggregationKey(item.aggregation_key),
         item.max_created_at || '',

@@ -17,6 +17,7 @@ import { Button } from '@components1/ds/Button';
 import FilterDropdown from '@components1/ds/FilterDropdown';
 import CustomDateTimeRangePicker from '@common-new/widgets/CustomDateTimeRangePicker';
 import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
+import { getGroupedAlertStatus } from './groupedAlertStatus';
 
 interface KubernetesGroupedApplicationsProps {
   accountId: string;
@@ -217,7 +218,7 @@ const KubernetesGroupedApplications: React.FC<KubernetesGroupedApplicationsProps
     () =>
       eventGroupings.map((item: any) => {
         const severity = deriveSeverity(item.distinct_priority);
-        const status = item.distinct_status?.indexOf('FIRING') > 0 ? 'FIRING' : 'CLOSED';
+        const status = getGroupedAlertStatus(item.distinct_status);
 
         return [
           {
@@ -261,7 +262,7 @@ const KubernetesGroupedApplications: React.FC<KubernetesGroupedApplicationsProps
     const headerNames = ['Application', 'Namespace', 'Event Type', 'Last Occurred', 'Event Count', 'Severity', 'Alert Status'];
     const rows = eventGroupings.map((item: any) => {
       const severity = deriveSeverity(item.distinct_priority);
-      const status = item.distinct_status?.indexOf('FIRING') > 0 ? 'FIRING' : 'CLOSED';
+      const status = getGroupedAlertStatus(item.distinct_status);
       return [
         item.subject_name || '',
         item.subject_namespace || '',
