@@ -186,6 +186,11 @@ func TestExtractGCPResourceNameFromURL(t *testing.T) {
 			"default-subnet",
 		},
 		{"simple name", "default", "default"},
+		{
+			"trailing slash",
+			"https://www.googleapis.com/compute/v1/projects/my-project/global/networks/default/",
+			"default",
+		},
 		{"empty", "", ""},
 	}
 
