@@ -829,7 +829,7 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 
 	go func() {
 		defer func() {
-			if recover() !=nil {
+			if recover() != nil {
 				commonResChan <- searchResult{}
 			}
 		}()
@@ -846,7 +846,7 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 	clusterResourceTypes := []string{"clusterroles", "clusterrolebindings", "nodes", "persistentvolumes", "storageclasses", "customresourcedefinitions"}
 	go func() {
 		defer func() {
-			if recover() !=nil {
+			if recover() != nil {
 				clusterResChan <- searchResult{}
 			}
 		}()
@@ -860,11 +860,11 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 
 	// Strategy 3: CRD discovery (can be slow, run in parallel)
 	go func() {
-			defer func() {
-				if recover() !=nil {
-					crdResChan <- searchResult{}
-				}
-			}()
+		defer func() {
+			if recover() != nil {
+				crdResChan <- searchResult{}
+			}
+		}()
 		var resources []K8sResourceInfo
 		crdTypes := r.getCustomResourceTypes(nbRequestContext)
 		for _, resourceType := range crdTypes {
@@ -879,11 +879,11 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 
 	// Strategy 4: Label searches
 	go func() {
-			defer func() {
-				if recover() !=nil {
-					labelResChan <- searchResult{}
-				}
-			}()
+		defer func() {
+			if recover() != nil {
+				labelResChan <- searchResult{}
+			}
+		}()
 		var resources []K8sResourceInfo
 		labelKeys := []string{"app", "app.kubernetes.io/name", "app.kubernetes.io/instance", "k8s-app"}
 		for _, labelKey := range labelKeys {
