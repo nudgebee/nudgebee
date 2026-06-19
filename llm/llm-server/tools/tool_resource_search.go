@@ -819,10 +819,10 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 	}
 
 	// Channels to collect results from parallel execution
-	commonResChan := make(chan searchResult)
-	clusterResChan := make(chan searchResult)
-	crdResChan := make(chan searchResult)
-	labelResChan := make(chan searchResult)
+	commonResChan := make(chan searchResult, 1)
+	clusterResChan := make(chan searchResult, 1)
+	crdResChan := make(chan searchResult, 1)
+	labelResChan := make(chan searchResult, 1)
 
 	// Strategy 1: Try common resource types in parallel
 	commonResourceTypes := []string{"pods", "services", "deployments", "statefulsets", "daemonsets", "configmaps", "secrets", "jobs", "cronjobs", "rollouts"}
