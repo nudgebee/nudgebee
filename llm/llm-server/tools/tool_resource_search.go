@@ -828,6 +828,11 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 	commonResourceTypes := []string{"pods", "services", "deployments", "statefulsets", "daemonsets", "configmaps", "secrets", "jobs", "cronjobs", "rollouts"}
 
 	go func() {
+		defer func() {
+			if recover() !=nil {
+				commonResChan <- searchResult{}
+			}
+		}()
 		var resources []K8sResourceInfo
 		// We can further parallelize this inner loop if needed, but grouping by strategy is a good start
 		for _, resourceType := range commonResourceTypes {
@@ -840,6 +845,11 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 	// Strategy 2: Try cluster-wide resources in parallel
 	clusterResourceTypes := []string{"clusterroles", "clusterrolebindings", "nodes", "persistentvolumes", "storageclasses", "customresourcedefinitions"}
 	go func() {
+		defer func() {
+			if recover() !=nil {
+				clusterResChan <- searchResult{}
+			}
+		}()
 		var resources []K8sResourceInfo
 		for _, resourceType := range clusterResourceTypes {
 			res := r.searchResourceType(resourceName, namespace, resourceType, nbRequestContext)
@@ -850,6 +860,11 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 
 	// Strategy 3: CRD discovery (can be slow, run in parallel)
 	go func() {
+			defer func() {
+				if recover() !=nil {
+					crdResChan <- searchResult{}
+				}
+			}()
 		var resources []K8sResourceInfo
 		crdTypes := r.getCustomResourceTypes(nbRequestContext)
 		for _, resourceType := range crdTypes {
@@ -864,6 +879,11 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 
 	// Strategy 4: Label searches
 	go func() {
+			defer func() {
+				if recover() !=nil {
+					labelResChan <- searchResult{}
+				}
+			}()
 		var resources []K8sResourceInfo
 		labelKeys := []string{"app", "app.kubernetes.io/name", "app.kubernetes.io/instance", "k8s-app"}
 		for _, labelKey := range labelKeys {
