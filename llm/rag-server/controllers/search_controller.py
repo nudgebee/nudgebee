@@ -5,7 +5,7 @@ Handles document search endpoints with token tracking and metadata filtering.
 """
 
 import logging
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, TypedDict, cast
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -18,7 +18,19 @@ from utils.config import Config
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-TokenUsage = dict[str, Any]
+
+class TokenUsage(TypedDict, total=False):
+    """Tracked token usage fields persisted for LLM requests."""
+
+    input_tokens: int
+    output_tokens: int
+    content_length: int
+    latency_seconds: float
+    llm_provider: Optional[str]
+    llm_model: Optional[str]
+    stop_reason: Optional[str]
+    request_status: str
+    error_message: Optional[str]
 
 
 # Pydantic models
@@ -71,6 +83,8 @@ def _accumulate_token_usage(total_usage: TokenUsage, new_usage: Optional[Mapping
     if not total_usage["llm_provider"]:
         total_usage["llm_provider"] = new_usage.get("llm_provider")
         total_usage["llm_model"] = new_usage.get("llm_model")
+    if not total_usage.get("stop_reason"):
+        total_usage["stop_reason"] = new_usage.get("stop_reason")
     if not total_usage.get("request_status"):
         total_usage["request_status"] = new_usage.get("request_status", "success")
         total_usage["error_message"] = new_usage.get("error_message")
@@ -78,7 +92,7 @@ def _accumulate_token_usage(total_usage: TokenUsage, new_usage: Optional[Mapping
 
 def _persist_token_usage(
     track_token_usage: bool,
-    token_usage: dict,
+    token_usage: TokenUsage,
     conversation_id: Optional[str],
     message_id: Optional[str],
     agent_name: Optional[str],
@@ -100,7 +114,7 @@ def _persist_token_usage(
             message_id=message_id,
             agent_name=agent_name or "unknown",
             account_id=account_id,
-            token_usage=token_usage,
+            token_usage=dict(token_usage),
             user_id=user_id,
             agent_id=agent_id,
         )
@@ -119,7 +133,7 @@ def _extract_prometheus_metric(doc_content: str) -> str:
     return metric
 
 
-def _fetch_prometheus_metadata(documents: list, account_id: str, total_token_usage: dict) -> list:
+def _fetch_prometheus_metadata(documents: list, account_id: str, total_token_usage: TokenUsage) -> list:
     """Fetch metadata for prometheus metrics and accumulate token usage."""
     metadata = []
     for doc, score in documents:
@@ -132,7 +146,7 @@ def _fetch_prometheus_metadata(documents: list, account_id: str, total_token_usa
             account_id=account_id,
             module="prometheus-metadata",
         )
-        _accumulate_token_usage(total_token_usage, metadata_token_usage)
+        _accumulate_token_usage(total_token_usage, cast(TokenUsage, metadata_token_usage))
         if docs:
             metadata.append(docs[0][0].page_content)
     return metadata
@@ -163,6 +177,7 @@ async def get_matching_doc(request: GetMatchingDocRequest):
             use_reranking=request.use_reranking,
             tenant_id=request.tenant_id,
         )
+        token_usage = cast(TokenUsage, token_usage)
 
         for doc, score in documents:
             doc_response.append(
@@ -205,13 +220,14 @@ async def get_prometheus_doc(request: GetMatchingDocRequest):
     # Extract token tracking parameters and validate
     _validate_token_tracking(request.track_token_usage, request.conversation_id, request.message_id)
 
-    total_token_usage = {
+    total_token_usage: TokenUsage = {
         "input_tokens": 0,
         "output_tokens": 0,
         "llm_provider": None,
         "llm_model": None,
         "content_length": 0,
         "latency_seconds": 0,
+        "stop_reason": None,
     }
 
     logger.info("Getting matching document")
@@ -223,6 +239,7 @@ async def get_prometheus_doc(request: GetMatchingDocRequest):
             module=request.module,
             use_reranking=request.use_reranking,
         )
+        token_usage = cast(TokenUsage, token_usage)
 
         # Accumulate token usage from main query
         _accumulate_token_usage(total_token_usage, token_usage)
