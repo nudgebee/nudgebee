@@ -4,11 +4,9 @@ import (
 	"fmt"
 	"log/slog"
 	"nudgebee/services/common"
-	"nudgebee/services/event"
 	"nudgebee/services/eventrule"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/security"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -86,8 +84,8 @@ func (m GrafanaWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 			continue
 		}
 
-		labels := mapStringAnyToStringString(alert["labels"])
-		annotations := mapStringAnyToStringString(alert["annotations"])
+		labels := MapStringAnyToStringString(alert["labels"])
+		annotations := MapStringAnyToStringString(alert["annotations"])
 
 		startsAtStr, ok := alert["startsAt"].(string)
 		if !ok {
@@ -159,7 +157,7 @@ func (m GrafanaWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 			tags = append(tags, v)
 		}
 
-		subjectKind, subjectName := extractGrafanaSubject(labels)
+		subjectKind, subjectName := ExtractK8sSubject(labels)
 		if subjectName != "" && labels["service"] == "" {
 			labels["service"] = subjectName
 		}
@@ -205,8 +203,8 @@ func (m GrafanaWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 			EventType:             labels["alertname"],
 			EventId:               fingerprint,
 			EventUrl:              eventURL,
-			EventStatus:           string(mapGrafanaStatus(status)),
-			EventPriority:         string(mapGrafanaSeverity(labels["severity"])),
+			EventStatus:           string(MapAlertStatus(status)),
+			EventPriority:         string(MapAlertSeverity(labels["severity"])),
 			EventCreatedAt:        startsAt,
 			EventEndsAt:           endsAt,
 			EventTitle:            title,
@@ -222,8 +220,8 @@ func (m GrafanaWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 				RuleType:    "grafana",
 				RuleId:      labels["alertname"],
 				Fingerprint: fingerprint,
-				Status:      mapGrafanaStatus(status),
-				Severity:    mapGrafanaSeverity(labels["severity"]),
+				Status:      MapAlertStatus(status),
+				Severity:    MapAlertSeverity(labels["severity"]),
 				SourceUrl:   eventURL,
 			},
 		}
@@ -238,47 +236,4 @@ func (m GrafanaWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	return results, nil
 }
 
-// extractGrafanaSubject picks the K8s workload subject from alert labels.
-// Priority: pod > deployment > statefulset > daemonset > replicaset > job > cronjob.
-func extractGrafanaSubject(labels map[string]string) (kind, name string) {
-	for _, k := range []string{"pod", "deployment", "statefulset", "daemonset", "replicaset", "job", "cronjob"} {
-		if v := labels[k]; v != "" {
-			return k, v
-		}
-	}
-	return "", ""
-}
 
-// mapGrafanaStatus maps Grafana/Prometheus lowercase status to EventStatus constants.
-func mapGrafanaStatus(status string) event.EventStatus {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "firing":
-		return event.EventStatusFiring
-	case "resolved":
-		return event.EventStatusResolved
-	case "closed":
-		return event.EventStatusClosed
-	default:
-		return event.EventStatusFiring
-	}
-}
-
-// mapGrafanaSeverity maps Grafana/Prometheus lowercase severity to EventPriortiy constants.
-func mapGrafanaSeverity(severity string) event.EventPriortiy {
-	switch strings.ToLower(strings.TrimSpace(severity)) {
-	case "critical":
-		return event.EventPriortiyHigh
-	case "high":
-		return event.EventPriortiyHigh
-	case "warning", "warn", "medium":
-		return event.EventPriortiyMedium
-	case "low":
-		return event.EventPriortiyLow
-	case "info", "informational", "none":
-		return event.EventPriortiyInfo
-	case "debug":
-		return event.EventPriortiyDebug
-	default:
-		return event.EventPriortiyLow
-	}
-}

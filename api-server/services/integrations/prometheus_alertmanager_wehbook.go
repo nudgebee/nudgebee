@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"nudgebee/services/common"
+
 	"nudgebee/services/eventrule"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/security"
+
 	"time"
 
 	"github.com/google/uuid"
@@ -88,11 +90,11 @@ func (m PrometheusAlertManagerWebhook) ProcessEventWebook(sc *security.RequestCo
 			continue
 		}
 
-		labels := mapStringAnyToStringString(alert["labels"])
+		labels := MapStringAnyToStringString(alert["labels"])
 		if externalURL != "" {
 			labels["externalURL"] = externalURL
 		}
-		annotations := mapStringAnyToStringString(alert["annotations"])
+		annotations := MapStringAnyToStringString(alert["annotations"])
 
 		startsAtStr, _ := alert["startsAt"].(string)
 		startsAt, err := time.Parse(time.RFC3339, startsAtStr)
@@ -199,8 +201,8 @@ func (m PrometheusAlertManagerWebhook) ProcessEventWebook(sc *security.RequestCo
 			EventType:             alertName,
 			EventId:               fingerprint,
 			EventUrl:              generatorURL,
-			EventStatus:           string(mapGrafanaStatus(status)),
-			EventPriority:         string(mapGrafanaSeverity(labels["severity"])),
+			EventStatus:           string(MapAlertStatus(status)),
+			EventPriority:         string(MapAlertSeverity(labels["severity"])),
 			EventCreatedAt:        startsAt,
 			EventEndsAt:           endsAt,
 			EventTitle:            title,
@@ -218,8 +220,8 @@ func (m PrometheusAlertManagerWebhook) ProcessEventWebook(sc *security.RequestCo
 				RuleType:    "prometheus",
 				RuleId:      alertName,
 				Fingerprint: fingerprint,
-				Status:      mapGrafanaStatus(status),
-				Severity:    mapGrafanaSeverity(labels["severity"]),
+				Status:      MapAlertStatus(status),
+				Severity:    MapAlertSeverity(labels["severity"]),
 				SourceUrl:   generatorURL,
 			},
 		}
@@ -235,14 +237,6 @@ func (m PrometheusAlertManagerWebhook) ProcessEventWebook(sc *security.RequestCo
 }
 
 // extractPromSubject picks the K8s subject from Prometheus alert labels.
-// Priority: K8s controllers > service-mesh workload > service > pod > instance.
-// Controllers preferred over pod because pod names are ephemeral. Service
-// preferred over pod when no controller label is present since prometheus
-// usually labels alerts with the K8s Service name. The `job` label is
-// intentionally NOT a controller fallback — in Prometheus it almost always
-// refers to the scrape job, not a K8s Job; use `kube_job` for that.
-// `destination_workload_name` / `workload` come from service-mesh telemetry
-// (Istio, Linkerd) where the K8s controller kind is not in the label set.
 func extractPromSubject(labels map[string]string) (kind, name string) {
 	for _, k := range []string{"deployment", "statefulset", "daemonset", "replicaset", "cronjob", "kube_job"} {
 		if v := labels[k]; v != "" {
@@ -270,9 +264,7 @@ func extractPromSubject(labels map[string]string) (kind, name string) {
 	return "", ""
 }
 
-// extractPromNamespace picks the namespace from Prometheus alert labels,
-// falling through service-mesh telemetry conventions when the canonical
-// `namespace` label is absent.
+// extractPromNamespace picks the namespace from Prometheus alert labels.
 func extractPromNamespace(labels map[string]string) string {
 	for _, k := range []string{"namespace", "destination_workload_namespace", "workload_namespace", "source_workload_namespace", "kubernetes_namespace"} {
 		if v := labels[k]; v != "" {
@@ -282,17 +274,4 @@ func extractPromNamespace(labels map[string]string) string {
 	return ""
 }
 
-func mapStringAnyToStringString(input any) map[string]string {
-	result := map[string]string{}
-	if input == nil {
-		return result
-	}
-	if casted, ok := input.(map[string]any); ok {
-		for k, v := range casted {
-			if s, ok := v.(string); ok {
-				result[k] = s
-			}
-		}
-	}
-	return result
-}
+
