@@ -5,7 +5,7 @@ Handles document search endpoints with token tracking and metadata filtering.
 """
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -58,7 +58,7 @@ def _validate_token_tracking(
         )
 
 
-def _accumulate_token_usage(total_usage: dict, new_usage: dict) -> None:
+def _accumulate_token_usage(total_usage: dict[str, Any], new_usage: dict[str, Any]) -> None:
     """Accumulate token usage metrics into total."""
     if not new_usage:
         return
@@ -76,7 +76,7 @@ def _accumulate_token_usage(total_usage: dict, new_usage: dict) -> None:
 
 def _persist_token_usage(
     track_token_usage: bool,
-    token_usage: dict,
+    token_usage: dict[str, Any],
     conversation_id: Optional[str],
     message_id: Optional[str],
     agent_name: Optional[str],
@@ -117,7 +117,7 @@ def _extract_prometheus_metric(doc_content: str) -> str:
     return metric
 
 
-def _fetch_prometheus_metadata(documents: list, account_id: str, total_token_usage: dict) -> list:
+def _fetch_prometheus_metadata(documents: list[tuple[Any, float]], account_id: str, total_token_usage: dict[str, Any]) -> list[str]:
     """Fetch metadata for prometheus metrics and accumulate token usage."""
     metadata = []
     for doc, score in documents:
@@ -137,7 +137,7 @@ def _fetch_prometheus_metadata(documents: list, account_id: str, total_token_usa
 
 
 @router.post("/get_matching_doc")
-async def get_matching_doc(request: GetMatchingDocRequest):
+async def get_matching_doc(request: GetMatchingDocRequest) -> list[dict[str, Any]]:
     """Get matching documents based on query with optional metadata filtering."""
     doc_response = []
 
@@ -198,7 +198,7 @@ async def get_matching_doc(request: GetMatchingDocRequest):
 
 
 @router.post("/get_prometheus_matching_doc")
-async def get_prometheus_doc(request: GetMatchingDocRequest):
+async def get_prometheus_doc(request: GetMatchingDocRequest) -> dict[str, Any]:
     """Get matching prometheus documents with metadata."""
     # Extract token tracking parameters and validate
     _validate_token_tracking(request.track_token_usage, request.conversation_id, request.message_id)
