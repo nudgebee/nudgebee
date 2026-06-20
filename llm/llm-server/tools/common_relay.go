@@ -190,7 +190,7 @@ func isVMAgentMode(values []core.ToolConfigValue) bool {
 
 // isDBProxyModule returns true for database modules that the proxy agent supports
 func isDBProxyModule(module RelayJob) bool {
-	return slices.Contains([]RelayJob{RelayJobPostgres, RelayJobMongo, RelayJobMysql, RelayJobClickhouse, RelayJobRedis, RelayJobMssql, RelayJobOracle}, module)
+	return slices.Contains([]RelayJob{RelayJobPostgres, RelayJobMysql, RelayJobClickhouse, RelayJobRedis, RelayJobMssql, RelayJobOracle}, module)
 }
 
 // isSSHProxyModule returns true for SSH module that the proxy agent supports

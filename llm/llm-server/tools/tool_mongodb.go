@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -103,8 +102,7 @@ func (m MongoExecuteTool) Call(nbRequestContext core.NbToolContext, input core.N
 	}
 
 	responseType := core.NBToolResponseTypeText
-	if normalized, ok := normalizeJSONString(responseData); ok {
-		responseData = normalized
+	if strings.HasPrefix(responseData, "{") || strings.HasPrefix(responseData, "[") {
 		responseType = core.NBToolResponseTypeJson
 	}
 
@@ -133,7 +131,7 @@ func (m MongoExecuteTool) IdentifyConfig(ctx core.NbToolContext, input core.NBTo
 			}
 
 			if hostPatterns != "" {
-				for _, pattern := range strings.Split(hostPatterns, ",") {
+				for _, pattern := range strings.Split(hostPatterns, ";") {
 					trimmedPattern := strings.TrimSpace(pattern)
 					if trimmedPattern == "" {
 						continue
@@ -214,18 +212,4 @@ func extractMongoInstance(input core.NBToolCallRequest) string {
 	}
 
 	return ""
-}
-
-func normalizeJSONString(value string) (string, bool) {
-	var parsed any
-	if err := common.UnmarshalJson([]byte(value), &parsed); err != nil {
-		return value, false
-	}
-
-	pretty, err := json.MarshalIndent(parsed, "", "  ")
-	if err != nil {
-		return value, false
-	}
-
-	return string(pretty), true
 }

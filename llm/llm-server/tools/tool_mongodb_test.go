@@ -25,6 +25,14 @@ func TestParseProxyMongoResponseMissingData(t *testing.T) {
 	assert.Contains(t, err.Error(), "missing 'data' field")
 }
 
+func TestParseProxyMongoResponseError(t *testing.T) {
+	_, err := parseProxyMongoResponse(map[string]any{
+		"data": `{"error":"authentication failed"}`,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "proxy mongo error: authentication failed")
+}
+
 func TestMongoToolInputSchema(t *testing.T) {
 	schema := MongoExecuteTool{}.InputSchema()
 	assert.Equal(t, core.ToolSchemaTypeObject, schema.Type)
@@ -60,7 +68,7 @@ func TestMongoIdentifyConfig(t *testing.T) {
 		},
 		{
 			Name:   "prod-mongo",
-			Values: []core.ToolConfigValue{{Name: "host", Value: "prod-mongo.*"}},
+			Values: []core.ToolConfigValue{{Name: "host", Value: "prod-mongo.*;prod-alt-mongo.*"}},
 			Tags:   map[string]string{"environment": "prod"},
 		},
 	}
@@ -72,4 +80,23 @@ func TestMongoIdentifyConfig(t *testing.T) {
 	selected, err = tool.IdentifyConfig(ctx, core.NBToolCallRequest{}, configs)
 	require.NoError(t, err)
 	assert.Equal(t, "prod-mongo", selected.Name)
+}
+
+func TestMongoIdentifyConfig_HostPatternSemicolon(t *testing.T) {
+	tool := MongoExecuteTool{}
+	ctx := core.NbToolContext{
+		Query: "check mongo status",
+		Ctx:   security.NewRequestContextForSuperAdmin(),
+	}
+
+	configs := []core.ToolConfig{
+		{
+			Name:   "mongo-shared",
+			Values: []core.ToolConfigValue{{Name: "host", Value: "dev-mongo.*;prod-mongo.*"}},
+		},
+	}
+
+	selected, err := tool.IdentifyConfig(ctx, core.NBToolCallRequest{Arguments: map[string]any{"instance": "prod-mongo-1"}}, configs)
+	require.NoError(t, err)
+	assert.Equal(t, "mongo-shared", selected.Name)
 }
