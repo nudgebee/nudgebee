@@ -530,6 +530,12 @@ func parseProxyMongoResponse(response map[string]any) (string, error) {
 		return trimmed, nil
 	}
 
+	if obj, ok := parsed.(map[string]any); ok && obj != nil {
+		if msg, ok := obj["error"].(string); ok && msg != "" {
+			return "", fmt.Errorf("proxy mongo error: %s", msg)
+		}
+	}
+
 	pretty, err := json.MarshalIndent(parsed, "", "  ")
 	if err != nil {
 		return "", err
