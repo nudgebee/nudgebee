@@ -1,4 +1,4 @@
--- Remove the AI-assisted monitoring workflow template added in V760.
+-- Remove the AI-assisted monitoring workflow template added in V761.
 DELETE FROM workflow_templates
 WHERE is_system = true
   AND tenant_id IS NULL
