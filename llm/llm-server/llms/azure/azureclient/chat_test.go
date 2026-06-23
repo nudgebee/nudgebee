@@ -76,6 +76,9 @@ func TestParseStreamingChatResponse_NoGoroutineLeakOnStreamingFuncError(t *testi
 		},
 	}
 
+	// GC first so the baseline isn't skewed by transient runtime goroutines or
+	// pending finalizers (keeps the count comparison stable in CI).
+	runtime.GC()
 	baseline := runtime.NumGoroutine()
 	_, err := parseStreamingChatResponse(context.Background(), r, req)
 	require.Error(t, err)
@@ -86,6 +89,7 @@ func TestParseStreamingChatResponse_NoGoroutineLeakOnStreamingFuncError(t *testi
 	for runtime.NumGoroutine() > baseline && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
+	runtime.GC()
 	assert.LessOrEqual(t, runtime.NumGoroutine(), baseline,
 		"parseStreamingChatResponse leaked a goroutine after the consumer returned early")
 }
