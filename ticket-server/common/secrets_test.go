@@ -18,8 +18,12 @@ func TestEncode(t *testing.T) {
 	if got := Encode("hello"); got != want {
 		t.Errorf("Encode(\"hello\") = %q, want %q", got, want)
 	}
-	// Encode is deterministic.
-	if Encode("x") != Encode("x") {
+	// Encode is deterministic — calling it twice on the same input yields the
+	// same digest. Assigning to locals first avoids staticcheck SA4000
+	// (identical expressions on both sides of '!=').
+	first := Encode("x")
+	second := Encode("x")
+	if first != second {
 		t.Error("Encode is not deterministic for the same input")
 	}
 }
