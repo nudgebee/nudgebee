@@ -18,6 +18,7 @@ import (
 	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/tmc/langchaingo/llms"
+	"golang.org/x/sync/singleflight"
 )
 
 // CacheScope defines the stability level of the cache
@@ -161,6 +162,15 @@ const GoogleAICacheNamespace = "llm_googleai_cache"
 // GoogleAICacheProvider implements caching for Google AI (pre-created cached content)
 type GoogleAICacheProvider struct {
 	namespace string
+
+	// createGroup collapses concurrent createCache calls for the same cacheKey
+	// onto a single execution (singleflight), so parallel conversations sharing
+	// an account-scoped key create exactly one Google AI cached-content resource
+	// instead of N redundant, separately-billed ones.
+	createGroup singleflight.Group
+	// createCacheFn performs the actual creation; indirected so tests can count
+	// invocations without calling the Google AI API. Defaults to createCache.
+	createCacheFn func(ctx context.Context, req *CacheRequest, cacheableMessages []llms.MessageContent, contentHash, cacheKey string, tokenCount int32) (*CacheInfo, error)
 }
 
 type CacheInfo struct {
@@ -185,9 +195,11 @@ func NewGoogleAICacheProvider() *GoogleAICacheProvider {
 		common.CacheNamespaceWithMaxEntries(config.Config.CacheInMemoryMaxEntries),
 	)
 
-	return &GoogleAICacheProvider{
+	p := &GoogleAICacheProvider{
 		namespace: GoogleAICacheNamespace,
 	}
+	p.createCacheFn = p.createCache
+	return p
 }
 
 func (p *GoogleAICacheProvider) GetProviderName() string {
@@ -487,7 +499,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 		"status", "miss")
 	common.MetricsLLMCacheTotal(req.Provider, req.Model, "miss", req.AccountId)
 
-	cacheInfoResult, errCreate := p.createCache(ctx, req, cacheableMessages, contentHash, cacheKey, tokenCount)
+	cacheInfoResult, errCreate := p.getOrCreateCache(ctx, req, cacheableMessages, contentHash, cacheKey, tokenCount)
 	if errCreate != nil {
 		slog.Error("Google AI cache: Failed to create cache",
 			"error", errCreate,
@@ -525,6 +537,32 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 		CacheHit:  false,
 		CacheInfo: cacheInfoResult,
 	}
+}
+
+// getOrCreateCache creates the Google AI cache for cacheKey, collapsing
+// concurrent callers for the same key onto one creation via singleflight, so
+// parallel conversations don't each create a separate (separately-billed)
+// cached-content resource. The winning goroutine re-checks the shared cache
+// first, so a resource a sibling committed moments earlier is reused.
+func (p *GoogleAICacheProvider) getOrCreateCache(ctx context.Context, req *CacheRequest, cacheableMessages []llms.MessageContent, contentHash, cacheKey string, tokenCount int32) (*CacheInfo, error) {
+	result, err, _ := p.createGroup.Do(cacheKey, func() (any, error) {
+		// Another goroutine may have committed a valid cache for this key just
+		// before we entered Do; reuse it instead of creating a duplicate.
+		if data, ok := common.CacheGet(p.namespace, cacheKey); ok {
+			var existing CacheInfo
+			if json.Unmarshal(data, &existing) == nil &&
+				existing.ContentHash == contentHash &&
+				existing.ExpiresAt.After(time.Now()) {
+				return &existing, nil
+			}
+		}
+		return p.createCacheFn(ctx, req, cacheableMessages, contentHash, cacheKey, tokenCount)
+	})
+	if err != nil {
+		return nil, err
+	}
+	info, _ := result.(*CacheInfo)
+	return info, nil
 }
 
 func (p *GoogleAICacheProvider) createCache(ctx context.Context, req *CacheRequest, cacheableMessages []llms.MessageContent, contentHash, cacheKey string, tokenCount int32) (*CacheInfo, error) {
