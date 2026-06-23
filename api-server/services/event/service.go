@@ -202,6 +202,7 @@ func ListEventResolutions(context *security.RequestContext, rescommendationId st
 	if err != nil {
 		return []models.EventResolution{}, err
 	}
+	defer func() { _ = r.Close() }()
 
 	resolutions := []models.EventResolution{}
 	for r.Next() {
@@ -211,6 +212,9 @@ func ListEventResolutions(context *security.RequestContext, rescommendationId st
 			return []models.EventResolution{}, err
 		}
 		resolutions = append(resolutions, resolution)
+	}
+	if err := r.Err(); err != nil {
+		return []models.EventResolution{}, fmt.Errorf("error iterating event resolution rows: %w", err)
 	}
 	return resolutions, nil
 }

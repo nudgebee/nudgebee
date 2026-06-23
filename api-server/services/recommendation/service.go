@@ -64,6 +64,7 @@ func ListRecommendationResolutions(context *security.RequestContext, rescommenda
 	if err != nil {
 		return []models.RecommendationResolution{}, err
 	}
+	defer func() { _ = r.Close() }()
 
 	resolutions := []models.RecommendationResolution{}
 	for r.Next() {
@@ -73,6 +74,9 @@ func ListRecommendationResolutions(context *security.RequestContext, rescommenda
 			return []models.RecommendationResolution{}, err
 		}
 		resolutions = append(resolutions, resolution)
+	}
+	if err := r.Err(); err != nil {
+		return []models.RecommendationResolution{}, fmt.Errorf("error iterating recommendation resolution rows: %w", err)
 	}
 	return resolutions, nil
 }
