@@ -682,6 +682,47 @@ func fixBareTimestamps(sql string) string {
 	})
 }
 
+// quotedIsoTimestampRe matches a single-quoted ISO 8601 timestamp literal
+// (date + time, optional fractional seconds, optional Z/offset). Duration
+// literals like '24 hours' don't match because they lack the date+time shape.
+var quotedIsoTimestampRe = regexp.MustCompile(`'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}(?::?\d{2})?)?'`)
+
+// intervalPrefixRe detects an INTERVAL keyword immediately preceding a literal,
+// so a timestamp-shaped string used (incorrectly) as an interval is left alone.
+var intervalPrefixRe = regexp.MustCompile(`(?i)\binterval\s+$`)
+
+// castIsoTimestampLiterals appends ::timestamp to single-quoted ISO 8601
+// timestamp literals so PostgreSQL types them explicitly. Without it, a literal
+// used in arithmetic like `'<ts>' - INTERVAL '1 hour'` stays an untyped string
+// and PostgreSQL mis-resolves the operator to interval arithmetic, failing with
+// "invalid input syntax for type interval" (SQLSTATE 22007).
+//
+// timestamp (not timestamptz) is used because the primary event time column
+// (events.starts_at) is `timestamp without time zone`, so a timestamp-to-
+// timestamp comparison needs no session-timezone conversion. Already-cast
+// literals (next chars "::") and timestamp-shaped values directly after an
+// INTERVAL keyword are skipped.
+func castIsoTimestampLiterals(sql string) string {
+	locs := quotedIsoTimestampRe.FindAllStringIndex(sql, -1)
+	if locs == nil {
+		return sql
+	}
+	var b strings.Builder
+	b.Grow(len(sql) + len(locs)*len("::timestamp"))
+	last := 0
+	for _, loc := range locs {
+		start, end := loc[0], loc[1]
+		b.WriteString(sql[last:start])
+		b.WriteString(sql[start:end])
+		if !strings.HasPrefix(sql[end:], "::") && !intervalPrefixRe.MatchString(sql[:start]) {
+			b.WriteString("::timestamp")
+		}
+		last = end
+	}
+	b.WriteString(sql[last:])
+	return b.String()
+}
+
 func (m EventsExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 	// Validate that the input is actually SQL, not descriptive text
 	if isDescriptiveText(input.Command) {
@@ -724,6 +765,7 @@ func (m EventsExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 
 	input.Command = strings.TrimSuffix(input.Command, ";")
 	input.Command = fixBareTimestamps(input.Command)
+	input.Command = castIsoTimestampLiterals(input.Command)
 
 	resp, data, err := sqlToolCall(nbRequestContext, input.Command, "events", eventsView1, 0, nil)
 	if err != nil {

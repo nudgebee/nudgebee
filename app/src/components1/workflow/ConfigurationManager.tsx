@@ -425,12 +425,14 @@ const ConfigurationManager: React.FC<ConfigurationManagerProps> = ({ accountId, 
           <Input
             id='config-key'
             label='Key'
-            instructionText='Unique identifier for this configuration'
+            instructionText={
+              selectedConfig ? 'Key cannot be changed after creation. Delete and recreate to rename.' : 'Unique identifier for this configuration'
+            }
             value={formData.key}
             onChange={(next) => setFormData({ ...formData, key: next })}
             placeholder='Enter configuration key'
             required
-            disabled={loading}
+            disabled={loading || !!selectedConfig}
             size='sm'
             error={!formData.key ? 'Key is required' : undefined}
           />

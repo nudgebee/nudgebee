@@ -661,15 +661,21 @@ var recommendationJobProviderMap = map[string]string{
 	// volume rightsizing for every metrics provider — see
 	// services/ml/service.go:TriggerVolumeRightsizing. Routed via "nb".
 	"volume_analyzer": "nb",
+	// krr_scan (pod/vertical rightsizing) is owned by ml-k8s-server — see
+	// services/ml/service.go:TriggerVerticalRightsizing (also driven by the
+	// daily "Vertical Rightsizing Refresh" cron). The legacy agent_task path
+	// is dead (nothing consumes krr_scan since the legacy agent was removed),
+	// so the UI Refresh would enqueue a task that only fails. Routed via "nb"
+	// so on-demand refresh triggers the server-side generator directly.
+	"krr_scan": "nb",
 	// Not yet migrated — these stay on the legacy agent_task path.
 	// image_scanner: needs per-image orchestration (Phase 2b).
-	// krr_scan / unused_pv: ml-k8s-server owns rightsizing already; agent_task
-	//   path is dead but the entry is kept until Wave 3 cleans up.
+	// unused_pv: ml-k8s-server owns rightsizing already; agent_task path is
+	//   dead but the entry is kept until Wave 3 cleans up.
 	// k8s_version_upgrade / certificate_scanner: not Job-based — Robusta
 	//   implemented them as in-process K8s API calls; api-server will
 	//   reimplement using existing get_resource primitives in a follow-up.
 	"image_scanner":       "agent",
-	"krr_scan":            "agent",
 	"unused_pv":           "agent",
 	"k8s_version_upgrade": "agent",
 	"certificate_scanner": "agent",
@@ -752,6 +758,33 @@ func CreateRecommendationJob(ctx *security.RequestContext, query RecommendationJ
 			}
 			if _, err := ml.TriggerVolumeRightsizing(ctx, req); err != nil {
 				ctx.GetLogger().Error("volume_analyzer: error triggering ml-k8s-server", "error", err, "account_id", query.AccountId, "metrics_provider", mp)
+				return RecommendationJobCreateResponse{}, err
+			}
+		case "krr_scan":
+			// Pod/vertical rightsizing. ml-k8s-server owns generation (same path
+			// as the daily "Vertical Rightsizing Refresh" cron). Synchronous:
+			// ml-k8s-server is async itself (returns 202 and queues the work) so
+			// this returns quickly without blocking the UI.
+			mp, _, _ := observability.GetLogsMetricsTracesProvider(ctx, query.AccountId, "", "metrics", "")
+			req := ml.VerticalRightsizingRequest{
+				AccountId:             query.AccountId,
+				TenantId:              a.Tenant,
+				PersistRecommendation: true,
+				BatchByNamespace:      true,
+				MetricsProvider:       mp,
+			}
+			if mp == "datadog" {
+				apiKey, appKey, site, ddErr := integrations.GetDatadogConfigs(ctx, query.AccountId)
+				if ddErr != nil {
+					ctx.GetLogger().Error("krr_scan: error getting datadog configs", "error", ddErr, "account_id", query.AccountId)
+					return RecommendationJobCreateResponse{}, ddErr
+				}
+				req.DatadogApiKey = apiKey
+				req.DatadogAppKey = appKey
+				req.DatadogSite = site
+			}
+			if _, err := ml.TriggerVerticalRightsizing(ctx, req); err != nil {
+				ctx.GetLogger().Error("krr_scan: error triggering ml-k8s-server", "error", err, "account_id", query.AccountId, "metrics_provider", mp)
 				return RecommendationJobCreateResponse{}, err
 			}
 		case "popeye_scan", "trivy_cis_scan", "kube_bench_scan", "helm_chart_upgrade":

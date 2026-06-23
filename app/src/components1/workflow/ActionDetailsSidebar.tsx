@@ -59,6 +59,18 @@ const EMAIL_BUILTIN_VARIABLES: TemplateSuggestion[] = [
   { type: 'builtin', text: 'time_hms', description: 'Current time — HH:MM:SS (e.g. 15:30:45)', insertText: '{{ time_hms }}' },
   { type: 'builtin', text: 'datetime', description: 'Date + time — DDMMYYYY_HHMM (e.g. 14042026_1530)', insertText: '{{ datetime }}' },
   { type: 'builtin', text: 'timestamp_iso', description: 'Full ISO 8601 timestamp', insertText: '{{ timestamp_iso }}' },
+  {
+    type: 'builtin',
+    text: 'local time (tz)',
+    description: 'Current time in a timezone — IANA name + strftime codes (%Y-%m-%d %H:%M)',
+    insertText: '{{ now() | tz("Asia/Kolkata") | strftime("%Y-%m-%d %H:%M %Z") }}',
+  },
+  {
+    type: 'builtin',
+    text: 'local time (date_format)',
+    description: 'Current time in a timezone — Go reference layout (2006-01-02 15:04)',
+    insertText: '{{ now() | tz("Asia/Kolkata") | date_format("2006-01-02 15:04") }}',
+  },
 ];
 
 // Task names whose subject/body fields should expose the email built-in variable picker.
@@ -488,6 +500,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
     if (!schema?.input_schema) return committedValidationErrors;
     return validateTaskData(selectedActionType, localData, taskDefinitions).errors;
   }, [selectedActionType, localData, taskDefinitions, committedValidationErrors]);
+  // Non-blocking date-format lint warnings (e.g. mixing strftime %-codes with the Go
+  // reference layout). Surfaced as an advisory banner, not per-field errors.
+  const validationWarnings = useMemo(() => {
+    if (!selectedActionType) return {} as Record<string, string>;
+    const schema = taskDefinitions.find((td: any) => td.name === selectedActionType);
+    if (!schema?.input_schema) return {} as Record<string, string>;
+    return validateTaskData(selectedActionType, localData, taskDefinitions).warnings;
+  }, [selectedActionType, localData, taskDefinitions]);
 
   // Refs for stable access in callbacks without adding to dependency arrays
   const taskDefinitionsRef = useRef(taskDefinitions);
@@ -4195,6 +4215,25 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {/* Form Description */}
           <Typography sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.secondaryDark, mb: 1 }}>{description}</Typography>
+
+          {/* Advisory date-format lint warnings (non-blocking) */}
+          {Object.keys(validationWarnings).length > 0 && (
+            <Box
+              sx={{
+                mb: 1,
+                p: 1,
+                borderRadius: 'var(--ds-radius-md)',
+                backgroundColor: ds.amber[100],
+                border: `1px solid ${ds.amber[200]}`,
+              }}
+            >
+              {Array.from(new Set(Object.values(validationWarnings))).map((warning, i) => (
+                <Typography key={i} sx={{ fontSize: 'var(--ds-text-small)', color: ds.amber[700] }}>
+                  ⚠ {warning}
+                </Typography>
+              ))}
+            </Box>
+          )}
 
           {/* Input Fields */}
           {fields.map(([fieldName, fieldSchema], _index) => {
