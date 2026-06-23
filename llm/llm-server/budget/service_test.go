@@ -426,7 +426,7 @@ func TestGetEntityConversationCount_ModulePartition(t *testing.T) {
 		dm, mock := newDM(t)
 		// Pre-fix the filter was empty, so this NOT LIKE clause was absent and the
 		// query went unmatched — making this assertion fail.
-		mock.ExpectQuery("c.session_id NOT LIKE 'event-%'").
+		mock.ExpectQuery("c.session_id NOT LIKE '" + events.SessionIdPrefixEvent + "%'").
 			WithArgs("acc-1").
 			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(42))
 
@@ -439,7 +439,7 @@ func TestGetEntityConversationCount_ModulePartition(t *testing.T) {
 
 	t.Run("investigation matches event sessions", func(t *testing.T) {
 		dm, mock := newDM(t)
-		mock.ExpectQuery("c.session_id LIKE 'event-%'").
+		mock.ExpectQuery("c.session_id LIKE '" + events.SessionIdPrefixEvent + "%'").
 			WithArgs("acc-1").
 			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(7))
 
