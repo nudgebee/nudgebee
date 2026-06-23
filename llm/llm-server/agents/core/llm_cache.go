@@ -545,6 +545,15 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 // cached-content resource. The winning goroutine re-checks the shared cache
 // first, so a resource a sibling committed moments earlier is reused.
 func (p *GoogleAICacheProvider) getOrCreateCache(ctx context.Context, req *CacheRequest, cacheableMessages []llms.MessageContent, contentHash, cacheKey string, tokenCount int32) (*CacheInfo, error) {
+	// singleflight runs the work function under the first caller's context. Use
+	// a detached context for the shared creation so that if the initiating
+	// request is canceled (client disconnect / timeout) the Google AI call is
+	// NOT aborted — otherwise that one cancellation would fail every other
+	// concurrent caller sharing this result. WithoutCancel keeps the parent's
+	// values (tracing, tenant id); the timeout bounds the detached work.
+	sharedCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
+	defer cancel()
+
 	result, err, _ := p.createGroup.Do(cacheKey, func() (any, error) {
 		// Another goroutine may have committed a valid cache for this key just
 		// before we entered Do; reuse it instead of creating a duplicate.
@@ -556,7 +565,7 @@ func (p *GoogleAICacheProvider) getOrCreateCache(ctx context.Context, req *Cache
 				return &existing, nil
 			}
 		}
-		return p.createCacheFn(ctx, req, cacheableMessages, contentHash, cacheKey, tokenCount)
+		return p.createCacheFn(sharedCtx, req, cacheableMessages, contentHash, cacheKey, tokenCount)
 	})
 	if err != nil {
 		return nil, err
