@@ -3281,6 +3281,12 @@ func (s *Service) ValidateWorkflow(ctx *security.RequestContext, accountId strin
 		return common.ErrorBadRequest(err.Error())
 	}
 
+	// Surface non-fatal date-format lint warnings (e.g. mixing strftime %-codes with
+	// the Go reference layout) without blocking the save.
+	for _, w := range LintTemplates(wf.Definition.Tasks) {
+		ctx.GetLogger().Warn("workflow template lint", "workflow_id", wf.ID, "warning", w)
+	}
+
 	return s.validateTaskTypes(ctx, accountId, wf)
 }
 
