@@ -18,6 +18,7 @@ import (
 	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/tmc/langchaingo/llms"
+	"golang.org/x/sync/singleflight"
 )
 
 // CacheScope defines the stability level of the cache
@@ -160,7 +161,24 @@ const GoogleAICacheNamespace = "llm_googleai_cache"
 
 // GoogleAICacheProvider implements caching for Google AI (pre-created cached content)
 type GoogleAICacheProvider struct {
-	namespace string
+	namespace        string
+	cacheCreateGroup singleflight.Group
+
+	countTokensFunc       googleAICountTokensFunc
+	createCacheFunc       googleAICreateCacheFunc
+	verifyCacheExistsFunc googleAIVerifyCacheExistsFunc
+	deleteCacheFunc       googleAIDeleteCacheFunc
+}
+
+type googleAICountTokensFunc func(ctx context.Context, apiKey string, model string, messages []llms.MessageContent) (int32, error)
+type googleAICreateCacheFunc func(ctx context.Context, req *CacheRequest, cacheableMessages []llms.MessageContent, contentHash, cacheKey string, tokenCount int32) (*CacheInfo, error)
+type googleAIVerifyCacheExistsFunc func(ctx context.Context, cacheName, apiKey string) bool
+type googleAIDeleteCacheFunc func(ctx context.Context, cacheName, apiKey string) error
+
+type googleAICacheCreateResult struct {
+	cacheInfo *CacheInfo
+	created   bool
+	owner     *int
 }
 
 type CacheInfo struct {
@@ -289,22 +307,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 		}
 	}
 
-	// Use Google AI's CountTokens API for accurate token counting
-	cachingHelper, err := googleai.NewCachingHelper(ctx, googleai.WithAPIKey(req.ApiKey))
-	if err != nil {
-		slog.Warn("Google AI cache: Not using cache - Failed to create caching helper",
-			"error", err,
-			"conversationId", req.ConversationId,
-			"reason", "caching_helper_init_failed")
-		// Fallback to no caching if we can't count tokens
-		return &CacheResponse{
-			Messages: req.Messages,
-			CacheHit: false,
-			Error:    err,
-		}
-	}
-
-	tokenCount, err := cachingHelper.CountTokens(ctx, req.Model, cacheableMessages)
+	tokenCount, err := p.countTokens(ctx, req.ApiKey, req.Model, cacheableMessages)
 	if err != nil {
 		slog.Warn("Google AI cache: Not using cache - Token counting failed",
 			"error", err,
@@ -352,7 +355,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 			cacheableMessages = newCacheable
 
 			// Recalculate tokens after padding
-			tokenCount, err = cachingHelper.CountTokens(ctx, req.Model, cacheableMessages)
+			tokenCount, err = p.countTokens(ctx, req.ApiKey, req.Model, cacheableMessages)
 			if err != nil {
 				slog.Warn("Google AI cache: Token recount failed after padding", "error", err)
 			}
@@ -407,7 +410,7 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 	// Cache hit path
 	if exists && cacheInfo.ExpiresAt.After(now) && cacheInfo.ContentHash == contentHash {
 		// Verify the cache actually exists in Google AI
-		if p.verifyCacheExists(ctx, cacheInfo.CacheName, req.ApiKey) {
+		if p.verifyCacheExistsWithFunc(ctx, cacheInfo.CacheName, req.ApiKey) {
 			timeToExpiry := cacheInfo.ExpiresAt.Sub(now)
 			slog.Info("Google AI cache: CACHE HIT - Using existing cache",
 				"cacheName", cacheInfo.CacheName,
@@ -463,31 +466,23 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 			// unreachable. Without this delete, it sits orphaned for the remainder
 			// of its TTL paying full storage cost — historically the dominant cause
 			// of Gemini cache spend on this service.
-			if helper, helperErr := googleai.NewCachingHelper(ctx, googleai.WithAPIKey(req.ApiKey)); helperErr == nil {
-				if delErr := helper.DeleteCachedContent(ctx, cacheInfo.CacheName); delErr != nil {
-					slog.Warn("Google AI cache: failed to delete orphaned content_changed cache",
-						"error", delErr,
-						"cacheName", cacheInfo.CacheName,
-						"conversationId", req.ConversationId)
-				}
-			} else {
-				slog.Warn("Google AI cache: failed to init helper for orphan deletion",
-					"error", helperErr,
+			if delErr := p.deleteCache(ctx, cacheInfo.CacheName, req.ApiKey); delErr != nil {
+				slog.Warn("Google AI cache: failed to delete orphaned content_changed cache",
+					"error", delErr,
+					"cacheName", cacheInfo.CacheName,
 					"conversationId", req.ConversationId)
 			}
 		}
 	}
 
-	// Cache miss - create new cache
-	slog.Info("Google AI cache: CACHE MISS - Creating new cache",
+	slog.Info("Google AI cache: CACHE MISS - Resolving cache",
 		"conversationId", req.ConversationId,
 		"tokenCount", tokenCount,
 		"cachedMessages", len(cacheableMessages),
 		"nonCachedMessages", len(nonCacheableMessages),
 		"status", "miss")
-	common.MetricsLLMCacheTotal(req.Provider, req.Model, "miss", req.AccountId)
 
-	cacheInfoResult, errCreate := p.createCache(ctx, req, cacheableMessages, contentHash, cacheKey, tokenCount)
+	cacheInfoResult, createdCache, errCreate := p.getOrCreateCache(ctx, req, cacheableMessages, contentHash, cacheKey, tokenCount)
 	if errCreate != nil {
 		slog.Error("Google AI cache: Failed to create cache",
 			"error", errCreate,
@@ -502,12 +497,24 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 		}
 	}
 
-	slog.Info("Google AI cache: Successfully created new cache",
+	cacheStatus := "hit"
+	cacheInfoForResponse := cacheInfoResult
+	if createdCache {
+		cacheStatus = "miss"
+	} else if cacheInfoForResponse != nil {
+		cacheInfoCopy := *cacheInfoForResponse
+		cacheInfoCopy.CacheCreationTokens = 0
+		cacheInfoForResponse = &cacheInfoCopy
+	}
+	common.MetricsLLMCacheTotal(req.Provider, req.Model, cacheStatus, req.AccountId)
+
+	slog.Info("Google AI cache: Cache ready after miss resolution",
 		"cacheName", cacheInfoResult.CacheName,
 		"conversationId", req.ConversationId,
 		"tokenCount", tokenCount,
 		"cachedMessages", len(cacheableMessages),
 		"nonCachedMessages", len(nonCacheableMessages),
+		"createdCache", createdCache,
 		"ttl", getCacheTTL(req.Scope).String())
 
 	// IMPORTANT: Return only non-cacheable messages
@@ -522,9 +529,110 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 				o.Metadata["CachedContentName"] = cacheInfoResult.CacheName
 			},
 		},
-		CacheHit:  false,
-		CacheInfo: cacheInfoResult,
+		CacheHit:  !createdCache,
+		CacheInfo: cacheInfoForResponse,
 	}
+}
+
+func (p *GoogleAICacheProvider) countTokens(ctx context.Context, apiKey string, model string, messages []llms.MessageContent) (int32, error) {
+	if p.countTokensFunc != nil {
+		return p.countTokensFunc(ctx, apiKey, model, messages)
+	}
+
+	cachingHelper, err := googleai.NewCachingHelper(ctx, googleai.WithAPIKey(apiKey))
+	if err != nil {
+		return 0, err
+	}
+	return cachingHelper.CountTokens(ctx, model, messages)
+}
+
+func (p *GoogleAICacheProvider) getOrCreateCache(ctx context.Context, req *CacheRequest, cacheableMessages []llms.MessageContent, contentHash, cacheKey string, tokenCount int32) (*CacheInfo, bool, error) {
+	owner := new(int)
+	flightKey := cacheKey + "\x00" + contentHash
+	result, err, _ := p.cacheCreateGroup.Do(flightKey, func() (any, error) {
+		if cacheInfo, ok := p.getValidCachedInfo(ctx, cacheKey, contentHash, req.ApiKey, time.Now()); ok {
+			return googleAICacheCreateResult{
+				cacheInfo: cacheInfo,
+				created:   false,
+				owner:     owner,
+			}, nil
+		}
+		cacheInfo, err := p.createCacheWithFunc(ctx, req, cacheableMessages, contentHash, cacheKey, tokenCount)
+		if err != nil {
+			return nil, err
+		}
+		return googleAICacheCreateResult{
+			cacheInfo: cacheInfo,
+			created:   true,
+			owner:     owner,
+		}, nil
+	})
+	if err != nil {
+		return nil, false, err
+	}
+
+	cacheResult, ok := result.(googleAICacheCreateResult)
+	if !ok || cacheResult.cacheInfo == nil {
+		return nil, false, fmt.Errorf("GoogleAICacheProvider.getOrCreateCache: unexpected singleflight result %T", result)
+	}
+	return cacheResult.cacheInfo, cacheResult.created && cacheResult.owner == owner, nil
+}
+
+func (p *GoogleAICacheProvider) getValidCachedInfo(ctx context.Context, cacheKey, contentHash, apiKey string, now time.Time) (*CacheInfo, bool) {
+	data, ok := common.CacheGet(p.namespace, cacheKey)
+	if !ok {
+		return nil, false
+	}
+
+	var cacheInfo CacheInfo
+	if err := json.Unmarshal(data, &cacheInfo); err != nil {
+		slog.Warn("Google AI cache: Failed to unmarshal cache info during singleflight recheck, clearing bad entry", "error", err, "cacheKey", cacheKey)
+		if delErr := common.CacheDelete(p.namespace, cacheKey); delErr != nil {
+			slog.Warn("Google AI cache: Failed to delete corrupt entry during singleflight recheck", "error", delErr, "cacheKey", cacheKey)
+		}
+		return nil, false
+	}
+
+	if !cacheInfo.ExpiresAt.After(now) || cacheInfo.ContentHash != contentHash {
+		return nil, false
+	}
+	if !p.verifyCacheExistsWithFunc(ctx, cacheInfo.CacheName, apiKey) {
+		slog.Warn("Google AI cache: Cache entry exists during singleflight recheck but not in Google AI, will recreate",
+			"cacheName", cacheInfo.CacheName,
+			"reason", "cache_verification_failed")
+		if err := common.CacheDelete(p.namespace, cacheKey); err != nil {
+			slog.Error("Google AI cache: Failed to delete stale cache entry during singleflight recheck", "error", err, "cacheKey", cacheKey)
+		}
+		return nil, false
+	}
+
+	return &cacheInfo, true
+}
+
+func (p *GoogleAICacheProvider) createCacheWithFunc(ctx context.Context, req *CacheRequest, cacheableMessages []llms.MessageContent, contentHash, cacheKey string, tokenCount int32) (*CacheInfo, error) {
+	if p.createCacheFunc != nil {
+		return p.createCacheFunc(ctx, req, cacheableMessages, contentHash, cacheKey, tokenCount)
+	}
+	return p.createCache(ctx, req, cacheableMessages, contentHash, cacheKey, tokenCount)
+}
+
+func (p *GoogleAICacheProvider) verifyCacheExistsWithFunc(ctx context.Context, cacheName, apiKey string) bool {
+	if p.verifyCacheExistsFunc != nil {
+		return p.verifyCacheExistsFunc(ctx, cacheName, apiKey)
+	}
+	return p.verifyCacheExists(ctx, cacheName, apiKey)
+}
+
+func (p *GoogleAICacheProvider) deleteCache(ctx context.Context, cacheName, apiKey string) error {
+	if p.deleteCacheFunc != nil {
+		return p.deleteCacheFunc(ctx, cacheName, apiKey)
+	}
+
+	cachingHelper, err := googleai.NewCachingHelper(ctx, googleai.WithAPIKey(apiKey))
+	if err != nil {
+		return err
+	}
+	return cachingHelper.DeleteCachedContent(ctx, cacheName)
 }
 
 func (p *GoogleAICacheProvider) createCache(ctx context.Context, req *CacheRequest, cacheableMessages []llms.MessageContent, contentHash, cacheKey string, tokenCount int32) (*CacheInfo, error) {
@@ -663,13 +771,7 @@ func (p *GoogleAICacheProvider) InvalidateCache(ctx context.Context, req *CacheR
 		return nil
 	}
 
-	// Delete from Google AI
-	cachingHelper, err := googleai.NewCachingHelper(ctx, googleai.WithAPIKey(req.ApiKey))
-	if err != nil {
-		return err
-	}
-
-	if err := cachingHelper.DeleteCachedContent(ctx, cacheInfo.CacheName); err != nil {
+	if err := p.deleteCache(ctx, cacheInfo.CacheName, req.ApiKey); err != nil {
 		return err
 	}
 
