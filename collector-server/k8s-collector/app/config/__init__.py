@@ -371,10 +371,12 @@ class Settings(BaseSettings):
 def setup_logger() -> None:
     basedir = os.path.abspath(os.path.dirname(__file__))
     config_file = os.path.join(basedir, "logging.json")
-    print("reading logging configs from ", config_file)
     with open(config_file, "rt") as f:
         config = json.load(f)
         logging.config.dictConfig(config)
+    # Logged after dictConfig so it routes through the configured logging
+    # rather than the pre-config last-resort handler (which would drop INFO).
+    logging.getLogger(__name__).info("loaded logging config from %s", config_file)
 
 
 Configs = Settings()

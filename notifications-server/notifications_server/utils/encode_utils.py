@@ -36,11 +36,6 @@ class ModelEncoder(json.JSONEncoder):
             return list(obj)
         if hasattr(obj, "to_dict"):
             return obj.to_dict()
-        if isinstance(obj, str):
-            try:
-                return json.loads(obj)
-            except Exception:
-                pass
         return json.JSONEncoder.default(self, obj)
 
 
