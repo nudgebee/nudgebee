@@ -324,7 +324,7 @@ func processSingleEvent(ctx context.Context, db *sqlx.DB, event *models.Event) *
 	)
 
 	// Process correlations
-	err = detectAndRecordCorrelations(ctx, db, event)
+	_, _, err = detectAndRecordCorrelations(ctx, db, event)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to detect correlations",
 			"error", err,
@@ -441,7 +441,7 @@ func processBatch(ctx context.Context, db *sqlx.DB, events []models.Event) *Back
 			}
 
 			// Process correlation detection for this event
-			if err := detectAndRecordCorrelations(ctx, db, event); err != nil {
+			if _, _, err := detectAndRecordCorrelations(ctx, db, event); err != nil {
 				slog.ErrorContext(ctx, "Failed to detect correlations",
 					"error", err,
 					"event_id", event.Id,
