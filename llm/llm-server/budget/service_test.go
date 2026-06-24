@@ -413,17 +413,19 @@ func TestModuleQueryFilters_EventChatPartition(t *testing.T) {
 // TestGetEntityConversationCount_ModulePartition verifies the filters flow into
 // the actual count query: user_investigation excludes event sessions while
 // investigation matches them. Driven by sqlmock, no live DB.
-func TestGetEntityConversationCount_ModulePartition(t *testing.T) {
-	newDM := func(t *testing.T) (*common.DatabaseManager, sqlmock.Sqlmock) {
-		t.Helper()
-		db, mock, err := sqlmock.New()
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = db.Close() })
-		return &common.DatabaseManager{Db: sqlx.NewDb(db, "postgresql")}, mock
-	}
+// newMockMetastoreDM returns a sqlmock-backed Metastore DatabaseManager for the
+// budget usage-query tests, registering cleanup to close the mock connection.
+func newMockMetastoreDM(t *testing.T) (*common.DatabaseManager, sqlmock.Sqlmock) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	return &common.DatabaseManager{Db: sqlx.NewDb(db, "postgresql")}, mock
+}
 
+func TestGetEntityConversationCount_ModulePartition(t *testing.T) {
 	t.Run("user_investigation excludes event sessions", func(t *testing.T) {
-		dm, mock := newDM(t)
+		dm, mock := newMockMetastoreDM(t)
 		// Pre-fix the filter was empty, so this NOT LIKE clause was absent and the
 		// query went unmatched — making this assertion fail.
 		mock.ExpectQuery("c.session_id NOT LIKE '" + events.SessionIdPrefixEvent + "%'").
@@ -438,7 +440,7 @@ func TestGetEntityConversationCount_ModulePartition(t *testing.T) {
 	})
 
 	t.Run("investigation matches event sessions", func(t *testing.T) {
-		dm, mock := newDM(t)
+		dm, mock := newMockMetastoreDM(t)
 		mock.ExpectQuery("c.session_id LIKE '" + events.SessionIdPrefixEvent + "%'").
 			WithArgs("acc-1").
 			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(7))
