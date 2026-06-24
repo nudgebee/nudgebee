@@ -256,30 +256,34 @@ else
     # bounded window first. If services-server never becomes ready we log and
     # continue rather than fail: the playbook cron self-registers on first
     # services-server boot, so this trigger is best-effort.
-    max_attempts="${MIGRATE_PLAYBOOK_WAIT_ATTEMPTS:-60}"
-    interval="${MIGRATE_PLAYBOOK_WAIT_INTERVAL:-5}"
-    attempt=0
-    playbook_ready=0
-    while [ "$attempt" -lt "$max_attempts" ]; do
-        if curl -sf -m 5 "$SERVICE_API_SERVER_URL/health" > /dev/null 2>&1; then
-            playbook_ready=1
-            break
-        fi
-        attempt=$((attempt + 1))
-        echo "Waiting for services-server health ($SERVICE_API_SERVER_URL/health), attempt $attempt/$max_attempts..."
-        sleep "$interval"
-    done
-
-    if [ "$playbook_ready" = "1" ]; then
-        echo "Loading Agent Playbook..."
-        curl -X POST $SERVICE_API_SERVER_URL/rpc-cron -d '{
-                "comment": "Load Agent Playbook",
-                "name": "Load Agent Playbook",
-                "payload": {}
-            }' -v -H "X-ACTION-TOKEN: $ACTION_API_SERVER_TOKEN" \
-            || echo "WARN: Agent Playbook trigger failed; cron self-registers on services-server boot, continuing."
+    if [ -z "${SERVICE_API_SERVER_URL:-}" ]; then
+        echo "WARN: SERVICE_API_SERVER_URL is not set; skipping Agent Playbook trigger (cron self-registers on services-server boot)."
     else
-        echo "WARN: services-server not healthy after $((max_attempts * interval))s; skipping Agent Playbook trigger (cron self-registers on services-server boot)."
+        max_attempts="${MIGRATE_PLAYBOOK_WAIT_ATTEMPTS:-60}"
+        interval="${MIGRATE_PLAYBOOK_WAIT_INTERVAL:-5}"
+        attempt=0
+        playbook_ready=0
+        while [ "$attempt" -lt "$max_attempts" ]; do
+            if curl -sf -m 5 "$SERVICE_API_SERVER_URL/health" > /dev/null 2>&1; then
+                playbook_ready=1
+                break
+            fi
+            attempt=$((attempt + 1))
+            echo "Waiting for services-server health ($SERVICE_API_SERVER_URL/health), attempt $attempt/$max_attempts..."
+            sleep "$interval"
+        done
+
+        if [ "$playbook_ready" = "1" ]; then
+            echo "Loading Agent Playbook..."
+            curl -X POST "$SERVICE_API_SERVER_URL/rpc-cron" -d '{
+                    "comment": "Load Agent Playbook",
+                    "name": "Load Agent Playbook",
+                    "payload": {}
+                }' -v -H "X-ACTION-TOKEN: $ACTION_API_SERVER_TOKEN" \
+                || echo "WARN: Agent Playbook trigger failed; cron self-registers on services-server boot, continuing."
+        else
+            echo "WARN: services-server not healthy after $((max_attempts * interval))s; skipping Agent Playbook trigger (cron self-registers on services-server boot)."
+        fi
     fi
 fi
 
