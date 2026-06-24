@@ -544,19 +544,24 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 // parallel conversations don't each create a separate (separately-billed)
 // cached-content resource. The winning goroutine re-checks the shared cache
 // first, so a resource a sibling committed moments earlier is reused.
+//
+// DoChan (not Do) is used so a caller whose own ctx is canceled returns
+// immediately instead of blocking on the shared creation; the creation keeps
+// running in the background for the other callers. The detached, timeout-bound
+// context lives inside the singleflight function so its lifetime is tied to the
+// background work, not to any one caller returning early.
 func (p *GoogleAICacheProvider) getOrCreateCache(ctx context.Context, req *CacheRequest, cacheableMessages []llms.MessageContent, contentHash, cacheKey string, tokenCount int32) (*CacheInfo, error) {
-	// singleflight runs the work function under the first caller's context. Use
-	// a detached context for the shared creation so that if the initiating
-	// request is canceled (client disconnect / timeout) the Google AI call is
-	// NOT aborted — otherwise that one cancellation would fail every other
-	// concurrent caller sharing this result. WithoutCancel keeps the parent's
-	// values (tracing, tenant id); the timeout bounds the detached work.
-	sharedCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
-	defer cancel()
+	ch := p.createGroup.DoChan(cacheKey, func() (res any, err error) {
+		// DoChan runs this in a background goroutine; recover so a panic here
+		// can't crash the process.
+		defer func() {
+			if r := recover(); r != nil {
+				err = fmt.Errorf("panic recovered in Google AI cache creation: %v", r)
+			}
+		}()
 
-	result, err, _ := p.createGroup.Do(cacheKey, func() (any, error) {
 		// Another goroutine may have committed a valid cache for this key just
-		// before we entered Do; reuse it instead of creating a duplicate.
+		// before we entered; reuse it instead of creating a duplicate.
 		if data, ok := common.CacheGet(p.namespace, cacheKey); ok {
 			var existing CacheInfo
 			if json.Unmarshal(data, &existing) == nil &&
@@ -565,13 +570,32 @@ func (p *GoogleAICacheProvider) getOrCreateCache(ctx context.Context, req *Cache
 				return &existing, nil
 			}
 		}
-		return p.createCacheFn(sharedCtx, req, cacheableMessages, contentHash, cacheKey, tokenCount)
+
+		// Detach from the initiating caller's ctx (so its cancellation can't
+		// abort the shared creation) and bound the work with a timeout. Created
+		// inside the function so its lifetime matches the background execution.
+		sharedCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
+		defer cancel()
+
+		createFn := p.createCacheFn
+		if createFn == nil {
+			createFn = p.createCache
+		}
+		return createFn(sharedCtx, req, cacheableMessages, contentHash, cacheKey, tokenCount)
 	})
-	if err != nil {
-		return nil, err
+
+	select {
+	case <-ctx.Done():
+		// The caller's request was canceled/timed out — return promptly. The
+		// shared creation continues in the background for the other callers.
+		return nil, ctx.Err()
+	case res := <-ch:
+		if res.Err != nil {
+			return nil, res.Err
+		}
+		info, _ := res.Val.(*CacheInfo)
+		return info, nil
 	}
-	info, _ := result.(*CacheInfo)
-	return info, nil
 }
 
 func (p *GoogleAICacheProvider) createCache(ctx context.Context, req *CacheRequest, cacheableMessages []llms.MessageContent, contentHash, cacheKey string, tokenCount int32) (*CacheInfo, error) {
