@@ -25,14 +25,21 @@ export interface TriggeredExecution {
 
 interface RunAutomationMenuProps {
   accountId: string;
+  // Event this menu lists triggered executions for. The list is fetched here
+  // (one mount fetch for the badge count) and smart-polled every 5s while the
+  // dropdown is open, so newly triggered runs and their live status stay current.
+  eventId: string;
   disabled?: boolean;
-  triggeredExecutions?: TriggeredExecution[];
   // Gates the run/create/configure actions. When false the menu still shows the
   // read-only "Triggered for this event" list, but offers no way to run, create,
   // or configure automations. Defaults to false so the gate fails closed.
   canRun?: boolean;
   onCreateAutomation?: () => void;
 }
+
+// Poll the triggered-executions list every 5s while the dropdown is open. Closed
+// dropdown = no polling, so API usage is bounded to when the user is looking.
+const EXECUTIONS_POLL_INTERVAL_MS = 5000;
 
 interface WorkflowListItem {
   id: string;
@@ -150,28 +157,116 @@ const TriggeredExecutionRow: React.FC<{ ex: TriggeredExecution }> = ({ ex }) => 
   );
 };
 
-const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
-  accountId,
-  disabled = false,
-  triggeredExecutions = [],
-  canRun = false,
-  onCreateAutomation,
-}) => {
+const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({ accountId, eventId, disabled = false, canRun = false, onCreateAutomation }) => {
   const router = useRouter();
   const [workflows, setWorkflows] = useState<WorkflowListItem[]>([]);
   const [loadState, setLoadState] = useState<LoadState>('idle');
   const [errorMessage, setErrorMessage] = useState('');
+  const [executions, setExecutions] = useState<TriggeredExecution[]>([]);
 
   const [selectedWorkflow, setSelectedWorkflow] = useState<WorkflowListItem | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [triggerLoading, setTriggerLoading] = useState(false);
 
-  // Tracks the current accountId so an in-flight fetch can detect that the
-  // caller has switched account mid-flight and drop its stale response.
+  // Tracks the current accountId/eventId so an in-flight fetch can detect that
+  // the caller switched account or event mid-flight and drop its stale response.
   const currentAccountIdRef = useRef<string>(accountId);
   useEffect(() => {
     currentAccountIdRef.current = accountId;
   }, [accountId]);
+  const currentEventIdRef = useRef<string>(eventId);
+  useEffect(() => {
+    currentEventIdRef.current = eventId;
+  }, [eventId]);
+
+  // ── Triggered-executions list: mount fetch (badge) + open-gated 5s poll ──
+  const menuOpenRef = useRef(false);
+  const pollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Drops async results that resolve after unmount so we never setState on an
+  // unmounted component (the fetch/poll can outlive the menu).
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  const fetchExecutions = useCallback(async () => {
+    if (!accountId || !eventId) return;
+    const reqAccountId = accountId;
+    const reqEventId = eventId;
+    try {
+      const resp: any = await apiWorkflow.listExecutionsForEvent(reqAccountId, reqEventId);
+      if (!isMountedRef.current) return;
+      // Drop the response if the active event/account changed while in flight.
+      if (currentAccountIdRef.current !== reqAccountId || currentEventIdRef.current !== reqEventId) return;
+      setExecutions(resp?.data?.executions || []);
+    } catch (err) {
+      if (isMountedRef.current) console.error('Failed to load triggered executions:', err);
+    }
+  }, [accountId, eventId]);
+
+  const stopExecutionsPoll = useCallback(() => {
+    if (pollTimeoutRef.current) {
+      clearTimeout(pollTimeoutRef.current);
+      pollTimeoutRef.current = null;
+    }
+  }, []);
+
+  // Recursive setTimeout (not setInterval) so requests never overlap: the next
+  // tick is only scheduled after the current fetch settles, and only while open.
+  const pollExecutions = useCallback(async () => {
+    if (!menuOpenRef.current || !isMountedRef.current) return;
+    await fetchExecutions();
+    // Re-check after the await: the menu may have closed or the component
+    // unmounted while the fetch was in flight — don't schedule another tick.
+    if (!menuOpenRef.current || !isMountedRef.current) return;
+    pollTimeoutRef.current = setTimeout(pollExecutions, EXECUTIONS_POLL_INTERVAL_MS);
+  }, [fetchExecutions]);
+
+  const handleMenuOpen = useCallback(() => {
+    menuOpenRef.current = true;
+    stopExecutionsPoll();
+    // Immediate fetch on open, then the loop schedules itself every 5s.
+    pollExecutions();
+  }, [stopExecutionsPoll, pollExecutions]);
+
+  const handleMenuClose = useCallback(() => {
+    menuOpenRef.current = false;
+    stopExecutionsPoll();
+  }, [stopExecutionsPoll]);
+
+  // One fetch per (account, event) so the closed-button badge count is correct
+  // before the dropdown is ever opened. Resets the list when the event changes.
+  const lastFetchedExecKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!accountId || !eventId) return;
+    const key = `${accountId}:${eventId}`;
+    if (lastFetchedExecKeyRef.current === key) return;
+    lastFetchedExecKeyRef.current = key;
+    setExecutions([]);
+    fetchExecutions();
+  }, [accountId, eventId, fetchExecutions]);
+
+  // Pause polling when the tab is hidden; resume on return if the menu is open.
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        stopExecutionsPoll();
+      } else if (menuOpenRef.current) {
+        pollExecutions();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      // Flip the gate so any in-flight poll bails instead of rescheduling.
+      menuOpenRef.current = false;
+      stopExecutionsPoll();
+    };
+  }, [stopExecutionsPoll, pollExecutions]);
 
   const fetchWorkflows = useCallback(async () => {
     if (!accountId) return;
@@ -245,6 +340,9 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
       const triggerData = response?.data?.workflow_execute;
       if (!triggerData?.execution_id) throw new Error('Failed to trigger automation');
       snackbar.success(`Automation "${selectedWorkflow.name}" triggered`);
+      // Refresh so the just-triggered execution surfaces on the next open even
+      // though the modal closed the dropdown (which stopped the poll loop).
+      fetchExecutions();
     } catch (err) {
       console.error('Error triggering automation:', err);
       const msg = err instanceof Error && err.message ? err.message : `Failed to trigger automation "${selectedWorkflow.name}"`;
@@ -267,7 +365,7 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
     [accountId]
   );
 
-  const validTriggered = useMemo(() => triggeredExecutions.filter((ex) => ex?.workflow_id && ex?.id), [triggeredExecutions]);
+  const validTriggered = useMemo(() => executions.filter((ex) => ex?.workflow_id && ex?.id), [executions]);
   const triggeredCount = validTriggered.length;
 
   const triggeredItems: DropdownMenuItem[] = useMemo(() => {
@@ -401,14 +499,19 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
           itemsMaxHeight='min(420px, calc(100vh - 260px))'
           searchable
           searchPlaceholder='Search automations…'
-          onRefresh={fetchWorkflows}
+          onRefresh={() => {
+            fetchWorkflows();
+            fetchExecutions();
+          }}
           refreshLabel='Refresh list'
           headerActions={headerActions}
+          onClose={handleMenuClose}
           trigger={
             <Badge
               badgeContent={triggeredCount}
               overlap='rectangular'
               data-testid='run-automation-triggered-badge'
+              onClick={handleMenuOpen}
               sx={{
                 '& .MuiBadge-badge': {
                   top: 4,

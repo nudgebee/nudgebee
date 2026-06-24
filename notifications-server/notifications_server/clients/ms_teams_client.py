@@ -27,6 +27,28 @@ from notifications_server.exceptions import (
 LOG = logging.getLogger(__name__)
 GRAPH_API_BASE_URL = "https://graph.microsoft.com"
 
+# Fallback delay (seconds) used when the Retry-After header is missing or unparsable.
+DEFAULT_RETRY_AFTER_SECONDS = 15
+
+
+def _get_retry_after(response: requests.Response) -> int:
+    """
+    Safely extract and parse the Retry-After header from a response.
+
+    Returns the integer number of seconds to wait. Falls back to
+    DEFAULT_RETRY_AFTER_SECONDS when the header is missing, or when its value
+    is non-integer (e.g. an HTTP-date) or otherwise unparsable.
+    """
+    try:
+        return int(response.headers.get("Retry-After", DEFAULT_RETRY_AFTER_SECONDS))
+    except (ValueError, TypeError):
+        LOG.warning(
+            "Could not parse Retry-After header value, using default of %s seconds.",
+            DEFAULT_RETRY_AFTER_SECONDS,
+        )
+        return DEFAULT_RETRY_AFTER_SECONDS
+
+
 # Pattern for valid MS Graph API resource IDs (GUIDs, channel IDs, message IDs)
 # Valid characters: alphanumeric, hyphens, underscores, colons, periods, and @
 # This prevents path traversal attacks using ../ or other special characters
@@ -120,11 +142,7 @@ def handle_teams_response(
     error_body = response.text
 
     if response.status_code == 429:
-        retry_after = 15
-        try:
-            retry_after = int(response.headers.get("Retry-After", 15))
-        except (ValueError, TypeError):
-            LOG.warning("Could not parse Retry-After header value, using default of %s seconds.", retry_after)
+        retry_after = _get_retry_after(response)
 
         raise RateLimitedError(
             message="MS Teams rate limit exceeded",
@@ -247,7 +265,7 @@ class MsTeamsClient:
                 LOG.debug(f"MS Teams notification sent for tenant {tenant}")
 
                 if response.status_code == 429 and attempts < max_retries:
-                    retry_after = int(response.headers.get("Retry-After", 15))
+                    retry_after = _get_retry_after(response)
                     LOG.warning(f"MS Teams Rate limited for tenant {tenant}. Retrying after {retry_after}s...")
                     attempts += 1
                     last_error = RateLimitedError(
@@ -332,7 +350,7 @@ class MsTeamsClient:
 
             # Rate limited - retry if attempts remaining
             if response.status_code == 429 and attempts < max_retries:
-                retry_after = int(response.headers.get("Retry-After", 15))
+                retry_after = _get_retry_after(response)
                 LOG.warning("MS Teams Rate limited. Retrying after %ss...", retry_after)
                 attempts += 1
                 time.sleep(retry_after)
@@ -403,7 +421,7 @@ class MsTeamsClient:
             LOG.debug(f"MS Teams threaded reply sent to message {parent_message_id}")
 
             if response.status_code == 429 and attempts < max_retries:
-                retry_after = int(response.headers.get("Retry-After", 15))
+                retry_after = _get_retry_after(response)
                 LOG.warning(f"MS Teams Rate limited. Retrying after {retry_after}s...")
                 attempts += 1
                 time.sleep(retry_after)
@@ -490,7 +508,7 @@ class MsTeamsClient:
             chat_response = requests.post(create_chat_url, headers=headers, json=chat_payload)
 
             if chat_response.status_code == 429 and attempt < max_retries:
-                retry_after = int(chat_response.headers.get("Retry-After", 15))
+                retry_after = _get_retry_after(chat_response)
                 LOG.warning("MS Teams rate limited creating chat. Retrying after %ss...", retry_after)
                 time.sleep(retry_after)
                 continue
@@ -533,7 +551,7 @@ class MsTeamsClient:
             msg_response = requests.post(send_message_url, headers=headers, json=message_payload)
 
             if msg_response.status_code == 429 and attempt < max_retries:
-                retry_after = int(msg_response.headers.get("Retry-After", 15))
+                retry_after = _get_retry_after(msg_response)
                 LOG.warning("MS Teams rate limited sending message. Retrying after %ss...", retry_after)
                 time.sleep(retry_after)
                 continue

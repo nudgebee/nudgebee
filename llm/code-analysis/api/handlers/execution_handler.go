@@ -170,16 +170,43 @@ func (h *ExecutionHandler) HandleExecute(c *gin.Context) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", req.Command)
 	cmd.Dir = workDir
 
-	// Apply environment variables - strictly from request, do NOT inherit host env
-	// Ensure basic PATH is present if not provided, otherwise standard tools fail
+	// Apply environment variables — strictly from request, do NOT inherit host env.
+	// The per-conversation isolation contract (see CLAUDE.md, the workspace
+	// contract carried by ShellTool.Description() in llm-server) is built on:
+	//
+	//   * HOME=workDir → tool defaults (XDG_*, PIP_CACHE_DIR, NPM_CONFIG_CACHE,
+	//     GOPATH, KUBECONFIG, AWS_CONFIG_FILE, …) all land under the
+	//     conversation directory because they default to subdirs of $HOME.
+	//   * PWD=workDir  → cwd for the shell process.
+	//   * TMPDIR/TMP/TEMP=workDir → Python `tempfile`, mktemp(1), `sort -T`,
+	//     Go `os.TempDir()`, npm and other cross-platform tools default to
+	//     /tmp (pod-wide, account-shared) when these are unset. With them
+	//     set, tempfile lands in the per-conversation dir automatically
+	//     without the LLM having to remember the warning that absolute
+	//     /tmp/... paths leak across conversations.
+	//   * LC_ALL=C.UTF-8 → predictable sort/grep/date behavior across pods
+	//     while still handling non-ASCII bytes without errors.
+	//
+	// req.Env may NOT override any of these — the isolation contract is the
+	// server's, not the caller's. Note PATH is also reserved; the request
+	// can append extra variables but not redefine where files land.
 	cmd.Env = []string{
 		"PATH=/home/appuser/.local/bin:/home/appuser/bin:/app/google-cloud-sdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		fmt.Sprintf("HOME=%s", workDir),
 		fmt.Sprintf("PWD=%s", workDir),
+		fmt.Sprintf("TMPDIR=%s", workDir),
+		fmt.Sprintf("TMP=%s", workDir),
+		fmt.Sprintf("TEMP=%s", workDir),
+		"LC_ALL=C.UTF-8",
+	}
+	reservedEnv := map[string]struct{}{
+		"PATH": {}, "HOME": {}, "PWD": {},
+		"TMPDIR": {}, "TMP": {}, "TEMP": {},
+		"LC_ALL": {},
 	}
 	for k, v := range req.Env {
-		if k == "PATH" || k == "HOME" || k == "PWD" {
-			// Skip or handle specially if needed
+		if _, reserved := reservedEnv[k]; reserved {
+			// Caller cannot override the per-conversation isolation contract.
 			continue
 		}
 		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))

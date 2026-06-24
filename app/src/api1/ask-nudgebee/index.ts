@@ -1303,6 +1303,9 @@ const api = {
     if (data.status) {
       where.status = { _eq: data.status };
     }
+    if (data.user_id) {
+      where.user_id = { _eq: data.user_id };
+    }
 
     if (Array.isArray(data.source)) {
       where.source = { _in: data.source };

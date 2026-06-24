@@ -324,3 +324,43 @@ func TestMergeRelationships_EmptyAPI(t *testing.T) {
 		t.Errorf("Expected 1 merged relationship, got %d", len(merged))
 	}
 }
+
+func TestMergeRelationships_StableOrder(t *testing.T) {
+	makeRel := func(name string) CrossAccountRelationship {
+		return CrossAccountRelationship{
+			Name:           name,
+			Enabled:        true,
+			SourceType:     "k8s",
+			TargetType:     "k8s",
+			SourceNodeType: NodeTypeService,
+			TargetNodeType: NodeTypeWorkload,
+			MatchingRules: []MatchingRule{
+				{
+					SourceProperty: "prop1",
+					TargetProperty: "prop2",
+					MatchType:      MatchTypeExact,
+				},
+			},
+			RelationshipType: RelationshipRunsOn,
+		}
+	}
+
+	defaults := []CrossAccountRelationship{
+		makeRel("zebra"),
+		makeRel("alpha"),
+		makeRel("mike"),
+	}
+
+	wantOrder := []string{"alpha", "mike", "zebra"}
+	for i := 0; i < 20; i++ {
+		merged := MergeRelationships(defaults, nil)
+		if len(merged) != len(wantOrder) {
+			t.Fatalf("iteration %d: expected %d relationships, got %d", i, len(wantOrder), len(merged))
+		}
+		for j, want := range wantOrder {
+			if merged[j].Name != want {
+				t.Fatalf("iteration %d: index %d = %q, want %q", i, j, merged[j].Name, want)
+			}
+		}
+	}
+}

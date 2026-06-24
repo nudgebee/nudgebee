@@ -26,6 +26,11 @@ export interface ResourceAction {
   // Marks actions that render a bespoke dialog instead of ConfirmActionDialog.
   // The consumer component is responsible for rendering the matching dialog.
   customDialog?: 'ssm_run_command';
+  // When set, the result `message` (which may be large multi-line command
+  // output) is NOT dumped into the snackbar — the snackbar shows only a concise
+  // status and the consumer is expected to render the full output elsewhere
+  // (e.g. SsmCommandResultDialog).
+  suppressResultMessage?: boolean;
   // Args derived from the resource row itself (not from user input). The
   // backend needs these as part of `args` but they aren't filled by the
   // confirmation dialog. Returned values are merged BEFORE user-supplied
@@ -91,6 +96,7 @@ export const RUN_SSM_COMMAND_ACTION: ResourceAction = {
   isAvailable: (state) => VM_RUNNING_STATES.has(normalizeState(state)),
   serviceNameOverride: 'AWSSystemsManager',
   customDialog: 'ssm_run_command',
+  suppressResultMessage: true,
 };
 
 export const RDS_ACTIONS: ResourceAction[] = [

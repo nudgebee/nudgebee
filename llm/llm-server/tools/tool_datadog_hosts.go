@@ -91,7 +91,7 @@ func (m DatadogHostsTool) ConfigSchema(ctx *security.RequestContext) toolcore.To
 func (m DatadogHostsTool) executeDatadogHosts(ctx toolcore.NbToolContext, query string, configs map[string]any) (map[string]any, error) {
 	apiKey, appKey, site, err := getDataDogConfigs(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("executeDatadogHosts: get datadog configs: %w", err)
 	}
 
 	// Datadog Hosts API v1 endpoint
@@ -106,7 +106,7 @@ func (m DatadogHostsTool) executeDatadogHosts(ctx toolcore.NbToolContext, query 
 
 	req, err := http.NewRequest("GET", requestURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("executeDatadogHosts: build request: %w", err)
 	}
 	return doDatadogRequest(req, apiKey, appKey)
 }

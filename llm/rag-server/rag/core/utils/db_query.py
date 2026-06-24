@@ -72,7 +72,13 @@ def get_confluence_integrations(cloud_account_id):
                     integrations[integration_id]["account_id"] = row.cloud_account_id
                     integrations[integration_id]["config"] = {}
 
-                integrations[integration_id]["config"][row.name] = row.value
+                # The token is encrypted at rest (see confluence.go schema).
+                # decrypt_value is best-effort: legacy plaintext rows fail
+                # AES-GCM and are returned unchanged.
+                if row.name == "token":
+                    integrations[integration_id]["config"][row.name] = decrypt_value(row.value)
+                else:
+                    integrations[integration_id]["config"][row.name] = row.value
 
             return list(integrations.values())
 
@@ -364,7 +370,13 @@ def get_confluence_integrations_for_tenant(tenant_id):
                     integrations[integration_id]["integration_id"] = integration_id
                     integrations[integration_id]["tenant_id"] = tenant_id
                     integrations[integration_id]["config"] = {}
-                integrations[integration_id]["config"][row.name] = row.value
+                # The token is encrypted at rest (see confluence.go schema).
+                # decrypt_value is best-effort: legacy plaintext rows fail
+                # AES-GCM and are returned unchanged.
+                if row.name == "token":
+                    integrations[integration_id]["config"][row.name] = decrypt_value(row.value)
+                else:
+                    integrations[integration_id]["config"][row.name] = row.value
 
             return list(integrations.values())
     except Exception as e:

@@ -111,6 +111,10 @@ func (a *nbCustomAgent) GetPlannerType() AgentPlannerType {
 	return a.agent.ExecutorType
 }
 
+func (a *nbCustomAgent) GetModelCategory() ModelTier {
+	return ModelTierReasoning
+}
+
 func (a *nbCustomAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	// Per-instance cache: warm within a single request (GetSupportedTools called by both
 	// GetSystemPrompt and the executor).

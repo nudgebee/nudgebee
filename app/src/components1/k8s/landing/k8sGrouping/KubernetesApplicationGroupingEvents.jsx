@@ -347,7 +347,7 @@ const KubernetesApplicationGroupingEvents = ({ groupId }) => {
           <CustomTable
             loading={loading}
             tableData={tableData}
-            headers={['Message', 'Name', 'Type', 'Severity', 'Occured time', 'Status', '']}
+            headers={['Message', 'Name', 'Type', 'Severity', 'Occurred time', 'Status', '']}
             rowsPerPage={rowsPerPage}
             totalRows={eventsCount}
             onPageChange={onPageChange}

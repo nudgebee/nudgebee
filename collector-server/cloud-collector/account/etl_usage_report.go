@@ -580,9 +580,13 @@ func storeUsageReport(ctx *security.RequestContext, dbms *common.DatabaseManager
 	reportInsertedDate := time.Now().UTC()
 	reportDate := time.Date(year, month, 1, 0, 0, 0, 0, time.UTC)
 
-	// Delete existing records for this month first
+	// Delete existing records for this month first.
+	// Use a half-open range on report_date (>= first-of-month, < first-of-next-month)
+	// rather than TO_CHAR(report_date,'yyyy-mm') so the (account_id, report_date) index
+	// can be used instead of a full table scan.
+	nextMonth := reportDate.AddDate(0, 1, 0)
 	_, err := dbms.DoInTransaction(func(tx common.DatabaseManagerTx) (any, error) {
-		impactedRecords, err := dbms.Exec("DELETE FROM cloud_account_usage_report WHERE account_id = $1 AND TO_CHAR(report_date::date, 'yyyy-mm') = $2", accountId, reportDate.Format("2006-01"))
+		impactedRecords, err := tx.Exec("DELETE FROM cloud_account_usage_report WHERE account_id = $1 AND report_date >= $2 AND report_date < $3", accountId, reportDate, nextMonth)
 		if err != nil {
 			ctx.GetLogger().Error("usagereport: unable to delete existing usage report", "error", err)
 			return nil, err

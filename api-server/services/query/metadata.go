@@ -6075,7 +6075,11 @@ var table_metadata = map[string]TableDefinition{
 								icv.name LIKE 'llm_provider_api_key%' OR
 								icv.name LIKE 'llm_provider_access_key%' OR
 								icv.name LIKE 'llm_provider_secret_key%' OR
-								icv.name LIKE 'llm_provider_session_token%'
+								icv.name LIKE 'llm_provider_session_token%' OR
+								icv.name LIKE 'llm_tier_api_key%' OR
+								icv.name LIKE 'llm_tier_access_key%' OR
+								icv.name LIKE 'llm_tier_secret_key%' OR
+								icv.name LIKE 'llm_tier_session_token%'
 							) THEN ''
 							ELSE icv.value
 						END,
@@ -8045,18 +8049,25 @@ var table_metadata = map[string]TableDefinition{
 		Type:   Derived,
 		Source: database.Metastore,
 		Name:   "event_resolution_v2",
+		// event_id is polymorphic: for event-backed resolutions it is an events.id,
+		// for AI-investigation-raised resolutions (e.g. agent rightsizing PRs) it is an
+		// llm_conversations.id. Tenant/account are COALESCEd across both joins so
+		// investigation-backed rows are not dropped by the gateway tenant filter, and
+		// conversation_session_id is exposed so the UI can deep-link to /ask-nudgebee.
 		Def: `(SELECT er.*,
-			e.tenant as tenant_id,
-			e.cloud_account_id as account_id,
+			COALESCE(e.tenant, c.tenant_id) as tenant_id,
+			COALESCE(e.cloud_account_id, c.account_id) as account_id,
 			u.display_name as resolver_display_name,
-			ev.subject_name as event_subject_name,
-			ev.subject_namespace as event_subject_namespace,
-			ev.cloud_account_id as event_cloud_account_id,
-			ev.priority as event_priority,
-			ev.category as event_category
+			e.subject_name as event_subject_name,
+			e.subject_namespace as event_subject_namespace,
+			COALESCE(e.cloud_account_id, c.account_id) as event_cloud_account_id,
+			e.priority as event_priority,
+			e.category as event_category,
+			c.session_id as conversation_session_id,
+			c.title as conversation_title
 			FROM event_resolution er
 			LEFT JOIN events e ON e.id = er.event_id
-			LEFT JOIN events ev ON ev.id = er.event_id
+			LEFT JOIN llm_conversations c ON c.id = er.event_id
 			LEFT JOIN users u ON er.resolver_type = 'User' AND u.id::text = er.resolver_id
 		) as event_resolution_v2`,
 		TenantIdColumnName:  "tenant_id",
@@ -8081,12 +8092,14 @@ var table_metadata = map[string]TableDefinition{
 			"event_cloud_account_id":  {Type: ColumnDefinitionTypeString},
 			"event_priority":          {Type: ColumnDefinitionTypeString},
 			"event_category":          {Type: ColumnDefinitionTypeString},
+			"conversation_session_id": {Type: ColumnDefinitionTypeString},
+			"conversation_title":      {Type: ColumnDefinitionTypeString},
 		},
 	},
 	"event_resolution_groupings_v2": {
 		Type:                Aggregate,
 		Source:              database.Metastore,
-		Def:                 "(SELECT er.*, e.tenant as tenant_id, e.cloud_account_id as account_id, e.cloud_account_id as event_cloud_account_id FROM event_resolution er LEFT JOIN events e ON e.id = er.event_id) as er_agg",
+		Def:                 "(SELECT er.*, COALESCE(e.tenant, c.tenant_id) as tenant_id, COALESCE(e.cloud_account_id, c.account_id) as account_id, COALESCE(e.cloud_account_id, c.account_id) as event_cloud_account_id FROM event_resolution er LEFT JOIN events e ON e.id = er.event_id LEFT JOIN llm_conversations c ON c.id = er.event_id) as er_agg",
 		Name:                "event_resolution_groupings_v2",
 		TenantIdColumnName:  "tenant_id",
 		AccountIdColumnName: "account_id",

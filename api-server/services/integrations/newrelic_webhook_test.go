@@ -310,11 +310,11 @@ func TestMapLegacyStateToStatus(t *testing.T) {
 }
 
 func TestMapLegacySeverityToPriority(t *testing.T) {
-	assert.Equal(t, event.EventPriortiyHigh, mapLegacySeverityToPriority("CRITICAL"))
-	assert.Equal(t, event.EventPriortiyMedium, mapLegacySeverityToPriority("WARNING"))
-	assert.Equal(t, event.EventPriortiyInfo, mapLegacySeverityToPriority("INFO"))
-	assert.Equal(t, event.EventPriortiyLow, mapLegacySeverityToPriority("UNKNOWN"))
-	assert.Equal(t, event.EventPriortiyLow, mapLegacySeverityToPriority(""))
+	assert.Equal(t, event.EventPriorityHigh, mapLegacySeverityToPriority("CRITICAL"))
+	assert.Equal(t, event.EventPriorityMedium, mapLegacySeverityToPriority("WARNING"))
+	assert.Equal(t, event.EventPriorityInfo, mapLegacySeverityToPriority("INFO"))
+	assert.Equal(t, event.EventPriorityLow, mapLegacySeverityToPriority("UNKNOWN"))
+	assert.Equal(t, event.EventPriorityLow, mapLegacySeverityToPriority(""))
 }
 
 // The dispatcher must route legacy payloads (non-zero `incident_id`) to the

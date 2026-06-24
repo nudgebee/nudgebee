@@ -68,25 +68,25 @@ type ImageAttachment struct {
 
 // DO not use for API calls
 type NBAgentRequest struct {
-	Query                 string                   `json:"query" mapstructure:"required" validate:"required"`
-	AccountId             string                   `json:"account_id" mapstructure:"required" validate:"required"`
-	ConversationId        string                   `json:"conversation_id"`
-	AgentId               string                   `json:"agent_id"`
-	ParentAgentId         string                   `json:"parent_agent_id"`
-	MessageId             string                   `json:"message_id"`
-	UserId                string                   `json:"user_id"`
-	ConversationContext   string                   `json:"conversation_context"`
-	QueryContext          string                   `json:"query_context"`
-	QueryConfig           toolcore.NBQueryConfig   `json:"query_config"`
-	EnableQueryRefinement bool                     `json:"enable_query_refinement"`
-	AccountPrompt         string                   `json:"account_prompt"`
-	SessionId             string                   `json:"session_id"`
-	ConversationSource    ConversationSource       `json:"source"`
-	EnableCritique        bool                     `json:"enable_critique"`
-	ClientTools           []toolcore.NBToolCommand `json:"client_tools"`
-	Capabilities          map[string]any           `json:"capabilities"`
-	PreviousState         string                   `json:"previous_state"`
-	Images                []ImageAttachment        `json:"images,omitempty"`
+	Query                 string                     `json:"query" mapstructure:"required" validate:"required"`
+	AccountId             string                     `json:"account_id" mapstructure:"required" validate:"required"`
+	ConversationId        string                     `json:"conversation_id"`
+	AgentId               string                     `json:"agent_id"`
+	ParentAgentId         string                     `json:"parent_agent_id"`
+	MessageId             string                     `json:"message_id"`
+	UserId                string                     `json:"user_id"`
+	ConversationContext   string                     `json:"conversation_context"`
+	QueryContext          string                     `json:"query_context"`
+	QueryConfig           toolcore.NBQueryConfig     `json:"query_config"`
+	EnableQueryRefinement bool                       `json:"enable_query_refinement"`
+	AccountPrompt         string                     `json:"account_prompt"`
+	SessionId             string                     `json:"session_id"`
+	ConversationSource    ConversationSource         `json:"source"`
+	EnableCritique        bool                       `json:"enable_critique"`
+	ClientTools           []toolcore.NBToolCommand   `json:"client_tools"`
+	Capabilities          toolcore.AgentCapabilities `json:"capabilities"`
+	PreviousState         string                     `json:"previous_state"`
+	Images                []ImageAttachment          `json:"images,omitempty"`
 	// SkillsContext carries fully-rendered skill content (a `<skills>...</skills>` block)
 	// for agents whose planner type is AgentPlannerTypeCustom AND whose Execute()
 	// makes direct LLM calls (loganalysis, logs_default.generateFinalResponse,
@@ -193,6 +193,12 @@ type NBAgentPlannerToolActionStep struct {
 	IsTerminal  bool                               `json:"is_terminal"`
 	References  []toolcore.NBToolResponseReference `json:"references"`
 	Followup    *FollowupRequest                   `json:"followup,omitempty"`
+	// Metadata carries tool-execution telemetry (exit status, duration,
+	// stderr, truncation) used by the prompt-assembly seams to append a
+	// trailing `[exitStatus: N | executionDuration: Xms]` footer to the
+	// observation text — without baking the footer into Observation itself
+	// (which would also leak it to the UI render of the response column).
+	Metadata *toolcore.NBToolResponseMetadata `json:"metadata,omitempty"`
 	// CompressedObservation caches the LLM-generated summary for this step's observation.
 	// Computed once when the step is first compressed, then reused across subsequent
 	// scratchpad builds to avoid redundant LLM calls.
@@ -347,18 +353,25 @@ type NBAgent interface {
 // NBAgentCategoryProvider is an optional interface that lets an agent declare
 // its model category (ModelTier). executeAgent stamps the category onto the
 // request context so the agent's LLM calls resolve the category-specific
-// model. An agent that does not implement it resolves through the normal flow.
+// model. An agent that does not implement it defaults to the Retrieval tier
+// (see agentModelCategory).
 type NBAgentCategoryProvider interface {
 	GetModelCategory() ModelTier
 }
 
-// agentModelCategory returns the category an agent opted into, or an empty
-// tier when it declared none (→ normal resolution flow).
+// agentModelCategory returns the category an agent opted into, or the default
+// Retrieval tier when it declared none. Retrieval is the fleet floor: most
+// agents are read/query tools, so defaulting to Retrieval keeps them untagged
+// while still routing them off the (expensive) global model. Agents that need
+// a different tier opt in explicitly — Summary (analysis/extract) or Reasoning
+// (orchestrators). Global is no longer a per-agent routing target; it remains
+// the inherited base/fallback every tier resolves to when its own model is
+// unconfigured.
 func agentModelCategory(agent NBAgent) ModelTier {
 	if p, ok := agent.(NBAgentCategoryProvider); ok {
 		return p.GetModelCategory()
 	}
-	return ""
+	return ModelTierRetrieval
 }
 
 // NBAgentCacheScopeProvider is an optional interface that allows agents to define

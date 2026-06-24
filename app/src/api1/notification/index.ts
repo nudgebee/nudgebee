@@ -1,4 +1,5 @@
 import { gqlStringify, queryGraphQL } from '@lib/HttpService';
+import apiIntegrations from '@api1/integrations';
 
 export const LIST_INSTALLED_NOTIFICATION_TOOLS = `query ListInstalledNotificationTools {
     messagingplatforms_list {
@@ -113,7 +114,19 @@ const apiNotifications = {
     try {
       const response = await queryGraphQL(LIST_INSTALLED_NOTIFICATION_TOOLS, 'ListInstalledNotificationTools');
       const platforms = response?.data?.data?.messagingplatforms_list?.data || [];
-      return { messaging_platforms: platforms };
+      // Slack/MS Teams may live in the integrations table now; surface them so the
+      // rule builder's platform toggles light up. Integration installs win (one per tenant).
+      let integrationPlatforms: any[] = [];
+      try {
+        const res: any = await apiIntegrations.listIntegrations({ type: ['slack', 'ms_teams'], limit: 50 });
+        const rows = res?.data?.data?.integrations_list?.rows || [];
+        integrationPlatforms = rows.map((r: any) => ({ id: r.id, platform: r.type }));
+      } catch {
+        integrationPlatforms = [];
+      }
+      const overridden = new Set(integrationPlatforms.map((p) => p.platform));
+      const merged = platforms.filter((p: any) => !overridden.has(p.platform)).concat(integrationPlatforms);
+      return { messaging_platforms: merged };
     } catch {
       console.log('failed to fetch installed notifications tools');
       return { messaging_platforms: [] };

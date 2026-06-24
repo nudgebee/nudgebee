@@ -26,6 +26,7 @@ import {
   ouAzure,
   ouGoogle,
   SlackIcon,
+  GChatIcon,
   McpIcon,
 } from '@assets';
 import { snakeToTitleCase } from 'src/utils/common';
@@ -186,6 +187,7 @@ const getCategoryInfo = (taskName: string) => {
     azure: { label: 'Azure', icon: ouAzure, description: 'Run Azure CLI commands against your Azure subscription', color: 'var(--ds-blue-600)' }, // Azure Blue
     k8s: { label: 'Kubernetes', icon: K8sIcon, description: 'Run kubectl commands against your Kubernetes cluster', color: 'var(--ds-blue-500)' }, // Kubernetes Blue
     slack: { label: 'Slack', icon: SlackIcon, description: 'Slack messaging and channel management', color: 'var(--ds-pink-700)' }, // Slack Purple
+    google_chat: { label: 'Google Chat', icon: GChatIcon, description: 'Google Chat messaging and space management', color: 'var(--ds-green-600)' }, // Google Chat Green
     mcp: { label: 'MCP', icon: McpIcon, description: 'Execute tools via Model Context Protocol servers', color: 'var(--ds-gray-700)' },
   };
 

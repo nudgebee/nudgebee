@@ -19,6 +19,13 @@ func init() {
 
 const ToolSpendSummary = "spend_summary"
 
+// Spend summary lookback windows, expressed in days.
+const (
+	lastWeekDays    = 7
+	lastMonthDays   = 30
+	lastQuarterDays = 90
+)
+
 // SpendSummaryTool provides pre-aggregated cloud spend data grouped by account or service.
 // Unlike SQL-executor tools, it runs fixed parameterized queries — no LLM-generated SQL.
 type SpendSummaryTool struct{}
@@ -108,11 +115,11 @@ func (t SpendSummaryTool) Call(nbCtx core.NbToolContext, input core.NBToolCallRe
 	var windowStart time.Time
 	switch window {
 	case "7d":
-		windowStart = windowEnd.AddDate(0, 0, -7)
+		windowStart = windowEnd.AddDate(0, 0, -lastWeekDays)
 	case "90d":
-		windowStart = windowEnd.AddDate(0, 0, -90)
+		windowStart = windowEnd.AddDate(0, 0, -lastQuarterDays)
 	default:
-		windowStart = windowEnd.AddDate(0, 0, -30)
+		windowStart = windowEnd.AddDate(0, 0, -lastMonthDays)
 		window = "30d"
 	}
 

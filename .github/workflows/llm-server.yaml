@@ -9,10 +9,18 @@ on:
       - .github/workflows/llm-server.yaml
       - deploy/kubernetes/llm-server/**
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     name: Go Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     outputs:
       image_tag: ${{ steps.set-tag.outputs.IMAGE_TAG }}
 

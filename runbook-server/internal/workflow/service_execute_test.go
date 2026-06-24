@@ -89,7 +89,7 @@ func TestExecuteWorkflowStampsLiveVersionMemo(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "test-run-id", runID)
 	// SetLiveVersion is a pointer flip only — it must not happen on Execute.
-	mockStore.AssertNotCalled(t, "SetLiveVersion", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	mockStore.AssertNotCalled(t, "SetLiveVersion", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	mockTemporal.AssertExpectations(t)
 }
 
@@ -131,7 +131,7 @@ func TestTriggerWorkflowFromDraftRunsDraftNoVersion(t *testing.T) {
 	// Critical invariants: no version row written, live pointer untouched, and we
 	// must not have asked for the live snapshot.
 	mockStore.AssertNotCalled(t, "PublishVersion", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
-	mockStore.AssertNotCalled(t, "SetLiveVersion", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	mockStore.AssertNotCalled(t, "SetLiveVersion", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	mockStore.AssertNotCalled(t, "GetLiveWorkflowVersion", mock.Anything, mock.Anything)
 	mockTemporal.AssertExpectations(t)
 }
@@ -263,7 +263,7 @@ func TestPublishWorkflowWithExplicitActiveStatus(t *testing.T) {
 	mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-pub").Return(wf, nil)
 	mockStore.On("PublishVersion", mock.Anything, "wf-pub", "test-user", model.WorkflowVersionSourcePublish, (*string)(nil), (*string)(nil), (*int)(nil), model.WorkflowStatusActive).
 		Return(publishedVersion, nil).Once()
-	mockStore.On("SetLiveVersion", mock.Anything, "test-tenant", "test-account", "wf-pub", "v-pub-2").Return(nil).Once()
+	mockStore.On("SetLiveVersion", mock.Anything, "test-tenant", "test-account", "wf-pub", "v-pub-2", "test-user").Return(nil).Once()
 	mockStore.On("GetLiveWorkflowVersion", mock.Anything, "wf-pub").
 		Return(&model.WorkflowVersion{ID: "v-pub-2", WorkflowID: "wf-pub", VersionNumber: 2, IsLive: true, Status: model.WorkflowStatusActive, Definition: wf.Definition}, nil)
 
@@ -280,7 +280,7 @@ func TestPublishWorkflowWithExplicitActiveStatus(t *testing.T) {
 	assert.True(t, v.IsLive)
 	// The dedicated UpdateWorkflowStatus call is gone — SetLiveVersion now
 	// mirrors the version's status onto the workflow row atomically.
-	mockStore.AssertNotCalled(t, "UpdateWorkflowStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	mockStore.AssertNotCalled(t, "UpdateWorkflowStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 }
 
 // TestPublishWorkflowRegistersTriggersWhenAlreadyActive locks in the recovery
@@ -304,7 +304,7 @@ func TestPublishWorkflowRegistersTriggersWhenAlreadyActive(t *testing.T) {
 	mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-active").Return(wf, nil)
 	mockStore.On("PublishVersion", mock.Anything, "wf-active", "test-user", model.WorkflowVersionSourcePublish, (*string)(nil), (*string)(nil), (*int)(nil), model.WorkflowStatusActive).
 		Return(publishedVersion, nil).Once()
-	mockStore.On("SetLiveVersion", mock.Anything, "test-tenant", "test-account", "wf-active", "v-active-3").Return(nil).Once()
+	mockStore.On("SetLiveVersion", mock.Anything, "test-tenant", "test-account", "wf-active", "v-active-3", "test-user").Return(nil).Once()
 	mockStore.On("GetLiveWorkflowVersion", mock.Anything, "wf-active").
 		Return(&model.WorkflowVersion{ID: "v-active-3", WorkflowID: "wf-active", VersionNumber: 3, IsLive: true, Status: model.WorkflowStatusActive, Definition: wf.Definition}, nil)
 
@@ -321,7 +321,7 @@ func TestPublishWorkflowRegistersTriggersWhenAlreadyActive(t *testing.T) {
 	assert.True(t, v.IsLive)
 	// Status mirror happens inside SetLiveVersion now, so there's no separate
 	// UpdateWorkflowStatus call to assert on.
-	mockStore.AssertNotCalled(t, "UpdateWorkflowStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
+	mockStore.AssertNotCalled(t, "UpdateWorkflowStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything)
 	// ...but triggers were registered regardless (the recovery guarantee).
 	mockTemporal.AssertCalled(t, "Create", mock.Anything, mock.MatchedBy(func(opts client.ScheduleOptions) bool {
 		return opts.ID == "workflow-schedule-wf-active-0"
@@ -412,7 +412,7 @@ func TestSetLiveWorkflowVersionResyncsSchedule(t *testing.T) {
 	}
 
 	mockStore.On("GetWorkflowVersion", mock.Anything, "wf-roll", 1).Return(target, nil)
-	mockStore.On("SetLiveVersion", mock.Anything, "test-tenant", "test-account", "wf-roll", "v1").Return(nil)
+	mockStore.On("SetLiveVersion", mock.Anything, "test-tenant", "test-account", "wf-roll", "v1", "test-user").Return(nil)
 	mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-roll").Return(reloaded, nil)
 	mockStore.On("GetLiveWorkflowVersion", mock.Anything, "wf-roll").Return(liveV1, nil)
 

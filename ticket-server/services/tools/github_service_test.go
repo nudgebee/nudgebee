@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"nudgebee/tickets-server/models"
 
@@ -173,5 +174,71 @@ func TestCreateGithubIssueWithClient_AcceptsValidAssignee(t *testing.T) {
 	}
 	if got.Status != "open" {
 		t.Errorf("expected status=open, got %q", got.Status)
+	}
+}
+
+// TestGetGithubIssueWithClient_MapsMetadata verifies that the Get mapping
+// promotes assignees, labels, reporter, milestone, project_key and updated_at
+// to top-level Ticket fields (issue #32155), not just into Raw.
+func TestGetGithubIssueWithClient_MapsMetadata(t *testing.T) {
+	const owner, repo = "nudgebee", "demo"
+
+	handler := http.NewServeMux()
+	handler.HandleFunc("/repos/"+owner+"/"+repo+"/issues/42", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"number": 42,
+			"title": "Issue Title",
+			"body": "Issue Description",
+			"state": "open",
+			"html_url": "https://github.com/nudgebee/demo/issues/42",
+			"created_at": "2026-06-11T06:18:55Z",
+			"updated_at": "2026-06-11T06:19:05Z",
+			"user": {"login": "rohitutekar123"},
+			"assignee": {"login": "rohitutekar123"},
+			"assignees": [{"login": "Kankshit-02"}, {"login": "rohitutekar123"}],
+			"labels": [{"name": "bug"}, {"name": "Workflow"}],
+			"milestone": {"title": "v1.0"}
+		}`))
+	})
+
+	client, srv := newTestGithubClient(t, handler)
+	defer srv.Close()
+
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	got, err := getGithubIssueWithClient(ctx, client, owner, repo, 42, owner+"/"+repo)
+	if err != nil {
+		t.Fatalf("getGithubIssueWithClient() error = %v", err)
+	}
+
+	if got.Assignee != "rohitutekar123" {
+		t.Errorf("Assignee = %q, want rohitutekar123", got.Assignee)
+	}
+	if joined := strings.Join(got.Assignees, ","); joined != "Kankshit-02,rohitutekar123" {
+		t.Errorf("Assignees = %v, want [Kankshit-02 rohitutekar123]", got.Assignees)
+	}
+	if got.Reporter != "rohitutekar123" {
+		t.Errorf("Reporter = %q, want rohitutekar123", got.Reporter)
+	}
+	if joined := strings.Join(got.Labels, ","); joined != "bug,Workflow" {
+		t.Errorf("Labels = %v, want [bug Workflow]", got.Labels)
+	}
+	if got.Milestone != "v1.0" {
+		t.Errorf("Milestone = %q, want v1.0", got.Milestone)
+	}
+	if got.ProjectKey != owner+"/"+repo {
+		t.Errorf("ProjectKey = %q, want %s/%s", got.ProjectKey, owner, repo)
+	}
+	if got.URL != "https://github.com/nudgebee/demo/issues/42" {
+		t.Errorf("URL = %q", got.URL)
+	}
+	if got.CreatedAt == nil || got.CreatedAt.UTC().Format(time.RFC3339) != "2026-06-11T06:18:55Z" {
+		t.Errorf("CreatedAt = %v, want 2026-06-11T06:18:55Z", got.CreatedAt)
+	}
+	if got.UpdatedAt == nil || got.UpdatedAt.UTC().Format(time.RFC3339) != "2026-06-11T06:19:05Z" {
+		t.Errorf("UpdatedAt = %v, want 2026-06-11T06:19:05Z", got.UpdatedAt)
+	}
+	if got.Platform != "github" {
+		t.Errorf("Platform = %q, want github", got.Platform)
 	}
 }

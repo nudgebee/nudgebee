@@ -193,3 +193,113 @@ func TestHandleExecute(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleExecute_IsolatedEnv pins the per-conversation isolation
+// contract: TMPDIR / TMP / TEMP / HOME / PWD all point at the
+// per-conversation work directory (so Python tempfile, mktemp, sort -T,
+// pip cache, npm cache, kubeconfig, etc. all default into the
+// conversation dir, not /tmp or some other shared location), and
+// LC_ALL=C.UTF-8 is set for cross-pod determinism. The contract is the
+// server's, so req.Env may not override these — even if the caller
+// asks.
+//
+// This guards the workspace contract that the llm-server publishes to
+// the LLM via ShellTool.Description():
+//
+//   - "per-conversation directory"
+//   - "/tmp/ … shared with other conversations on the same account"
+//   - ".nb_profile"
+//
+// If TMPDIR/TMP/TEMP stop pointing at workDir, Python tempfile leaks
+// to /tmp and the prompt is silently lying again. This test catches
+// that.
+func TestHandleExecute_IsolatedEnv(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	tempDir, err := os.MkdirTemp("", "exec_test_env")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	cfg := &config.Config{}
+	cfg.Analysis.WorkspaceDir = tempDir
+	cfg.Execution.WorkspaceDir = filepath.Join(tempDir, "exec_workspaces")
+
+	handler := NewExecutionHandler(cfg)
+	router := gin.New()
+	router.POST("/execute", handler.HandleExecute)
+
+	exec := func(req ExecutionRequest) ExecutionResponse {
+		t.Helper()
+		body, _ := json.Marshal(req)
+		httpReq, _ := http.NewRequest(http.MethodPost, "/execute", bytes.NewBuffer(body))
+		httpReq.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, httpReq)
+		var resp ExecutionResponse
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		return resp
+	}
+
+	convID := "convo-env-isolation"
+	expectedWorkDir := filepath.Join(tempDir, "exec_workspaces", convID)
+
+	t.Run("defaults: TMPDIR/TMP/TEMP/HOME/PWD all point at the per-conversation directory", func(t *testing.T) {
+		// One echo emits all five values on separate lines so the test
+		// fails informatively when only one drifts.
+		cmd := `echo "HOME=$HOME"; echo "PWD=$PWD"; echo "TMPDIR=$TMPDIR"; echo "TMP=$TMP"; echo "TEMP=$TEMP"`
+		resp := exec(ExecutionRequest{Command: cmd, ConversationID: convID})
+
+		assert.Equal(t, "success", resp.CommandStatus, "response: %+v", resp)
+		assert.Contains(t, resp.Response, "HOME="+expectedWorkDir)
+		assert.Contains(t, resp.Response, "PWD="+expectedWorkDir)
+		assert.Contains(t, resp.Response, "TMPDIR="+expectedWorkDir,
+			"TMPDIR must point at the per-conversation directory so Python tempfile / mktemp default into it")
+		assert.Contains(t, resp.Response, "TMP="+expectedWorkDir,
+			"TMP must point at the per-conversation directory for cross-platform tools that check TMP not TMPDIR")
+		assert.Contains(t, resp.Response, "TEMP="+expectedWorkDir,
+			"TEMP must point at the per-conversation directory for cross-platform tools that check TEMP")
+	})
+
+	t.Run("LC_ALL is C.UTF-8 for cross-pod determinism", func(t *testing.T) {
+		resp := exec(ExecutionRequest{Command: `echo "LC_ALL=$LC_ALL"`, ConversationID: convID})
+		assert.Equal(t, "success", resp.CommandStatus, "response: %+v", resp)
+		assert.Contains(t, resp.Response, "LC_ALL=C.UTF-8")
+	})
+
+	t.Run("req.Env cannot override the isolation contract", func(t *testing.T) {
+		// The caller asks for TMPDIR=/etc and HOME=/etc — both should be
+		// ignored and the server's per-conversation values should win.
+		resp := exec(ExecutionRequest{
+			Command:        `echo "TMPDIR=$TMPDIR"; echo "HOME=$HOME"; echo "LC_ALL=$LC_ALL"`,
+			ConversationID: convID,
+			Env: map[string]string{
+				"TMPDIR": "/etc",
+				"TMP":    "/etc",
+				"TEMP":   "/etc",
+				"HOME":   "/etc",
+				"LC_ALL": "en_US.UTF-8",
+			},
+		})
+		assert.Equal(t, "success", resp.CommandStatus, "response: %+v", resp)
+		assert.NotContains(t, resp.Response, "/etc",
+			"req.Env must NOT override the per-conversation isolation contract; rendered env contained %q", resp.Response)
+		assert.Contains(t, resp.Response, "TMPDIR="+expectedWorkDir)
+		assert.Contains(t, resp.Response, "HOME="+expectedWorkDir)
+		assert.Contains(t, resp.Response, "LC_ALL=C.UTF-8")
+	})
+
+	t.Run("non-reserved env vars in req.Env pass through unchanged", func(t *testing.T) {
+		// A caller-provided variable that is NOT part of the isolation
+		// contract is allowed through — otherwise we lose legitimate
+		// per-call env injection (CLI config, feature flags, etc.).
+		resp := exec(ExecutionRequest{
+			Command:        `echo "MY_CUSTOM_VAR=$MY_CUSTOM_VAR"`,
+			ConversationID: convID,
+			Env:            map[string]string{"MY_CUSTOM_VAR": "caller-provided"},
+		})
+		assert.Equal(t, "success", resp.CommandStatus, "response: %+v", resp)
+		assert.Contains(t, resp.Response, "MY_CUSTOM_VAR=caller-provided")
+	})
+}

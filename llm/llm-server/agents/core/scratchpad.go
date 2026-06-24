@@ -154,11 +154,14 @@ func ConstructScratchPad(intermediateSteps []NBAgentPlannerToolActionStep, sctx 
 			fmt.Fprintf(&sb, "    <plan><![CDATA[%s]]></plan>\n", plan.Action.Log)
 			comp.Header = sb.String()
 
-			obs := intermediateSteps[plannerSummaryToolIndex[i]].Observation
+			summaryStep := intermediateSteps[plannerSummaryToolIndex[i]]
+			obs := summaryStep.Observation
 			if len(obs) > getMaxObservationChars() {
 				obs = TruncateMiddle(obs, 2048, getMaxObservationChars()-2048)
 			}
-			comp.Observation = obs
+			// Append the metadata footer AFTER truncation so it can't be cut
+			// mid-string. Stored observation column stays footer-free.
+			comp.Observation = renderObservationWithMetadata(obs, summaryStep.Metadata)
 			comp.Footer = "  </plan_summary>\n"
 
 			components = append(components, comp)
@@ -223,7 +226,10 @@ func ConstructScratchPad(intermediateSteps []NBAgentPlannerToolActionStep, sctx 
 		if len(obs) > getMaxObservationChars() {
 			obs = TruncateMiddle(obs, 2048, getMaxObservationChars()-2048)
 		}
-		comp.Observation = obs
+		// Append the metadata footer AFTER truncation/pruning so the planner
+		// always sees exitStatus + executionDuration alongside the (possibly
+		// minimized) observation. Stored observation column stays footer-free.
+		comp.Observation = renderObservationWithMetadata(obs, plan.Metadata)
 
 		var fsb strings.Builder
 		if len(plan.References) > 0 {

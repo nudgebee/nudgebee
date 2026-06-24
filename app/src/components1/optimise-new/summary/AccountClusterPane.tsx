@@ -62,15 +62,18 @@ const formatCurrency = (value: number, symbol: string): string => {
 
 // ─── Cost overview header ──────────────────────────────────────────────────
 
+const OverviewHeader = (
+  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+    <AccountBalanceWalletOutlinedIcon sx={{ fontSize: 18, color: ds.gray[700] }} />
+    <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>Cost & Health Overview</Typography>
+  </Box>
+);
+
 const PaneHeader = ({ costByCurrency, costLoading }: { costByCurrency?: CurrencyCostSummary[]; costLoading?: boolean }) => {
   if (costLoading) {
     return (
       <Box sx={{ mb: ds.space[4] }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], mb: ds.space[3] }}>
-          <AccountBalanceWalletOutlinedIcon sx={{ fontSize: 18, color: ds.gray[700] }} />
-          <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>Cost & Health Overview</Typography>
-        </Box>
-        <Card size='md'>
+        <Card size='md' header={OverviewHeader}>
           <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', columnGap: ds.space[5], rowGap: ds.space[3] }}>
             {[0, 1, 2, 3].map((i) => (
               <Box key={i} sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
@@ -90,18 +93,11 @@ const PaneHeader = ({ costByCurrency, costLoading }: { costByCurrency?: Currency
 
   return (
     <Box sx={{ mb: ds.space[4] }}>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], mb: ds.space[3] }}>
-        <AccountBalanceWalletOutlinedIcon sx={{ fontSize: 18, color: ds.gray[700] }} />
-        <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>Cost & Health Overview</Typography>
-      </Box>
-
-      {costByCurrency.map((summary) => (
-        <Card
-          key={summary.currencySymbol}
-          size='md'
-          sx={{ mb: ds.space[3] }}
-          header={
-            costByCurrency.length > 1 ? (
+      <Card size='md' header={OverviewHeader}>
+        {costByCurrency.map((summary, idx) => (
+          <Box key={summary.currencySymbol}>
+            {idx > 0 && <Divider sx={{ my: ds.space[4] }} />}
+            {costByCurrency.length > 1 && (
               <CustomTooltip title={summary.accountNames.join(', ')} placement='top'>
                 <Typography
                   sx={{
@@ -110,63 +106,64 @@ const PaneHeader = ({ costByCurrency, costLoading }: { costByCurrency?: Currency
                     color: ds.gray[600],
                     textTransform: 'uppercase',
                     cursor: 'default',
+                    mb: ds.space[3],
+                    display: 'inline-block',
                   }}
                 >
                   {SYMBOL_TO_NAME[summary.currencySymbol] || summary.currencySymbol} &middot; {summary.accountNames.length} account
                   {summary.accountNames.length !== 1 ? 's' : ''}
                 </Typography>
               </CustomTooltip>
-            ) : undefined
-          }
-        >
-          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', columnGap: ds.space[5], rowGap: ds.space[3] }}>
-            <Stat
-              label='Month to Date'
-              size='sm'
-              value={
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
-                  <Box component='span' sx={{ fontSize: ds.text.title, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>
-                    {formatCurrency(summary.mtd, summary.currencySymbol)}
+            )}
+            <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', columnGap: ds.space[5], rowGap: ds.space[3] }}>
+              <Stat
+                label='Month to Date'
+                size='sm'
+                value={
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+                    <Box component='span' sx={{ fontSize: ds.text.title, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>
+                      {formatCurrency(summary.mtd, summary.currencySymbol)}
+                    </Box>
+                    {summary.mtdChange !== 0 && <Trend value={Math.abs(summary.mtdChange)} sign={summary.mtdChange > 0 ? -1 : 1} size='sm' />}
                   </Box>
-                  {summary.mtdChange !== 0 && <Trend value={Math.abs(summary.mtdChange)} sign={summary.mtdChange > 0 ? -1 : 1} size='sm' />}
-                </Box>
-              }
-            />
-            <Stat
-              label='Prev. Month'
-              size='sm'
-              value={
-                <Box component='span' sx={{ fontSize: ds.text.title, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>
-                  {formatCurrency(summary.prevMonth, summary.currencySymbol)}
-                </Box>
-              }
-            />
-            <Stat
-              label='Projected'
-              size='sm'
-              value={
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+                }
+              />
+              <Stat
+                label='Prev. Month'
+                size='sm'
+                value={
                   <Box component='span' sx={{ fontSize: ds.text.title, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>
-                    {formatCurrency(summary.projected, summary.currencySymbol)}
+                    {formatCurrency(summary.prevMonth, summary.currencySymbol)}
                   </Box>
-                  {summary.projectedChange !== 0 && (
-                    <Trend value={Math.abs(summary.projectedChange)} sign={summary.projectedChange > 0 ? -1 : 1} size='sm' />
-                  )}
-                </Box>
-              }
-            />
-            <Stat
-              label='Year to Date'
-              size='sm'
-              value={
-                <Box component='span' sx={{ fontSize: ds.text.title, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>
-                  {formatCurrency(summary.ytd, summary.currencySymbol)}
-                </Box>
-              }
-            />
+                }
+              />
+              <Stat
+                label='Projected'
+                size='sm'
+                value={
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+                    <Box component='span' sx={{ fontSize: ds.text.title, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>
+                      {formatCurrency(summary.projected, summary.currencySymbol)}
+                    </Box>
+                    {summary.projectedChange !== 0 && (
+                      <Trend value={Math.abs(summary.projectedChange)} sign={summary.projectedChange > 0 ? -1 : 1} size='sm' />
+                    )}
+                  </Box>
+                }
+              />
+              <Stat
+                label='Year to Date'
+                size='sm'
+                value={
+                  <Box component='span' sx={{ fontSize: ds.text.title, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>
+                    {formatCurrency(summary.ytd, summary.currencySymbol)}
+                  </Box>
+                }
+              />
+            </Box>
           </Box>
-        </Card>
-      ))}
+        ))}
+      </Card>
     </Box>
   );
 };
@@ -311,12 +308,15 @@ const AccountClusterPane = ({ accounts, costByCurrency, accountCosts, costLoadin
   return (
     <Box sx={{ width: '370px', flexShrink: 0 }}>
       <PaneHeader costByCurrency={costByCurrency} costLoading={costLoading} />
-      {((costByCurrency && costByCurrency.length > 0) || costLoading) && <Divider sx={{ mb: ds.space[4] }} />}
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], mb: ds.space[3] }}>
-        <StorageOutlinedIcon sx={{ fontSize: 18, color: ds.gray[700] }} />
-        <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>Accounts & Clusters</Typography>
-      </Box>
-      <Card size='sm'>
+      <Card
+        size='sm'
+        header={
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
+            <StorageOutlinedIcon sx={{ fontSize: 18, color: ds.gray[700] }} />
+            <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>Accounts</Typography>
+          </Box>
+        }
+      >
         {accounts.map((acct) => (
           <AccountCard
             key={acct.accountId}

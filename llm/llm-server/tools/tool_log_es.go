@@ -141,7 +141,7 @@ func (m ElasticSearchExecuteTool) executeES(ctx core.NbToolContext, query string
 		queryObj["index"] = utils.GetESAccountIndex(accountId)
 	}
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("executeES: unmarshal query: %w", err)
 	}
 	actionParam := relay.ActionExecuteBody{
 		AccountID:    accountId,
@@ -150,7 +150,7 @@ func (m ElasticSearchExecuteTool) executeES(ctx core.NbToolContext, query string
 	}
 	response, err := relay.Execute(actionParam)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("executeES: relay execute: %w", err)
 	}
 	return m.getRelayESResponseData(response)
 }
@@ -178,7 +178,7 @@ func (m ElasticSearchExecuteTool) getRelayESResponseData(relayResponse map[strin
 	}
 	err := common.UnmarshalJson([]byte(dataStr), &funcCall)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("getRelayESResponseData: unmarshal es response: %w", err)
 	}
 	result := map[string]any{
 		"result": funcCall.Hits.Hits,

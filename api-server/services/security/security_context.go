@@ -285,7 +285,7 @@ func (sc *SecurityContext) ListK8sPermissions(accountId string, resourceType str
 }
 
 func (sc *SecurityContext) ListK8sObjectNames(accountId string, resourceType string, permission K8sRbacPermissionType) ([]string, error) {
-	if resourceType == K8sObjectNamespaces && slices.Contains(sc.roles, AUTH_K8S_NAMESPACE_ADMIN_ROLE) || slices.Contains(sc.roles, AUTH_K8S_NAMESPACE_READ_ADMIN_ROLE) {
+	if resourceType == K8sObjectNamespaces && (slices.Contains(sc.roles, AUTH_K8S_NAMESPACE_ADMIN_ROLE) || slices.Contains(sc.roles, AUTH_K8S_NAMESPACE_READ_ADMIN_ROLE)) {
 		return sc.k8sNamespaces[accountId], nil
 	} else {
 		user, groups := sc.GetK8sUserAndGroup(accountId)

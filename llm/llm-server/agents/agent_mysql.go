@@ -55,10 +55,6 @@ func (l MySQLDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query cor
 		"**4. Interpret & Summarize:** Analyze the returned results. If no data is found, explain why.",
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		instructions = append(instructions, core.GetWorkspaceInstructions()...)
-	}
-
 	constraints := []string{
 		"You MUST use the `mysql_query_execute` tool for all database interactions. Do NOT provide answers without evidence from the database.",
 		"When broad data is requested (e.g., 'all users'), do NOT add restrictive filters unless requested.",

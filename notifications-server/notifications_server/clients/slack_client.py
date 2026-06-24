@@ -14,7 +14,7 @@ class SlackClient(WebClient):
         client = WebClient(token=token)
         return client.chat_postMessage(channel=channel_id, **kwargs)
 
-    def post_ephimeral(self, *, token, channel_id=None, user=None, **kwargs):
+    def post_ephemeral(self, *, token, channel_id=None, user=None, **kwargs):
         client = WebClient(token=token)
         return client.chat_postEphemeral(channel=channel_id, user=user, **kwargs)
 

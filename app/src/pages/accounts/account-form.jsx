@@ -4,6 +4,7 @@ import ServiceNowAccountModal from '@common/ServiceNowAccountModal';
 import ZenDutyAccountModal from '@common/ZenDutyAccountModal';
 import ListIntegrations from './ListIntegrations';
 import MessagingIntegrationTile from './MessagingIntegrationTile';
+import GoogleChatSpacesPanel from './GoogleChatSpacesPanel';
 import TicketingIntegrationTile from './TicketingIntegrationTile';
 import JiraAccountModal from '@components1/common/JiraAccountModal';
 import K8sIntegrationTile from './K8sIntegrationTile';
@@ -38,12 +39,14 @@ export default function AddAccountForm() {
               />
             );
           case 'google_chat':
+            return <GoogleChatSpacesPanel />;
+          case 'discord':
             return (
               <MessagingIntegrationTile
-                provider='google_chat'
-                displayName='Google Chat'
-                installUrl='/api/integrations/google/install'
-                headers={['Installed At', 'Channels', { name: '', width: '20%' }, { name: '', width: '1%' }]}
+                provider='discord'
+                displayName='Discord'
+                installUrl={null}
+                headers={['Installed At', 'Channels', { name: ' ', width: '20%' }, { name: '  ', width: '1%' }]}
                 hasTeamName={false}
               />
             );

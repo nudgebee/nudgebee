@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -236,5 +237,16 @@ func init() {
 		if namespace != "" {
 			Config.NudgebeeNamespace = namespace
 		}
+	}
+}
+
+const insecureRelaySecret = "default"
+
+// LogSecurityWarnings emits warnings for insecure config defaults. Called once
+// from main() at startup. Non-blocking — warnings only.
+func LogSecurityWarnings() {
+	if Config.RelayServerSecretKey == insecureRelaySecret {
+		slog.Warn("config: SECURITY — relay_server_secret_key is set to the publicly known default value; " +
+			"set RELAY_SERVER_SECRET_KEY to a strong random value before deploying.")
 	}
 }

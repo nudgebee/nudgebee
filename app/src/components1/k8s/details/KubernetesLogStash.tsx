@@ -8,7 +8,7 @@ import ThreeDotsMenu from '@components1/common/ThreeDotsMenu';
 import { Box } from '@mui/material';
 import { RefreshSubmitButton } from '@components1/k8s/common/RefreshSubmitButton';
 import UserHistoryButton from '@components1/common/UserHistory';
-import useTicketFliter from '@hooks/useTicketFliter';
+import useTicketFilter from '@hooks/useTicketFilter';
 import QueryAutocomplete from '@components1/k8s/common/QueryAutocomplete';
 import Text from '@common-new/format/Text';
 import apiAskNudgebee from '@api1/ask-nudgebee';
@@ -91,7 +91,7 @@ const KubernetesLogStash: React.FC<KubernetesLogStashProps> = ({ accountId, show
     getTicketDescription,
     handleTicketSuccess,
     handleTicketFailure,
-  } = useTicketFliter();
+  } = useTicketFilter();
 
   const k8sLogs = 'k8sLogstash';
 

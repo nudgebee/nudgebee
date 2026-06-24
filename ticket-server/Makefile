@@ -14,7 +14,7 @@ test:
 benchmark:
 	go test -bench=. -count=5 -benchmem -run=^$  ./... | tee testresults/testperf.txt
 
-validate: test
+validate: lint test
 	gofmt -l ./**/*.go
 	go vet ./...
 
@@ -27,5 +27,3 @@ install: build
 
 lint:
 	golangci-lint run
-
-validate: lint test

@@ -49,7 +49,7 @@ const PROVIDERS = {
   DATABASE: ['POSTGRES', 'MYSQL', 'CLICKHOUSE', 'MSSQL', 'ORACLE'],
   IN_MEMORY: ['REDIS'],
   DOCS: ['CONFLUENCE'],
-  MESSAGING: ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT'],
+  MESSAGING: ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT', 'DISCORD'],
   OBSERVABITY_PLATFORM: [
     'DATADOG',
     'DYNATRACE',
@@ -83,7 +83,7 @@ const SECTIONS_CONFIG = [
     id: 'messaging',
     label: 'Messaging & Alerting',
     icon: MessageBlueIcon,
-    providers: ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT'],
+    providers: ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT', 'DISCORD'],
     tab: 2,
   },
   {
@@ -208,7 +208,7 @@ const AccountCard = React.memo(({ cloud_provider = 'AWS', active = 0, disabled =
     router.push(`/accounts/account-form?cloudProvider=${cloud_provider}`);
   }, [router, cloud_provider]);
 
-  const isMessagingProvider = ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT'].includes(cloud_provider?.toUpperCase());
+  const isMessagingProvider = ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT', 'DISCORD'].includes(cloud_provider?.toUpperCase());
   const needsChannelMapping =
     isMessagingProvider &&
     active > 0 &&
@@ -616,6 +616,9 @@ const accountHelpers = {
       } else if (platform.toLowerCase() === 'google_chat') {
         activeClouds = gChatAccData;
         platformKey = 'google_chat';
+      } else if (platform.toLowerCase() === 'discord') {
+        activeClouds = data.filter((d) => d.platform === 'discord');
+        platformKey = 'discord';
       } else {
         activeClouds = [];
       }
@@ -676,7 +679,7 @@ const Integrations = () => {
         channels = [acc.team_name]; // simplified based on code analysis
       } else if (acc.platform === 'ms_teams' && acc.channels?.team_name) {
         channels = [acc.channels.team_name];
-      } else if (acc.platform === 'google_chat') {
+      } else if (acc.platform === 'google_chat' || acc.platform === 'discord') {
         try {
           const parsed = typeof acc.channels === 'string' ? JSON.parse(acc.channels) : acc.channels;
           if (parsed?.name) {
@@ -696,6 +699,21 @@ const Integrations = () => {
     resData?.integrations?.forEach((acc) => {
       // Map 'status: enabled' to 'active' for consistency
       const status = acc.status === 'enabled' ? 'active' : 'disabled';
+
+      // google_chat_space bindings count under the Google Chat card; the space is the
+      // destination (no channel picker), so seed channels for the messaging badge check.
+      if (acc.type === 'google_chat_space') {
+        addToMap('GOOGLE_CHAT', { ...acc, status, channels: [acc.name] });
+        return;
+      }
+
+      // Slack / MS Teams integration installs supersede any legacy messaging_platforms
+      // entry for the same card (one install per tenant during the storage migration).
+      if (acc.type === 'slack' || acc.type === 'ms_teams') {
+        const cardKey = acc.type === 'ms_teams' ? 'MSTEAMS' : 'SLACK';
+        map[cardKey] = [{ ...acc, status, channels: [acc.name] }];
+        return;
+      }
 
       // Special case mapping for OTel/Clickhouse naming if needed
       let key = acc.type;

@@ -106,8 +106,9 @@ func CreateIntegrationConfig(
 
 	isUpdate := integrationId != ""
 
-	// Make accountIds optional for ticketing category (tenant-level integrations)
-	if integration.Category() != IntegrationCategoryTicketing && len(accountIds) == 0 {
+	// Tenant-scoped categories (ticketing, messaging) bind to a tenant directly
+	// and may be created with no cloud-account mappings.
+	if !integration.Category().IsTenantScoped() && len(accountIds) == 0 {
 		return IntegrationDto{}, errors.New("integrations: accountId is required")
 	}
 
@@ -1158,6 +1159,50 @@ func checkWorkflowWebhookNotInUse(tx *sqlx.Tx, integrationType, integrationId, t
 		return err
 	}
 	return fmt.Errorf("cannot %s workflow_webhook: automation %q (%s) is using it. Remove or update the automation first", action, workflowName, workflowId)
+}
+
+// DeleteGoogleChatSpaceBinding removes the google_chat_space integration for a
+// space, looked up by its globally-unique name. Used by notifications-server when
+// the bot is removed from a space (REMOVED_FROM_SPACE). Returns false if no
+// binding exists.
+func DeleteGoogleChatSpaceBinding(spaceID string) (bool, error) {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return false, err
+	}
+
+	var id string
+	err = dbms.Db.QueryRow(`SELECT id::text FROM integrations WHERE type = 'google_chat_space' AND name = $1`, spaceID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	tx, err := dbms.Db.Beginx()
+	if err != nil {
+		return false, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if _, err = tx.Exec(`DELETE FROM integration_config_values WHERE integration_id = $1`, id); err != nil {
+		return false, err
+	}
+	if _, err = tx.Exec(`DELETE FROM integrations WHERE id = $1`, id); err != nil {
+		return false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	committed = true
+	InvalidateIntegrationCache()
+	return true, nil
 }
 
 func DeleteIntegrationConfig(

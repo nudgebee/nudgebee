@@ -47,7 +47,7 @@ func TestPauseResumeWorkflow_MissingSchedule(t *testing.T) {
 
 		// Expect lookup + DB update via the legacy fallback path.
 		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", workflowID).Return(wfNoLive, nil)
-		mockStore.On("UpdateWorkflowStatus", mock.Anything, "test-tenant", "test-account", workflowID, model.WorkflowStatusPaused).Return(nil)
+		mockStore.On("UpdateWorkflowStatus", mock.Anything, "test-tenant", "test-account", workflowID, "test-user", model.WorkflowStatusPaused).Return(nil)
 
 		err := service.PauseWorkflow(sc, "test-account", workflowID)
 		assert.NoError(t, err)
@@ -71,7 +71,7 @@ func TestPauseResumeWorkflow_MissingSchedule(t *testing.T) {
 
 		// Expect lookup + DB update via the legacy fallback path.
 		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", workflowID).Return(wfNoLive, nil)
-		mockStore.On("UpdateWorkflowStatus", mock.Anything, "test-tenant", "test-account", workflowID, model.WorkflowStatusActive).Return(nil)
+		mockStore.On("UpdateWorkflowStatus", mock.Anything, "test-tenant", "test-account", workflowID, "test-user", model.WorkflowStatusActive).Return(nil)
 
 		err := service.ResumeWorkflow(sc, "test-account", workflowID)
 		assert.NoError(t, err)
@@ -128,7 +128,7 @@ func TestPauseResumeWorkflow_ScheduleExists(t *testing.T) {
 		mockTemporalClient.On("Pause", scheduleID+"-0", mock.Anything).Return(nil)
 
 		// Expect DB update via the legacy UpdateWorkflowStatus fallback path.
-		mockStore.On("UpdateWorkflowStatus", mock.Anything, "test-tenant", "test-account", workflowID, model.WorkflowStatusPaused).Return(nil)
+		mockStore.On("UpdateWorkflowStatus", mock.Anything, "test-tenant", "test-account", workflowID, "test-user", model.WorkflowStatusPaused).Return(nil)
 
 		err := service.PauseWorkflow(sc, "test-account", workflowID)
 		assert.NoError(t, err)
@@ -151,7 +151,7 @@ func TestPauseResumeWorkflow_ScheduleExists(t *testing.T) {
 
 		mockTemporalClient.On("Unpause", scheduleID, mock.Anything).Return(nil)
 		mockTemporalClient.On("Unpause", scheduleID+"-0", mock.Anything).Return(nil)
-		mockStore.On("UpdateWorkflowStatus", mock.Anything, "test-tenant", "test-account", workflowID, model.WorkflowStatusActive).Return(nil)
+		mockStore.On("UpdateWorkflowStatus", mock.Anything, "test-tenant", "test-account", workflowID, "test-user", model.WorkflowStatusActive).Return(nil)
 
 		err := service.ResumeWorkflow(sc, "test-account", workflowID)
 		assert.NoError(t, err)

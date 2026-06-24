@@ -109,6 +109,32 @@ const podOwnerLookupSQL = `
 	LIMIT 1
 `
 
+// workloadCloudResourceSQL resolves a k8s workload (Deployment/StatefulSet/
+// DaemonSet/Job/CronJob) to the cloud_resource_id assigned during k8s state
+// discovery. Kind is intentionally not matched: subject_type casing differs
+// across emitters (lowercase "deployment" vs k8s_workloads "Deployment") and
+// (account, namespace, name) is effectively unique within an account's
+// workloads. Prefers active, most-recently-seen rows for recreate cases.
+const workloadCloudResourceSQL = `
+	SELECT cloud_resource_id
+	FROM k8s_workloads
+	WHERE tenant_id = $1 AND cloud_account_id = $2 AND namespace = $3 AND name = $4
+	  AND cloud_resource_id IS NOT NULL
+	ORDER BY is_active DESC, last_seen DESC
+	LIMIT 1
+`
+
+// podCloudResourceSQL is the fallback for pod-subject events whose owning
+// workload could not be determined: link the pod's own cloud_resource_id.
+const podCloudResourceSQL = `
+	SELECT cloud_resource_id
+	FROM k8s_pods
+	WHERE tenant_id = $1 AND cloud_account_id = $2 AND namespace = $3 AND name = $4
+	  AND cloud_resource_id IS NOT NULL
+	ORDER BY is_active DESC, last_seen DESC
+	LIMIT 1
+`
+
 // lookupPodOwner resolves a pod → owning workload via the cached k8s state
 // snapshot (k8s_pods JOIN k8s_workloads). Returns ("", "") when the pod is
 // unknown — caller leaves SubjectOwner empty rather than guess. Errors are
@@ -176,6 +202,7 @@ func ListEventResolutions(context *security.RequestContext, rescommendationId st
 	if err != nil {
 		return []models.EventResolution{}, err
 	}
+	defer func() { _ = r.Close() }()
 
 	resolutions := []models.EventResolution{}
 	for r.Next() {
@@ -185,6 +212,9 @@ func ListEventResolutions(context *security.RequestContext, rescommendationId st
 			return []models.EventResolution{}, err
 		}
 		resolutions = append(resolutions, resolution)
+	}
+	if err := r.Err(); err != nil {
+		return []models.EventResolution{}, fmt.Errorf("error iterating event resolution rows: %w", err)
 	}
 	return resolutions, nil
 }
@@ -1548,6 +1578,15 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 		}
 	}
 
+	// Resolve cloud_resource_id for Kubernetes-sourced events from the cached
+	// k8s state snapshot. Cloud-provider events resolve theirs later from
+	// playbook evidence (linkCloudResourceId); K8s emitters never carry the
+	// UUID because it is assigned server-side at discovery time. Done before
+	// the existing-event check so both the duplicate-update and the insert
+	// branch persist the resolved id (and previously-NULL duplicates backfill
+	// as the event recurs).
+	linkK8sCloudResourceId(sc, dbms, tenantId, &webhookEvent)
+
 	var existingEventId string
 	var existingSubjectName sql.NullString
 	err = dbms.Db.QueryRowx("SELECT id, subject_name FROM events WHERE tenant = $1 AND cloud_account_id = $2 AND finding_id = $3", tenantId, accountId, webhookEvent.FindingId).Scan(&existingEventId, &existingSubjectName)
@@ -2023,6 +2062,90 @@ func mergeAggregatedAlertLabels(labels map[string]string, aggregationKey string,
 	return updated
 }
 
+// linkK8sCloudResourceId resolves cloud_resource_id for Kubernetes-sourced
+// events (kubernetes_api_server, prometheus, anomaly, slo, ...) from the cached
+// k8s state snapshot. Cloud-provider events get their resource id from playbook
+// evidence (linkCloudResourceId); K8s emitters never carry the UUID because it
+// is assigned server-side at discovery time, so without this lookup the event's
+// cloud_resource_id stays NULL.
+//
+// Resolution:
+//   - workload-subject events (deployment/statefulset/daemonset/job/...):
+//     match the workload by (tenant, account, namespace, subject_name).
+//   - pod-subject events: prefer the owning workload (SubjectOwner, enriched
+//     upstream in InvestigateEvent); fall back to the pod's own resource.
+//
+// Best-effort: a miss leaves cloud_resource_id NULL and never blocks ingestion.
+// k8s_workloads.cloud_resource_id and k8s_pods.cloud_resource_id are valid
+// cloud_resourses.id values, so the events FK is satisfied.
+func linkK8sCloudResourceId(sc *security.RequestContext, dbms *database.DatabaseManager, tenantId string, webhookEvent *Event) {
+	if webhookEvent.CloudResourceId != "" || webhookEvent.AccountId == "" || tenantId == "" {
+		return
+	}
+	// SubjectNamespace / SubjectName are empty on the struct for some emitters
+	// (prometheus-rule bridges, raw alertmanager) that carry them only in
+	// Labels. This runs before playbook execution, so Labels holds only
+	// original webhook labels — no originalLabelKeys guard needed. namespaceKeys
+	// / subjectKeys are the codebase's source of truth for these conventions.
+	ns := webhookEvent.SubjectNamespace
+	if ns == "" {
+		for _, k := range namespaceKeys {
+			if v := webhookEvent.Labels[k]; v != "" {
+				ns = v
+				break
+			}
+		}
+	}
+	if ns == "" {
+		return
+	}
+
+	subjectName := webhookEvent.SubjectName
+	if subjectName == "" {
+		for _, k := range subjectKeys {
+			if v := webhookEvent.Labels[k]; v != "" {
+				subjectName = v
+				break
+			}
+		}
+	}
+
+	// Determine the workload name to resolve against k8s_workloads.
+	var workloadName string
+	switch strings.ToLower(webhookEvent.SubjectType) {
+	case "", "pod":
+		// Pod (or unspecified subject) → resolve via its owning workload.
+		workloadName = webhookEvent.SubjectOwner
+	default:
+		// Subject is itself a workload.
+		workloadName = subjectName
+	}
+
+	if workloadName != "" {
+		var crid string
+		err := dbms.Db.QueryRowxContext(sc.GetContext(), workloadCloudResourceSQL, tenantId, webhookEvent.AccountId, ns, workloadName).Scan(&crid)
+		switch {
+		case err == nil && crid != "":
+			webhookEvent.CloudResourceId = crid
+			return
+		case err != nil && err != sql.ErrNoRows:
+			sc.GetLogger().Warn("link_k8s_cloud_resource: workload lookup failed", "error", err, "namespace", ns, "workload", workloadName)
+		}
+	}
+
+	// Pod fallback: link the pod's own resource when the owner is unknown.
+	if strings.EqualFold(webhookEvent.SubjectType, "pod") && subjectName != "" {
+		var crid string
+		err := dbms.Db.QueryRowxContext(sc.GetContext(), podCloudResourceSQL, tenantId, webhookEvent.AccountId, ns, subjectName).Scan(&crid)
+		switch {
+		case err == nil && crid != "":
+			webhookEvent.CloudResourceId = crid
+		case err != nil && err != sql.ErrNoRows:
+			sc.GetLogger().Warn("link_k8s_cloud_resource: pod lookup failed", "error", err, "namespace", ns, "pod", subjectName)
+		}
+	}
+}
+
 // linkCloudResourceId resolves the cloud_resource_id for an event by extracting
 // resource_id/resource_arn from cloud_resource evidence and looking up the UUID
 // in the cloud_resourses table.
@@ -2279,13 +2402,17 @@ func RegisterEventProcessor(name string, processor func(ctx *security.RequestCon
 func PostProcessEvent(ctx *security.RequestContext, newEvent map[string]any) {
 
 	if newEvent["priority"] == nil {
-		newEvent["priority"] = EventPriortiyInfo
+		newEvent["priority"] = EventPriorityInfo
 	}
 
 	// use string as rest of the system is assuming this to be string
-	if priorityE, ok := newEvent["priority"].(EventPriortiy); ok {
+	if priorityE, ok := newEvent["priority"].(EventPriority); ok {
 		newEvent["priority"] = string(priorityE)
 	}
+
+	// Register this event's aggregation_key in event_rules so it is selectable as
+	// a workflow-trigger Event Type. Guarded + idempotent (no-op once registered).
+	registerNativeEventTypeRule(ctx, newEvent)
 
 	// Triage must run before other processors so its classification
 	// (nb_status etc.) is visible in newEvent to downstream gates such as
@@ -2350,7 +2477,7 @@ func UpdateEvent(ctx *security.RequestContext, request models.UpdateEventRequest
 		Description:      *r.Description,
 		Source:           *r.Source,
 		AggregationKey:   *r.AggregationKey,
-		Priority:         EventPriortiy(*r.Priority),
+		Priority:         EventPriority(*r.Priority),
 		SubjectType:      subjectType,
 		SubjectName:      subjectName,
 		SubjectNamespace: subjectNamespace,

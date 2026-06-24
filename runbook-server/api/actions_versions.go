@@ -210,6 +210,24 @@ func (s *Server) handleUpdateWorkflowVersionStatus(c *gin.Context, sc *security.
 	c.JSON(http.StatusOK, v)
 }
 
+func (s *Server) handleDeleteWorkflowVersion(c *gin.Context, sc *security.RequestContext, args map[string]any) {
+	accountID, workflowID, versionNumber, err := parseVersionArgs(args)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{err}))
+		return
+	}
+	if err := s.workflowService.DeleteWorkflowVersion(sc, accountID, workflowID, versionNumber); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, buildApiResponse(nil, []error{errors.New("workflow version not found")}))
+			return
+		}
+		s.logger.Error("failed to delete workflow version", "workflowID", workflowID, "versionNumber", versionNumber, "error", err)
+		handleServiceError(c, err, "failed to delete workflow version")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": true, "version_number": versionNumber})
+}
+
 // nullableStringArg returns a *string only if the key is present in args. A
 // missing key yields nil (leave column unchanged); an explicit empty string
 // yields a pointer to "" (clear column).

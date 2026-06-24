@@ -201,7 +201,7 @@ func (o *NBReActPlanner2) resolveToolResponse(step NBAgentPlannerToolActionStep)
 	if toolResponse == "" {
 		toolResponse = "No Data Found"
 	}
-	return toolResponse
+	return renderObservationWithMetadata(toolResponse, step.Metadata)
 }
 
 // prewarmSummaries fires LLM summarizations in parallel for all non-recent steps

@@ -699,20 +699,20 @@ func mapNewRelicStateToStatus(state string) string {
 }
 
 // mapNewRelicPriority maps New Relic priority to our event priority
-func mapNewRelicPriority(priority string) event.EventPriortiy {
+func mapNewRelicPriority(priority string) event.EventPriority {
 	switch strings.ToUpper(priority) {
 	case "CRITICAL":
-		return event.EventPriortiyHigh
+		return event.EventPriorityHigh
 	case "HIGH":
-		return event.EventPriortiyHigh
+		return event.EventPriorityHigh
 	case "MEDIUM":
-		return event.EventPriortiyMedium
+		return event.EventPriorityMedium
 	case "LOW":
-		return event.EventPriortiyLow
+		return event.EventPriorityLow
 	case "INFO":
-		return event.EventPriortiyInfo
+		return event.EventPriorityInfo
 	default:
-		return event.EventPriortiyLow
+		return event.EventPriorityLow
 	}
 }
 
@@ -735,16 +735,16 @@ func mapLegacyStateToStatus(state string) string {
 // (CRITICAL/WARNING/INFO) to our event priority. NewRelic's pre-migration
 // shim emits WARNING for HIGH-priority modern issues, so WARNING→High
 // would over-promote; mapping WARNING→Medium preserves the original spread.
-func mapLegacySeverityToPriority(severity string) event.EventPriortiy {
+func mapLegacySeverityToPriority(severity string) event.EventPriority {
 	switch strings.ToUpper(severity) {
 	case "CRITICAL":
-		return event.EventPriortiyHigh
+		return event.EventPriorityHigh
 	case "WARNING":
-		return event.EventPriortiyMedium
+		return event.EventPriorityMedium
 	case "INFO":
-		return event.EventPriortiyInfo
+		return event.EventPriorityInfo
 	default:
-		return event.EventPriortiyLow
+		return event.EventPriorityLow
 	}
 }
 

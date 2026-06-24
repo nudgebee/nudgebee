@@ -3079,8 +3079,14 @@ func extractGCPResourceNameFromURL(url string) string {
 	}
 
 	parts := strings.Split(url, "/")
-	if len(parts) > 0 {
-		return parts[len(parts)-1]
+	lastPart := parts[len(parts)-1]
+	if lastPart != "" {
+		return lastPart
+	}
+
+	// If the last part is empty (trailing slash), try the second to last
+	if len(parts) >= 2 {
+		return parts[len(parts)-2]
 	}
 
 	return url

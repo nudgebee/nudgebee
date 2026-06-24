@@ -785,8 +785,33 @@ type argoCDApplication struct {
 	Spec     argoCDSpec     `json:"spec"`
 }
 
+// argoCDAppNameRegex validates the application name before shell interpolation.
+// Mirrors the regex in eventrule/playbooks/action_argocd.go.
+var argoCDAppNameRegex = regexp.MustCompile(`^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)?$`)
+
+// argoCDServerHostRegex validates the server host (after scheme strip) before
+// shell interpolation. Accepts `host` and `host:port` for DNS names and IPv4;
+// rejects shell metacharacters, paths, and anything outside `[a-zA-Z0-9.-]`.
+// IPv6 (`[::1]:8080`) is not supported by this regex — extremely rare for
+// ArgoCD server endpoints. Sibling action_argocd.go avoids this entirely by
+// passing the URL via the `$ARGOCD_SERVER` env var from a k8s secret; that
+// pattern is preferred long-term but requires a different secret contract
+// than `fetchArgoCDIntegrationForGithub` currently exposes.
+var argoCDServerHostRegex = regexp.MustCompile(`^[a-zA-Z0-9.-]+(:[0-9]+)?$`)
+
 // getGitRepoFromArgoCD queries ArgoCD to get the Git repository URL for values files
 func getGitRepoFromArgoCD(ctx AccountAdapterContext, accountID, argoCDAppName string) (string, string, string, error) {
+	// Fail-fast on empty accountID: downstream fetchArgoCDIntegrationForGithub
+	// runs a DB query scoped by account_id, and an empty value would either
+	// return no rows or — in the event of a future query-builder bug — leak
+	// rows from another tenant. Reject explicitly so the contract is local.
+	if accountID == "" {
+		return "", "", "", fmt.Errorf("accountID is required")
+	}
+	if !argoCDAppNameRegex.MatchString(argoCDAppName) {
+		return "", "", "", fmt.Errorf("invalid ArgoCD application name %q: must contain only alphanumeric characters, dashes, dots, underscores, or a single slash", argoCDAppName)
+	}
+
 	// Fetch ArgoCD integration configuration
 	secretName, serverURL, authTokenKeyInSecret, insecure, err := fetchArgoCDIntegrationForGithub(ctx, accountID)
 	if err != nil {
@@ -797,6 +822,12 @@ func getGitRepoFromArgoCD(ctx AccountAdapterContext, accountID, argoCDAppName st
 	// Build ArgoCD CLI command
 	serverHost := strings.TrimPrefix(serverURL, "https://")
 	serverHost = strings.TrimPrefix(serverHost, "http://")
+	// serverHost is interpolated into the shell command below — validate it
+	// the same way as argoCDAppName so a tenant admin who's misconfigured
+	// (or compromised) cannot inject shell via the integration's server URL.
+	if !argoCDServerHostRegex.MatchString(serverHost) {
+		return "", "", "", fmt.Errorf("invalid ArgoCD server host %q: must be a hostname[:port] with only alphanumeric characters, dots, dashes", serverHost)
+	}
 
 	insecureFlag := ""
 	if insecure {
@@ -1855,6 +1886,46 @@ func extractNumberFromURL(link string) (string, error) {
 	return matches[1], nil
 }
 
+// formatRequestedValuesForPrompt returns a copy of the per-container requested
+// values with memory request/limit rendered as Kubernetes quantity strings
+// (e.g. 341725388 -> "326Mi") instead of raw bytes. The recommendation pipeline
+// carries memory as a byte count, but the Helm values file (and therefore the
+// "Before" column the agent emits) uses unit-suffixed quantities. Passing raw
+// bytes made the agent write a value like "341725388" next to an existing
+// "500Mi", producing inconsistent units in both the file and the PR table. CPU
+// is left untouched — it is already a valid core quantity (e.g. 0.101).
+func formatRequestedValuesForPrompt(data map[string]any) map[string]any {
+	out := make(map[string]any, len(data))
+	for key, value := range data {
+		container, ok := value.(map[string]any)
+		if !ok {
+			out[key] = value
+			continue
+		}
+		formattedContainer := make(map[string]any, len(container))
+		for resourceName, resourceValue := range container {
+			fields, ok := resourceValue.(map[string]any)
+			if !ok {
+				formattedContainer[resourceName] = resourceValue
+				continue
+			}
+			formattedFields := make(map[string]any, len(fields))
+			for field, fieldValue := range fields {
+				if resourceName == "memory" {
+					if n, ok := fieldValue.(float64); ok {
+						formattedFields[field] = applyMemoryUnit(n)
+						continue
+					}
+				}
+				formattedFields[field] = fieldValue
+			}
+			formattedContainer[resourceName] = formattedFields
+		}
+		out[key] = formattedContainer
+	}
+	return out
+}
+
 func ApplyRightsizingRecommendationUsingCodeAgent(ctx AccountAdapterContext, request ApplyRecommendationRequest, gitDetail gitDetailFromDeployment, recommendResolutionId string) error {
 	// Run asynchronously to avoid blocking the request
 	go func() {
@@ -1908,7 +1979,7 @@ func ApplyRightsizingRecommendationUsingCodeAgent(ctx AccountAdapterContext, req
 		// Build structured prompt with clear instructions
 		// Using @agent_code_2 to invoke the code agent
 		recommendationJSON, _ := common.MarshalJson(request.Recommendation)
-		requestDataJSON, _ := common.MarshalJson(request.Data)
+		requestDataJSON, _ := common.MarshalJson(formatRequestedValuesForPrompt(request.Data))
 
 		queryText := fmt.Sprintf(`Please apply the following Kubernetes resource rightsizing recommendations.
 
@@ -2065,6 +2136,10 @@ Make minimal, precise changes only.`,
 				"provider":  "github",
 				"org":       gitDetail.Org,
 				"repo":      gitDetail.Repo,
+				// tenant_id lets the pr_lifecycle followup cron scope the run.
+				// recommendation_resolution has no tenant column, so the cron's
+				// fallback reads it from here (with a recommendation join as backstop).
+				"tenant_id": ctx.GetSecurityContext().GetTenantId(),
 			}
 			if branchName, ok := agentResponse["branch"].(string); ok {
 				prMeta["pr_branch"] = branchName
@@ -2340,6 +2415,10 @@ When creating the PR, ensure the description includes:
 				"provider":  "github",
 				"org":       gitDetail.Org,
 				"repo":      gitDetail.Repo,
+				// tenant_id lets the pr_lifecycle followup cron scope the run.
+				// recommendation_resolution has no tenant column, so the cron's
+				// fallback reads it from here (with a recommendation join as backstop).
+				"tenant_id": ctx.GetSecurityContext().GetTenantId(),
 			}
 			if branchName, ok := agentResponse["branch"].(string); ok {
 				prMeta["pr_branch"] = branchName

@@ -1,7 +1,7 @@
 package common
 
 import (
-	"fmt"
+	"log/slog"
 
 	"github.com/spf13/viper"
 )
@@ -114,14 +114,14 @@ func init() {
 
 	err := viper.ReadInConfig()
 	if err != nil {
-		fmt.Println("Error reading config file:", err)
+		slog.Error("reading config file", "error", err)
 	}
 
 	viper.AutomaticEnv()
 	err = viper.Unmarshal(&Config)
 
 	if err != nil {
-		fmt.Println("Error unmarshalling config:", err)
+		slog.Error("unmarshalling config", "error", err)
 	}
 
 	if Config.OtelExporterOtlpEndpoint == "" {

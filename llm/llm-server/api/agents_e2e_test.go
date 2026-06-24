@@ -47,14 +47,14 @@ func TestAgents_CustomAgent(t *testing.T) {
 
 	err := core.DeleteCustomAgent(sc, accountId, customAgent.Name)
 	if err != nil && err.Error() != "agent: agent not found" {
-		slog.Error("Error deleting custom agent", "error", err)
+		slog.Error("deleting custom agent", "error", err)
 		return
 	}
 
 	customAgent, err = core.CreateCustomAgent(sc, accountId, customAgent, []core.AgentRagDto{customAgentRag}, false)
 	assert.Nil(t, err)
 	if err != nil {
-		slog.Error("Error creating custom agent", "error", err)
+		slog.Error("creating custom agent", "error", err)
 		return
 	}
 	assert.NotEmpty(t, customAgent.Id)
@@ -102,7 +102,7 @@ func TestAgents_CustomAgentUpdate(t *testing.T) {
 	customAgent, err = core.UpdateCustomAgent(sc, accountId, customAgent)
 	assert.Nil(t, err)
 	if err != nil {
-		slog.Error("Error updating custom agent", "error", err)
+		slog.Error("updating custom agent", "error", err)
 		return
 	}
 	assert.NotEmpty(t, customAgent.Id)

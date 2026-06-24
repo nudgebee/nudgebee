@@ -1,12 +1,11 @@
 package ai
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
+	"nudgebee/runbook/common"
 	"nudgebee/runbook/internal/tasks/types"
 	"nudgebee/runbook/services/llm"
-	"regexp"
 	"strings"
 )
 
@@ -78,11 +77,33 @@ func (t *LLMInvestigateTask) Execute(taskCtx types.TaskContext, params map[strin
 	}
 
 	if responseFormat == "json" {
-		parsed, parseErr := extractJSON(resp.Message)
+		parsed, parseErr := common.ExtractJSONFromLLMResponse(resp.Message)
+		// This task's contract (OutputSchema + RuntimeNotes) is that `data` is a
+		// JSON object on success. A valid but non-object JSON value (array or
+		// primitive) would otherwise pass through and break downstream templates
+		// that index data.<field>, so treat it as a parse failure and fall into
+		// the raw_text path below — keeping data-is-an-object invariant intact.
+		if parseErr == nil {
+			if _, isObj := parsed.(map[string]any); !isObj {
+				parseErr = fmt.Errorf("extracted JSON is not an object (got %T)", parsed)
+			}
+		}
 		if parseErr != nil {
+			// Log a truncated copy of the raw response so we can see what the LLM
+			// actually produced when extraction failed, without dumping a
+			// multi-KB blob into the logs.
 			taskCtx.GetLogger().Warn("response_format=json but failed to extract JSON from LLM response",
-				"error", parseErr)
+				"error", parseErr,
+				"response_preview", truncateForLog(resp.Message, 1000))
 			result["parse_error"] = parseErr.Error()
+			// Keep `data` a map even on failure. Downstream tasks template into
+			// data (e.g. {{ Tasks['x'].output.data.summary }}); if data were left
+			// as the raw LLM string, that field access resolves to empty and a
+			// dependent task — typically Notifications Email — then fails with
+			// "body is required". Wrapping the raw text under a known key keeps
+			// the data-is-an-object invariant so such templates resolve to a
+			// deterministic empty value, and the raw response is still inspectable.
+			result["data"] = map[string]any{"raw_text": resp.Message}
 		} else {
 			result["data"] = parsed
 		}
@@ -119,6 +140,17 @@ func parseToolsParam(raw any) ([]string, error) {
 	}
 }
 
+// truncateForLog returns at most max runes of s, appending an ellipsis marker
+// when the input was longer. Operates on runes so it never splits a multi-byte
+// UTF-8 sequence.
+func truncateForLog(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…[truncated]"
+}
+
 func filterEmpty(in []string) []string {
 	out := make([]string, 0, len(in))
 	for _, s := range in {
@@ -131,29 +163,6 @@ func filterEmpty(in []string) []string {
 		return nil
 	}
 	return out
-}
-
-var codeBlockRe = regexp.MustCompile("(?s)```(?:json)?\\s*\\n?(.*?)\\n?```")
-
-// extractJSON attempts to parse JSON from text, trying direct parse first,
-// then extraction from markdown code blocks.
-func extractJSON(text string) (any, error) {
-	trimmed := strings.TrimSpace(text)
-	var direct any
-	if err := json.Unmarshal([]byte(trimmed), &direct); err == nil {
-		return direct, nil
-	}
-
-	re := codeBlockRe
-	matches := re.FindStringSubmatch(text)
-	if len(matches) >= 2 {
-		var parsed any
-		if err := json.Unmarshal([]byte(strings.TrimSpace(matches[1])), &parsed); err == nil {
-			return parsed, nil
-		}
-	}
-
-	return nil, fmt.Errorf("could not extract valid JSON from response (%d chars)", len(text))
 }
 
 // InputSchema returns the schema for the task's expected parameters.
@@ -197,7 +206,7 @@ func (t *LLMInvestigateTask) RuntimeNotes() []string {
 	return []string{
 		"Output is in the 'data' field. When response_format='text', data is a raw string. When response_format='json', data is a parsed object.",
 		"If you need structured data from the investigation, set response_format='json'. The agent is automatically instructed to return a valid JSON object — add a JSON schema or example in your message to control the exact shape.",
-		"If JSON extraction fails with response_format='json', 'data' contains the raw response and 'parse_error' explains the failure.",
+		"If JSON extraction fails with response_format='json', 'data' is an object of the form {\"raw_text\": \"<raw response>\"} and 'parse_error' explains the failure. Referencing other fields on 'data' (e.g. data.summary) will resolve empty in that case — guard downstream tasks accordingly.",
 		"Setting 'tools' restricts the investigation to that allow-list — the auto-selected agent's other tools, shell_execute, and load_skills (knowledge bases) are all hidden unless explicitly listed. Leave empty for the default tool set.",
 	}
 }

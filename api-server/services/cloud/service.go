@@ -245,7 +245,7 @@ func QueryMetrics(ctx *security.RequestContext, metricRequest QueryMetricsReques
 	}
 
 	if resp.StatusCode != 200 {
-		return response, errors.New("Error while fetching metrics - " + string(bodyData))
+		return response, fmt.Errorf("error while fetching metrics - %s", string(bodyData))
 	}
 
 	response2 := queryMetricsResponse{}
@@ -292,7 +292,7 @@ func ListMetrics(ctx *security.RequestContext, accountId string, request ListMet
 	}
 
 	if resp.StatusCode != 200 {
-		return ListMetricsResponse{}, errors.New("Error while listing metrics - " + string(bodyData))
+		return ListMetricsResponse{}, fmt.Errorf("error while listing metrics - %s", string(bodyData))
 	}
 
 	response2 := listMetricsApiResponse{}

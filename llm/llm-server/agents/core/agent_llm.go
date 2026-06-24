@@ -59,6 +59,10 @@ func (l LLMAgent) GetPlannerType() AgentPlannerType {
 	return AgentPlannerTypeCustom
 }
 
+func (l LLMAgent) GetModelCategory() ModelTier {
+	return ModelTierRetrieval
+}
+
 func (l LLMAgent) Execute(ctx *security.RequestContext, request NBAgentRequest) (NBAgentResponse, error) {
 	queryContext := request.QueryContext
 

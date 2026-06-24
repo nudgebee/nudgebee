@@ -25,6 +25,10 @@ type EventConfig struct {
 	MetricProvider       string                 `json:"metric_provider"`
 	MetricProviderSource string                 `json:"metric_provider_source"`
 	ProviderConfig       map[string]interface{} `json:"provider_config"`
+	// SkipPlaybook suppresses agent-playbook creation, like webhook-ingested
+	// rules do. Set for auto-registered native event-type rows (Anomaly,
+	// k8s-failure enrichers) which have no playbook to run.
+	SkipPlaybook bool `json:"-"`
 }
 
 type DisableEventConfig struct {

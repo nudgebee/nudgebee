@@ -179,7 +179,21 @@ func (s *SignozSaasSource) GetSignozAuth(ctx *security.RequestContext, accountId
 		case SignozUserName:
 			signozUsername = config.Value
 		case SignozPassword:
-			signozPassword = config.Value
+			// ListIntegrationConfigs returns config values raw — it does not
+			// decrypt. signoz_password is stored with is_encrypted=true (see the
+			// signoz integration schema), so the stored value is ciphertext.
+			// Pass it through Decrypt before using it as the login password;
+			// without this the SigNoz login receives ciphertext and 401s.
+			// (Legacy rows saved with is_encrypted=false are left untouched.)
+			if config.IsEncrypted && config.Value != "" {
+				decrypted, derr := common.Decrypt(config.Value)
+				if derr != nil {
+					return "", "", fmt.Errorf("failed to decrypt signoz password: %w", derr)
+				}
+				signozPassword = decrypted
+			} else {
+				signozPassword = config.Value
+			}
 		}
 	}
 	if signozMode == "" {

@@ -22,6 +22,25 @@ To retrieve the password from the secret, run the following command:
 kubectl get secret nudgebee -n {{ .Release.Namespace }} -o jsonpath='{.data.NEXTAUTH_DUMMY_CREDS_PASSWORD}' | base64 --decode
 {{- end }}
 
+{{- /* The chart has no local/dev/prod environment marker, so this warns on
+       every install/upgrade with dummy creds enabled — imprecise but with no
+       false negatives. */}}
+{{- if and .Values.nudgebee_secret (eq (toString (index .Values.nudgebee_secret "NEXTAUTH_DUMMY_CREDS_ENABLED")) "true") }}
+
+⚠️  WARNING: NEXTAUTH_DUMMY_CREDS_ENABLED is set to "true". This
+   username/password provider exists to bootstrap the first admin user
+   (new sign-ins are gated by the bootstrap access check). The password is
+   randomly generated on first install (or operator-set), but it is shared:
+   anyone who knows it can sign in with any existing user's email,
+   bypassing OAuth / LDAP / SSO. Disable it once your admin user and a
+   real auth method are set up:
+
+     helm upgrade {{ .Release.Name }} ... --set nudgebee_secret.NEXTAUTH_DUMMY_CREDS_ENABLED=false
+
+   The default in values.yaml is intentionally `true` for the first-run
+   bootstrap experience; production overlays should disable it explicitly.
+{{- end }}
+
 {{- $existing := lookup "v1" "Secret" .Release.Namespace "nudgebee" }}
 {{- if $existing }}
 {{- $existingKey := "" }}

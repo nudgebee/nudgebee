@@ -1,0 +1,6 @@
+apiVersion: v2
+name: cost-server
+description: Nudgebee cost engine — per-cluster OpenCost allocations over upstream OpenCost (library)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

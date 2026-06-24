@@ -1795,7 +1795,7 @@ const Home = () => {
       .then((res) => {
         const response = res?.data?.data?.ai_execute_investigation ?? {};
         if (!response?.data?.query) {
-          snackbar.error('Cant process your request right now.');
+          snackbar.error("Can't process your request right now.");
           setLoadingConversation(false);
         } else {
           setLoadingConversation(false);

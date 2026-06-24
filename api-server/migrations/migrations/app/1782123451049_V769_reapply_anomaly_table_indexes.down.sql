@@ -1,0 +1,14 @@
+-- Intentional no-op.
+--
+-- V760 does not introduce new schema — it re-applies the anomaly hot-path
+-- indexes that V751 (1780917680820) was supposed to create but that golang-
+-- migrate silently skipped on tiers whose high-water mark had already advanced
+-- past V751. Those indexes are therefore owned by V751, which remains "applied"
+-- (below the mark) and can never be replayed.
+--
+-- If this down dropped them, rolling back V760 on a tier where V751 *did* apply
+-- (e.g. prod) would strip the active hot-path indexes with nothing left to
+-- recreate them — golang-migrate won't re-run the below-mark V751. So the
+-- correct inverse of "re-apply baseline schema" is to do nothing and leave the
+-- indexes in place. (Roll back V751's down explicitly if you truly want them
+-- removed.)

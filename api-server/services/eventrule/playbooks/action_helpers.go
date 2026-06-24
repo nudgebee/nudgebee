@@ -6,7 +6,7 @@ func getPlatformDisplayName(platform string) string {
 		return "Slack"
 	case "teams":
 		return "Microsoft Teams"
-	case "gchat":
+	case "gchat", "google_chat":
 		return "Google Chat"
 	default:
 		return platform

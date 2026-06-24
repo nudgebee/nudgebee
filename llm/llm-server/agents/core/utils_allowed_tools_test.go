@@ -29,8 +29,8 @@ func TestFilterTools_AllowedToolsKeepsOnlyListed(t *testing.T) {
 		mockTool{name: "promql_query"},
 	}
 
-	capabilities := map[string]any{
-		"allowed_tools": []string{"aws_execute", "promql_query"},
+	capabilities := toolcore.AgentCapabilities{
+		AllowedTools: []string{"aws_execute", "promql_query"},
 	}
 
 	result := FilterTools(tools, capabilities)
@@ -39,30 +39,14 @@ func TestFilterTools_AllowedToolsKeepsOnlyListed(t *testing.T) {
 	assert.Equal(t, "promql_query", result[1].Name())
 }
 
-func TestFilterTools_AllowedToolsAnySliceFromJSON(t *testing.T) {
-	// JSON deserialisation produces []any, not []string.
-	tools := []toolcore.NBTool{
-		mockTool{name: "aws_execute"},
-		mockTool{name: "kubectl_execute"},
-	}
-
-	capabilities := map[string]any{
-		"allowed_tools": []any{"kubectl_execute"},
-	}
-
-	result := FilterTools(tools, capabilities)
-	require.Len(t, result, 1)
-	assert.Equal(t, "kubectl_execute", result[0].Name())
-}
-
 func TestFilterTools_AllowedToolsCaseInsensitive(t *testing.T) {
 	tools := []toolcore.NBTool{
 		mockTool{name: "aws_execute"},
 		mockTool{name: "kubectl_execute"},
 	}
 
-	capabilities := map[string]any{
-		"allowed_tools": []string{"AWS_EXECUTE"},
+	capabilities := toolcore.AgentCapabilities{
+		AllowedTools: []string{"AWS_EXECUTE"},
 	}
 
 	result := FilterTools(tools, capabilities)
@@ -76,8 +60,8 @@ func TestFilterTools_AllowedToolsMatchesAliases(t *testing.T) {
 		mockTool{name: "kubectl_execute"},
 	}
 
-	capabilities := map[string]any{
-		"allowed_tools": []string{"aws_cli"}, // alias of aws_execute
+	capabilities := toolcore.AgentCapabilities{
+		AllowedTools: []string{"aws_cli"}, // alias of aws_execute
 	}
 
 	result := FilterTools(tools, capabilities)
@@ -91,8 +75,8 @@ func TestFilterTools_AllowedToolsEmptyMeansNoFilter(t *testing.T) {
 		mockTool{name: "kubectl_execute"},
 	}
 
-	capabilities := map[string]any{
-		"allowed_tools": []string{},
+	capabilities := toolcore.AgentCapabilities{
+		AllowedTools: []string{},
 	}
 
 	result := FilterTools(tools, capabilities)
@@ -104,8 +88,8 @@ func TestFilterTools_AllowedToolsUnknownNameYieldsEmpty(t *testing.T) {
 		mockTool{name: "aws_execute"},
 	}
 
-	capabilities := map[string]any{
-		"allowed_tools": []string{"nonexistent_tool"},
+	capabilities := toolcore.AgentCapabilities{
+		AllowedTools: []string{"nonexistent_tool"},
 	}
 
 	result := FilterTools(tools, capabilities)
@@ -119,9 +103,9 @@ func TestFilterTools_DisabledWinsOverAllowed(t *testing.T) {
 		mockTool{name: "kubectl_execute"},
 	}
 
-	capabilities := map[string]any{
-		"allowed_tools":  []string{"aws_execute", "kubectl_execute"},
-		"disabled_tools": []string{"aws_execute"},
+	capabilities := toolcore.AgentCapabilities{
+		AllowedTools:  []string{"aws_execute", "kubectl_execute"},
+		DisabledTools: []string{"aws_execute"},
 	}
 
 	result := FilterTools(tools, capabilities)
@@ -144,8 +128,8 @@ func TestFilterAndInjectDefaultTools_AllowedListBlocksShellInjection(t *testing.
 		mockTool{name: "aws_execute"},
 	}
 
-	capabilities := map[string]any{
-		"allowed_tools": []string{"aws_execute"}, // shell_execute deliberately not allowed
+	capabilities := toolcore.AgentCapabilities{
+		AllowedTools: []string{"aws_execute"}, // shell_execute deliberately not allowed
 	}
 
 	result := FilterAndInjectDefaultTools("test-account", nil, "", tools, capabilities)
@@ -165,8 +149,8 @@ func TestFilterAndInjectDefaultTools_AllowedListIncludingShellKeepsInjection(t *
 		mockTool{name: "aws_execute"},
 	}
 
-	capabilities := map[string]any{
-		"allowed_tools": []string{"aws_execute", toolcore.ToolExecuteShellCommand},
+	capabilities := toolcore.AgentCapabilities{
+		AllowedTools: []string{"aws_execute", toolcore.ToolExecuteShellCommand},
 	}
 
 	result := FilterAndInjectDefaultTools("test-account", nil, "", tools, capabilities)
@@ -186,7 +170,7 @@ func TestFilterAndInjectDefaultTools_NoAllowedListPreservesExistingBehaviour(t *
 		mockTool{name: "aws_execute"},
 	}
 
-	result := FilterAndInjectDefaultTools("test-account", nil, "", tools, nil)
+	result := FilterAndInjectDefaultTools("test-account", nil, "", tools, toolcore.AgentCapabilities{})
 	assert.True(t, HasShellTool(result), "no capabilities — shell should still inject")
 }
 
@@ -202,8 +186,8 @@ func TestFilterAndInjectDefaultTools_AllowedListWithNoMatchesYieldsEmpty(t *test
 		mockTool{name: "aws_execute"},
 	}
 
-	capabilities := map[string]any{
-		"allowed_tools": []string{"some_other_tool"},
+	capabilities := toolcore.AgentCapabilities{
+		AllowedTools: []string{"some_other_tool"},
 	}
 
 	result := FilterAndInjectDefaultTools("test-account", nil, "", tools, capabilities)

@@ -17,7 +17,19 @@ const (
 	IntegrationLLM                           IntegrationCategory = "llm"
 	IntegrationCategoryTicketing             IntegrationCategory = "ticketing"
 	IntegrationCategoryProxy                 IntegrationCategory = "proxy"
+	IntegrationCategoryMessaging             IntegrationCategory = "messaging"
 )
+
+// IsTenantScoped reports whether integrations of this category bind to a
+// tenant directly rather than to a (tenant, cloud_account) pair. Tenant-scoped
+// integrations accept empty accountIds in CreateIntegrationConfig.
+func (c IntegrationCategory) IsTenantScoped() bool {
+	switch c {
+	case IntegrationCategoryTicketing, IntegrationCategoryMessaging:
+		return true
+	}
+	return false
+}
 
 type Integration interface {
 	Name() string

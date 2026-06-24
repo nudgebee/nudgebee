@@ -174,9 +174,22 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 				Name:      "k8s_workloads",
 				Metastore: database.Metastore,
 				Batched:   true,
+				// Skip workloads still referenced by application_group_mapping: the FK
+				// (workload_name, workload_kind, namespace_name, account_id) → k8s_workloads
+				// is ON DELETE RESTRICT, so one referenced row fails the entire 10K batch and
+				// aborts the run. application_group_mapping is small (hundreds of rows) so the
+				// NOT EXISTS anti-join is cheap. Mapped workloads represent user app-group
+				// membership and are intentionally retained (not cascade-deleted).
 				Query: fmt.Sprintf(`WITH to_del AS (
-					SELECT ctid FROM k8s_workloads
-					WHERE is_active = false AND creation_time < now() - interval '%d days'
+					SELECT w.ctid FROM k8s_workloads w
+					WHERE w.is_active = false AND w.creation_time < now() - interval '%d days'
+					  AND NOT EXISTS (
+						SELECT 1 FROM application_group_mapping m
+						WHERE m.workload_name = w.name
+						  AND m.workload_kind = w.kind
+						  AND m.namespace_name = w.namespace
+						  AND m.account_id = w.cloud_account_id
+					  )
 					LIMIT %d
 				) DELETE FROM k8s_workloads WHERE ctid IN (SELECT ctid FROM to_del)`, config.Config.NBRetentionDaysK8sResources, cleanupBatchSize),
 			},
@@ -196,6 +209,18 @@ func CleanupData(ctx *security.RequestContext, job ...string) {
 					LIMIT %d
 				) DELETE FROM knowledge_graph_edge WHERE id IN (SELECT id FROM to_del)`,
 					config.Config.NBRetentionDaysKGInactiveEdges, cleanupBatchSize),
+			},
+			{
+				Name:      "recommendations_archive",
+				Metastore: database.Metastore,
+				Batched:   true,
+				Query: fmt.Sprintf(`WITH to_del AS (
+					SELECT id FROM recommendation
+					WHERE status = 'Archive'
+					  AND updated_at < now() - interval '%d days'
+					LIMIT %d
+				) DELETE FROM recommendation WHERE id IN (SELECT id FROM to_del)`,
+					config.Config.NBRetentionDaysRecommendationsArchive, cleanupBatchSize),
 			},
 		}
 

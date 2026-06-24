@@ -293,7 +293,7 @@ class GatherBenchmarkRequest(BaseModel):
     cc_emails: Optional[List[str]] = None
 
 
-USE_ORCHESTRATOR = os.getenv("USE_ORCHESTRATOR", "false").lower() == "true"
+USE_ORCHESTRATOR = os.getenv("USE_ORCHESTRATOR", "true").lower() == "true"
 
 
 async def run_agent_benchmark_and_notify(  # noqa: C901
@@ -2204,19 +2204,40 @@ async def _run_followup_task(  # noqa: C901
             )
     except Exception as e:
         logger.exception("Error in followup task for test %d in run %s", test_index, run_id)
-        run_manager.store_test_result(
-            run_id,
-            {
-                "test_index": test_index,
-                "status": "fail",
-                "error_message": f"Followup task error: {e}",
-                "error_category": "client_error",
-            },
-        )
+        # A benchmark-side error while processing the followup result does NOT
+        # mean the test failed — the llm-server may have accepted the answer and
+        # the conversation may be resuming/completing. Mark the row DETACHED
+        # (non-terminal) with its conversation handle so the reconciler
+        # re-attaches and finalizes from the real conversation state, instead of
+        # throwing away a possibly-good result with a hard fail.
+        store_payload = {
+            "test_index": test_index,
+            "status": "detached",
+            "error_message": f"Followup processing error (reconciling): {e}",
+            "error_category": "",
+        }
+        if conversation_id:
+            store_payload["conversation_id"] = conversation_id
+        run_manager.store_test_result(run_id, store_payload)
     # NOTE: Do NOT call finish_single_test here. The main benchmark subprocess
     # manages run lifecycle. Calling it here would see only the DB rows that
     # exist so far (not all 45 tests), miscalculate pending=0, and mark the
     # run as COMPLETED — causing the subprocess to skip remaining tests.
+
+    # Immediately reconcile this run's non-terminal rows so the UI reflects the
+    # resumed conversation's state (and any sibling/parent rows the llm-server
+    # bubble-up completed out-of-band) right away, instead of waiting up to one
+    # sweep interval (~60s). nudge_complete=False: row-sync only — run lifecycle
+    # stays owned by the orchestrator subprocess / sweeper. Best-effort: a
+    # reconcile failure must not surface as a followup-task error.
+    try:
+        await asyncio.to_thread(
+            run_manager.reconcile_waiting_tests, run_id, nudge_complete=False
+        )
+    except Exception:
+        logger.exception(
+            "Followup task: post-resume reconcile failed for run %s", run_id
+        )
 
 
 @router.post("/{run_id}/run-all", status_code=202)

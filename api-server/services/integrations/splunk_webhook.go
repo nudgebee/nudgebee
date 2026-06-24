@@ -284,7 +284,7 @@ func parseSplunkTriggerTime(val interface{}) time.Time {
 }
 
 // mapSplunkSeverity maps Splunk severity/urgency/priority fields to EventPriority
-func mapSplunkSeverity(severity, urgency, priority string) event.EventPriortiy {
+func mapSplunkSeverity(severity, urgency, priority string) event.EventPriority {
 	// Prefer severity, fall back to urgency, then priority
 	val := severity
 	if val == "" {
@@ -296,16 +296,16 @@ func mapSplunkSeverity(severity, urgency, priority string) event.EventPriortiy {
 
 	switch strings.ToLower(val) {
 	case "critical", "fatal":
-		return event.EventPriortiyHigh
+		return event.EventPriorityHigh
 	case "high", "error":
-		return event.EventPriortiyHigh
+		return event.EventPriorityHigh
 	case "medium", "warning", "warn":
-		return event.EventPriortiyMedium
+		return event.EventPriorityMedium
 	case "low", "notice":
-		return event.EventPriortiyLow
+		return event.EventPriorityLow
 	case "info", "informational", "debug":
-		return event.EventPriortiyInfo
+		return event.EventPriorityInfo
 	default:
-		return event.EventPriortiyLow
+		return event.EventPriorityLow
 	}
 }

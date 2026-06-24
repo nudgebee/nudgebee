@@ -184,7 +184,7 @@ func findMatchingZone(hostname string, zones []Route53HostedZone) *Route53Hosted
 
 	for i := range zones {
 		zoneName := strings.TrimSuffix(zones[i].Name, ".")
-		if strings.HasSuffix(hostname, zoneName) && len(zoneName) > bestMatchLen {
+		if (hostname == zoneName || strings.HasSuffix(hostname, "."+zoneName)) && len(zoneName) > bestMatchLen {
 			bestMatch = &zones[i]
 			bestMatchLen = len(zoneName)
 		}
@@ -366,7 +366,7 @@ func EnrichRoute53DNSWithTargets(
 
 	for _, zone := range hostedZones.HostedZones {
 		zoneName := strings.TrimSuffix(zone.Name, ".")
-		matches := strings.HasSuffix(hostname, zoneName)
+		matches := hostname == zoneName || strings.HasSuffix(hostname, "."+zoneName)
 
 		slog.Debug("Checking zone match",
 			"hostname", hostname,

@@ -129,7 +129,7 @@ const EventResolutions = () => {
     if (nested.increase_replicas) return `Scale Replicas: ${nested.increase_replicas}`;
     if (nested.imageNameWithTag) return `Image Update: ${nested.imageNameWithTag}`;
 
-    if (data.provider) return snakeToTitleCase(data.provider);
+    if (data.provider) return data.repo ? `${snakeToTitleCase(data.provider)} · ${data.repo}` : snakeToTitleCase(data.provider);
     return '-';
   };
 
@@ -182,16 +182,44 @@ const EventResolutions = () => {
         referenceObj['data'] = typeLabel;
       }
 
+      const accountId = item.event_cloud_account_id || item.event?.cloud_account_id || '';
+      const sourceObj = item.conversation_session_id
+        ? {
+            component: (
+              <Link
+                href={`/ask-nudgebee?accountId=${accountId}&session_id=${item.conversation_session_id}`}
+                style={{ fontSize: 'var(--ds-text-body)' }}
+              >
+                Investigation
+              </Link>
+            ),
+            data: 'Investigation',
+          }
+        : item.event_id && item.event?.subject_name
+        ? {
+            component: (
+              <Link href={`/investigate?id=${item.event_id}&accountId=${accountId}`} style={{ fontSize: 'var(--ds-text-body)' }}>
+                Event
+              </Link>
+            ),
+            data: 'Event',
+          }
+        : {
+            component: <Typography sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[700] }}>-</Typography>,
+            data: '-',
+          };
+
       return [
         {
           component: (
             <Box display='flex' flexDirection='column'>
-              <Text value={item.event?.subject_name || '-'} showAutoEllipsis />
+              <Text value={item.event?.subject_name || item.conversation_title || '-'} showAutoEllipsis />
               {item.event?.subject_namespace && <Text value={`ns: ${item.event.subject_namespace}`} secondaryText />}
               {item.event?.cloud_account_id && <Text value={`acc: ${getAccountName(item.event.cloud_account_id)}`} secondaryText />}
             </Box>
           ),
         },
+        sourceObj,
         {
           component: (
             <Box display='flex' alignItems='center' gap={ds.space.mul(0, 3)}>
@@ -389,10 +417,11 @@ const EventResolutions = () => {
           id={tableId}
           tableData={data}
           headers={[
-            { name: 'Event Subject', width: '16%' },
-            { name: 'Severity', width: '10%' },
-            { name: 'Resolution', width: '10%' },
-            { name: 'Resolution Details', width: '16%' },
+            { name: 'Subject', width: '15%' },
+            { name: 'Source', width: '9%' },
+            { name: 'Severity', width: '8%' },
+            { name: 'Resolution', width: '9%' },
+            { name: 'Resolution Details', width: '15%' },
             { name: 'Status', width: '14%' },
             { name: 'Resolver', width: '8%' },
             { name: 'Updated', width: '10%' },

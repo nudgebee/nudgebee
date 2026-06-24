@@ -1,6 +1,10 @@
 package audit
 
-import "time"
+import (
+	"encoding/json"
+	"nudgebee/services/common"
+	"time"
+)
 
 type EventCategory string
 
@@ -99,6 +103,12 @@ const (
 
 	EventTypeK8sAgentTask EventType = "K8SAGENT_TASK_CREATE"
 	EventTypeK8sRelayTask EventType = "K8SRELAY_TASK_CREATE"
+
+	// Emitted by relay-server when an agent's websocket session transitions
+	// connection state. Kept in sync with the literals in relay-server's
+	// pkg/audit (separate Go module — cannot import this package).
+	EventTypeK8sRelayAgentConnected    EventType = "K8SRELAY_AGENT_CONNECTED"
+	EventTypeK8sRelayAgentDisconnected EventType = "K8SRELAY_AGENT_DISCONNECTED"
 
 	EventTypeTicketConfigCreate EventType = "TICKET_CONFIGURATION_CREATE"
 	EventTypeTicketConfigUpdate EventType = "TICKET_CONFIGURATION_UPDATE"
@@ -219,6 +229,28 @@ type Audit struct {
 	EventStatus    EventStatus    `json:"event_status,omitempty" db:"event_status" validate:"required"`
 	TransactionId  string         `json:"transaction_id,omitempty" db:"transaction_id" validate:"omitempty"`
 	EventAttr      map[string]any `json:"event_attr" db:"event_attr"`
+}
+
+func (a *Audit) UnmarshalJSON(data []byte) error {
+	type Alias Audit
+	aux := &struct {
+		EventTime any `json:"event_time"`
+		*Alias
+	}{
+		Alias: (*Alias)(a),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	if aux.EventTime != nil {
+		t, err := common.ParseTimeValue(aux.EventTime)
+		if err != nil {
+			return err
+		}
+		a.EventTime = t
+	}
+	return nil
 }
 
 type AuditRequest struct {

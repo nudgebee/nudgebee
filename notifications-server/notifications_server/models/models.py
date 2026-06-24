@@ -43,6 +43,7 @@ class BaseModel:
 
 class MessagingPlatform(Base):
     __tablename__ = "messaging_platforms"
+    __table_args__ = (UniqueConstraint("tenant_id", "platform", name="uq_messaging_platforms_tenant_platform"),)
 
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=gen_id)
     created_at = Column(DateTime, default=utc_now)
@@ -130,6 +131,40 @@ class MessagingPlatform(Base):
         instance.refresh_token_expires_at = parse_datetime(data.get("refresh_token_expires_at"))
 
         return instance
+
+
+class Integration(Base):
+    """ORM view of api-server's `integrations` table.
+
+    notifications-server reads bindings (google_chat_space, Slack, MS Teams) here,
+    and writes Slack/MS Teams installs directly (tokens encrypted via
+    security/secrets.py, byte-compatible with api-server). Other integration types
+    are still created through api-server's `integrations_create_config` action.
+    """
+
+    __tablename__ = "integrations"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=gen_id)
+    tenant_id = Column(PG_UUID(as_uuid=True), nullable=False)
+    type = Column(String, nullable=False)
+    source = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    status = Column(String, nullable=True)
+    labels = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+    created_by = Column(PG_UUID(as_uuid=True), nullable=True)
+    updated_by = Column(PG_UUID(as_uuid=True), nullable=True)
+
+
+class IntegrationConfigValue(Base):
+    __tablename__ = "integration_config_values"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=gen_id)
+    integration_id = Column(PG_UUID(as_uuid=True), ForeignKey("integrations.id"), nullable=False)
+    name = Column(String, nullable=False)
+    value = Column(Text, nullable=True)
+    is_encrypted = Column(Boolean, nullable=False, default=False)
 
 
 class SentNotifications(Base):

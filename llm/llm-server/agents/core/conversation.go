@@ -308,7 +308,7 @@ type additionalConversationSessionRequestConfig struct {
 	systemPrompt          string
 	enableCritique        *bool
 	clientTools           []toolcore.NBToolCommand
-	capabilities          map[string]any
+	capabilities          toolcore.AgentCapabilities
 	previousState         string
 	isNewConversation     bool
 	isResume              bool
@@ -356,14 +356,14 @@ func ConversationSessionRequestWithClientTools(clientTools []toolcore.NBToolComm
 }
 
 type sessionRequestWithCapabilities struct {
-	capabilities map[string]any
+	capabilities toolcore.AgentCapabilities
 }
 
 func (h sessionRequestWithCapabilities) apply(c *additionalConversationSessionRequestConfig) {
 	c.capabilities = h.capabilities
 }
 
-func ConversationSessionRequestWithCapabilities(capabilities map[string]any) ConversationSessionRequestConfig {
+func ConversationSessionRequestWithCapabilities(capabilities toolcore.AgentCapabilities) ConversationSessionRequestConfig {
 	return sessionRequestWithCapabilities{
 		capabilities: capabilities,
 	}
@@ -553,7 +553,7 @@ func HandleConversationSessionRequest(ctx *security.RequestContext, agent NBAgen
 	if len(defaultConfig.clientTools) > 0 {
 		defaultConfig.config.ClientTools = defaultConfig.clientTools
 	}
-	if len(defaultConfig.capabilities) > 0 {
+	if !defaultConfig.capabilities.IsEmpty() {
 		defaultConfig.config.Capabilities = defaultConfig.capabilities
 	}
 
@@ -1095,7 +1095,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	}
 
 	// Sync capabilities and client tools from QueryConfig if they are present there but missing at top level
-	if request.Capabilities == nil && request.QueryConfig.Capabilities != nil {
+	if request.Capabilities.IsEmpty() && !request.QueryConfig.Capabilities.IsEmpty() {
 		request.Capabilities = request.QueryConfig.Capabilities
 	}
 	if len(request.ClientTools) == 0 && len(request.QueryConfig.ClientTools) > 0 {

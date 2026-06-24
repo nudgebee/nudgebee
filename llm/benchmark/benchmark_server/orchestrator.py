@@ -265,8 +265,22 @@ def execute_single_test(
                 "test_index": global_index,
                 "status": "running",
                 "query": test_case.get("user_prompt", "")[:200],
-                "expected_answer": _flatten_ground_truth(test_case.get("expected_output", "")),
+                "expected_answer": _flatten_ground_truth(
+                    test_case.get("expected_output", "")
+                ),
                 "tags": test_case.get("tags", []),
+                # Stash what the reconciler needs to run after_test if IT ends up
+                # finalizing this test (handed-off non-terminal path).
+                "teardown_ctx": (
+                    {
+                        "after_test": test_case.get("after_test", ""),
+                        "__path__": test_case.get("__path__", ""),
+                        "__id__": test_id,
+                        "teardown_timeout": test_case.get("teardown_timeout"),
+                    }
+                    if test_case.get("after_test")
+                    else None
+                ),
             },
         )
 
@@ -285,9 +299,7 @@ def execute_single_test(
         if setup_result.success and run_id:
             _label_benchmark_namespaces(test_case, run_id)
         if not setup_result.success:
-            error_msg = (
-                f"Setup failed: {setup_result.error_details or setup_result.stderr or 'unknown'}"
-            )
+            error_msg = f"Setup failed: {setup_result.error_details or setup_result.stderr or 'unknown'}"
             logger.error("[%s] %s", test_id, error_msg)
             # Categorize setup failures
             error_cat = "setup_failed"
@@ -295,9 +307,9 @@ def execute_single_test(
                 error_cat = "setup_timeout"
             elif "Permission denied" in (setup_result.stderr or ""):
                 error_cat = "setup_permission"
-            elif "Missing env var" in (setup_result.stdout or "") or "Missing env var" in (
-                setup_result.stderr or ""
-            ):
+            elif "Missing env var" in (
+                setup_result.stdout or ""
+            ) or "Missing env var" in (setup_result.stderr or ""):
                 error_cat = "setup_env_missing"
             elif "timed out waiting" in (setup_result.stderr or ""):
                 error_cat = "infra_timeout"
@@ -322,7 +334,12 @@ def execute_single_test(
         result = _run_test_core(
             test_case, session, config, global_index, start_time, setup_duration
         )
-        if result.status == "waiting":
+        # Keep the scenario alive for tests that aren't really done: WAITING
+        # (agent paused for an answer) and RUNNING (poll budget elapsed but the
+        # conversation is still in flight on the llm-server). The reconciler
+        # keeps watching; the scenario must remain valid for the finishing /
+        # resumed conversation. Terminal results (pass/fail) tear down here.
+        if result.status in ("waiting", "running"):
             skip_cleanup = True
         return result
 
@@ -446,6 +463,25 @@ def _run_test_core(
     user_prompt = test_case["user_prompt"]
     logger.info("[%s] Querying: %s...", test_id, user_prompt[:100])
 
+    # Persist the conversation handle the instant the server accepts the async
+    # request, so a benchmark restart can re-attach to this in-flight test
+    # (reconcile by conversation_id) instead of orphaning it. Best-effort.
+    def _persist_submit_cid(cid: str) -> None:
+        if not run_id:
+            return
+        try:
+            store_test_result(
+                run_id,
+                {
+                    "test_index": global_index,
+                    "conversation_id": cid,
+                },
+            )
+        except Exception as e:
+            logger.warning(
+                "[%s] failed to persist submit conversation_id: %s", test_id, e
+            )
+
     # Execute LLM call
     final_query = f"@{agent} {user_prompt}" if prefix_query else user_prompt
     llm_start = time.time()
@@ -455,6 +491,7 @@ def _run_test_core(
         session.tenant_id,
         session.user_id,
         config=llm_config,
+        on_submit=_persist_submit_cid,
     )
     elapsed = round(time.time() - llm_start, 2)
     docs = extractor(llm_result.data, session.account_id, tool_names, db_tool_name)
@@ -482,7 +519,9 @@ def _run_test_core(
                     "conversation_id": convo_id or "",
                     "polling_conversation_id": session_id,
                     "query": user_prompt,
-                    "expected_answer": _flatten_ground_truth(test_case.get("expected_output", "")),
+                    "expected_answer": _flatten_ground_truth(
+                        test_case.get("expected_output", "")
+                    ),
                     "duration_seconds": round(time.time() - start_time, 2),
                     # Unified shape: always a list, one entry per pending panel.
                     # First entry is also mirrored into ``followup_request`` for the
@@ -510,7 +549,9 @@ def _run_test_core(
                 )
         except Exception:
             pass
-        logger.info("[%s] WAITING for followup (%.1fs)", test_id, time.time() - start_time)
+        logger.info(
+            "[%s] WAITING for followup (%.1fs)", test_id, time.time() - start_time
+        )
         return TestResult(
             test_id=test_id,
             test_index=global_index,
@@ -524,7 +565,9 @@ def _run_test_core(
     if not docs:
         error_category = llm_result.error_category
         error_message = llm_result.error_message or ""
-        if max_retries > 0 and (not error_category or error_category in ErrorCategory.RETRYABLE):
+        if max_retries > 0 and (
+            not error_category or error_category in ErrorCategory.RETRYABLE
+        ):
             for attempt in range(1, max_retries + 1):
                 time.sleep(2.0 * (2 ** (attempt - 1)))
                 logger.info("[%s] Retry %d/%d", test_id, attempt, max_retries)
@@ -534,8 +577,11 @@ def _run_test_core(
                     session.tenant_id,
                     session.user_id,
                     config=llm_config,
+                    on_submit=_persist_submit_cid,
                 )
-                docs = extractor(llm_result.data, session.account_id, tool_names, db_tool_name)
+                docs = extractor(
+                    llm_result.data, session.account_id, tool_names, db_tool_name
+                )
                 if docs:
                     error_category = None
                     error_message = ""
@@ -600,13 +646,17 @@ def _run_test_core(
             score_reason = eval_result.reason
 
             # Planner evaluation
-            trace = get_execution_trace(convo_id, session.account_id) if convo_id else ""
+            trace = (
+                get_execution_trace(convo_id, session.account_id) if convo_id else ""
+            )
             if not trace:
                 trace = get_planner_response(convo_id, session.account_id) or ""
             if trace:
                 from llm.agents.common.benchmark import _evaluate_planner
 
-                planner_score, planner_reason = _evaluate_planner(trace, user_prompt, session.llm)
+                planner_score, planner_reason = _evaluate_planner(
+                    trace, user_prompt, session.llm
+                )
                 if planner_reason:
                     score_reason += f"\n[Planner] {planner_reason}"
                     score_reason = score_reason.strip()
@@ -632,6 +682,18 @@ def _run_test_core(
         except Exception as e:
             logger.warning("[%s] result_enricher hook failed: %s", test_id, e)
 
+    # A benchmark-side poll TIMEOUT is NOT terminal: the agent keeps running on
+    # the llm-server. Leave the row RUNNING (non-terminal) with the conversation
+    # handle so the single poller (reconciler) keeps copying the real conversation
+    # status until it reaches terminal — instead of inventing a benchmark-side
+    # outcome. (Status is always a projection of the llm-server conversation.)
+    if not test_failed:
+        final_status = "pass"
+    elif error_category == ErrorCategory.TIMEOUT and convo_id:
+        final_status = "running"
+    else:
+        final_status = "fail"
+
     # Store to DB
     if run_id:
         store_test_result(
@@ -639,7 +701,7 @@ def _run_test_core(
             {
                 "test_id": test_id,
                 "test_index": global_index,
-                "status": "pass" if not test_failed else "fail",
+                "status": final_status,
                 "conversation_id": convo_id or "",
                 "polling_conversation_id": session_id or "",
                 "query": user_prompt,
@@ -654,8 +716,12 @@ def _run_test_core(
                 "setup_duration": setup_duration,
                 "llm_duration": elapsed,
                 "cost": token_metrics.get("cost", 0.0) if token_metrics else 0.0,
-                "total_tokens": (token_metrics.get("total_tokens", 0) if token_metrics else 0),
-                "input_tokens": (token_metrics.get("input_tokens", 0) if token_metrics else 0),
+                "total_tokens": (
+                    token_metrics.get("total_tokens", 0) if token_metrics else 0
+                ),
+                "input_tokens": (
+                    token_metrics.get("input_tokens", 0) if token_metrics else 0
+                ),
                 "output_tokens": (
                     token_metrics.get("completion_tokens", 0) if token_metrics else 0
                 ),
@@ -666,10 +732,16 @@ def _run_test_core(
                     token_metrics.get("total_tool_calls", 0) if token_metrics else 0
                 ),
                 "tool_calls_successful": (
-                    token_metrics.get("successful_tool_calls", 0) if token_metrics else 0
+                    token_metrics.get("successful_tool_calls", 0)
+                    if token_metrics
+                    else 0
                 ),
-                "tool_names": (tool_names_data.get("tool_names", []) if tool_names_data else []),
-                "model_names": (token_metrics.get("model_names", []) if token_metrics else []),
+                "tool_names": (
+                    tool_names_data.get("tool_names", []) if tool_names_data else []
+                ),
+                "model_names": (
+                    token_metrics.get("model_names", []) if token_metrics else []
+                ),
                 "model_providers": (
                     token_metrics.get("model_providers", []) if token_metrics else []
                 ),
@@ -679,7 +751,7 @@ def _run_test_core(
             },
         )
 
-    status = "pass" if not test_failed else "fail"
+    status = final_status
     logger.info(
         "[%s] %s (%.1fs) sim=%.1f rel=%.1f planner=%.1f",
         test_id,
@@ -713,7 +785,9 @@ def _store_error(
             "test_index": global_index,
             "status": "error",
             "query": test_case.get("user_prompt", "")[:200],
-            "expected_answer": _flatten_ground_truth(test_case.get("expected_output", "")),
+            "expected_answer": _flatten_ground_truth(
+                test_case.get("expected_output", "")
+            ),
             "duration_seconds": round(duration, 2),
             "setup_duration": setup_duration,
             "error_message": error_msg[:500],
@@ -823,7 +897,9 @@ class TestOrchestrator:
                             "test_index": global_index,
                             "status": "skipped",
                             "query": tc.get("user_prompt", "")[:200],
-                            "expected_answer": _flatten_ground_truth(tc.get("expected_output", "")),
+                            "expected_answer": _flatten_ground_truth(
+                                tc.get("expected_output", "")
+                            ),
                             "error_message": skip_reason,
                             "tags": tc.get("tags", []),
                         },
@@ -940,6 +1016,8 @@ class TestOrchestrator:
 
         # Deploy infrastructure for AWS/Azure agents
         if agent_path and os.getenv("DEPLOY_INFRA", "").lower() in ("1", "true", "yes"):
+            if run_id:
+                set_phase(run_id, RunPhase.DEPLOYING_INFRA)
             deploy_start = time.time()
             self._deploy_infrastructure(
                 config["agent"],
@@ -950,7 +1028,9 @@ class TestOrchestrator:
                 tag_filter,
             )
             session.infra_deploy_duration = round(time.time() - deploy_start, 2)
-            logger.info("Orchestrator: infra deploy took %.1fs", session.infra_deploy_duration)
+            logger.info(
+                "Orchestrator: infra deploy took %.1fs", session.infra_deploy_duration
+            )
 
         if run_id:
             set_phase(run_id, RunPhase.RUNNING_TESTS)
@@ -977,7 +1057,9 @@ class TestOrchestrator:
                 tag_filter=tag_filter,
             )
             if not scenarios:
-                scenarios = sorted(p.stem for p in (aws_test_dir / "scenarios").rglob("*.yaml"))
+                scenarios = sorted(
+                    p.stem for p in (aws_test_dir / "scenarios").rglob("*.yaml")
+                )
 
             logger.info("Deploying AWS infrastructure: %s", scenarios)
             sp.run(["bash", str(deploy_sh), "--bootstrap"], check=True, text=True)
@@ -991,7 +1073,10 @@ class TestOrchestrator:
                 except sp.CalledProcessError:
                     logger.error("Failed to deploy AWS scenario %s", scenario)
 
-        elif azure_test_dir.exists() and (azure_test_dir / "scripts" / "deploy.sh").exists():
+        elif (
+            azure_test_dir.exists()
+            and (azure_test_dir / "scripts" / "deploy.sh").exists()
+        ):
             deploy_sh = azure_test_dir / "scripts" / "deploy.sh"
             scenarios = resolve_scenarios_from_fixtures(
                 fixtures_dir,
@@ -1000,10 +1085,14 @@ class TestOrchestrator:
                 tag_filter=tag_filter,
             )
             if not scenarios:
-                scenarios = sorted(p.stem for p in (azure_test_dir / "scenarios").rglob("*.json"))
+                scenarios = sorted(
+                    p.stem for p in (azure_test_dir / "scenarios").rglob("*.json")
+                )
 
             location = os.getenv("AZURE_LOCATION", "eastus")
-            subscription = os.getenv("AZURE_SUBSCRIPTION", "19e207a9-769d-4afd-b261-10bbed2d43e8")
+            subscription = os.getenv(
+                "AZURE_SUBSCRIPTION", "19e207a9-769d-4afd-b261-10bbed2d43e8"
+            )
             extra_env = {
                 **os.environ,
                 "AZURE_LOCATION": location,
@@ -1028,7 +1117,9 @@ class TestOrchestrator:
                 except sp.CalledProcessError:
                     logger.error("Failed to deploy Azure scenario %s", scenario)
 
-    def _execute_sequential(self, test_cases, session, config, total) -> List[TestResult]:
+    def _execute_sequential(
+        self, test_cases, session, config, total
+    ) -> List[TestResult]:
         """Execute tests one at a time."""
         results = []
         for i, tc in enumerate(test_cases):
@@ -1071,7 +1162,9 @@ class TestOrchestrator:
                     try:
                         run_after_test(tc)
                     except Exception:
-                        logger.warning("[%s] Cleanup after timeout also failed", test_id)
+                        logger.warning(
+                            "[%s] Cleanup after timeout also failed", test_id
+                        )
                     _store_error(
                         session.run_id,
                         tc,
@@ -1112,7 +1205,9 @@ class TestOrchestrator:
 
         return results
 
-    def _finalize(self, session: Optional[SessionState], run_id: str, agent_path: Path = None):
+    def _finalize(
+        self, session: Optional[SessionState], run_id: str, agent_path: Path = None
+    ):
         """Finalize session — nuke infrastructure and set phase to report generation.
 
         Safe to call even if session is None (setup failed).
@@ -1132,7 +1227,9 @@ class TestOrchestrator:
                     session.infra_nuke_duration = nuke_duration
                 logger.info("Orchestrator: infra nuke took %.1fs", nuke_duration)
             except Exception as e:
-                logger.error("Infrastructure nuke failed: %s — manual cleanup may be needed", e)
+                logger.error(
+                    "Infrastructure nuke failed: %s — manual cleanup may be needed", e
+                )
 
         # Safety-net: clean up any benchmark-labeled namespaces for this run
         if run_id:
@@ -1184,10 +1281,15 @@ class TestOrchestrator:
                     e.returncode,
                 )
 
-        elif azure_test_dir.exists() and (azure_test_dir / "scripts" / "deploy.sh").exists():
+        elif (
+            azure_test_dir.exists()
+            and (azure_test_dir / "scripts" / "deploy.sh").exists()
+        ):
             deploy_sh = azure_test_dir / "scripts" / "deploy.sh"
             location = os.getenv("AZURE_LOCATION", "eastus")
-            subscription = os.getenv("AZURE_SUBSCRIPTION", "19e207a9-769d-4afd-b261-10bbed2d43e8")
+            subscription = os.getenv(
+                "AZURE_SUBSCRIPTION", "19e207a9-769d-4afd-b261-10bbed2d43e8"
+            )
             extra_env = {
                 **os.environ,
                 "AZURE_LOCATION": location,
@@ -1200,7 +1302,9 @@ class TestOrchestrator:
             fixtures_dir = agent_path / "fixtures"
             scenarios = resolve_scenarios_from_fixtures(fixtures_dir)
             if not scenarios:
-                scenarios = sorted(p.stem for p in (azure_test_dir / "scenarios").rglob("*.json"))
+                scenarios = sorted(
+                    p.stem for p in (azure_test_dir / "scenarios").rglob("*.json")
+                )
 
             logger.info("Deleting Azure infrastructure")
             for scenario in scenarios:

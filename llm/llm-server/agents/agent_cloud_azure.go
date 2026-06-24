@@ -2,7 +2,6 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -64,10 +63,6 @@ func (a AzureAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBA
 		"**Service-Specific Investigation Patterns:** VM: provisioning state, power state, boot diagnostics, OS-level run-command (detect OS first), NSG effective rules (check last). AKS: cluster state, node pool health, pod/node events via `az aks command invoke`, node logs, network policies. App Service/Function App: app state, App Settings, log stream via `az webapp log tail`, deployment status, VNet integration and outbound routing. Storage: account state, network rules via `az storage account network-rule list`, role assignments, SAS/key validity. SQL/Cosmos DB: server state, firewall rules, connection strings, DTU/RU metrics, audit logs. NSG: inspect effective security rules on the NIC/subnet only after OS or app-level signals point to network.",
 		"**Permission Errors (403 / AuthorizationFailed):** Do NOT guess or speculate about what the permission issue might be hiding. Clearly state: which Azure CLI command failed, which permission/role is required (e.g., Reader, Contributor, specific RBAC action), and which scope it must be granted on. If the investigation cannot proceed without that permission, stop and report: 'Investigation blocked: <permission> required on <resource/scope>'. Only after confirming permissions are resolved, resume investigation. **CRITICAL: NEVER attempt to modify your own role assignments or permissions to gain access.** Do NOT run commands like `az role assignment create` or `az ad app permission grant` to grant yourself access. Report the missing permission as a finding.",
 		"**Reporting Standard:** Prefer 'no change required' over speculative fixes. End with exactly one root cause category: configuration, application logic, infrastructure/network, managed service health, permission, or unknown.",
-	}
-
-	if config.Config.LlmServerShellToolEnabled {
-		instructions = append(instructions, core.GetWorkspaceInstructions()...)
 	}
 
 	constraints := []string{

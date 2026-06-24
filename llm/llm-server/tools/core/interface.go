@@ -70,6 +70,34 @@ type NBToolResponse struct {
 	IsTerminal        bool                      `json:"is_terminal"`
 	AdditionalDetails map[string]any            `json:"additional_details,omitempty"`
 	References        []NBToolResponseReference `json:"references"`
+	// Metadata carries execution telemetry (exit status, duration, stderr,
+	// truncation) that the planner formats into the prompt at render time and
+	// the persistence layer stores as a JSONB column. Kept off `Data` so the
+	// observation text the UI renders stays byte-for-byte what the tool
+	// produced. Nil for tools that don't populate it.
+	Metadata *NBToolResponseMetadata `json:"metadata,omitempty"`
+}
+
+// NBToolResponseMetadata is the typed seam for tool-execution metadata. New
+// fields land here without an interface change or DB migration (persisted as
+// one JSONB column on llm_conversation_tool_calls).
+type NBToolResponseMetadata struct {
+	// ExitStatus mirrors POSIX-style intent: 0 success, 1 failure, 2
+	// empty-but-successful (e.g. grep with no match). Not a literal shell
+	// exit code — it's derived from NBToolResponseStatus + empty-data check
+	// in the executor.
+	ExitStatus int `json:"exit_status"`
+	// ExecutionDurationMs is wall-clock duration of the tool call in
+	// milliseconds. Clamped to 0 on negative input.
+	ExecutionDurationMs int64 `json:"execution_duration_ms"`
+	// Stderr is the stderr stream when the tool surfaces one separately
+	// (today: kubectl). Empty when stdout is the only stream.
+	Stderr string `json:"stderr,omitempty"`
+	// Truncated is true when Data was clipped by truncateToolResponse before
+	// persistence. OriginalLen records the pre-truncation byte length so
+	// callers can tell the planner how much was dropped.
+	Truncated   bool `json:"truncated,omitempty"`
+	OriginalLen int  `json:"original_len,omitempty"`
 }
 
 type ToolSchemaType string

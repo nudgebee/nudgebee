@@ -238,7 +238,10 @@ func (m *ConversationContextManager) unifiedExtraction(
 	}
 
 	extractCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), ContextKeyCacheScope, CacheScopeGlobal),
+		context.WithValue(
+			context.WithValue(ctx.GetContext(), ContextKeyCacheScope, CacheScopeGlobal),
+			ContextKeyModelTier, ModelTierSummary,
+		),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),

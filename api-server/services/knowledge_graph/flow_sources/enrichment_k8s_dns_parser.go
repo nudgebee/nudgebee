@@ -79,22 +79,19 @@ func (p *K8sDNSParser) IsK8sInternalDNS(hostname string) bool {
 // LooksLikeK8sServiceName checks if a name looks like it could be a K8s service name
 // Returns true only for patterns that strongly suggest K8s internal DNS
 func (p *K8sDNSParser) LooksLikeK8sServiceName(name string) bool {
+	name = strings.ToLower(p.CleanServiceName(name))
+	name = strings.TrimSuffix(name, ".")
+
 	// Skip if it's clearly an external hostname
 	externalTLDs := []string{".com", ".io", ".org", ".net", ".edu", ".gov", ".co", ".app"}
 	for _, tld := range externalTLDs {
-		if strings.Contains(name, tld) {
+		if strings.HasSuffix(name, tld) {
 			return false
 		}
 	}
 
 	// Skip AWS hostnames
 	if strings.Contains(name, "amazonaws") || strings.Contains(name, "cloudfront") {
-		return false
-	}
-
-	// K8s service names are typically lowercase with hyphens
-	nameLower := strings.ToLower(name)
-	if name != nameLower {
 		return false
 	}
 

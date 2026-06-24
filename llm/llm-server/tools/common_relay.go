@@ -58,6 +58,24 @@ const (
 	RelayJobSSH        RelayJob = "ssh"
 )
 
+// getRelayCommandResponseData extracts the command-execution payload from a
+// relay response. Two response shapes exist in production today:
+//
+//  1. The deeply-nested findings shape used by the analysis path:
+//     data.findings[0].evidence[0].data → JSON → [0].data → JSON →
+//     {response: "..."}. Handled by the original walk below.
+//  2. A simpler shape returned by command-style executions (kubectl, helm,
+//     etc.) where data carries the response directly without a findings
+//     envelope.
+//
+// Before #32240 the parser hard-errored on shape #2 with "findings field
+// not found or is nil from data" — the shim in the workspace pod surfaced
+// that as `Error: Server returned 500: {…findings field not found…}` and
+// the LLM had no way to interpret it. Production data showed ~10–15% of
+// kubectl_execute calls hitting this path on perfectly valid commands
+// (rollout history, exec, helm list). We now fall through to returning
+// `data` directly so the caller's downstream `responseParsed["response"]`
+// lookup gets a shot at it instead of being aborted with a parser error.
 func getRelayCommandResponseData(relayResponse map[string]any) (map[string]any, error) {
 	data1, ok := relayResponse["data"].(map[string]any)
 	if !ok || data1 == nil {
@@ -65,7 +83,10 @@ func getRelayCommandResponseData(relayResponse map[string]any) (map[string]any, 
 	}
 	findings, ok := data1["findings"].([]any)
 	if !ok || findings == nil {
-		return nil, errors.New("findings field not found or is nil from data")
+		// Shape #2 — no findings envelope. Treat data itself as the
+		// already-extracted command payload; the caller's
+		// responseParsed["response"] lookup is the next step.
+		return data1, nil
 	}
 
 	if len(findings) == 0 {

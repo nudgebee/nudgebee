@@ -128,7 +128,9 @@ services:
     networks: [nudgebee]
     ports:
       - "8000:8000"
-    env_file: ./api-server/services/.env
+    env_file:
+      - path: ./api-server/services/.env
+        required: false
     depends_on:
       - postgres
       - rabbitmq
@@ -275,7 +277,8 @@ services:
     depends_on:
       - api-server-services
     env_file:
-      - ./app/.env
+      - path: ./app/.env
+        required: false
     environment:
       SERVICE_API_SERVER_URL: http://api-server-services:8000
       LLM_SERVER_URL: http://llm-server:8000

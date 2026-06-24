@@ -53,6 +53,7 @@ func (m Confluence) ConfigSchema() core.IntegrationSchema {
 				Description: "Confluence API token",
 				Default:     "",
 				IsTestable:  true,
+				IsEncrypted: true,
 				Priority:    68,
 			},
 			"host": {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/netip"
 	"nudgebee/services/cloud"
 	"nudgebee/services/common"
 	"nudgebee/services/integrations"
@@ -444,13 +445,12 @@ func (e *TraceToKnowledgeGraphExtractor) isInternalDomain(hostname string) bool 
 		}
 	}
 
-	// Check for localhost and internal IP ranges
-	if strings.HasPrefix(hostname, "localhost") ||
-		strings.HasPrefix(hostname, "127.") ||
-		strings.HasPrefix(hostname, "10.") ||
-		strings.HasPrefix(hostname, "192.168.") ||
-		strings.Contains(hostname, "172.") {
+	if strings.HasPrefix(hostname, "localhost") {
 		return true
+	}
+
+	if addr, err := netip.ParseAddr(hostname); err == nil {
+		return addr.IsPrivate() || addr.IsLoopback()
 	}
 
 	// Check for internal Kubernetes service patterns

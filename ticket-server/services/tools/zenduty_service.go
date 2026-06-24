@@ -7,6 +7,7 @@ import (
 	"nudgebee/tickets-server/models"
 	"nudgebee/tickets-server/services/ticket"
 	"nudgebee/tickets-server/utils"
+	"sort"
 	"strings"
 	"time"
 
@@ -48,16 +49,42 @@ func (s *ZenDutyService) Get(ctx *gin.Context, config models.TicketConfiguration
 	}
 
 	createdAt, _ := time.Parse(time.RFC3339, incident.CreationDate)
+
+	assignees := make([]string, 0, len(incident.AssignedTo))
+	for _, u := range incident.AssignedTo {
+		if name := zenDutyUserLabel(u); name != "" {
+			assignees = append(assignees, name)
+		}
+	}
+	var assignee string
+	if len(assignees) > 0 {
+		assignee = assignees[0]
+	}
+
 	return &models.Ticket{
 		TicketID:    incident.UniqueID,
 		Title:       incident.Title,
 		Description: incident.Summary,
 		Status:      clients.MapStatusToString(incident.Status),
+		Assignee:    assignee,
+		Assignees:   assignees,
 		Platform:    "zenduty",
 		URL:         incident.HTMLURL,
 		CreatedAt:   &createdAt,
 		Raw:         marshalToMap(incident),
 	}, nil
+}
+
+// zenDutyUserLabel picks the most human-readable identifier available on a
+// ZenDuty user reference: username, then email, then full name.
+func zenDutyUserLabel(u clients.ZenDutyUserRef) string {
+	if u.Username != "" {
+		return u.Username
+	}
+	if u.Email != "" {
+		return u.Email
+	}
+	return strings.TrimSpace(u.FirstName + " " + u.LastName)
 }
 
 // Acknowledge acknowledges an incident.
@@ -178,11 +205,30 @@ func (s *ZenDutyService) List(ctx *gin.Context, config models.TicketConfiguratio
 		return nil, fmt.Errorf("failed to list ZenDuty incidents: %w", err)
 	}
 
-	// Client-side pagination since ZenDuty API may not support offset/limit
+	// Sort client-side to honor sort_by/sort_order, consistent with the other
+	// providers. ZenDuty incidents only carry a creation timestamp, so that is
+	// the sole supported sort field; the default order is creation date
+	// descending (newest first), and SortOrder == "asc" flips it to ascending.
+	sortAscending := strings.ToLower(params.SortOrder) == "asc"
+	sort.SliceStable(incidents, func(i, j int) bool {
+		ti, _ := time.Parse(time.RFC3339, incidents[i].CreationDate)
+		tj, _ := time.Parse(time.RFC3339, incidents[j].CreationDate)
+		if sortAscending {
+			return ti.Before(tj)
+		}
+		return ti.After(tj)
+	})
+
+	// Client-side pagination since ZenDuty API may not support offset/limit.
+	// Normalize limit/offset in-place (params is passed by value, so this is
+	// safe) so an unset limit returns DefaultListLimit rows instead of an empty
+	// page (incidents[offset:offset]) and the returned ListResult is consistent.
+	params.Limit = normalizeLimit(params.Limit)
+	params.Offset = normalizeOffset(params.Offset)
 	total := len(incidents)
 	end := params.Offset + params.Limit
 	if params.Offset > total {
-		incidents = nil
+		incidents = incidents[:0]
 	} else {
 		if end > total {
 			end = total

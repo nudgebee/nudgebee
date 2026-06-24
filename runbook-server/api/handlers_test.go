@@ -256,6 +256,11 @@ func (m *MockWorkflowService) UpdateWorkflowVersionStatus(ctx *security.RequestC
 	return args.Get(0).(*model.WorkflowVersion), args.Error(1)
 }
 
+func (m *MockWorkflowService) DeleteWorkflowVersion(ctx *security.RequestContext, accountId, id string, versionNumber int) error {
+	args := m.Called(ctx, accountId, id, versionNumber)
+	return args.Error(0)
+}
+
 // MockConfigService is a mock of config.ConfigService interface
 type MockConfigService struct {
 	mock.Mock

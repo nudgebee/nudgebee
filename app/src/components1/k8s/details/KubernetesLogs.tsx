@@ -26,7 +26,7 @@ import WidgetCard from '@components1/ds/WidgetCard';
 import CloudProviderIcon from '@components1/common/CloudIcon';
 import { isAtMost70PercentDifferent, parseHttpResponseBodyMessage, safeJSONParse, snakeToTitleCase } from 'src/utils/common';
 import { useData } from '@context/DataContext';
-import useTicketFliter from '@hooks/useTicketFliter';
+import useTicketFilter from '@hooks/useTicketFilter';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import observability from '@api1/observability';
 import apiAccount from '@api1/account';
@@ -113,7 +113,7 @@ const KubernetesLogs: React.FC<KubernetesLogProps> = ({
     getTicketReferenceId,
     handleTicketSuccess,
     handleTicketFailure,
-  } = useTicketFliter();
+  } = useTicketFilter();
 
   const [rawLogs, setRawLogs] = useState<any[]>([]);
   const [ticketReferenceMap, setTicketReferenceMap] = useState<Map<string, any>>(new Map());

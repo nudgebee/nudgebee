@@ -240,9 +240,9 @@ async def get_prometheus_doc(request: GetMatchingDocRequest):
             request.agent_id,
         )
 
-    except Exception as e:
-        logger.exception(f"Error getting matching document df: {e}")
-        return {"status": "error", "error": str(e)}
+    except Exception:
+        logger.exception("Error getting matching document df")
+        return {"status": "error", "error": "Failed to get matching documents"}
 
     content = [doc.page_content for doc, score in documents]
     if not content:

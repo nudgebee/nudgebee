@@ -481,23 +481,28 @@ func (s *DatadogAPMFlowSource) buildEdgeProperties(
 func (s *DatadogAPMFlowSource) inferProtocol(operation string) string {
 	operation = strings.ToLower(operation)
 
-	protocolMap := map[string]string{
-		"http.request":   "http",
-		"grpc":           "grpc",
-		"postgres.query": "postgres",
-		"redis.command":  "redis",
-		"kafka.consume":  "kafka",
-		"kafka.produce":  "kafka",
-		"mongo.query":    "mongo",
-		"s3.command":     "s3",
-		"universal.http": "http",
-		"web.request":    "http",
-		"http.client":    "http",
+	// Ordered most-specific-first so matching is deterministic regardless of
+	// Go's randomized map iteration order.
+	protocolPatterns := []struct {
+		pattern  string
+		protocol string
+	}{
+		{"http.request", "http"},
+		{"grpc", "grpc"},
+		{"postgres.query", "postgres"},
+		{"redis.command", "redis"},
+		{"kafka.consume", "kafka"},
+		{"kafka.produce", "kafka"},
+		{"mongo.query", "mongo"},
+		{"s3.command", "s3"},
+		{"universal.http", "http"},
+		{"web.request", "http"},
+		{"http.client", "http"},
 	}
 
-	for pattern, protocol := range protocolMap {
-		if strings.Contains(operation, pattern) {
-			return protocol
+	for _, entry := range protocolPatterns {
+		if strings.Contains(operation, entry.pattern) {
+			return entry.protocol
 		}
 	}
 

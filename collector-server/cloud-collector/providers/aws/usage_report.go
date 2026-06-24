@@ -538,107 +538,111 @@ func getAwsUsageReport(ctx providers.CloudProviderContext, account providers.Acc
 
 	items := []providers.UsageReportItem{}
 	for _, key := range s3Keys {
-		keyWithoutLeadingSlash := strings.TrimPrefix(key, "/")
-		input := &s3.GetObjectInput{
-			Bucket: &s3Bucket,
-			Key:    &keyWithoutLeadingSlash,
-		}
-		result, err := s3Svc.GetObject(ctx.GetContext(), input)
-		if err != nil {
-			// Check if error is NoSuchKey - file doesn't exist yet or was removed
-			var noSuchKey *types.NoSuchKey
-			if errors.As(err, &noSuchKey) {
-				slog.Warn("aws: cost report file not found, skipping",
-					"bucket", s3Bucket,
-					"key", key,
-					"hint", "File may not be generated yet or was removed")
-				continue // Skip this file and continue with others
+		// Wrap each key in an IIFE so that defers fire per-iteration, not when the
+		// outer function returns — preventing S3 response bodies from accumulating.
+		moreItems, iterErr := func(key string) ([]providers.UsageReportItem, error) {
+			keyWithoutLeadingSlash := strings.TrimPrefix(key, "/")
+			input := &s3.GetObjectInput{
+				Bucket: &s3Bucket,
+				Key:    &keyWithoutLeadingSlash,
 			}
-			// For other S3 errors (permissions, etc), return the error
-			ctx.GetLogger().Error("failed to fetch cost report", "error", err, "bucket", s3Bucket, "key", key)
-			return providers.GetUsageReportResponse{}, err
-		}
-		defer func() {
-			if err := result.Body.Close(); err != nil {
-				ctx.GetLogger().Error("unable to close result body", "error", err)
-			}
-		}()
-		var stream io.Reader
-		if compression == "GZIP" {
-			gzr, err := gzip.NewReader(result.Body)
+			result, err := s3Svc.GetObject(ctx.GetContext(), input)
 			if err != nil {
-				ctx.GetLogger().Error("failed to decompress cost report", "error", err, "bucket", s3Bucket, "key", key)
-				return providers.GetUsageReportResponse{}, err
+				// Check if error is NoSuchKey - file doesn't exist yet or was removed
+				var noSuchKey *types.NoSuchKey
+				if errors.As(err, &noSuchKey) {
+					slog.Warn("aws: cost report file not found, skipping",
+						"bucket", s3Bucket,
+						"key", key,
+						"hint", "File may not be generated yet or was removed")
+					return nil, nil
+				}
+				// For other S3 errors (permissions, etc), return the error
+				ctx.GetLogger().Error("failed to fetch cost report", "error", err, "bucket", s3Bucket, "key", key)
+				return nil, err
 			}
-			stream = gzr
-		} else if compression == "ZIP" {
-			zipBodyBytes, err := io.ReadAll(result.Body)
-			if err != nil {
-				ctx.GetLogger().Error("failed to read S3 object body for ZIP", "error", err, "bucket", s3Bucket, "key", key)
-				continue
-			}
+			defer func() {
+				if err := result.Body.Close(); err != nil {
+					ctx.GetLogger().Error("unable to close result body", "error", err)
+				}
+			}()
+			var stream io.Reader
+			if compression == "GZIP" {
+				gzr, err := gzip.NewReader(result.Body)
+				if err != nil {
+					ctx.GetLogger().Error("failed to decompress cost report", "error", err, "bucket", s3Bucket, "key", key)
+					return nil, err
+				}
+				stream = gzr
+			} else if compression == "ZIP" {
+				zipBodyBytes, err := io.ReadAll(result.Body)
+				if err != nil {
+					ctx.GetLogger().Error("failed to read S3 object body for ZIP", "error", err, "bucket", s3Bucket, "key", key)
+					return nil, nil
+				}
 
-			bytesReader := bytes.NewReader(zipBodyBytes)
-			zipReader, err := zip.NewReader(bytesReader, int64(len(zipBodyBytes)))
-			if err != nil {
-				ctx.GetLogger().Error("failed to create zip reader", "error", err, "bucket", s3Bucket, "key", key)
-				continue // Skip this file
-			}
+				bytesReader := bytes.NewReader(zipBodyBytes)
+				zipReader, err := zip.NewReader(bytesReader, int64(len(zipBodyBytes)))
+				if err != nil {
+					ctx.GetLogger().Error("failed to create zip reader", "error", err, "bucket", s3Bucket, "key", key)
+					return nil, nil
+				}
 
-			// Find the first .csv file in the archive
-			foundCsv := false
-			var zipFileReadCloser io.ReadCloser
-			for _, zf := range zipReader.File {
-				if strings.HasSuffix(strings.ToLower(zf.Name), ".csv") {
-					ctx.GetLogger().Info("Found CSV file in ZIP archive", "zipFileName", zf.Name, "key", key)
-					zipFileReadCloser, err = zf.Open()
-					if err != nil {
-						ctx.GetLogger().Error("failed to open file within zip archive", "error", err, "zipFileName", zf.Name, "bucket", s3Bucket, "key", key)
+				// Find the first .csv file in the archive
+				foundCsv := false
+				var zipFileReadCloser io.ReadCloser
+				for _, zf := range zipReader.File {
+					if strings.HasSuffix(strings.ToLower(zf.Name), ".csv") {
+						ctx.GetLogger().Info("Found CSV file in ZIP archive", "zipFileName", zf.Name, "key", key)
+						zipFileReadCloser, err = zf.Open()
+						if err != nil {
+							ctx.GetLogger().Error("failed to open file within zip archive", "error", err, "zipFileName", zf.Name, "bucket", s3Bucket, "key", key)
+							break
+						}
+						stream = zipFileReadCloser
+						foundCsv = true
 						break
 					}
-					stream = zipFileReadCloser
-					foundCsv = true
-					break
+				}
+
+				if !foundCsv {
+					if zipFileReadCloser == nil {
+						ctx.GetLogger().Warn("No .csv file found or failed to open file within ZIP archive", "bucket", s3Bucket, "key", key)
+					} else {
+						if err := zipFileReadCloser.Close(); err != nil {
+							ctx.GetLogger().Error("unable to close zipFileReadCloser", "error", err)
+						}
+						ctx.GetLogger().Warn("No .csv file processed within ZIP archive", "bucket", s3Bucket, "key", key)
+					}
+					return nil, nil
 				}
 			}
 
-			if !foundCsv {
-				// If opening the file failed in the loop, zipFileReadCloser might be nil
-				if zipFileReadCloser == nil {
-					ctx.GetLogger().Warn("No .csv file found or failed to open file within ZIP archive", "bucket", s3Bucket, "key", key)
-				} else {
-					// This case shouldn't happen if break works correctly, but handle defensively
-					// This case shouldn't happen if break works correctly, but handle defensively
-					if err := zipFileReadCloser.Close(); err != nil {
-						ctx.GetLogger().Error("unable to close zipFileReadCloser", "error", err)
-					} // Close if opened but loop exited unexpectedly
-					zipFileReadCloser = nil
-					ctx.GetLogger().Warn("No .csv file processed within ZIP archive", "bucket", s3Bucket, "key", key)
+			if stream == nil {
+				return nil, errors.New("unable to find cost report")
+			}
+
+			streamCloser, ok := stream.(io.ReadCloser)
+			if !ok {
+				streamCloser = io.NopCloser(stream)
+			}
+			defer func() {
+				if err := streamCloser.Close(); err != nil {
+					ctx.GetLogger().Error("unable to close streamCloser", "error", err)
 				}
-				continue // Skip this S3 object
+			}()
+
+			items2, err := readAwsBillingReport(stream, timeUnit)
+			if err != nil {
+				ctx.GetLogger().Error("failed to parse cost report", "error", err, "bucket", s3Bucket, "key", key)
+				return nil, err
 			}
+			return items2, nil
+		}(key)
+		if iterErr != nil {
+			return providers.GetUsageReportResponse{}, iterErr
 		}
-
-		if stream == nil {
-			return providers.GetUsageReportResponse{}, errors.New("unable to find cost report")
-		}
-
-		streamCloser, ok := stream.(io.ReadCloser)
-		if !ok {
-			streamCloser = io.NopCloser(stream)
-		}
-		defer func() {
-			if err := streamCloser.Close(); err != nil {
-				ctx.GetLogger().Error("unable to close streamCloser", "error", err)
-			}
-		}()
-
-		items2, err := readAwsBillingReport(stream, timeUnit)
-		if err != nil {
-			ctx.GetLogger().Error("failed to parse cost report", "error", err, "bucket", s3Bucket, "key", key)
-			return providers.GetUsageReportResponse{}, err
-		}
-		items = append(items, items2...)
+		items = append(items, moreItems...)
 	}
 
 	return providers.GetUsageReportResponse{Items: items, Dates: []time.Time{}}, nil

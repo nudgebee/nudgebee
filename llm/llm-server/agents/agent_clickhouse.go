@@ -58,10 +58,6 @@ func (l ClickhouseDebugAgent) GetSystemPrompt(ctx *security.RequestContext, quer
 		"**4. Interpret & Summarize:** Analyze the returned data. If no rows are found, explain why.",
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		instructions = append(instructions, core.GetWorkspaceInstructions()...)
-	}
-
 	constraints := []string{
 		"You MUST use the `clickhouse_query_execute` tool for all database interactions. Do NOT answer without evidence from Clickhouse.",
 		"When broad data is requested (e.g., 'all records'), do NOT add restrictive filters unless requested.",

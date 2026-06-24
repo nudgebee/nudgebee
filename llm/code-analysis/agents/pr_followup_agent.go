@@ -21,6 +21,12 @@ import (
 	"nudgebee/code-analysis-agent/tools/core"
 )
 
+// commitEnforcementMaxIterations bounds the focused second planner pass that
+// runs when the agent finishes with uncommitted edits. The task (commit/push
+// the already-made changes, or discard them) is concrete, so a small budget is
+// enough and prevents the retry from thrashing.
+const commitEnforcementMaxIterations = 6
+
 // PRFollowupAgent addresses CI failures and review comments on existing PRs/MRs.
 type PRFollowupAgent struct {
 	llmClient    *llm.Client
@@ -213,6 +219,14 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 	preHead = strings.TrimSpace(preHead)
 	prePRMeta := a.fetchPRMetaSnapshot(repoInfo, prNumber)
 
+	// Run the planner in "followup" mode so BuildGoal's termination criterion
+	// is "changes committed and pushed" rather than the generic "report
+	// produced". Without this the goal block (read-only/report-oriented)
+	// contradicts this agent's own system prompt ("commit your work"), and the
+	// goal wins — the agent investigates, writes a report, and stops without
+	// ever running git commit. See planners/goal.go ("followup" case).
+	ctx = tools.WithMode(ctx, "followup")
+
 	a.logger.Log(common.EventStepStart, fmt.Sprintf("Executing ReAct planner for %s followup", mrTerm), nil)
 	planResult, err := planner.Plan(ctx, userPrompt, systemPrompt)
 	if err != nil {
@@ -230,11 +244,70 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 		Summary: planResult.FinalAnswer,
 	}
 
-	// Extract structured data from submit_analysis if available
-	if submitData := planner.GetSubmitAnalysisData(); submitData != nil {
+	// Capture the planner's submit_analysis data now, before any commit-
+	// enforcement retry below re-runs the planner (which would overwrite it and
+	// drop the comment_responses we need for replies in Step 6). Structured
+	// fields are extracted into result *after* the retry's salvage below, so a
+	// retry that succeeds where the first pass produced nothing isn't ignored.
+	submitData := planner.GetSubmitAnalysisData()
+
+	// Did the agent commit (and presumably push)? If HEAD moved, yes.
+	// Require both pre and post HEADs to be non-empty: an empty preHead means
+	// the workspace had no commits before the planner ran (defensive — Execute
+	// is normally invoked on a populated clone, but the agent could in principle
+	// initialize a repo via cli_tool and we don't want to count that as "fixed").
+	postHead, _ := a.runCommandInDir("git", "rev-parse", "HEAD")
+	postHead = strings.TrimSpace(postHead)
+	committed := preHead != "" && postHead != "" && postHead != preHead
+
+	// Commit-enforcement retry. The "followup" goal directs the agent to commit
+	// and push, but agents still sometimes finish with edits left uncommitted
+	// (ran out of steps mid-task, or treated the run as investigation). Those
+	// edits would be silently discarded when the ephemeral workspace is torn
+	// down and the run would no_op despite real work. Give the agent one short,
+	// focused pass to commit/push what it left — or discard it if incomplete.
+	// We re-prompt the agent (rather than committing for it) so it keeps
+	// judgment over partial/incorrect edits.
+	if !committed {
+		if dirty, _ := a.runCommandInDir("git", "status", "--porcelain"); strings.TrimSpace(dirty) != "" {
+			a.logger.Log(common.EventStepStart, "Uncommitted changes after planner — running commit-enforcement pass", map[string]any{
+				"pr_number": prNumber,
+			})
+			commitPrompt := fmt.Sprintf(
+				"You edited files for %s #%s but the working tree still has uncommitted changes:\n%s\n\n"+
+					"Commit and push them now: git add the changes, git commit, and git push (follow the git safety rules in your instructions). "+
+					"If the changes are incomplete or incorrect, discard them with `git checkout -- .` instead. "+
+					"Make NO other edits, then call submit_analysis.",
+				mrTerm, prNumber, strings.TrimSpace(dirty),
+			)
+			planner.SetMaxIterations(commitEnforcementMaxIterations)
+			if _, rerr := planner.Plan(ctx, commitPrompt, systemPrompt); rerr != nil {
+				a.logger.Error(common.EventStepFailure, "Commit-enforcement pass failed", rerr, nil)
+			}
+			postHead, _ = a.runCommandInDir("git", "rev-parse", "HEAD")
+			postHead = strings.TrimSpace(postHead)
+			committed = preHead != "" && postHead != "" && postHead != preHead
+			if committed {
+				// The retry landed the commit, so the run succeeded even if the
+				// first pass didn't. Salvage the retry's submit_analysis data only
+				// when the first pass produced none — otherwise keep the first
+				// pass's data, which carries the comment_responses used for replies
+				// (the commit-only retry won't have them).
+				result.Success = true
+				if submitData == nil {
+					submitData = planner.GetSubmitAnalysisData()
+				}
+			}
+		}
+	}
+
+	// Salvage complete — now extract structured fields from whichever
+	// submit_analysis data we settled on, before any consumer reads result.
+	if submitData != nil {
 		if data, ok := submitData.(map[string]any); ok {
 			if fm, ok := data["files_modified"]; ok {
 				if files, ok := fm.([]any); ok {
+					result.FilesModified = nil
 					for _, f := range files {
 						if s, ok := f.(string); ok {
 							result.FilesModified = append(result.FilesModified, s)
@@ -248,14 +321,7 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 		}
 	}
 
-	// Did the agent commit (and presumably push)? If HEAD moved, yes.
-	// Require both pre and post HEADs to be non-empty: an empty preHead means
-	// the workspace had no commits before the planner ran (defensive — Execute
-	// is normally invoked on a populated clone, but the agent could in principle
-	// initialize a repo via cli_tool and we don't want to count that as "fixed").
-	postHead, _ := a.runCommandInDir("git", "rev-parse", "HEAD")
-	postHead = strings.TrimSpace(postHead)
-	if preHead != "" && postHead != "" && postHead != preHead {
+	if committed {
 		result.CommitHash = postHead
 		a.logger.Log(common.EventStepComplete, "Agent committed", map[string]any{
 			"pre_head":  preHead,
@@ -283,7 +349,7 @@ func (a *PRFollowupAgent) Execute(ctx context.Context, req PRFollowupRequest) (*
 	// Route replies based on comment source: inline → thread reply, issue/review_body → issue comment
 	var responses []commentResponse
 	if len(pendingComments) > 0 {
-		responses = a.extractCommentResponses(planner.GetSubmitAnalysisData(), result.Summary, pendingComments)
+		responses = a.extractCommentResponses(submitData, result.Summary, pendingComments)
 		// Build a source lookup from pending comments
 		commentSource := make(map[int64]string)
 		for _, c := range pendingComments {
@@ -866,7 +932,7 @@ Don't revert correct code changes because a failing check is unrelated.
 
 ## Committing and pushing
 
-You commit and push your own work. The git identity (`+"`nudgebee-bot <bot@nudgebee.com>`"+`) is already configured via env vars — just run git commands.
+You commit and push your own work. The git identity (`+"`nudgebee-bot <bot@nudgebee.com>`"+`) is already configured for this repo — just run git commands.
 
 **Two safety rules — non-negotiable:**
 

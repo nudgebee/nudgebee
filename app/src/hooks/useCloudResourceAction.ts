@@ -56,11 +56,11 @@ export function useCloudResourceAction(params: {
   // collected form values directly, sidestepping the async setState gap
   // between setActionArgs() and executeAction() being called in the same tick.
   const executeAction = useCallback(
-    async (overrideArgs?: Record<string, any>) => {
+    async (overrideArgs?: Record<string, any>): Promise<{ success: boolean; message: string } | undefined> => {
       const act = state.selectedAction;
       const res = state.selectedResource;
       if (!act || !res || !params.accountId) {
-        return;
+        return undefined;
       }
 
       // Merge resource-derived args (e.g. ECS cluster name from row meta)
@@ -71,8 +71,9 @@ export function useCloudResourceAction(params: {
       const serviceName = act.serviceNameOverride ?? params.serviceName;
 
       setState((prev) => ({ ...prev, isLoading: true }));
+      let result: { success: boolean; message: string } | undefined;
       try {
-        const result = await apiCloudAccount.applyCommand({
+        result = await apiCloudAccount.applyCommand({
           account_id: params.accountId,
           service_name: serviceName,
           region: res.region,
@@ -81,13 +82,21 @@ export function useCloudResourceAction(params: {
           args: argsToSend && Object.keys(argsToSend).length > 0 ? argsToSend : undefined,
         });
 
+        // Actions that render their own result view (e.g. SSM Run Command) keep
+        // the snackbar to a concise status — the full, possibly multi-line
+        // command output is shown in their dedicated dialog instead.
         if (result?.success) {
-          snackbar.success(`${act.label} executed successfully${result.message ? ': ' + result.message : ''}`);
+          const detail = act.suppressResultMessage ? '' : result.message ? ': ' + result.message : '';
+          snackbar.success(`${act.label} executed successfully${detail}`);
+        } else if (act.suppressResultMessage) {
+          snackbar.error(`${act.label} failed`);
         } else {
           snackbar.error(`${act.label} failed: ${result?.message || 'Unknown error'}`);
         }
       } catch (error: any) {
-        snackbar.error(`${act.label} failed: ${error?.message || 'Network error'}`);
+        const message = error?.message || 'Network error';
+        snackbar.error(`${act.label} failed: ${message}`);
+        result = { success: false, message };
       } finally {
         setState(initialState);
         const delay = params.refreshDelayMs ?? 3000;
@@ -95,6 +104,7 @@ export function useCloudResourceAction(params: {
           params.onRefresh();
         }, delay);
       }
+      return result;
     },
     [state.selectedAction, state.selectedResource, state.actionArgs, params]
   );

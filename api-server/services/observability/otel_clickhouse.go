@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"nudgebee/services/account"
 	"nudgebee/services/common"
@@ -437,8 +438,12 @@ func MapRowToOpenTelemetryTrace(row map[string]interface{}) (common.OpenTelemetr
 		trace.WorkloadNamespace = v
 	}
 	trace.DurationNs = clickhouseInt64(row["duration_ns"])
+	// status_code / http_status_code may arrive as a string (traces_v2 baseQuery) or a number
+	// (the traces_view projection uses toInt32OrZero); handle both so the fields populate either way.
 	if v, ok := row["status_code"].(string); ok {
 		trace.StatusCode = v
+	} else if f, ok := row["status_code"].(float64); ok && f != 0 {
+		trace.StatusCode = strconv.Itoa(int(f))
 	}
 	if v, ok := row["span_name"].(string); ok {
 		trace.SpanName = v
@@ -463,6 +468,8 @@ func MapRowToOpenTelemetryTrace(row map[string]interface{}) (common.OpenTelemetr
 	}
 	if v, ok := row["http_status_code"].(string); ok {
 		trace.HTTPStatusCode = v
+	} else if f, ok := row["http_status_code"].(float64); ok && f != 0 {
+		trace.HTTPStatusCode = strconv.Itoa(int(f))
 	}
 	if v, ok := row["request_payload"].(string); ok {
 		trace.RequestPayload = v
@@ -816,6 +823,20 @@ func (s OtelClickhouseTraceSource) executeClickhouseQuery(ctx context.Context, c
 		}
 		slog.Error("agent: unable to execute query", "error", errorData)
 		return nil, fmt.Errorf("%s", errorData)
+	}
+
+	// The agent reports a successful round-trip (status_code 200, success=true) even when the
+	// underlying ClickHouse query failed, surfacing the DB error under the `error` key with an
+	// empty `data`/`columns` payload (e.g. an UNKNOWN_IDENTIFIER when the generated SQL references
+	// a column that does not exist). Without this check that error was dropped and an empty result
+	// returned, so a failed trace query looked like "no traces exist" to the caller.
+	// Only a non-empty string under `error` indicates a failure. Some success envelopes carry
+	// `"error": false` (or other non-string falsy values); those must not be treated as an error.
+	if queryError, exists := responseDataMap["error"]; exists {
+		if errStr, ok := queryError.(string); ok && strings.TrimSpace(errStr) != "" {
+			slog.Error("agent: clickhouse query returned an error", "error", errStr)
+			return nil, fmt.Errorf("%s", errStr)
+		}
 	}
 
 	dataCols, ok := responseDataMap["columns"].([]any)

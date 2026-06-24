@@ -189,6 +189,34 @@ func (s *Server) makeWorkflowVersionLive(c *gin.Context) {
 	c.JSON(http.StatusOK, wf)
 }
 
+func (s *Server) deleteWorkflowVersion(c *gin.Context) {
+	sc, accountID, ok := s.getRequestDetails(c)
+	if !ok {
+		return
+	}
+	id := c.Param("id")
+	versionNumber, err := strconv.Atoi(c.Param("version_number"))
+	if err != nil || versionNumber <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "version_number must be a positive integer"})
+		return
+	}
+
+	if err := s.workflowService.DeleteWorkflowVersion(sc, accountID, id, versionNumber); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "workflow version not found"})
+			return
+		}
+		if commonErr, ok := err.(common.Error); ok {
+			c.JSON(commonErr.Code, gin.H{"error": commonErr.Message})
+			return
+		}
+		s.logger.Error("failed to delete workflow version", "error", err, "workflow_id", id, "version_number", versionNumber)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete workflow version"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": true, "version_number": versionNumber})
+}
+
 func (s *Server) updateWorkflowVersionMetadata(c *gin.Context) {
 	sc, accountID, ok := s.getRequestDetails(c)
 	if !ok {
