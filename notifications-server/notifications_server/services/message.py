@@ -432,6 +432,15 @@ class GoogleChatSender(BaseSender):
         )
 
 
+class DiscordSender(BaseSender):
+    def __init__(self, cache: Cache):
+        super().__init__(cache=cache)
+
+    async def acquire_discord_access_token(self, session, discord_installation):
+        # Bot tokens are static, we don't need a refresh token flow
+        return discord_installation.token
+
+
 # ----------------------------- Grouped Message Handler -----------------------------
 
 
@@ -578,6 +587,7 @@ class MessageService:
         self.slack_sender = SlackSender(slack_app, cache)
         self.teams_sender = TeamsSender(teams_app, cache, engine)
         self.gchat_sender = GoogleChatSender(cache)
+        self.discord_sender = DiscordSender(cache)
 
         # grouped handler
         self.group_handler = GroupedMessageHandler(cache, self)
@@ -823,6 +833,7 @@ class MessageService:
             PlatformTypes.SLACK.value: self._send_finding_to_slack,
             PlatformTypes.MS_TEAMS.value: self._send_finding_to_teams,
             PlatformTypes.GOOGLE_CHAT.value: self._send_finding_to_gchat,
+            PlatformTypes.DISCORD.value: self._send_finding_to_discord,
         }.get(platform)
 
     async def _send_finding_to_slack(self, session, tenant_id, ip, finding, fingerprint):
@@ -919,6 +930,46 @@ class MessageService:
                 "google_chat",
                 reason=result.get("reason"),
                 channel_id=result.get("channel_id"),
+            ),
+            None,
+        )
+
+    async def _send_finding_to_discord(self, session, tenant_id, ip, finding, _):
+        token = await self.discord_sender.acquire_discord_access_token(session, ip)
+        if not token:
+            return None, None
+
+        from notifications_server.clients.discord_client import DiscordClient
+        from notifications_server.message_templates.discord.finding import get_discord_finding_message
+
+        discord_payload = get_discord_finding_message(finding)
+
+        # ip.to_channel is a {name, id} dict set by get_channels_from_request_or_defaults;
+        # normalize it to extract the bare channel ID string.
+        channel = normalize_channel(ip.to_channel)
+        channel_id = channel.get("id") if isinstance(channel, dict) else channel
+
+        if not channel_id:
+            LOG.error("No channel provided for Discord message")
+            return failed_response("discord", reason="No channel ID provided"), None
+
+        result = await asyncio.to_thread(DiscordClient.chat_post, token=token, channel_id=channel_id, **discord_payload)
+
+        if result and result.get("ok"):
+            return (
+                success_response(
+                    "discord",
+                    channel_id=channel_id,
+                    message_ts=result.get("ts"),
+                ),
+                None,
+            )
+
+        return (
+            failed_response(
+                "discord",
+                reason=result.get("error") if result else "Unknown error",
+                channel_id=channel_id,
             ),
             None,
         )

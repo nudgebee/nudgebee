@@ -404,7 +404,7 @@ const apiAccount = {
   async getAllAccount() {
     try {
       const cloudProviders = ['K8s', 'AWS', 'Azure', 'GCP', 'CloudFoundry'];
-      const messagingPlatforms = ['slack', 'ms_teams', 'google_chat'];
+      const messagingPlatforms = ['slack', 'ms_teams', 'google_chat', 'discord'];
       const integrationTypes = [
         'github',
         'gitlab',
@@ -532,7 +532,28 @@ const apiAccount = {
       });
     } catch (err) {
       console.log('Failed to add jira account', err);
-      return err;
+    }
+  },
+  installDiscord: async function (botToken: string) {
+    try {
+      const response = await fetch('/api/integrations/discord/install', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'tenant-id': localStorage.getItem('tenant_id') || '',
+          'x-user-email': localStorage.getItem('email') || '',
+          Authorization: `Bearer ${localStorage.getItem('token') || ''}`,
+        },
+        body: JSON.stringify({ bot_token: botToken }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.detail || data?.error || 'Failed to install Discord integration');
+      }
+      return { success: true, data };
+    } catch (err: any) {
+      console.log('Failed to install Discord integration', err);
+      return { success: false, error: err.message };
     }
   },
   sendTestNotification: async function (platform: string, channel_id: string, team_id?: string) {

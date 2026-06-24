@@ -20,6 +20,7 @@ import {
   EmailIconBlack,
   EmaiIconWhite,
   GChatIcon,
+  DiscordIcon,
   EmailIcon,
   CloudAccountIcon,
   CloudIconBlackOutline,
@@ -93,6 +94,8 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
   const [selectedSlackChannel, setSelectedSlackChannel] = useState<string>('');
   const [gChatChannelList, setGChatChannelList] = useState([]);
   const [selectedGChatChannel, setSelectedGChatChannel] = useState<string>('');
+  const [discordChannelList, setDiscordChannelList] = useState([]);
+  const [selectedDiscordChannel, setSelectedDiscordChannel] = useState<string>('');
   const [email, setEmail] = useState('');
   const [selectedExclusionEmails, setSelectedExclusionEmails] = useState<Option[]>([]);
   const [selectedCluster, setSelectedCluster] = useState('');
@@ -110,6 +113,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
   const [slackToggle, setSlackToggle] = useState<boolean>(false);
   const [teamsToggle, setTeamsToggle] = useState<boolean>(false);
   const [gChatToggle, setGChatToggle] = useState<boolean>(false);
+  const [discordToggle, setDiscordToggle] = useState<boolean>(false);
   const [emailToggle, setEmailToggle] = useState<boolean>(false);
   const [msChannelList, setMsChannelList] = useState([]);
   const [installationId, setInstallationId] = useState<any>({});
@@ -117,6 +121,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
     slack: false,
     ms_teams: false,
     google_chat: false,
+    discord: false,
   });
   const [loadingDropdown, setLoadingDropdown] = useState({
     namespaces: false,
@@ -136,6 +141,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
     basedOnValue !== 'daily_recap' && slackToggle && 'Slack',
     basedOnValue !== 'daily_recap' && teamsToggle && 'MS Teams',
     basedOnValue !== 'daily_recap' && gChatToggle && 'Google Chat',
+    basedOnValue !== 'daily_recap' && discordToggle && 'Discord',
     basedOnValue === 'daily_recap' && emailToggle && 'Email',
   ].filter(Boolean) as string[];
 
@@ -154,6 +160,8 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
     msChannelId: '',
     gChatToggle: false,
     selectedGChatChannel: '',
+    discordToggle: false,
+    selectedDiscordChannel: '',
     notificationName: '',
     expiresAt: null,
     description: '',
@@ -169,6 +177,8 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
     setMSChannelId(defaultFormState.msChannelId);
     setGChatToggle(defaultFormState.gChatToggle);
     setSelectedGChatChannel(defaultFormState.selectedGChatChannel);
+    setDiscordToggle(defaultFormState.discordToggle);
+    setSelectedDiscordChannel(defaultFormState.selectedDiscordChannel);
     setNotificationName(defaultFormState.notificationName);
     setExpiresAt(defaultFormState.expiresAt);
     setDescription(defaultFormState.description);
@@ -187,6 +197,8 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
           msChannelId,
           gChatToggle,
           selectedGChatChannel,
+          discordToggle,
+          selectedDiscordChannel,
           notificationName,
           expiresAt,
           description,
@@ -207,6 +219,8 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
     setMSChannelId(oldState.msChannelId);
     setGChatToggle(oldState.gChatToggle);
     setSelectedGChatChannel(oldState.selectedGChatChannel);
+    setDiscordToggle(oldState.discordToggle);
+    setSelectedDiscordChannel(oldState.selectedDiscordChannel);
     setNotificationName(oldState.notificationName);
     setExpiresAt(oldState.expiresAt ? new Date(oldState.expiresAt) : null);
     setDescription(oldState.description);
@@ -410,6 +424,10 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
         setSelectedGChatChannel(value);
         break;
       }
+      case 'action-discord-channel-value': {
+        setSelectedDiscordChannel(value);
+        break;
+      }
       case 'workload':
         setSelectedWorkload(value);
         break;
@@ -446,6 +464,8 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
               installationId.ms_teams = element.id;
             } else if (element.platform == 'google_chat') {
               installationId.google_chat = element.id;
+            } else if (element.platform == 'discord') {
+              installationId.discord = element.id;
             }
           }
           setInstallationId(installationId);
@@ -540,6 +560,25 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
           }));
         });
     }
+    if (platforms.includes('discord')) {
+      setLoadingChannelList((prev) => ({
+        ...prev,
+        discord: true,
+      }));
+      apiAccount
+        .getNotificationChannelList('discord')
+        .then((res: any) => {
+          const channels = res?.data?.channels || res?.data?.data || [];
+          const teamOptions = channels.map((item: any) => ({ label: item.name, value: item.id }));
+          setDiscordChannelList(teamOptions);
+        })
+        .finally(() => {
+          setLoadingChannelList((prev) => ({
+            ...prev,
+            discord: false,
+          }));
+        });
+    }
 
     getClustersData();
   }, [installedPlatforms]);
@@ -624,6 +663,8 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
     setSlackChannelList([]);
     setGChatChannelList([]);
     setSelectedGChatChannel('');
+    setDiscordChannelList([]);
+    setSelectedDiscordChannel('');
     setEmail('');
     setSelectedExclusionEmails([]);
     setUserEmailOptions([]);
@@ -634,6 +675,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
     setSlackToggle(false);
     setTeamsToggle(false);
     setGChatToggle(false);
+    setDiscordToggle(false);
     setEmailToggle(false);
     setSelectedSlackChannel('');
     setAggregationKey('');
@@ -676,6 +718,9 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
       if (item.channels.id && item.platform == 'google_chat') {
         setSelectedGChatChannel(item.channels.id);
         setGChatToggle(true);
+      } else if (item.channels.id && item.platform == 'discord') {
+        setSelectedDiscordChannel(item.channels.id);
+        setDiscordToggle(true);
       } else if (item.platform == 'email') {
         // Handle new format: {"emails": [...], "exclusion_emails": [...]}
         if (item.channels.emails || item.channels.exclusion_emails) {
@@ -713,7 +758,7 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
     if (!isValidString(notificationName)) {
       error.notificationName = 'Rule name must start with letter or number and can include spaces, underscores, and hyphens.';
     }
-    if (!suppressed && !slackToggle && !teamsToggle && !gChatToggle && !emailToggle) {
+    if (!suppressed && !slackToggle && !teamsToggle && !gChatToggle && !discordToggle && !emailToggle) {
       error.general = 'Please enable at least one notification platform or email';
     }
 
@@ -730,6 +775,11 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
     if (gChatToggle && !selectedGChatChannel) {
       error.gChat = 'Google Chat channel must be selected';
       snackbar.error('Google Chat channel must be selected');
+    }
+
+    if (discordToggle && !selectedDiscordChannel) {
+      error.discord = 'Discord channel must be selected';
+      snackbar.error('Discord channel must be selected');
     }
 
     if (emailToggle && email && !isValidEmail(email)) {
@@ -797,7 +847,10 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
 
     // Prevent submission while channel lists are still loading
     const isChannelListLoading =
-      (slackToggle && loadingChannelList.slack) || (teamsToggle && loadingChannelList.ms_teams) || (gChatToggle && loadingChannelList.google_chat);
+      (slackToggle && loadingChannelList.slack) ||
+      (teamsToggle && loadingChannelList.ms_teams) ||
+      (gChatToggle && loadingChannelList.google_chat) ||
+      (discordToggle && loadingChannelList.discord);
     if (isChannelListLoading && !suppressed) {
       snackbar.warning('Channel data is still loading. Please wait and try again.');
       return;
@@ -856,6 +909,20 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
         queryParams.mappings.push({
           channels: { name: channel['label'], id: channel['value'] },
           platform: 'google_chat',
+        });
+      }
+    }
+    if (selectedDiscordChannel && discordToggle && !suppressed) {
+      const channel = discordChannelList.find((item: any) => item.value == selectedDiscordChannel);
+      if (!channel) {
+        snackbar.warning('Discord channel is no longer available and will be removed from this rule.');
+        setDiscordToggle(false);
+        setSelectedDiscordChannel('');
+      } else {
+        queryParams.mappings.push({
+          channels: { name: channel['label'], id: channel['value'] },
+          platform: 'discord',
+          installation_id: installationId.discord,
         });
       }
     }
@@ -1499,6 +1566,46 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
               </Box>
             )}
 
+            {/* Discord Badge — hidden for daily_recap (email-only) */}
+            {basedOnValue !== 'daily_recap' && installedPlatforms.filter((g: any) => g.platform == 'discord').length > 0 && (
+              <Box
+                id='discord-badge'
+                onClick={() => setActiveChannel(activeChannel === 'discord' ? null : 'discord')}
+                sx={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: ds.space[1],
+                  px: ds.space.mul(0, 5),
+                  py: ds.space[1],
+                  borderRadius: 'var(--ds-radius-xl)',
+                  border: `1.5px solid ${getBadgeBorderColor(activeChannel === 'discord', !!selectedDiscordChannel)}`,
+                  backgroundColor: activeChannel === 'discord' ? ds.blue[100] : ds.background[100],
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease',
+                  '&:hover': { borderColor: getBadgeHoverBorderColor(activeChannel === 'discord', !!selectedDiscordChannel) },
+                }}
+              >
+                <SafeIcon src={DiscordIcon} alt='Discord' width={14} height={14} />
+                <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: ds.gray[700] }}>
+                  Discord
+                </Typography>
+                {selectedDiscordChannel && (
+                  <>
+                    <CheckCircleOutlineIcon sx={{ fontSize: 14, color: 'var(--ds-green-500)', ml: ds.space[0] }} />
+                    <CloseIcon
+                      sx={{ fontSize: 13, color: 'var(--ds-gray-400)', ml: ds.space[0], '&:hover': { color: 'var(--ds-red-500)' } }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedDiscordChannel('');
+                        setDiscordToggle(false);
+                        if (activeChannel === 'discord') setActiveChannel(null);
+                      }}
+                    />
+                  </>
+                )}
+              </Box>
+            )}
+
             {/* Email Badge - only for daily_recap */}
             {showEmail && (
               <Box
@@ -1670,6 +1777,41 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
                     {errors.gChat && (
                       <FormHelperText error sx={{ mt: ds.space[1] }}>
                         {errors.gChat}
+                      </FormHelperText>
+                    )}
+                  </Box>
+                </Box>
+              )}
+
+              {/* Discord Config */}
+              {activeChannel === 'discord' && (
+                <Box>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[3] }}>
+                    <SafeIcon src={DiscordIcon} alt='Discord' width={16} height={16} />
+                    <Typography sx={{ fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: ds.gray[700] }}>
+                      Discord Configuration
+                    </Typography>
+                  </Box>
+                  <Box sx={{ maxWidth: ds.space.mul(1, 80) }}>
+                    <InputLabel sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[600], mb: ds.space[1] }}>Channel</InputLabel>
+                    <Box sx={{ width: '60%' }}>
+                      <Select
+                        id='discord-channel'
+                        placeholder='Channel'
+                        onChange={(value) => {
+                          handleChildComponentChange(value, 'action-discord-channel-value');
+                          if (value) setDiscordToggle(true);
+                          else setDiscordToggle(false);
+                        }}
+                        value={selectedDiscordChannel || null}
+                        options={discordChannelList}
+                        loading={loadingChannelList.discord}
+                        size='sm'
+                      />
+                    </Box>
+                    {errors.discord && (
+                      <FormHelperText error sx={{ mt: ds.space[1] }}>
+                        {errors.discord}
                       </FormHelperText>
                     )}
                   </Box>

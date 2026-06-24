@@ -101,7 +101,7 @@ class URLSettings(BaseSettings):
     branding_address: str = "Pune"
     branding_copyright_start_year: int = 2022
 
-    model_config = SettingsConfigDict(env_prefix="")
+    model_config = SettingsConfigDict(env_prefix="", env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @model_validator(mode="after")
     def load_branding_from_theme_file(self):
@@ -325,7 +325,7 @@ class DatabaseSettings(BaseSettings):
     sync_pool_size: int = Field(10, validation_alias=AliasChoices("DB_SYNC_POOL_SIZE", "db_sync_pool_size"))
     sync_max_overflow: int = Field(10, validation_alias=AliasChoices("DB_SYNC_MAX_OVERFLOW", "db_sync_max_overflow"))
 
-    model_config = SettingsConfigDict(env_prefix="")
+    model_config = SettingsConfigDict(env_prefix="", env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 
 class RabbitMQSettings(BaseSettings):
@@ -347,7 +347,7 @@ class RabbitMQSettings(BaseSettings):
         30, validation_alias=AliasChoices("RABBITMQ_CONNECTION_TIMEOUT", "rabbitmq_connection_timeout")
     )
 
-    model_config = SettingsConfigDict(env_prefix="")
+    model_config = SettingsConfigDict(env_prefix="", env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 
 class RedisSettings(BaseSettings):
@@ -370,7 +370,7 @@ class RedisSettings(BaseSettings):
         validation_alias=AliasChoices("CONVERSATION_CACHE_EXPIRATION_MINUTES", "conversation_cache_expiration_minutes"),
     )
 
-    model_config = SettingsConfigDict(env_prefix="")
+    model_config = SettingsConfigDict(env_prefix="", env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @property
     def is_enabled(self) -> bool:
@@ -412,7 +412,7 @@ class SlackSettings(BaseSettings):
         25, validation_alias=AliasChoices("FOLLOWUP_OPTIONS_THRESHOLD", "followup_options_threshold")
     )
 
-    model_config = SettingsConfigDict(env_prefix="")
+    model_config = SettingsConfigDict(env_prefix="", env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @property
     def is_oauth(self) -> bool:
@@ -456,7 +456,7 @@ class MSTeamsSettings(BaseSettings):
         2, validation_alias=AliasChoices("MS_TEAMS_MAX_RATE_LIMIT_RETRIES", "ms_teams_max_rate_limit_retries")
     )
 
-    model_config = SettingsConfigDict(env_prefix="")
+    model_config = SettingsConfigDict(env_prefix="", env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @property
     def is_configured(self) -> bool:
@@ -496,7 +496,7 @@ class GoogleChatSettings(BaseSettings):
         ),
     )
 
-    model_config = SettingsConfigDict(env_prefix="")
+    model_config = SettingsConfigDict(env_prefix="", env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @property
     def is_configured(self) -> bool:
@@ -521,7 +521,7 @@ class EmailSettings(BaseSettings):
         10, validation_alias=AliasChoices("EMAIL_MAX_CONCURRENT_SENDS", "email_max_concurrent_sends")
     )
 
-    model_config = SettingsConfigDict(env_prefix="")
+    model_config = SettingsConfigDict(env_prefix="", env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @property
     def is_configured(self) -> bool:
@@ -562,7 +562,7 @@ class ServiceURLSettings(BaseSettings):
         "http://workflow-server:8000", validation_alias=AliasChoices("WORKFLOW_SERVER_URL", "workflow_server_url")
     )
 
-    model_config = SettingsConfigDict(env_prefix="")
+    model_config = SettingsConfigDict(env_prefix="", env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 
 class NotificationSettings(BaseSettings):
@@ -598,7 +598,7 @@ class NotificationSettings(BaseSettings):
         validation_alias=AliasChoices("EVENT_CACHE_TTL_SECONDS", "CACHE_ENTRY_TTL_SECONDS", "event_cache_ttl_seconds"),
     )
 
-    model_config = SettingsConfigDict(env_prefix="")
+    model_config = SettingsConfigDict(env_prefix="", env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @field_validator("enable_batched", "enable_incident_channel_reply", mode="before")
     @classmethod

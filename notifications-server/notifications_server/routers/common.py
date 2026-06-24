@@ -20,7 +20,7 @@ from notifications_server.clients.google_chat_app_client import GoogleChatAppCli
 
 
 class PlatformInput(BaseModel):
-    platform: Literal["slack", "ms_teams", "google_chat"] = Field(..., description="Target platform")
+    platform: Literal["slack", "ms_teams", "google_chat", "discord"] = Field(..., description="Target platform")
 
 
 class HasuraActionPayload(BaseModel):

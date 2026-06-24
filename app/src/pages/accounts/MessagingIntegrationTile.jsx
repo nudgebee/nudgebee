@@ -6,6 +6,7 @@ import { ListingLayout } from '@components1/ds/ListingLayout';
 import { Button as DsButton } from '@components1/ds/Button';
 import CloudProviderIcon from '@components1/common/CloudIcon';
 import { Select } from '@components1/ds/Select';
+import { Input } from '@components1/ds/Input';
 import Datetime from '@common-new/format/Datetime';
 import { Modal } from '@components1/ds/Modal';
 import { toast as snackbar } from '@components1/ds/Toast';
@@ -41,6 +42,10 @@ const MessagingIntegrationTile = ({
   const [teamOptions, setTeamOptions] = useState([]);
   const [teamName, setTeamName] = useState('');
   const [isSendingTest, setIsSendingTest] = useState(false);
+
+  const [openInstallModal, setOpenInstallModal] = useState(false);
+  const [botToken, setBotToken] = useState('');
+  const [isInstalling, setIsInstalling] = useState(false);
 
   // Fetch installations
   const listMessagingPlatform = () => {
@@ -97,6 +102,11 @@ const MessagingIntegrationTile = ({
   }, []);
 
   const handleInstall = () => {
+    if (provider === 'discord') {
+      setOpenInstallModal(true);
+      return;
+    }
+
     // Open as popup instead of new tab
     const width = 600;
     const height = 700;
@@ -116,6 +126,22 @@ const MessagingIntegrationTile = ({
         fetchChannelList();
       }
     }, 500);
+  };
+
+  const handleDiscordInstall = async () => {
+    if (!botToken) return;
+    setIsInstalling(true);
+    const result = await apiAccount.installDiscord(botToken);
+    setIsInstalling(false);
+    if (result?.success) {
+      snackbar.success('Discord integration installed successfully!');
+      setOpenInstallModal(false);
+      setBotToken('');
+      listMessagingPlatform();
+      fetchChannelList();
+    } else {
+      snackbar.error(result?.error || 'Failed to install Discord integration');
+    }
   };
 
   const handleSendTest = async () => {
@@ -395,6 +421,35 @@ const MessagingIntegrationTile = ({
 
   return (
     <>
+      <Modal
+        width='sm'
+        open={openInstallModal}
+        handleClose={() => setOpenInstallModal(false)}
+        title='Install Discord Integration'
+        loader={isInstalling}
+        actionButtons={
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', p: '12px 24px' }}>
+            <DsButton id='cancel-install-modal-btn' size='md' tone='secondary' onClick={() => setOpenInstallModal(false)} disabled={isInstalling}>
+              Cancel
+            </DsButton>
+            <DsButton id='save-install-modal-btn' size='md' tone='primary' disabled={isInstalling || !botToken} onClick={handleDiscordInstall}>
+              Install
+            </DsButton>
+          </Box>
+        }
+      >
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '20px 24px' }}>
+          <Input
+            id='bot-token'
+            label='Discord Bot Token'
+            required
+            value={botToken}
+            onChange={(val) => setBotToken(val)}
+            placeholder='Enter your Discord bot token'
+          />
+        </Box>
+      </Modal>
+
       <Modal
         open={deleteConfig}
         handleClose={() => setDeleteConfig(false)}

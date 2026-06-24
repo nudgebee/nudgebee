@@ -50,3 +50,4 @@ class PlatformTypes(str, Enum):
     SLACK = "slack"
     MS_TEAMS = "ms_teams"
     GOOGLE_CHAT = "google_chat"
+    DISCORD = "discord"

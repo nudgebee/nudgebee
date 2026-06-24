@@ -17,6 +17,9 @@ from notifications_server.repositories.oauth_repository import (
     update_state_tenant,
 )
 from notifications_server.services.ms_teams.ms_teams import MsTeamsService
+from notifications_server.services.discord.discord import DiscordService
+from notifications_server.clients.discord_client import DiscordClient
+from pydantic import BaseModel
 
 OAUTH_NOT_FOUND = "OAuth flow not configured"
 
@@ -140,3 +143,38 @@ async def slack_installation_handler(request: Request):
             return JSONResponse(content=response, headers={"set-cookie": set_cookie_value})
     else:
         raise HTTPException(status_code=404, detail=OAUTH_NOT_FOUND)
+
+
+class DiscordInstallRequest(BaseModel):
+    bot_token: str
+
+
+@router.post("/install/discord")
+async def discord_install(request: Request, body: DiscordInstallRequest):
+    tenant_id = request.headers.get("tenant-id")
+    user_email = request.headers.get("x-user-email")
+
+    if not tenant_id:
+        raise HTTPException(status_code=403, detail="Tenant id missing for installation")
+
+    # Reject duplicates
+    with Session(sync_engine) as session:
+        installations = find_installation_by_tenant_and_platform(session, tenant_id, "discord")
+    if len(installations) > 0:
+        raise HTTPException(status_code=400, detail="Installation already exists for tenant")
+
+    # Validate the bot token
+    result = DiscordClient.validate_token(body.bot_token)
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid Discord bot token: {result.get('error', 'Unknown error')}",
+        )
+
+    bot_info = result.get("bot", {})
+
+    service = DiscordService(sync_engine)
+    service.save_discord_installation(tenant_id, body.bot_token, bot_info, user_email)
+
+    LOG.info("Discord installation saved for tenant %s (bot: %s)", tenant_id, bot_info.get("username"))
+    return {"success": True, "bot_username": bot_info.get("username")}
