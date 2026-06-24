@@ -30,6 +30,15 @@ var splunkO11yLogLabelMapping = map[string]string{
 	"span_id":   "span_id",
 }
 
+// splunkO11yKnownFields is the static fallback list of well-known OTel/Splunk O11y field names.
+// It is returned when dynamic discovery fails or returns no results.
+var splunkO11yKnownFields = []string{
+	"message", "severity", "timestamp",
+	"kubernetes.namespace.name", "kubernetes.pod.name", "kubernetes.container.name",
+	"kubernetes.node.name", "host.name", "service.name",
+	"trace_id", "span_id",
+}
+
 // QueryLogs fetches logs from Splunk O11y Log Observer.
 func (s *SplunkLogSource) QueryLogs(ctx *security.RequestContext, req FetchLogRequest) ([]OutputLog, error) {
 	cfg, err := integrations.GetSplunkO11yConfigs(ctx, req.AccountId)
@@ -61,25 +70,58 @@ func (s *SplunkLogSource) QueryLogs(ctx *security.RequestContext, req FetchLogRe
 }
 
 // QueryLabels returns available log label names from Splunk O11y.
-// Returns the well-known OTel/Splunk O11y field names used in log attributes.
+// It dynamically discovers fields by sampling recent log entries, then merges
+// the result with the static well-known field list as a baseline/fallback.
 func (s *SplunkLogSource) QueryLabels(ctx *security.RequestContext, req FetchLogLabelRequest) ([]OutputLogLabel, error) {
-	// Use the label mapping keys plus common additional O11y fields as the known label set.
-	// A full dynamic implementation would call a catalog API; for now return the standard set.
-	knownFields := []string{
-		"message", "severity", "timestamp",
-		"kubernetes.namespace.name", "kubernetes.pod.name", "kubernetes.container.name",
-		"kubernetes.node.name", "host.name", "service.name",
-		"trace_id", "span_id",
+	cfg, err := integrations.GetSplunkO11yConfigs(ctx, req.AccountId)
+	if err != nil {
+		ctx.GetLogger().Error("SplunkLogSource.QueryLabels: failed to get configs", "error", err)
+		// Fall back to the static list rather than returning an error.
+		return staticLabels(), nil
 	}
 
-	labels := make([]OutputLogLabel, 0, len(knownFields))
-	for _, f := range knownFields {
+	startMs, endMs := normalizeTimeRangeMs(req.StartTime, req.EndTime)
+
+	// Sample a small number of recent entries to discover what fields are present.
+	entries, err := integrations.ExecuteO11yLogSearch(cfg, "", startMs, endMs, 200)
+	if err != nil {
+		ctx.GetLogger().Error("SplunkLogSource.QueryLabels: dynamic discovery failed, using static list", "error", err)
+		// Degrade gracefully – never return an empty list.
+		return staticLabels(), nil
+	}
+
+	// Collect unique attribute keys from the sampled entries.
+	seen := make(map[string]bool)
+	for _, key := range splunkO11yKnownFields {
+		seen[key] = true
+	}
+	for _, e := range entries {
+		for k := range e.Attributes {
+			seen[k] = true
+		}
+	}
+
+	labels := make([]OutputLogLabel, 0, len(seen))
+	for field := range seen {
+		labels = append(labels, OutputLogLabel{
+			Label:      field,
+			Attributes: map[string]any{},
+		})
+	}
+	return labels, nil
+}
+
+// staticLabels returns the hardcoded well-known field set as OutputLogLabel slice.
+// Used as the fallback when dynamic discovery is unavailable.
+func staticLabels() []OutputLogLabel {
+	labels := make([]OutputLogLabel, 0, len(splunkO11yKnownFields))
+	for _, f := range splunkO11yKnownFields {
 		labels = append(labels, OutputLogLabel{
 			Label:      f,
 			Attributes: map[string]any{},
 		})
 	}
-	return labels, nil
+	return labels
 }
 
 // QueryLabelValues returns distinct values for a specific log field.
