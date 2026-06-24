@@ -83,6 +83,12 @@ class BenchmarkTestResult(Base):
     test_id = Column(String(128), nullable=False)
     test_index = Column(Integer, nullable=False)
     status = Column(String(20), nullable=False, default="pending")
+    # Minimal context the reconciler needs to run this test's per-test teardown
+    # (after_test) when IT finalizes the test — the orchestrator worker skips
+    # teardown for handed-off non-terminal tests, so the reconciler owns it.
+    # Shape: {"after_test": str, "__path__": str, "__id__": str,
+    #         "teardown_timeout": int|None}. Null when there's no after_test.
+    teardown_ctx = Column(JSONB, nullable=True)
 
     # Query & answers
     query = Column(Text, nullable=True)
@@ -131,6 +137,10 @@ class BenchmarkTestResult(Base):
     error_message = Column(Text, nullable=True)
     error_category = Column(String(30), nullable=True)
     followup_request = Column(JSONB, nullable=True)  # followup data when status=waiting
+    # Pre-authored answer for a followup the agent may ask (from the fixture's
+    # ``followup_response``). Used by the auto-followup resolver to answer
+    # clarification / write-approval questions unattended so the test completes.
+    expected_followup = Column(JSONB, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     # Auto-bumped by SQLAlchemy on every UPDATE. Used by the abandoned-
     # followup sweeper to decide which waiting tests have gone stale —

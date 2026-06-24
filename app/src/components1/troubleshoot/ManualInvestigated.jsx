@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/router';
 import { applyFiltersOnRouter } from '@lib/router';
+import { getUserSession } from '@lib/auth';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import apiUser from '@api1/user';
 import { Box } from '@mui/material';
@@ -49,8 +50,19 @@ const ManualInvestigated = () => {
     return raw ? String(raw).split(',').filter(Boolean) : [];
   });
   const [selectedStatus, setSelectedStatus] = useState('');
+  const [selectedUserId, setSelectedUserId] = useState(() => {
+    const raw = router.query.userId;
+    return raw ? String(raw) : '';
+  });
+  const [userOptions, setUserOptions] = useState([]);
   const [title, setTitle] = useState('');
   const [appliedTitle, setAppliedTitle] = useState('');
+
+  // The "User" filter is sourced from the tenant user list (users_list_by_tenant),
+  // which only tenant-level roles can read. Hide it for everyone else instead of
+  // rendering an empty, broken filter. Mirrors WorkflowListing's "Created By" gate.
+  const sessionRoles = getUserSession()?.roles || [];
+  const canFilterByUser = sessionRoles.includes('tenant_admin') || sessionRoles.includes('tenant_admin_readonly');
   const [selectedDateRange, setSelectedDateRange] = useState({
     startDate: new Date().getTime() - 24 * 3600 * 1000,
     endDate: new Date().getTime(),
@@ -65,10 +77,34 @@ const ManualInvestigated = () => {
   }, [router.query.accountId]);
 
   useEffect(() => {
+    const raw = router.query.userId;
+    setSelectedUserId(raw ? String(raw) : '');
+  }, [router.query.userId]);
+
+  useEffect(() => {
     apiHome.getCloudAccounts().then((res) => {
       setAccounts(res);
     });
   }, []);
+
+  // Fetch active users for the "User" filter. Only tenant-level roles can read
+  // the tenant user list; skip the call for others to avoid a 403.
+  useEffect(() => {
+    if (!canFilterByUser) return;
+    apiUser
+      .listUsers({ status: 'active' })
+      .then((response) => {
+        const users = response?.data || [];
+        const options = users
+          .map((user) => ({ label: user.display_name || user.username, value: user.id != null ? String(user.id) : '' }))
+          .filter((option) => option.value)
+          .sort((a, b) => String(a.label).localeCompare(String(b.label)));
+        setUserOptions(options);
+      })
+      .catch((error) => {
+        console.error('Error fetching users for investigation filter:', error);
+      });
+  }, [canFilterByUser]);
 
   const getAccountName = (id) => {
     const filteredAcc = accounts.find((ac) => ac.id == id);
@@ -171,6 +207,7 @@ const ManualInvestigated = () => {
         offset: rowsPerPage * currentPage,
         status: selectedStatus,
         title: appliedTitle,
+        user_id: canFilterByUser && selectedUserId ? selectedUserId : undefined,
         account_id: selectedAccountId.length ? selectedAccountId : undefined,
         startUpdatedAt: new Date(selectedDateRange.startDate).toISOString(),
         endUpdatedAt: new Date(selectedDateRange.endDate).toISOString(),
@@ -187,7 +224,7 @@ const ManualInvestigated = () => {
 
   useEffect(() => {
     listManualInvestigations();
-  }, [selectedAccountId, rowsPerPage, currentPage, selectedStatus, selectedDateRange, appliedTitle]);
+  }, [selectedAccountId, selectedUserId, rowsPerPage, currentPage, selectedStatus, selectedDateRange, appliedTitle]);
 
   const onPageChange = (page, limit) => {
     setCurrentPage(page - 1);
@@ -239,6 +276,19 @@ const ManualInvestigated = () => {
           }}
           data-testid='manual-investigated-account-filter'
         />
+        {canFilterByUser && (
+          <FilterDropdown
+            label='User'
+            options={userOptions}
+            value={userOptions.find((u) => u.value === selectedUserId) || null}
+            onSelect={(_e, option) => {
+              setSelectedUserId(option?.value || '');
+              setCurrentPage(0);
+              applyFiltersOnRouter(router, { userId: option?.value || '' });
+            }}
+            data-testid='manual-investigated-user-filter'
+          />
+        )}
         <FilterDropdown
           label='Status'
           options={statusOptions}

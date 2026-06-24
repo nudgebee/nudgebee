@@ -68,3 +68,7 @@ dependencies:
     version: '0.1.0'
     condition: workflow-server.enabled
     repository: file://../workflow-server/
+  - name: cost-server
+    version: '0.1.0'
+    condition: cost-server.enabled
+    repository: file://../cost-server/

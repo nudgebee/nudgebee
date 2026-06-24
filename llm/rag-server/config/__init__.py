@@ -7,7 +7,6 @@ import os
 def setup_logger() -> None:
     # Get the path to the logging config file from the environment variable
     config_file_path = os.getenv("LOGGING_CONFIG_FILE")
-    print(f"LOGGING_CONFIG_FILE: {config_file_path}")  # Debugging to see the file path
 
     if config_file_path:
         try:
@@ -15,13 +14,14 @@ def setup_logger() -> None:
             with open(config_file_path, "rt") as f:
                 config = json.load(f)
                 logging.config.dictConfig(config)
+                logging.debug("LOGGING_CONFIG_FILE: %s", config_file_path)
                 logging.info("Logging configuration loaded successfully.")
         except json.JSONDecodeError as e:
-            logging.warn(f"Error decoding JSON from file: {e}")
+            logging.warning(f"Error decoding JSON from file: {e}")
             logging.info("Loading default logging configuration.")
             load_default_config()
         except Exception as e:
-            logging.warn(f"Error reading the logging configuration file: {e}")
+            logging.warning(f"Error reading the logging configuration file: {e}")
             logging.info("Loading default logging configuration.")
             load_default_config()
     else:

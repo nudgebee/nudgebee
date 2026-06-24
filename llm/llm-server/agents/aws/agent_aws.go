@@ -66,7 +66,6 @@ func (a AwsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAge
 				newInstructions = append(newInstructions, inst)
 			}
 		}
-		newInstructions = append(newInstructions, core.GetWorkspaceInstructions()...)
 		instructions = newInstructions
 	}
 

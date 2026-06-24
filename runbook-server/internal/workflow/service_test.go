@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -676,8 +677,8 @@ func (m *MockWorkflowStore) Delete(ctx context.Context, tenantID, accountID, id 
 	return args.Error(0)
 }
 
-func (m *MockWorkflowStore) UpdateWorkflowStatus(ctx context.Context, tenantID, accountID, id string, status model.WorkflowStatus) error {
-	args := m.Called(ctx, tenantID, accountID, id, status)
+func (m *MockWorkflowStore) UpdateWorkflowStatus(ctx context.Context, tenantID, accountID, id, updatedBy string, status model.WorkflowStatus) error {
+	args := m.Called(ctx, tenantID, accountID, id, updatedBy, status)
 	return args.Error(0)
 }
 
@@ -764,12 +765,17 @@ func (m *MockWorkflowStore) PublishVersion(ctx context.Context, workflowID, crea
 	return args.Get(0).(*model.WorkflowVersion), args.Error(1)
 }
 
-func (m *MockWorkflowStore) SetLiveVersion(ctx context.Context, tenantID, accountID, workflowID, versionID string) error {
-	args := m.Called(ctx, tenantID, accountID, workflowID, versionID)
+func (m *MockWorkflowStore) SetLiveVersion(ctx context.Context, tenantID, accountID, workflowID, versionID, updatedBy string) error {
+	args := m.Called(ctx, tenantID, accountID, workflowID, versionID, updatedBy)
 	return args.Error(0)
 }
 
 func (m *MockWorkflowStore) SetDraftVersionID(ctx context.Context, tenantID, accountID, workflowID, versionID string) error {
+	args := m.Called(ctx, tenantID, accountID, workflowID, versionID)
+	return args.Error(0)
+}
+
+func (m *MockWorkflowStore) DeleteWorkflowVersion(ctx context.Context, tenantID, accountID, workflowID, versionID string) error {
 	args := m.Called(ctx, tenantID, accountID, workflowID, versionID)
 	return args.Error(0)
 }
@@ -782,8 +788,8 @@ func (m *MockWorkflowStore) UpdateVersionMetadata(ctx context.Context, workflowI
 	return args.Get(0).(*model.WorkflowVersion), args.Error(1)
 }
 
-func (m *MockWorkflowStore) UpdateVersionStatus(ctx context.Context, tenantID, accountID, workflowID, versionID string, status model.WorkflowStatus) (bool, error) {
-	args := m.Called(ctx, tenantID, accountID, workflowID, versionID, status)
+func (m *MockWorkflowStore) UpdateVersionStatus(ctx context.Context, tenantID, accountID, workflowID, versionID, updatedBy string, status model.WorkflowStatus) (bool, error) {
+	args := m.Called(ctx, tenantID, accountID, workflowID, versionID, updatedBy, status)
 	return args.Bool(0), args.Error(1)
 }
 
@@ -1389,6 +1395,106 @@ func TestGetWorkflowVersion(t *testing.T) {
 		got, err := service.GetWorkflowVersion(sc, "test-account", "wf-ok", 1)
 		assert.NoError(t, err)
 		assert.Equal(t, expected, got)
+		mockStore.AssertExpectations(t)
+	})
+}
+
+func TestDeleteWorkflowVersion(t *testing.T) {
+	sc := security.NewRequestContextForTenantAccountAdmin("test-tenant", "test-user", []string{"test-account"})
+	liveID := "v-live"
+	draftID := "v-draft"
+
+	t.Run("Invalid args return error", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		assert.Error(t, service.DeleteWorkflowVersion(sc, "", "wf-1", 1))
+		assert.Error(t, service.DeleteWorkflowVersion(sc, "test-account", "", 1))
+		assert.Error(t, service.DeleteWorkflowVersion(sc, "test-account", "wf-1", 0))
+		mockStore.AssertNotCalled(t, "GetWorkflowVersion")
+	})
+
+	t.Run("Account not accessible returns unauthorized", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		err := service.DeleteWorkflowVersion(sc, "other-account", "wf-1", 1)
+		var commonErr common.Error
+		assert.ErrorAs(t, err, &commonErr)
+		assert.Equal(t, http.StatusForbidden, commonErr.Code)
+	})
+
+	t.Run("Workflow not found wraps ErrNoRows", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-gone").Return((*model.Workflow)(nil), sql.ErrNoRows)
+		err := service.DeleteWorkflowVersion(sc, "test-account", "wf-gone", 2)
+		assert.ErrorIs(t, err, sql.ErrNoRows)
+		mockStore.AssertNotCalled(t, "GetWorkflowVersion")
+		mockStore.AssertNotCalled(t, "DeleteWorkflowVersion")
+	})
+
+	t.Run("Version not found wraps ErrNoRows", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-ok").Return(&model.Workflow{ID: "wf-ok"}, nil)
+		mockStore.On("GetWorkflowVersion", mock.Anything, "wf-ok", 99).Return((*model.WorkflowVersion)(nil), sql.ErrNoRows)
+		err := service.DeleteWorkflowVersion(sc, "test-account", "wf-ok", 99)
+		assert.ErrorIs(t, err, sql.ErrNoRows)
+		mockStore.AssertNotCalled(t, "DeleteWorkflowVersion")
+	})
+
+	t.Run("DAO ErrNoRows (lost race) wraps ErrNoRows", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		mockStore.On("GetWorkflowVersion", mock.Anything, "wf-ok", 2).Return(&model.WorkflowVersion{ID: "v-2", WorkflowID: "wf-ok", VersionNumber: 2}, nil)
+		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-ok").Return(&model.Workflow{ID: "wf-ok", LiveVersionID: &liveID, DraftVersionID: &draftID}, nil)
+		mockStore.On("DeleteWorkflowVersion", mock.Anything, "test-tenant", "test-account", "wf-ok", "v-2").Return(sql.ErrNoRows)
+		err := service.DeleteWorkflowVersion(sc, "test-account", "wf-ok", 2)
+		assert.ErrorIs(t, err, sql.ErrNoRows)
+	})
+
+	t.Run("DAO generic error is surfaced", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		mockStore.On("GetWorkflowVersion", mock.Anything, "wf-ok", 2).Return(&model.WorkflowVersion{ID: "v-2", WorkflowID: "wf-ok", VersionNumber: 2}, nil)
+		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-ok").Return(&model.Workflow{ID: "wf-ok", LiveVersionID: &liveID, DraftVersionID: &draftID}, nil)
+		mockStore.On("DeleteWorkflowVersion", mock.Anything, "test-tenant", "test-account", "wf-ok", "v-2").Return(errors.New("db kaboom"))
+		err := service.DeleteWorkflowVersion(sc, "test-account", "wf-ok", 2)
+		assert.Error(t, err)
+		assert.NotErrorIs(t, err, sql.ErrNoRows)
+	})
+
+	t.Run("Deleting live version is rejected", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		mockStore.On("GetWorkflowVersion", mock.Anything, "wf-ok", 3).Return(&model.WorkflowVersion{ID: liveID, WorkflowID: "wf-ok", VersionNumber: 3}, nil)
+		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-ok").Return(&model.Workflow{ID: "wf-ok", LiveVersionID: &liveID}, nil)
+		err := service.DeleteWorkflowVersion(sc, "test-account", "wf-ok", 3)
+		var commonErr common.Error
+		assert.ErrorAs(t, err, &commonErr)
+		assert.Equal(t, http.StatusBadRequest, commonErr.Code)
+		mockStore.AssertNotCalled(t, "DeleteWorkflowVersion")
+	})
+
+	t.Run("Deleting draft-base version is rejected", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		mockStore.On("GetWorkflowVersion", mock.Anything, "wf-ok", 4).Return(&model.WorkflowVersion{ID: draftID, WorkflowID: "wf-ok", VersionNumber: 4}, nil)
+		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-ok").Return(&model.Workflow{ID: "wf-ok", LiveVersionID: &liveID, DraftVersionID: &draftID}, nil)
+		err := service.DeleteWorkflowVersion(sc, "test-account", "wf-ok", 4)
+		var commonErr common.Error
+		assert.ErrorAs(t, err, &commonErr)
+		assert.Equal(t, http.StatusBadRequest, commonErr.Code)
+		mockStore.AssertNotCalled(t, "DeleteWorkflowVersion")
+	})
+
+	t.Run("Success deletes a non-live non-draft version", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		mockStore.On("GetWorkflowVersion", mock.Anything, "wf-ok", 2).Return(&model.WorkflowVersion{ID: "v-2", WorkflowID: "wf-ok", VersionNumber: 2}, nil)
+		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-ok").Return(&model.Workflow{ID: "wf-ok", LiveVersionID: &liveID, DraftVersionID: &draftID}, nil)
+		mockStore.On("DeleteWorkflowVersion", mock.Anything, "test-tenant", "test-account", "wf-ok", "v-2").Return(nil)
+		err := service.DeleteWorkflowVersion(sc, "test-account", "wf-ok", 2)
+		assert.NoError(t, err)
 		mockStore.AssertExpectations(t)
 	})
 }

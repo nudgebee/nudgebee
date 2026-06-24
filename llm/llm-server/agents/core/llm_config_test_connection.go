@@ -43,6 +43,7 @@ const (
 	cfgKeyAPIKey       = "llm_provider_api_key"
 	cfgKeyAPIEndpoint  = "llm_provider_api_endpoint"
 	cfgKeyAPIVersion   = "llm_provider_api_version"
+	cfgKeyAPIType      = "llm_provider_api_type"
 	cfgKeyRegion       = "llm_provider_region"
 	cfgKeyAccessKey    = "llm_provider_access_key"
 	cfgKeySecretKey    = "llm_provider_secret_key"
@@ -306,7 +307,7 @@ func agentCredsOverlay(cfg map[string]string, agent, agentProvider, agentModel s
 		cfgKeyModel:    agentModel,
 	}
 	for _, k := range []string{
-		cfgKeyAPIKey, cfgKeyAPIEndpoint, cfgKeyAPIVersion,
+		cfgKeyAPIKey, cfgKeyAPIEndpoint, cfgKeyAPIVersion, cfgKeyAPIType,
 		cfgKeyRegion, cfgKeyAccessKey, cfgKeySecretKey, cfgKeySessionToken,
 	} {
 		if v := cfg[k+"_"+agent]; v != "" {
@@ -332,6 +333,7 @@ func tierCredsOverlay(cfg map[string]string, tier, tierProvider, tierModel strin
 		cfgKeyAPIKey:       "llm_tier_api_key_" + tier,
 		cfgKeyAPIEndpoint:  "llm_tier_api_endpoint_" + tier,
 		cfgKeyAPIVersion:   "llm_tier_api_version_" + tier,
+		cfgKeyAPIType:      "llm_tier_api_type_" + tier,
 		cfgKeyRegion:       "llm_tier_region_" + tier,
 		cfgKeyAccessKey:    "llm_tier_access_key_" + tier,
 		cfgKeySecretKey:    "llm_tier_secret_key_" + tier,
@@ -402,10 +404,15 @@ func newAnthropicFromConfig(model string, cfg map[string]string) (llms.Model, er
 }
 
 func newHuggingFaceFromConfig(model string, cfg map[string]string) (llms.Model, error) {
+	// api_type selects the wire protocol ("openai" → /v1/chat/completions for
+	// HF Dedicated Endpoints). Mirror the runtime resolver (llm_config.go's
+	// huggingface.WithAPIType) so the probe exercises the same protocol; without
+	// it an OpenAI-compatible endpoint is probed with the native HF API and fails.
 	return huggingface.New(
 		huggingface.WithToken(cfg[cfgKeyAPIKey]),
 		huggingface.WithURL(cfg[cfgKeyAPIEndpoint]),
 		huggingface.WithModel(model),
+		huggingface.WithAPIType(cfg[cfgKeyAPIType]),
 	)
 }
 

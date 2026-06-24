@@ -9,7 +9,20 @@ import { ds } from 'src/utils/colors';
 const TitleWithValue = ({ dots = false, title, value = 0, displaySign = false, textAlign, customSign, onClick, active = false }) => {
   return (
     <Box
+      role={onClick ? 'button' : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      aria-label={onClick ? `Filter by ${title}` : undefined}
       onClick={onClick ? () => onClick(title) : undefined}
+      onKeyDown={
+        onClick
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onClick(title);
+              }
+            }
+          : undefined
+      }
       sx={{
         display: 'flex',
         flexDirection: 'column',

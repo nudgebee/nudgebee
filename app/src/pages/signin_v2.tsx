@@ -242,7 +242,7 @@ export default function SignInV2({ providers, samlEnabled, tier }: any) {
       credsPassword: '',
     }));
 
-    const emailPattern = new RegExp('[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+.[a-zA-Z]{2,4}$');
+    const emailPattern = EmailRegEx;
     let hasError = false;
 
     if (!emailPattern.test(credsUsername)) {

@@ -91,7 +91,7 @@ func CreateAudit(context *security.RequestContext, auditRequest *AuditRequest) e
 		}
 		jsonPrevEventState, err := common.MarshalJson(audit.EventPrevState)
 		if err != nil {
-			context.GetLogger().Error("audit: error marshalling next event state", "error", err, "request", audit.EventPrevState)
+			context.GetLogger().Error("audit: error marshalling previous event state", "error", err, "request", audit.EventPrevState)
 			errs = append(errs, err)
 			continue
 		}

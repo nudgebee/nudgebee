@@ -263,11 +263,11 @@ func (z ZenDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 
 	switch incident.Urgency {
 	case ZenDutyUrgencyHigh:
-		alert.Severity = event.EventPriortiyHigh
+		alert.Severity = event.EventPriorityHigh
 	case ZenDutyUrgencyMedium:
-		alert.Severity = event.EventPriortiyMedium
+		alert.Severity = event.EventPriorityMedium
 	default:
-		alert.Severity = event.EventPriortiyLow
+		alert.Severity = event.EventPriorityLow
 	}
 
 	// Parse the Alertmanager-style firing text embedded in incident.Summary.

@@ -129,6 +129,11 @@ type Event struct {
 	CloudAccountId   string          `json:"cloud_account_id,omitempty"`
 	Status           string          `json:"status,omitempty"`
 	Labels           any             `json:"labels,omitempty"`
+	NbStatus         string          `json:"nb_status,omitempty"`
+	ComputedPriority string          `json:"computed_priority,omitempty"`
+	ComputedScore    any             `json:"computed_score,omitempty"`
+	ScoreFactors     any             `json:"score_factors,omitempty"`
+	ScoreConfidence  any             `json:"score_confidence,omitempty"`
 }
 
 type InvestigateDataInsight struct {

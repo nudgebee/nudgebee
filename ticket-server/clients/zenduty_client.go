@@ -13,6 +13,9 @@ import (
 
 const (
 	ZenDutyBaseURL = "https://www.zenduty.com/api"
+
+	// zendutyHTTPTimeout is the timeout for the ZenDuty HTTP client.
+	zendutyHTTPTimeout = 30 * time.Second
 )
 
 // ZenDutyClient provides methods to interact with the ZenDuty API.
@@ -25,7 +28,7 @@ type ZenDutyClient struct {
 func CreateZenDutyClient(apiKey string) *ZenDutyClient {
 	return &ZenDutyClient{
 		apiKey:     apiKey,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: &http.Client{Timeout: zendutyHTTPTimeout},
 	}
 }
 

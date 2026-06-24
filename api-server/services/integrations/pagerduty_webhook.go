@@ -470,7 +470,7 @@ func (m PagerDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settin
 				alert.RuleName = queryParams.Get("rule_name")
 				alert.RuleType = queryParams.Get("rule_type")
 				alert.SourceUrl = urlStr
-				alert.Severity = event.EventPriortiyHigh
+				alert.Severity = event.EventPriorityHigh
 				alert.Fingerprint = queryParams.Get("alert_hash")
 
 				if parsedPayload.EventStatus == "triggered" {
@@ -482,7 +482,7 @@ func (m PagerDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settin
 				alert.RuleId = strings.TrimPrefix(parsedURL.Path, "/monitors/")
 				alert.RuleName = alert.RuleId
 				alert.SourceUrl = urlStr
-				alert.Severity = event.EventPriortiyHigh
+				alert.Severity = event.EventPriorityHigh
 				alert.Fingerprint = base64.StdEncoding.EncodeToString([]byte(queryParams.Get("signal")))
 				alert.RuleType = "static_threshold"
 				alert.Labels = make(map[string]string)
@@ -3242,21 +3242,21 @@ func GetPagerDutyIncidentAlerts(apiToken, incidentID string) ([]PagerDutyAlert, 
 }
 
 // mapSeverityToEventPriority maps alert severity strings to event priority constants
-func mapSeverityToEventPriority(severity string) event.EventPriortiy {
+func mapSeverityToEventPriority(severity string) event.EventPriority {
 	switch strings.ToLower(strings.TrimSpace(severity)) {
 	case "critical":
-		return event.EventPriortiyHigh
+		return event.EventPriorityHigh
 	case "high":
-		return event.EventPriortiyHigh
+		return event.EventPriorityHigh
 	case "warning", "warn", "medium":
-		return event.EventPriortiyMedium
+		return event.EventPriorityMedium
 	case "low", "info", "informational":
-		return event.EventPriortiyLow
+		return event.EventPriorityLow
 	case "debug":
-		return event.EventPriortiyDebug
+		return event.EventPriorityDebug
 	default:
 		// Default to low if severity is unrecognized or empty
-		return event.EventPriortiyLow
+		return event.EventPriorityLow
 	}
 }
 

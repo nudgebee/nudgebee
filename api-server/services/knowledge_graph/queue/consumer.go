@@ -172,7 +172,7 @@ func processFilter(ctx *security.RequestContext, kgService *core.Service,
 	accountIDs, sourcesFromFilter, flowSourcesFromFilter := filter.ToSlices()
 
 	// Set time range for last 24 hours
-	now := time.Now()
+	now := time.Now().UTC()
 	timeRange := &core.TimeRange{
 		StartTime: now.Add(-24 * time.Hour),
 		EndTime:   now,

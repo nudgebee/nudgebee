@@ -1,46 +1,11 @@
 import crypto from 'crypto';
 import type { NextApiRequest, NextApiResponse } from 'next';
-import type { JWT } from 'next-auth/jwt';
 
 import { generateGithubAppJwt, getRequestId, sendAuthenticationError } from '@utils/apiUtils';
-import { authenticateRequest, tryBypassGraphQL } from '@lib/rpcGateway';
-import { decrypt } from '@lib/internal';
+import { tryBypassGraphQL } from '@lib/rpcGateway';
+import { decodeIdentityState } from '@lib/integrationState';
+import { resolveRequestAuth } from '@lib/sessionToken';
 import { getAppBaseUrl } from '@lib/externalUrls';
-
-// Identity travels through the OAuth `state` parameter (signed by
-// /api/integrations/github/install), not the session cookie — the cookie is
-// unreliable here because GitHub redirects into the popup cross-site. Recover
-// the JWT shape buildSessionVariables() expects from `state`; reject stale or
-// tampered values. Returns null so the caller can fall back to the cookie.
-const STATE_MAX_AGE_MS = 10 * 60 * 1000;
-
-async function jwtFromState(rawState: string | string[] | undefined): Promise<JWT | null> {
-  const state = Array.isArray(rawState) ? rawState[0] : rawState;
-  if (!state) return null;
-  try {
-    const payload = JSON.parse(await decrypt(state)) as {
-      id?: string;
-      tenant_id?: string;
-      roles?: string[];
-      isSuperAdmin?: boolean;
-      isSuperAdminReadonly?: boolean;
-      ts?: number;
-    };
-    if (!payload.id || !payload.tenant_id) return null;
-    if (typeof payload.ts !== 'number' || Date.now() - payload.ts > STATE_MAX_AGE_MS) return null;
-    return {
-      id: payload.id,
-      sub: payload.id,
-      tenant: { id: payload.tenant_id },
-      roles: Array.isArray(payload.roles) ? payload.roles : [],
-      isSuperAdmin: !!payload.isSuperAdmin,
-      isSuperAdminReadonly: !!payload.isSuperAdminReadonly,
-    } as unknown as JWT;
-  } catch {
-    // tampered/stale/legacy state — fall through to the cookie path
-    return null;
-  }
-}
 
 export const CREATE_INTEGRATION = `
 mutation CreateIntegration($object: ticket_integration_create_config_input!) {
@@ -106,20 +71,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const requestId = getRequestId(req);
 
   try {
-    // Identity comes from the signed `state` (cookie-independent). Fall back
-    // to the session cookie for legacy links and during the migration window.
-    let jwt = await jwtFromState(req.query.state);
-    let clientAuthorization: string | undefined;
-    if (!jwt) {
-      const auth = await authenticateRequest(req);
-      if (auth?.jwt) {
-        jwt = auth.jwt;
-        clientAuthorization = auth.token ? `Bearer ${auth.token}` : undefined;
-      }
-    }
-    if (!jwt) {
+    // Tenant is authoritative from the installer's own session, never the
+    // redirect. The signed `state` is a CSRF token: it must decrypt and its
+    // tenant must match the session, blocking cross-tenant state injection and
+    // OAuth installation/code injection.
+    const auth = await resolveRequestAuth(req);
+    const tenantId = ((auth?.jwt?.tenant as { id?: string } | undefined)?.id as string) || null;
+    if (!auth?.jwt || !tenantId) {
       return sendAuthenticationError(res);
     }
+    const signed = await decodeIdentityState(req.query.state);
+    if (!signed || signed.tenant_id !== tenantId) {
+      return res.status(400).json({ error: 'invalid_state', description: 'State missing, expired, or tenant mismatch' });
+    }
+    const jwt = auth.jwt;
+    const clientAuthorization = auth.token ? `Bearer ${auth.token}` : undefined;
 
     const installationId = req.query.installation_id as string;
     if (!installationId) {

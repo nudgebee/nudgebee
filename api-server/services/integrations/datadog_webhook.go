@@ -1585,17 +1585,17 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		labels["alert_name"] = alertName
 	}
 
-	priorityMap := map[string]event.EventPriortiy{
-		"P1":      event.EventPriortiyHigh,
-		"P2":      event.EventPriortiyMedium,
-		"P3":      event.EventPriortiyLow,
-		"P4":      event.EventPriortiyInfo,
-		"Unknown": event.EventPriortiyInfo,
-		"SEV-5":   event.EventPriortiyInfo,
-		"SEV-4":   event.EventPriortiyLow,
-		"SEV-3":   event.EventPriortiyMedium,
-		"SEV-2":   event.EventPriortiyHigh,
-		"SEV-1":   event.EventPriortiyHigh,
+	priorityMap := map[string]event.EventPriority{
+		"P1":      event.EventPriorityHigh,
+		"P2":      event.EventPriorityMedium,
+		"P3":      event.EventPriorityLow,
+		"P4":      event.EventPriorityInfo,
+		"Unknown": event.EventPriorityInfo,
+		"SEV-5":   event.EventPriorityInfo,
+		"SEV-4":   event.EventPriorityLow,
+		"SEV-3":   event.EventPriorityMedium,
+		"SEV-2":   event.EventPriorityHigh,
+		"SEV-1":   event.EventPriorityHigh,
 	}
 
 	fingerprint := p.Event.AggregKey

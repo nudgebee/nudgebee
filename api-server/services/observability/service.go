@@ -698,6 +698,9 @@ var allProviderCaps = map[string]providerStaticCaps{
 }
 
 func getProviderCapabilities(provider, integrationSource, providerType string) ProviderCapabilities {
+	if provider == "" {
+		return ProviderCapabilities{}
+	}
 	var caps ProviderCapabilities
 
 	// Apply static per-provider capabilities.

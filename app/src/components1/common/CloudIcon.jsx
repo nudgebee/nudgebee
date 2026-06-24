@@ -16,6 +16,7 @@ import {
   ouMsTeams as MsTeamsIcon,
   GithubIcon,
   GChatIcon,
+  DiscordIcon,
   ServiceNowIcon,
   PagerDutyIcon,
   ZenDutyIcon,
@@ -90,6 +91,8 @@ const CloudProviderIcon = ({ cloud_provider, width, height, sx = {} }) => {
     Icon = GithubIcon;
   } else if (cloud_provider.toUpperCase() === 'GOOGLE_CHAT') {
     Icon = GChatIcon;
+  } else if (cloud_provider.toUpperCase() === 'DISCORD') {
+    Icon = DiscordIcon;
   } else if (cloud_provider.toUpperCase() === 'SERVICENOW' || cloud_provider.toUpperCase() === 'SERVICENOW_WEBHOOK') {
     Icon = ServiceNowIcon;
   } else if (cloud_provider.toUpperCase() === 'PAGERDUTY' || cloud_provider.toUpperCase() === 'PAGERDUTY_WEBHOOK') {

@@ -21,7 +21,7 @@ test("Add multiple users from list", async ({ page }) => {
       await locators.lastNameInput.fill(user.last);
       await locators.emailInput.fill(user.email);
 
-      await locators.getRoleOption(user.role).click();
+      await locators.selectRole(user.role);
 
       await locators.addUserSubmitBtn.click();
 

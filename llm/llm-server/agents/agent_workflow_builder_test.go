@@ -3,8 +3,11 @@ package agents
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/config"
+	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"strings"
 	"testing"
@@ -541,28 +544,177 @@ func TestWorkflowBuilderAgent_HandleEntry_DetectsFixMode(t *testing.T) {
 
 func TestWorkflowBuilderAgent_ExtractWorkflowIdFromQuery(t *testing.T) {
 	// Fix request with UUID → should extract
-	id := extractWorkflowIdFromQuery("Fix workflow 5d064c4c-bb53-4630-95ff-f6bb7b9133a6. Error: task failed")
+	id := extractWorkflowIdFromQuery("Fix workflow 5d064c4c-bb53-4630-95ff-f6bb7b9133a6. Error: task failed", nil)
 	assert.Equal(t, "5d064c4c-bb53-4630-95ff-f6bb7b9133a6", id)
 
 	// Debug request with UUID → should extract
-	id = extractWorkflowIdFromQuery("Debug the failing workflow abc12345-1234-5678-9abc-def012345678")
+	id = extractWorkflowIdFromQuery("Debug the failing workflow abc12345-1234-5678-9abc-def012345678", nil)
 	assert.Equal(t, "abc12345-1234-5678-9abc-def012345678", id)
 
 	// Error message with UUID → should extract
-	id = extractWorkflowIdFromQuery("Workflow 5d064c4c-bb53-4630-95ff-f6bb7b9133a6 has an error in the notification task")
+	id = extractWorkflowIdFromQuery("Workflow 5d064c4c-bb53-4630-95ff-f6bb7b9133a6 has an error in the notification task", nil)
 	assert.Equal(t, "5d064c4c-bb53-4630-95ff-f6bb7b9133a6", id)
 
 	// Create request with UUID → should NOT extract (no fix keyword)
-	id = extractWorkflowIdFromQuery("Create a workflow named 5d064c4c-bb53-4630-95ff-f6bb7b9133a6")
+	id = extractWorkflowIdFromQuery("Create a workflow named 5d064c4c-bb53-4630-95ff-f6bb7b9133a6", nil)
 	assert.Equal(t, "", id)
 
 	// Create request without UUID → should NOT extract
-	id = extractWorkflowIdFromQuery("Build a workflow that prints hello")
+	id = extractWorkflowIdFromQuery("Build a workflow that prints hello", nil)
 	assert.Equal(t, "", id)
 
 	// Fix request without UUID → should return empty
-	id = extractWorkflowIdFromQuery("Fix the pod health check workflow")
+	id = extractWorkflowIdFromQuery("Fix the pod health check workflow", nil)
 	assert.Equal(t, "", id)
+}
+
+// TestWorkflowBuilderAgent_ExtractWorkflowIdFromQuery_ExcludesAccountIds reproduces the create-vs-fix
+// misroute: a create delegation embeds an account UUID + an incidental fix keyword ("update"/"error").
+// Without exclusion the account UUID was returned and the build was misrouted into fix mode
+// (GET workflows/{account_id} → 404). With the account UUID excluded, create delegations resolve to
+// "" (→ create path) while genuine fix delegations still resolve to the workflow ID.
+func TestWorkflowBuilderAgent_ExtractWorkflowIdFromQuery_ExcludesAccountIds(t *testing.T) {
+	const acctK8s = "a2a30b02-0f67-42e5-a2ab-c658230fd798"
+	const acctAws = "883efbbc-bb2c-404b-9ed9-6b7ecbf6f509"
+	const wfID = "d147021e-aa40-4f02-b4ff-dc53950f72dd"
+	exclude := map[string]bool{acctK8s: true, acctAws: true}
+
+	// Build payload that previously misrouted: "update DNS records" (fix keyword "update") + account UUID.
+	id := extractWorkflowIdFromQuery(
+		"Build the approved 'deploy-dns-sync' automation. Tasks include update-route53-record in account "+acctK8s,
+		exclude)
+	assert.Equal(t, "", id, "create delegation carrying only an account UUID must not be treated as a fix")
+
+	// "continue on error" (fix keyword "error") + account UUID → still create.
+	id = extractWorkflowIdFromQuery(
+		"Build 'hourly-pod-check' in "+acctK8s+"; ensure post-to-slack continues on error",
+		exclude)
+	assert.Equal(t, "", id)
+
+	// Genuine fix delegation: workflow UUID plus an account UUID that appears first in the text.
+	id = extractWorkflowIdFromQuery(
+		"Fix automation "+wfID+" running in account "+acctK8s+". Error: task get-pods failed",
+		exclude)
+	assert.Equal(t, wfID, id, "a real workflow ID must still resolve even when an account UUID precedes it")
+
+	// Exclusion is case-insensitive (UUIDs may be upper-cased in the query text).
+	id = extractWorkflowIdFromQuery(
+		"Update the deployment for account "+strings.ToUpper(acctK8s),
+		exclude)
+	assert.Equal(t, "", id)
+}
+
+// TestParseDelegationCommand covers the structured create-vs-fix delegation contract. Routing is read
+// from explicit mode/workflow_id fields, so an account UUID embedded in a create payload is never
+// consulted as a workflow id — the root-cause fix for the misroute (vs. inferring mode from prose).
+func TestParseDelegationCommand(t *testing.T) {
+	const wfID = "d147021e-aa40-4f02-b4ff-dc53950f72dd"
+	const acct = "a2a30b02-0f67-42e5-a2ab-c658230fd798"
+
+	// Explicit fix directive → mode+id surfaced, query unwrapped.
+	mode, id, text := parseDelegationCommand(`{"mode":"fix","workflow_id":"` + wfID + `","query":"task get-pods failed"}`)
+	assert.Equal(t, "fix", mode)
+	assert.Equal(t, wfID, id)
+	assert.Equal(t, "task get-pods failed", text)
+
+	// Explicit create directive carrying an account UUID → mode=create, NO workflow id surfaced.
+	mode, id, text = parseDelegationCommand(`{"mode":"create","query":"build deploy-dns-sync updating route53 in account ` + acct + `"}`)
+	assert.Equal(t, "create", mode)
+	assert.Equal(t, "", id)
+	assert.Contains(t, text, "deploy-dns-sync")
+
+	// Plain-string (legacy) command → no directive, text unchanged (falls through to heuristic backstop).
+	mode, id, text = parseDelegationCommand("Create an automation to update DNS records when a deploy finishes")
+	assert.Equal(t, "", mode)
+	assert.Equal(t, "", id)
+	assert.Equal(t, "Create an automation to update DNS records when a deploy finishes", text)
+
+	// JSON envelope without mode (existing {"query":...} shape) → unwrap text, no directive.
+	mode, _, text = parseDelegationCommand(`{"query":"build a hello workflow"}`)
+	assert.Equal(t, "", mode)
+	assert.Equal(t, "build a hello workflow", text)
+}
+
+// ==================== Fix B — idempotent create save ====================
+
+func TestIsNameConflictError(t *testing.T) {
+	assert.False(t, isNameConflictError(nil))
+	assert.False(t, isNameConflictError(fmt.Errorf("runbook server returned error (status 500): boom")))
+	assert.True(t, isNameConflictError(fmt.Errorf(`runbook server returned error (status 400): {"error":"workflow with name 'x' already exists for this tenant and account"}`)))
+	assert.True(t, isNameConflictError(fmt.Errorf("Workflow ALREADY EXISTS")))
+}
+
+func TestWorkflowDefinitionName(t *testing.T) {
+	assert.Equal(t, "demo", workflowDefinitionName(map[string]interface{}{"name": "demo", "definition": map[string]interface{}{}}))
+	assert.Equal(t, "", workflowDefinitionName(map[string]interface{}{"definition": map[string]interface{}{}}))
+	assert.Equal(t, "", workflowDefinitionName("not-a-map"))
+}
+
+func TestWorkflowSessionId(t *testing.T) {
+	assert.Equal(t, "s1", workflowSessionId(map[string]interface{}{"created_from_session_id": "s1"}))
+	assert.Equal(t, "s2", workflowSessionId(map[string]interface{}{"definition": map[string]interface{}{"created_from_session_id": "s2"}}))
+	assert.Equal(t, "", workflowSessionId(map[string]interface{}{"name": "x"}))
+}
+
+// TestAutoSaveWorkflow_CreateConflict_ConvergesWhenOwnedBySession verifies the Fix B idempotency
+// path: a create POST that collides on the name uniqueness constraint converges to a PUT-update when
+// the existing workflow was created from THIS session, and otherwise fails cleanly WITHOUT updating a
+// workflow this session doesn't own (the data-loss guard).
+func TestAutoSaveWorkflow_CreateConflict_ConvergesWhenOwnedBySession(t *testing.T) {
+	const wfName = "deploy-dns-sync"
+	const ownedID = "existing-id-1"
+
+	cases := []struct {
+		name           string
+		existingSessId string
+		wantID         string
+		wantErr        bool
+		wantPutCalled  bool
+	}{
+		{name: "owned by this session → update", existingSessId: "sess-1", wantID: ownedID, wantErr: false, wantPutCalled: true},
+		{name: "owned by a different session → clean error, no update", existingSessId: "other-sess", wantID: "", wantErr: true, wantPutCalled: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			putCalled := false
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodPost && r.URL.Path == "/workflows":
+					w.WriteHeader(http.StatusBadRequest)
+					_, _ = w.Write([]byte(`{"error":"workflow with name '` + wfName + `' already exists for this tenant and account"}`))
+				case r.Method == http.MethodGet && r.URL.Path == "/workflows":
+					assert.Equal(t, wfName, r.URL.Query().Get("name"))
+					_, _ = w.Write([]byte(`{"workflows":[{"id":"` + ownedID + `","name":"` + wfName + `","created_from_session_id":"` + tc.existingSessId + `"}]}`))
+				case r.Method == http.MethodPut && r.URL.Path == "/workflows/"+ownedID:
+					putCalled = true
+					_, _ = w.Write([]byte(`{"id":"` + ownedID + `"}`))
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+
+			oldEndpoint := config.Config.WorkflowServerEndpoint
+			config.Config.WorkflowServerEndpoint = srv.URL
+			defer func() { config.Config.WorkflowServerEndpoint = oldEndpoint }()
+
+			agent := newWorkflowBuilderAgent("acct-1")
+			// Non-empty accountIds avoids the DB lookup in the security-context constructor.
+			ctx := security.NewRequestContextForTenantAccountAdmin("tenant-1", "user-1", []string{"acct-1"})
+
+			id, err := agent.autoSaveWorkflow(ctx, `{"name":"`+wfName+`","tasks":[]}`, "sess-1")
+
+			assert.Equal(t, tc.wantID, id)
+			assert.Equal(t, tc.wantPutCalled, putCalled)
+			if tc.wantErr {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), "already exists")
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
 }
 
 // TestWorkflowBuilderAgent_FixMode_Integration tests the full fix mode flow against a real workflow

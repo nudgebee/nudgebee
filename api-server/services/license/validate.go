@@ -29,7 +29,7 @@ func CheckLimits(c *gin.Context, _ *trace.Tracer, _ *metric.Meter, logger *slog.
 		logger.Warn("License expired")
 		c.JSON(http.StatusOK, gin.H{"license": gin.H{
 			"type": string(lic.Tier()), "max_accounts": maxAccounts, "max_nodes_per_cluster": maxNodes,
-			"message": "Your license is expired on " + lic.Expiry().Format("2006-01-02"),
+			"message": "Your license expired on " + lic.Expiry().Format("2006-01-02"),
 			"status":  "expired",
 		}})
 	case StatusGrace, StatusActive:

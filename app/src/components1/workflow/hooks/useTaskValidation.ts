@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { isCronValid } from 'src/utils/common';
+import { validateDateTemplate } from 'src/utils/templateValidation';
 
 // Validation function for trigger configurations - validates required fields only
 export const validateTriggerData = (triggerType: string, params: any): { errors: Record<string, string>; isValid: boolean } => {
@@ -76,17 +77,18 @@ export const useTaskValidation = (actionType: string, data: any) => {
 export const validateTaskData = (actionType: string, data: any, validationRules: any) => {
   // Handle case where validationRules is undefined or not an array
   if (!validationRules || !Array.isArray(validationRules)) {
-    return { errors: {}, isValid: true };
+    return { errors: {}, warnings: {}, isValid: true };
   }
 
   const taskDefinition = validationRules.find((item: any) => item.name === actionType);
   if (!taskDefinition?.input_schema) {
-    return { errors: {}, isValid: true };
+    return { errors: {}, warnings: {}, isValid: true };
   }
 
   const inputSchema = taskDefinition.input_schema;
 
   const errors: Record<string, string> = {};
+  const warnings: Record<string, string> = {};
   let isValid = true;
 
   // Validate each field in the input schema
@@ -249,7 +251,28 @@ export const validateTaskData = (actionType: string, data: any, validationRules:
         isValid = false;
       }
     }
+
+    // Date/time template validation — invalid tz() zones are hard errors; mixed
+    // format dialects are advisory warnings. Recurse into nested maps/arrays so a
+    // template inside e.g. `headers`, `env`, `set_vars`, or `set_state` is checked too —
+    // the backend validator traverses these recursively.
+    const extractStrings = (val: any): string[] => {
+      if (typeof val === 'string') return [val];
+      if (Array.isArray(val)) return val.flatMap(extractStrings);
+      if (val && typeof val === 'object') return Object.values(val).flatMap(extractStrings);
+      return [];
+    };
+    for (const str of extractStrings(value)) {
+      const res = validateDateTemplate(str);
+      if (res.error) {
+        errors[fieldName] = res.error;
+        isValid = false;
+      }
+      if (res.warnings.length > 0) {
+        warnings[fieldName] = [warnings[fieldName], ...res.warnings].filter(Boolean).join(' ');
+      }
+    }
   }
 
-  return { errors, isValid };
+  return { errors, warnings, isValid };
 };

@@ -208,28 +208,9 @@ func handleAccountAction(actionPayload *ActionRequest, c *gin.Context, tracer *t
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return
 		}
-		auditEvent := audit.Audit{
-			UserId:         ctx.GetSecurityContext().GetUserId(),
-			TenantId:       ctx.GetSecurityContext().GetTenantId(),
-			AccountId:      request.AccountId,
-			EventTime:      time.Now().UTC(),
-			EventCategory:  audit.EventAgentToken,
-			EventTarget:    ctx.GetSecurityContext().GetTenantId(),
-			EventType:      audit.EventTypeUpdateAgentToken,
-			EventState:     request.AccountId,
-			EventPrevState: nil,
-			EventActor:     audit.EventActorUiService,
-			EventAction:    audit.EventActionUpdate,
-			EventStatus:    audit.EventStatusSuccess,
-			EventAttr:      map[string]any{},
-		}
+		// Audit for token (re)generation is persisted by account.RegenerateAgentKeys
+		// (single K8S_AGENT row, success-path only) — no audit emitted here.
 		resp, err := account.RegenerateAgentKeys(ctx, request.AccountId, request.AgentType)
-		defer func() {
-			err := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{auditEvent}})
-			if err != nil {
-				ctx.GetLogger().Error("failed to create audit event to update token", "error", err)
-			}
-		}()
 		if err != nil {
 			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
 			return

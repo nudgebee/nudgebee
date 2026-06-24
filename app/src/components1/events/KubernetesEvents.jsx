@@ -1,44 +1,28 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import PropTypes from 'prop-types';
-import RefreshIcon from '@mui/icons-material/Refresh';
-import { Box } from '@mui/material';
-import { FiArrowRight } from 'react-icons/fi';
+import { Box, FormControlLabel } from '@mui/material';
+import CustomSwitch from '@common/CustomSwitch';
 
-// DS V2 primitives
-import ListingLayout from '@components1/ds/ListingLayout';
-import { Button as DsButton } from '@components1/ds/Button';
-import { Switch as DsSwitch } from '@components1/ds/Switch';
-import SeverityIcon from '@components1/ds/SeverityIcon';
-import NBStatusBadge from '@common-new/widgets/NBStatusBadge';
-import FilterDropdown from '@components1/ds/FilterDropdown';
-import CustomSearch from '@common-new/CustomSearch';
-
-// DS V2 compositions / format / widgets
-import Datetime from '@common-new/format/Datetime';
-import Text from '@common-new/format/Text';
-import { Label } from '@components1/ds/Label';
-import CustomTicketLink from '@common-new/CustomTicketLink';
-import ThreeDotsMenu from '@common-new/ThreeDotsMenu';
-import { toast as snackbar } from '@components1/ds/Toast';
-import ScoreDisplay from '@common-new/widgets/ScoreDisplay';
-import NewIssueChip from '@common-new/widgets/NewIssueChip';
-import CustomDateTimeRangePicker from '@common-new/widgets/CustomDateTimeRangePicker';
-
-// MUI icons used by the toolbar action cluster
-import FileDownloadOutlinedIcon from '@mui/icons-material/FileDownloadOutlined';
-import IosShareOutlinedIcon from '@mui/icons-material/IosShareOutlined';
-
-// TODO(ds-migration): no v2 yet — track in V2_GAPS follow-up
+// Components
+import BoxLayout2 from '@components1/common/BoxLayout2';
 import KubernetesTable2 from '@components1/k8s/common/KubernetesTable2';
 import ClusterNameWithRegion from '@components1/k8s/common/ClusterNameWithRegion';
+import Datetime from '@components1/common/format/Datetime';
+import SeverityIcon from '@components1/common/widgets/SeverityIcon';
 import TicketCreatePopupForm from '@components1/tickets/TicketCreatePopupForm';
+import ThreeDotsMenu from '@components1/common/ThreeDotsMenu';
+import InvestigateButton from '@components1/common/InvestigateButton';
 import LineChart from '@components1/common/charts/LineCharts';
+import CustomLabels from '@components1/common/widgets/CustomLabels';
+import NBStatusBadge from '@components1/common/widgets/NBStatusBadge';
+import ScoreDisplay from '@components1/common/widgets/ScoreDisplay';
+import NewIssueChip from '@components1/common/widgets/NewIssueChip';
 import CloudProviderIcon from '@components1/common/CloudIcon';
+import Text from '@components1/common/format/Text';
+import CustomTicketLink from '@components1/common/CustomTicketLink';
 import CustomPRLink from '@components1/common/CustomPRLink';
-import { Link } from '@components1/ds/Link';
-import SafeIcon from '@components1/common/SafeIcon';
-import Tooltip from '@components1/ds/Tooltip';
+import CustomLink from '@components1/common/CustomLink';
 import EventClassifyModal from './EventClassifyModal';
 
 // API & Utils
@@ -47,44 +31,21 @@ import ticketsApi from '@api1/tickets';
 import apiUser from '@api1/user';
 import { getDateString, getLast24Hrs } from '@lib/datetime';
 import { hasWriteAccess } from '@lib/auth';
-import { safeJSONParse, titleCaseForAggregationKey, syncFilterFromQuery, toSeverityLevel } from 'src/utils/common';
+import { safeJSONParse, titleCaseForAggregationKey, syncFilterFromQuery } from 'src/utils/common';
 import { applyFiltersOnRouter } from '@lib/router';
+import { snackbar } from '@components1/common/snackbarService';
 import { action } from 'src/utils/actionStyles';
-import { ds } from 'src/utils/colors';
 
 import { useEventCloudFilter } from '@hooks/useCloudFilters';
 
 // Assets
 import TicketsIcon from '@assets/sidebar-icon/tickets-icon.svg';
 import { dashboardIcon1 as ClassifyIcon, infoIcon } from '@assets';
+import SafeIcon from '@components1/common/SafeIcon';
+import CustomTooltip from '@components1/common/CustomTooltip';
 import { getTriageStatusTooltip } from '@api1/triage';
 import useKubernetesEventFilters from '@hooks/useKubernetesEventFilters';
-import { readPersistedFilters, writePersistedFilters } from '@hooks/usePersistedFilters';
 import WorkflowIcon from '@assets/WorkflowIcon';
-
-// localStorage key for the Troubleshoot Events tab. Bump the suffix when the
-// shape of persisted filter values changes so old entries are ignored.
-const TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY = 'troubleshoot:events:filters:v1';
-
-// Known shortcut durations from CustomDateTimeRangePicker, kept in sync so we can
-// rehydrate a relative time selection ("Current Week", "Last 24 Hours", ...) by
-// recomputing from `now` instead of restoring stale absolute timestamps.
-const KNOWN_SHORTCUT_DURATIONS_MS = new Set([
-  5 * 60 * 1000,
-  10 * 60 * 1000,
-  15 * 60 * 1000,
-  30 * 60 * 1000,
-  60 * 60 * 1000,
-  3 * 60 * 60 * 1000,
-  6 * 60 * 60 * 1000,
-  12 * 60 * 60 * 1000,
-  24 * 60 * 60 * 1000,
-  7 * 24 * 60 * 60 * 1000,
-]);
-const CURRENT_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-
-// Distinct line colors for the multi-account trend chart, cycled by account index.
-const TREND_SERIES_COLORS = ['#2f7af0', '#f5b400', '#e5484d', '#16a34a', '#9333ea', '#0891b2', '#db2777', '#65a30d'];
 
 const DEFAULT_TABLE_COLUMNS = [
   {
@@ -93,7 +54,7 @@ const DEFAULT_TABLE_COLUMNS = [
     align: 'center',
     defaultVisible: true,
     info: "Severity is the original urgency level assigned by the source monitoring/alerting system, based on that tool's built-in rules or your configured thresholds",
-    infoPlacement: 'top',
+    infoPlacement: 'top-start',
   },
   {
     name: 'Application',
@@ -132,7 +93,7 @@ const DEFAULT_TABLE_COLUMNS = [
     align: 'center',
     defaultVisible: false,
     component: (
-      <Tooltip
+      <CustomTooltip
         variant='interactive'
         title='Triage Status'
         desc="Your team's response to this issue. Update it as you investigate, escalate, or resolve. To handle matching issues automatically, go to"
@@ -140,13 +101,13 @@ const DEFAULT_TABLE_COLUMNS = [
         linkUrl='/troubleshoot#triage-rules'
         placement='top'
       >
-        <Box component='span' sx={{ cursor: 'default', display: 'inline-flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
+        <Box component='span' sx={{ cursor: 'default', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
           Triage Status
-          <Box component='span' sx={{ position: 'relative', top: ds.space[0], opacity: '50%' }}>
+          <Box component='span' sx={{ position: 'relative', top: '3px', opacity: '50%' }}>
             <SafeIcon src={infoIcon} alt='info' width={12} height={14} />
           </Box>
         </Box>
-      </Tooltip>
+      </CustomTooltip>
     ),
   },
   { name: 'Action', width: '12%', size: 'sm', align: 'right', exportEnabled: false, defaultVisible: true },
@@ -234,15 +195,6 @@ const KubernetesEventsTable = ({
 }) => {
   const router = useRouter();
 
-  // Persist filter selections only on the Troubleshoot Events tab. Sidebar nav
-  // strips query params (layout/index.jsx forces /troubleshoot#all-events), so
-  // localStorage is what survives a "leave + come back" round-trip. All other
-  // call sites (PodsDetails, KubernetesTable2 expand, SLO configs, threshold
-  // evidence) keep the legacy URL-only behavior.
-  const persistKey = isTroubleshootPage ? TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY : null;
-  // Read once on mount; precedence is URL query > localStorage > component default.
-  const persisted = useMemo(() => readPersistedFilters(persistKey), [persistKey]);
-
   const showEllipsis = true;
   const statusFilter = [
     { value: 'FIRING', label: 'Open' },
@@ -273,26 +225,6 @@ const KubernetesEventsTable = ({
     } else if (defaultQuery?.startTime && defaultQuery?.endTime) {
       return { startDate: defaultQuery.startTime, endDate: defaultQuery.endTime };
     }
-    // Persisted relative shortcut → recompute from now to avoid serving stale
-    // absolute timestamps. Custom (non-shortcut) absolute ranges are only
-    // restored if the saved end date is still in the past 30 days; older
-    // saved ranges fall through to the per-page default.
-    const persistedShortcut = persisted?.shortcutClickTime;
-    if (typeof persistedShortcut === 'number' && KNOWN_SHORTCUT_DURATIONS_MS.has(persistedShortcut)) {
-      const now = Date.now();
-      return { startDate: now - persistedShortcut, endDate: now, shortcutClickTime: persistedShortcut };
-    }
-    if (
-      typeof persisted?.startDate === 'number' &&
-      typeof persisted?.endDate === 'number' &&
-      Date.now() - persisted.endDate < 30 * 24 * 60 * 60 * 1000
-    ) {
-      return { startDate: persisted.startDate, endDate: persisted.endDate };
-    }
-    if (isTroubleshootPage) {
-      const now = Date.now();
-      return { startDate: now - CURRENT_WEEK_MS, endDate: now, shortcutClickTime: CURRENT_WEEK_MS };
-    }
     return { startDate: getLast24Hrs().getTime(), endDate: new Date().getTime() };
   };
 
@@ -310,9 +242,6 @@ const KubernetesEventsTable = ({
           .map((e) => ({ value: e }));
       }
     }
-    if (selectedKeys.length === 0 && Array.isArray(persisted?.aggregationKey)) {
-      selectedKeys = persisted.aggregationKey.filter((v) => v != null && v !== '').map((v) => ({ value: v }));
-    }
     return selectedKeys;
   };
 
@@ -324,7 +253,7 @@ const KubernetesEventsTable = ({
         width: '9%',
         align: 'center',
         info: "Severity is the original urgency level assigned by the source monitoring/alerting system, based on that tool's built-in rules or your configured thresholds",
-        infoPlacement: 'top',
+        infoPlacement: 'top-start',
       },
       {
         name: 'Application',
@@ -358,7 +287,7 @@ const KubernetesEventsTable = ({
         width: '11%',
         align: 'center',
         component: (
-          <Tooltip
+          <CustomTooltip
             variant='interactive'
             title='Triage Status'
             desc="Your team's response to this issue. Update it as you investigate, escalate, or resolve. To handle matching issues automatically, go to"
@@ -366,13 +295,13 @@ const KubernetesEventsTable = ({
             linkUrl='/troubleshoot#triage-rules'
             placement='top'
           >
-            <Box component='span' sx={{ cursor: 'default', display: 'inline-flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
+            <Box component='span' sx={{ cursor: 'default', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
               Triage Status
-              <Box component='span' sx={{ position: 'relative', top: ds.space[0], opacity: '50%' }}>
+              <Box component='span' sx={{ position: 'relative', top: '3px', opacity: '50%' }}>
                 <SafeIcon src={infoIcon} alt='info' width={12} height={14} />
               </Box>
             </Box>
-          </Tooltip>
+          </CustomTooltip>
         ),
       },
       { name: 'Action', width: '12%', size: 'sm', align: 'right', exportEnabled: false },
@@ -386,51 +315,39 @@ const KubernetesEventsTable = ({
   const [currentPage, setCurrentPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(() => recordsPerPage ?? apiUser.getUserPreferencesTablePageSize());
 
-  // Selections — precedence: explicit prop / defaultQuery > URL query > persisted > built-in default
-  const [selectedAccountId, setSelectedAccountId] = useState(() => {
-    const raw = accountId || router.query.accountId;
-    if (raw) return String(raw).split(',').filter(Boolean);
-    if (Array.isArray(persisted?.accountId) && persisted.accountId.length > 0) return persisted.accountId;
-    return [];
-  });
+  // Selections
+  const [selectedAccountId, setSelectedAccountId] = useState(() => accountId || router.query.accountId);
   const [selectedNamespace, setSelectedNamespace] = useState(
-    () => defaultQuery?.namespace ?? getValidParam(router?.query?.namespace) ?? getValidParam(router?.query?.eventNamespace) ?? persisted?.namespace
+    () => defaultQuery?.namespace ?? getValidParam(router?.query?.namespace) ?? getValidParam(router?.query?.eventNamespace)
   );
   const [selectedWorkload, setSelectedWorkload] = useState(
-    () =>
-      defaultQuery?.workloadName ??
-      defaultQuery?.subjectName ??
-      getValidParam(router?.query?.eventSubjectName || router?.query?.subject_name, '') ??
-      persisted?.workload ??
-      ''
+    () => defaultQuery?.workloadName ?? defaultQuery?.subjectName ?? getValidParam(router?.query?.eventSubjectName || router?.query?.subject_name, '')
   );
-  const [selectedSubjectType, setSelectedSubjectType] = useState(() => getValidParam(router.query.eventSubjectType) ?? persisted?.subjectType);
+  const [selectedSubjectType, setSelectedSubjectType] = useState(() => getValidParam(router.query.eventSubjectType));
   const [selectedAggregationKey, setSelectedAggregationKey] = useState(() => getInitialAggregationKey());
-  const [selectedPriority, setSelectedPriority] = useState(
-    () => defaultQuery?.eventPriority ?? getValidParam(router.query.eventPriority) ?? persisted?.priority
-  );
+  const [selectedPriority, setSelectedPriority] = useState(() => defaultQuery?.eventPriority ?? getValidParam(router.query.eventPriority));
   const [selectedDateRange, setSelectedDateRange] = useState(() => getInitialTime());
   const [selectedStatus, setSelectedStatus] = useState(
-    () =>
-      defaultQuery?.eventStatus ??
-      getValidParam(router.query.eventStatus || router.query.status) ??
-      persisted?.status ??
-      (isTroubleshootPage ? 'FIRING' : undefined)
+    () => defaultQuery?.eventStatus ?? getValidParam(router.query.eventStatus || router.query.status)
   );
   const [selectedSource, setSelectedSource] = useState([]);
-  const [selectedServiceName, setSelectedServiceName] = useState(() => persisted?.serviceName ?? '');
-  const [selectedEventName, setSelectedEventName] = useState(() => persisted?.eventName ?? '');
+  const [selectedServiceName, setSelectedServiceName] = useState('');
+  const [selectedEventName, setSelectedEventName] = useState('');
   const [searchByLabel, setSearchByLabel] = useState('');
-  const [appliedSearchByLabel, setAppliedSearchByLabel] = useState('');
+  const [searchByMessage, setSearchByMessage] = useState(() => getValidParam(router.query.messageSearch) || '');
+  // Bump to request a refetch after a search submit / clear so the dep-driven
+  // useEffect re-runs once React has flushed the updated search state. Keeps
+  // listEvents off the keystroke path while still firing on Enter / Clear.
+  const [searchSubmitTick, setSearchSubmitTick] = useState(0);
   const [selectedNbStatus, setSelectedNbStatus] = useState([]);
-  const [selectedSortBy, setSelectedSortBy] = useState(() => getValidParam(router.query.sortBy) || persisted?.sortBy || 'created_at');
-  const [selectedIssueType, setSelectedIssueType] = useState(() => getValidParam(router.query.issueType) || persisted?.issueType || 'all');
+  const [selectedSortBy, setSelectedSortBy] = useState(() => getValidParam(router.query.sortBy) || 'created_at');
+  const [selectedIssueType, setSelectedIssueType] = useState(() => getValidParam(router.query.issueType) || 'all');
 
   // UI Toggles & Popups
   const [isTicketCreateFormOpen, setIsTicketCreateFormOpen] = useState(false);
   const [ticketData, setTicketData] = useState({});
   const [showTrendChart, setShowTrendChart] = useState(enableTrendChart);
-  const [trendChartData, setTrendChartData] = useState({ data: [], labels: [], chartLabels: [], chartColors: [] });
+  const [trendChartData, setTrendChartData] = useState({ data: [], labels: [] });
   const [isTrendChartLoading, setIsTrendChartLoading] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState({});
   const [isClassifyModalOpen, setIsClassifyModalOpen] = useState(false);
@@ -446,22 +363,14 @@ const KubernetesEventsTable = ({
       disabledFilters,
       resource_ids,
       selectedNamespace,
-      startTime: new Date(selectedDateRange.startDate).toISOString(),
-      endTime: new Date(selectedDateRange.endDate).toISOString(),
     });
 
   // Cloud Filters Hook
-  const {
-    serviceNamesFilter,
-    eventNamesFilter,
-    isOptionsLoading: cloudOptionsLoading,
-  } = useEventCloudFilter(
-    selectedAccountId[0] ?? '',
-    { subjectNamespace: selectedServiceName },
-    { startTime: new Date(selectedDateRange.startDate).toISOString(), endTime: new Date(selectedDateRange.endDate).toISOString() }
-  );
+  const { serviceNamesFilter, eventNamesFilter } = useEventCloudFilter(selectedAccountId, {
+    subjectNamespace: selectedServiceName,
+  });
 
-  const areFiltersDisabled = isTroubleshootPage && !selectedAccountId.length;
+  const areFiltersDisabled = isTroubleshootPage && !selectedAccountId;
 
   // --- Effects ---
 
@@ -471,53 +380,22 @@ const KubernetesEventsTable = ({
   // onSourceFilterChange → applyFiltersOnRouter updates the query → useEffect would fire again
   // even though state is already correct. After initialization, the handler owns the state.
   useEffect(() => {
-    const fromQuery = syncFilterFromQuery(sourceFilter, router?.query?.source, (f) => f.value);
-    if (fromQuery.length > 0) {
-      setSelectedSource(fromQuery);
-      return;
-    }
-    if (Array.isArray(persisted?.source) && persisted.source.length > 0) {
-      setSelectedSource((prev) => {
-        const next = syncFilterFromQuery(sourceFilter, persisted.source.join(','), (f) => f.value);
-        if (prev.length === 0 && next.length === 0) return prev;
-        return next;
-      });
-    }
+    setSelectedSource(syncFilterFromQuery(sourceFilter, router?.query?.source, (f) => f.value));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceFilter]);
 
   // NB_STATUS_FILTER is a stable module-level constant so this runs once on mount,
   // reading the router query at that point to initialize. Same pattern as selectedSource.
   useEffect(() => {
-    const fromQuery = syncFilterFromQuery(NB_STATUS_FILTER, router?.query?.nbStatus, (f) => f.value);
-    if (fromQuery.length > 0) {
-      setSelectedNbStatus(fromQuery);
-      return;
-    }
-    if (Array.isArray(persisted?.nbStatus) && persisted.nbStatus.length > 0) {
-      setSelectedNbStatus((prev) => {
-        const next = syncFilterFromQuery(NB_STATUS_FILTER, persisted.nbStatus.join(','), (f) => f.value);
-        if (prev.length === 0 && next.length === 0) return prev;
-        return next;
-      });
-    }
+    setSelectedNbStatus(syncFilterFromQuery(NB_STATUS_FILTER, router?.query?.nbStatus, (f) => f.value));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Sync the account selection when the prop / URL query supplies one (deep links,
-  // account-scoped page, router becoming ready). When neither is present, leave the
-  // current selection alone — clobbering it to [] here would wipe the value the
-  // useState initializer seeded from persisted localStorage, so the saved filter
-  // would never apply on return to the tab. Clearing is handled by the change handler.
   useEffect(() => {
-    const raw = accountId || router.query.accountId;
-    if (!raw) return;
-    const next = String(raw).split(',').filter(Boolean);
-    setSelectedAccountId((prev) => {
-      if (prev.length === next.length && prev.every((id, i) => id === next[i])) return prev;
-      return next;
-    });
-  }, [accountId, router.query.accountId]);
+    if (accountId) {
+      setSelectedAccountId(accountId);
+    }
+  }, [accountId]);
 
   useEffect(() => {
     if (isTroubleshootPage) {
@@ -561,12 +439,10 @@ const KubernetesEventsTable = ({
     setRowsPerPage(limit);
   };
 
-  const onAccountFilterChange = (_e, value) => {
-    const ids = (value || []).map((v) => v.value);
-    setSelectedAccountId(ids);
+  const onAccountFilterChange = (e) => {
+    setSelectedAccountId(e.target.value);
     setCurrentPage(0);
-    applyFiltersOnRouter(router, { accountId: ids.join(',') });
-    writePersistedFilters(persistKey, { accountId: ids });
+    applyFiltersOnRouter(router, { accountId: e.target.value });
   };
 
   const onNamespaceFilterChange = (e, _p) => {
@@ -575,21 +451,18 @@ const KubernetesEventsTable = ({
     // Note: Workload filtering is handled automatically by the hook based on selectedNamespace
     setCurrentPage(0);
     applyFiltersOnRouter(router, { eventNamespace: e?.target?.value, eventSubjectName: '' });
-    writePersistedFilters(persistKey, { namespace: e?.target?.value, workload: '' });
   };
 
   const onWorkloadFilterChange = (e) => {
     setSelectedWorkload(e?.target.value);
     setCurrentPage(0);
     applyFiltersOnRouter(router, { eventSubjectName: e?.target?.value });
-    writePersistedFilters(persistKey, { workload: e?.target?.value });
   };
 
   const onTypeFilterChange = (e, _p) => {
     setSelectedSubjectType(e?.target?.value);
     setCurrentPage(0);
     applyFiltersOnRouter(router, { eventSubjectType: e?.target?.value });
-    writePersistedFilters(persistKey, { subjectType: e?.target?.value });
   };
 
   const onAggregationKeyFilterChange = (_e, _p) => {
@@ -600,21 +473,18 @@ const KubernetesEventsTable = ({
     }
     setCurrentPage(0);
     applyFiltersOnRouter(router, { eventAggregationKey: _p?.map((v) => v.value) });
-    writePersistedFilters(persistKey, { aggregationKey: _p?.map((v) => v.value) ?? [] });
   };
 
   const onPriorityFilterChange = (e, _p) => {
     setSelectedPriority(e?.target?.value);
     setCurrentPage(0);
     applyFiltersOnRouter(router, { eventPriority: e?.target?.value });
-    writePersistedFilters(persistKey, { priority: e?.target?.value });
   };
 
   const onStatusFilterChange = (e, _p) => {
     setSelectedStatus(e?.target?.value);
     setCurrentPage(0);
     applyFiltersOnRouter(router, { eventStatus: e?.target?.value });
-    writePersistedFilters(persistKey, { status: e?.target?.value });
   };
 
   const onSourceFilterChange = (e, _p) => {
@@ -622,7 +492,6 @@ const KubernetesEventsTable = ({
     setSelectedSource(value);
     setCurrentPage(0);
     applyFiltersOnRouter(router, { source: value.map((s) => s.value).join(',') });
-    writePersistedFilters(persistKey, { source: value.map((s) => s.value) });
   };
 
   const onNbStatusFilterChange = (e, _p) => {
@@ -630,26 +499,22 @@ const KubernetesEventsTable = ({
     setSelectedNbStatus(value);
     setCurrentPage(0);
     applyFiltersOnRouter(router, { nbStatus: value.map((v) => v.value).join(',') });
-    writePersistedFilters(persistKey, { nbStatus: value.map((v) => v.value) });
   };
 
   const onSortByChange = (e, _p) => {
     setSelectedSortBy(e?.target?.value);
     setCurrentPage(0);
     applyFiltersOnRouter(router, { sortBy: e?.target?.value });
-    writePersistedFilters(persistKey, { sortBy: e?.target?.value });
   };
 
   const onServiceNamesFilterChange = (e) => {
     setSelectedServiceName(e?.target?.value);
     setCurrentPage(0);
-    writePersistedFilters(persistKey, { serviceName: e?.target?.value });
   };
 
   const onEventNamesFilterChange = (e) => {
     setSelectedEventName(e?.target?.value || '');
     setCurrentPage(0);
-    writePersistedFilters(persistKey, { eventName: e?.target?.value || '' });
   };
 
   // --- Ticket & Menu Handlers ---
@@ -678,19 +543,16 @@ const KubernetesEventsTable = ({
           label: 'Create Ticket',
           id: 0,
           disabled: disableTicket,
-          iconBlack: true,
         },
         {
           icon: ClassifyIcon,
           label: 'Classify',
           id: 4,
-          iconBlack: true,
         },
         {
           icon: WorkflowIcon,
           label: 'Create Automation',
           id: 5,
-          iconBlack: true,
         },
       ];
     } else {
@@ -700,7 +562,6 @@ const KubernetesEventsTable = ({
           label: 'Create Ticket',
           id: 0,
           disabled: disableTicket,
-          iconBlack: true,
         },
       ];
     }
@@ -738,89 +599,49 @@ const KubernetesEventsTable = ({
 
   const handleDateRangeChange = (passedSelectedDateTime) => {
     setCurrentPage(0);
-    const next = {
+    setSelectedDateRange({
       startDate: passedSelectedDateTime.startTime,
       endDate: passedSelectedDateTime.endTime,
-      shortcutClickTime: passedSelectedDateTime.shortcutClickTime ?? 0,
-    };
-    setSelectedDateRange(next);
-    applyFiltersOnRouter(router, { start_time: passedSelectedDateTime.startTime, end_time: passedSelectedDateTime.endTime });
-    // Persist the shortcut duration when known so we can rehydrate as a relative
-    // range. For a custom range (shortcutClickTime = 0) persist the absolute
-    // bounds; getInitialTime() ignores them once they're > 30 days old.
-    writePersistedFilters(persistKey, {
-      shortcutClickTime: next.shortcutClickTime,
-      startDate: next.startDate,
-      endDate: next.endDate,
     });
+    applyFiltersOnRouter(router, { start_time: passedSelectedDateTime.startTime, end_time: passedSelectedDateTime.endTime });
+  };
+
+  const onSearchLabelFilter = (e) => {
+    setCurrentPage(0);
+    setSearchByLabel(e.target.value);
+  };
+
+  const onSearchMessageFilter = (e) => {
+    setCurrentPage(0);
+    setSearchByMessage(e.target.value);
+  };
+
+  const onEnterPress = () => {
+    applyFiltersOnRouter(router, { messageSearch: searchByMessage || '' });
+    setSearchSubmitTick((n) => n + 1);
   };
 
   const handleClearFilters = () => {
     setSearchByLabel('');
-    setAppliedSearchByLabel('');
+    setSearchByMessage('');
+    applyFiltersOnRouter(router, { messageSearch: '' });
     setCurrentPage(0);
-  };
-
-  // CSV export — replaces the v1 DownloadButton DOM scrape. Mirrors the same
-  // contract (only cells with data-export-enabled="true" are emitted; cells
-  // with data-export-data="..." override innerText) so the table component
-  // doesn't need to change. Triggered by the ds/Button below.
-  const handleDownloadCsv = () => {
-    const oTable = document.getElementById(kubernetesEventsTable);
-    if (!oTable) {
-      snackbar.error('Nothing to export — table not ready.');
-      return;
-    }
-    const escape = (s) => `"${(s == null ? '' : String(s)).replace(/"/g, '""').replace(/[\r\n]+/g, ' ')}"`;
-    let csv = '';
-    const headerRows = oTable.querySelectorAll('thead tr');
-    const headerRow = headerRows?.[headerRows.length - 1];
-    if (headerRow) {
-      csv +=
-        [...headerRow.children]
-          .filter((th) => th.getAttribute('data-export-enabled') !== 'false')
-          .map((th) => escape(th.innerText))
-          .join(',') + '\r\n';
-    }
-    const bodyRows = oTable.querySelectorAll('tbody tr') || [];
-    for (const tr of bodyRows) {
-      const cells = [...tr.children].filter((td) => td.getAttribute('data-export-enabled') === 'true');
-      if (cells.length === 0) continue;
-      csv += cells.map((td) => escape(td.getAttribute('data-export-data') ?? td.innerText)).join(',') + '\r\n';
-    }
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'event.csv';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    setSearchSubmitTick((n) => n + 1);
   };
 
   // --- Data Fetching ---
 
-  // Monotonic token guarding against out-of-order responses. Filters settle over
-  // several renders on mount (accountType resolves async, persisted values seed in),
-  // so multiple listEvents calls can be in flight at once. Without this, whichever
-  // response lands last wins — a stale default-filter response can overwrite the
-  // correct applied-filter data. Only the latest request is allowed to commit state.
-  const eventsRequestSeqRef = useRef(0);
-
   const listEvents = () => {
-    if (!selectedAccountId.length && !isTroubleshootPage) {
+    if (!selectedAccountId && !isTroubleshootPage) {
       return;
     }
-    const requestSeq = ++eventsRequestSeqRef.current;
-    const isStaleRequest = () => requestSeq !== eventsRequestSeqRef.current;
     setData([]);
     setTotalCount([]);
     let query = {
       exact_subject_name_search: getValidParam(router.query?.exact) === 'true',
     };
 
-    if (selectedAccountId.length) {
+    if (selectedAccountId) {
       query.account_id = selectedAccountId;
     }
 
@@ -861,11 +682,14 @@ const KubernetesEventsTable = ({
     if (resource_ids.length) {
       query.resource_ids = resource_ids;
     }
-    if (appliedSearchByLabel) {
-      query.searchByLabel = parseKeyValueStringToJSON(appliedSearchByLabel);
+    if (searchByLabel) {
+      query.searchByLabel = parseKeyValueStringToJSON(searchByLabel);
     } else if (defaultQuery?.searchByLabel) {
       // Support searchByLabel from defaultQuery (e.g., from drilldown queries)
       query.searchByLabel = defaultQuery.searchByLabel;
+    }
+    if (searchByMessage) {
+      query.messageSearch = searchByMessage;
     }
     if (accountType === 'AWS' || accountType === 'GCP' || accountType === 'Azure') {
       if (selectedServiceName) {
@@ -903,16 +727,16 @@ const KubernetesEventsTable = ({
                   display: 'flex',
                   flexDirection: 'column',
                   alignItems: 'center',
-                  gap: 0,
+                  gap: '0px',
                   '@media(max-width: 1100px)': {
                     '& p': {
-                      fontSize: ds.text.bodyLg,
+                      fontSize: '14px',
                     },
                   },
                 }}
               >
-                <SeverityIcon level={toSeverityLevel(item.priority)} aria-label={`${item.priority || 'unknown'}`} />
-                <Datetime value={item.created_at || item.starts_at} sx={{ fontSize: ds.text.caption }} />
+                <SeverityIcon severityType={item.priority} />
+                <Datetime value={item.created_at || item.starts_at} sx={{ fontSize: '11px' }} />
               </Box>
             ),
             data: item.priority,
@@ -929,12 +753,12 @@ const KubernetesEventsTable = ({
                 sx={{
                   '@media(max-width: 1100px)': {
                     '& p': {
-                      fontSize: ds.text.bodyLg,
+                      fontSize: '14px',
                     },
                   },
                 }}
               >
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                   <Text showAutoEllipsis value={item.subject_name} />
                   {item.is_new_issue && <NewIssueChip firstSeenAt={item.fingerprint_first_seen_at} />}
                 </Box>
@@ -951,14 +775,14 @@ const KubernetesEventsTable = ({
             component: ClusterNameWithRegion({
               name: item.title,
               hideIcon: true,
-              smallScreenWidth: ds.space.mul(0, 60),
+              smallScreenWidth: '120px',
               maxWidth: '100%',
               showAutoEllipsis: true,
               lineClamp: 3,
               showTooltip: false,
               cursorPointer: false,
               wordBreak: true,
-              font: ds.text.small,
+              font: '12px',
               sx: {
                 fontStyle: 'italic',
               },
@@ -1008,7 +832,7 @@ const KubernetesEventsTable = ({
                   alignItems: 'center',
                 }}
               >
-                <Label
+                <CustomLabels
                   margin='0'
                   text={item.status === 'FIRING' ? 'Open' : item.status === 'CLOSED' ? 'Closed' : item.status}
                   variant={item.status === 'FIRING' ? 'red' : item.status === 'CLOSED' ? 'grey' : ''}
@@ -1027,17 +851,17 @@ const KubernetesEventsTable = ({
               text: (
                 <Box
                   sx={{
-                    minWidth: showEllipsis && ds.space.mul(0, 75),
+                    minWidth: showEllipsis && '150px',
                     '@media(max-width: 1100px)': {
                       '& p': {
-                        fontSize: ds.text.bodyLg,
+                        fontSize: '14px',
                       },
                     },
                   }}
                 >
-                  <Link style={{ textDecoration: 'none', display: 'inline-flex' }} target={'_blank'} href={navigateUrl} openInNew={true}>
+                  <CustomLink style={{ textDecoration: 'none', display: 'inline-flex' }} target={'_blank'} href={navigateUrl} openInNew={true}>
                     <Text showAutoEllipsis value={titleCaseForAggregationKey(item.aggregation_key)} />
-                  </Link>
+                  </CustomLink>
                 </Box>
               ),
             });
@@ -1046,10 +870,10 @@ const KubernetesEventsTable = ({
               text: (
                 <Box
                   sx={{
-                    minWidth: showEllipsis && ds.space.mul(0, 75),
+                    minWidth: showEllipsis && '150px',
                     '@media(max-width: 1100px)': {
                       '& p': {
-                        fontSize: ds.text.bodyLg,
+                        fontSize: '14px',
                       },
                     },
                   }}
@@ -1063,7 +887,7 @@ const KubernetesEventsTable = ({
         if (headersArray.includes('Triage Status')) {
           row.push({
             component: (
-              <Tooltip variant='default' title={getTriageStatusTooltip(item.nb_status || 'OPEN', item.snoozed_until)} placement='top'>
+              <CustomTooltip variant='default' title={getTriageStatusTooltip(item.nb_status || 'OPEN', item.snoozed_until)} placement='top'>
                 <Box>
                   <NBStatusBadge
                     eventId={item.id}
@@ -1077,23 +901,15 @@ const KubernetesEventsTable = ({
                     disableTooltip
                   />
                 </Box>
-              </Tooltip>
+              </CustomTooltip>
             ),
             data: item.nb_status || 'OPEN',
           });
         }
         row.push({
           component: item.aggregation_key && (
-            <Box display={'flex'} flexDirection={'row'} alignItems={'center'} gap={ds.space[2]} justifyContent={'center'}>
-              <DsButton
-                tone='secondary'
-                size='xs'
-                trailingAccent={<FiArrowRight />}
-                href={`/investigate?id=${item.id}&accountId=${item.account_id}`}
-                data-testid='investigate-btn'
-              >
-                Investigate
-              </DsButton>
+            <Box display={'flex'} flexDirection={'row'} alignItems={'center'} gap={'6px'} justifyContent={'center'}>
+              <InvestigateButton displayText url={`/investigate?id=${item.id}&accountId=${item.account_id}`} />
               <ThreeDotsMenu
                 sx={{ ...action.primary }}
                 menuItems={getMenuItems(item, ticketReferenceMap.has(item.fingerprint))}
@@ -1115,7 +931,6 @@ const KubernetesEventsTable = ({
 
     // Data + tickets chain: once data arrives, fetch ticket summaries, then render
     const dataAndTicketsPromise = dataPromise.then((res) => {
-      if (isStaleRequest()) return undefined;
       const events = res.data?.events || [];
       const uniqueReferenceIds = new Set();
       events.forEach((item) => {
@@ -1124,7 +939,6 @@ const KubernetesEventsTable = ({
       const references = Array.from(uniqueReferenceIds);
 
       return ticketsApi.listTicketsSummary({ reference_id: references }).then((ticketRes) => {
-        if (isStaleRequest()) return;
         const ticketReferenceMap = new Map();
         ticketRes?.data?.tickets?.forEach((element) => {
           ticketReferenceMap.set(element.reference_id, element);
@@ -1137,13 +951,11 @@ const KubernetesEventsTable = ({
 
     // Count updates independently (doesn't block table rendering)
     countPromise.then((countRes) => {
-      if (isStaleRequest()) return;
       setTotalCount(countRes.count);
     });
 
     // Handle errors from the data chain
     dataAndTicketsPromise.catch(() => {
-      if (isStaleRequest()) return;
       setLoading(false);
     });
   };
@@ -1172,20 +984,16 @@ const KubernetesEventsTable = ({
     selectedSource,
     isTroubleshootPage,
     accounts.length,
-    // accountType gates the cloud-only service-name / event-name query branch
-    // (resolves async K8s -> AWS/GCP/Azure after mount). Without it, a persisted
-    // service-name filter shows selected but never re-fetches once the type lands.
-    accountType,
     selectedServiceName,
     selectedEventName,
     selectedNbStatus,
     selectedSortBy,
     selectedIssueType,
-    appliedSearchByLabel,
+    searchSubmitTick,
   ]);
 
   useEffect(() => {
-    if (!selectedAccountId.length && !isTroubleshootPage) {
+    if (!selectedAccountId && !isTroubleshootPage) {
       return;
     }
     if (!showTrendChart) {
@@ -1201,7 +1009,7 @@ const KubernetesEventsTable = ({
       status: selectedStatus,
     };
 
-    if (selectedAccountId.length) {
+    if (selectedAccountId) {
       query.account_id = selectedAccountId;
     }
 
@@ -1224,44 +1032,16 @@ const KubernetesEventsTable = ({
     k8sApi
       .getK8sEventGroupings(1000, 0, query)
       .then((res) => {
-        const groupings = res?.data?.event_groupings || [];
+        let data = [];
+        let labels = [];
 
-        // Build a shared, time-sorted x-axis from every distinct bucket so each
-        // account's series lines up on the same dates.
-        const sortedBuckets = [...new Set(groupings.map((g) => g.created_at))].sort(
-          (a, b) => new Date(a || 0).getTime() - new Date(b || 0).getTime()
-        );
-        const bucketIndex = new Map(sortedBuckets.map((ts, i) => [ts, i]));
-        const labels = sortedBuckets.map((ts) => getDateString(ts));
-
-        // One series per account, aligned to the shared x-axis (missing buckets -> 0).
-        const seriesByAccount = new Map();
-        groupings.forEach((item) => {
-          if (!seriesByAccount.has(item.account_id)) {
-            seriesByAccount.set(
-              item.account_id,
-              Array.from({ length: sortedBuckets.length }, () => 0)
-            );
-          }
-          seriesByAccount.get(item.account_id)[bucketIndex.get(item.created_at)] = item.event_count;
+        res.data.event_groupings.forEach((item) => {
+          data.push(item.event_count);
+          labels.push(getDateString(item.created_at));
         });
-
-        // Label each series with the account name (falling back to the id).
-        const data = [];
-        const chartLabels = [];
-        const chartColors = [];
-        seriesByAccount.forEach((series, accountId) => {
-          const account = accounts?.find((acc) => (acc?.id || acc?.value) === accountId);
-          chartLabels.push(account?.label || account?.account_name || accountId);
-          chartColors.push(TREND_SERIES_COLORS[data.length % TREND_SERIES_COLORS.length]);
-          data.push(series);
-        });
-
         setTrendChartData({
           data: data,
           labels: labels,
-          chartLabels: chartLabels,
-          chartColors: chartColors,
         });
       })
       .finally(() => {
@@ -1279,7 +1059,6 @@ const KubernetesEventsTable = ({
     showTrendChart,
     isTroubleshootPage,
     selectedAccountId,
-    accounts,
   ]);
 
   return (
@@ -1295,7 +1074,7 @@ const KubernetesEventsTable = ({
             id: selectedEvent?.id,
             title: selectedEvent?.title,
             fingerprint: selectedEvent?.fingerprint,
-            accountId: selectedEvent?.account_id || selectedAccountId[0],
+            accountId: selectedEvent?.account_id || selectedAccountId,
           }}
           onSuccess={() => {
             setIsClassifyModalOpen(false);
@@ -1321,261 +1100,238 @@ const KubernetesEventsTable = ({
           type: 'kubernetes',
         }}
       />
-      <ListingLayout id='all-events'>
-        <ListingLayout.Toolbar
-          actions={
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
-              {showTimeFilter && (
-                <CustomDateTimeRangePicker
-                  passedSelectedDateTime={{
-                    startTime: selectedDateRange.startDate,
-                    endTime: selectedDateRange.endDate,
-                    shortcutClickTime: selectedDateRange.shortcutClickTime || 0,
-                  }}
-                  minDate={new Date(new Date().getFullYear(), new Date().getMonth() - 6, 1)}
-                  onChange={({ selection }) => handleDateRangeChange(selection)}
-                />
-              )}
-              <DsSwitch id='showTrend' label='Show Trend' size='sm' checked={showTrendChart} onChange={(_e, checked) => setShowTrendChart(checked)} />
-              <DsButton
-                tone='secondary'
-                size='sm'
-                composition='icon-only'
-                icon={<IosShareOutlinedIcon />}
-                aria-label='Share'
-                tooltip='Share (coming soon)'
-                id='all-events-share'
-                disabled
-              />
-              <DsButton
-                tone='secondary'
-                size='sm'
-                composition='icon-only'
-                icon={<FileDownloadOutlinedIcon />}
-                aria-label='Download events as CSV'
-                tooltip='Download as CSV'
-                id='all-events-download'
-                onClick={handleDownloadCsv}
-              />
-              <DsButton
-                tone='secondary'
-                size='sm'
-                composition='icon-only'
-                icon={<RefreshIcon />}
-                aria-label='Refresh'
-                tooltip='Refresh'
-                id='all-events-refresh'
-                onClick={() => listEvents()}
-                loading={loading}
-              />
-            </Box>
-          }
-        >
-          {enableFilters && (
-            <>
-              {isTroubleshootPage && (
-                <FilterDropdown
-                  id='filter-account'
-                  label='Account'
-                  multiple
-                  grouped
-                  groupIcon={renderAccountGroupIcon}
-                  selectionWithinGroup
-                  options={accounts.map((acc) => ({
-                    label: acc.label || acc.account_name,
-                    value: acc.id || acc.value,
-                    group: acc.cloud_provider || 'Other',
-                  }))}
-                  value={accounts
-                    .filter((acc) => selectedAccountId.includes(acc.id || acc.value))
-                    .map((acc) => ({
-                      label: acc.label || acc.account_name,
-                      value: acc.id || acc.value,
-                      group: acc.cloud_provider || 'Other',
-                    }))}
-                  onSelect={onAccountFilterChange}
-                />
-              )}
-
-              {accountType === 'K8s' && (!isTroubleshootPage || selectedAccountId.length) ? (
-                <>
-                  {!isTroubleshootPage && !disabledFilters.includes('search_labels') && (
-                    <CustomSearch
-                      id='filter-search-labels'
-                      label='Search by alert labels'
-                      value={searchByLabel}
-                      onChange={(next) => {
-                        setSearchByLabel((prev) => {
-                          if (prev.trim() !== '' && next.trim() === '') {
-                            setAppliedSearchByLabel('');
-                            setCurrentPage(0);
-                          }
-                          return next;
-                        });
-                      }}
-                      onEnterPress={() => {
-                        setAppliedSearchByLabel(searchByLabel);
-                        setCurrentPage(0);
-                      }}
-                      onClear={() => {
-                        handleClearFilters();
-                      }}
-                    />
-                  )}
-                  {!disabledFilters.includes('namespace') && (
-                    <FilterDropdown
-                      id='filter-namespace'
-                      label='Namespace'
-                      options={ensureSelectedInOptions(namespaceFilter, selectedNamespace)}
-                      value={selectedNamespace}
-                      onSelect={onNamespaceFilterChange}
-                      disabled={areFiltersDisabled}
-                      isOptionsLoading={isOptionsLoading.namespace}
-                    />
-                  )}
-                  {!disabledFilters.includes('workload') && (
-                    <FilterDropdown
-                      id='filter-workload'
-                      label='Workload'
-                      options={ensureSelectedInOptions(workloadFilter, selectedWorkload)}
-                      value={selectedWorkload}
-                      onSelect={onWorkloadFilterChange}
-                      disabled={areFiltersDisabled}
-                      isOptionsLoading={isOptionsLoading.workload}
-                    />
-                  )}
-                  {!disabledFilters.includes('subjectType') && (
-                    <FilterDropdown
-                      id='filter-subject-type'
-                      label='Subject Type'
-                      options={ensureSelectedInOptions(subjectTypeFilter, selectedSubjectType)}
-                      value={selectedSubjectType}
-                      onSelect={onTypeFilterChange}
-                      disabled={areFiltersDisabled}
-                      isOptionsLoading={isOptionsLoading.subjectType}
-                    />
-                  )}
-                  {!disabledFilters.includes('aggregationKey') && (
-                    <FilterDropdown
-                      id='filter-event-type'
-                      label='Event Type'
-                      multiple
-                      options={ensureSelectedInOptions(aggregationKeyFilter, selectedAggregationKey)}
-                      value={selectedAggregationKey}
-                      onSelect={onAggregationKeyFilterChange}
-                      isOptionsLoading={isOptionsLoading.aggregationKey}
-                    />
-                  )}
-                </>
-              ) : null}
-
-              {(accountType === 'AWS' || accountType === 'GCP' || accountType === 'Azure') && (!isTroubleshootPage || selectedAccountId.length) ? (
-                <>
-                  <FilterDropdown
-                    id='filter-event-name'
-                    label='Event Name'
-                    options={ensureSelectedInOptions(eventNamesFilter, selectedEventName)}
-                    value={selectedEventName}
-                    onSelect={onEventNamesFilterChange}
-                    isOptionsLoading={cloudOptionsLoading.aggregationKey}
-                  />
-                  <FilterDropdown
-                    id='filter-service-name'
-                    label='Service Name'
-                    options={ensureSelectedInOptions(serviceNamesFilter, selectedServiceName)}
-                    value={selectedServiceName}
-                    onSelect={onServiceNamesFilterChange}
-                    isOptionsLoading={cloudOptionsLoading.namespace}
-                  />
-                </>
-              ) : null}
-
-              {!disabledFilters.includes('priority') && (
-                <FilterDropdown
-                  id='filter-priority'
-                  label='Severity'
-                  options={priorityFilter}
-                  value={selectedPriority}
-                  onSelect={onPriorityFilterChange}
-                />
-              )}
-              {!disabledFilters.includes('status') && (
-                <FilterDropdown id='filter-status' label='Status' options={statusFilter} value={selectedStatus} onSelect={onStatusFilterChange} />
-              )}
-              {!disabledFilters.includes('source') && (
-                <FilterDropdown
-                  id='filter-source'
-                  label='Source'
-                  multiple
-                  options={sourceFilter}
-                  value={selectedSource}
-                  onSelect={onSourceFilterChange}
-                  isOptionsLoading={isOptionsLoading.source}
-                />
-              )}
-              {!disabledFilters.includes('nbStatus') && (
-                <FilterDropdown
-                  id='filter-nb-status'
-                  label='Triage Status'
-                  multiple
-                  options={NB_STATUS_FILTER}
-                  value={selectedNbStatus}
-                  onSelect={onNbStatusFilterChange}
-                />
-              )}
-              {!disabledFilters.includes('sortBy') && (
-                <FilterDropdown id='filter-sort-by' label='Sort By' options={sortByOptions} value={selectedSortBy} onSelect={onSortByChange} />
-              )}
-              <FilterDropdown
-                id='filter-issue-type'
-                label='Issue Type'
-                options={[
-                  { value: 'all', label: 'All Issues' },
-                  { value: 'new', label: 'New Issues' },
-                  { value: 'recurring', label: 'Recurring Issues' },
-                ]}
-                value={selectedIssueType}
-                onSelect={(e) => {
-                  setSelectedIssueType(e.target.value);
-                  setCurrentPage(0);
-                  applyFiltersOnRouter(router, { issueType: e.target.value === 'all' ? '' : e.target.value });
-                }}
-              />
-            </>
-          )}
-        </ListingLayout.Toolbar>
-        <ListingLayout.Body>
-          {showTrendChart && (
-            <LineChart
-              data={trendChartData.data}
-              labels={trendChartData.labels}
-              chartLabel={trendChartData.chartLabels}
-              colors={trendChartData.chartColors}
-              loading={isTrendChartLoading}
-            />
-          )}
-          <KubernetesTable2
-            id={kubernetesEventsTable}
-            headers={currentHeader}
-            data={data}
-            sort={{
-              name: 'Alert Status',
-              order: 'desc',
-            }}
-            onSortChange={undefined}
-            showExpandable={false}
-            rowsPerPage={rowsPerPage}
-            onPageChange={onPageChange}
-            totalRows={totalCount}
-            loading={loading}
-            rounded={ds.radius.md}
-            pageNumber={currentPage + 1}
-            tableHeadingCenter={['Severity', 'NB Priority', 'Triage Score', 'Alert Status', 'Triage Status', 'Action']}
-            stickyColumnIndex={stickyColumnIndex}
-            resizableColumns
-          />
-        </ListingLayout.Body>
-      </ListingLayout>
+      <BoxLayout2
+        id='all-events'
+        filterOptions={
+          enableFilters
+            ? [
+                ...(isTroubleshootPage
+                  ? [
+                      {
+                        type: 'dropdown',
+                        enabled: true,
+                        grouped: true,
+                        groupIcon: renderAccountGroupIcon,
+                        options: accounts.map((acc) => ({
+                          label: acc.label || acc.account_name,
+                          value: acc.id || acc.value,
+                          group: acc.cloud_provider || 'Other',
+                        })),
+                        onSelect: onAccountFilterChange,
+                        label: 'Account',
+                        value: selectedAccountId,
+                      },
+                    ]
+                  : []),
+                ...(accountType === 'K8s'
+                  ? [
+                      ...(!isTroubleshootPage
+                        ? [
+                            {
+                              type: 'search',
+                              enabled: !disabledFilters.includes('search_labels'),
+                              onSelect: onSearchLabelFilter,
+                              label: 'Search By Alert Labels',
+                              onEnter: onEnterPress,
+                              minWidth: '220px',
+                              maxWidth: '220px',
+                              value: searchByLabel,
+                              onClear: handleClearFilters,
+                            },
+                            {
+                              type: 'search',
+                              enabled: !disabledFilters.includes('search_message'),
+                              onSelect: onSearchMessageFilter,
+                              label: 'Search By Message',
+                              onEnter: onEnterPress,
+                              minWidth: '220px',
+                              maxWidth: '220px',
+                              value: searchByMessage,
+                              onClear: handleClearFilters,
+                            },
+                          ]
+                        : []),
+                      {
+                        type: 'dropdown',
+                        enabled: !disabledFilters.includes('namespace') && !areFiltersDisabled,
+                        options: ensureSelectedInOptions(namespaceFilter, selectedNamespace),
+                        onSelect: onNamespaceFilterChange,
+                        label: 'Namespace',
+                        value: selectedNamespace,
+                        isOptionsLoading: isOptionsLoading.namespace,
+                      },
+                      {
+                        type: 'dropdown',
+                        enabled: !disabledFilters.includes('workload') && !areFiltersDisabled,
+                        options: ensureSelectedInOptions(workloadFilter, selectedWorkload),
+                        onSelect: onWorkloadFilterChange,
+                        label: 'Workload',
+                        value: selectedWorkload,
+                        isOptionsLoading: isOptionsLoading.workload,
+                      },
+                      {
+                        type: 'dropdown',
+                        enabled: !disabledFilters.includes('subjectType') && !areFiltersDisabled,
+                        options: ensureSelectedInOptions(subjectTypeFilter, selectedSubjectType),
+                        onSelect: onTypeFilterChange,
+                        label: 'Subject Type',
+                        value: selectedSubjectType,
+                        isOptionsLoading: isOptionsLoading.subjectType,
+                      },
+                      {
+                        type: 'multi-dropdown',
+                        enabled: !disabledFilters.includes('aggregationKey'),
+                        options: ensureSelectedInOptions(aggregationKeyFilter, selectedAggregationKey),
+                        onSelect: onAggregationKeyFilterChange,
+                        label: 'Event Type',
+                        value: selectedAggregationKey,
+                        isOptionsLoading: isOptionsLoading.aggregationKey,
+                      },
+                    ]
+                  : []),
+                ...(accountType === 'AWS' || accountType === 'GCP' || accountType === 'Azure'
+                  ? [
+                      {
+                        type: 'dropdown',
+                        enabled: true,
+                        options: ensureSelectedInOptions(eventNamesFilter, selectedEventName),
+                        onSelect: onEventNamesFilterChange,
+                        label: 'Event Name',
+                        value: selectedEventName,
+                      },
+                      {
+                        type: 'dropdown',
+                        enabled: true,
+                        options: ensureSelectedInOptions(serviceNamesFilter, selectedServiceName),
+                        onSelect: onServiceNamesFilterChange,
+                        label: 'Service Name',
+                        value: selectedServiceName,
+                      },
+                    ]
+                  : []),
+                {
+                  type: 'dropdown',
+                  enabled: !disabledFilters.includes('priority'),
+                  options: priorityFilter,
+                  onSelect: onPriorityFilterChange,
+                  label: 'Severity',
+                  value: selectedPriority,
+                },
+                {
+                  type: 'dropdown',
+                  enabled: !disabledFilters.includes('status'),
+                  options: statusFilter,
+                  onSelect: onStatusFilterChange,
+                  label: 'Status',
+                  value: selectedStatus,
+                },
+                {
+                  type: 'multi-dropdown',
+                  enabled: !disabledFilters.includes('source'),
+                  options: sourceFilter,
+                  onSelect: onSourceFilterChange,
+                  label: 'Source',
+                  value: selectedSource,
+                  isOptionsLoading: isOptionsLoading.source,
+                },
+                {
+                  type: 'multi-dropdown',
+                  enabled: !disabledFilters.includes('nbStatus'),
+                  options: NB_STATUS_FILTER,
+                  onSelect: onNbStatusFilterChange,
+                  label: 'Triage Status',
+                  value: selectedNbStatus,
+                },
+                {
+                  type: 'dropdown',
+                  enabled: !disabledFilters.includes('sortBy'),
+                  options: sortByOptions,
+                  onSelect: onSortByChange,
+                  label: 'Sort By',
+                  value: selectedSortBy,
+                },
+                {
+                  type: 'dropdown',
+                  enabled: true,
+                  options: [
+                    { value: 'all', label: 'All Issues' },
+                    { value: 'new', label: 'New Issues' },
+                    { value: 'recurring', label: 'Recurring Issues' },
+                  ],
+                  onSelect: (e) => {
+                    setSelectedIssueType(e.target.value);
+                    setCurrentPage(0);
+                    applyFiltersOnRouter(router, { issueType: e.target.value === 'all' ? '' : e.target.value });
+                  },
+                  label: 'Issue Type',
+                  value: selectedIssueType,
+                },
+              ]
+            : []
+        }
+        dateTimeRange={{
+          enabled: showTimeFilter,
+          onChange: handleDateRangeChange,
+          passedSelectedDateTime: {
+            startTime: selectedDateRange.startDate,
+            endTime: selectedDateRange.endDate,
+            shortcutClickTime: selectedDateRange.shortcutClickTime || 0,
+          },
+        }}
+        minDate={new Date(new Date().getFullYear(), new Date().getMonth() - 6, 1)}
+        sharingOptions={{
+          download: {
+            enabled: true,
+            onClick: () => {
+              return {
+                tableId: kubernetesEventsTable,
+                fileName: 'event.csv',
+              };
+            },
+          },
+          sharing: { enabled: true },
+        }}
+        extraOptions={[
+          <FormControlLabel
+            sx={{ gap: 1, marginRight: '4px', '& .MuiFormControlLabel-label': { fontSize: '13px', width: 'max-content' } }}
+            control={<CustomSwitch id='showTrend' checked={showTrendChart} onChange={(e) => setShowTrendChart(e.target.checked)} />}
+            label='Show Trend'
+            key='showTrend'
+          />,
+        ]}
+        onRefresh={{
+          enabled: true,
+          loading: loading,
+          text: '',
+          onClick: () => {
+            {
+              listEvents();
+            }
+          },
+        }}
+      >
+        {showTrendChart && <LineChart data={trendChartData.data} labels={trendChartData.labels} loading={isTrendChartLoading} />}
+        <KubernetesTable2
+          id={kubernetesEventsTable}
+          headers={currentHeader}
+          data={data}
+          sort={{
+            name: 'Alert Status',
+            order: 'desc',
+          }}
+          onSortChange={undefined}
+          showExpandable={false}
+          rowsPerPage={rowsPerPage}
+          onPageChange={onPageChange}
+          totalRows={totalCount}
+          loading={loading}
+          rounded={'10px'}
+          pageNumber={currentPage + 1}
+          tableHeadingCenter={['Severity', 'NB Priority', 'Triage Score', 'Alert Status', 'Triage Status', 'Action']}
+          stickyColumnIndex={stickyColumnIndex}
+          resizableColumns
+        />
+      </BoxLayout2>
     </>
   );
 };

@@ -136,6 +136,7 @@ func (s *Server) setupRoutes() {
 		workflows.POST("/:id/publish", s.publishWorkflowVersion)
 		workflows.POST("/:id/versions/:version_number/make-live", s.makeWorkflowVersionLive)
 		workflows.PATCH("/:id/versions/:version_number", s.updateWorkflowVersionMetadata)
+		workflows.DELETE("/:id/versions/:version_number", s.deleteWorkflowVersion)
 	}
 
 	configs := s.router.Group("/configs")

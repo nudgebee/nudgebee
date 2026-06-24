@@ -4389,6 +4389,17 @@ actions:
     permissions:
       - role: tenant_admin
       - role: account_admin
+  - name: workflows_delete_version
+    definition:
+      kind: synchronous
+      handler: '{{WORKFLOW_SERVER_URL}}/rpc'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: WORKFLOW_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
   - name: k8s_nodes_v2
     definition:
       kind: "synchronous"

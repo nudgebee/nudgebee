@@ -639,8 +639,9 @@ const KubernetesAutoScalerNodePool = ({ accountId }) => {
       setInstanceZone(zoneRequirement);
       setCPULimit(cpuLimit);
       setNodeClassRef(nodeClassRefName);
-      if (memoryLimit) {
-        setMemoryLimit(parseInt(memoryLimit.match(/\d+/)[0], 10));
+      const memMatch = memoryLimit?.match(/\d+/);
+      if (memMatch) {
+        setMemoryLimit(parseInt(memMatch[0], 10));
       }
       if (disruption.consolidationPolicy) {
         setConsolidationPolicy(disruption.consolidationPolicy);

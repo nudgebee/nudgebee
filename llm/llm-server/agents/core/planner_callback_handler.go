@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"nudgebee/llm/common"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -85,7 +86,7 @@ func (h *plannerExecutorCallbackHandler) BeforeToolCall(toolcall NBAgentPlannerT
 		parameters = agentInput
 		sqlArgs = fmt.Sprintf("%v", toolcall.ToolInput)
 	}
-	err := GetConversationDao().SaveConversationToolCall(h.request.ConversationId, h.request.AccountId, userId, h.request.MessageId, h.request.AgentId, toolcall.ToolID, toolcall.Tool, stripNullBytes(parameters), stripNullBytes(log), stripNullBytes(sqlArgs), "", toolcore.NBToolResponseStatusInProgress, tool.GetType(), nil, nil)
+	err := GetConversationDao().SaveConversationToolCall(h.request.ConversationId, h.request.AccountId, userId, h.request.MessageId, h.request.AgentId, toolcall.ToolID, toolcall.Tool, stripNullBytes(parameters), stripNullBytes(log), stripNullBytes(sqlArgs), "", toolcore.NBToolResponseStatusInProgress, tool.GetType(), nil, nil, nil)
 	if err != nil {
 		h.ctx.GetLogger().Error("toolcallbackhandler: unable to save tool call", "error", err.Error())
 	}
@@ -117,7 +118,17 @@ func (h *plannerExecutorCallbackHandler) AfterToolCallResponse(tcr NBAgentPlanne
 		}
 	}
 
-	err := GetConversationDao().SaveConversationToolCall(h.request.ConversationId, h.request.AccountId, userId, h.request.MessageId, h.request.AgentId, tcr.ToolID, tcr.Tool, "", stripNullBytes(tcr.Log), "", stripNullBytes(response.Data), status, tool.GetType(), refAgentId, response.References)
+	// JSON-marshal Metadata for the V751 metadata JSONB column. Failure is
+	// non-fatal — log and persist NULL so the row still lands.
+	var metadataJSON []byte
+	if response.Metadata != nil {
+		if b, mErr := common.MarshalJson(response.Metadata); mErr == nil {
+			metadataJSON = b
+		} else {
+			h.ctx.GetLogger().Warn("toolcallbackhandler: failed to marshal tool metadata", "error", mErr)
+		}
+	}
+	err := GetConversationDao().SaveConversationToolCall(h.request.ConversationId, h.request.AccountId, userId, h.request.MessageId, h.request.AgentId, tcr.ToolID, tcr.Tool, "", stripNullBytes(tcr.Log), "", stripNullBytes(response.Data), status, tool.GetType(), refAgentId, response.References, metadataJSON)
 	if err != nil {
 		h.ctx.GetLogger().Error("toolcallbackhandler: unable to save tool call", "error", err.Error())
 	}

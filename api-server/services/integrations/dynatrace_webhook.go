@@ -1574,16 +1574,16 @@ func mapDynatraceStateToStatus(state string) string {
 }
 
 // mapDynatraceSeverity maps a Dynatrace severity level to our internal EventPriority.
-func mapDynatraceSeverity(severity string) event.EventPriortiy {
+func mapDynatraceSeverity(severity string) event.EventPriority {
 	switch strings.ToUpper(severity) {
 	case "AVAILABILITY", "ERROR":
-		return event.EventPriortiyHigh
+		return event.EventPriorityHigh
 	case "PERFORMANCE", "RESOURCE_CONTENTION":
-		return event.EventPriortiyMedium
+		return event.EventPriorityMedium
 	case "CUSTOM_ALERT":
-		return event.EventPriortiyLow
+		return event.EventPriorityLow
 	default:
-		return event.EventPriortiyLow
+		return event.EventPriorityLow
 	}
 }
 
@@ -1839,24 +1839,24 @@ func mapDavisEventStatus(eventStatus string) string {
 
 // mapDavisEventSeverity maps a DAVIS_EVENT category and specific type to our internal EventPriority.
 // Event type is checked first for precision; category is the fallback.
-func mapDavisEventSeverity(category, eventType string) event.EventPriortiy {
+func mapDavisEventSeverity(category, eventType string) event.EventPriority {
 	switch strings.ToUpper(eventType) {
 	case "PROCESS_CRASH", "OOM_KILL", "APPLICATION_UNEXPECTED_HIGH_LOAD":
-		return event.EventPriortiyHigh
+		return event.EventPriorityHigh
 	case "PROCESS_RESTART", "HIGH_CPU", "HIGH_MEMORY", "HIGH_NETWORK":
-		return event.EventPriortiyMedium
+		return event.EventPriorityMedium
 	case "CONFIG_CHANGE", "DEPLOYMENT", "MARKED_FOR_TERMINATION":
-		return event.EventPriortiyLow
+		return event.EventPriorityLow
 	}
 	switch strings.ToUpper(category) {
 	case "AVAILABILITY", "ERROR":
-		return event.EventPriortiyHigh
+		return event.EventPriorityHigh
 	case "PERFORMANCE", "RESOURCE_CONTENTION":
-		return event.EventPriortiyMedium
+		return event.EventPriorityMedium
 	case "INFO", "CUSTOM_ALERT":
-		return event.EventPriortiyLow
+		return event.EventPriorityLow
 	}
-	return event.EventPriortiyLow
+	return event.EventPriorityLow
 }
 
 // extractDavisEventEntityNames returns a deduplicated, prioritized list of entity names

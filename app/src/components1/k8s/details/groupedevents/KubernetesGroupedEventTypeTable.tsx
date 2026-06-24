@@ -165,7 +165,7 @@ const KubernetesGroupedEventTypeTable: React.FC<KubernetesGroupedEventTypeTableP
     () =>
       eventGroupings.map((item: any) => {
         const severity = deriveSeverity(item.distinct_priority);
-        const status = item.distinct_status?.indexOf('FIRING') > 0 ? 'FIRING' : 'CLOSED';
+        const status = item.distinct_status?.includes('FIRING') ? 'FIRING' : 'CLOSED';
 
         return [
           {
@@ -199,7 +199,7 @@ const KubernetesGroupedEventTypeTable: React.FC<KubernetesGroupedEventTypeTableP
     const headerNames = ['Event Type', 'Last Occurred', 'Event Count', 'Severity', 'Alert Status', 'Subjects'];
     const rows = eventGroupings.map((item: any) => {
       const severity = deriveSeverity(item.distinct_priority);
-      const status = item.distinct_status?.indexOf('FIRING') > 0 ? 'FIRING' : 'CLOSED';
+      const status = item.distinct_status?.includes('FIRING') ? 'FIRING' : 'CLOSED';
       return [
         titleCaseForAggregationKey(item.aggregation_key),
         item.max_created_at || '',

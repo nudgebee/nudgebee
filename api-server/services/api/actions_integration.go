@@ -1,9 +1,11 @@
 package api
 
 import (
+	"fmt"
 	"log/slog"
 	"nudgebee/services/audit"
 	"nudgebee/services/common"
+	"nudgebee/services/config"
 	"nudgebee/services/integrations"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/llm"
@@ -39,6 +41,26 @@ type ValidationResponse struct {
 	Error   string `json:"error,omitempty"`
 }
 
+// notifyGoogleChatBinding asks notifications-server to post a bind/unbind notice
+// into the space (and have the bot leave it on unbind). Best-effort.
+func notifyGoogleChatBinding(tenantId, spaceId, event string) {
+	if tenantId == "" || config.Config.NotificationServiceUrl == "" {
+		return
+	}
+	headers := map[string]string{
+		"Content-Type":   "application/json",
+		"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
+	}
+	if _, err := common.HttpPost(
+		fmt.Sprintf("%s/api/integrations/google-chat/notify", config.Config.NotificationServiceUrl),
+		common.HttpWithTimeout(10*time.Second),
+		common.HttpWithHeaders(headers),
+		common.HttpWithJsonBody(map[string]any{"space_id": spaceId, "event": event, "tenant_id": tenantId}),
+	); err != nil {
+		slog.Warn("integrations: google chat notice failed (best-effort)", "error", err, "space_id", spaceId, "event", event)
+	}
+}
+
 func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {
 	ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
 	if err != nil {
@@ -72,6 +94,9 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		// Audit is persisted by core.CreateIntegrationConfig (CreateAudit, DB) —
 		// no MQ publish here to avoid a duplicate write.
 		llm.InvalidateLLMServerCacheForAccounts(ctx, request.AccountIds)
+		if request.IntegrationName == integrations.IntegrationGoogleChatSpace {
+			notifyGoogleChatBinding(ctx.GetSecurityContext().GetTenantId(), request.IntegrationConfigName, "bound")
+		}
 		return
 	case "integrations_delete_config":
 		var request IntegrationDeleteRequest
@@ -118,6 +143,9 @@ func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, trace
 		// Audit is persisted by core.DeleteIntegrationConfig (CreateAudit, DB) —
 		// no MQ publish here to avoid a duplicate write.
 		llm.InvalidateLLMServerCacheForAccounts(ctx, affectedAccountIds)
+		if request.IntegrationName == integrations.IntegrationGoogleChatSpace {
+			notifyGoogleChatBinding(ctx.GetSecurityContext().GetTenantId(), request.IntegrationConfigName, "unbound")
+		}
 		return
 	case "integrations_get_schema":
 		request := map[string]string{}

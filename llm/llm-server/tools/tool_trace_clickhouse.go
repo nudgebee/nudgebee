@@ -6,13 +6,19 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/tools/core"
+	"regexp"
 	"strings"
 )
 
 const ToolGetTracesClickhouse = "traces_execute"
 
+// tracesViewPattern matches the logical `traces_view` token (optionally schema-qualified
+// as `default.traces_view`) on word boundaries, so it is expanded into the real otel_traces
+// projection regardless of the surrounding punctuation/whitespace in the generated SQL.
+var tracesViewPattern = regexp.MustCompile(`(?i)\b(?:default\.)?traces_view\b`)
+
 // query traces using relay server
-const tracesViewClickhouseFormat = `(select Timestamp as timestamp,ServiceName as service_name, SpanAttributes['source.workload_name'] as workload_name, SpanAttributes['source.workload_namespace'] as workload_namespace, TraceId as trace_id, SpanId as span_id, ParentSpanId as parent_span_id, TraceState as trace_state, SpanKind as span_kind, Duration as duration_ns, case when mapContains(SpanAttributes, 'db.statement') then SpanAttributes['db.statement'] else SpanAttributes['http.url'] end as resource, case when mapContains(SpanAttributes, 'destination.workload_namespace') then SpanAttributes['destination.workload_namespace'] else ResourceAttributes['k8s.namespace.name'] end as destination_workload_namespace, case when mapContains(SpanAttributes, 'destination.name') then SpanAttributes['destination.name'] else ResourceAttributes['service.name'] end as destination_name, case when mapContains(SpanAttributes, 'destination.workload_name') then SpanAttributes['destination.workload_name'] else ResourceAttributes['k8s.deployment.name'] end as destination_workload_name, toInt32OrZero(SpanAttributes['http.status_code']) as status_code, SpanName as span_name from %s) q`
+const tracesViewClickhouseFormat = `(select Timestamp as timestamp,ServiceName as service_name, SpanAttributes['source.workload_name'] as workload_name, SpanAttributes['source.workload_namespace'] as workload_namespace, TraceId as trace_id, SpanId as span_id, ParentSpanId as parent_span_id, TraceState as trace_state, SpanKind as span_kind, Duration as duration_ns, case when mapContains(SpanAttributes, 'db.statement') then SpanAttributes['db.statement'] else SpanAttributes['http.url'] end as resource, case when mapContains(SpanAttributes, 'http.path') then SpanAttributes['http.path'] when mapContains(SpanAttributes, 'db.statement') then SpanAttributes['db.statement'] else SpanName end as endpoint, case when mapContains(SpanAttributes, 'destination.workload_namespace') then SpanAttributes['destination.workload_namespace'] else ResourceAttributes['k8s.namespace.name'] end as destination_workload_namespace, case when mapContains(SpanAttributes, 'destination.name') then SpanAttributes['destination.name'] else ResourceAttributes['service.name'] end as destination_name, case when mapContains(SpanAttributes, 'destination.workload_name') then SpanAttributes['destination.workload_name'] else ResourceAttributes['k8s.deployment.name'] end as destination_workload_name, toInt32OrZero(SpanAttributes['http.status_code']) as status_code, toInt32OrZero(SpanAttributes['http.status_code']) as http_status_code, SpanName as span_name from %s) q`
 
 func init() {
 	core.RegisterNBToolFactory(ToolGetTracesClickhouse, func(accountId string) (core.NBTool, error) {
@@ -135,16 +141,19 @@ func (m TracesExecuteClickhouseTool) getTracesView(accountId string) string {
 func (m TracesExecuteClickhouseTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCallRequest) (core.NBToolResponse, error) {
 	nbRequestContext.Ctx.GetLogger().Info("traces: executing getTraces tool call")
 	finalQuery := m.cleanUpQuery(input.Command)
-	targetView := " traces_view "
-	if strings.Contains(finalQuery, " default.traces_view ") {
-		targetView = " default.traces_view "
-	} else if strings.Contains(finalQuery, " default.traces_view\n") {
-		targetView = " default.traces_view\n"
-	} else if strings.Contains(finalQuery, " traces_view\n") {
-		targetView = " traces_view\n"
-	}
-	finalQuery = strings.Replace(finalQuery, targetView, " "+m.getTracesView(nbRequestContext.AccountId)+" ", 1)
-	finalQuery = fmt.Sprintf("select * from (%s) as ql limit %d;", finalQuery, config.Config.LlmServerAgentMaxTracesRows)
+	// Expand the logical `traces_view` (optionally schema-qualified as `default.traces_view`)
+	// into the real otel_traces projection. A word-boundary regex is used instead of matching
+	// a space-padded literal: queries such as `... FROM traces_view` (end of string),
+	// `FROM traces_view)`, or `SELECT count(*) FROM traces_view` did not have the view name
+	// surrounded by spaces, so the substitution silently no-op'd and the non-existent
+	// `traces_view` table was sent to ClickHouse verbatim — the query then errored and was
+	// surfaced as an empty result, making the agent conclude "no trace data exists".
+	finalQuery = tracesViewPattern.ReplaceAllString(finalQuery, " "+m.getTracesView(nbRequestContext.AccountId)+" ")
+	// No trailing semicolon: the agent appends ` FORMAT JSONCompact` to the query before running
+	// it, so a terminating `;` produces `... ; FORMAT JSONCompact`, which ClickHouse rejects with
+	// "Multi-statements are not allowed". cleanUpQuery already strips a trailing `;` from the
+	// agent-supplied SQL for the same reason; the wrapper must not reintroduce one.
+	finalQuery = fmt.Sprintf("select * from (%s) as ql limit %d", finalQuery, config.Config.LlmServerAgentMaxTracesRows)
 
 	queryResponse, err := executeFetchTrace(nbRequestContext, "otel_clickhouse", "agent", finalQuery, core.TraceQueryBuilder{}, map[string]any{})
 	if err != nil {

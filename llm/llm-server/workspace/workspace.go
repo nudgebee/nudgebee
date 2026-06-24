@@ -709,15 +709,56 @@ type executeResponse struct {
 // failures.
 var ErrWorkspaceCommandFailed = stderrors.New("workspace command failed")
 
-// classifyExecuteResponse returns a wrapped ErrWorkspaceCommandFailed
-// when the workspace agent reports a failure. Empty status + empty error
-// stays success for backward-compat with legacy / minimal agents.
+// CommandFailure carries the structured failure shape reported by the
+// workspace agent (status + raw stderr). It satisfies errors.Is for
+// ErrWorkspaceCommandFailed so existing call-site discrimination keeps
+// working, and lets callers errors.As to inspect Status / StdErr
+// (e.g. to detect "exit status 1" from grep/find/jq for which empty
+// output is a normal result, not a failure).
+type CommandFailure struct {
+	Status string // agent-reported status, typically "failed"
+	StdErr string // raw error string from the workspace agent
+}
+
+func (e *CommandFailure) Error() string {
+	return fmt.Sprintf("%s: status=%q error=%q", ErrWorkspaceCommandFailed,
+		e.Status, e.StdErr)
+}
+
+func (e *CommandFailure) Is(target error) bool {
+	return target == ErrWorkspaceCommandFailed
+}
+
+// stderrExitStatus1 is the verbatim form the workspace agent reports
+// when a process exited with code 1. Centralised here so callers
+// that need to discriminate that exact case (e.g. reclassifying
+// grep-family no-match exits) do not sprinkle the literal across
+// the codebase; if the agent ever changes the format, this is the
+// single update site.
+const stderrExitStatus1 = "exit status 1"
+
+// IsExitStatus1Failure reports whether err is a *CommandFailure whose
+// stderr is exactly "exit status 1" (after trimming surrounding
+// whitespace). Used by the shell tool to distinguish the grep-family
+// no-match exit from richer command failures without exposing the
+// literal string to every caller.
+func IsExitStatus1Failure(err error) bool {
+	var cf *CommandFailure
+	if !stderrors.As(err, &cf) {
+		return false
+	}
+	return strings.TrimSpace(cf.StdErr) == stderrExitStatus1
+}
+
+// classifyExecuteResponse returns a *CommandFailure (wrapping
+// ErrWorkspaceCommandFailed) when the workspace agent reports a failure.
+// Empty status + empty error stays success for backward-compat with
+// legacy / minimal agents.
 func classifyExecuteResponse(result executeResponse) error {
 	if result.Error == "" && (result.CommandStatus == "" || result.CommandStatus == "success") {
 		return nil
 	}
-	return fmt.Errorf("%w: status=%q error=%q", ErrWorkspaceCommandFailed,
-		result.CommandStatus, result.Error)
+	return &CommandFailure{Status: result.CommandStatus, StdErr: result.Error}
 }
 
 // isAgentContractViolation flags status="success" + non-empty Error —

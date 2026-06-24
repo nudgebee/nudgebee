@@ -396,3 +396,6 @@ temporal:
 workflow-server:
   enabled: true
   fullnameOverride: workflow-server
+cost-server:
+  enabled: true
+  fullnameOverride: cost-server

@@ -54,6 +54,13 @@ func (c *Consumer) ProcessMessage(data []byte) error {
 		return nil // Ack and drop
 	}
 
+	// Internal events (sourced from the events table) carry `aggregation_key` but
+	// no `event_type` field. Trigger filters are authored against `event.event_type`
+	// (e.g. {{ event.event_type == "Anomaly" }}), so normalize it here from the
+	// resolved eventType — which already falls back to aggregation_key — so those
+	// filters evaluate correctly for every event source (k8s alerts, anomalies, etc.).
+	event["event_type"] = eventType
+
 	// Extract account_id for tenancy check
 	accountID := ""
 	if aid, ok := event["account_id"].(string); ok {

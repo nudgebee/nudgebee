@@ -148,13 +148,14 @@ function Badge({ level, variant, size }: { level: SeverityLevel; variant: Severi
 }
 
 export function SeverityIcon({ level, variant = 'bar', size = 14, label, count, 'aria-label': ariaLabel, className, id }: SeverityIconProps) {
+  const lowercaseLevel = (level.toLowerCase() in LEVEL_PALETTE ? level.toLowerCase() : 'info') as SeverityLevel;
   const hasLabel = label !== undefined;
   const hasCount = count !== undefined;
   const composition: 'icon-only' | 'icon+text' | 'icon+count' | 'icon+text+count' =
     hasLabel && hasCount ? 'icon+text+count' : hasLabel ? 'icon+text' : hasCount ? 'icon+count' : 'icon-only';
 
-  const accessibleName = composition === 'icon-only' ? ariaLabel ?? LEVEL_DEFAULT_LABEL[level] : undefined;
-  const tooltipText = ariaLabel ?? LEVEL_DEFAULT_LABEL[level];
+  const accessibleName = composition === 'icon-only' ? ariaLabel ?? LEVEL_DEFAULT_LABEL[lowercaseLevel] : undefined;
+  const tooltipText = ariaLabel ?? LEVEL_DEFAULT_LABEL[lowercaseLevel];
 
   return (
     <Tooltip title={tooltipText}>
@@ -167,13 +168,13 @@ export function SeverityIcon({ level, variant = 'bar', size = 14, label, count, 
           display: 'inline-flex',
           alignItems: 'center',
           gap: composition === 'icon-only' ? 0 : ds.space.mul(0, 3),
-          color: LEVEL_PALETTE[level].text,
+          color: LEVEL_PALETTE[lowercaseLevel].text,
           fontSize: 'var(--ds-text-small)',
           fontWeight: 'var(--ds-font-weight-medium)',
           lineHeight: 1,
         }}
       >
-        <Badge level={level} variant={variant} size={size} />
+        <Badge level={lowercaseLevel} variant={variant} size={size} />
         {hasLabel && <Box component='span'>{label}</Box>}
         {hasCount && (
           <Box component='span' sx={{ fontVariantNumeric: 'tabular-nums', marginLeft: composition === 'icon+text+count' ? ds.space[1] : 0 }}>

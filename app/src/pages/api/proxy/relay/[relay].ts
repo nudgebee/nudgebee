@@ -11,9 +11,24 @@ import { context, propagation, trace, SpanStatusCode } from '@opentelemetry/api'
 const relayEndpoint = process.env.RELAY_SERVER_ENDPOINT ?? 'http://localhost:52832';
 const secretKey = process.env.RELAY_SERVER_SECRET_KEY ?? '';
 
+// Allowlist of known relay-server endpoints reachable through this single-segment
+// proxy. The dynamic `[relay]` segment is interpolated into the upstream fetch URL,
+// so it must be validated against this set to prevent forwarding to arbitrary paths.
+// Only POST endpoints the app actually targets are allowed (`hitRelayServer` uses
+// `/request` and `/grafana`).
+const ALLOWED_RELAY_ENDPOINTS = new Set(['request', 'grafana']);
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const tracer = trace.getTracer('relay-api');
   const { relay } = req.query;
+
+  // Validate the dynamic segment against the allowlist before doing any work, so
+  // untrusted input never reaches the span name or the upstream fetch URL.
+  const relaySegment = Array.isArray(relay) ? relay[0] : relay;
+  if (!relaySegment || !ALLOWED_RELAY_ENDPOINTS.has(relaySegment)) {
+    res.status(400).json({ error: 'invalid_relay_endpoint', description: 'Unknown relay endpoint' });
+    return;
+  }
 
   // --- Traceparent setup ---
   let traceParent: string;
@@ -29,7 +44,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   }
 
   const parentCtx = propagation.extract(context.active(), { traceparent: traceParent });
-  const span = tracer.startSpan(`relay-handler-${relay}`, undefined, parentCtx);
+  const span = tracer.startSpan(`relay-handler-${relaySegment}`, undefined, parentCtx);
 
   try {
     await context.with(trace.setSpan(context.active(), span), async () => {
@@ -115,7 +130,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       try {
         let attempt = 3;
         while (attempt > 0 && !success) {
-          const response = await fetch(`${relayEndpoint}/${relay}`, {
+          const response = await fetch(`${relayEndpoint}/${relaySegment}`, {
             headers,
             body: JSON.stringify(req.body),
             method: 'post',

@@ -1246,6 +1246,10 @@ Make minimal, precise changes only.`,
 				"branch":       gitDetail.BaseBranch,
 				"provider":     "gitlab",
 				"project_path": gitDetail.ProjectPath,
+				// tenant_id lets the pr_lifecycle followup cron scope the run.
+				// recommendation_resolution has no tenant column, so the cron's
+				// fallback reads it from here (with a recommendation join as backstop).
+				"tenant_id": ctx.GetSecurityContext().GetTenantId(),
 			}
 			if branchName, ok := agentResponse["branch"].(string); ok {
 				mrMeta["pr_branch"] = branchName
@@ -1253,7 +1257,13 @@ Make minimal, precise changes only.`,
 			mrMetaJSON, marshalErr := common.MarshalJson(mrMeta)
 			if marshalErr == nil {
 				_, _ = dbms.Db.ExecContext(context.Background(),
-					fmt.Sprintf(`UPDATE %s SET data = $1 WHERE id = $2`, tableName),
+					// Merge (jsonb ||) rather than overwrite: the original apply payload
+					// carries provider_config / account_id, which
+					// GetRecommendationResolutionStatus needs to verify MR status. A
+					// blind `data = $1` drops them and leaves a successfully-raised MR
+					// stuck InProgress. mrMeta keys win on conflict; prior keys survive.
+					// (Mirrors github.go.)
+					fmt.Sprintf(`UPDATE %s SET data = COALESCE(data, '{}'::jsonb) || $1::jsonb WHERE id = $2`, tableName),
 					string(mrMetaJSON), recommendResolutionId)
 			}
 		} else if executionStatus == "success" {

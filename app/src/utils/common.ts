@@ -89,6 +89,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
     case 'GOOGLE_CHAT':
       label = 'Google Chat';
       break;
+    case 'DISCORD':
+      label = 'Discord';
+      break;
     case 'GITHUB':
       label = 'GitHub';
       break;

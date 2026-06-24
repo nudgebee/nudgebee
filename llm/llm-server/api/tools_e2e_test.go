@@ -49,14 +49,14 @@ func TestTools_CustomTool(t *testing.T) {
 	err := core.DeleteCustomTool(sc, accountId, customTool.Name)
 	assert.Nil(t, err)
 	if err != nil {
-		slog.Error("Error deleting custom tool", "error", err)
+		slog.Error("deleting custom tool", "error", err)
 		return
 	}
 
 	customTool, err = core.CreateCustomTool(sc, accountId, customTool)
 	assert.Nil(t, err)
 	if err != nil {
-		slog.Error("Error creating custom tool", "error", err)
+		slog.Error("creating custom tool", "error", err)
 		return
 	}
 	assert.NotEmpty(t, customTool.Id)
@@ -110,14 +110,14 @@ func TestTools_CustomToolWithAgent(t *testing.T) {
 	err := core.DeleteCustomTool(sc, accountId, customTool.Name)
 	assert.Nil(t, err)
 	if err != nil {
-		slog.Error("Error deleting custom tool", "error", err)
+		slog.Error("deleting custom tool", "error", err)
 		return
 	}
 
 	customTool, err = core.CreateCustomTool(sc, accountId, customTool)
 	assert.Nil(t, err)
 	if err != nil {
-		slog.Error("Error creating custom tool", "error", err)
+		slog.Error("creating custom tool", "error", err)
 		return
 	}
 	assert.NotEmpty(t, customTool.Id)
@@ -162,7 +162,7 @@ func TestTools_CustomToolWithAgent(t *testing.T) {
 	customAgent, err = agentcore.CreateCustomAgent(sc, accountId, customAgent, nil, false)
 	assert.Nil(t, err)
 	if err != nil {
-		slog.Error("Error creating custom agent", "error", err)
+		slog.Error("creating custom agent", "error", err)
 		return
 	}
 	assert.NotEmpty(t, customAgent.Id)
@@ -210,14 +210,14 @@ func TestTools_UpdateTool(t *testing.T) {
 	err := core.DeleteCustomTool(sc, accountId, customTool.Name)
 	assert.Nil(t, err)
 	if err != nil {
-		slog.Error("Error deleting custom tool", "error", err)
+		slog.Error("deleting custom tool", "error", err)
 		return
 	}
 
 	customTool, err = core.CreateCustomTool(sc, accountId, customTool)
 	assert.Nil(t, err)
 	if err != nil {
-		slog.Error("Error creating custom tool", "error", err)
+		slog.Error("creating custom tool", "error", err)
 		return
 	}
 	assert.NotEmpty(t, customTool.Id)

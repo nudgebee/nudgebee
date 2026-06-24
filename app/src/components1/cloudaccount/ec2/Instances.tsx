@@ -20,6 +20,7 @@ import { getActionsForService, buildMenuItems } from '@components1/cloudaccount/
 import { useCloudResourceAction } from '@hooks/useCloudResourceAction';
 import ConfirmActionDialog from '@components1/cloudaccount/ConfirmActionDialog';
 import RunSsmCommandDialog from '@components1/cloudaccount/RunSsmCommandDialog';
+import SsmCommandResultDialog, { type SsmCommandResult } from '@components1/cloudaccount/SsmCommandResultDialog';
 import ResourceActionHistory from '@components1/cloudaccount/ResourceActionHistory';
 import { ListingLayout } from '@components1/ds/ListingLayout';
 import FilterDropdown from '@components1/ds/FilterDropdown';
@@ -505,6 +506,10 @@ const InstancesView = (props: {
     onRefresh: () => listEC2Instances(),
   });
 
+  // Holds the output of the most recent SSM Run Command so it can be shown in a
+  // dedicated dialog (the snackbar can't render multi-line command output).
+  const [ssmResult, setSsmResult] = useState<SsmCommandResult | null>(null);
+
   const onMenuClick = (menuItem: { id: string }, data: any) => {
     const selectedAction = ec2Actions.find((a) => a.id === menuItem.id);
     if (selectedAction) {
@@ -948,7 +953,12 @@ const InstancesView = (props: {
           open={actionHook.isConfirmOpen}
           resource={actionHook.selectedResource}
           loading={actionHook.isLoading}
-          onConfirm={(args) => actionHook.executeAction(args)}
+          onConfirm={async (args) => {
+            const result = await actionHook.executeAction(args);
+            if (result) {
+              setSsmResult(result);
+            }
+          }}
           onCancel={actionHook.closeConfirm}
         />
       ) : (
@@ -966,6 +976,7 @@ const InstancesView = (props: {
           onCancel={actionHook.closeConfirm}
         />
       )}
+      <SsmCommandResultDialog open={!!ssmResult} result={ssmResult} onClose={() => setSsmResult(null)} />
     </ListingLayout>
   );
 };

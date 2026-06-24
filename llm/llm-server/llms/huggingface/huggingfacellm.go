@@ -57,6 +57,46 @@ func parseMessageResponse(msges string) string {
 	return response
 }
 
+// Map our internal MessageContent to OpenAI chat roles. The host's chat
+// template (vLLM/TGI/Ollama) handles all the wrapping — we just provide
+// roles so it knows where system / user / assistant boundaries are.
+//
+// Qwen3.x and several other recent chat templates reject any payload that
+// has a system message anywhere but position 0 ("System message must be at
+// the beginning"). Collect all system messages, merge them with "\n\n",
+// and emit as a single leading system message; keep all other messages in
+// their original order.
+func toChatMessages(msges []llms.MessageContent) []huggingfaceclient.ChatMessage {
+	var systemParts []string
+	rest := make([]huggingfaceclient.ChatMessage, 0, len(msges))
+	for _, m := range msges {
+		var content string
+		for _, p := range m.Parts {
+			if tp, ok := p.(llms.TextContent); ok {
+				content += tp.Text
+			}
+		}
+		if content == "" {
+			continue
+		}
+		switch m.Role {
+		case llms.ChatMessageTypeSystem:
+			systemParts = append(systemParts, content)
+		case llms.ChatMessageTypeAI:
+			rest = append(rest, huggingfaceclient.ChatMessage{Role: "assistant", Content: content})
+		default:
+			rest = append(rest, huggingfaceclient.ChatMessage{Role: "user", Content: content})
+		}
+	}
+	if len(systemParts) == 0 {
+		return rest
+	}
+	out := make([]huggingfaceclient.ChatMessage, 0, 1+len(rest))
+	out = append(out, huggingfaceclient.ChatMessage{Role: "system", Content: strings.Join(systemParts, "\n\n")})
+	out = append(out, rest...)
+	return out
+}
+
 // GenerateContent implements the Model interface.
 func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) { //nolint: lll, cyclop, whitespace
 
@@ -69,11 +109,9 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 		opt(opts)
 	}
 
-	// Assume we get a single text message
-	result, err := o.client.RunInference(ctx, &huggingfaceclient.InferenceRequest{
+	req := &huggingfaceclient.InferenceRequest{
 		Model:             o.client.Model,
 		Adapter:           o.client.Adapter,
-		Prompt:            generateMessageContent(messages),
 		Task:              huggingfaceclient.InferenceTaskTextGeneration,
 		Temperature:       opts.Temperature,
 		TopP:              opts.TopP,
@@ -82,7 +120,13 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 		MaxLength:         opts.MaxLength,
 		RepetitionPenalty: opts.RepetitionPenalty,
 		Seed:              opts.Seed,
-	})
+	}
+	if o.client.APIType == "openai" {
+		req.Messages = toChatMessages(messages)
+	} else {
+		req.Prompt = generateMessageContent(messages)
+	}
+	result, err := o.client.RunInference(ctx, req)
 	if err != nil {
 		if o.CallbacksHandler != nil {
 			o.CallbacksHandler.HandleLLMError(ctx, err)
@@ -90,14 +134,19 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 		return nil, err
 	}
 
-	resp := &llms.ContentResponse{
-		Choices: []*llms.ContentChoice{
-			{
-				Content: parseMessageResponse(result.Text),
-			},
-		},
+	choice := &llms.ContentChoice{
+		Content: parseMessageResponse(result.Text),
 	}
-	return resp, nil
+	if result.PromptTokens > 0 || result.CompletionTokens > 0 {
+		// Key names match the extractor in agents/core/llm_common.go:653-663
+		// (uses Anthropic-style InputTokens/OutputTokens, not OpenAI naming).
+		choice.GenerationInfo = map[string]any{
+			"InputTokens":  result.PromptTokens,
+			"OutputTokens": result.CompletionTokens,
+			"total_tokens": result.TotalTokens,
+		}
+	}
+	return &llms.ContentResponse{Choices: []*llms.ContentChoice{choice}}, nil
 }
 
 func New(opts ...Option) (*LLM, error) {
@@ -115,7 +164,7 @@ func New(opts ...Option) (*LLM, error) {
 		return nil, ErrMissingToken
 	}
 
-	c, err := huggingfaceclient.New(options.token, options.model, options.url, options.adapter)
+	c, err := huggingfaceclient.NewWithAPIType(options.token, options.model, options.url, options.adapter, options.apiType)
 	if err != nil {
 		return nil, err
 	}

@@ -449,6 +449,9 @@
   --ds-pink-600: #a4225f;
   --ds-pink-700: #69143b;
 
+  /* Slate (cool-neutral muted icon tone; Tailwind slate-600) */
+  --ds-slate-600: #475569;
+
   /* ----- Brand colours --------------------------------------------------- */
   /* Brand navy ("Sidebar Dark") — anchored at #1B2D4A.
      Primary buttons (rest=600, hover=500, active=700), brand-toned icons

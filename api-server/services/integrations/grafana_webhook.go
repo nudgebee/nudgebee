@@ -86,84 +86,9 @@ func (m GrafanaWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 			continue
 		}
 
+		// Fire-and-forget: ensure an event rule exists for this alert.
 		labels := mapStringAnyToStringString(alert["labels"])
 		annotations := mapStringAnyToStringString(alert["annotations"])
-
-		startsAtStr, ok := alert["startsAt"].(string)
-		if !ok {
-			slog.Warn("grafana webhook: missing or invalid 'startsAt' field", "alert", alert)
-		}
-		startsAt, err := time.Parse(time.RFC3339, startsAtStr)
-		if err != nil && startsAtStr != "" {
-			slog.Warn("grafana webhook: failed to parse 'startsAt'", "value", startsAtStr, "error", err)
-		}
-
-		endsAtStr, ok := alert["endsAt"].(string)
-		if !ok {
-			slog.Warn("grafana webhook: missing or invalid 'endsAt' field", "alert", alert)
-		}
-		endsAt, err := time.Parse(time.RFC3339, endsAtStr)
-		if err != nil && endsAtStr != "" {
-			slog.Warn("grafana webhook: failed to parse 'endsAt'", "value", endsAtStr, "error", err)
-		}
-
-		fingerprint, ok := alert["fingerprint"].(string)
-		if !ok {
-			slog.Warn("grafana webhook: missing or invalid 'fingerprint' field")
-		}
-		generatorURL, _ := alert["generatorURL"].(string)
-		dashboardURL, _ := alert["dashboardURL"].(string)
-		silenceURL, _ := alert["silenceURL"].(string)
-		panelURL, _ := alert["panelURL"].(string)
-		if silenceURL != "" {
-			labels["silenceURL"] = silenceURL
-		}
-		if generatorURL != "" {
-			labels["generatorURL"] = generatorURL
-		}
-		if dashboardURL != "" {
-			labels["dashboardURL"] = dashboardURL
-		}
-		if panelURL != "" {
-			labels["panelURL"] = panelURL
-		}
-		status, ok := alert["status"].(string)
-		if !ok {
-			slog.Warn("grafana webhook: missing or invalid 'status' field")
-		}
-
-		// Use generatorURL, fall back to dashboardURL or panelURL
-		eventURL := generatorURL
-		if eventURL == "" {
-			eventURL = dashboardURL
-		}
-		if eventURL == "" {
-			eventURL = panelURL
-		}
-
-		// Build title from annotations or labels
-		title := annotations["summary"]
-		if title == "" {
-			title = labels["alertname"]
-		}
-
-		// Build tags from relevant labels
-		var tags []string
-		if v := labels["grafana_folder"]; v != "" {
-			tags = append(tags, v)
-		}
-		if v := labels["namespace"]; v != "" {
-			tags = append(tags, v)
-		}
-		if v := labels["cluster"]; v != "" {
-			tags = append(tags, v)
-		}
-
-		subjectKind, subjectName := extractGrafanaSubject(labels)
-		if subjectName != "" && labels["service"] == "" {
-			labels["service"] = subjectName
-		}
-
 		alertName := labels["alertname"]
 		severity := labels["severity"]
 		if severity == "" {
@@ -199,36 +124,13 @@ func (m GrafanaWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 			}
 		}()
 
-		parsedPayload := core.EventIncomingWebhook{
-			AccountId:             accountId,
-			WebhookId:             uuid.NewString(),
-			EventType:             labels["alertname"],
-			EventId:               fingerprint,
-			EventUrl:              eventURL,
-			EventStatus:           string(mapGrafanaStatus(status)),
-			EventPriority:         string(mapGrafanaSeverity(labels["severity"])),
-			EventCreatedAt:        startsAt,
-			EventEndsAt:           endsAt,
-			EventTitle:            title,
-			EventDescription:      annotations["description"],
-			EventTags:             tags,
-			EventSubjectKind:      subjectKind,
-			EventSubjectName:      subjectName,
-			EventSubjectNamespace: labels["namespace"],
-			Investigation: core.EventIncomingWebhookInvestigation{
-				RuleName:    labels["alertname"],
-				Labels:      labels,
-				Annotations: annotations,
-				RuleType:    "grafana",
-				RuleId:      labels["alertname"],
-				Fingerprint: fingerprint,
-				Status:      mapGrafanaStatus(status),
-				Severity:    mapGrafanaSeverity(labels["severity"]),
-				SourceUrl:   eventURL,
-			},
+		parsedPayload, err := mapGrafanaAlertToEvent(accountId, alert)
+		if err != nil {
+			slog.Warn("grafana webhook: failed to map alert to event", "error", err)
+			continue
 		}
 
-		results = append(results, parsedPayload)
+		results = append(results, *parsedPayload)
 	}
 
 	if len(results) == 0 {
@@ -236,6 +138,133 @@ func (m GrafanaWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	}
 
 	return results, nil
+}
+
+// mapGrafanaAlertToEvent maps a single parsed Grafana alert into a NudgeBee
+// EventIncomingWebhook. It is the single source of truth for the per-alert
+// mapping (fingerprint, firing/resolved status, start/end times, labels,
+// severity, title) so that both the inbound webhook path and any reconcile
+// job that pulls alerts from Grafana's API produce identical, fingerprint-keyed
+// events.
+func mapGrafanaAlertToEvent(accountId string, alert map[string]any) (*core.EventIncomingWebhook, error) {
+	labels := mapStringAnyToStringString(alert["labels"])
+	annotations := mapStringAnyToStringString(alert["annotations"])
+
+	startsAtStr, ok := alert["startsAt"].(string)
+	if !ok {
+		slog.Warn("grafana webhook: missing or invalid 'startsAt' field", "alert", alert)
+	}
+	startsAt, err := time.Parse(time.RFC3339, startsAtStr)
+	if err != nil && startsAtStr != "" {
+		slog.Warn("grafana webhook: failed to parse 'startsAt'", "value", startsAtStr, "error", err)
+	}
+
+	endsAtStr, ok := alert["endsAt"].(string)
+	if !ok {
+		slog.Warn("grafana webhook: missing or invalid 'endsAt' field", "alert", alert)
+	}
+	endsAt, err := time.Parse(time.RFC3339, endsAtStr)
+	if err != nil && endsAtStr != "" {
+		slog.Warn("grafana webhook: failed to parse 'endsAt'", "value", endsAtStr, "error", err)
+	}
+
+	// EventId is a required field on EventIncomingWebhook and is keyed on the
+	// fingerprint, so a missing or empty fingerprint is a hard error.
+	fingerprint, ok := alert["fingerprint"].(string)
+	if !ok || fingerprint == "" {
+		return nil, fmt.Errorf("grafana webhook: missing or invalid 'fingerprint' field")
+	}
+
+	var generatorURL, dashboardURL, silenceURL, panelURL string
+	if val, ok := alert["generatorURL"].(string); ok {
+		generatorURL = val
+	}
+	if val, ok := alert["dashboardURL"].(string); ok {
+		dashboardURL = val
+	}
+	if val, ok := alert["silenceURL"].(string); ok {
+		silenceURL = val
+	}
+	if val, ok := alert["panelURL"].(string); ok {
+		panelURL = val
+	}
+	if silenceURL != "" {
+		labels["silenceURL"] = silenceURL
+	}
+	if generatorURL != "" {
+		labels["generatorURL"] = generatorURL
+	}
+	if dashboardURL != "" {
+		labels["dashboardURL"] = dashboardURL
+	}
+	if panelURL != "" {
+		labels["panelURL"] = panelURL
+	}
+	status, ok := alert["status"].(string)
+	if !ok {
+		slog.Warn("grafana webhook: missing or invalid 'status' field")
+	}
+
+	// Use generatorURL, fall back to dashboardURL or panelURL
+	eventURL := generatorURL
+	if eventURL == "" {
+		eventURL = dashboardURL
+	}
+	if eventURL == "" {
+		eventURL = panelURL
+	}
+
+	// Build title from annotations or labels
+	title := annotations["summary"]
+	if title == "" {
+		title = labels["alertname"]
+	}
+
+	// Build tags from relevant labels
+	var tags []string
+	if v := labels["grafana_folder"]; v != "" {
+		tags = append(tags, v)
+	}
+	if v := labels["namespace"]; v != "" {
+		tags = append(tags, v)
+	}
+	if v := labels["cluster"]; v != "" {
+		tags = append(tags, v)
+	}
+
+	subjectKind, subjectName := extractGrafanaSubject(labels)
+	if subjectName != "" && labels["service"] == "" {
+		labels["service"] = subjectName
+	}
+
+	return &core.EventIncomingWebhook{
+		AccountId:             accountId,
+		WebhookId:             uuid.NewString(),
+		EventType:             labels["alertname"],
+		EventId:               fingerprint,
+		EventUrl:              eventURL,
+		EventStatus:           string(mapGrafanaStatus(status)),
+		EventPriority:         string(mapGrafanaSeverity(labels["severity"])),
+		EventCreatedAt:        startsAt,
+		EventEndsAt:           endsAt,
+		EventTitle:            title,
+		EventDescription:      annotations["description"],
+		EventTags:             tags,
+		EventSubjectKind:      subjectKind,
+		EventSubjectName:      subjectName,
+		EventSubjectNamespace: labels["namespace"],
+		Investigation: core.EventIncomingWebhookInvestigation{
+			RuleName:    labels["alertname"],
+			Labels:      labels,
+			Annotations: annotations,
+			RuleType:    "grafana",
+			RuleId:      labels["alertname"],
+			Fingerprint: fingerprint,
+			Status:      mapGrafanaStatus(status),
+			Severity:    mapGrafanaSeverity(labels["severity"]),
+			SourceUrl:   eventURL,
+		},
+	}, nil
 }
 
 // extractGrafanaSubject picks the K8s workload subject from alert labels.
@@ -263,22 +292,22 @@ func mapGrafanaStatus(status string) event.EventStatus {
 	}
 }
 
-// mapGrafanaSeverity maps Grafana/Prometheus lowercase severity to EventPriortiy constants.
-func mapGrafanaSeverity(severity string) event.EventPriortiy {
+// mapGrafanaSeverity maps Grafana/Prometheus lowercase severity to EventPriority constants.
+func mapGrafanaSeverity(severity string) event.EventPriority {
 	switch strings.ToLower(strings.TrimSpace(severity)) {
 	case "critical":
-		return event.EventPriortiyHigh
+		return event.EventPriorityHigh
 	case "high":
-		return event.EventPriortiyHigh
+		return event.EventPriorityHigh
 	case "warning", "warn", "medium":
-		return event.EventPriortiyMedium
+		return event.EventPriorityMedium
 	case "low":
-		return event.EventPriortiyLow
+		return event.EventPriorityLow
 	case "info", "informational", "none":
-		return event.EventPriortiyInfo
+		return event.EventPriorityInfo
 	case "debug":
-		return event.EventPriortiyDebug
+		return event.EventPriorityDebug
 	default:
-		return event.EventPriortiyLow
+		return event.EventPriorityLow
 	}
 }

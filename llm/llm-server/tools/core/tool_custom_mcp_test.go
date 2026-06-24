@@ -1,9 +1,12 @@
 package core
 
 import (
+	"context"
+	"net"
 	"nudgebee/llm/security"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -39,6 +42,61 @@ func TestValidateMCPURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPinnedSafeDialContext_LiteralRestrictedIP(t *testing.T) {
+	tests := []struct {
+		name string
+		addr string
+	}{
+		{"loopback v4", "127.0.0.1:80"},
+		{"loopback v6", "[::1]:80"},
+		{"private 10.x", "10.0.0.1:80"},
+		{"link-local metadata", "169.254.169.254:80"},
+		{"unspecified", "0.0.0.0:80"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			conn, err := pinnedSafeDialContext(ctx, "tcp", tt.addr)
+			if conn != nil {
+				_ = conn.Close()
+			}
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "restricted IP")
+		})
+	}
+}
+
+func TestPinnedSafeDialContext_UnresolvableHostname(t *testing.T) {
+	// Hostnames that fail to resolve should surface a wrapped resolve error,
+	// not a panic or a nil-deref.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := pinnedSafeDialContext(ctx, "tcp", "this-host-does-not-exist-nb-test.invalid:80")
+	assert.Error(t, err)
+}
+
+func TestPinnedSafeDialContext_ResolvedRestrictedIP(t *testing.T) {
+	// Use a hostname (`localhost`) so the DNS-resolution + post-resolve
+	// validation branch runs instead of the literal-IP fast path. `localhost`
+	// resolves to a loopback address, which isRestrictedIP rejects.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("could not allocate listener:", err)
+	}
+	defer func() { _ = ln.Close() }()
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	assert.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, err := pinnedSafeDialContext(ctx, "tcp", net.JoinHostPort("localhost", port))
+	if conn != nil {
+		_ = conn.Close()
+	}
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "restricted IP")
 }
 
 func TestAgentMCP(t *testing.T) {

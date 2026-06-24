@@ -987,46 +987,201 @@ func TestTruncateToolResponse(t *testing.T) {
 	config.Config.LlmServerMaxToolOutputLen = 30000
 	config.Config.LlmServerMaxToolErrorOutputLen = 10000
 
-	t.Run("success under limit returns unchanged", func(t *testing.T) {
+	t.Run("success under limit returns unchanged + reports original length", func(t *testing.T) {
 		data := "small observation"
-		got := truncateToolResponse(nil, data, ToolStatusSuccess, "tool")
+		got, origLen := truncateToolResponse(nil, data, ToolStatusSuccess, "tool")
 		assert.Equal(t, data, got)
+		assert.Equal(t, len(data), origLen)
 	})
 
-	t.Run("success over limit gets truncated", func(t *testing.T) {
+	t.Run("success over limit gets truncated + origLen is pre-truncation size", func(t *testing.T) {
 		data := strings.Repeat("x", 50000)
-		got := truncateToolResponse(nil, data, ToolStatusSuccess, "tool")
+		got, origLen := truncateToolResponse(nil, data, ToolStatusSuccess, "tool")
 		assert.Less(t, len(got), len(data))
 		assert.LessOrEqual(t, len(got), 30500) // cap + truncation marker overhead
 		assert.Contains(t, got, "TRUNCATED")
+		assert.Equal(t, 50000, origLen)
 	})
 
 	t.Run("failure over limit uses smaller error cap", func(t *testing.T) {
 		data := strings.Repeat("stack trace line\n", 2000)
-		got := truncateToolResponse(nil, data, ToolStatusFailure, "tool")
+		got, origLen := truncateToolResponse(nil, data, ToolStatusFailure, "tool")
 		assert.LessOrEqual(t, len(got), 10500)
 		assert.Contains(t, got, "TRUNCATED")
+		assert.Equal(t, len(data), origLen)
 	})
 
 	t.Run("empty sentinel values are never truncated", func(t *testing.T) {
-		assert.Equal(t, "", truncateToolResponse(nil, "", ToolStatusSuccess, "tool"))
-		assert.Equal(t, plannerToolNoData, truncateToolResponse(nil, plannerToolNoData, ToolStatusSuccess, "tool"))
-		assert.Equal(t, "[]", truncateToolResponse(nil, "[]", ToolStatusSuccess, "tool"))
+		got, origLen := truncateToolResponse(nil, "", ToolStatusSuccess, "tool")
+		assert.Equal(t, "", got)
+		assert.Equal(t, 0, origLen)
+		got, _ = truncateToolResponse(nil, plannerToolNoData, ToolStatusSuccess, "tool")
+		assert.Equal(t, plannerToolNoData, got)
+		got, _ = truncateToolResponse(nil, "[]", ToolStatusSuccess, "tool")
+		assert.Equal(t, "[]", got)
 	})
 
 	t.Run("limit of zero disables truncation", func(t *testing.T) {
 		config.Config.LlmServerMaxToolOutputLen = 0
 		data := strings.Repeat("x", 100000)
-		got := truncateToolResponse(nil, data, ToolStatusSuccess, "tool")
+		got, _ := truncateToolResponse(nil, data, ToolStatusSuccess, "tool")
 		assert.Equal(t, data, got)
 		config.Config.LlmServerMaxToolOutputLen = 30000
 	})
 
 	t.Run("preserves head and tail of the data", func(t *testing.T) {
 		data := "HEADER_START" + strings.Repeat("x", 50000) + "FOOTER_END"
-		got := truncateToolResponse(nil, data, ToolStatusSuccess, "tool")
+		got, _ := truncateToolResponse(nil, data, ToolStatusSuccess, "tool")
 		assert.True(t, strings.HasPrefix(got, "HEADER_START"))
 		assert.True(t, strings.HasSuffix(got, "FOOTER_END"))
+	})
+}
+
+func TestToolStatusToExitCode(t *testing.T) {
+	cases := []struct {
+		name   string
+		status ToolStatus
+		want   int
+	}{
+		{"success", ToolStatusSuccess, 0},
+		{"failure", ToolStatusFailure, 1},
+		{"empty result", ToolStatusEmptyResult, 2},
+		{"unknown defaults to success", ToolStatus("weird"), 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, toolStatusToExitCode(tc.status))
+		})
+	}
+}
+
+// TestIsNoMatchEnvelope pins the classifier's recognition of the
+// `"no_matches":true` JSON envelope that shell_execute / kubectl_execute
+// / helm_execute emit via successResponseNoMatches. Without this, those
+// tools' non-empty Data falls through to ToolStatusSuccess (ExitStatus=0)
+// even though semantically they ran successfully with no matches — the
+// "exit status 2" signal the footer is supposed to expose.
+func TestIsNoMatchEnvelope(t *testing.T) {
+	cases := []struct {
+		name string
+		data string
+		want bool
+	}{
+		// Positive — the canonical shape successResponseNoMatches emits.
+		{"canonical shell shape (alphabetical key order)", `{"no_matches":true,"stdout":""}`, true},
+		{"canonical with stdout content", `{"no_matches":true,"stdout":"hello\nworld\n"}`, true},
+		{"tolerant whitespace between colon and true", `{"no_matches": true,"stdout":""}`, true},
+		{"key order reversed", `{"stdout":"","no_matches":true}`, true},
+		{"nested inside an outer wrapper (future-proofing)", `{"result":{"no_matches":true,"stdout":""}}`, true},
+
+		// Negative — must NOT trigger.
+		{"empty string", "", false},
+		{"plain success with content", `{"stdout":"alpha\nbeta\n"}`, false},
+		{"no_matches false", `{"no_matches":false,"stdout":"alpha"}`, false},
+		{"merely contains the word no_matches", `{"stdout":"the no_matches script ran"}`, false},
+		{"different key entirely", `{"matches":0,"stdout":""}`, false},
+		// JSON-escaped quotes (`\"`) do NOT trigger — the literal
+		// `"no_matches":true` substring isn't there, only the escaped
+		// form `\"no_matches\":true`. Confirms the recognition is
+		// quote-shape-sensitive, not just keyword-presence-based.
+		{"no_matches:true mentioned in escaped form in user text — no false positive",
+			`{"stdout":"the response is \"no_matches\":true literally"}`, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, isNoMatchEnvelope(c.data))
+		})
+	}
+}
+
+// TestClassifierExitStatus2_FiresForNoMatchEnvelope is the integration-
+// shaped test that pins the EXACT problem from the PR #32253 follow-up
+// discussion: shell_execute's no-match envelope was being classified as
+// ExitStatus=0 instead of 2 because the classifier's "empty Data"
+// heuristic was too narrow. This test asserts the alignment is now
+// correct by walking the classifier's branch logic directly.
+func TestClassifierExitStatus2_FiresForNoMatchEnvelope(t *testing.T) {
+	cases := []struct {
+		name           string
+		status         toolcore.NBToolResponseStatus
+		data           string
+		wantToolStatus ToolStatus
+	}{
+		{"Error trumps everything",
+			toolcore.NBToolResponseStatusError, `{"no_matches":true,"stdout":""}`, ToolStatusFailure},
+		{"empty Data → EmptyResult (legacy path)",
+			toolcore.NBToolResponseStatusSuccess, "", ToolStatusEmptyResult},
+		{"plannerToolNoData sentinel → EmptyResult (legacy path)",
+			toolcore.NBToolResponseStatusSuccess, plannerToolNoData, ToolStatusEmptyResult},
+		{"`[]` Data → EmptyResult (legacy path)",
+			toolcore.NBToolResponseStatusSuccess, "[]", ToolStatusEmptyResult},
+		{"no_matches:true envelope → EmptyResult (this PR)",
+			toolcore.NBToolResponseStatusSuccess, `{"no_matches":true,"stdout":""}`, ToolStatusEmptyResult},
+		{"no_matches:true envelope with content stdout → EmptyResult (this PR)",
+			toolcore.NBToolResponseStatusSuccess, `{"no_matches":true,"stdout":"some text"}`, ToolStatusEmptyResult},
+		{"regular success with content → Success",
+			toolcore.NBToolResponseStatusSuccess, `{"stdout":"hello"}`, ToolStatusSuccess},
+		{"explicit no_matches:false → Success (not EmptyResult)",
+			toolcore.NBToolResponseStatusSuccess, `{"no_matches":false,"stdout":"hit"}`, ToolStatusSuccess},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// Mirror the classifier branch order from doAction. Keeping
+			// this in lockstep with the production code is the point.
+			var got ToolStatus
+			switch {
+			case c.status == toolcore.NBToolResponseStatusError:
+				got = ToolStatusFailure
+			case c.data == "" || c.data == plannerToolNoData || c.data == "[]" || isNoMatchEnvelope(c.data):
+				got = ToolStatusEmptyResult
+			default:
+				got = ToolStatusSuccess
+			}
+			assert.Equal(t, c.wantToolStatus, got)
+			assert.Equal(t, exitCodeFor(c.wantToolStatus), toolStatusToExitCode(got))
+		})
+	}
+}
+
+func exitCodeFor(s ToolStatus) int {
+	switch s {
+	case ToolStatusFailure:
+		return 1
+	case ToolStatusEmptyResult:
+		return 2
+	default:
+		return 0
+	}
+}
+
+func TestFormatToolMetadataFooter(t *testing.T) {
+	cases := []struct {
+		name string
+		md   *toolcore.NBToolResponseMetadata
+		want string
+	}{
+		{"nil metadata renders nothing", nil, ""},
+		{"success", &toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: 123}, "\n[exitStatus: 0 | executionDuration: 123ms]"},
+		{"failure", &toolcore.NBToolResponseMetadata{ExitStatus: 1, ExecutionDurationMs: 45}, "\n[exitStatus: 1 | executionDuration: 45ms]"},
+		{"empty result", &toolcore.NBToolResponseMetadata{ExitStatus: 2, ExecutionDurationMs: 8}, "\n[exitStatus: 2 | executionDuration: 8ms]"},
+		{"negative duration clamps to 0", &toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: -1}, "\n[exitStatus: 0 | executionDuration: 0ms]"},
+		{"multi-second renders as ms", &toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: 3200}, "\n[exitStatus: 0 | executionDuration: 3200ms]"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, formatToolMetadataFooter(tc.md))
+		})
+	}
+}
+
+func TestRenderObservationWithMetadata(t *testing.T) {
+	t.Run("nil metadata returns observation unchanged", func(t *testing.T) {
+		assert.Equal(t, "raw output", renderObservationWithMetadata("raw output", nil))
+	})
+	t.Run("metadata appended at the end", func(t *testing.T) {
+		md := &toolcore.NBToolResponseMetadata{ExitStatus: 1, ExecutionDurationMs: 42}
+		got := renderObservationWithMetadata("raw output", md)
+		assert.Equal(t, "raw output\n[exitStatus: 1 | executionDuration: 42ms]", got)
 	})
 }
 

@@ -1037,6 +1037,44 @@ func registerTimeFilters() {
 		panic(err)
 	}
 
+	// tz filter: shifts a time into an IANA timezone, returning a time.Time so it
+	// chains into strftime/date_format. Usage: {{ now() | tz("Asia/Kolkata") | strftime("%H:%M") }}
+	err = gonja.DefaultEnvironment.Filters.Register("tz", func(e *exec.Evaluator, in *exec.Value, params *exec.VarArgs) *exec.Value {
+		// Accept time.Time or RFC3339 string (same coercion as date_format/time_add).
+		t, ok := in.Interface().(time.Time)
+		if !ok {
+			if tStr, ok := in.Interface().(string); ok {
+				parsed, err := time.Parse(time.RFC3339, tStr)
+				if err != nil {
+					return in // not a parseable time → pass through unchanged
+				}
+				t = parsed
+			} else {
+				return in
+			}
+		}
+
+		name := ""
+		if p, ok := params.KwArgs["name"]; ok {
+			name = p.String()
+		} else if len(params.Args) > 0 {
+			name = params.Args[0].String()
+		}
+
+		loc, err := time.LoadLocation(name)
+		if err != nil {
+			// Fail loud on a bad zone: silently returning UTC would render a
+			// wrong-but-plausible time. Recovered into a render error by renderGonja
+			// (task fails) and logged+skipped by the trigger evaluator.
+			panic(fmt.Errorf("tz: invalid timezone %q: %w", name, err))
+		}
+
+		return exec.AsValue(t.In(loc))
+	})
+	if err != nil {
+		panic(err)
+	}
+
 	// time_add filter: adds duration. Usage: {{ my_time | time_add("-1h") }}
 	err = gonja.DefaultEnvironment.Filters.Register("time_add", func(e *exec.Evaluator, in *exec.Value, params *exec.VarArgs) *exec.Value {
 		t, ok := in.Interface().(time.Time)

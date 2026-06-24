@@ -528,7 +528,7 @@ export const ConversationTokenUsage = ({ tokenUsageData, isLoading = false }) =>
             {model_usage.map((model, idx) => (
               <React.Fragment key={idx}>
                 <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)', paddingTop: ds.space[1] }}>
-                  {model.model_name}
+                  {model.model_name?.toLowerCase()}
                 </Typography>
                 <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
                   {model.requests}
@@ -954,7 +954,7 @@ export const MessageTokenUsage = ({ messageData, onHover, isLoading = false }) =
             {modelUsageArray.map((model, idx) => (
               <React.Fragment key={idx}>
                 <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-700)', paddingTop: ds.space[1] }}>
-                  {model.model_name}
+                  {model.model_name?.toLowerCase()}
                 </Typography>
                 <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-500)', paddingTop: ds.space[1], textAlign: 'right' }}>
                   {model.agents}
@@ -1243,7 +1243,7 @@ export const AgentTokenUsage = ({ agentData }) => {
       <Typography sx={tooltipTitleStyles}>{displayTitle}</Typography>
       {model_name?.Valid && (
         <Typography sx={modelInfoStyles}>
-          {model_name.String} ({model_provider_name?.String || 'Unknown'})
+          {model_name.String?.toLowerCase()} ({model_provider_name?.String || 'Unknown'})
         </Typography>
       )}
       <Box sx={contentRowStyles}>

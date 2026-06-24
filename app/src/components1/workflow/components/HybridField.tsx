@@ -3,7 +3,7 @@ import { Box, Typography, ToggleButtonGroup, ToggleButton, Autocomplete, TextFie
 import { ArrowDropDown, Code } from '@mui/icons-material';
 import { colors } from 'src/utils/colors';
 import SafeIcon from '@common/SafeIcon';
-import FilterDropdownButton from '@common/FilterDropdownButton';
+import { Select, SelectOptionLike } from '@components1/ds/Select';
 import TemplateTextField from './TemplateTextField';
 
 interface PreviousTask {
@@ -83,6 +83,20 @@ const HybridField: React.FC<HybridFieldProps> = ({
   onSearch,
 }) => {
   const isAsync = !!onSearch;
+  // DS Select takes {value,label,icon?} with icon as a node; the workflow
+  // options carry icon as an image `src` string, so map them through SafeIcon.
+  // Consumed by the non-async select-mode picker below.
+  const selectOptions: SelectOptionLike[] = React.useMemo(
+    () =>
+      options.map((opt) => ({
+        value: opt.value,
+        label: opt.label,
+        icon: opt.icon ? (
+          <SafeIcon src={opt.icon} alt={opt.type ?? ''} style={{ width: 16, height: 16, flexShrink: 0, objectFit: 'contain' }} />
+        ) : undefined,
+      })),
+    [options]
+  );
   const [mode, setMode] = useState<FieldMode>(() => detectMode(value, options, optionsLoading, isAsync));
   const userToggledRef = useRef(false);
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -332,34 +346,24 @@ const HybridField: React.FC<HybridFieldProps> = ({
         />
       )}
 
-      {/* Select mode - FilterDropdownButton for standard (non-async) dropdowns.
-          Note: per-option icon and type chip are not rendered here — the
-          shared FilterDropdownButton renders text labels only. Callers that
-          need icons (integration/ticket dropdowns) still get them via the
-          async branch above when onSearch is wired. */}
+      {/* Select mode - DS Select for standard (non-async) dropdowns. DS Select
+          renders per-option icons (unlike the old FilterDropdownButton) and owns
+          its own error state + message, so the shared error block below is
+          suppressed for this branch. Async fields keep the MUI Autocomplete
+          branch above — DS Select has no server-side onSearch hook. */}
       {mode === 'select' && !isAsync && (
-        <Box sx={{ width: '100%' }}>
-          <FilterDropdownButton
-            id={fieldName}
-            options={options}
-            value={value || null}
-            onSelect={(_event: any, selected: any) => {
-              onChange(selected?.value ?? selected ?? '');
-            }}
-            disabled={disabled}
-            isOptionsLoading={optionsLoading}
-            required={required}
-            placeholder={placeholder || `Select ${fieldName.replace(/_/g, ' ')}`}
-            searchPlaceholder={placeholder || `Search ${fieldName.replace(/_/g, ' ')}`}
-            sx={{
-              width: '100%',
-              ...(error && {
-                border: `1px solid ${colors.border?.error || '#d32f2f'}`,
-                boxShadow: 'none',
-              }),
-            }}
-          />
-        </Box>
+        <Select
+          id={fieldName}
+          options={selectOptions}
+          value={value || null}
+          onChange={(next) => onChange(next)}
+          placeholder={placeholder || `Select ${fieldName.replace(/_/g, ' ')}`}
+          disabled={disabled}
+          required={required}
+          error={error || undefined}
+          loading={optionsLoading}
+          minWidth='100%'
+        />
       )}
 
       {/* Expression mode - Template text field (error text handled by HybridField below) */}
@@ -377,8 +381,9 @@ const HybridField: React.FC<HybridFieldProps> = ({
         />
       )}
 
-      {/* Error message */}
-      {error && (
+      {/* Error message — DS Select (non-async select mode) renders its own, so
+          only show this for async select + expression modes. */}
+      {error && !(mode === 'select' && !isAsync) && (
         <Typography
           sx={{ color: colors.border?.error || '#d32f2f', fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', mt: 0.5 }}
         >

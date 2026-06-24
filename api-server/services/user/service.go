@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"nudgebee/services/audit"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
@@ -107,6 +108,16 @@ func sendTenantInvitationEmail(ctx *security.RequestContext, userId, tenantId st
 		}
 	}
 
+	// Tenant-targeted invite link so an already-logged-in user lands on the
+	// invited tenant rather than whichever tenant their session is currently on.
+	// The frontend /accept-invite page reads ?tenant=<name> and switches the
+	// active tenant. We key on the tenant name (the app's client-facing
+	// identifier; tenant ids are never exposed in URLs) and encode spaces as
+	// %20 so Next's query parser round-trips names with spaces/special chars.
+	inviteLink := fmt.Sprintf("%s/accept-invite?tenant=%s",
+		strings.TrimRight(config.Config.BaseUrl, "/"),
+		strings.ReplaceAll(url.QueryEscape(tenantObj.Name), "+", "%20"))
+
 	message := map[string]any{
 		"kind":      "email",
 		"email":     []string{userObj.Username},
@@ -124,7 +135,7 @@ func sendTenantInvitationEmail(ctx *security.RequestContext, userId, tenantId st
 				},
 			},
 			"links": map[string]any{
-				"login_button": config.Config.BaseUrl,
+				"login_button": inviteLink,
 			},
 		},
 	}

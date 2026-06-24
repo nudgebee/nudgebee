@@ -12,6 +12,7 @@ Lifecycle phases:
 import concurrent.futures
 import logging
 import os
+import subprocess
 import threading
 import time
 import uuid
@@ -125,34 +126,24 @@ def recover_orphaned_runs():
                 # updates, so this isn't an orphan.
                 continue
 
-            waiting_left = (
-                db.query(BenchmarkTestResult)
-                .filter(
-                    BenchmarkTestResult.run_id == run_id,
-                    BenchmarkTestResult.status == "waiting",
-                )
-                .count()
-            )
-            running_left = (
-                db.query(BenchmarkTestResult)
-                .filter(
-                    BenchmarkTestResult.run_id == run_id,
-                    BenchmarkTestResult.status == "running",
-                )
-                .count()
-            )
+            # Account for this run's non-terminal rows: running/waiting WITH a
+            # conversation_id are recoverable (the reconciler re-attaches and
+            # finishes them); running rows that never got submitted are errored.
+            recoverable, orphaned = _recover_running_tests(db, run_id)
 
-            if waiting_left > 0 and running_left == 0:
-                # Benign orphan: server restarted while tests awaited user
-                # input. Keep the run alive so the UI can accept followups.
+            if recoverable > 0:
+                # Reconciler will keep mirroring these to terminal. Keep RUNNING.
                 logger.info(
-                    "Orphan recovery: run %s kept RUNNING (%d waiting, 0 running)",
+                    "Orphan recovery: run %s kept RUNNING (%d recoverable, "
+                    "%d orphaned→error)",
                     run_id,
-                    waiting_left,
+                    recoverable,
+                    orphaned,
                 )
                 continue
 
-            # Genuine orphan — tests stuck in-flight or no progress possible.
+            # Nothing recoverable — quarantine the run and clean up its
+            # leaked scenario namespaces.
             run.state = RunState.FAILED
             run.phase = RunPhase.DONE
             run.completed_at = datetime.now()
@@ -171,11 +162,10 @@ def recover_orphaned_runs():
             _mark_running_tests(
                 db, run.run_id, "error", "Server restarted — run was orphaned"
             )
+            _cleanup_run_namespaces(run_id)
             logger.warning(
-                "Orphan recovery: marked run %s FAILED (%d waiting, %d running)",
+                "Orphan recovery: marked run %s FAILED and cleaned namespaces",
                 run_id,
-                waiting_left,
-                running_left,
             )
         db.commit()
     except Exception:
@@ -267,18 +257,152 @@ def _get_run(db, run_id: str) -> BenchmarkRun:
 # (complete_run gate, orphan recovery, periodic sweep) — it's idempotent.
 
 
-def reconcile_waiting_tests(run_id: str, nudge_complete: bool = True) -> dict:
-    """Reconcile waiting test rows against llm-server conversation state.
+# --- The status model -------------------------------------------------------
+# A benchmark test's status is ALWAYS a projection of its llm-server conversation
+# status (the single source of truth) — never an independently-invented value.
+# This one map is used by both the orchestrator and the reconciler so the two
+# can never drift. Returns None for COMPLETED — the caller grades pass/fail.
+_NON_TERMINAL_STATUSES = ("pending", "running", "waiting", "detached")
 
-    For each test in ``waiting`` status with a conversation_id:
-      - If conversation is COMPLETED → mark test pass (+ store final answer).
-      - If conversation is FAILED/KILLED/TERMINATED → mark test fail.
-      - If conversation is WAITING → refresh followup list on the row (so UI
-        sees the current set of panels; e.g. after the llm-server's parent
-        resume produced a new followup).
-      - On network/server error → leave test untouched, log, retry later.
 
-    Returns counts by outcome: ``{"completed": n, "failed": n, "refreshed": n, "error": n}``.
+def _test_status_from_conversation(conv_status: str):
+    """Map an llm-server conversation status → benchmark test status.
+
+    PENDING/IN_PROGRESS → running, WAITING/WAITING_FOR_CLIENT_TOOL → waiting,
+    FAILED/KILLED/TERMINATED → fail, COMPLETED → None (caller grades pass/fail).
+    Unknown/blank → running (keep watching; never guess a terminal outcome).
+    """
+    s = (conv_status or "").upper()
+    if s == "COMPLETED":
+        return None
+    if s in ("WAITING", "WAITING_FOR_CLIENT_TOOL"):
+        return "waiting"
+    if s in ("FAILED", "KILLED", "TERMINATED"):
+        return "fail"
+    return "running"  # PENDING, IN_PROGRESS, unknown → still in flight
+
+
+def _hard_timeout_sec() -> int:
+    """Optional hard ceiling (seconds) on how long a test may stay non-terminal
+    before the reconciler gives up and marks it ``timeout``. Default 0 = OFF, so
+    interactive runs never abandon a live followup or a slow conversation. Set a
+    value for unattended/CI so a hung llm-server conversation can't block the run
+    forever."""
+    try:
+        return int(os.environ.get("BENCHMARK_HARD_TIMEOUT_SEC", "0"))
+    except (ValueError, TypeError):
+        return 0
+
+
+def _waiting_age_sec(tr) -> float:
+    """Seconds since the test row last changed (entered/refreshed WAITING)."""
+    ua = getattr(tr, "updated_at", None)
+    if ua is None:
+        return 0.0
+    now = datetime.now(ua.tzinfo) if ua.tzinfo else datetime.now()
+    try:
+        return max(0.0, (now - ua).total_seconds())
+    except Exception:
+        return 0.0
+
+
+def _cleanup_run_namespaces(run_id: str) -> None:
+    """Best-effort delete of any K8s scenario namespaces a run left behind
+    (labeled ``benchmark-run-id=<run_id>``). Called when a run is quarantined so
+    a stuck/abandoned run doesn't leak its broken scenario infra."""
+    if not run_id:
+        return
+    try:
+        subprocess.run(
+            [
+                "kubectl",
+                "delete",
+                "ns",
+                "-l",
+                f"benchmark-run-id={run_id}",
+                "--ignore-not-found",
+                "--wait=false",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        logger.info("Cleaned up benchmark namespaces for run %s", run_id)
+    except Exception as e:
+        logger.warning("Namespace cleanup failed for run %s: %s", run_id, e)
+
+
+def _recover_running_tests(db, run_id: str):
+    """Account for a run's non-terminal rows after a benchmark restart (the
+    worker that owned them is gone):
+
+      - ``running``/``waiting`` rows WITH a conversation_id are recoverable — the
+        reconciler re-attaches by conversation_id and finishes them (``running``
+        IS the in-flight state now; nothing to change);
+      - ``running`` rows WITHOUT a conversation_id never got submitted → ``error``.
+
+    Returns ``(recoverable, orphaned_errored)``. Does not commit.
+    """
+    recoverable = 0
+    orphaned = 0
+    rows = (
+        db.query(BenchmarkTestResult)
+        .filter(
+            BenchmarkTestResult.run_id == run_id,
+            BenchmarkTestResult.status.in_(("running", "waiting", "detached")),
+        )
+        .all()
+    )
+    for r in rows:
+        if r.conversation_id:
+            recoverable += 1
+        else:
+            r.status = "error"
+            r.error_message = (
+                r.error_message or "Server restarted — test orphaned before submit"
+            )
+            r.error_category = r.error_category or "orphaned"
+            orphaned += 1
+    return recoverable, orphaned
+
+
+def _run_after_test_teardown(ctx: dict) -> None:
+    """Run one test's ``after_test`` teardown from its stored ``teardown_ctx``.
+
+    Called when the RECONCILER finalizes a test — the orchestrator worker skips
+    teardown for handed-off non-terminal tests (waiting / poll-budget elapsed),
+    so the reconciler owns the per-test cleanup. Best-effort; after_test scripts
+    should be idempotent (delete with ``--ignore-not-found``) since a narrow
+    race could let both the worker and the reconciler tear the same test down.
+    """
+    if not ctx or not ctx.get("after_test"):
+        return
+    try:
+        from llm.agents.common.lifecycle import run_after_test
+
+        run_after_test(ctx)
+    except Exception as e:
+        logger.warning(
+            "reconcile teardown failed for test %s: %s", ctx.get("__id__", "?"), e
+        )
+
+
+def reconcile_waiting_tests(  # noqa: C901
+    run_id: str, nudge_complete: bool = True
+) -> dict:
+    """The single poller. Copy each non-terminal test's status from its
+    llm-server conversation (the source of truth) — never invent one.
+
+    Per the locked status model (see ``_test_status_from_conversation``):
+      - IN_PROGRESS/PENDING → ``running`` (keep watching);
+      - WAITING/WAITING_FOR_CLIENT_TOOL → ``waiting`` (refresh the followup form
+        for a human to answer in the UI; never auto-answered);
+      - COMPLETED → grade → ``pass`` / ``fail``;
+      - FAILED/KILLED/TERMINATED → ``fail``;
+      - past the optional hard timeout → ``timeout`` (only if configured);
+      - on network/server error → leave the test untouched, retry next pass.
+
+    Returns counts by outcome.
     """
     from benchmark_server.utils.llm_client import (
         fetch_conversation,
@@ -286,7 +410,19 @@ def reconcile_waiting_tests(run_id: str, nudge_complete: bool = True) -> dict:
     )
     from benchmark_server.utils.followup_events import emit as _fevent
 
-    outcome = {"completed": 0, "failed": 0, "refreshed": 0, "error": 0, "skipped": 0}
+    outcome = {
+        "completed": 0,
+        "failed": 0,
+        "refreshed": 0,
+        "error": 0,
+        "skipped": 0,
+        "timeout": 0,
+    }
+    hard_timeout_sec = _hard_timeout_sec()
+    # Per-test teardowns to run AFTER the DB commit (shell/kubectl can take
+    # seconds; don't hold the txn open for them). One entry per test the
+    # reconciler finalizes that still has a live scenario.
+    to_teardown = []
     db = get_db()
     if not db:
         return outcome
@@ -297,11 +433,15 @@ def reconcile_waiting_tests(run_id: str, nudge_complete: bool = True) -> dict:
         account_id = run.account_id or ""
         tenant_id = run.tenant_id or ""
         user_id = run.user_id or ""
+        # Watch EVERY non-terminal test — both `running` (in flight; a followup
+        # may appear at any time) and `waiting`. Copying the conversation status
+        # is idempotent and never writes RAGAS scores, so it converges with the
+        # orchestrator worker's own write rather than fighting it.
         waiting = (
             db.query(BenchmarkTestResult)
             .filter(
                 BenchmarkTestResult.run_id == run_id,
-                BenchmarkTestResult.status == "waiting",
+                BenchmarkTestResult.status.in_(("running", "waiting", "detached")),
             )
             .all()
         )
@@ -322,37 +462,34 @@ def reconcile_waiting_tests(run_id: str, nudge_complete: bool = True) -> dict:
                     for tr, cid in to_fetch
                 }
                 for fut in concurrent.futures.as_completed(futures):
-                    prefetched[futures[fut]] = fut.result()
+                    # One conversation's fetch must never kill the whole sweep:
+                    # treat a failed fetch as a per-test error and carry on.
+                    try:
+                        prefetched[futures[fut]] = fut.result()
+                    except Exception:
+                        logger.exception(
+                            "reconcile: conversation fetch failed for test row %s",
+                            futures[fut],
+                        )
+                        prefetched[futures[fut]] = None
 
         for tr in waiting:
             convo_id = tr.conversation_id or ""
             if not convo_id:
+                # Non-terminal test with no conversation handle — can't mirror.
                 outcome["skipped"] += 1
                 continue
             result = prefetched.get(tr.id)
             if result is None:
+                # Fetch failed this pass — leave the row untouched, retry later.
                 outcome["error"] += 1
                 continue
-            status = (result.status or "").upper()
-            if status == "WAITING":
-                # Refresh followups so UI shows current panel set.
-                from benchmark_server.orchestrator import _wrap_followups_for_storage
 
-                followups = list(result.followups or [])
-                if followups:
-                    tr.followup_request = _wrap_followups_for_storage(followups)
-                    outcome["refreshed"] += 1
-                elif tr.followup_request:
-                    # Zombie WAITING: llm-server says WAITING but no pending
-                    # followup exists (parent agent still running post-
-                    # answer). Clear the stale input form from the row so
-                    # the UI stops showing an already-answered question.
-                    # Test stays ``waiting`` — next reconcile will catch the
-                    # real terminal state.
-                    tr.followup_request = None
-                    outcome["refreshed"] += 1
-                continue
-            if status == "COMPLETED":
+            mapped = _test_status_from_conversation(result.status or "")
+            prior = tr.status
+
+            if mapped is None:
+                # COMPLETED → grade.
                 answer = extract_response_text(result.data)
                 tr.status = "pass" if answer else "fail"
                 tr.actual_answer = answer or tr.actual_answer or ""
@@ -363,45 +500,85 @@ def reconcile_waiting_tests(run_id: str, nudge_complete: bool = True) -> dict:
                     )
                     tr.error_category = tr.error_category or "empty_response"
                 outcome["completed"] += 1
+                if tr.teardown_ctx:
+                    to_teardown.append(tr.teardown_ctx)
                 _fevent(
                     "reconciled",
                     run_id=run_id,
                     test_index=tr.test_index,
                     conversation_id=convo_id,
-                    from_state="waiting",
+                    from_state=prior,
                     to_state=tr.status,
-                    reason="conversation_terminal",
+                    reason="conversation_completed",
                 )
-            elif status in ("FAILED", "KILLED", "TERMINATED"):
+                continue
+
+            if mapped == "fail":
+                # FAILED / KILLED / TERMINATED.
                 tr.status = "fail"
                 tr.followup_request = None
-                tr.error_message = result.error_message or f"conversation {status}"
+                tr.error_message = result.error_message or (
+                    f"conversation {(result.status or '').upper()}"
+                )
                 tr.error_category = result.error_category or "agent_failed"
                 outcome["failed"] += 1
+                if tr.teardown_ctx:
+                    to_teardown.append(tr.teardown_ctx)
                 _fevent(
                     "reconciled",
                     run_id=run_id,
                     test_index=tr.test_index,
                     conversation_id=convo_id,
-                    from_state="waiting",
+                    from_state=prior,
                     to_state="fail",
-                    reason=status.lower(),
+                    reason="conversation_failed",
                 )
+                continue
+
+            if mapped == "waiting":
+                # WAITING → keep the followup form visible for a human to answer
+                # in the UI (never auto-answered). Write only when it changed so
+                # updated_at — the hard-timeout clock — doesn't reset each sweep.
+                from benchmark_server.orchestrator import _wrap_followups_for_storage
+
+                tr.status = "waiting"
+                followups = list(result.followups or [])
+                new_form = _wrap_followups_for_storage(followups) if followups else None
+                if tr.followup_request != new_form:
+                    tr.followup_request = new_form
+                    outcome["refreshed"] += 1
             else:
-                # Non-terminal in-flight status — typically IN_PROGRESS, but
-                # we don't enumerate to stay forward-compatible with any other
-                # llm-server-side state name (e.g. PROCESSING, RUNNING). The
-                # contract: anything that's not WAITING and not in the
-                # terminal set above means the conversation is being processed
-                # and we should NOT keep showing the answered followup form.
-                # Clear ``followup_request`` so the UI sees row=waiting with
-                # no form (rendered as "submitted, awaiting response"); the
-                # next reconcile pass picks up the eventual COMPLETED/FAILED.
-                # Without this branch, the row sat at waiting with the old
-                # form forever — the visible "stuck on waiting" bug.
+                # running (IN_PROGRESS/PENDING/unknown) → still in flight. Clear
+                # any stale answered-followup form; keep watching next pass.
+                if tr.status != "running":
+                    tr.status = "running"
                 if tr.followup_request:
                     tr.followup_request = None
                     outcome["refreshed"] += 1
+
+            # Optional hard timeout (default OFF). A non-terminal test that has
+            # sat too long → honest `timeout` so an unattended/CI run can finish
+            # without abandoning live followups by default.
+            if hard_timeout_sec > 0 and _waiting_age_sec(tr) > hard_timeout_sec:
+                tr.status = "timeout"
+                tr.followup_request = None
+                tr.error_message = tr.error_message or (
+                    f"Non-terminal for >{int(hard_timeout_sec)}s "
+                    f"(conversation {(result.status or '').upper()})"
+                )
+                tr.error_category = tr.error_category or "timeout"
+                outcome["timeout"] += 1
+                if tr.teardown_ctx:
+                    to_teardown.append(tr.teardown_ctx)
+                _fevent(
+                    "reconciled",
+                    run_id=run_id,
+                    test_index=tr.test_index,
+                    conversation_id=convo_id,
+                    from_state=prior,
+                    to_state="timeout",
+                    reason="hard_timeout",
+                )
         db.commit()
         if any(outcome.values()):
             logger.info("Reconciled run %s: %s", run_id, outcome)
@@ -410,6 +587,11 @@ def reconcile_waiting_tests(run_id: str, nudge_complete: bool = True) -> dict:
         logger.exception("Reconciliation failed for run %s", run_id)
     finally:
         db.close()
+
+    # Per-test teardown for tests the reconciler just finalized — run AFTER the
+    # DB session is closed so a slow after_test (kubectl) never holds the txn.
+    for ctx in to_teardown:
+        _run_after_test_teardown(ctx)
 
     # Skip the nudge when called from inside complete_run — that path runs
     # reconcile as a precursor to its own completion check, so a recursive
@@ -563,7 +745,7 @@ def _run_has_all_terminal_tests(run_id: str) -> bool:
             db.query(BenchmarkTestResult)
             .filter(
                 BenchmarkTestResult.run_id == run_id,
-                BenchmarkTestResult.status.in_(("pending", "waiting", "running")),
+                BenchmarkTestResult.status.in_(_NON_TERMINAL_STATUSES),
             )
             .count()
         )
@@ -615,16 +797,21 @@ def _sweeper_loop():
         try:
             # Reconcile every active run so UI catches up to llm-server state
             # without waiting for the foreground poll.
+            # Reconcile any run that still has a non-terminal (waiting/running)
+            # test row, regardless of run state. The old state == RUNNING filter
+            # froze followup rows on the UI whenever a run was marked
+            # completed/stopped while a followup was still in flight.
             db = get_db()
             active_ids = []
             if db:
                 try:
-                    active = (
-                        db.query(BenchmarkRun)
-                        .filter(BenchmarkRun.state == RunState.RUNNING)
+                    rows = (
+                        db.query(BenchmarkTestResult.run_id)
+                        .filter(BenchmarkTestResult.status.in_(("waiting", "running", "detached")))
+                        .distinct()
                         .all()
                     )
-                    active_ids = [r.run_id for r in active]
+                    active_ids = [r.run_id for r in rows]
                 finally:
                     db.close()
             for rid in active_ids:
@@ -863,6 +1050,29 @@ def complete_run(run_id: str) -> bool:
                 run.phase = RunPhase.RUNNING_TESTS
                 db.commit()
                 return False
+
+        # Non-terminal guard: refuse to complete while any test is still pending
+        # or running. reserve_test_rows pre-inserts all rows as 'pending', so
+        # total_rows == planned_total from the start and the row-count guard
+        # above can never catch a run whose tests never ran (orchestrator exited
+        # early). 'waiting' is already guarded above; check pending/running here.
+        non_terminal = (
+            db.query(BenchmarkTestResult)
+            .filter(
+                BenchmarkTestResult.run_id == run_id,
+                BenchmarkTestResult.status.in_(("pending", "running", "detached")),
+            )
+            .count()
+        )
+        if non_terminal > 0:
+            logger.info(
+                "Run %s has %d pending/running test(s); deferring completion",
+                run_id,
+                non_terminal,
+            )
+            run.phase = RunPhase.RUNNING_TESTS
+            db.commit()
+            return False
 
         run.state = RunState.COMPLETED
         run.phase = RunPhase.DONE
@@ -2134,6 +2344,9 @@ def reserve_test_rows(run_id: str, test_cases: list) -> int:
                 query=(tc.get("user_prompt") or "")[:200],
                 expected_answer=expected_str,
                 tags=tc.get("tags", []),
+                # Fixture-provided answer for any followup the agent asks, so the
+                # auto-followup resolver can answer it unattended.
+                expected_followup=tc.get("followup_response"),
             )
             db.add(tr)
             inserted += 1

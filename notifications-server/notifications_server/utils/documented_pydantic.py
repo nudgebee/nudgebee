@@ -1,6 +1,7 @@
 import inspect
 import json
 import logging
+from typing import Any
 from xml.etree import ElementTree
 
 from docutils.core import publish_doctree
@@ -14,7 +15,7 @@ class DocstringField:
     For the above example, field_type is "var", field_target is "xyz", and field_value is "abc"
     """
 
-    def __init__(self, name: str, body: str):
+    def __init__(self, name: str, body: str) -> None:
         field_type, field_target = name.split()
         self.field_type = field_type
         self.field_target = field_target
@@ -22,7 +23,7 @@ class DocstringField:
 
 
 class Docstring:
-    def __init__(self, docstring: str):
+    def __init__(self, docstring: str) -> None:
         """
         Parse docutils/sphinx-style docs from a docstring.
 
@@ -68,14 +69,14 @@ class DocumentedModel(BaseModel):
     """
 
     # warning: __init_subclass__ only works on Python 3.6 and above
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
         docs = inspect.getdoc(cls)
         if docs is not None:
             cls.__update_fields_from_docstring(docs)
 
     @classmethod
-    def __update_fields_from_docstring(cls, docstring):
+    def __update_fields_from_docstring(cls, docstring: str) -> None:
         """
         Updates pydantic fields according to the docstring so that:
 
@@ -94,9 +95,12 @@ class DocumentedModel(BaseModel):
 
             f: FieldInfo = cls.model_fields[doc_field.field_target]
             if doc_field.field_type == "example":
-                existing = f.json_schema_extra or {}
-                existing["example"] = cls.__parse_example(doc_field.field_value)
-                f.json_schema_extra = existing
+                # json_schema_extra is dict | Callable | None; narrow to dict
+                # before indexing (also avoids a TypeError if it's a callable).
+                if f.json_schema_extra is None:
+                    f.json_schema_extra = {}
+                if isinstance(f.json_schema_extra, dict):
+                    f.json_schema_extra["example"] = cls.__parse_example(doc_field.field_value)
             if doc_field.field_type == "var":
                 if f.description:
                     logging.warning(
@@ -106,7 +110,7 @@ class DocumentedModel(BaseModel):
         cls.__doc__ = docs.description
 
     @staticmethod
-    def __parse_example(example: str):
+    def __parse_example(example: str) -> Any:
         try:
             return json.loads(example)
         except json.JSONDecodeError:

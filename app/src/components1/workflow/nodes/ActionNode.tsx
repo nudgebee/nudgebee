@@ -33,6 +33,7 @@ import {
   ArgocdIcon,
   K8sIcon,
   SlackIcon,
+  GChatIcon,
   newAwsLogo,
   ouAzure,
   ouGoogle,
@@ -126,6 +127,7 @@ const getTaskIcon = (taskType: string) => {
     azure: ouAzure,
     k8s: K8sIcon,
     slack: SlackIcon,
+    google_chat: GChatIcon,
     mcp: McpIcon,
   };
 

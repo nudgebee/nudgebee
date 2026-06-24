@@ -1,10 +1,7 @@
-import { getToken } from 'next-auth/jwt';
-import { getServerSession } from 'next-auth/next';
-
 import type { NextApiRequest, NextApiResponse } from 'next';
 
-import { authOptions } from '@pages/api/auth/[...nextauth]';
 import { decrypt } from '@lib/internal';
+import { resolveRequestJwt } from '@lib/sessionToken';
 import crypto from 'crypto';
 
 const unprotected: string[] = [];
@@ -34,16 +31,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const splits = req.headers.authorization ? req.headers.authorization.split(' ') : [];
     let token = splits.length > 1 ? await decrypt(splits[1]) : null;
 
-    const session = await getServerSession(req, res, authOptions);
-    const jwtToken = await getToken({ req });
-    const tenantId = (jwtToken?.tenant as any)?.id ?? null;
+    const jwtToken = await resolveRequestJwt(req);
+    const tenantId = ((jwtToken?.tenant as { id?: string } | undefined)?.id as string) || null;
 
-    token = !token && session?.user ? (jwtToken?.idToken as string) : token;
+    token = !token && jwtToken ? (jwtToken.idToken as string) : token;
 
-    if (authenticate) {
-      if (!token) {
-        return sendAuthenticationError(res);
-      }
+    // Gate on tenant (set for every login method), not idToken: the notifications
+    // route needs the tenant header, not a bearer, so SAML / magic-link logins
+    // (which have no idToken) must not be rejected here.
+    if (authenticate && !tenantId) {
+      return sendAuthenticationError(res);
     }
     const notificaionServiceUrl = process.env.NOTIFICATION_SERVICE_URL ? process.env.NOTIFICATION_SERVICE_URL : 'http://notifications:80';
     const installEndpoint = notificaionServiceUrl + '/slack/install?tenant=' + `${tenantId}`;
@@ -114,8 +111,8 @@ async function validateAndReturnResponse(proxyResponse: Response | null, req: Ne
   if (proxyResponse != null) {
     const data = await proxyResponse.json();
     if (data?.url) {
-      const session = await getServerSession(req, res, authOptions);
-      const userEmail = session?.user?.email;
+      const jwt = await resolveRequestJwt(req);
+      const userEmail = jwt?.email;
       const redirectUrl = new URL(data.url);
 
       const rawState = redirectUrl.searchParams.get('state') || '{}';

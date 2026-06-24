@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Box, Typography, Collapse } from '@mui/material';
 import { Button } from '@components1/ds/Button';
 import { ExpandMore, ExpandLess, ContentCopy, AccessTime } from '@mui/icons-material';
-import { colors } from 'src/utils/colors';
+import { colors, ds } from 'src/utils/colors';
 import JsonTreeView from '@components1/common/JsonTreeView';
 import CustomLabels from '@components1/common/widgets/CustomLabels';
 
@@ -144,7 +144,7 @@ const ChildTaskCard: React.FC<{ task: ChildTask; copyToClipboard?: (text: string
                   padding: 'var(--ds-space-1) var(--ds-space-2)',
                 }}
               >
-                <JsonTreeView data={task.output} defaultExpanded={1} maxHeight='160px' fontSize='11px' />
+                <JsonTreeView data={task.output} defaultExpanded={1} maxHeight='160px' fontSize={ds.text.caption} />
               </Box>
             ) : (
               <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.tertiary, fontStyle: 'italic' }}>No output</Typography>

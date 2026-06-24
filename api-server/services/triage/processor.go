@@ -19,13 +19,15 @@ func ProcessEvent(ctx context.Context, db *sqlx.DB, event *models.Event) error {
 	// Step 1: Deduplication detection FIRST (target: < 10ms)
 	// This must run before CheckTriageRules so that the occurrence number is available
 	// for occurrence-based rules (like the system auto-duplicate rule)
-	if err := detectAndRecordDuplicate(ctx, db, event); err != nil {
+	occurrence, err := detectAndRecordDuplicate(ctx, db, event)
+	if err != nil {
 		slog.ErrorContext(ctx, "Failed to detect duplicate", "error", err, "event_id", event.Id)
 		// Continue processing - don't fail entire triage on duplicate detection error
+		occurrence = 1
 	}
 
 	// Step 2: Check triage rules (after deduplication so occurrence_number is available)
-	ruleResult, err := CheckTriageRules(ctx, db, event)
+	ruleResult, err := CheckTriageRules(ctx, db, event, occurrence)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to check triage rules", "error", err, "event_id", event.Id)
 		// Continue processing - don't fail on rule check error
@@ -48,14 +50,15 @@ func ProcessEvent(ctx context.Context, db *sqlx.DB, event *models.Event) error {
 	}
 
 	// Step 3: Correlation detection (target: < 150ms)
-	if err := detectAndRecordCorrelations(ctx, db, event); err != nil {
+	corrType, corrScore, err := detectAndRecordCorrelations(ctx, db, event)
+	if err != nil {
 		slog.ErrorContext(ctx, "Failed to detect correlations", "error", err, "event_id", event.Id)
 		// Continue processing - don't fail entire triage on correlation error
 	}
 
 	// Step 4: Compute and save score (target: < 50ms)
 	// Apply any score adjustments from rules
-	result, err := ComputeScore(ctx, db, event)
+	result, err := ComputeScore(ctx, db, event, occurrence, corrType, corrScore)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to compute score", "error", err, "event_id", event.Id)
 		// Continue processing - don't fail entire triage on scoring error
@@ -97,10 +100,10 @@ func ProcessEvent(ctx context.Context, db *sqlx.DB, event *models.Event) error {
 // detectAndRecordDuplicate checks if this event is a duplicate and records it
 // Creates chains per fingerprint. If the chain's first event is RESOLVED, starts a new chain
 // while keeping a reference to the previous chain via previous_event_id.
-func detectAndRecordDuplicate(ctx context.Context, db *sqlx.DB, event *models.Event) error {
+func detectAndRecordDuplicate(ctx context.Context, db *sqlx.DB, event *models.Event) (int, error) {
 	// Check for required fields
-	if event.Fingerprint == nil || event.CloudAccountId == nil || event.StartsAt == nil {
-		return fmt.Errorf("event missing required fields (fingerprint, cloud_account_id, or starts_at)")
+	if event.Fingerprint == nil || event.CloudAccountId == nil || event.StartsAt == nil || event.Tenant == nil || *event.Tenant == "" {
+		return 0, fmt.Errorf("event missing required fields (fingerprint, cloud_account_id, starts_at, or tenant)")
 	}
 
 	// Query event_duplicates to find existing chain for this fingerprint
@@ -163,16 +166,16 @@ func detectAndRecordDuplicate(ctx context.Context, db *sqlx.DB, event *models.Ev
 				event.CreatedAt, // absolute_first_seen_at
 			)
 			if err != nil {
-				return fmt.Errorf("failed to insert first occurrence: %w", err)
+				return 0, fmt.Errorf("failed to insert first occurrence: %w", err)
 			}
 
 			slog.InfoContext(ctx, "First occurrence of fingerprint",
 				"event_id", event.Id,
 				"fingerprint", *event.Fingerprint,
 			)
-			return nil
+			return 1, nil
 		}
-		return fmt.Errorf("failed to query duplicate chain: %w", err)
+		return 0, fmt.Errorf("failed to query duplicate chain: %w", err)
 	}
 
 	// Check if the first event in the chain is RESOLVED
@@ -198,7 +201,7 @@ func detectAndRecordDuplicate(ctx context.Context, db *sqlx.DB, event *models.Ev
 			chainInfo.AbsoluteFirstSeenAt, // absolute_first_seen_at (carry from old chain, never reset)
 		)
 		if err != nil {
-			return fmt.Errorf("failed to insert new chain after resolved: %w", err)
+			return 0, fmt.Errorf("failed to insert new chain after resolved: %w", err)
 		}
 
 		slog.InfoContext(ctx, "Recurrence after resolved - starting new chain",
@@ -206,7 +209,7 @@ func detectAndRecordDuplicate(ctx context.Context, db *sqlx.DB, event *models.Ev
 			"previous_chain_first_event_id", chainInfo.FirstEventID,
 			"fingerprint", *event.Fingerprint,
 		)
-		return nil
+		return 1, nil
 	}
 
 	// This is a duplicate event - continue the existing chain
@@ -238,7 +241,7 @@ func detectAndRecordDuplicate(ctx context.Context, db *sqlx.DB, event *models.Ev
 	)
 
 	if err != nil {
-		return fmt.Errorf("failed to insert duplicate record: %w", err)
+		return 0, fmt.Errorf("failed to insert duplicate record: %w", err)
 	}
 
 	slog.InfoContext(ctx, "Duplicate event detected",
@@ -251,14 +254,14 @@ func detectAndRecordDuplicate(ctx context.Context, db *sqlx.DB, event *models.Ev
 		"fingerprint", *event.Fingerprint,
 	)
 
-	return nil
+	return occurrenceNumber, nil
 }
 
 // detectAndRecordCorrelations finds and records correlated events
-func detectAndRecordCorrelations(ctx context.Context, db *sqlx.DB, event *models.Event) error {
+func detectAndRecordCorrelations(ctx context.Context, db *sqlx.DB, event *models.Event) (string, float64, error) {
 	// Check for required fields
-	if event.CloudAccountId == nil || event.Fingerprint == nil || event.StartsAt == nil {
-		return fmt.Errorf("event missing required fields (cloud_account_id, fingerprint, or starts_at)")
+	if event.CloudAccountId == nil || event.Fingerprint == nil || event.StartsAt == nil || event.Tenant == nil || *event.Tenant == "" {
+		return "", 0, fmt.Errorf("event missing required fields (cloud_account_id, fingerprint, starts_at, or tenant)")
 	}
 
 	// Parse service map from event evidences
@@ -309,7 +312,7 @@ func detectAndRecordCorrelations(ctx context.Context, db *sqlx.DB, event *models
 	)
 
 	if err != nil {
-		return fmt.Errorf("failed to query recent events: %w", err)
+		return "", 0, fmt.Errorf("failed to query recent events: %w", err)
 	}
 
 	slog.DebugContext(ctx, "Checking correlations",
@@ -320,6 +323,8 @@ func detectAndRecordCorrelations(ctx context.Context, db *sqlx.DB, event *models
 	)
 
 	correlationCount := 0
+	highestScore := 0.0
+	highestType := ""
 
 	// Calculate correlation score for each recent event
 	for i := range recentEvents {
@@ -333,6 +338,11 @@ func detectAndRecordCorrelations(ctx context.Context, db *sqlx.DB, event *models
 		result := calculateCorrelationScore(recentEvent, event, serviceMap, traceServices)
 
 		if result.IsCorrelated {
+			if result.CorrelationScore > highestScore {
+				highestScore = result.CorrelationScore
+				highestType = result.CorrelationType
+			}
+
 			// Insert bidirectional correlation
 			err := insertCorrelation(ctx, db, event, recentEvent, &result)
 			if err != nil {
@@ -361,7 +371,7 @@ func detectAndRecordCorrelations(ctx context.Context, db *sqlx.DB, event *models
 		"correlations_found", correlationCount,
 	)
 
-	return nil
+	return highestType, highestScore, nil
 }
 
 // insertCorrelation inserts a bidirectional correlation record

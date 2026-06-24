@@ -15,6 +15,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/llms/googleai"
+	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -44,7 +45,7 @@ type CacheRequest struct {
 	Messages       []llms.MessageContent
 	ApiKey         string
 	Scope          CacheScope
-	Capabilities   map[string]any // Optional; used to isolate cache slots when tool set varies per request
+	Capabilities   toolcore.AgentCapabilities // Optional; used to isolate cache slots when tool set varies per request
 }
 
 // CacheResponse contains the result of cache operation
@@ -807,38 +808,22 @@ func generateCacheKey(scope CacheScope, accountId, conversationId, agentName, mo
 }
 
 // capabilityFingerprint returns an 8-hex-char suffix derived from the sorted
-// allowed_tools list in capabilities, or an empty string when no allow-list is
+// AllowedTools list in capabilities, or an empty string when no allow-list is
 // set. This suffix is appended to agentName inside GoogleAICacheProvider only
 // so that different tool scopes get distinct Google AI CachedContent slots and
 // don't thrash each other (Google AI uses a single slot per cache key).
 //
 // Anthropic inline cache_control is content-addressed and unaffected.
-func capabilityFingerprint(capabilities map[string]any) string {
-	if len(capabilities) == 0 {
-		return ""
-	}
-	raw, ok := capabilities["allowed_tools"]
-	if !ok {
-		return ""
-	}
-	var tools []string
-	switch v := raw.(type) {
-	case []string:
-		tools = v
-	case []any:
-		for _, item := range v {
-			if s, ok := item.(string); ok {
-				tools = append(tools, s)
-			}
-		}
-	}
+func capabilityFingerprint(capabilities toolcore.AgentCapabilities) string {
+	tools := toolcore.NormalizeList(capabilities.AllowedTools)
 	if len(tools) == 0 {
 		return ""
 	}
-	sorted := make([]string, len(tools))
-	copy(sorted, tools)
-	sort.Strings(sorted)
-	h := sha256.Sum256([]byte(strings.Join(sorted, ",")))
+	for i, t := range tools {
+		tools[i] = strings.ToLower(t)
+	}
+	sort.Strings(tools)
+	h := sha256.Sum256([]byte(strings.Join(tools, ",")))
 	return hex.EncodeToString(h[:4]) // 8 hex chars from first 4 bytes
 }
 

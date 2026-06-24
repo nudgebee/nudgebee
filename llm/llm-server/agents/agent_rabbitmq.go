@@ -66,10 +66,6 @@ func (l RabbitMQAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 		"**Error Handling:** Handle errors gracefully. If a queue name is not found (HTTP 404), tell the user clearly.",
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		instructions = append(instructions, core.GetWorkspaceInstructions()...)
-	}
-
 	constraints := []string{
 		"Use ONLY `rabbitmqadmin` or `curl` against the RabbitMQ HTTP Management API — no other tools or commands",
 		"Do not include credentials in any command — they are injected automatically",

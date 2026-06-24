@@ -1,9 +1,17 @@
 """Standardized response constructors for notification delivery results."""
 
+from typing import Any, Optional
+
 from notifications_server.schemas.message import PlatformResponse
 
 
-def success_response(platform, channel_id=None, message_ts=None, team_id=None, **extra) -> dict:
+def success_response(
+    platform: str,
+    channel_id: Optional[str] = None,
+    message_ts: Optional[str] = None,
+    team_id: Optional[str] = None,
+    **extra: Any,
+) -> dict[str, Any]:
     return PlatformResponse(
         platform=platform,
         status="success",
@@ -14,7 +22,7 @@ def success_response(platform, channel_id=None, message_ts=None, team_id=None, *
     ).model_dump(exclude_none=True)
 
 
-def failed_response(platform, reason=None, **extra) -> dict:
+def failed_response(platform: str, reason: Optional[str] = None, **extra: Any) -> dict[str, Any]:
     return PlatformResponse(
         platform=platform,
         status="failed",
@@ -23,7 +31,7 @@ def failed_response(platform, reason=None, **extra) -> dict:
     ).model_dump(exclude_none=True)
 
 
-def system_response(status, reason=None) -> dict:
+def system_response(status: str, reason: Optional[str] = None) -> dict[str, Any]:
     return PlatformResponse(
         platform="system",
         status=status,

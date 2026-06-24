@@ -120,6 +120,13 @@ type appConfig struct {
 	CloudCollectorServerUrl         string `mapstructure:"cloud_collector_server_url"`
 	CloudCollectorServerTokenHeader string `mapstructure:"cloud_collector_server_token_header"`
 
+	// K8s-collector (spend ingestion) + cost-server (allocation compute), used by
+	// the OpenCost spend-sync cron. cost-server is the standalone nudgebee cost
+	// engine (collector-server/cost-server) the cron HTTP-calls per cluster,
+	// keyed by X-Scope-OrgID = cloud account id.
+	K8sCollectorServerUrl string `mapstructure:"k8s_collector_server_url"`
+	CostServerUrl         string `mapstructure:"cost_server_url"`
+
 	LLMServerEndpoint    string `mapstructure:"llm_server_endpoint"`
 	LLMServerToken       string `mapstructure:"llm_server_token"`
 	LLMServerTokenHeader string `mapstructure:"llm_server_token_header"`
@@ -142,6 +149,8 @@ type appConfig struct {
 	NBRetentionDaysEventsCritical int `mapstructure:"nb_retention_days_events_critical"`
 
 	NBRetentionDaysK8sResources int `mapstructure:"nb_retention_days_k8s_resources"`
+
+	NBRetentionDaysRecommendationsArchive int `mapstructure:"nb_retention_days_recommendations_archive"`
 
 	KGEdgeStaleAfterDays           int    `mapstructure:"kg_edge_stale_after_days"`
 	NBRetentionDaysKGInactiveEdges int    `mapstructure:"nb_retention_days_kg_inactive_edges"`
@@ -300,6 +309,9 @@ func init() {
 	viper.SetDefault("cloud_collector_server_token", "")
 	viper.SetDefault("cloud_collector_server_token_header", "X-ACTION-TOKEN")
 
+	viper.SetDefault("k8s_collector_server_url", "http://k8s-collector:80")
+	viper.SetDefault("cost_server_url", "http://cost-server:9003")
+
 	viper.SetDefault("llm_server_endpoint", "http://llm-server:8000")
 	viper.SetDefault("llm_server_token", "")
 	viper.SetDefault("llm_server_token_header", "X-ACTION-TOKEN")
@@ -326,6 +338,7 @@ func init() {
 	viper.SetDefault("nb_retention_days_events_critical", 90)
 	viper.SetDefault("nb_retention_days_cloud_account_usage_report", 90)
 	viper.SetDefault("nb_retention_days_k8s_resources", 30)
+	viper.SetDefault("nb_retention_days_recommendations_archive", 30)
 	viper.SetDefault("kg_edge_stale_after_days", 7)
 	viper.SetDefault("nb_retention_days_kg_inactive_edges", 14)
 	viper.SetDefault("kg_behavioral_edge_types", "") // empty → use DefaultBehavioralEdgeTypes

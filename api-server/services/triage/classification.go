@@ -209,6 +209,10 @@ func ClassifyEvent(ctx context.Context, db *sqlx.DB, req ClassifyEventRequest, c
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
+	if ruleID != nil {
+		ClearTriageRulesCache()
+	}
+
 	// 12. Queue bulk update for existing events (async, outside transaction)
 	var bulkOp *BulkOperationResponse
 	if req.ApplyToExisting && req.ApplyScope != ApplyScopeThisEvent && event.Fingerprint != nil {

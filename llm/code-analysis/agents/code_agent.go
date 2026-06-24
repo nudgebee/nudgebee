@@ -18,11 +18,12 @@ import (
 )
 
 type CodeAgent struct {
-	llmClient    *llm.Client
-	planner      *planners.ReActPlanner
-	logger       *common.Logger
-	tools        []core.NBTool
-	promptLoader *common.PromptLoader
+	llmClient     *llm.Client
+	planner       *planners.ReActPlanner
+	logger        *common.Logger
+	tools         []core.NBTool
+	promptLoader  *common.PromptLoader
+	repoCloneTool *tools.RepoCloneTool // kept to seed its default branch from the request at Execute time
 }
 
 func NewCodeAgent(cfg *config.Config, llmClient *llm.Client, gitClient *git.GitClient, logger *common.Logger, workspaceDir string) *CodeAgent {
@@ -51,8 +52,10 @@ func NewCodeAgentWithTracker(cfg *config.Config, llmClient *llm.Client, gitClien
 	rawTools = append(rawTools, tools.NewSubmitAnalysisTool())
 
 	// Add repo_clone tool so agent can decide when to clone repositories
+	var repoCloneTool *tools.RepoCloneTool
 	if gitClient != nil {
-		rawTools = append(rawTools, tools.NewRepoCloneTool(workspaceDir, gitClient))
+		repoCloneTool = tools.NewRepoCloneTool(workspaceDir, gitClient)
+		rawTools = append(rawTools, repoCloneTool)
 	}
 
 	// Add git and gh tools for intelligent repository operations
@@ -76,11 +79,12 @@ func NewCodeAgentWithTracker(cfg *config.Config, llmClient *llm.Client, gitClien
 	planner.SetLogger(logger)
 
 	return &CodeAgent{
-		llmClient:    llmClient,
-		planner:      planner,
-		logger:       logger,
-		tools:        trackedTools,
-		promptLoader: common.NewPromptLoader(),
+		llmClient:     llmClient,
+		planner:       planner,
+		logger:        logger,
+		tools:         trackedTools,
+		promptLoader:  common.NewPromptLoader(),
+		repoCloneTool: repoCloneTool,
 	}
 }
 
@@ -101,6 +105,10 @@ func (a *CodeAgent) SetToolTracker(tracker *common.ToolInvocationTracker) {
 func (a *CodeAgent) Execute(ctx context.Context, sessionCtx *session.SessionContext) (string, error) {
 	// Set repository context in the planner
 	a.planner.SetRepositoryContext(sessionCtx.RepoContext)
+
+	// Seed repo_clone's default branch from the request's target/base branch so the
+	// clone (and any fix branch cut from it) starts on the branch the PR targets.
+	seedRepoCloneBranch(a.repoCloneTool, sessionCtx)
 
 	// Set credentials for repository operations
 	if sessionCtx.Credentials != nil {

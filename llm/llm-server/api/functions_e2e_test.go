@@ -43,7 +43,7 @@ func TestFunctions_CreateLLMFunction(t *testing.T) {
 	createdFunction, err := core.CreateLLMFunction(sc, accountId, customFunction)
 	assert.Nil(t, err)
 	if err != nil {
-		slog.Error("Error creating custom function", "error", err)
+		slog.Error("creating custom function", "error", err)
 		return
 	}
 
@@ -91,7 +91,7 @@ func TestFunctions_DeleteLLMFunction(t *testing.T) {
 	createdFunction, err := core.CreateLLMFunction(sc, accountId, customFunction)
 	assert.Nil(t, err)
 	if err != nil {
-		slog.Error("Error creating function for delete test", "error", err)
+		slog.Error("creating function for delete test", "error", err)
 		return
 	}
 	assert.NotEmpty(t, createdFunction.Id)
@@ -101,7 +101,7 @@ func TestFunctions_DeleteLLMFunction(t *testing.T) {
 	_, err = core.DeleteLLMFunction(sc, accountId, createdFunction.Id)
 	assert.Nil(t, err)
 	if err != nil {
-		slog.Error("Error deleting function", "error", err)
+		slog.Error("deleting function", "error", err)
 		return
 	}
 
@@ -136,7 +136,7 @@ func TestFunctions_UpdateLLMFunction(t *testing.T) {
 	createdFunction, err := core.CreateLLMFunction(sc, accountId, originalFunction)
 	assert.Nil(t, err)
 	if err != nil {
-		slog.Error("Error creating function for update test", "error", err)
+		slog.Error("creating function for update test", "error", err)
 		return
 	}
 	assert.NotEmpty(t, createdFunction.Id)
@@ -161,7 +161,7 @@ func TestFunctions_UpdateLLMFunction(t *testing.T) {
 	resultFunction, err := core.UpdateLLMFunction(sc, accountId, createdFunction.Id, updatedFunction)
 	assert.Nil(t, err)
 	if err != nil {
-		slog.Error("Error updating function", "error", err)
+		slog.Error("updating function", "error", err)
 		return
 	}
 
@@ -193,7 +193,7 @@ func TestFunctions_UpdateLLMFunction(t *testing.T) {
 	_, err = core.DeleteLLMFunction(sc, accountId, createdFunction.Id)
 	assert.Nil(t, err)
 	if err != nil {
-		slog.Error("Error cleaning up test function", "error", err)
+		slog.Error("cleaning up test function", "error", err)
 	}
 }
 

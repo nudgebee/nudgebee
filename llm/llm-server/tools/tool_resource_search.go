@@ -819,22 +819,21 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 		resources []K8sResourceInfo
 	}
 
-	// Buffered channels (cap 1) prevent goroutine leaks: a goroutine that finishes
-	// after the collect loop has already timed out can still send and exit cleanly
-	// instead of blocking forever on an unbuffered channel with no receiver.
+	// Channels to collect results from parallel execution
 	commonResChan := make(chan searchResult, 1)
 	clusterResChan := make(chan searchResult, 1)
 	crdResChan := make(chan searchResult, 1)
 	labelResChan := make(chan searchResult, 1)
 
-	// ctx lets goroutines exit their inner loops early when the caller times out.
-	ctx, cancel := context.WithCancel(nbRequestContext.Ctx.GetContext())
-	defer cancel()
-
 	// Strategy 1: Try common resource types in parallel
 	commonResourceTypes := []string{"pods", "services", "deployments", "statefulsets", "daemonsets", "configmaps", "secrets", "jobs", "cronjobs", "rollouts"}
 
 	go func() {
+		defer func() {
+			if recover() != nil {
+				commonResChan <- searchResult{}
+			}
+		}()
 		var resources []K8sResourceInfo
 		for _, resourceType := range commonResourceTypes {
 			select {
@@ -852,6 +851,11 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 	// Strategy 2: Try cluster-wide resources in parallel
 	clusterResourceTypes := []string{"clusterroles", "clusterrolebindings", "nodes", "persistentvolumes", "storageclasses", "customresourcedefinitions"}
 	go func() {
+		defer func() {
+			if recover() != nil {
+				clusterResChan <- searchResult{}
+			}
+		}()
 		var resources []K8sResourceInfo
 		for _, resourceType := range clusterResourceTypes {
 			select {
@@ -868,6 +872,11 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 
 	// Strategy 3: CRD discovery (can be slow, run in parallel)
 	go func() {
+		defer func() {
+			if recover() != nil {
+				crdResChan <- searchResult{}
+			}
+		}()
 		var resources []K8sResourceInfo
 		crdTypes := r.getCustomResourceTypes(nbRequestContext)
 		for _, resourceType := range crdTypes {
@@ -888,6 +897,11 @@ func (r K8sResourceSearchTool) findActualResources(resourceName, namespace, requ
 
 	// Strategy 4: Label searches
 	go func() {
+		defer func() {
+			if recover() != nil {
+				labelResChan <- searchResult{}
+			}
+		}()
 		var resources []K8sResourceInfo
 		labelKeys := []string{"app", "app.kubernetes.io/name", "app.kubernetes.io/instance", "k8s-app"}
 		for _, labelKey := range labelKeys {

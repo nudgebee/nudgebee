@@ -11,6 +11,10 @@ interface SsmTemplate {
   id: string;
   label: string;
   description: string;
+  // Seconds the backend polls GetCommandInvocation for output before giving up.
+  // Reads (df/free) finish in seconds; agent installs take longer, so they get
+  // a larger budget. Stays well under the 300s cloud_apply_command action limit.
+  timeout: number;
   params?: {
     field: string;
     label: string;
@@ -25,16 +29,19 @@ const SSM_TEMPLATES: SsmTemplate[] = [
     id: 'check_disk_space',
     label: 'Check disk space',
     description: 'Runs `df -h` on the instance and returns the output.',
+    timeout: 60,
   },
   {
     id: 'check_memory',
     label: 'Check memory',
     description: 'Runs `free -h` on the instance and returns the output.',
+    timeout: 60,
   },
   {
     id: 'update_ssm_agent',
     label: 'Update SSM agent',
     description: 'Updates the AWS Systems Manager agent to the latest version.',
+    timeout: 180,
     params: [
       {
         field: 'allowDowngrade',
@@ -49,6 +56,7 @@ const SSM_TEMPLATES: SsmTemplate[] = [
     id: 'install_cloudwatch_agent',
     label: 'Install CloudWatch agent',
     description: 'Installs the Amazon CloudWatch agent on the instance.',
+    timeout: 180,
     params: [
       {
         field: 'version',
@@ -65,7 +73,7 @@ interface RunSsmCommandDialogProps {
   open: boolean;
   resource: any | null;
   loading: boolean;
-  onConfirm: (args: { template_id: string; parameters?: Record<string, any> }) => void;
+  onConfirm: (args: { template_id: string; parameters?: Record<string, any>; wait_for_results: boolean; timeout: number }) => void;
   onCancel: () => void;
 }
 
@@ -109,6 +117,11 @@ const RunSsmCommandDialog: React.FC<RunSsmCommandDialogProps> = ({ open, resourc
     onConfirm({
       template_id: selectedTemplate.id,
       parameters: Object.keys(parameters).length > 0 ? parameters : undefined,
+      // Wait for the command to finish so the backend polls GetCommandInvocation
+      // and returns the actual stdout/stderr — otherwise the UI only gets a
+      // "command sent" ack with no output to show.
+      wait_for_results: true,
+      timeout: selectedTemplate.timeout,
     });
   };
 

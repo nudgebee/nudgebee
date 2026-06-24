@@ -33,9 +33,9 @@ func TestMergeServiceNowFieldsIntoLabels(t *testing.T) {
 		},
 
 		// Custom u_* string fields
-		"u_cloud_technology":    "AWS",
-		"u_emea_incident_id":    "EMEA-42",
-		"u_environment":         "",
+		"u_cloud_technology":       "AWS",
+		"u_emea_incident_id":       "EMEA-42",
+		"u_environment":            "",
 		"u_custom_vendor_informed": "false",
 
 		// u_payload is a JSON string; top-level scalars should be flattened
@@ -53,23 +53,23 @@ func TestMergeServiceNowFieldsIntoLabels(t *testing.T) {
 	mergeServiceNowFieldsIntoLabels(record, labels)
 
 	want := map[string]string{
-		"number":                "INC0000001",
-		"short_description":     "Agent failed",
-		"state":                 "New",
-		"cmdb_ci":               "dbhost-01",
-		"cmdb_ci_value":         "abc123",
-		"business_service":      "Ops Team",
-		"caller_id":             "Test User",
-		"caller_id_value":       "user-123",
-		"u_cloud_technology":    "AWS",
-		"u_emea_incident_id":    "EMEA-42",
+		"number":                   "INC0000001",
+		"short_description":        "Agent failed",
+		"state":                    "New",
+		"cmdb_ci":                  "dbhost-01",
+		"cmdb_ci_value":            "abc123",
+		"business_service":         "Ops Team",
+		"caller_id":                "Test User",
+		"caller_id_value":          "user-123",
+		"u_cloud_technology":       "AWS",
+		"u_emea_incident_id":       "EMEA-42",
 		"u_custom_vendor_informed": "false",
-		"u_payload":             `{"alarmName":"xyz-P3-EC2-disk","region":"eu-central-1","account":"` + testenv.FakeAWSAccountID + `"}`,
-		"payload.alarmName":     "xyz-P3-EC2-disk",
-		"payload.region":        "eu-central-1",
-		"payload.account":       testenv.FakeAWSAccountID,
-		"reopen_count":          "3",
-		"made_sla":              "true",
+		"u_payload":                `{"alarmName":"xyz-P3-EC2-disk","region":"eu-central-1","account":"` + testenv.FakeAWSAccountID + `"}`,
+		"payload.alarmName":        "xyz-P3-EC2-disk",
+		"payload.region":           "eu-central-1",
+		"payload.account":          testenv.FakeAWSAccountID,
+		"reopen_count":             "3",
+		"made_sla":                 "true",
 	}
 
 	for k, v := range want {

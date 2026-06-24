@@ -230,3 +230,7 @@ func (l *VisualizationAgent) Execute(ctx *security.RequestContext, request core.
 
 	return core.NBAgentResponse{Response: []string{lastContent}, Status: core.ConversationStatusCompleted}, nil
 }
+
+func (l *VisualizationAgent) GetModelCategory() core.ModelTier {
+	return core.ModelTierSummary
+}

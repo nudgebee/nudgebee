@@ -3,7 +3,7 @@ from typing import Optional, List
 
 from sqlalchemy.orm import Session
 
-from notifications_server.models.models import MessagingPlatform, SlackOAuthState
+from notifications_server.models.models import Integration, MessagingPlatform, SlackOAuthState
 
 LOG = logging.getLogger(__name__)
 
@@ -22,16 +22,29 @@ def find_installation_by_tenant_and_platform(session: Session, tenant_id: str, p
         List of dicts with 'id' key for each installation
     """
     try:
-        installations = (
-            session.query(MessagingPlatform)
+        # Slack/MS Teams are migrating to the integrations table; an integration row
+        # (one per tenant) wins over any legacy messaging_platforms row.
+        integration_ids = (
+            session.query(Integration.id)
             .filter(
-                MessagingPlatform.tenant_id == tenant_id,
-                MessagingPlatform.platform == platform,
+                Integration.tenant_id == tenant_id,
+                Integration.type == platform,
+                Integration.status != "disabled",
             )
             .all()
         )
-
-        result = [{"id": str(inst.id)} for inst in installations]
+        if integration_ids:
+            result = [{"id": str(row.id)} for row in integration_ids]
+        else:
+            installations = (
+                session.query(MessagingPlatform)
+                .filter(
+                    MessagingPlatform.tenant_id == tenant_id,
+                    MessagingPlatform.platform == platform,
+                )
+                .all()
+            )
+            result = [{"id": str(inst.id)} for inst in installations]
         session.commit()
         return result
     except Exception as e:

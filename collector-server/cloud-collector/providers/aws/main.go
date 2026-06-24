@@ -178,7 +178,15 @@ func GetAwsService(serviceName string) (awsService, bool) {
 type awsProvider struct {
 }
 
-var logGroupCache = map[string]string{}
+var (
+	logGroupCacheMu sync.RWMutex
+	logGroupCache   = map[string]string{}
+)
+
+// logGroupCacheMaxSize caps unbounded growth in long-running collector processes.
+// When the limit is hit the entire cache is dropped; a brief cold-start is
+// preferable to an OOM in a multi-tenant deployment.
+const logGroupCacheMaxSize = 10_000
 
 var servicesWithoutDirectLogs = map[string]struct{}{
 	"dynamodb":      {},
@@ -218,14 +226,26 @@ func (a *awsProvider) QueryLogs(ctx providers.CloudProviderContext, account prov
 		if service, found := GetAwsService(query.ServiceName); found {
 			detectionAttempted = true
 			cacheKey := fmt.Sprintf("%s-%s-%s", account.AccountNumber, query.Region, query.ResourceId)
-			if loggroup, ok := logGroupCache[cacheKey]; ok {
+			logGroupCacheMu.RLock()
+			loggroup, ok := logGroupCache[cacheKey]
+			logGroupCacheMu.RUnlock()
+			if ok {
 				query.LogGroupName = loggroup
 			} else {
-				loggroup, err := service.GetLogGroupName(ctx, account, query.Region, query.ResourceId)
+				var err error
+				loggroup, err = service.GetLogGroupName(ctx, account, query.Region, query.ResourceId)
 				if err != nil {
 					logger.Error("failed to get log group name", "error", err, "accountNumber", account.AccountNumber, "service", query.ServiceName, "region", query.Region, "resource", query.ResourceId)
+				} else {
+					// Only cache on success — caching an empty string on error would
+					// permanently suppress retries for transient failures.
+					logGroupCacheMu.Lock()
+					if len(logGroupCache) >= logGroupCacheMaxSize {
+						logGroupCache = map[string]string{}
+					}
+					logGroupCache[cacheKey] = loggroup
+					logGroupCacheMu.Unlock()
 				}
-				logGroupCache[cacheKey] = loggroup
 				if loggroup != "" {
 					query.LogGroupName = loggroup
 				}

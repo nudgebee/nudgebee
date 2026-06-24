@@ -26,6 +26,7 @@ import ConfigurationManager from './ConfigurationManager';
 import CreateWorkflowOptionsModal from './components/CreateWorkflowOptionsModal';
 import CreateWorkflowFromCodeModal from './components/CreateWorkflowFromCodeModal';
 import WorkflowTemplatesModal from './components/WorkflowTemplatesModal';
+import { getAutomationToggleAction } from './automationMenu';
 import {
   manualTriggerIcon,
   SettingsIcon,
@@ -50,6 +51,11 @@ const playIcon = require('@assets/play-circle.svg');
 // between the post-trigger polling loop and the post-cancel reconcile loop
 // so both agree on what counts as "done."
 const TERMINAL_EXECUTION_STATUSES = ['CANCELED', 'CANCELLED', 'COMPLETED', 'COMPLETE', 'COMPLETE_WITH_ERROR', 'FAILED', 'TERMINATED', 'TIMED_OUT'];
+
+// Background refresh cadence for the listing. While the tab is visible the
+// current page is silently re-fetched every 10s so running executions and
+// newly started runs surface without a manual refresh.
+const WORKFLOW_LISTING_POLL_INTERVAL_MS = 10000;
 
 // Snapshot of the most recent polled state for a triggered execution.
 // `closeTime` is only set once Temporal reports a terminal status;
@@ -234,6 +240,24 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   // Interval handle for post-cancel status polling; cleared on unmount.
   const cancelPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Guards the 10s background listing poll so a slow request can't stack: a tick
+  // is skipped while the previous silent fetch is still in flight.
+  const silentPollInFlightRef = useRef(false);
+
+  // Monotonic request id: only the newest listWorkflows response is allowed to
+  // write state, so a slow background poll can't clobber a fresher user-driven
+  // filter/page change that resolved first.
+  const requestCountRef = useRef(0);
+
+  // Drops responses that resolve after unmount.
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
   // Per-workflow polling started after a manual trigger. Polls
   // getWorkflowExecution until Temporal returns a terminal status, then
   // refreshes the listing so the row's last_execution_status (and the
@@ -336,16 +360,18 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
       const pauseResumeApplicable = workflow?.definition?.triggers?.some((trigger: any) => ['schedule', 'event', 'webhook'].includes(trigger.type));
 
       if (pauseResumeApplicable) {
-        // Show pause button only if workflow is not paused
-        if (workflow?.status !== 'PAUSED') {
+        // State-aware toggle (see getAutomationToggleAction): Active -> Pause,
+        // Paused -> Activate, anything else -> neither.
+        const toggleAction = getAutomationToggleAction(workflow?.status);
+        if (toggleAction === 'pause') {
           MENU_ITEMS.push({
             label: 'Pause',
             id: 1,
             icon: pauseIcon,
           });
-        } else {
+        } else if (toggleAction === 'activate') {
           MENU_ITEMS.push({
-            label: 'Resume',
+            label: 'Activate',
             id: 2,
             icon: playIcon,
           });
@@ -434,9 +460,18 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   };
 
   const handlePauseWorkflow = async () => {
+    if (!accountId || !selectedWorkflow?.id) {
+      snackbar.error('Cannot pause automation: missing account or automation id');
+      return;
+    }
     setLoading(true);
     try {
-      const response = await apiWorkflow.pauseWorkflow(accountId!, selectedWorkflow.id);
+      const response = await apiWorkflow.pauseWorkflow(accountId, selectedWorkflow.id);
+      // pauseWorkflow swallows errors and resolves undefined on failure; treat a
+      // missing response as a failure rather than showing a false success toast.
+      if (!response) {
+        throw new Error('No response from server while pausing automation');
+      }
       const errorMessage = parseHttpResponseBodyMessage(response);
       if (errorMessage) {
         snackbar.error(errorMessage);
@@ -463,14 +498,23 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   };
 
   const handleResumeWorkflow = async () => {
+    if (!accountId || !selectedWorkflow?.id) {
+      snackbar.error('Cannot activate automation: missing account or automation id');
+      return;
+    }
     setLoading(true);
     try {
-      const response = await apiWorkflow.resumeWorkflow(accountId!, selectedWorkflow.id);
+      const response = await apiWorkflow.resumeWorkflow(accountId, selectedWorkflow.id);
+      // resumeWorkflow swallows errors and resolves undefined on failure; treat a
+      // missing response as a failure rather than showing a false success toast.
+      if (!response) {
+        throw new Error('No response from server while activating automation');
+      }
       const errorMessage = parseHttpResponseBodyMessage(response);
       if (errorMessage) {
         snackbar.error(errorMessage);
       } else {
-        snackbar.success(`Automation "${selectedWorkflow.name}" resumed successfully`);
+        snackbar.success(`Automation "${selectedWorkflow.name}" activated successfully`);
         // Refresh current page
         const offsetToken = pageOffsetTokens[currentPage] ?? ((currentPage - 1) * rowsPerPage).toString();
         listWorkflows(currentPage, rowsPerPage, offsetToken);
@@ -478,7 +522,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
     } catch (_error) {
       console.error(_error);
 
-      snackbar.error(`Failed to resume automation "${selectedWorkflow.name}"`);
+      snackbar.error(`Failed to activate automation "${selectedWorkflow.name}"`);
     } finally {
       setResumeModalOpen(false);
       setSelectedWorkflow({ id: '', name: '' });
@@ -1056,12 +1100,16 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   };
 
   const listWorkflows = useCallback(
-    (page: number, pageSize: number, offsetToken: string) => {
+    (page: number, pageSize: number, offsetToken: string, silent = false) => {
       if (!accountId) {
-        return;
+        return Promise.resolve();
       }
 
-      setLoading(true);
+      const currentRequestId = ++requestCountRef.current;
+
+      // Silent (background poll) refreshes skip the loading flag so the table
+      // spinner / refresh button / modal loaders don't flicker every 10s.
+      if (!silent) setLoading(true);
       const getStatusFilter = (status: string) => {
         if (!status || status === 'All') {
           return undefined;
@@ -1108,7 +1156,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
       const triggerTypeFilter = getTriggerTypeFilter(selectedTriggerType);
       const createdByFilter = !selectedCreatedBy || selectedCreatedBy === 'All' ? undefined : selectedCreatedBy;
 
-      apiWorkflow
+      return apiWorkflow
         .listWorkflows(
           accountId,
           statusFilter,
@@ -1121,6 +1169,9 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
           createdByFilter
         )
         .then((res: any) => {
+          // Ignore a stale response (a newer request superseded it) or one that
+          // resolved after unmount.
+          if (!isMountedRef.current || currentRequestId !== requestCountRef.current) return;
           if (res?.data?.workflow_list) {
             const workflowList = res.data.workflow_list;
             const workflows = workflowList.workflows || [];
@@ -1284,13 +1335,19 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
             setTotalRows(0);
           }
 
-          setLoading(false);
+          if (!silent) setLoading(false);
         })
         .catch((error) => {
+          // Ignore errors from a superseded request or after unmount.
+          if (!isMountedRef.current || currentRequestId !== requestCountRef.current) return;
           console.error('Error fetching workflows:', error);
-          setData([]);
-          setTotalRows(0);
-          setLoading(false);
+          // A failed background poll must not blank the table the user is
+          // viewing; only surface the empty/error state for foreground loads.
+          if (!silent) {
+            setData([]);
+            setTotalRows(0);
+            setLoading(false);
+          }
         });
       // eslint-disable-next-line react-hooks/exhaustive-deps
     },
@@ -1341,6 +1398,32 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
     listWorkflows(1, rowsPerPage, '');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId, selectedStatus, selectedLastExecutionStatus, selectedTriggerType, committedSearchName, committedSelectedTags, selectedCreatedBy]);
+
+  // Background listing refresh: while the tab is visible, silently re-fetch the
+  // current page every 10s so running executions and newly started runs surface
+  // without a manual refresh. Paused when the tab is hidden; a tick is skipped
+  // while a prior silent fetch is still in flight. Reads page/size/token from
+  // refs so it always targets the page the user is on; filters come from the
+  // current listWorkflows closure (re-created when filters change → new interval).
+  useEffect(() => {
+    if (!accountId) return;
+    const tick = () => {
+      if (document.hidden || silentPollInFlightRef.current) return;
+      const page = currentPageRef.current;
+      const size = rowsPerPageRef.current;
+      const token = pageOffsetTokensRef.current[page] ?? ((page - 1) * size).toString();
+      silentPollInFlightRef.current = true;
+      // Call inside the .then so a synchronous throw is captured by the promise
+      // chain and .finally still clears the lock (otherwise polling would stall).
+      Promise.resolve()
+        .then(() => listWorkflows(page, size, token, true))
+        .finally(() => {
+          silentPollInFlightRef.current = false;
+        });
+    };
+    const handle = setInterval(tick, WORKFLOW_LISTING_POLL_INTERVAL_MS);
+    return () => clearInterval(handle);
+  }, [accountId, listWorkflows]);
 
   // Check AI workflow feature flag
   useEffect(() => {
@@ -1570,22 +1653,22 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
         open={resumeModalOpen}
         handleClose={handleCloseResumeModal}
         width='md'
-        title={`Resume Automation "${selectedWorkflow.name}"`}
+        title={`Activate Automation "${selectedWorkflow.name}"`}
         loader={loading}
         actionButtons={
           <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2, px: 2, py: 2 }}>
-            <DsButton id='workflow-resume-cancel-btn' tone='secondary' size='md' onClick={handleCloseResumeModal} disabled={loading}>
+            <DsButton id='workflow-activate-cancel-btn' tone='secondary' size='md' onClick={handleCloseResumeModal} disabled={loading}>
               Cancel
             </DsButton>
-            <DsButton id='workflow-resume-confirm-btn' size='md' onClick={handleResumeWorkflow} loading={loading}>
-              Resume
+            <DsButton id='workflow-activate-confirm-btn' size='md' onClick={handleResumeWorkflow} loading={loading}>
+              Activate
             </DsButton>
           </Box>
         }
       >
         <DialogContent sx={{ padding: 'var(--ds-space-5)' }}>
           <DialogContentText>
-            Are you sure you want to resume this scheduled automation? It will start executing according to its schedule.
+            Are you sure you want to activate this scheduled automation? It will start executing according to its schedule.
           </DialogContentText>
         </DialogContent>
       </Modal>

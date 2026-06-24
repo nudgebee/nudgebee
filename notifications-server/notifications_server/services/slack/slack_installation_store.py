@@ -1,6 +1,4 @@
 import logging
-from datetime import datetime
-from typing import Optional
 
 import sqlalchemy
 from sqlalchemy import (
@@ -9,17 +7,18 @@ from sqlalchemy import (
     String,
     DateTime,
     Index,
-    and_,
     MetaData,
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session
 from sqlalchemy.sql.sqltypes import JSON
 
 from slack_sdk.oauth.installation_store.installation_store import InstallationStore
 
 from notifications_server.models.enums import PlatformTypes
 from notifications_server.models.models import MessagingPlatform
+from notifications_server.services.messaging_installations import upsert_messaging_integration
 from notifications_server.utils.encode_utils import gen_id
 
 LOG = logging.getLogger(__name__)
@@ -78,28 +77,24 @@ class SlackInstallationStore(InstallationStore):
         return self._logger
 
     def save(self, installation: MessagingPlatform):
-        with self.engine.begin() as conn:
-            i = installation.to_dict()
-            i["client_id"] = self.client_id
-            i["platform"] = PlatformTypes.SLACK.value
-
-            i_column = self.installations.c
-            installations_rows = conn.execute(
-                sqlalchemy.select(i_column.id)
-                .where(
-                    and_(
-                        i_column.client_id == self.client_id,
-                        i_column.team_id == installation.team_id,
-                        i_column.tenant_id == installation.tenant_id,
-                    )
-                )
-                .limit(1)
+        # Slack installs persist to the integrations table with the bot token encrypted
+        # at rest (one Slack install per tenant, enforced by the upsert). The legacy
+        # messaging_platforms table stays read-only fallback until the data backfill runs.
+        config = {
+            "bot_token": installation.token,
+            "team_name": installation.team_name,
+            "bot_id": installation.bot_id,
+            "app_id": installation.app_id,
+            "client_id": self.client_id,
+            "installed_by": installation.username,
+            "scopes": installation.scopes,
+            "token_expires_at": installation.token_expires_at,
+        }
+        with Session(self.engine) as session:
+            upsert_messaging_integration(
+                session,
+                tenant_id=installation.tenant_id,
+                platform=PlatformTypes.SLACK.value,
+                name=installation.team_id,
+                config=config,
             )
-            installations_row_id: Optional[str] = None
-            for row in installations_rows.mappings():
-                installations_row_id = row["id"]
-            if installations_row_id is None:
-                conn.execute(self.installations.insert(), i)
-            else:
-                update_statement = self.installations.update().where(i_column.id == installations_row_id).values(**i)
-                conn.execute(update_statement, i)

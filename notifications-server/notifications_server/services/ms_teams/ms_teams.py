@@ -1,5 +1,4 @@
 import logging
-import uuid
 from datetime import timedelta
 
 from sqlalchemy.exc import IntegrityError
@@ -8,8 +7,8 @@ from notifications_server.exceptions.common_exc import WrongArgumentsException, 
 from notifications_server.exceptions.exceptions import Err
 from notifications_server.models.db_base import BaseDB
 from notifications_server.models.enums import EventCategory, EventType, EventActor, EventAction, EventStatus
-from notifications_server.models.models import MessagingPlatform
 from notifications_server.services.audit import create_audit_request
+from notifications_server.services.messaging_installations import upsert_messaging_integration
 from notifications_server.utils.datetime_utils import utc_now
 from notifications_server.utils.user_util import get_user_id_by_email
 
@@ -22,20 +21,19 @@ class MsTeamsService:
 
     def save_teams_installation(self, client_id, tenant_id, result, account, user_email):
         try:
-            teams_installation = MessagingPlatform()
-            teams_installation.platform = "ms_teams"
-            teams_installation.id = uuid.uuid4()
-            teams_installation.created_at = utc_now()
-            teams_installation.updated_at = utc_now()
-            teams_installation.client_id = account["local_account_id"]
-            teams_installation.team_id = account["home_account_id"]
-            teams_installation.tenant_id = tenant_id
-            teams_installation.token = result["access_token"]
             expires_in = result.get("expires_in")
-            teams_installation.token_expires_at = utc_now() + timedelta(seconds=expires_in - 60) if expires_in else None
-            teams_installation.refresh_token = result["refresh_token"]
-            teams_installation.username = result["id_token_claims"]["preferred_username"]
-            teams_installation.app_id = client_id
+            token_expires_at = utc_now() + timedelta(seconds=expires_in - 60) if expires_in else None
+            # MS Teams installs persist to the integrations table with the Graph access
+            # and refresh tokens encrypted at rest (one Teams install per tenant). The
+            # integration name is the Azure AD account id (the legacy team_id).
+            config = {
+                "access_token": result["access_token"],
+                "refresh_token": result["refresh_token"],
+                "token_expires_at": token_expires_at,
+                "client_id": account["local_account_id"],
+                "app_id": client_id,
+                "installed_by": result["id_token_claims"]["preferred_username"],
+            }
 
             user_id = get_user_id_by_email(user_email)
 
@@ -54,10 +52,17 @@ class MsTeamsService:
                 event_status=EventStatus.SUCCESS.value,
                 event_attr={"status": "success"},
             )
-            self.session.add(teams_installation)
-            self.session.commit()
+
+            integration = upsert_messaging_integration(
+                self.session,
+                tenant_id=tenant_id,
+                platform="ms_teams",
+                name=account["home_account_id"],
+                config=config,
+                created_by=user_id,
+            )
             self.session.close()
-            return teams_installation
+            return integration
         except IntegrityError as exc:
             LOG.exception("Unable to save teams installation: %s", exc)
             raise WrongArgumentsException(Err.OS0009, [exc])

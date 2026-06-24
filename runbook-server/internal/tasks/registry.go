@@ -19,6 +19,7 @@ import (
 	"nudgebee/runbook/internal/tasks/mq"
 	"nudgebee/runbook/internal/tasks/network"
 	"nudgebee/runbook/internal/tasks/notifications"
+	"nudgebee/runbook/internal/tasks/notifications/googlechat"
 	"nudgebee/runbook/internal/tasks/notifications/slack"
 	"nudgebee/runbook/internal/tasks/observability"
 	"nudgebee/runbook/internal/tasks/scm"
@@ -101,6 +102,7 @@ func NewInitializedTaskRegistry() *TaskRegistry {
 	tr.RegisterTask(&notifications.EmailTask{})
 	tr.RegisterTask(&notifications.DmSendTask{})
 	tr.RegisterTask(&slack.SlackJoinChannelTask{})
+	tr.RegisterTask(&googlechat.GoogleChatJoinSpaceTask{})
 	tr.RegisterTask(&tickets.TicketsCreateTask{})
 	tr.RegisterTask(&tickets.TicketsAddCommentTask{})
 	tr.RegisterTask(&tickets.TicketsGetTask{})

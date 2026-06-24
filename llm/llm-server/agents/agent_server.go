@@ -61,10 +61,6 @@ func (l ServerAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 		"'instance', hostname",
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		instructions = append(instructions, core.GetWorkspaceInstructions()...)
-	}
-
 	constraints := []string{
 		"Always use shell as the primary tool to interact with the server.",
 	}

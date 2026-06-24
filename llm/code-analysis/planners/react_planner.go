@@ -331,6 +331,15 @@ func (p *ReActPlanner) SetMaxContextTokens(tokens int) {
 	}
 }
 
+// SetMaxIterations adjusts the iteration ceiling. Used to run a short, focused
+// follow-up pass (e.g. the PR-followup commit-enforcement retry) on an existing
+// planner instance without rebuilding it and its tool set.
+func (p *ReActPlanner) SetMaxIterations(n int) {
+	if n > 0 {
+		p.maxIterations = n
+	}
+}
+
 // ResetCallHashes clears the dedup tracker (useful between agent phases).
 func (p *ReActPlanner) ResetCallHashes() {
 	p.mu.Lock()

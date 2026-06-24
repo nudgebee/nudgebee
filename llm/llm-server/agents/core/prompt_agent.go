@@ -46,7 +46,7 @@ func UpdatePromptForMultiCommandTool(query NBAgentRequest, tools []toolcore.NBTo
 
 			subCmds, err := multiCmdTool.GetSubCommands()
 			if err != nil {
-				slog.Error("Error getting subcommands", "tool", toolName, "error", err)
+				slog.Error("getting subcommands", "tool", toolName, "error", err)
 				usage = append(usage, fmt.Sprintf("  - *Error retrieving subcommands: %v*", err))
 				// Overwrite ToolUsage for this tool with the generated details (including error)
 				prompt.ToolUsage[toolName] = usage

@@ -4,7 +4,7 @@ import { Button } from '@components1/ds/Button';
 import { Modal } from '@components1/ds/Modal';
 import { PlayArrow, Timer, Storage, GridView, ErrorOutline, Close, AltRoute, Check } from '@mui/icons-material';
 import { FormCard, FormField } from '@components1/common/NewReusabeFormComponents';
-import { colors } from 'src/utils/colors';
+import { colors, ds } from 'src/utils/colors';
 import JsonTreeView from '@components1/common/JsonTreeView';
 import type { Node } from 'reactflow';
 import { DraggableOutputField } from './components/action-modal';
@@ -19,6 +19,8 @@ import HybridField from './components/HybridField';
 import AccountField from './components/AccountField';
 import CallWorkflowFields from './components/CallWorkflowFields';
 import FilterDropdownButton from '@components1/common/FilterDropdownButton';
+import { Select, SelectOptionLike } from '@components1/ds/Select';
+import SafeIcon from '@components1/common/SafeIcon';
 import { getPreviousTasksForNode, getSwitchChildNodeIds, getSwitchDryRunEligibility } from './utils/templateUtils';
 import { parseDurationToSeconds, sanitizeTaskId } from './utils/taskUtils';
 import apiWorkflow from '@api1/workflow';
@@ -57,6 +59,18 @@ const EMAIL_BUILTIN_VARIABLES: TemplateSuggestion[] = [
   { type: 'builtin', text: 'time_hms', description: 'Current time — HH:MM:SS (e.g. 15:30:45)', insertText: '{{ time_hms }}' },
   { type: 'builtin', text: 'datetime', description: 'Date + time — DDMMYYYY_HHMM (e.g. 14042026_1530)', insertText: '{{ datetime }}' },
   { type: 'builtin', text: 'timestamp_iso', description: 'Full ISO 8601 timestamp', insertText: '{{ timestamp_iso }}' },
+  {
+    type: 'builtin',
+    text: 'local time (tz)',
+    description: 'Current time in a timezone — IANA name + strftime codes (%Y-%m-%d %H:%M)',
+    insertText: '{{ now() | tz("Asia/Kolkata") | strftime("%Y-%m-%d %H:%M %Z") }}',
+  },
+  {
+    type: 'builtin',
+    text: 'local time (date_format)',
+    description: 'Current time in a timezone — Go reference layout (2006-01-02 15:04)',
+    insertText: '{{ now() | tz("Asia/Kolkata") | date_format("2006-01-02 15:04") }}',
+  },
 ];
 
 // Task names whose subject/body fields should expose the email built-in variable picker.
@@ -358,6 +372,16 @@ const DEFAULT_FORM_FIELD_PROPS = {
   maxLength: 500,
 };
 
+// Map workflow dropdown options ({label,value,icon?}) to DS Select options.
+// `icon` arrives as an image `src` string, so wrap it in SafeIcon for the
+// node-typed `icon` slot DS Select expects.
+const toDsSelectOptions = (opts: Array<{ label?: string; value: string; icon?: any; type?: string }>): SelectOptionLike[] =>
+  (opts || []).map((o) => ({
+    value: o.value,
+    label: o.label ?? o.value,
+    icon: o.icon ? <SafeIcon src={o.icon} alt={o.type ?? ''} style={{ width: 16, height: 16, flexShrink: 0, objectFit: 'contain' }} /> : undefined,
+  }));
+
 const FIELD_PLACEHOLDERS: Record<string, string> = {
   script: "#!/bin/bash\necho 'Starting script execution...'\ncurl -X GET 'https://api.example.com/data'\necho 'Script completed successfully'",
   env: '{"API_KEY": "your-key", "ENV": "production"}',
@@ -476,6 +500,14 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
     if (!schema?.input_schema) return committedValidationErrors;
     return validateTaskData(selectedActionType, localData, taskDefinitions).errors;
   }, [selectedActionType, localData, taskDefinitions, committedValidationErrors]);
+  // Non-blocking date-format lint warnings (e.g. mixing strftime %-codes with the Go
+  // reference layout). Surfaced as an advisory banner, not per-field errors.
+  const validationWarnings = useMemo(() => {
+    if (!selectedActionType) return {} as Record<string, string>;
+    const schema = taskDefinitions.find((td: any) => td.name === selectedActionType);
+    if (!schema?.input_schema) return {} as Record<string, string>;
+    return validateTaskData(selectedActionType, localData, taskDefinitions).warnings;
+  }, [selectedActionType, localData, taskDefinitions]);
 
   // Refs for stable access in callbacks without adding to dependency arrays
   const taskDefinitionsRef = useRef(taskDefinitions);
@@ -519,6 +551,10 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
   // State for Slack join_channel channel dropdown (slack.join_channel task)
   const [slackJoinChannelOptions, setSlackJoinChannelOptions] = useState<{ label: string; value: string }[]>([]);
   const [slackJoinChannelLoading, setSlackJoinChannelLoading] = useState(false);
+
+  // State for Google Chat join_space space dropdown (google_chat.join_space task)
+  const [googleChatJoinSpaceOptions, setGoogleChatJoinSpaceOptions] = useState<{ label: string; value: string }[]>([]);
+  const [googleChatJoinSpaceLoading, setGoogleChatJoinSpaceLoading] = useState(false);
 
   // State for Approval task IM channel dropdown (core.approval task)
   const [approvalChannelOptions, setApprovalChannelOptions] = useState<{ label: string; value: string }[]>([]);
@@ -1096,6 +1132,9 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
   // Check if this is a Slack join_channel task
   const isSlackJoinChannelTask = selectedActionType === 'slack.join_channel';
 
+  // Check if this is a Google Chat join_space task
+  const isGoogleChatJoinSpaceTask = selectedActionType === 'google_chat.join_space';
+
   // Fetch channels for Slack join_channel task — provider is hardcoded to slack
   useEffect(() => {
     if (!isSlackJoinChannelTask) {
@@ -1122,6 +1161,43 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
         setSlackJoinChannelLoading(false);
       });
   }, [selectedActionType]);
+
+  // Fetch spaces for Google Chat join_space task — provider is hardcoded to google_chat.
+  // The `active` flag drops a stale resolution if the user switches action type before the
+  // fetch settles, so a previous task's spaces never land in this one's dropdown.
+  useEffect(() => {
+    let active = true;
+    if (!isGoogleChatJoinSpaceTask) {
+      setGoogleChatJoinSpaceOptions([]);
+      return;
+    }
+
+    setGoogleChatJoinSpaceLoading(true);
+    apiAccount
+      .getNotificationChannelList('google_chat')
+      .then((res: any) => {
+        if (!active) return;
+        const response = res?.data?.data || [];
+        const spaces = response.map((item: any) => ({
+          label: item.name,
+          value: item.id,
+        }));
+        setGoogleChatJoinSpaceOptions(spaces);
+      })
+      .catch((error) => {
+        if (!active) return;
+        console.error('Failed to fetch Google Chat spaces for join_space:', error);
+        setGoogleChatJoinSpaceOptions([]);
+      })
+      .finally(() => {
+        if (!active) return;
+        setGoogleChatJoinSpaceLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [isGoogleChatJoinSpaceTask]);
 
   // Check if this is an Approval task
   const isApprovalTask = selectedActionType === 'core.approval';
@@ -1700,7 +1776,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                           data={taskOutput.output}
                           defaultExpanded={2}
                           maxHeight='none'
-                          fontSize='10px'
+                          fontSize={ds.text.caption}
                           bare
                           showCopy
                           templatePrefix={task.id ? `Tasks['${task.id}'].output` : undefined}
@@ -1812,7 +1888,7 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 data={result.output}
                 defaultExpanded={2}
                 maxHeight='none'
-                fontSize='10px'
+                fontSize={ds.text.caption}
                 bare
                 showCopy
                 templatePrefix={selectedNode?.id ? `Tasks['${selectedNode.data?.taskConfig?.id || selectedNode.id}'].output` : undefined}
@@ -2082,15 +2158,18 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
         }
       }
 
-      // Special handling for Slack join_channel task — dynamic channel dropdown.
-      // HybridField auto-detects whether the saved value is a channel id (Select
-      // mode, shows channel name) or a {{ }} template (Expression mode), so the
-      // field renders consistently when the task is closed and reopened.
-      if (isSlackJoinChannelTask && fieldName === 'channel_id') {
+      // Special handling for the join tasks (slack.join_channel / google_chat.join_space)
+      // — dynamic channel/space dropdown. HybridField auto-detects whether the saved
+      // value is an id (Select mode, shows the name) or a {{ }} template (Expression
+      // mode), so the field renders consistently when the task is closed and reopened.
+      if ((isSlackJoinChannelTask || isGoogleChatJoinSpaceTask) && fieldName === 'channel_id') {
+        const joinOptions = isGoogleChatJoinSpaceTask ? googleChatJoinSpaceOptions : slackJoinChannelOptions;
+        const joinLoading = isGoogleChatJoinSpaceTask ? googleChatJoinSpaceLoading : slackJoinChannelLoading;
+        const joinNoun = isGoogleChatJoinSpaceTask ? 'space' : 'channel';
         const getChannelPlaceholder = () => {
-          if (slackJoinChannelLoading) return 'Loading channels...';
-          if (slackJoinChannelOptions.length === 0) return 'No channels available';
-          return 'Select channel';
+          if (joinLoading) return `Loading ${joinNoun}s...`;
+          if (joinOptions.length === 0) return `No ${joinNoun}s available`;
+          return `Select ${joinNoun}`;
         };
 
         return (
@@ -2117,8 +2196,8 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                 disabled={isReadOnly || viewOnlyMode}
                 error={validationErrors[fieldName] || ''}
                 required={isRequired}
-                options={slackJoinChannelOptions}
-                optionsLoading={slackJoinChannelLoading}
+                options={joinOptions}
+                optionsLoading={joinLoading}
                 previousTasks={previousTasks}
                 workflowInputs={workflowInputs}
                 workflowConfigs={workflowConfigs}
@@ -3518,45 +3597,18 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                     workflowInputs={workflowInputs}
                     workflowConfigs={workflowConfigs}
                   />
-                ) : (options as any[]).some((o) => o?.icon) ? (
-                  <FilterDropdownButton
-                    id={fieldName}
-                    options={options as any[]}
-                    value={(options as any[]).find((o) => o?.value === renderedValue) ?? null}
-                    onSelect={(_e: any, selected: any) => handleDataChange(fieldName, selected?.value ?? '')}
-                    disabled={isReadOnly || viewOnlyMode}
-                    required={isRequired}
-                    placeholder={`Select ${fieldName.replace(/_/g, ' ')}`}
-                    searchPlaceholder={`Search ${fieldName.replace(/_/g, ' ')}`}
-                    sx={{
-                      width: '100%',
-                      ...(validationErrors[fieldName] && {
-                        border: `1px solid ${colors.border?.error || '#d32f2f'}`,
-                        boxShadow: 'none',
-                      }),
-                    }}
-                  />
                 ) : (
-                  <FormField
-                    {...DEFAULT_FORM_FIELD_PROPS}
-                    description={fieldSchema.description || ''}
-                    value={renderedValue}
-                    onChange={(e: any) => handleDataChange(fieldName, e.target.value)}
-                    onSelect={(e: any) => handleDataChange(fieldName, e?.target?.value)}
+                  <Select
+                    id={fieldName}
+                    options={toDsSelectOptions(options as any[])}
+                    value={renderedValue || null}
+                    onChange={(next) => handleDataChange(fieldName, next)}
                     placeholder={`Select ${fieldName.replace(/_/g, ' ')}`}
                     disabled={isReadOnly || viewOnlyMode}
-                    error={validationErrors[fieldName] || ''}
-                    fieldType='autocomplete'
-                    options={options as any}
                     required={isRequired}
+                    error={validationErrors[fieldName] || undefined}
                     minWidth='100%'
-                    maxLength={0}
                   />
-                )}
-                {!isAccountField && (options as any[]).some((o) => o?.icon) && validationErrors[fieldName] && (
-                  <Typography sx={{ mt: 0.5, fontSize: 'var(--ds-text-small)', color: colors.border?.error || '#d32f2f' }}>
-                    {validationErrors[fieldName]}
-                  </Typography>
                 )}
                 {showDefaultProviderChip && (
                   <Box sx={{ mt: 0.75 }}>
@@ -4164,6 +4216,25 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
           {/* Form Description */}
           <Typography sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.secondaryDark, mb: 1 }}>{description}</Typography>
 
+          {/* Advisory date-format lint warnings (non-blocking) */}
+          {Object.keys(validationWarnings).length > 0 && (
+            <Box
+              sx={{
+                mb: 1,
+                p: 1,
+                borderRadius: 'var(--ds-radius-md)',
+                backgroundColor: ds.amber[100],
+                border: `1px solid ${ds.amber[200]}`,
+              }}
+            >
+              {Array.from(new Set(Object.values(validationWarnings))).map((warning, i) => (
+                <Typography key={i} sx={{ fontSize: 'var(--ds-text-small)', color: ds.amber[700] }}>
+                  ⚠ {warning}
+                </Typography>
+              ))}
+            </Box>
+          )}
+
           {/* Input Fields */}
           {fields.map(([fieldName, fieldSchema], _index) => {
             // Unified Time Range group: mode dropdown + either duration or absolute pickers
@@ -4193,26 +4264,24 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                     Time Range
                   </Typography>
                   <Box sx={{ flex: '1 1 300px', minWidth: '200px', display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <FormField
-                      {...DEFAULT_FORM_FIELD_PROPS}
-                      fieldType='autocomplete'
+                    <Select
+                      options={modeOptions}
                       value={timeMode}
-                      onSelect={(e: any) => handleTimeModeChange(e?.target?.value === 'absolute' ? 'absolute' : 'relative')}
-                      options={modeOptions as any}
+                      onChange={(next) => handleTimeModeChange(next === 'absolute' ? 'absolute' : 'relative')}
                       placeholder='Select time range type'
                       disabled={viewOnlyMode}
+                      clearable={false}
                       minWidth='100%'
                     />
                     {timeMode === 'relative' ? (
-                      <FormField
-                        {...DEFAULT_FORM_FIELD_PROPS}
-                        fieldType='autocomplete'
+                      <Select
+                        options={durationOptions}
                         value={localData?.['duration'] ?? (durationSchema?.default as string) ?? '1h'}
-                        onSelect={(e: any) => handleDataChange('duration', e?.target?.value)}
-                        options={durationOptions as any}
+                        onChange={(next) => handleDataChange('duration', next)}
                         placeholder='Select duration'
-                        description={durationSchema?.description || ''}
+                        help={durationSchema?.description || undefined}
                         disabled={viewOnlyMode}
+                        clearable={false}
                         minWidth='100%'
                       />
                     ) : (
@@ -4266,14 +4335,13 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
                     Resize
                   </Typography>
                   <Box sx={{ flex: '1 1 300px', minWidth: '200px', display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    <FormField
-                      {...DEFAULT_FORM_FIELD_PROPS}
-                      fieldType='autocomplete'
+                    <Select
+                      options={modeOptions}
                       value={changeMode}
-                      onSelect={(e: any) => handleChangeModeChange(e?.target?.value === 'to' ? 'to' : 'by')}
-                      options={modeOptions as any}
+                      onChange={(next) => handleChangeModeChange(next === 'to' ? 'to' : 'by')}
                       placeholder='Select resize mode'
                       disabled={viewOnlyMode}
+                      clearable={false}
                       minWidth='100%'
                     />
                     <FormField

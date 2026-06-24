@@ -834,6 +834,7 @@ const apiCloudAccount = {
       principal?: string | string[];
       source?: string | string[];
       nbStatus?: string | string[];
+      messageSearch?: string;
       startDate?: Date;
       endDate?: Date;
     },
@@ -947,7 +948,15 @@ const apiCloudAccount = {
       const endDate = query.endDate || query.endDate || getEndOfMonth(new Date());
       const startDate = query.startDate || query.startDate || getStartOfMonth(new Date());
 
-      filterParams['_and'] = [{ starts_at: { _gte: startDate.toISOString() } }, { starts_at: { _lte: endDate.toISOString() } }];
+      const andClauses: any[] = [{ starts_at: { _gte: startDate.toISOString() } }, { starts_at: { _lte: endDate.toISOString() } }];
+
+      if (query?.messageSearch?.trim()) {
+        // Pushed into `_and` so it composes with any existing exact-match
+        // `title` filter set by a drilldown query rather than overwriting it.
+        andClauses.push({ title: { _ilike: `%${query.messageSearch.trim()}%` } });
+      }
+
+      filterParams['_and'] = andClauses;
 
       const useLight = options?.light === true;
       let queryStr = useLight ? LIST_CLOUD_ISSUES_LIGHT : LIST_CLOUD_ISSUES;

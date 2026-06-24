@@ -11,6 +11,27 @@ from notifications_server.utils.encode_utils import is_valid_port
 
 LOG = logging.getLogger(__name__)
 
+# SMTP ports for the two supported secure connection types.
+SMTP_SSL_PORT = "465"
+SMTP_STARTTLS_PORT = "587"
+
+
+def _create_smtp_connection(server, port, context):
+    """Create an SMTP connection for the given port.
+
+    Returns a connected ``smtplib.SMTP``/``SMTP_SSL`` instance (with STARTTLS
+    already negotiated for port 587), or ``None`` when the port is not one of
+    the supported secure ports (465 for implicit SSL, 587 for STARTTLS).
+    """
+    if port == SMTP_SSL_PORT:
+        return smtplib.SMTP_SSL(server, port, context=context)
+    if port == SMTP_STARTTLS_PORT:
+        smtp_server = smtplib.SMTP(server, port)
+        smtp_server.starttls(context=context)
+        return smtp_server
+    LOG.error("Unsupported port: %s. Use port 465 for SSL or 587 for STARTTLS.", port)
+    return None
+
 
 def _envelope_from_message(message):
     """Build a RCPT TO list from a message's To and Cc headers.
@@ -51,13 +72,14 @@ def _is_valid_smtp_params(params):
     port, server, email, password, _ = params
     for value in (server, email, password):
         if value is None:
-            LOG.exception("Server/email/password should not be none")
+            LOG.error("Server/email/password should not be None")
             return False
     if not isinstance(server, str):
-        LOG.exception("server %s is not instance ", server)
+        LOG.error("server %s is not a string", server)
         return False
     if not is_valid_port(port):
-        LOG.exception("port %s is not valid ", port)
+        LOG.error("port %s is not valid", port)
+        return False
     return True
 
 
@@ -65,18 +87,12 @@ def _send_email_to_user_smtp(server, port, email, password, message, from_email,
     context = ssl.create_default_context()
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     try:
-        if port == "465":
-            with smtplib.SMTP_SSL(server, port, context=context) as smtp_server:
-                smtp_server.login(email, password)
-                smtp_server.sendmail(from_email, rcpt, message.as_string())
-        elif port == "587":
-            with smtplib.SMTP(server, port) as smtp_server:
-                smtp_server.starttls(context=context)
-                smtp_server.login(email, password)
-                smtp_server.sendmail(from_email, rcpt, message.as_string())
-        else:
-            LOG.error(f"Unsupported port: {port}. Use port 465 for SSL or 587 for STARTTLS.")
+        smtp_server = _create_smtp_connection(server, port, context)
+        if smtp_server is None:
             return
+        with smtp_server:
+            smtp_server.login(email, password)
+            smtp_server.sendmail(from_email, rcpt, message.as_string())
 
         LOG.info(f"Email sent successfully. from: {from_email}")
 
@@ -119,13 +135,8 @@ def send_email_batch(messages):
         ctx = ssl.create_default_context()
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         try:
-            if port == "465":
-                smtp_server = smtplib.SMTP_SSL(server, port, context=ctx)
-            elif port == "587":
-                smtp_server = smtplib.SMTP(server, port)
-                smtp_server.starttls(context=ctx)
-            else:
-                LOG.error("Unsupported port: %s. Use port 465 for SSL or 587 for STARTTLS.", port)
+            smtp_server = _create_smtp_connection(server, port, ctx)
+            if smtp_server is None:
                 return
 
             with smtp_server:

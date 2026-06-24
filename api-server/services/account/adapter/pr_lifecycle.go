@@ -146,11 +146,16 @@ func queryOpenPRResolutions(dbms *database.DatabaseManager) ([]prResolutionRow, 
 		results = append(results, row)
 	}
 
+	// recommendation_resolution has no tenant column of its own; resolve it via
+	// the parent recommendation. AutoOptimize PR metadata does not carry
+	// tenant_id, so without this join the followup would fail with
+	// "missing_tenant" and abandon every recommendation-driven PR.
 	recQuery := fmt.Sprintf(`
 		SELECT rr.id, rr.type_reference_id, rr.data,
 		       rr.pr_iteration_count, rr.pr_lifecycle_state,
-		       '' AS tenant
+		       COALESCE(r.tenant_id::text, '') AS tenant
 		FROM recommendation_resolution rr
+		LEFT JOIN recommendation r ON rr.recommendation_id = r.id
 		WHERE rr.type = 'PullRequest'
 		  AND rr.status = 'InProgress'
 		  AND rr.pr_lifecycle_state IN ('created', 'needs_followup')
@@ -280,8 +285,9 @@ func fetchResolutionRow(dbms *database.DatabaseManager, resolutionID, tableName 
 		query = `
 			SELECT rr.id, rr.type_reference_id, rr.data,
 			       rr.pr_iteration_count, rr.pr_lifecycle_state,
-			       '' AS tenant
+			       COALESCE(r.tenant_id::text, '') AS tenant
 			FROM recommendation_resolution rr
+			LEFT JOIN recommendation r ON rr.recommendation_id = r.id
 			WHERE rr.id = $1
 		`
 	}

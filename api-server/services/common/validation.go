@@ -22,6 +22,11 @@ func ValidateStruct(s interface{}) error {
 }
 
 func IsValidK8sDNSLabel(s string) bool {
+	// RFC 1123 DNS labels are capped at 63 characters; the regex only checks
+	// the character set and structure, so enforce the length here.
+	if len(s) > 63 {
+		return false
+	}
 	return dnsLabelRegex.MatchString(s)
 }
 

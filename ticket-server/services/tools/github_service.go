@@ -68,26 +68,62 @@ func (s *GitHubService) Get(ctx *gin.Context, config models.TicketConfigurations
 	if len(config.Projects) == 0 {
 		return nil, errors.New("no projects configured")
 	}
-	parts := strings.Split(config.Projects[0].Key, "/")
+	projectKey := config.Projects[0].Key
+	parts := strings.Split(projectKey, "/")
 	if len(parts) != 2 {
 		return nil, errors.New("invalid project key format")
 	}
 	owner, repo := parts[0], parts[1]
 
+	return getGithubIssueWithClient(ctx, githubClient, owner, repo, issueNumber, projectKey)
+}
+
+// getGithubIssueWithClient fetches a single issue and maps it to the normalized
+// Ticket, promoting metadata (assignees, labels, reporter, milestone,
+// updated_at) to top-level fields. Split out from Get so tests can drive the
+// mapping against an httptest-backed client, mirroring createGithubIssueWithClient.
+func getGithubIssueWithClient(ctx *gin.Context, githubClient *github.Client, owner, repo string, issueNumber int, projectKey string) (*models.Ticket, error) {
 	issue, _, err := githubClient.Issues.Get(ctx, owner, repo, issueNumber)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get GitHub issue: %w", err)
 	}
 
 	createdAt := issue.GetCreatedAt().Time
+
+	var updatedAt *time.Time
+	if t := issue.GetUpdatedAt().Time; !t.IsZero() {
+		updatedAt = &t
+	}
+
+	assignees := make([]string, 0, len(issue.Assignees))
+	for _, a := range issue.Assignees {
+		if login := a.GetLogin(); login != "" {
+			assignees = append(assignees, login)
+		}
+	}
+
+	labels := make([]string, 0, len(issue.Labels))
+	for _, l := range issue.Labels {
+		if name := l.GetName(); name != "" {
+			labels = append(labels, name)
+		}
+	}
+
 	return &models.Ticket{
 		TicketID:    fmt.Sprintf("%d", issue.GetNumber()),
 		Title:       issue.GetTitle(),
 		Description: issue.GetBody(),
 		Status:      issue.GetState(),
+		Assignee:    issue.GetAssignee().GetLogin(),
+		Assignees:   assignees,
+		Reporter:    issue.GetUser().GetLogin(),
+		Labels:      labels,
+		Milestone:   issue.GetMilestone().GetTitle(),
 		Platform:    "github",
+		ProjectKey:  projectKey,
 		URL:         issue.GetHTMLURL(),
 		CreatedAt:   &createdAt,
+		UpdatedAt:   updatedAt,
 		Raw:         marshalToMap(issue),
 	}, nil
 }
@@ -518,19 +554,14 @@ func (s *GitHubService) List(ctx *gin.Context, config models.TicketConfiguration
 	}
 	owner, repo := parts[0], parts[1]
 
-	// Convert offset/limit to page/perPage using local variables to avoid
-	// mutating the caller's struct. GitHub caps PerPage at 100 server-side,
-	// so we cap here too so the page calculation matches what is actually returned.
+	// Normalize offset/limit in-place. params is passed by value, so mutating
+	// its fields is safe and keeps later logic (total estimate and ListResult)
+	// consistent with the page size actually used. GitHub caps PerPage at 100
+	// server-side, so we cap here too so the page calculation matches.
+	params.Limit = normalizeLimit(params.Limit)
+	params.Offset = normalizeOffset(params.Offset)
 	limit := params.Limit
-	if limit <= 0 {
-		limit = 25
-	} else if limit > 100 {
-		limit = 100
-	}
 	offset := params.Offset
-	if offset < 0 {
-		offset = 0
-	}
 	page := (offset / limit) + 1
 
 	opts := &github.IssueListByRepoOptions{

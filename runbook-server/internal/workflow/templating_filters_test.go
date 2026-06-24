@@ -302,3 +302,75 @@ func TestCustomFilters(t *testing.T) {
 		assert.Equal(t, "null", res) // or empty list depending on impl
 	})
 }
+
+func TestTZFilter(t *testing.T) {
+	t.Run("offset_via_strftime", func(t *testing.T) {
+		ctx := NewTemplateContext(nil, nil)
+		// now() is UTC; shifting to IST must yield the +0530 offset.
+		res, err := ctx.renderGonja(`{{ now() | tz("Asia/Kolkata") | strftime("%z") }}`)
+		assert.NoError(t, err)
+		assert.Equal(t, "+0530", res)
+	})
+
+	t.Run("string_input_converted", func(t *testing.T) {
+		ctx := NewTemplateContext(nil, nil)
+		// 00:30 UTC is 06:00 IST.
+		res, err := ctx.renderGonja(`{{ "2026-06-15T00:30:00Z" | tz("Asia/Kolkata") | date_format("2006-01-02 15:04") }}`)
+		assert.NoError(t, err)
+		assert.Equal(t, "2026-06-15 06:00", res)
+	})
+
+	t.Run("unknown_zone_fails_loud", func(t *testing.T) {
+		ctx := NewTemplateContext(nil, nil)
+		// A bad zone must error the render rather than silently returning UTC.
+		_, err := ctx.renderGonja(`{{ "2026-06-15T00:30:00Z" | tz("Not/AZone") }}`)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid timezone")
+	})
+
+	t.Run("non_time_input_passes_through", func(t *testing.T) {
+		ctx := NewTemplateContext(nil, nil)
+		res, err := ctx.renderGonja(`{{ "hello" | tz("Asia/Kolkata") }}`)
+		assert.NoError(t, err)
+		assert.Equal(t, "hello", res)
+	})
+
+	t.Run("utc_zone_is_noop", func(t *testing.T) {
+		ctx := NewTemplateContext(nil, nil)
+		res, err := ctx.renderGonja(`{{ "2026-06-15T12:00:00Z" | tz("UTC") | strftime("%z") }}`)
+		assert.NoError(t, err)
+		assert.Equal(t, "+0000", res)
+	})
+
+	t.Run("empty_zone_defaults_to_utc", func(t *testing.T) {
+		ctx := NewTemplateContext(nil, nil)
+		// time.LoadLocation("") returns UTC, so an empty zone is a safe no-op.
+		res, err := ctx.renderGonja(`{{ "2026-06-15T12:00:00Z" | tz("") | strftime("%z") }}`)
+		assert.NoError(t, err)
+		assert.Equal(t, "+0000", res)
+	})
+
+	t.Run("dst_zone_name_and_offset", func(t *testing.T) {
+		ctx := NewTemplateContext(nil, nil)
+		// 2026-06-15 is summer → America/New_York is EDT (UTC-4): 12:00Z -> 08:00 EDT.
+		res, err := ctx.renderGonja(`{{ "2026-06-15T12:00:00Z" | tz("America/New_York") | strftime("%H:%M %Z") }}`)
+		assert.NoError(t, err)
+		assert.Equal(t, "08:00 EDT", res)
+	})
+
+	t.Run("chains_after_to_datetime", func(t *testing.T) {
+		ctx := NewTemplateContext(nil, nil)
+		res, err := ctx.renderGonja(`{{ "2026-06-15T23:00:00Z" | to_datetime | tz("Asia/Kolkata") | strftime("%Y-%m-%d %H:%M") }}`)
+		assert.NoError(t, err)
+		// 23:00 UTC + 5:30 = 04:30 on the next day.
+		assert.Equal(t, "2026-06-16 04:30", res)
+	})
+
+	t.Run("chains_with_time_add", func(t *testing.T) {
+		ctx := NewTemplateContext(nil, nil)
+		res, err := ctx.renderGonja(`{{ "2026-06-15T00:30:00Z" | to_datetime | time_add("1h") | tz("Asia/Kolkata") | strftime("%H:%M") }}`)
+		assert.NoError(t, err)
+		// 00:30 UTC + 1h = 01:30 UTC -> 07:00 IST.
+		assert.Equal(t, "07:00", res)
+	})
+}

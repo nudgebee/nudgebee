@@ -362,6 +362,10 @@ func (a *dynamicReActAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeReAct
 }
 
+func (a *dynamicReActAgent) GetModelCategory() core.ModelTier {
+	return core.ModelTierReasoning
+}
+
 // GetMaxIterations implements core.NBAgentIterationProvider to cap the sub-agent's
 // ReAct loop, preventing runaway execution.
 func (a *dynamicReActAgent) GetMaxIterations() int {

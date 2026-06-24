@@ -179,3 +179,7 @@ func (p SecurityAgent) GetSupportedTools(ctx *security.RequestContext) []toolcor
 func (l SecurityAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeReAct
 }
+
+func (l SecurityAgent) GetModelCategory() core.ModelTier {
+	return core.ModelTierSummary
+}

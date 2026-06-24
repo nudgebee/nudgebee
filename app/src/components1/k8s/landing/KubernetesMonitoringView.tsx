@@ -246,10 +246,12 @@ const KubernetesMonitoring: React.FC = () => {
       .then((res) => {
         const workloadRecommendationCountRes = res?.data?.data?.k8s_workloads_cloud_account_monitoring_recommendations_v2?.rows || [];
         if (workloadRecommendationCountRes && workloadRecommendationCountRes.length > 0) {
+          // O(n+m) via Map instead of O(n*m) via nested .find() — matches the pattern at line 191
+          const recomLookup = new Map<string, any>(
+            workloadRecommendationCountRes.map((obj: any) => [`${obj.account_id}\0${obj.workload_name}\0${obj.namespace}`, obj])
+          );
           const updatedStats = data.map((obj1: any) => {
-            const matchingObj = workloadRecommendationCountRes.find(
-              (obj2: any) => obj1.accountId == obj2.account_id && obj1.name == obj2.workload_name && obj1.namespace == obj2.namespace
-            );
+            const matchingObj = recomLookup.get(`${obj1.accountId}\0${obj1.name}\0${obj1.namespace}`);
             if (matchingObj) {
               return {
                 ...obj1,

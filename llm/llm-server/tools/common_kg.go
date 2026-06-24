@@ -489,11 +489,26 @@ func formatKGGetNodeResponse(node map[string]any) string {
 }
 
 func writeKGNodeHeader(b *strings.Builder, node map[string]any, id string) {
-	name := stringFromAny(node["name"])
+	name := kgNodeField(node, "name")
 	if name == "" {
 		name = "(unnamed)"
 	}
-	fmt.Fprintf(b, "**%s** (%s) — id: %s\n", name, stringFromAny(node["node_type"]), id)
+	fmt.Fprintf(b, "**%s** (%s) — id: %s\n", name, kgNodeField(node, "node_type"), id)
+}
+
+// kgNodeField looks up a field on the node, falling back to the node's
+// "properties" map when the top-level key is absent or empty. The KgNode
+// payload nests name/namespace/cluster (and other fields) under "properties",
+// so a top-level-only lookup would render "(unnamed)" and drop the
+// Namespace/Cluster metadata lines.
+func kgNodeField(node map[string]any, key string) string {
+	if v := stringFromAny(node[key]); v != "" {
+		return v
+	}
+	if props, ok := node["properties"].(map[string]any); ok {
+		return stringFromAny(props[key])
+	}
+	return ""
 }
 
 var kgNodeMetaPairs = []struct {
@@ -510,7 +525,7 @@ var kgNodeMetaPairs = []struct {
 
 func writeKGNodeMetadata(b *strings.Builder, node map[string]any) {
 	for _, p := range kgNodeMetaPairs {
-		v := stringFromAny(node[p.key])
+		v := kgNodeField(node, p.key)
 		if v != "" {
 			fmt.Fprintf(b, kgKVLineFmt, p.label, v)
 		}

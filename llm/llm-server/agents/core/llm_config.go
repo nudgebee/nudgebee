@@ -1152,12 +1152,14 @@ func getHuggingFaceLLM(provider, modelName, agentName string, appendAgentName bo
 
 	apiKey := getLLMApiKey(accountId, provider, agentName, appendAgentName, res)
 	apiEndpoint := getLLMApiEndpoint(accountId, provider, agentName, appendAgentName, res)
-	slog.Debug("Hugging Face configuration", "hasApiKey", apiKey != "", "endpoint", apiEndpoint)
+	apiType := getLLMApiType(accountId, provider, agentName, appendAgentName, res)
+	slog.Debug("Hugging Face configuration", "hasApiKey", apiKey != "", "endpoint", apiEndpoint, "apiType", apiType)
 
 	opts := []huggingface.Option{
 		huggingface.WithToken(apiKey),
 		huggingface.WithURL(apiEndpoint),
 		huggingface.WithModel(modelName),
+		huggingface.WithAPIType(apiType),
 	}
 
 	// Only add WithAdapter if needed
