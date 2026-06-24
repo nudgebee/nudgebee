@@ -49,7 +49,7 @@ const PROVIDERS = {
   DATABASE: ['POSTGRES', 'MYSQL', 'CLICKHOUSE', 'MSSQL', 'ORACLE'],
   IN_MEMORY: ['REDIS'],
   DOCS: ['CONFLUENCE'],
-  MESSAGING: ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT'],
+  MESSAGING: ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT', 'DISCORD'],
   OBSERVABITY_PLATFORM: [
     'DATADOG',
     'DYNATRACE',
@@ -83,7 +83,7 @@ const SECTIONS_CONFIG = [
     id: 'messaging',
     label: 'Messaging & Alerting',
     icon: MessageBlueIcon,
-    providers: ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT'],
+    providers: ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT', 'DISCORD'],
     tab: 2,
   },
   {
@@ -208,7 +208,7 @@ const AccountCard = React.memo(({ cloud_provider = 'AWS', active = 0, disabled =
     router.push(`/accounts/account-form?cloudProvider=${cloud_provider}`);
   }, [router, cloud_provider]);
 
-  const isMessagingProvider = ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT'].includes(cloud_provider?.toUpperCase());
+  const isMessagingProvider = ['SLACK', 'MSTEAMS', 'GOOGLE_CHAT', 'DISCORD'].includes(cloud_provider?.toUpperCase());
   const needsChannelMapping =
     isMessagingProvider &&
     active > 0 &&
@@ -616,6 +616,9 @@ const accountHelpers = {
       } else if (platform.toLowerCase() === 'google_chat') {
         activeClouds = gChatAccData;
         platformKey = 'google_chat';
+      } else if (platform.toLowerCase() === 'discord') {
+        activeClouds = data.filter((d) => d.platform === 'discord');
+        platformKey = 'discord';
       } else {
         activeClouds = [];
       }
@@ -676,7 +679,7 @@ const Integrations = () => {
         channels = [acc.team_name]; // simplified based on code analysis
       } else if (acc.platform === 'ms_teams' && acc.channels?.team_name) {
         channels = [acc.channels.team_name];
-      } else if (acc.platform === 'google_chat') {
+      } else if (acc.platform === 'google_chat' || acc.platform === 'discord') {
         try {
           const parsed = typeof acc.channels === 'string' ? JSON.parse(acc.channels) : acc.channels;
           if (parsed?.name) {

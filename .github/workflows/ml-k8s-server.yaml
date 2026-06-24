@@ -8,10 +8,18 @@ on:
       - ml-k8s-server/**
       - .github/workflows/ml-k8s-server.yaml
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     name: Lint and Code Quality
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     outputs:
       image_tag: ${{ steps.set-tag.outputs.IMAGE_TAG }}
 

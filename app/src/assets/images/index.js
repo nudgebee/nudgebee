@@ -293,6 +293,7 @@ export const slackIcon = require('@assets/slack_icon.icon.svg');
 export const GithubIcon = require('@assets/github-icon.icon.svg');
 export const GitMergeIcon = require('@assets/git-merge.svg');
 export const GChatIcon = require('@assets/gchat-icon.icon.svg');
+export const DiscordIcon = require('@assets/discord-icon.icon.svg');
 export const downArrowSVG = require('@assets/down_arrow3.svg');
 export const downArrow3SVG = require('@assets/down_arrow3.svg');
 export const downArrow4SVG = require('@assets/down_arrow4.svg');

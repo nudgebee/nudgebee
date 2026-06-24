@@ -8,9 +8,17 @@ on:
       - llm/code-analysis/**
       - .github/workflows/code-analysis.yaml
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     strategy:
       matrix:

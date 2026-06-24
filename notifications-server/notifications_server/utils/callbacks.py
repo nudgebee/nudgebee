@@ -13,7 +13,7 @@ class ExternalActionRequestBuilder(BaseModel):
         choice: CallbackChoice,
         text: str,
         signing_key: str,
-    ):
+    ) -> ExternalActionRequest:
         if choice.action is None:
             raise ValueError(
                 f"The callback for choice {text} is None. Did you accidentally pass `foo()` as a callback and not"

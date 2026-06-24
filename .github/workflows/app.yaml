@@ -8,10 +8,18 @@ on:
       - app/**
       - .github/workflows/app.yaml
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Job 1: Lint and validate (runs on any runner)
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       NODE_OPTIONS: --max_old_space_size=4096
     steps:
