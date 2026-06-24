@@ -49,6 +49,7 @@ const (
 	RelayJobHelm       RelayJob = "helm"
 	RelayJobArgoCD     RelayJob = "argocd"
 	RelayJobPostgres   RelayJob = "postgres"
+	RelayJobMongo      RelayJob = "mongo"
 	RelayJobMysql      RelayJob = "mysql"
 	RelayJobRabbitmq   RelayJob = "rabbitmq"
 	RelayJobRedis      RelayJob = "redis"
@@ -429,7 +430,8 @@ func executeViaProxyAgent(toolContext core.NbToolContext, module RelayJob, query
 	if agentType == "" {
 		// Derive from connection_mode: vm_agent → proxy, otherwise k8s
 		connectionMode := getConfigValue(toolContext.ToolConfig.Values, "connection_mode")
-		if connectionMode == "vm_agent" {
+		proxyType := getConfigValue(toolContext.ToolConfig.Values, "proxy_type")
+		if connectionMode == "vm_agent" || module == RelayJobMongo || strings.EqualFold(proxyType, "mongo-proxy") {
 			agentType = "proxy"
 		} else {
 			agentType = "k8s"
@@ -458,6 +460,10 @@ func executeViaProxyAgent(toolContext core.NbToolContext, module RelayJob, query
 	response, err := relay.Execute(actionParam)
 	if err != nil {
 		return nil, fmt.Errorf("proxy agent db_query failed: %w", err)
+	}
+
+	if module == RelayJobMongo {
+		return parseProxyMongoResponse(response)
 	}
 
 	return parseProxyDBResponse(response)
@@ -525,6 +531,38 @@ func parseProxyDBResponse(response map[string]any) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// parseProxyMongoResponse converts the proxy agent's Mongo response into a
+// readable JSON string without forcing table-shaped assumptions.
+func parseProxyMongoResponse(response map[string]any) (string, error) {
+	dataStr, ok := response["data"].(string)
+	if !ok {
+		return "", errors.New("proxy Mongo response missing 'data' field")
+	}
+
+	trimmed := strings.TrimSpace(dataStr)
+	if trimmed == "" {
+		return "", errors.New("no data returned from MongoDB")
+	}
+
+	var parsed any
+	if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return trimmed, nil
+	}
+
+	if obj, ok := parsed.(map[string]any); ok && obj != nil {
+		if msg, ok := obj["error"].(string); ok && msg != "" {
+			return "", fmt.Errorf("proxy mongo error: %s", msg)
+		}
+	}
+
+	pretty, err := json.MarshalIndent(parsed, "", "  ")
+	if err != nil {
+		return "", err
+	}
+
+	return string(pretty), nil
 }
 
 // executeSSHViaProxyAgent sends an ssh_command request to the forager agent via the relay
@@ -596,8 +634,12 @@ func parseProxySSHResponse(response map[string]any) (string, error) {
 
 func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query string, accountId string, configs map[string]any, raw bool) (any, error) {
 
-	if !slices.Contains([]RelayJob{RelayJobShell, RelayJobPostgres, RelayJobMysql, RelayJobMssql, RelayJobClickhouse, RelayJobOracle, RelayJobKubectl, RelayJobRabbitmq, RelayJobRedis, RelayJobHelm, RelayJobArgoCD, RelayJobSSH}, module) {
+	if !slices.Contains([]RelayJob{RelayJobShell, RelayJobPostgres, RelayJobMongo, RelayJobMysql, RelayJobMssql, RelayJobClickhouse, RelayJobOracle, RelayJobKubectl, RelayJobRabbitmq, RelayJobRedis, RelayJobHelm, RelayJobArgoCD, RelayJobSSH}, module) {
 		return nil, errors.New("module not supported")
+	}
+
+	if module == RelayJobMongo {
+		return executeViaProxyAgent(toolContext, module, query, accountId, configs)
 	}
 
 	// Route DB queries to proxy agent for vm_agent integrations

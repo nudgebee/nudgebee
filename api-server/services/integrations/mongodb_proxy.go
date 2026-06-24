@@ -75,23 +75,26 @@ func (m MongoDBProxy) ConfigSchema() core.IntegrationSchema {
 				Priority:    92,
 			},
 			"username": {
-				Type:        core.ToolSchemaTypeString,
-				Description: "MongoDB username",
-				ShowWhen:    map[string]any{"credential_source": "cloud_push"},
-				Priority:    70,
+				Type:         core.ToolSchemaTypeString,
+				Description:  "MongoDB username",
+				ShowWhen:     map[string]any{"credential_source": "cloud_push"},
+				RequiredWhen: map[string]any{"credential_source": "cloud_push"},
+				Priority:     70,
 			},
 			"password": {
-				Type:        core.ToolSchemaTypeString,
-				Description: "MongoDB password",
-				IsEncrypted: true,
-				ShowWhen:    map[string]any{"credential_source": "cloud_push"},
-				Priority:    68,
+				Type:         core.ToolSchemaTypeString,
+				Description:  "MongoDB password",
+				IsEncrypted:  true,
+				ShowWhen:     map[string]any{"credential_source": "cloud_push"},
+				RequiredWhen: map[string]any{"credential_source": "cloud_push"},
+				Priority:     68,
 			},
 			"secret_ref": {
-				Type:        core.ToolSchemaTypeString,
-				Description: "Secret reference in the secret manager",
-				ShowWhen:    map[string]any{"credential_source": []any{"aws_sm", "gcp_sm", "azure_kv"}},
-				Priority:    66,
+				Type:         core.ToolSchemaTypeString,
+				Description:  "Secret reference in the secret manager",
+				ShowWhen:     map[string]any{"credential_source": []any{"aws_sm", "gcp_sm", "azure_kv"}},
+				RequiredWhen: map[string]any{"credential_source": []any{"aws_sm", "gcp_sm", "azure_kv"}},
+				Priority:     66,
 			},
 			core.AccountId: {
 				Type:             core.ToolSchemaTypeArray,
@@ -128,6 +131,15 @@ func (m MongoDBProxy) ValidateConfig(_ *security.SecurityContext, config []core.
 	}
 
 	credSource := configMap["credential_source"]
+	if credSource == "cloud_push" {
+		if configMap["username"] == "" {
+			errs = append(errs, fmt.Errorf("username is required for cloud_push credential source"))
+		}
+		if configMap["password"] == "" {
+			errs = append(errs, fmt.Errorf("password is required for cloud_push credential source"))
+		}
+	}
+
 	if credSource == "aws_sm" || credSource == "gcp_sm" || credSource == "azure_kv" {
 		if configMap["secret_ref"] == "" {
 			errs = append(errs, fmt.Errorf("secret_ref is required for %s credential source", credSource))
