@@ -406,8 +406,11 @@ func TestModuleQueryFilters_EventChatPartition(t *testing.T) {
 	assert.Contains(t, moduleQueryFilters[ModuleInvestigation], eventLike)
 	assert.NotContains(t, moduleQueryFilters[ModuleInvestigation], "NOT "+eventLike)
 
-	// user_investigation is the complement: it must exclude event sessions.
+	// user_investigation is the complement: it must exclude event sessions, and
+	// keep session-less (NULL session_id) rows in the chat budget rather than
+	// dropping them via NOT LIKE's NULL semantics.
 	assert.Contains(t, moduleQueryFilters[ModuleUserInvestigation], "NOT "+eventLike)
+	assert.Contains(t, moduleQueryFilters[ModuleUserInvestigation], "c.session_id IS NULL")
 }
 
 // TestGetEntityConversationCount_ModulePartition verifies the filters flow into

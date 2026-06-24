@@ -29,8 +29,11 @@ var moduleQueryFilters = map[string]string{
 	// Previously this filter was empty, so user_investigation usage swept in the
 	// event-* sessions that investigation already accounts for — double-counting
 	// event-analysis spend against the chat budget. ("event-rca-" also starts
-	// with "event-", so it is excluded too.)
-	ModuleUserInvestigation: " AND c.session_id NOT LIKE '" + events.SessionIdPrefixEvent + "%'",
+	// with "event-", so it is excluded too.) The IS NULL guard keeps any
+	// session-less conversation in the chat budget instead of silently dropping
+	// it (NOT LIKE evaluates to NULL for a NULL session_id), matching
+	// enforcement's "otherwise -> user_investigation" branch.
+	ModuleUserInvestigation: " AND (c.session_id IS NULL OR c.session_id NOT LIKE '" + events.SessionIdPrefixEvent + "%')",
 }
 
 // Entity type constants
