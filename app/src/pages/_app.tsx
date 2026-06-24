@@ -35,14 +35,7 @@ export default function App({ Component, pageProps }: AppProps<{ session: Sessio
             router.pathname.indexOf('ready') >= 0 ||
             router.pathname.indexOf('no-tenant-access') >= 0 ||
             router.pathname.indexOf('verify-request') >= 0 ||
-            router.pathname.indexOf('auth/error') >= 0 ||
-            // Error pages must never render inside the withAuth layout. When the
-            // auth endpoint is transiently unavailable, a protected page bounces
-            // to /api/auth/signin; if that 404s the 404 page renders here — and
-            // re-running withAuth would re-fire the redirect into a loop (#394).
-            router.pathname === '/404' ||
-            router.pathname === '/500' ||
-            router.pathname === '/_error' ? (
+            router.pathname.indexOf('auth/error') >= 0 ? (
               <Component {...pageProps} />
             ) : (
               <DataProvider>
