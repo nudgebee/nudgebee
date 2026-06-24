@@ -70,7 +70,12 @@ const (
 // LLM-verdict-per-class path (feature-flagged) and the legacy severity*env formula. In
 // shadow mode the new score is recorded in score_factors for comparison while the legacy
 // score stays authoritative.
-func ComputeScore(ctx context.Context, db *sqlx.DB, event *models.Event) (*ScoreResult, error) {
+//
+// The occurrenceNumber, correlationType, and correlationScore params are pre-fetched by
+// processor.go (detectAndRecordDuplicate / detectAndRecordCorrelations) and passed in so
+// computeLegacyScore can derive its duplicate penalty and correlation adjustment without
+// re-querying — eliminates the per-event N+1 fingerprinted in OSS issue #286.
+func ComputeScore(ctx context.Context, db *sqlx.DB, event *models.Event, occurrenceNumber int, correlationType string, correlationScore float64) (*ScoreResult, error) {
 	// Human overrides are authoritative and bypass the machine score entirely. This MUST be
 	// the first check so a per-event correction or a class priority_pin is never overwritten by
 	// the LLM/legacy verdict on re-score (events upsert on recurrence and re-run ComputeScore).
@@ -82,7 +87,7 @@ func ComputeScore(ctx context.Context, db *sqlx.DB, event *models.Event) (*Score
 	}
 
 	if !llmTriageScoringEnabled(event) {
-		return computeLegacyScore(ctx, db, event)
+		return computeLegacyScore(ctx, db, event, occurrenceNumber, correlationType, correlationScore)
 	}
 
 	llmResult, llmErr := ComputeScoreLLM(ctx, db, event)
@@ -91,13 +96,13 @@ func ComputeScore(ctx context.Context, db *sqlx.DB, event *models.Event) (*Score
 		if llmErr != nil || llmResult == nil {
 			slog.WarnContext(ctx, "LLM triage scoring failed; falling back to legacy",
 				"event_id", event.Id, "error", llmErr)
-			return computeLegacyScore(ctx, db, event)
+			return computeLegacyScore(ctx, db, event, occurrenceNumber, correlationType, correlationScore)
 		}
 		return llmResult, nil
 	}
 
 	// Shadow: legacy authoritative, attach the LLM result to factors for comparison.
-	legacy, err := computeLegacyScore(ctx, db, event)
+	legacy, err := computeLegacyScore(ctx, db, event, occurrenceNumber, correlationType, correlationScore)
 	if err != nil {
 		return legacy, err
 	}
@@ -124,8 +129,10 @@ func llmTriageScoringEnabled(event *models.Event) bool {
 	return tenant.IsFeatureExplicitlyEnabled(nil, *event.Tenant, tenant.FEATURE_TRIAGE_LLM_SCORING)
 }
 
-// computeLegacyScore is the original severity*env scoring formula.
-func computeLegacyScore(ctx context.Context, db *sqlx.DB, event *models.Event) (*ScoreResult, error) {
+// computeLegacyScore is the original severity*env scoring formula. Takes
+// occurrenceNumber/correlationType/correlationScore from the caller so it can compute
+// the duplicate penalty and correlation adjustment in-process — no per-event DB lookup.
+func computeLegacyScore(ctx context.Context, db *sqlx.DB, event *models.Event, occurrenceNumber int, correlationType string, correlationScore float64) (*ScoreResult, error) {
 	factors := make(map[string]interface{})
 	var factorCount int
 

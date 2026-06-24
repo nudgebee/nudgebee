@@ -922,6 +922,9 @@ func CreateTriageRule(ctx context.Context, db *sqlx.DB, req CreateTriageRuleRequ
 		}
 	}
 
+	// Invalidate the in-process LoadMatchingRules cache so the new rule is visible to
+	// CheckTriageRules on the very next event without waiting for the TTL refresh.
+	ClearTriageRulesCache()
 	return rule, nil
 }
 
