@@ -26,6 +26,7 @@ import ConfigurationManager from './ConfigurationManager';
 import CreateWorkflowOptionsModal from './components/CreateWorkflowOptionsModal';
 import CreateWorkflowFromCodeModal from './components/CreateWorkflowFromCodeModal';
 import WorkflowTemplatesModal from './components/WorkflowTemplatesModal';
+import { getAutomationToggleAction } from './automationMenu';
 import {
   manualTriggerIcon,
   SettingsIcon,
@@ -359,16 +360,18 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
       const pauseResumeApplicable = workflow?.definition?.triggers?.some((trigger: any) => ['schedule', 'event', 'webhook'].includes(trigger.type));
 
       if (pauseResumeApplicable) {
-        // Show pause button only if workflow is not paused
-        if (workflow?.status !== 'PAUSED') {
+        // State-aware toggle (see getAutomationToggleAction): Active -> Pause,
+        // Paused -> Activate, anything else -> neither.
+        const toggleAction = getAutomationToggleAction(workflow?.status);
+        if (toggleAction === 'pause') {
           MENU_ITEMS.push({
             label: 'Pause',
             id: 1,
             icon: pauseIcon,
           });
-        } else {
+        } else if (toggleAction === 'activate') {
           MENU_ITEMS.push({
-            label: 'Resume',
+            label: 'Activate',
             id: 2,
             icon: playIcon,
           });
@@ -457,9 +460,18 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   };
 
   const handlePauseWorkflow = async () => {
+    if (!accountId || !selectedWorkflow?.id) {
+      snackbar.error('Cannot pause automation: missing account or automation id');
+      return;
+    }
     setLoading(true);
     try {
-      const response = await apiWorkflow.pauseWorkflow(accountId!, selectedWorkflow.id);
+      const response = await apiWorkflow.pauseWorkflow(accountId, selectedWorkflow.id);
+      // pauseWorkflow swallows errors and resolves undefined on failure; treat a
+      // missing response as a failure rather than showing a false success toast.
+      if (!response) {
+        throw new Error('No response from server while pausing automation');
+      }
       const errorMessage = parseHttpResponseBodyMessage(response);
       if (errorMessage) {
         snackbar.error(errorMessage);
@@ -486,14 +498,23 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   };
 
   const handleResumeWorkflow = async () => {
+    if (!accountId || !selectedWorkflow?.id) {
+      snackbar.error('Cannot activate automation: missing account or automation id');
+      return;
+    }
     setLoading(true);
     try {
-      const response = await apiWorkflow.resumeWorkflow(accountId!, selectedWorkflow.id);
+      const response = await apiWorkflow.resumeWorkflow(accountId, selectedWorkflow.id);
+      // resumeWorkflow swallows errors and resolves undefined on failure; treat a
+      // missing response as a failure rather than showing a false success toast.
+      if (!response) {
+        throw new Error('No response from server while activating automation');
+      }
       const errorMessage = parseHttpResponseBodyMessage(response);
       if (errorMessage) {
         snackbar.error(errorMessage);
       } else {
-        snackbar.success(`Automation "${selectedWorkflow.name}" resumed successfully`);
+        snackbar.success(`Automation "${selectedWorkflow.name}" activated successfully`);
         // Refresh current page
         const offsetToken = pageOffsetTokens[currentPage] ?? ((currentPage - 1) * rowsPerPage).toString();
         listWorkflows(currentPage, rowsPerPage, offsetToken);
@@ -501,7 +522,7 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
     } catch (_error) {
       console.error(_error);
 
-      snackbar.error(`Failed to resume automation "${selectedWorkflow.name}"`);
+      snackbar.error(`Failed to activate automation "${selectedWorkflow.name}"`);
     } finally {
       setResumeModalOpen(false);
       setSelectedWorkflow({ id: '', name: '' });
@@ -1632,22 +1653,22 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
         open={resumeModalOpen}
         handleClose={handleCloseResumeModal}
         width='md'
-        title={`Resume Automation "${selectedWorkflow.name}"`}
+        title={`Activate Automation "${selectedWorkflow.name}"`}
         loader={loading}
         actionButtons={
           <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 2, px: 2, py: 2 }}>
-            <DsButton id='workflow-resume-cancel-btn' tone='secondary' size='md' onClick={handleCloseResumeModal} disabled={loading}>
+            <DsButton id='workflow-activate-cancel-btn' tone='secondary' size='md' onClick={handleCloseResumeModal} disabled={loading}>
               Cancel
             </DsButton>
-            <DsButton id='workflow-resume-confirm-btn' size='md' onClick={handleResumeWorkflow} loading={loading}>
-              Resume
+            <DsButton id='workflow-activate-confirm-btn' size='md' onClick={handleResumeWorkflow} loading={loading}>
+              Activate
             </DsButton>
           </Box>
         }
       >
         <DialogContent sx={{ padding: 'var(--ds-space-5)' }}>
           <DialogContentText>
-            Are you sure you want to resume this scheduled automation? It will start executing according to its schedule.
+            Are you sure you want to activate this scheduled automation? It will start executing according to its schedule.
           </DialogContentText>
         </DialogContent>
       </Modal>
