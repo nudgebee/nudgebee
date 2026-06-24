@@ -207,7 +207,7 @@ func TestCheckTriageRules(t *testing.T) {
 	t.Logf("Namespace: %v", ptrToStr(event.SubjectNamespace))
 
 	// Check triage rules for this event
-	result, err := CheckTriageRules(ctx, db, &event)
+	result, err := CheckTriageRules(ctx, db, &event, 1)
 	require.NoError(t, err)
 
 	t.Logf("\n=== TRIAGE RULES RESULT ===")
