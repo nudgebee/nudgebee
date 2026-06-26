@@ -101,7 +101,7 @@ func TestFilterAndInjectDefaultTools_InjectsShellWhenEnabled(t *testing.T) {
 		mockTool{name: "aws_execute"},
 	}
 
-	result := FilterAndInjectDefaultTools("test-account", nil, "", tools, nil)
+	result := FilterAndInjectDefaultTools("test-account", nil, "", tools, toolcore.AgentCapabilities{})
 
 	assert.True(t, HasShellTool(result), "shell_execute should be injected when enabled")
 	// Original tool should still be present
@@ -124,7 +124,7 @@ func TestFilterAndInjectDefaultTools_DoesNotInjectShellWhenDisabled(t *testing.T
 		mockTool{name: "aws_execute"},
 	}
 
-	result := FilterAndInjectDefaultTools("test-account", nil, "", tools, nil)
+	result := FilterAndInjectDefaultTools("test-account", nil, "", tools, toolcore.AgentCapabilities{})
 
 	assert.False(t, HasShellTool(result), "shell_execute should NOT be injected when disabled")
 }
@@ -171,7 +171,7 @@ func TestFilterAndInjectDefaultTools_ShellCoexistsWithCloudTools(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := FilterAndInjectDefaultTools("test-account", nil, "", tt.tools, nil)
+			result := FilterAndInjectDefaultTools("test-account", nil, "", tt.tools, toolcore.AgentCapabilities{})
 			assert.True(t, HasShellTool(result),
 				"shell_execute must be injected alongside cloud tools: %s", tt.name)
 
@@ -201,7 +201,7 @@ func TestFilterAndInjectDefaultTools_DoesNotDuplicateShell(t *testing.T) {
 		mockTool{name: toolcore.ToolExecuteShellCommand},
 	}
 
-	result := FilterAndInjectDefaultTools("test-account", nil, "", tools, nil)
+	result := FilterAndInjectDefaultTools("test-account", nil, "", tools, toolcore.AgentCapabilities{})
 
 	shellCount := 0
 	for _, t := range result {
@@ -223,8 +223,8 @@ func TestFilterTools_DisablesShellViaCapabilities(t *testing.T) {
 		mockTool{name: toolcore.ToolExecuteShellCommand},
 	}
 
-	capabilities := map[string]any{
-		"disabled_tools": []string{toolcore.ToolExecuteShellCommand},
+	capabilities := toolcore.AgentCapabilities{
+		DisabledTools: []string{toolcore.ToolExecuteShellCommand},
 	}
 
 	result := FilterTools(tools, capabilities)
@@ -235,41 +235,26 @@ func TestFilterTools_DisablesShellViaCapabilities(t *testing.T) {
 	assert.Equal(t, "aws_execute", result[0].Name())
 }
 
-func TestFilterTools_DisablesShellViaCapabilities_AnySlice(t *testing.T) {
-	// disabled_tools may come as []any from JSON deserialization
-	tools := []toolcore.NBTool{
-		mockTool{name: "aws_execute"},
-		mockTool{name: toolcore.ToolExecuteShellCommand},
-	}
-
-	capabilities := map[string]any{
-		"disabled_tools": []any{"shell_execute"},
-	}
-
-	result := FilterTools(tools, capabilities)
-	assert.False(t, HasShellTool(result), "shell_execute should be removed via []any disabled_tools")
-}
-
 func TestFilterTools_CaseInsensitive(t *testing.T) {
 	tools := []toolcore.NBTool{
 		mockTool{name: toolcore.ToolExecuteShellCommand},
 	}
 
-	capabilities := map[string]any{
-		"disabled_tools": []string{"Shell_Execute"},
+	capabilities := toolcore.AgentCapabilities{
+		DisabledTools: []string{"Shell_Execute"},
 	}
 
 	result := FilterTools(tools, capabilities)
 	assert.False(t, HasShellTool(result), "disabled_tools matching should be case-insensitive")
 }
 
-func TestFilterTools_NilCapabilities(t *testing.T) {
+func TestFilterTools_EmptyCapabilities(t *testing.T) {
 	tools := []toolcore.NBTool{
 		mockTool{name: toolcore.ToolExecuteShellCommand},
 	}
 
-	result := FilterTools(tools, nil)
-	assert.True(t, HasShellTool(result), "nil capabilities should not filter anything")
+	result := FilterTools(tools, toolcore.AgentCapabilities{})
+	assert.True(t, HasShellTool(result), "empty capabilities should not filter anything")
 }
 
 func TestFilterTools_EmptyDisabledList(t *testing.T) {
@@ -278,8 +263,8 @@ func TestFilterTools_EmptyDisabledList(t *testing.T) {
 		mockTool{name: "aws_execute"},
 	}
 
-	capabilities := map[string]any{
-		"disabled_tools": []string{},
+	capabilities := toolcore.AgentCapabilities{
+		DisabledTools: []string{},
 	}
 
 	result := FilterTools(tools, capabilities)
@@ -302,8 +287,8 @@ func TestFilterAndInjectDefaultTools_ShellInjectedThenFilteredByCapabilities(t *
 		mockTool{name: "aws_execute"},
 	}
 
-	capabilities := map[string]any{
-		"disabled_tools": []string{toolcore.ToolExecuteShellCommand},
+	capabilities := toolcore.AgentCapabilities{
+		DisabledTools: []string{toolcore.ToolExecuteShellCommand},
 	}
 
 	result := FilterAndInjectDefaultTools("test-account", nil, "", tools, capabilities)
@@ -339,7 +324,7 @@ func TestAwsDebugAgent_ShellToolInToolList(t *testing.T) {
 		mockTool{name: "aws_observability"},
 	}
 
-	result := FilterAndInjectDefaultTools("test-aws-account", nil, "", awsTools, nil)
+	result := FilterAndInjectDefaultTools("test-aws-account", nil, "", awsTools, toolcore.AgentCapabilities{})
 	assert.True(t, HasShellTool(result),
 		"AWS debug agent tools should include shell_execute when enabled")
 }
@@ -353,7 +338,7 @@ func TestGcpDebugAgent_ShellToolInToolList(t *testing.T) {
 		mockTool{name: "gcloud_execute"},
 	}
 
-	result := FilterAndInjectDefaultTools("test-gcp-account", nil, "", gcpTools, nil)
+	result := FilterAndInjectDefaultTools("test-gcp-account", nil, "", gcpTools, toolcore.AgentCapabilities{})
 	assert.True(t, HasShellTool(result),
 		"GCP debug agent tools should include shell_execute when enabled")
 }
@@ -367,7 +352,7 @@ func TestAzureDebugAgent_ShellToolInToolList(t *testing.T) {
 		mockTool{name: "azure_execute"},
 	}
 
-	result := FilterAndInjectDefaultTools("test-azure-account", nil, "", azureTools, nil)
+	result := FilterAndInjectDefaultTools("test-azure-account", nil, "", azureTools, toolcore.AgentCapabilities{})
 	assert.True(t, HasShellTool(result),
 		"Azure debug agent tools should include shell_execute when enabled")
 }
@@ -386,7 +371,7 @@ func TestFilterAndInjectDefaultTools_AgentOptOutSkipsShellInjection(t *testing.T
 
 	tools := []toolcore.NBTool{mockTool{name: "postgres_execute"}}
 
-	result := FilterAndInjectDefaultTools("test-account", mockOptOutAgent{name: "delegate_agent"}, "", tools, nil)
+	result := FilterAndInjectDefaultTools("test-account", mockOptOutAgent{name: "delegate_agent"}, "", tools, toolcore.AgentCapabilities{})
 
 	assert.False(t, HasShellTool(result),
 		"agents implementing DefaultToolsOptOut must not get shell_execute injected")
@@ -404,7 +389,7 @@ func TestFilterAndInjectDefaultTools_AgentOptOutSkipsLoadSkillsInjection(t *test
 	tools := []toolcore.NBTool{mockTool{name: "postgres_execute"}}
 
 	// Prompt contains the skill-lists marker that would normally trigger load_skills injection.
-	result := FilterAndInjectDefaultTools("test-account", mockOptOutAgent{name: "delegate_agent"}, "<skill-lists>foo</skill-lists>", tools, nil)
+	result := FilterAndInjectDefaultTools("test-account", mockOptOutAgent{name: "delegate_agent"}, "<skill-lists>foo</skill-lists>", tools, toolcore.AgentCapabilities{})
 
 	for _, tool := range result {
 		assert.NotEqual(t, "load_skills", tool.Name(),
@@ -426,7 +411,7 @@ func TestFilterAndInjectDefaultTools_CustomAgentOptsOut(t *testing.T) {
 	}
 	tools := []toolcore.NBTool{mockTool{name: "postgres_execute"}}
 
-	result := FilterAndInjectDefaultTools("test-account", custom, "", tools, nil)
+	result := FilterAndInjectDefaultTools("test-account", custom, "", tools, toolcore.AgentCapabilities{})
 
 	assert.False(t, HasShellTool(result),
 		"custom agent must not get shell_execute injected — user's tool selection is the curation contract")
@@ -444,7 +429,7 @@ func TestFilterAndInjectDefaultTools_PlainAgentStillGetsInjection(t *testing.T) 
 
 	tools := []toolcore.NBTool{mockTool{name: "aws_execute"}}
 
-	result := FilterAndInjectDefaultTools("test-account", mockPlainAgent{name: "aws_debug"}, "", tools, nil)
+	result := FilterAndInjectDefaultTools("test-account", mockPlainAgent{name: "aws_debug"}, "", tools, toolcore.AgentCapabilities{})
 
 	assert.True(t, HasShellTool(result),
 		"plain agent without opt-out interface must still receive shell_execute injection")
@@ -466,7 +451,7 @@ func TestCloudDebugAgents_ShellNotInjectedWhenDisabled(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := FilterAndInjectDefaultTools("test-account", nil, "", tt.tools, nil)
+			result := FilterAndInjectDefaultTools("test-account", nil, "", tt.tools, toolcore.AgentCapabilities{})
 			assert.False(t, HasShellTool(result),
 				"%s debug agent should NOT have shell_execute when disabled", tt.name)
 		})

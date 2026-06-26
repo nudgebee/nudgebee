@@ -1009,7 +1009,7 @@ export const ECSClusters = (props: {
             component: <Label text={item.meta?.Status || item.status} />,
           });
           data.push({
-            component: <Typography fontSize={13}>{item.meta?.ActiveServicesCount ?? 0}</Typography>,
+            component: <Typography fontSize={ds.text.body}>{item.meta?.ActiveServicesCount ?? 0}</Typography>,
           });
           data.push({
             component: (
@@ -1020,7 +1020,7 @@ export const ECSClusters = (props: {
             ),
           });
           data.push({
-            component: <Typography fontSize={13}>{item.meta?.RegisteredContainerInstancesCount ?? 0}</Typography>,
+            component: <Typography fontSize={ds.text.body}>{item.meta?.RegisteredContainerInstancesCount ?? 0}</Typography>,
           });
           data.push({ component: <TagsCell tags={item.tags} /> });
           data.push({

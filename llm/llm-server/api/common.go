@@ -174,3 +174,14 @@ func buildContextFromPayload(ctx context.Context, c *gin.Context, h *ActionReque
 	childLogger := logger.With("tenant_id", tenantId, "user_id", userId, "trace_id", span.SpanContext().TraceID().String())
 	return security.NewRequestContext(ctx, securityContext, childLogger, tracer, meter), nil
 }
+
+// extractRequestMap safely extracts the "request" field from an RPC input map.
+// If the field exists and is a map[string]any, it returns that map.
+// Otherwise (missing, nil, or wrong type), it returns the original input.
+// This prevents panics from unsafe type assertions on non-map request values.
+func extractRequestMap(input map[string]any) map[string]any {
+	if req, ok := input["request"].(map[string]any); ok {
+		return req
+	}
+	return input
+}

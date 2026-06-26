@@ -3,27 +3,22 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/router';
 import { applyFiltersOnRouter } from '@lib/router';
 import apiCloudAccount from '@api1/cloud-account';
-import { ListingLayout } from '@components1/ds/ListingLayout';
-import FilterDropdown from '@components1/ds/FilterDropdown';
-import CustomDateTimeRangePicker from '@common-new/widgets/CustomDateTimeRangePicker';
-import DownloadButton from '@common-new/DownloadButton';
-import CustomTable2 from '@common-new/tables/CustomTable2';
-import { Button as DsButton } from '@components1/ds/Button';
-import { DropdownMenu as DsDropdownMenu } from '@components1/ds/DropdownMenu';
-import { SeverityIcon as DsSeverityIcon } from '@components1/ds/SeverityIcon';
-import { Label } from '@components1/ds/Label';
-import { ds } from 'src/utils/colors';
-import MoreVertIcon from '@mui/icons-material/MoreVert';
+import BoxLayout2 from '@common/BoxLayout2';
+import CloudAccountTable from './CloudAccountTable';
 import HelpBeeModal from '@components1/helpbee';
+import ThreeDotsMenu from '@components1/common/ThreeDotsMenu';
+import { action } from 'src/utils/actionStyles';
 import { getLast7Days } from '@lib/datetime';
 import type { ICustomTable2Row } from './ec2/Instances';
 import ClusterNameWithRegion from '@components1/k8s/common/ClusterNameWithRegion';
-import Text from '@common-new/format/Text';
-import Datetime from '@common-new/format/Datetime';
+import Text from '@components1/common/format/Text';
+import SeverityIcon from '@components1/common/widgets/SeverityIcon';
+import Datetime from '@components1/common/format/Datetime';
 import { useEventCloudFilter } from '@hooks/useCloudFilters';
-import { syncFilterFromQuery, toSeverityLevel } from '@utils/common';
-import { FiArrowRight } from 'react-icons/fi';
-import NBStatusBadge from '@common-new/widgets/NBStatusBadge';
+import { syncFilterFromQuery } from '@utils/common';
+import InvestigateButton from '@components1/common/InvestigateButton';
+import CustomLabels from '@components1/common/widgets/CustomLabels';
+import NBStatusBadge from '@components1/common/widgets/NBStatusBadge';
 import { usePagination } from '@hooks/usePagination';
 import { hasWriteAccess } from '@lib/auth';
 import { TicketsIcon, dashboardIcon1 as ClassifyIcon, infoIcon } from '@assets';
@@ -33,8 +28,8 @@ import EventClassifyModal from '@components1/events/EventClassifyModal';
 import { snackbar } from '@components1/common/snackbarService';
 import ScoreDisplay from '@components1/common/widgets/ScoreDisplay';
 import WorkflowIcon from '@assets/WorkflowIcon';
-import Tooltip from '@components1/ds/Tooltip';
-import CustomTicketLink from '@common-new/CustomTicketLink';
+import CustomTooltip from '@components1/common/CustomTooltip';
+import CustomTicketLink from '@components1/common/CustomTicketLink';
 import { getTriageStatusTooltip } from '@api1/triage';
 import SafeIcon from '@components1/common/SafeIcon';
 
@@ -68,7 +63,7 @@ const TABLE_COLUMNS = [
     name: 'Triage Status',
     width: '9%',
     component: (
-      <Tooltip
+      <CustomTooltip
         variant='interactive'
         title='Triage Status'
         desc="Your team's response to this issue. Update it as you investigate, escalate, or resolve. To handle matching issues automatically, go to"
@@ -76,13 +71,13 @@ const TABLE_COLUMNS = [
         linkUrl='/troubleshoot#triage-rules'
         placement='top'
       >
-        <Box component='span' sx={{ cursor: 'default', display: 'inline-flex', alignItems: 'center', gap: ds.space[1] }}>
+        <Box component='span' sx={{ cursor: 'default', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
           Triage Status
-          <Box component='span' sx={{ position: 'relative', top: ds.space[0], opacity: '50%' }}>
+          <Box component='span' sx={{ position: 'relative', top: '3px', opacity: '50%' }}>
             <SafeIcon src={infoIcon} alt='info' width={12} height={14} />
           </Box>
         </Box>
-      </Tooltip>
+      </CustomTooltip>
     ),
   },
   { name: '', width: '11%' },
@@ -98,14 +93,13 @@ const getValidParam = (param: any, defaultValue = ''): string => {
 const getStatusText = (status: string | undefined): string => {
   if (status === 'FIRING') return 'Open';
   if (status === 'CLOSED') return 'Closed';
-  if (status === 'RESOLVED') return 'Resolved';
   return status || '-';
 };
 
-const getStatusTone = (status: string | undefined): 'critical' | 'success' | 'neutral' => {
-  if (status === 'FIRING') return 'critical';
-  if (status === 'RESOLVED') return 'success';
-  return 'neutral';
+const getStatusVariant = (status: string | undefined): string => {
+  if (status === 'FIRING') return 'red';
+  if (status === 'CLOSED') return 'grey';
+  return '';
 };
 
 const parseSubjectName = (item: any): string | undefined => {
@@ -167,7 +161,11 @@ const CloudAccountEvents = (props: {
   const [selectedEventName, setSelectedEventName] = useState(() => getValidParam(router?.query?.eventAggregationKey));
   const [selectedSource, setSelectedSource] = useState<{ label: string; value: string }[]>([]);
   const [selectedStatus, setSelectedStatus] = useState(() => getValidParam(router?.query?.eventStatus));
-  const [selectedDateRange, setSelectedDateRange] = useState<any>(() => {
+  const [searchByMessage, setSearchByMessage] = useState<string>(() => getValidParam(router?.query?.messageSearch));
+  // Bump on Enter / Clear so the dep-driven listEvents useEffect re-runs once
+  // React has flushed the search state; keeps fetch off the keystroke path.
+  const [searchSubmitTick, setSearchSubmitTick] = useState(0);
+  const [selectedDateRange, _setSelectedDateRange] = useState<any>(() => {
     const startParam = Number(router?.query?.start_time);
     const endParam = Number(router?.query?.end_time);
     return {
@@ -188,11 +186,9 @@ const CloudAccountEvents = (props: {
   const cloudAccountEventsTable = 'cloudaccount-events';
   const _showEllipsis = true;
 
-  const { severityFilterType, eventNamesFilter, sourceFilter, statusFilter, nbStatusFilter } = useEventCloudFilter(
-    props.accountId as string,
-    { subjectNamespace: props?.serviceName },
-    { startTime: new Date(selectedDateRange.startDate).toISOString(), endTime: new Date(selectedDateRange.endDate).toISOString() }
-  );
+  const { severityFilterType, eventNamesFilter, sourceFilter, statusFilter, nbStatusFilter } = useEventCloudFilter(props.accountId as string, {
+    subjectNamespace: props?.serviceName,
+  });
 
   const [selectedNbStatus, setSelectedNbStatus] = useState<Array<{ value: string }>>([]);
 
@@ -202,11 +198,7 @@ const CloudAccountEvents = (props: {
   // onSourceFilterChange → applyFiltersOnRouter updates the query → useEffect would fire again
   // even though state is already correct. After initialization, the handler owns the state.
   useEffect(() => {
-    setSelectedSource((prev) => {
-      const next = syncFilterFromQuery(sourceFilter, router?.query?.source, (f) => f.value);
-      if (prev.length === 0 && next.length === 0) return prev;
-      return next;
-    });
+    setSelectedSource(syncFilterFromQuery(sourceFilter, router?.query?.source, (f) => f.value));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceFilter]);
 
@@ -265,6 +257,23 @@ const CloudAccountEvents = (props: {
     setPage(0);
   };
 
+  const onSearchMessageFilter = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSearchByMessage(e?.target?.value || '');
+    setPage(0);
+  };
+
+  const onSearchMessageEnter = () => {
+    applyFiltersOnRouter(router, { messageSearch: searchByMessage || '' });
+    setSearchSubmitTick((n) => n + 1);
+  };
+
+  const onSearchMessageClear = () => {
+    setSearchByMessage('');
+    applyFiltersOnRouter(router, { messageSearch: '' });
+    setPage(0);
+    setSearchSubmitTick((n) => n + 1);
+  };
+
   const getMenuItems = (item: any, disableTicket: boolean) => {
     let MENU_ITEMS;
     if (hasWriteAccess(item.account_id)) {
@@ -309,9 +318,9 @@ const CloudAccountEvents = (props: {
     // Severity + Occurrence time merged
     rowData.push({
       component: (
-        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0 }}>
-          <DsSeverityIcon level={toSeverityLevel(item.priority)} aria-label={`Severity: ${item.priority || 'unknown'}`} />
-          <Datetime value={item.starts_at} sx={{ fontSize: ds.text.caption }} />
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0px' }}>
+          <SeverityIcon severityType={item.priority} />
+          <Datetime value={item.starts_at} sx={{ fontSize: '11px' }} />
         </Box>
       ),
       data: item.priority,
@@ -319,7 +328,7 @@ const CloudAccountEvents = (props: {
 
     rowData.push({
       component: (
-        <Box sx={{ minWidth: ds.space.mul(0, 60) }}>
+        <Box sx={{ minWidth: '120px' }}>
           <Text showAutoEllipsis value={subjectName} />
           {item.subject_namespace && <Text value={`service: ${item.subject_namespace}`} secondaryText />}
         </Box>
@@ -331,17 +340,17 @@ const CloudAccountEvents = (props: {
     // Event + Message merged (Event as primary, Message as sub-text)
     rowData.push({
       component: (
-        <Box sx={{ minWidth: ds.space.mul(0, 60) }}>
+        <Box sx={{ minWidth: '120px' }}>
           <Text showAutoEllipsis value={item.aggregation_key} />
           {ClusterNameWithRegion({
             name: item.title,
             showAutoEllipsis: true,
             maxWidth: '100%',
             hideIcon: true,
-            font: ds.text.caption,
-            sx: { fontStyle: 'italic', color: ds.gray[600] },
+            font: '11px',
+            sx: { fontStyle: 'italic', color: 'text.secondary' },
           })}
-          {crashDetail && <Text value={crashDetail} secondaryText sx={{ fontSize: ds.text.caption, color: ds.red[600], mt: 'var(--ds-space-1)' }} />}
+          {crashDetail && <Text value={crashDetail} secondaryText sx={{ fontSize: '10px', color: '#DC2626', mt: '2px' }} />}
           {ticketReferenceMap.has(item.fingerprint) && (
             <CustomTicketLink
               ticketURL={ticketReferenceMap.get(item.fingerprint)?.url || ''}
@@ -370,17 +379,15 @@ const CloudAccountEvents = (props: {
     rowData.push({
       component: (
         <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-          <Label tone={getStatusTone(item?.status)} size='sm'>
-            {getStatusText(item?.status)}
-          </Label>
-          <Text value={item.source?.replace('AWS_', '')} secondaryText sx={{ fontSize: ds.text.caption, mt: 'var(--ds-space-1)' }} />
+          <CustomLabels margin='0' text={getStatusText(item?.status)} variant={getStatusVariant(item?.status)} />
+          <Text value={item.source?.replace('AWS_', '')} secondaryText sx={{ fontSize: '11px', mt: '2px' }} />
         </Box>
       ),
     });
 
     rowData.push({
       component: (
-        <Tooltip variant='default' title={getTriageStatusTooltip(item?.nb_status || 'OPEN', item?.snoozed_until)} placement='top'>
+        <CustomTooltip variant='default' title={getTriageStatusTooltip(item?.nb_status || 'OPEN', item?.snoozed_until)} placement='top'>
           <Box>
             <NBStatusBadge
               eventId={item.id}
@@ -394,38 +401,21 @@ const CloudAccountEvents = (props: {
               disableTooltip
             />
           </Box>
-        </Tooltip>
+        </CustomTooltip>
       ),
       data: item?.nb_status,
     });
 
-    const menuItemsConfig = getMenuItems(item, ticketReferenceMap.has(item.fingerprint));
     rowData.push({
       component: (
-        <Box display={'flex'} flexDirection={'row'} alignItems={'center'} gap={ds.space[1]} justifyContent={'flex-start'}>
-          <DsButton
-            tone='secondary'
-            size='xs'
-            trailingAccent={<FiArrowRight />}
-            href={`/investigate?id=${item.id}&accountId=${props?.accountId}`}
-            data-testid='investigate-btn'
-          >
-            Investigate
-          </DsButton>
-          {menuItemsConfig && menuItemsConfig.length > 0 && (
-            <DsDropdownMenu
-              align='end'
-              size='sm'
-              items={menuItemsConfig.map((m) => ({
-                id: `events-action-${item.id}-${m.id}`,
-                label: m.label,
-                icon: m.icon ? <SafeIcon src={m.icon} alt='' width={14} height={14} /> : undefined,
-                disabled: m.disabled,
-                onSelect: () => onMenuClick({ id: m.id }, item),
-              }))}
-              trigger={<DsButton tone='ghost' size='xs' composition='icon-only' aria-label='More actions' icon={<MoreVertIcon />} />}
-            />
-          )}
+        <Box display={'flex'} flexDirection={'row'} alignItems={'center'} gap={'2px'} justifyContent={'flex-start'}>
+          <InvestigateButton displayText url={`/investigate?id=${item.id}&accountId=${props?.accountId}`} />
+          <ThreeDotsMenu
+            sx={{ ...action.primary }}
+            menuItems={getMenuItems(item, ticketReferenceMap.has(item.fingerprint))}
+            data={item}
+            onMenuClick={onMenuClick}
+          />
         </Box>
       ),
     });
@@ -450,6 +440,7 @@ const CloudAccountEvents = (props: {
           source: selectedSource.map((s) => s.value),
           status: selectedStatus,
           nbStatus: selectedNbStatus.length > 0 ? selectedNbStatus.map((s) => s?.value) : undefined,
+          messageSearch: searchByMessage || undefined,
         },
         rowsPerPage,
         page * rowsPerPage
@@ -517,17 +508,17 @@ const CloudAccountEvents = (props: {
     selectedSource,
     selectedStatus,
     selectedNbStatus,
+    searchSubmitTick,
     props?.subjectName,
     props.subjectType,
     props?.serviceName,
   ]);
 
   const handleDateRangeChange = (passedSelectedDateTime: any) => {
-    setSelectedDateRange({
+    _setSelectedDateRange({
       startDate: passedSelectedDateTime.startTime,
       endDate: passedSelectedDateTime.endTime,
     });
-    setPage(0);
     applyFiltersOnRouter(router, {
       start_time: passedSelectedDateTime.startTime,
       end_time: passedSelectedDateTime.endTime,
@@ -591,80 +582,102 @@ const CloudAccountEvents = (props: {
           }}
         />
       )}
-      <ListingLayout id='cloudaccount-events'>
-        <ListingLayout.Toolbar
-          data-testid={`${cloudAccountEventsTable}-filter-toolbar`}
-          actions={
-            <>
-              <CustomDateTimeRangePicker
-                passedSelectedDateTime={{
-                  startTime: selectedDateRange.startDate,
-                  endTime: selectedDateRange.endDate,
-                  shortcutClickTime: 0,
-                }}
-                onChange={(result: any) => {
-                  const val = result?.selection ?? result;
-                  if (val) handleDateRangeChange(val);
-                }}
-              />
-              <DownloadButton id={`${cloudAccountEventsTable}-download`} onClick={() => ({ tableId: cloudAccountEventsTable })} />
-            </>
-          }
-        >
-          <FilterDropdown
-            id={`${cloudAccountEventsTable}-filter-event-name`}
-            label='Event Name'
-            options={eventNamesFilter}
-            value={(eventNamesFilter || []).find((o: any) => o.value === selectedEventName) ?? null}
-            onSelect={(_e: any, item: any) => onEventNamesFilterChange({ target: { value: item?.value || '' } } as any)}
-          />
-          <FilterDropdown
-            id={`${cloudAccountEventsTable}-filter-severity`}
-            label='Severity'
-            options={(severityFilterType || []).map((s: string) => ({ label: s, value: s }))}
-            value={selectedSeverity ? { label: selectedSeverity, value: selectedSeverity } : null}
-            onSelect={(_e: any, item: any) => onSeverityFilterChange({ target: { value: item?.value || '' } } as any)}
-          />
-          <FilterDropdown
-            id={`${cloudAccountEventsTable}-filter-source`}
-            label='Source'
-            multiple
-            options={sourceFilter}
-            value={selectedSource}
-            onSelect={(_e: any, items: any) => onSourceFilterChange({ target: { value: Array.isArray(items) ? items : [] } })}
-          />
-          <FilterDropdown
-            id={`${cloudAccountEventsTable}-filter-status`}
-            label='Status'
-            options={statusFilter}
-            value={(statusFilter || []).find((o: any) => o.value === selectedStatus) ?? null}
-            onSelect={(_e: any, item: any) => onStatusFilterChange({ target: { value: item?.value || '' } } as any)}
-          />
-          <FilterDropdown
-            id={`${cloudAccountEventsTable}-filter-triage-status`}
-            label='Triage Status'
-            multiple
-            options={nbStatusFilter}
-            value={selectedNbStatus}
-            onSelect={(_e: any, items: any) => onNbStatusFilterChange({ target: { value: Array.isArray(items) ? items : [] } } as any)}
-          />
-        </ListingLayout.Toolbar>
-        <ListingLayout.Body>
-          <CustomTable2
-            id={cloudAccountEventsTable}
-            headers={TABLE_COLUMNS}
-            tableData={events}
-            rowsPerPage={rowsPerPage}
-            onPageChange={changePage}
-            totalRows={eventsCount}
-            loading={loading}
-            showExpandable={false}
-            pageNumber={page + 1}
-            tableHeadingCenter={props.tableHeadingCenter || ['Severity', 'Alert Status']}
-            stickyColumnIndex={props.stickyColumnIndex}
-          />
-        </ListingLayout.Body>
-      </ListingLayout>
+      <BoxLayout2
+        heading={props.heading ?? 'Events'}
+        id='cloudaccount-events'
+        filterOptions={[
+          {
+            type: 'search',
+            enabled: true,
+            onSelect: onSearchMessageFilter,
+            label: 'Search By Event',
+            onEnter: onSearchMessageEnter,
+            minWidth: '220px',
+            maxWidth: '220px',
+            value: searchByMessage,
+            onClear: onSearchMessageClear,
+          },
+          {
+            type: 'dropdown',
+            enabled: true,
+            options: eventNamesFilter,
+            onSelect: onEventNamesFilterChange,
+            minWidth: '150px',
+            label: 'Event Name',
+            value: selectedEventName,
+          },
+          {
+            type: 'dropdown',
+            enabled: true,
+            options: severityFilterType,
+            onSelect: onSeverityFilterChange,
+            minWidth: '150px',
+            label: 'Severity',
+            value: selectedSeverity,
+          },
+          {
+            type: 'multi-dropdown',
+            enabled: true,
+            options: sourceFilter,
+            onSelect: onSourceFilterChange,
+            minWidth: '150px',
+            label: 'Source',
+            value: selectedSource,
+          },
+          {
+            type: 'dropdown',
+            enabled: true,
+            options: statusFilter,
+            onSelect: onStatusFilterChange,
+            minWidth: '150px',
+            label: 'Status',
+            value: selectedStatus,
+          },
+          {
+            type: 'multi-dropdown',
+            enabled: true,
+            options: nbStatusFilter,
+            onSelect: onNbStatusFilterChange,
+            minWidth: '150px',
+            label: 'Triage Status',
+            value: selectedNbStatus,
+          },
+        ]}
+        sharingOptions={{
+          download: {
+            enabled: true,
+            onClick: () => {
+              return {
+                tableId: cloudAccountEventsTable,
+              };
+            },
+          },
+          sharing: { enabled: false, onClick: null },
+        }}
+        dateTimeRange={{
+          enabled: true,
+          onChange: handleDateRangeChange,
+          passedSelectedDateTime: {
+            startTime: selectedDateRange.startDate,
+            endTime: selectedDateRange.endDate,
+            shortcutClickTime: 0,
+          },
+        }}
+      >
+        <CloudAccountTable
+          id={cloudAccountEventsTable}
+          headers={TABLE_COLUMNS}
+          data={events}
+          rowsPerPage={rowsPerPage}
+          onPageChange={changePage}
+          totalRows={eventsCount}
+          loading={loading}
+          showExpandable={false}
+          pageNumber={page + 1}
+          tableHeadingCenter={props.tableHeadingCenter || ['Severity', 'Alert Status']}
+          stickyColumnIndex={props.stickyColumnIndex}
+        />
+      </BoxLayout2>
     </>
   );
 };

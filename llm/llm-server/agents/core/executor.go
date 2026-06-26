@@ -90,17 +90,16 @@ func sanitizeErrorForUser(err error) string {
 }
 
 // applyAgentModelTier returns a context whose ContextKeyModelTier reflects the
-// agent's declared model category — and explicitly RESETS it to "" when the
-// agent declares none.
+// agent's declared model category — defaulting to Retrieval when the agent
+// declares none (see agentModelCategory).
 //
-// The reset matters because sub-agents are invoked with the parent's context
-// (see factory_agent.go), which may already carry the parent investigation's
-// Reasoning tier. A naive "set only when declared" would let a category-less
-// tool agent (kubectl, logs, postgres, …) inherit that tier and silently run on
-// the expensive Reasoning-tier (pro) model. Always setting the value — to ""
-// when undeclared — makes modelTierFromContext report no tier → normal
-// global-default resolution, confining the pro tier to agents/steps that
-// explicitly opt in.
+// Always stamping the value matters because sub-agents are invoked with the
+// parent's context (see factory_agent.go), which may already carry the parent
+// investigation's Reasoning tier. A naive "set only when declared" would let a
+// category-less tool agent (kubectl, logs, postgres, …) inherit that tier and
+// silently run on the expensive Reasoning-tier (pro) model. Stamping every
+// agent — Retrieval by default — confines the pro tier to the orchestrators
+// that explicitly opt into Reasoning.
 func applyAgentModelTier(ctx *security.RequestContext, agent NBAgent) *security.RequestContext {
 	if ctx == nil {
 		return nil

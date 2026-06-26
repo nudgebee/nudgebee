@@ -9,7 +9,7 @@ async function selectFromFilterDropdown(
   dropdownLocator: import("@playwright/test").Locator,
   optionText: string
 ): Promise<boolean> {
-  const searchInput = page.locator('input[placeholder="Search..."]');
+  const searchInput = page.locator('input[placeholder^="Search"]');
   const isAlreadyOpen = await searchInput.isVisible().catch(() => false);
   if (!isAlreadyOpen) {
     await dropdownLocator.click();
@@ -36,7 +36,11 @@ async function selectFromFilterDropdown(
     }
     return false;
   }
-  await option.click();
+  await page.mouse.move(0, 0);
+  await page.waitForTimeout(150);
+  await option.click().catch(async () => {
+    await option.click({ force: true });
+  });
   return true;
 }
 
@@ -129,7 +133,10 @@ export async function configureChannels(
     (channelConfig.email || channelConfig.excludeUsers?.length) &&
     (await locators.emailBadge.isVisible())
   ) {
-    await locators.emailBadge.click();
+    const emailAlreadyOpen = await locators.emailInput.isVisible().catch(() => false);
+    if (!emailAlreadyOpen) {
+      await locators.emailBadge.click();
+    }
 
     if (channelConfig.email) {
       await locators.emailInput.waitFor({ state: "visible" });

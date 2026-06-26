@@ -618,6 +618,9 @@ const TicketListTable = ({
           <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
             <Typography
               noWrap
+              role='button'
+              tabIndex={0}
+              aria-label={`Open ticket ${item.ticket_id}`}
               sx={{
                 fontSize: 'var(--ds-text-body)',
                 color: 'var(--ds-blue-500)',
@@ -627,6 +630,13 @@ const TicketListTable = ({
               onClick={(e) => {
                 e.stopPropagation();
                 handleOpenTicket(item?.url);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleOpenTicket(item?.url);
+                }
               }}
             >
               {item.ticket_id}
@@ -789,7 +799,16 @@ const TicketListTable = ({
         {hasActiveFilters && (
           <Typography
             data-testid='clear-all-filters'
+            role='button'
+            tabIndex={0}
+            aria-label='Clear all filters'
             onClick={onClearAllFilters}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onClearAllFilters();
+              }
+            }}
             sx={{
               fontSize: 'var(--ds-text-small)',
               fontWeight: 'var(--ds-font-weight-medium)',

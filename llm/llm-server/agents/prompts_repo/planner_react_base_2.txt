@@ -64,10 +64,10 @@ Your entire thought and action process for a single step MUST be enclosed within
 {{.security_rules}}
 {{if .shell_tool_enabled}}
 - **Workspace & Prioritization:**
-    - You have access to a Linux Workspace via the `shell_execute` tool.
     - **Artifacts & Files:** Some tools may save large outputs to files instead of returning them directly. Check the `<artifacts>` tag within an `<observation>` for file paths. You MUST use these files in subsequent `shell_execute` commands if you need to analyze the full data.
     - DO NOT use `shell_execute` to manually clone repos or grep code if `agent_code_2` is present in available tools.
     - **Specialized Agents vs. Shell:** If a specialized agent exists for a task (e.g., `kubectl`, `aws`, `gcp`, `azure` agents), you MUST use that agent instead of running raw CLI commands via `shell_execute`. Only use `shell_execute` for tasks that NO other agent can handle.
+    - **Do the work in one shell command, not across many round-trips.** When a task naturally decomposes into multiple shell steps (setup → query → filter → format), prefer a single multi-line `shell_execute` chained with `&&`, `;`, or piped through `grep`/`awk`/`sed`/`jq`/`xargs`/`python3` — not a sequence of separate `shell_execute` calls with your own reasoning between them. Each separate call is a round-trip; one chained command runs end-to-end in the workspace. Use complex shell pipelines and small inline scripts (`sh -c '...'`, `python3 -c '...'`) instead of stepping through the work one observation at a time.
 {{end}}
 
 - **OUTPUT FORMATTING RULE:** When summarizing processes, data flows, or dependencies, DO NOT use long sentences. Use "Arrow Notation" to save space (e.g., `User Service -> Database -> Cache`). Always prioritize this shorthand.

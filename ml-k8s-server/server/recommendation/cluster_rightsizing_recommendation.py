@@ -299,10 +299,21 @@ class ClusterRightSizingRecommendation:
             result_data = data.fetchall()
             for row in result_data:
                 pod = row._asdict()
-                for container in pod.get("containers"):
-                    if "requests" in container["resources"]:
-                        total_cpu_request += self.parse_cpu(container["resources"].get("requests").get("cpu"))
-                        total_memory_request += self.parse_mem(container.get("resources").get("requests").get("memory"))
+                for container in pod.get("containers") or []:
+                    if not isinstance(container, dict):
+                        continue
+                    resources = container.get("resources")
+                    if not isinstance(resources, dict):
+                        continue
+                    requests = resources.get("requests")
+                    if not isinstance(requests, dict):
+                        continue
+                    cpu = requests.get("cpu")
+                    if cpu is not None:
+                        total_cpu_request += self.parse_cpu(str(cpu))
+                    memory = requests.get("memory")
+                    if memory is not None:
+                        total_memory_request += self.parse_mem(str(memory))
 
         return total_cpu_request, total_memory_request
 
@@ -372,15 +383,21 @@ class ClusterRightSizingRecommendation:
 
             for row in result_data:
                 pod = row._asdict()
-                for container in pod.get("containers"):
+                for container in pod.get("containers") or []:
+                    if not isinstance(container, dict):
+                        continue
                     resources = container.get("resources")
                     if not isinstance(resources, dict):
                         continue
                     requests = resources.get("requests")
                     if not isinstance(requests, dict):
                         continue
-                    total_cpu_request += self.parse_cpu(requests.get("cpu"))
-                    total_memory_request += self.parse_mem(requests.get("memory"))
+                    cpu = requests.get("cpu")
+                    if cpu is not None:
+                        total_cpu_request += self.parse_cpu(str(cpu))
+                    memory = requests.get("memory")
+                    if memory is not None:
+                        total_memory_request += self.parse_mem(str(memory))
 
         # convert total memory to GB
         return total_cpu_request, total_memory_request

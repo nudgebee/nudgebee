@@ -19,9 +19,14 @@ type Client struct {
 	Model   string
 	url     string
 	Adapter string
+	APIType string
 }
 
 func New(token, model, url, adapter string) (*Client, error) {
+	return NewWithAPIType(token, model, url, adapter, "")
+}
+
+func NewWithAPIType(token, model, url, adapter, apiType string) (*Client, error) {
 	if token == "" {
 		return nil, ErrInvalidToken
 	}
@@ -30,13 +35,20 @@ func New(token, model, url, adapter string) (*Client, error) {
 		Model:   model,
 		url:     url,
 		Adapter: adapter,
+		APIType: apiType,
 	}, nil
+}
+
+type ChatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 type InferenceRequest struct {
 	Model             string        `json:"repositoryId"`
 	Adapter           string        `json:"adapter,omitempty"`
 	Prompt            string        `json:"prompt"`
+	Messages          []ChatMessage `json:"messages,omitempty"`
 	Task              InferenceTask `json:"task"`
 	Temperature       float64       `json:"temperature"`
 	TopP              float64       `json:"top_p,omitempty"`
@@ -48,13 +60,17 @@ type InferenceRequest struct {
 }
 
 type InferenceResponse struct {
-	Text string `json:"generated_text"`
+	Text             string `json:"generated_text"`
+	PromptTokens     int    `json:"-"`
+	CompletionTokens int    `json:"-"`
+	TotalTokens      int    `json:"-"`
 }
 
 func (c *Client) RunInference(ctx context.Context, request *InferenceRequest) (*InferenceResponse, error) {
 	payload := &inferencePayload{
-		Model:  request.Model,
-		Inputs: request.Prompt,
+		Model:    request.Model,
+		Inputs:   request.Prompt,
+		Messages: request.Messages,
 		Parameters: parameters{
 			Temperature:       request.Temperature,
 			Adapter_id:        request.Adapter,
@@ -103,7 +119,10 @@ func (c *Client) RunInference(ctx context.Context, request *InferenceRequest) (*
 	// TODO: Add response cleaning based on Model.
 	// e.g., for gpt2, text = text[len(request.Prompt)+1:]
 	return &InferenceResponse{
-		Text: text,
+		Text:             text,
+		PromptTokens:     hfResp[0].PromptTokens,
+		CompletionTokens: hfResp[0].CompletionTokens,
+		TotalTokens:      hfResp[0].TotalTokens,
 	}, nil
 }
 

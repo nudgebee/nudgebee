@@ -15,8 +15,10 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/llms/googleai"
+	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/tmc/langchaingo/llms"
+	"golang.org/x/sync/singleflight"
 )
 
 // CacheScope defines the stability level of the cache
@@ -44,7 +46,7 @@ type CacheRequest struct {
 	Messages       []llms.MessageContent
 	ApiKey         string
 	Scope          CacheScope
-	Capabilities   map[string]any // Optional; used to isolate cache slots when tool set varies per request
+	Capabilities   toolcore.AgentCapabilities // Optional; used to isolate cache slots when tool set varies per request
 }
 
 // CacheResponse contains the result of cache operation
@@ -157,9 +159,23 @@ func (cm *CacheManager) Stop() {
 
 const GoogleAICacheNamespace = "llm_googleai_cache"
 
+// googleAICacheCreateLockTTL bounds how long the cross-replica creation lock is
+// held; if the holder dies mid-create the lock self-expires so peers can proceed.
+// googleAICacheCreateLockWait is how long a non-holder waits for the holder to
+// publish the cache entry before falling back to creating it itself.
+const (
+	googleAICacheCreateLockTTL  = 2 * time.Minute
+	googleAICacheCreateLockWait = 30 * time.Second
+)
+
 // GoogleAICacheProvider implements caching for Google AI (pre-created cached content)
 type GoogleAICacheProvider struct {
 	namespace string
+	// createGroup collapses concurrent cache-miss creations for the same cache
+	// key into a single createCache call, so parallel conversations sharing an
+	// account:agent:model key don't each create a distinct (duplicate) Google AI
+	// CachedContent resource. Zero value is ready to use.
+	createGroup singleflight.Group
 }
 
 type CacheInfo struct {
@@ -486,7 +502,48 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 		"status", "miss")
 	common.MetricsLLMCacheTotal(req.Provider, req.Model, "miss", req.AccountId)
 
-	cacheInfoResult, errCreate := p.createCache(ctx, req, cacheableMessages, contentHash, cacheKey, tokenCount)
+	// Collapse concurrent creations for the same cacheKey into one createCache
+	// call. Without this, parallel conversations that miss on the same
+	// account:agent:model key each create a distinct Google AI CachedContent —
+	// duplicate storage cost and orphaned resources under concurrent load (#302).
+	//
+	// singleflight runs the shared function under the *first* caller's context,
+	// so if that caller disconnects/times out, its cancellation would propagate
+	// to every concurrent waiter sharing this cacheKey and fail their cache
+	// creation too. Detach from the initiating request's cancellation and apply
+	// our own bounded timeout — cache creation is worth completing regardless of
+	// which caller triggered it, and the result is shared by all waiters.
+	detachedCtx := context.WithoutCancel(ctx)
+	detachedCtx, cancelCreate := context.WithTimeout(detachedCtx, 5*time.Minute)
+	defer cancelCreate()
+	created, errCreate, _ := p.createGroup.Do(cacheKey, func() (interface{}, error) {
+		// Re-check the shared cache first: another goroutine (Tier 1) or replica
+		// (Tier 2) may have published the entry between our miss and this flight.
+		if info := p.readSharedCacheInfo(cacheKey); info != nil {
+			return info, nil
+		}
+		// Tier 2 (cross-replica): singleflight only collapses creations within one
+		// process, so with >1 llm-server replica each still creates a duplicate
+		// Google AI cache. A Redis SETNX lock on cacheKey ensures only one replica
+		// creates it; the others wait for the entry to be published and reuse it.
+		// Single-replica/bigcache deployments always acquire (no peers).
+		token, acquired := common.CacheTryLock(detachedCtx, cacheKey, googleAICacheCreateLockTTL)
+		if acquired {
+			defer common.CacheUnlock(detachedCtx, cacheKey, token)
+		} else {
+			// Another replica owns creation; wait briefly for it to publish, then reuse.
+			if info := p.waitForSharedCacheInfo(cacheKey, googleAICacheCreateLockWait); info != nil {
+				return info, nil
+			}
+			// Holder didn't publish in time — fall through and create (best-effort,
+			// avoids a deadlock if the holder died mid-create).
+		}
+		return p.createCache(detachedCtx, req, cacheableMessages, contentHash, cacheKey, tokenCount)
+	})
+	var cacheInfoResult *CacheInfo
+	if errCreate == nil {
+		cacheInfoResult, _ = created.(*CacheInfo)
+	}
 	if errCreate != nil {
 		slog.Error("Google AI cache: Failed to create cache",
 			"error", errCreate,
@@ -523,6 +580,39 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 		},
 		CacheHit:  false,
 		CacheInfo: cacheInfoResult,
+	}
+}
+
+// readSharedCacheInfo returns the published CacheInfo for cacheKey from the
+// shared cache, or nil if absent/corrupt. Used to reuse a cache another
+// goroutine or replica just created instead of creating a duplicate.
+func (p *GoogleAICacheProvider) readSharedCacheInfo(cacheKey string) *CacheInfo {
+	data, ok := common.CacheGet(p.namespace, cacheKey)
+	if !ok {
+		return nil
+	}
+	var info CacheInfo
+	if err := json.Unmarshal(data, &info); err != nil {
+		return nil
+	}
+	return &info
+}
+
+// waitForSharedCacheInfo polls the shared cache for up to `within` for an entry
+// published by the replica that holds the creation lock.
+func (p *GoogleAICacheProvider) waitForSharedCacheInfo(cacheKey string, within time.Duration) *CacheInfo {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.After(within)
+	for {
+		select {
+		case <-timeout:
+			return nil
+		case <-ticker.C:
+			if info := p.readSharedCacheInfo(cacheKey); info != nil {
+				return info
+			}
+		}
 	}
 }
 
@@ -807,38 +897,22 @@ func generateCacheKey(scope CacheScope, accountId, conversationId, agentName, mo
 }
 
 // capabilityFingerprint returns an 8-hex-char suffix derived from the sorted
-// allowed_tools list in capabilities, or an empty string when no allow-list is
+// AllowedTools list in capabilities, or an empty string when no allow-list is
 // set. This suffix is appended to agentName inside GoogleAICacheProvider only
 // so that different tool scopes get distinct Google AI CachedContent slots and
 // don't thrash each other (Google AI uses a single slot per cache key).
 //
 // Anthropic inline cache_control is content-addressed and unaffected.
-func capabilityFingerprint(capabilities map[string]any) string {
-	if len(capabilities) == 0 {
-		return ""
-	}
-	raw, ok := capabilities["allowed_tools"]
-	if !ok {
-		return ""
-	}
-	var tools []string
-	switch v := raw.(type) {
-	case []string:
-		tools = v
-	case []any:
-		for _, item := range v {
-			if s, ok := item.(string); ok {
-				tools = append(tools, s)
-			}
-		}
-	}
+func capabilityFingerprint(capabilities toolcore.AgentCapabilities) string {
+	tools := toolcore.NormalizeList(capabilities.AllowedTools)
 	if len(tools) == 0 {
 		return ""
 	}
-	sorted := make([]string, len(tools))
-	copy(sorted, tools)
-	sort.Strings(sorted)
-	h := sha256.Sum256([]byte(strings.Join(sorted, ",")))
+	for i, t := range tools {
+		tools[i] = strings.ToLower(t)
+	}
+	sort.Strings(tools)
+	h := sha256.Sum256([]byte(strings.Join(tools, ",")))
 	return hex.EncodeToString(h[:4]) // 8 hex chars from first 4 bytes
 }
 

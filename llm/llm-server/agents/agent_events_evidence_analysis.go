@@ -920,14 +920,14 @@ func (m EvidenceInsightsTool) parseEventData(evidences map[string]any) RCAInvest
 	rcaInvestigateData := RCAInvestigateData{}
 	evidenceBytes, err := common.MarshalJson(evidences)
 	if err != nil {
-		slog.Error("Error marshaling evidences to JSON:", "error", err)
+		slog.Error("marshaling evidences to JSON", "error", err)
 		return RCAInvestigateData{}
 	}
 
 	var evidence events.InvestigateData
 	err = common.UnmarshalJson(evidenceBytes, &evidence)
 	if err != nil {
-		slog.Error("Error unmarshaling JSON to common.InvestigateData:", "error", err)
+		slog.Error("unmarshaling JSON to common.InvestigateData", "error", err)
 		return RCAInvestigateData{}
 	}
 
@@ -947,12 +947,12 @@ func (m EvidenceInsightsTool) parseEventData(evidences map[string]any) RCAInvest
 		temp["changes"] = updatedValues
 		jsonDeployment, err := common.MarshalJson(temp)
 		if err != nil {
-			slog.Error("Error marshaling deployment data to JSON:", "error", err)
+			slog.Error("marshaling deployment data to JSON", "error", err)
 			return RCAInvestigateData{}
 		}
 		var deploymentData map[string]any
 		if err := common.UnmarshalJson(jsonDeployment, &deploymentData); err != nil {
-			slog.Error("Error unmarshaling deployment data to map[string]any:", "error", err)
+			slog.Error("unmarshaling deployment data to map[string]any", "error", err)
 			return RCAInvestigateData{}
 		}
 		rcaInvestigateData.LastDeploymentChange = deploymentData
@@ -979,7 +979,7 @@ func (m EvidenceInsightsTool) parseEventData(evidences map[string]any) RCAInvest
 		if len(allNodeMetrics) > 0 {
 			JsonMemoryDataNormalized, err := common.MarshalJson(allNodeMetrics)
 			if err != nil {
-				slog.Error("Error marshaling node metrics to JSON:", "error", err)
+				slog.Error("marshaling node metrics to JSON", "error", err)
 				return RCAInvestigateData{}
 			}
 			rcaInvestigateData.NodeMemory = string(JsonMemoryDataNormalized)
@@ -1033,7 +1033,7 @@ func (m EvidenceInsightsTool) parseEventData(evidences map[string]any) RCAInvest
 		if len(allPodMetrics) > 0 {
 			jsonPodMemory, err := common.MarshalJson(allPodMetrics)
 			if err != nil {
-				slog.Error("Error marshaling pod memory to JSON:", "error", err)
+				slog.Error("marshaling pod memory to JSON", "error", err)
 				return RCAInvestigateData{}
 			}
 			rcaInvestigateData.PodMemory = string(jsonPodMemory)
@@ -1078,12 +1078,12 @@ func (m EvidenceInsightsTool) parseEventData(evidences map[string]any) RCAInvest
 			}
 			jsonPodMemory, err := common.MarshalJson(temp)
 			if err != nil {
-				slog.Error("Error marshaling pod memory to JSON:", "error", err)
+				slog.Error("marshaling pod memory to JSON", "error", err)
 				return RCAInvestigateData{}
 			}
 			rcaInvestigateData.PodMemory = string(jsonPodMemory)
 		} else {
-			slog.Error("Error: ContainerMetrics is not of type map[string]any")
+			slog.Error("ContainerMetrics is not of type map[string]any")
 		}
 	}
 	if evidence.PodData.Data != nil {
@@ -1185,11 +1185,11 @@ func (m EvidenceInsightsTool) Call(nbRequestContext toolcore.NbToolContext, inpu
 	eventInvestigateDataMap := make(map[string]any)
 	eventInvestigateDataBytes, err := common.MarshalJson(parsedEvidence)
 	if err != nil {
-		slog.Error("Error marshaling RCAInvestigateData to JSON:", "error", err)
+		slog.Error("marshaling RCAInvestigateData to JSON", "error", err)
 		return toolcore.NBToolResponse{}, err
 	}
 	if err := common.UnmarshalJson(eventInvestigateDataBytes, &eventInvestigateDataMap); err != nil {
-		slog.Error("Error unmarshaling JSON to map[string]any:", "error", err)
+		slog.Error("unmarshaling JSON to map[string]any", "error", err)
 		return toolcore.NBToolResponse{}, err
 	}
 	for evidenceName, evidenceContent := range eventInvestigateDataMap {
@@ -1256,4 +1256,8 @@ func (m EvidenceInsightsTool) Call(nbRequestContext toolcore.NbToolContext, inpu
 		Data: finalOutput,
 		Type: toolcore.NBToolResponseTypeText,
 	}, nil
+}
+
+func (l AgentEventAnalysis) GetModelCategory() core.ModelTier {
+	return core.ModelTierSummary
 }

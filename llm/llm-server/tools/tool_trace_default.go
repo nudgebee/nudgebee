@@ -10,6 +10,9 @@ import (
 
 const ToolGetTracesDefault = "traces_execute_default"
 
+// maxTracesInResponse caps the number of traces returned by the default trace tool.
+const maxTracesInResponse = 100
+
 func init() {
 	core.RegisterNBToolFactory(ToolGetTracesDefault, func(accountId string) (core.NBTool, error) {
 		return TracesExecuteDefaultTool{
@@ -116,8 +119,8 @@ func (m TracesExecuteDefaultTool) Call(nbRequestContext core.NbToolContext, inpu
 		}, err
 	}
 
-	if len(queryResponse.Traces) > 100 {
-		queryResponse.Traces = queryResponse.Traces[:100]
+	if len(queryResponse.Traces) > maxTracesInResponse {
+		queryResponse.Traces = queryResponse.Traces[:maxTracesInResponse]
 	}
 
 	response, err := common.MarshalJson(queryResponse.Traces)

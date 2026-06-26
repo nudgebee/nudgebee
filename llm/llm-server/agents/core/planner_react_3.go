@@ -528,7 +528,7 @@ func (o *NBReActPlanner3) resolveToolResponse(step NBAgentPlannerToolActionStep)
 	if toolResponse == "" {
 		toolResponse = "No Data Found"
 	}
-	return toolResponse
+	return renderObservationWithMetadata(toolResponse, step.Metadata)
 }
 
 // getToolResponse processes the observation for a step and applies semantic
@@ -1832,6 +1832,7 @@ func (o *NBReActPlanner3) saveCritiqueAsToolCall(feedback string) error {
 		feedback,
 		toolcore.NBToolResponseStatusSuccess,
 		toolcore.NBToolTypeTool,
+		nil,
 		nil,
 		nil,
 	)

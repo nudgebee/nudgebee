@@ -20,14 +20,14 @@ type EventRecommendationApplyResponse struct {
 }
 
 // Type aliases from event/types for backward compatibility
-type EventPriortiy = eventtypes.EventPriortiy
+type EventPriority = eventtypes.EventPriority
 
 const (
-	EventPriortiyDebug  = eventtypes.EventPriortiyDebug
-	EventPriortiyInfo   = eventtypes.EventPriortiyInfo
-	EventPriortiyLow    = eventtypes.EventPriortiyLow
-	EventPriortiyMedium = eventtypes.EventPriortiyMedium
-	EventPriortiyHigh   = eventtypes.EventPriortiyHigh
+	EventPriorityDebug  = eventtypes.EventPriorityDebug
+	EventPriorityInfo   = eventtypes.EventPriorityInfo
+	EventPriorityLow    = eventtypes.EventPriorityLow
+	EventPriorityMedium = eventtypes.EventPriorityMedium
+	EventPriorityHigh   = eventtypes.EventPriorityHigh
 )
 
 type EventStatus = eventtypes.EventStatus

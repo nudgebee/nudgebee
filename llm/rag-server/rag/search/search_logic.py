@@ -8,11 +8,14 @@ It is called directly by the RAG server for all search operations.
 import logging
 import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from config import setup_logger
 from rag.exceptions import is_not_found_error
 from utils.config import Config
+
+if TYPE_CHECKING:
+    from qdrant_client import QdrantClient
 
 logger = logging.getLogger(__name__)
 setup_logger()
@@ -21,7 +24,13 @@ setup_logger()
 _search_executor = ThreadPoolExecutor(max_workers=Config.search_max_workers, thread_name_prefix="qdrant-search")
 
 
-def _search_single_collection_by_vector(collection_name, query_vector, client, k, metadata_filter) -> List[dict]:
+def _search_single_collection_by_vector(
+    collection_name: str,
+    query_vector: List[float],
+    client: "QdrantClient",
+    k: int,
+    metadata_filter: Optional[Dict] = None,
+) -> List[dict]:
     """Search a single Qdrant collection using a pre-computed query vector."""
     try:
         query_filter = None
@@ -65,7 +74,13 @@ def _search_single_collection_by_vector(collection_name, query_vector, client, k
         return []
 
 
-def search_collections(collection_names, query, account_id, min_results, metadata_filter: Optional[Dict] = None):
+def search_collections(
+    collection_names: List[str],
+    query: str,
+    account_id: str,
+    min_results: int,
+    metadata_filter: Optional[Dict] = None,
+) -> List[dict]:
     """
     Performs a search on a list of Qdrant collections.
     Embeds the query once, then searches all collections with the pre-computed vector.

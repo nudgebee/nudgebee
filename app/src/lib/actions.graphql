@@ -5041,6 +5041,7 @@ input AIConfigClientToolSchemaInput {
 
 input AIConfigCapabilitiesInput {
   disabled_tools: [String]
+  allowed_tools: [String]
 }
 
 input AISubmitClientToolCallRequest {

@@ -67,6 +67,9 @@ type MetricListItem struct {
 	Namespace  string            `json:"namespace"`
 	Statistics []string          `json:"statistics,omitempty"`
 	Attributes map[string]string `json:"attributes,omitempty"`
+	// Dimensions holds the deduped dimension sets observed for this metric
+	// (each a name->value map), populated by the dynamic CloudWatch lister.
+	Dimensions []map[string]string `json:"dimensions,omitempty"`
 }
 
 type QueryResourceRequest struct {

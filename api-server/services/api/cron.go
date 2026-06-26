@@ -24,6 +24,7 @@ import (
 	"nudgebee/services/reports"
 	"nudgebee/services/security"
 	"nudgebee/services/slo"
+	"nudgebee/services/spend"
 	"nudgebee/services/tenant"
 	"nudgebee/services/traces"
 	"nudgebee/services/triage"
@@ -292,6 +293,21 @@ func handleCrons(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logge
 				}
 			}()
 			c.JSON(200, gin.H{"status": "ok"})
+		case "OpenCost Spend Sync":
+			accountId := parseAccountIdPayload(actionPayload.Payload)
+			go func() {
+				ctx.GetLogger().Info("cron: syncing opencost spends from central opencost")
+				// Detached cron context never cancels on its own; bound the run so a
+				// hung relay/opencost call can't leak this goroutine indefinitely.
+				tctx, cancel := context.WithTimeout(ctx.GetContext(), 30*time.Minute)
+				defer cancel()
+				runCtx := security.NewRequestContext(tctx, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
+				err := spend.SyncOpenCostSpends(runCtx, accountId)
+				if err != nil {
+					ctx.GetLogger().Error("cron: error syncing opencost spends", "error", err)
+				}
+			}()
+			c.JSON(200, gin.H{"status": "ok"})
 		case "Load Agent Playbook":
 			go func() {
 				ctx.GetLogger().Info("cron: Loading Agent Playbook")
@@ -535,6 +551,31 @@ func handleCrons(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logge
 			return
 		}
 	})
+}
+
+// parseAccountIdPayload extracts an optional account_id filter from a cron payload,
+// tolerating the []any / []string / string shapes Hasura crons send. Returns an
+// empty slice when absent (callers treat that as "all accounts").
+func parseAccountIdPayload(payload map[string]any) []string {
+	if payload == nil || payload["account_id"] == nil {
+		return nil
+	}
+	switch v := payload["account_id"].(type) {
+	case []any:
+		ids := make([]string, 0, len(v))
+		for _, val := range v {
+			if s, ok := val.(string); ok {
+				ids = append(ids, s)
+			}
+		}
+		return ids
+	case []string:
+		return v
+	case string:
+		return []string{v}
+	default:
+		return nil
+	}
 }
 
 // triggerVerticalRightsizing iterates over eligible K8s accounts and triggers vertical rightsizing

@@ -1453,6 +1453,8 @@ const apiRecommendations = {
           event_cloud_account_id
           event_priority
           event_category
+          conversation_session_id
+          conversation_title
         }
       }
       event_resolution_aggregate: event_resolution_groupings_v2(where: $whereAgg) {

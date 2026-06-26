@@ -21,7 +21,7 @@ function isLoopbackBaseURL(base: string | undefined): boolean {
     return false;
   }
   if (host === 'localhost') return true;
-  if (host === '::1') return true;
+  if (host === '[::1]' || host === '::1') return true;
   if (host.startsWith('127.')) return true; // 127.0.0.0/8
   return false;
 }

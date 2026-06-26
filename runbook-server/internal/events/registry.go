@@ -129,13 +129,39 @@ func (r *EventRegistry) evaluateRules(candidates []CompiledRule, accountID strin
 			continue
 		}
 
-		// Jinja context uses map[string]any
+		// Jinja context uses map[string]any. Inject the built-in date/time vars (now,
+		// datetime, timestamp_iso, …) — mirroring workflow task rendering — so trigger
+		// filters can do date-based logic, e.g.
+		// {{ now() | tz("Asia/Kolkata") | strftime("%H") | int >= 9 }}.
+		nowUTC := time.Now().UTC()
 		ctx := exec.NewContext(map[string]any{
-			"event": payload,
+			"event":         payload,
+			"now":           func() time.Time { return time.Now().UTC() },
+			"date":          nowUTC.Format("02012006"),
+			"date_iso":      nowUTC.Format("2006-01-02"),
+			"date_us":       nowUTC.Format("01/02/2006"),
+			"time":          nowUTC.Format("1504"),
+			"time_hms":      nowUTC.Format("15:04:05"),
+			"datetime":      nowUTC.Format("02012006_1504"),
+			"timestamp_iso": nowUTC.Format(time.RFC3339),
 		})
 
 		var buf bytes.Buffer
-		err := c.Query.Execute(&buf, ctx)
+		// Recover from filter panics (e.g. tz with an invalid zone, time_add with a
+		// bad duration) so a single malformed filter skips its rule instead of
+		// crashing the evaluator.
+		err := func() (err error) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					if e, ok := rec.(error); ok {
+						err = e
+					} else {
+						err = fmt.Errorf("filter panic: %v", rec)
+					}
+				}
+			}()
+			return c.Query.Execute(&buf, ctx)
+		}()
 		if err != nil {
 			r.logger.Warn("failed to evaluate gonja filter", "workflow_id", c.Rule.WorkflowID, "filter", c.Rule.Filter, "error", err)
 			continue

@@ -79,7 +79,10 @@ func HandleConversationSuggestionRequest(ctx *security.RequestContext, request C
 
 	// Create context with Global Cache Scope since suggestions use a static system prompt
 	suggestionCtx := security.NewRequestContext(
-		context.WithValue(ctx.GetContext(), ContextKeyCacheScope, CacheScopeGlobal),
+		context.WithValue(
+			context.WithValue(ctx.GetContext(), ContextKeyCacheScope, CacheScopeGlobal),
+			ContextKeyModelTier, ModelTierSummary,
+		),
 		ctx.GetSecurityContext(),
 		ctx.GetLogger(),
 		ctx.GetTracer(),

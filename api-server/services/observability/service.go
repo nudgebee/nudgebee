@@ -360,6 +360,8 @@ func getMetricsSource(provider, integrationSource string) (MetricSource, error) 
 		return &ChronosphereMetricSource{}, nil
 	case provider == "aws_cloudwatch" && integrationSource == "user":
 		return &cloudMetrics{}, nil
+	case provider == "azure_app_insights" && integrationSource == "user":
+		return &AzureAppInsightsMetricSource{}, nil
 	case provider == "newrelic" && integrationSource == "user":
 		return &NewRelicMetricSource{}, nil
 	case provider == "splunk_observability_platform" && integrationSource == "user":
@@ -698,6 +700,9 @@ var allProviderCaps = map[string]providerStaticCaps{
 }
 
 func getProviderCapabilities(provider, integrationSource, providerType string) ProviderCapabilities {
+	if provider == "" {
+		return ProviderCapabilities{}
+	}
 	var caps ProviderCapabilities
 
 	// Apply static per-provider capabilities.

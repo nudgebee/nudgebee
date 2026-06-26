@@ -600,7 +600,7 @@ const KubernetesLLMResponseGenerator = ({ accountId, query = '', popup = false, 
             if (!popup) {
               applyFiltersOnRouter(router, { session_id: '' });
             }
-            snackbar.error(parseHttpResponseBodyMessage(response) || 'Cant process your request right now.');
+            snackbar.error(parseHttpResponseBodyMessage(response) || "Can't process your request right now.");
           } else {
             if (!popup) {
               applyFiltersOnRouter(router, { session_id: llmSessionId });

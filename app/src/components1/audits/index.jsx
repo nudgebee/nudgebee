@@ -291,6 +291,10 @@ export const AuditsTable = () => {
       return <Text value={`New ${capitalize(item.event_category)} With Name ${formatSLOAuditMessage(data)} Created`} showAutoEllipsis />;
     } else if (item.event_type == 'UPDATE_AGENT_TOKEN') {
       return <Text value={`Agent Token of Account ${accountName} is Updated`} showAutoEllipsis />;
+    } else if (item.event_type == 'K8SRELAY_AGENT_CONNECTED') {
+      return <Text value={`Agent${accountName ? ` of Account ${accountName}` : ''} Connected`} showAutoEllipsis />;
+    } else if (item.event_type == 'K8SRELAY_AGENT_DISCONNECTED') {
+      return <Text value={`Agent${accountName ? ` of Account ${accountName}` : ''} Disconnected`} showAutoEllipsis />;
     } else if (item.event_type == 'CUSTOM_AGENT_UPDATE') {
       return <Text value={`New ${capitalize(item.event_category)} Updated`} showAutoEllipsis />;
     } else if (item.event_type == 'MESSAGING_PLATFORM_UPDATE') {

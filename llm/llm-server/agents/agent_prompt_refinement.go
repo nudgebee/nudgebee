@@ -120,3 +120,7 @@ func (l PromptRefinementAgent) GetPlannerType() core.AgentPlannerType {
 func (p PromptRefinementAgent) GetSummaryToolName() string {
 	return core.ToolLlm
 }
+
+func (l PromptRefinementAgent) GetModelCategory() core.ModelTier {
+	return core.ModelTierSummary
+}

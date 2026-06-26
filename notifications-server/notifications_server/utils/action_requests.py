@@ -16,7 +16,7 @@ class ActionParams(DocumentedModel):
     Base class for all Action parameter classes.
     """
 
-    def post_initialization(self):
+    def post_initialization(self) -> None:
         """
         This function can be used to run post initialization logic on the action params
         """
@@ -46,7 +46,7 @@ class PartialAuth(BaseModel):
     key: UUID
 
 
-def sign_action_request(body: BaseModel, signing_key: str):
+def sign_action_request(body: BaseModel, signing_key: str) -> str:
     import json
 
     format_req = str.encode(f"v0:{json.dumps(body.model_dump(exclude_none=True), sort_keys=True)}")
@@ -58,7 +58,7 @@ def sign_action_request(body: BaseModel, signing_key: str):
 
 class OutgoingActionRequest:
     @staticmethod
-    def send(body: ActionRequestBody, signing_key: str):
+    def send(body: ActionRequestBody, signing_key: str) -> None:
         action_request = ExternalActionRequest(
             signature=sign_action_request(body, signing_key),
             body=body,

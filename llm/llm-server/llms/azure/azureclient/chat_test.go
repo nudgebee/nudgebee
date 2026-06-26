@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -51,4 +55,41 @@ func TestChatMessage_MarshalUnmarshal(t *testing.T) {
 	err = json.Unmarshal(text, &msg2)
 	require.NoError(t, err)
 	require.Equal(t, msg, msg2)
+}
+
+func TestParseStreamingChatResponse_NoGoroutineLeakOnStreamingFuncError(t *testing.T) {
+	// Emit many chunks so the producer goroutine is still trying to send when
+	// the consumer aborts on the first one. Before the fix the producer blocks
+	// forever on the unbuffered channel and the goroutine leaks; the fix cancels
+	// it via context.
+	var body strings.Builder
+	for i := 0; i < 50; i++ {
+		body.WriteString(`data: {"choices":[{"index":0,"delta":{"content":"x"}}]}` + "\n")
+	}
+	r := &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body.String())),
+	}
+	req := &ChatRequest{
+		StreamingFunc: func(_ context.Context, _ []byte) error {
+			return errors.New("consumer aborted")
+		},
+	}
+
+	// GC first so the baseline isn't skewed by transient runtime goroutines or
+	// pending finalizers (keeps the count comparison stable in CI).
+	runtime.GC()
+	baseline := runtime.NumGoroutine()
+	_, err := parseStreamingChatResponse(context.Background(), r, req)
+	require.Error(t, err)
+
+	// The producer goroutine must terminate; poll until the goroutine count
+	// settles back to the baseline. Pre-fix it never does and this times out.
+	deadline := time.Now().Add(2 * time.Second)
+	for runtime.NumGoroutine() > baseline && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	runtime.GC()
+	assert.LessOrEqual(t, runtime.NumGoroutine(), baseline,
+		"parseStreamingChatResponse leaked a goroutine after the consumer returned early")
 }

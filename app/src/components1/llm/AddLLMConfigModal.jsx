@@ -124,7 +124,7 @@ const providerFieldShape = (p) => ({
   showsApiVersion: p === 'azure',
   showsRegion: ['bedrock', 'sagemaker'].includes(p),
   showsBedrockKeys: p === 'bedrock',
-  showsApiType: p === 'openai',
+  showsApiType: ['openai', 'huggingface'].includes(p),
 });
 
 /**
@@ -808,7 +808,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const showsApiVersion = provider === 'azure';
   const showsRegion = ['bedrock', 'sagemaker'].includes(provider);
   const showsBedrockKeys = provider === 'bedrock';
-  const showsApiType = provider === 'openai';
+  const showsApiType = ['openai', 'huggingface'].includes(provider);
   const showsAdapter = ['azure', 'huggingface'].includes(provider);
 
   // A secret field counts as "present" if either the user typed a non-empty

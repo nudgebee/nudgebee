@@ -7,12 +7,22 @@ from datetime import datetime
 from flask import request
 from werkzeug.exceptions import HTTPException
 
+from config import Configs
 from db import clickhouse
 from exception.collector_exceptions import BadRequestError, InternalServerError, UnauthorizedError
 from controllers.base import BaseController, CredCache
 from middleware.utils import decrypt, validate_key
 
 INVALID_SECRET = "Invalid secret"
+
+# Internal server-to-server auth. The api-server OpenCost-spend-sync cron drives
+# ingestion on behalf of every K8s account, so it cannot present a per-agent
+# Basic credential. Instead it sends the shared ACTION_API_SERVER_TOKEN (the same
+# token the collector uses to call api-server) plus the target account id, and we
+# resolve tenant/agent from the agent row. Header names are an internal contract
+# between api-server and this collector.
+INTERNAL_TOKEN_HEADER = "X-ACTION-TOKEN"
+INTERNAL_ACCOUNT_HEADER = "X-NB-Account-Id"
 
 cred_cache = CredCache()
 
@@ -88,7 +98,46 @@ class AuthTokenMiddleware(BaseController):
         else:
             raise UnauthorizedError("Invalid key")
 
+    def get_agent_by_account_id(self, account_id):
+        with self.postgres_client.cursor() as cursor:
+            cursor.execute(
+                "select cloud_account_id,tenant,id from agent where type = 'k8s' and cloud_account_id = %s",
+                (account_id,),
+            )
+            resp = cursor.fetchone()
+        if resp:
+            return {"id": resp[0], "tenant": resp[1], "agent_id": resp[2]}
+        raise UnauthorizedError("Invalid account id")
+
+    def authenticate_internal(self) -> bool:
+        """Server-to-server auth for the api-server OpenCost-spend-sync cron.
+
+        Returns True when the request carried a valid internal token (and request
+        scope has been populated); False when no internal token was present so the
+        caller falls back to per-agent Basic auth. A present-but-invalid token
+        raises rather than falling through, so a bad internal call can't be retried
+        as Basic auth.
+        """
+        token = request.headers.get(INTERNAL_TOKEN_HEADER)
+        if not token:
+            return False
+        # Fail closed if the shared token is unconfigured — otherwise an empty
+        # header would match an empty config and bypass auth.
+        if not Configs.ACTION_API_SERVER_TOKEN or not hmac.compare_digest(token, Configs.ACTION_API_SERVER_TOKEN):
+            raise UnauthorizedError(INVALID_SECRET)
+        account_id = request.headers.get(INTERNAL_ACCOUNT_HEADER)
+        if not account_id:
+            raise BadRequestError(f"{INTERNAL_ACCOUNT_HEADER} header missing")
+        agent = self.get_agent_by_account_id(account_id)
+        request.cloud_account_id = agent["id"]
+        request.tenant = agent["tenant"]
+        request.agent_id = agent["agent_id"]
+        return True
+
     def __call__(self, *args, **kwargs):
+        if self.authenticate_internal():
+            return self.func(*args, **kwargs)
+
         if not request.headers.get("Authorization"):
             raise BadRequestError("Authorization header missing")
 
@@ -142,7 +191,7 @@ class ErrorCatcher(BaseController):
         try:
             func_return = self.func(*args, **kwargs)
         except HTTPException as exc:
-            print(exc)
+            logging.warning(exc)
             raise exc
         except Exception as e:
             logging.exception(e)

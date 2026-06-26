@@ -124,11 +124,42 @@ func TestIsInternalDomain(t *testing.T) {
 			description: "Internal domain suffix",
 		},
 
+		{
+			hostname:    "127.0.0.1",
+			expected:    true,
+			description: "Loopback IP",
+		},
+		{
+			hostname:    "172.16.0.1",
+			expected:    true,
+			description: "172.16/12 private IP",
+		},
+		{
+			hostname:    "192.168.1.1",
+			expected:    true,
+			description: "192.168/16 private IP",
+		},
+
 		// Should be external
 		{
 			hostname:    "api.external.com",
 			expected:    false,
 			description: "External domain",
+		},
+		{
+			hostname:    "app-172.prod.example.com",
+			expected:    false,
+			description: "External hostname containing 172.",
+		},
+		{
+			hostname:    "172.217.16.142",
+			expected:    false,
+			description: "Public IP starting with 172 outside 172.16/12",
+		},
+		{
+			hostname:    "10.example.com",
+			expected:    false,
+			description: "Hostname starting with 10.",
 		},
 		{
 			hostname:    "payment.stripe.com",

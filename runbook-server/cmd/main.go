@@ -40,6 +40,7 @@ import (
 func main() {
 	logger := newLogger()
 	slog.SetDefault(logger)
+	config.LogSecurityWarnings()
 
 	tp, mp, err := initOtel()
 	if err != nil {
@@ -218,8 +219,15 @@ func main() {
 
 	sysManager := system.NewSystemJobManager(temporalClient, slog.Default())
 	if err := sysManager.EnsureSchedules(context.Background(), cronTriggers); err != nil {
-		slog.Error("failed to ensure system schedules, terminating", "error", err)
-		os.Exit(1)
+		// One retry to ride out a transient Temporal frontend stall on a single
+		// UpdateSchedule RPC (the SDK's default per-call timeout is ~10s, so a
+		// single slow call here would otherwise crash-loop the pod).
+		slog.Warn("failed to ensure system schedules, retrying once", "error", err)
+		time.Sleep(5 * time.Second)
+		if err := sysManager.EnsureSchedules(context.Background(), cronTriggers); err != nil {
+			slog.Error("failed to ensure system schedules, terminating", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	// Ensure Search Attributes

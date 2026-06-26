@@ -240,6 +240,8 @@ func workspaceToolToIntegrationType(tool string) string {
 		return "clickhouse"
 	case "rabbitmq", "rabbitmqadmin":
 		return "rabbitmq"
+	case "kafka", "kcat":
+		return "kafka"
 	case "ssh":
 		return "ssh"
 	case "mssql", "sqlcmd":
@@ -413,6 +415,29 @@ func buildWorkspaceAction(tool, command string, configValues []db.WorkspaceConfi
 		} else if strings.Contains(command, "curl") && strings.Contains(command, "/api/") {
 			command = strings.Replace(command, "curl ", "curl -s -u $RABBITMQ_USER:$RABBITMQ_PASSWORD ", 1)
 			command = strings.ReplaceAll(command, "$RABBITMQ_PORT", "${RABBITMQ_MGMT_PORT:-15672}")
+		}
+		params := map[string]any{
+			"image":    shellImage,
+			"command":  command,
+			"pod_name": podName,
+		}
+		injectK8sSecret(params, configValues)
+		return "pod_script_run_enricher", params, nil
+
+	// ── kafka ─────────────────────────────────────────────────────────────────
+	case "kafka", "kcat":
+		// Inject -b $KAFKA_BROKERS plus SASL/TLS -X flags. The SASL/TLS flags use
+		// ${VAR:+...} so they expand to nothing when the key is absent from the secret
+		// (PLAINTEXT clusters), and the value is double-quoted to survive spaces/metachars.
+		kafkaFlags := `-b "$KAFKA_BROKERS"` +
+			`${KAFKA_SECURITY_PROTOCOL:+ -X security.protocol="$KAFKA_SECURITY_PROTOCOL"}` +
+			`${KAFKA_SASL_MECHANISM:+ -X sasl.mechanism="$KAFKA_SASL_MECHANISM"}` +
+			`${KAFKA_SASL_USERNAME:+ -X sasl.username="$KAFKA_SASL_USERNAME"}` +
+			`${KAFKA_SASL_PASSWORD:+ -X sasl.password="$KAFKA_SASL_PASSWORD"}`
+		if strings.Contains(command, "kcat") {
+			command = strings.Replace(command, "kcat", "kcat "+kafkaFlags, 1)
+		} else {
+			command = "kcat " + kafkaFlags + " " + command
 		}
 		params := map[string]any{
 			"image":    shellImage,

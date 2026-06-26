@@ -69,7 +69,7 @@ type NBQueryConfig struct {
 	// Tool infrastructure (managed by executor/planner)
 	ToolConfigs        map[string]string `json:"tool_configs,omitempty"`
 	ClientTools        []NBToolCommand   `json:"client_tools,omitempty"`
-	Capabilities       map[string]any    `json:"capabilities,omitempty"`
+	Capabilities       AgentCapabilities `json:"capabilities,omitzero"`
 	ToolConfirmations  map[string]string `json:"tool_confirmations,omitempty"`
 	ToolConfigMetadata map[string]any    `json:"tool_config_metadata,omitempty"`
 }
@@ -81,7 +81,7 @@ func (q NBQueryConfig) IsEmpty() bool {
 		q.WorkflowId == "" && q.ExecutionId == "" && len(q.WorkflowDefinition) == 0 && len(q.Labels) == 0 &&
 		q.CurrentCluster == "" && q.CurrentClusterId == "" &&
 		q.LlmProvider == "" && q.LlmModelName == "" && len(q.LlmTierModels) == 0 && len(q.ToolConfigs) == 0 &&
-		len(q.ClientTools) == 0 && len(q.Capabilities) == 0 && len(q.ToolConfirmations) == 0 &&
+		len(q.ClientTools) == 0 && q.Capabilities.IsEmpty() && len(q.ToolConfirmations) == 0 &&
 		len(q.ToolConfigMetadata) == 0
 }
 
@@ -139,8 +139,8 @@ func (q *NBQueryConfig) MergeFrom(src NBQueryConfig) {
 	if q.ClientTools == nil {
 		q.ClientTools = src.ClientTools
 	}
-	if src.Capabilities != nil {
-		q.Capabilities = lo.Assign(src.Capabilities, q.Capabilities)
+	if !src.Capabilities.IsEmpty() {
+		q.Capabilities = q.Capabilities.Merge(src.Capabilities)
 	}
 	if src.ToolConfirmations != nil {
 		q.ToolConfirmations = lo.Assign(src.ToolConfirmations, q.ToolConfirmations)

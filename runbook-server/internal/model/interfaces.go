@@ -43,7 +43,10 @@ type WorkflowStore interface {
 	// triggering request's identity. Genuine user edits must use Update.
 	UpdateInternal(ctx context.Context, tenantID, accountID, id string, wf Workflow) error
 	Delete(ctx context.Context, tenantID, accountID, id string) error
-	UpdateWorkflowStatus(ctx context.Context, tenantID, accountID, id string, status WorkflowStatus) error
+	// UpdateWorkflowStatus flips workflows.status directly (legacy path used for
+	// workflows without a live_version_id) and bumps updated_at / updated_by in
+	// the same write. Empty updatedBy → nil-UUID system user (background paths).
+	UpdateWorkflowStatus(ctx context.Context, tenantID, accountID, id, updatedBy string, status WorkflowStatus) error
 	GetState(ctx context.Context, workflowID string) ([]WorkflowStateItem, error)
 	SetState(ctx context.Context, workflowID string, updates []WorkflowStateUpdate) error
 	DeleteExpiredState(ctx context.Context, limit int) (int64, error)
@@ -55,14 +58,21 @@ type WorkflowStore interface {
 	GetWorkflowVersionByID(ctx context.Context, versionID string) (*WorkflowVersion, error)
 	GetLiveWorkflowVersion(ctx context.Context, workflowID string) (*WorkflowVersion, error)
 	PublishVersion(ctx context.Context, workflowID, createdBy string, source WorkflowVersionSource, name, description *string, restoredFromVersion *int, status WorkflowStatus) (*WorkflowVersion, error)
-	SetLiveVersion(ctx context.Context, tenantID, accountID, workflowID, versionID string) error
+	// SetLiveVersion flips workflows.live_version_id (and mirrors the version's
+	// status onto workflows.status) plus bumps updated_at / updated_by, so a
+	// publish / restore registers as a user-initiated update. Empty updatedBy
+	// → nil-UUID system user.
+	SetLiveVersion(ctx context.Context, tenantID, accountID, workflowID, versionID, updatedBy string) error
 	SetDraftVersionID(ctx context.Context, tenantID, accountID, workflowID, versionID string) error
+	DeleteWorkflowVersion(ctx context.Context, tenantID, accountID, workflowID, versionID string) error
 	UpdateVersionMetadata(ctx context.Context, workflowID string, versionNumber int, name, description *string) (*WorkflowVersion, error)
 	// UpdateVersionStatus writes a new status onto a single workflow_versions row
-	// and, when the target is the live version, mirrors workflows.status in the
-	// same transaction. Returns wasLive so the service layer can decide whether
-	// to re-register schedule/webhook triggers.
-	UpdateVersionStatus(ctx context.Context, tenantID, accountID, workflowID, versionID string, status WorkflowStatus) (wasLive bool, err error)
+	// and, when the target is the live version, mirrors workflows.status (plus
+	// updated_at / updated_by) in the same transaction. updatedBy may be empty —
+	// the DAO substitutes the nil-UUID system user so background callers don't
+	// need to fabricate one. Returns wasLive so the service layer can decide
+	// whether to re-register schedule/webhook triggers.
+	UpdateVersionStatus(ctx context.Context, tenantID, accountID, workflowID, versionID, updatedBy string, status WorkflowStatus) (wasLive bool, err error)
 }
 
 // WorkflowTemplateStore defines the interface for storing and retrieving global workflow templates.

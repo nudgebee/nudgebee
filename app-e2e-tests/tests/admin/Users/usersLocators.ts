@@ -27,7 +27,7 @@ export class UserLocators extends CommonLocators {
     this.firstNameInput = page.locator('#user-modal-firstname');
     this.lastNameInput = page.locator('#user-modal-lastname');
     this.emailInput = page.locator('#user-modal-email');
-    this.tenantRoleCombobox = page.locator('#auto-complete-user-modal-tenant-role');
+    this.tenantRoleCombobox = page.locator('#user-modal-tenant-role');
     this.addUserSubmitBtn = page.locator('#user-modal-submit-button');
     this.cancelBtn = page.locator('#user-modal-cancel-button');
     this.successMsg = page.getByText("User Added Successfully").first();
@@ -36,20 +36,19 @@ export class UserLocators extends CommonLocators {
     this.successUpdateMsg = page.getByText("User updated");
     this.firstNameHelperText = page.locator('#user-modal-firstname-helper-text');
     this.lastNameHelperText = page.locator('#user-modal-lastname-helper-text');
-    this.statusCombobox = page.locator('#auto-complete-user-modal-status');
+    this.statusCombobox = page.locator('#user-modal-status');
     this.statusFilterBtn = page.locator('button').filter({ hasText: 'By Status' });
     this.userSearchToggleBtn = page.locator('#box-all-users-search-toggle-button');
     this.userSearchInput = page.locator('#box-all-users-search-input-text');
   }
 
+  async selectRole(role: string): Promise<void> {
+    await this.tenantRoleCombobox.click();
+    await this.getRoleOption(role).click();
+  }
+
   getRoleOption(role: string): Locator {
-    const testIdMap: Record<string, string> = {
-      'Admin': 'user-modal-role-tenant_admin',
-      'ReadOnly Admin': 'user-modal-role-tenant_admin_readonly',
-    };
-    const testId = testIdMap[role];
-    if (testId) return this.page.getByTestId(testId);
-    return this.page.getByRole('radio', { name: role, exact: true });
+    return this.page.locator('[role="option"]').filter({ hasText: new RegExp(`^${role}$`) });
   }
 
   getEditBtnForUser(email: string): Locator {
@@ -57,6 +56,6 @@ export class UserLocators extends CommonLocators {
   }
 
   getStatusOption(status: string): Locator {
-    return this.page.locator('[role="presentation"]').getByText(status, { exact: true });
+    return this.page.getByTestId(`user-modal-status-${status.toLowerCase()}`);
   }
 }

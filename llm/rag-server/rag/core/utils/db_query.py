@@ -1,4 +1,5 @@
 import logging
+import threading
 import time
 from collections import defaultdict
 
@@ -72,7 +73,13 @@ def get_confluence_integrations(cloud_account_id):
                     integrations[integration_id]["account_id"] = row.cloud_account_id
                     integrations[integration_id]["config"] = {}
 
-                integrations[integration_id]["config"][row.name] = row.value
+                # The token is encrypted at rest (see confluence.go schema).
+                # decrypt_value is best-effort: legacy plaintext rows fail
+                # AES-GCM and are returned unchanged.
+                if row.name == "token":
+                    integrations[integration_id]["config"][row.name] = decrypt_value(row.value)
+                else:
+                    integrations[integration_id]["config"][row.name] = row.value
 
             return list(integrations.values())
 
@@ -148,88 +155,73 @@ def get_servicenow_kb_integrations(cloud_account_id):
         return []
 
 
-def get_llm_integrations(cloud_account_id):
-    logger.info(f"Fetching LLM integrations for cloud_account_id={cloud_account_id}")
+# Serializes the cache-miss DB fetch for the integration caches above, so a
+# burst of concurrent requests for an uncached account collapses to a single
+# query (the sync fetches run in FastAPI's threadpool) instead of a thundering
+# herd. Cache hits don't take the lock.
+_llm_integrations_cache_lock = threading.Lock()
+_embeddings_integrations_cache_lock = threading.Lock()
+
+
+def _get_integrations_cached(cache, lock, cloud_account_id, integration_type):
+    """Return cached integration configs for an account, fetching on a miss.
+
+    Double-checked locking: the fast path reads the cache lock-free; on a miss
+    we take the lock, re-check (another thread may have filled it while we
+    waited), and only then query the DB.
+    """
     now = time.time()
-    cache_entry = _llm_integrations_cache.get(cloud_account_id)
+    cache_entry = cache.get(cloud_account_id)
     if cache_entry and now - cache_entry["time"] < Config.rag_llm_provider_cache_ttl:
-        logger.info(f"Returning cached LLM integrations for cloud_account_id={cloud_account_id}")
+        logger.info(f"Returning cached {integration_type} integrations for cloud_account_id={cloud_account_id}")
         return cache_entry["data"]
-    try:
-        with engine.connect() as connection:
-            query = text("""
-                SELECT i.id, ica.cloud_account_id, icv.name, icv.value
-                FROM integrations i
-                JOIN integration_config_values icv
-                ON i.id = icv.integration_id
-                JOIN integrations_cloud_accounts ica
-                ON i.id = ica.integration_id
-                WHERE i.type = 'llm'
-                AND ica.cloud_account_id = :ac_id
-                """)
-            params = {"ac_id": cloud_account_id}
-            result = connection.execute(query, params)
 
-            integrations = defaultdict(dict)
-            for row in result:
-                integration_id = row.id
-                if "integration_id" not in integrations[integration_id]:
-                    integrations[integration_id]["integration_id"] = integration_id
-                    integrations[integration_id]["account_id"] = row.cloud_account_id
-                    integrations[integration_id]["config"] = {}
+    with lock:
+        cache_entry = cache.get(cloud_account_id)
+        if cache_entry and time.time() - cache_entry["time"] < Config.rag_llm_provider_cache_ttl:
+            return cache_entry["data"]
+        try:
+            with engine.connect() as connection:
+                query = text("""
+                    SELECT i.id, ica.cloud_account_id, icv.name, icv.value
+                    FROM integrations i
+                    JOIN integration_config_values icv
+                    ON i.id = icv.integration_id
+                    JOIN integrations_cloud_accounts ica
+                    ON i.id = ica.integration_id
+                    WHERE i.type = :integration_type
+                    AND ica.cloud_account_id = :ac_id
+                    """)
+                result = connection.execute(query, {"ac_id": cloud_account_id, "integration_type": integration_type})
 
-                integrations[integration_id]["config"][row.name] = row.value
+                integrations = defaultdict(dict)
+                for row in result:
+                    integration_id = row.id
+                    if "integration_id" not in integrations[integration_id]:
+                        integrations[integration_id]["integration_id"] = integration_id
+                        integrations[integration_id]["account_id"] = row.cloud_account_id
+                        integrations[integration_id]["config"] = {}
 
-            data = list(integrations.values())
-            _llm_integrations_cache[cloud_account_id] = {"data": data, "time": now}
-            logger.info(f"Fetched {len(integrations)} LLM integrations for cloud_account_id={cloud_account_id}")
-            return data
+                    integrations[integration_id]["config"][row.name] = row.value
 
-    except Exception as e:
-        logger.exception("Error fetching llm integrations: %s", e)
-        return []
+                data = list(integrations.values())
+                cache[cloud_account_id] = {"data": data, "time": time.time()}
+                logger.info(f"Fetched {len(integrations)} {integration_type} integrations for {cloud_account_id}")
+                return data
+
+        except Exception as e:
+            logger.exception("Error fetching %s integrations: %s", integration_type, e)
+            return []
+
+
+def get_llm_integrations(cloud_account_id):
+    return _get_integrations_cached(_llm_integrations_cache, _llm_integrations_cache_lock, cloud_account_id, "llm")
 
 
 def get_embeddings_integrations(cloud_account_id):
-    logger.info(f"Fetching embeddings integrations for cloud_account_id={cloud_account_id}")
-    now = time.time()
-    cache_entry = _embeddings_integrations_cache.get(cloud_account_id)
-    if cache_entry and now - cache_entry["time"] < Config.rag_llm_provider_cache_ttl:
-        logger.info(f"Returning cached embeddings integrations for cloud_account_id={cloud_account_id}")
-        return cache_entry["data"]
-    try:
-        with engine.connect() as connection:
-            query = text("""
-                SELECT i.id, ica.cloud_account_id, icv.name, icv.value
-                FROM integrations i
-                JOIN integration_config_values icv
-                ON i.id = icv.integration_id
-                JOIN integrations_cloud_accounts ica
-                ON i.id = ica.integration_id
-                WHERE i.type = 'embeddings'
-                AND ica.cloud_account_id = :ac_id
-                """)
-
-            params = {"ac_id": cloud_account_id}
-            result = connection.execute(query, params)
-
-            integrations = defaultdict(dict)
-            for row in result:
-                integration_id = row.id
-                if "integration_id" not in integrations[integration_id]:
-                    integrations[integration_id]["integration_id"] = integration_id
-                    integrations[integration_id]["account_id"] = row.cloud_account_id
-                    integrations[integration_id]["config"] = {}
-
-                integrations[integration_id]["config"][row.name] = row.value
-
-            data = list(integrations.values())
-            _embeddings_integrations_cache[cloud_account_id] = {"data": data, "time": now}
-            return data
-
-    except Exception as e:
-        logger.exception("Error fetching embeddings integrations: %s", e)
-        return []
+    return _get_integrations_cached(
+        _embeddings_integrations_cache, _embeddings_integrations_cache_lock, cloud_account_id, "embeddings"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +356,13 @@ def get_confluence_integrations_for_tenant(tenant_id):
                     integrations[integration_id]["integration_id"] = integration_id
                     integrations[integration_id]["tenant_id"] = tenant_id
                     integrations[integration_id]["config"] = {}
-                integrations[integration_id]["config"][row.name] = row.value
+                # The token is encrypted at rest (see confluence.go schema).
+                # decrypt_value is best-effort: legacy plaintext rows fail
+                # AES-GCM and are returned unchanged.
+                if row.name == "token":
+                    integrations[integration_id]["config"][row.name] = decrypt_value(row.value)
+                else:
+                    integrations[integration_id]["config"][row.name] = row.value
 
             return list(integrations.values())
     except Exception as e:

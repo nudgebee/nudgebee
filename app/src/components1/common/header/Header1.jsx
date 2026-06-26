@@ -766,7 +766,7 @@ const Header1 = ({ showBorder = false }) => {
                         label: 'Google Chat',
                         icon: <GChatIcon width={18} height={18} />,
                         disabled: gChatAccountsCount > 0,
-                        onSelect: () => window.open('/api/integrations/google/install', '_blank'),
+                        onSelect: () => router.push('/accounts/account-form?cloudProvider=google_chat'),
                       },
                     ]}
                   />

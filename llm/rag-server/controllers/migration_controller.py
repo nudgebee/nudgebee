@@ -41,9 +41,9 @@ async def validate_qdrant_migration():
 
         return {"success": True, "validation": validation}
 
-    except Exception as e:
-        logger.error(f"Error validating Qdrant→Qdrant migration: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Error validating Qdrant→Qdrant migration")
+        raise HTTPException(status_code=500, detail="Failed to validate migration")
 
 
 @router.post("/qdrant-to-qdrant/start")
@@ -95,10 +95,10 @@ async def start_qdrant_migration(batch_size: int = 25, force: bool = False):
                     _qdrant_migration_status = {"status": "completed", "progress": result}
 
                 logger.info(f"Qdrant→Qdrant migration completed: {result}")
-            except Exception as e:
+            except Exception:
                 with _qdrant_migration_lock:
-                    _qdrant_migration_status = {"status": "failed", "progress": {}, "error": str(e)}
-                logger.error(f"Qdrant→Qdrant migration failed with exception: {e}", exc_info=True)
+                    _qdrant_migration_status = {"status": "failed", "progress": {}, "error": "Migration failed"}
+                logger.exception("Qdrant→Qdrant migration failed with exception")
 
         migration_thread = threading.Thread(target=run_migration, daemon=True)
         migration_thread.start()
@@ -112,9 +112,9 @@ async def start_qdrant_migration(batch_size: int = 25, force: bool = False):
 
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Error starting Qdrant→Qdrant migration: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Error starting Qdrant→Qdrant migration")
+        raise HTTPException(status_code=500, detail="Failed to start migration")
 
 
 @router.get("/qdrant-to-qdrant/status")
@@ -131,9 +131,9 @@ async def get_qdrant_migration_status():
 
         return {"success": True, "status": status}
 
-    except Exception as e:
-        logger.error(f"Error getting Qdrant→Qdrant migration status: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Error getting Qdrant→Qdrant migration status")
+        raise HTTPException(status_code=500, detail="Failed to get migration status")
 
 
 @router.get("/qdrant-to-qdrant/stats")
@@ -153,9 +153,9 @@ async def get_qdrant_migration_stats():
 
         return {"success": True, "source": source_stats, "target": target_stats}
 
-    except Exception as e:
-        logger.error(f"Error getting Qdrant→Qdrant stats: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Error getting Qdrant→Qdrant stats")
+        raise HTTPException(status_code=500, detail="Failed to get migration stats")
 
 
 # RAG Collection Renaming Endpoints (agent_{id} → kb_{id})

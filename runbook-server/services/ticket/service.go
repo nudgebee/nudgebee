@@ -150,18 +150,27 @@ type GetTicketRequest struct {
 	ProjectKey    string `json:"project_key"`
 }
 
-// GetTicketResponse represents the response from getting a ticket
+// GetTicketResponse represents the response from getting a ticket.
+// Field tags mirror the ticket-server models.Ticket JSON keys so the
+// map returned by the RPC decodes cleanly via mapstructure. Slice and
+// optional fields are omitted when the source connector does not supply them.
 type GetTicketResponse struct {
-	ID          string `json:"id" mapstructure:"id"`
-	Title       string `json:"title" mapstructure:"title"`
-	Description string `json:"description" mapstructure:"description"`
-	Status      string `json:"status" mapstructure:"status"`
-	Severity    string `json:"severity" mapstructure:"severity"`
-	Assignee    string `json:"assignee" mapstructure:"assignee"`
-	URL         string `json:"url" mapstructure:"url"`
-	Platform    string `json:"platform" mapstructure:"platform"`
-	TicketID    string `json:"ticket_id" mapstructure:"ticket_id"`
-	CreatedAt   string `json:"created_at" mapstructure:"created_at"`
+	ID          string   `json:"id" mapstructure:"id"`
+	Title       string   `json:"title" mapstructure:"title"`
+	Description string   `json:"description" mapstructure:"description"`
+	Status      string   `json:"status" mapstructure:"status"`
+	Severity    string   `json:"severity" mapstructure:"severity"`
+	Assignee    string   `json:"assignee" mapstructure:"assignee"`
+	Assignees   []string `json:"assignees,omitempty" mapstructure:"assignees"`
+	Reporter    string   `json:"reporter,omitempty" mapstructure:"reporter"`
+	Labels      []string `json:"labels,omitempty" mapstructure:"labels"`
+	Milestone   string   `json:"milestone,omitempty" mapstructure:"milestone"`
+	ProjectKey  string   `json:"project_key,omitempty" mapstructure:"project_key"`
+	URL         string   `json:"url" mapstructure:"url"`
+	Platform    string   `json:"platform" mapstructure:"platform"`
+	TicketID    string   `json:"ticket_id" mapstructure:"ticket_id"`
+	CreatedAt   string   `json:"created_at" mapstructure:"created_at"`
+	UpdatedAt   string   `json:"updated_at,omitempty" mapstructure:"updated_at"`
 	// Raw carries provider-specific fields not in the normalized struct
 	// (e.g. ServiceNow cmdb_ci, business_service, all u_* custom fields).
 	// nil when the source platform connector does not populate it.

@@ -187,6 +187,11 @@ func TestExtractGCPResourceNameFromURL(t *testing.T) {
 		},
 		{"simple name", "default", "default"},
 		{"empty", "", ""},
+		{
+			"trailing slash",
+			"https://www.googleapis.com/compute/v1/projects/my-project/global/networks/default/",
+			"default",
+		},
 	}
 
 	for _, tt := range tests {

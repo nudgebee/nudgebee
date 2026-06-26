@@ -3,7 +3,7 @@ import logging
 import os
 import tempfile
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Optional
 
 import pandas as pd
 import requests
@@ -16,6 +16,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
 from requests.adapters import HTTPAdapter
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 from urllib3 import Retry
 from dotenv import load_dotenv
 
@@ -23,6 +24,9 @@ load_dotenv()
 
 
 logger = logging.getLogger(__name__)
+
+# HTTP status codes that warrant retrying an outbound request.
+RETRY_STATUS_CODES = (429, 500, 502, 503, 504)
 
 default_health_check_endpoints = [
     "/actuator/health",
@@ -59,21 +63,21 @@ def handle_df_for_nan(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def get_model_name(account_id: str, tenant_id: str, namespace: str, deployment_name: str, model_type: str):
+def get_model_name(account_id: str, tenant_id: str, namespace: str, deployment_name: str, model_type: str) -> str:
     return f"{tenant_id}_{account_id}_{namespace}_{deployment_name}_{model_type}.keras"
 
 
-def get_model_path(account_id: str, tenant_id: str, namespace: str, deployment_name: str):
+def get_model_path(account_id: str, tenant_id: str, namespace: str, deployment_name: str) -> str:
     return f"{tenant_id}/{account_id}/{namespace}/{deployment_name}/"
 
 
-def get_http_session_with_retry(retry_attempts: int = 3, backoff_factor: float = 1):
+def get_http_session_with_retry(retry_attempts: int = 3, backoff_factor: float = 1) -> requests.Session:
     # Configure retry settings for HTTP requests
     retry_strategy = None
     if retry_attempts > 0:
         retry_strategy = Retry(
             total=retry_attempts,  # Total number of retries
-            status_forcelist=[429, 500, 502, 503, 504],  # Retry on these HTTP status codes
+            status_forcelist=RETRY_STATUS_CODES,  # Retry on these HTTP status codes
             allowed_methods=["HEAD", "GET", "OPTIONS", "POST"],  # Only retry on these HTTP methods
             backoff_factor=backoff_factor,  # Backoff factor for delay between retries
         )
@@ -84,7 +88,7 @@ def get_http_session_with_retry(retry_attempts: int = 3, backoff_factor: float =
     return session
 
 
-def set_metrics_exporter():
+def set_metrics_exporter() -> None:
     resource_attr = (
         {
             key.strip(): str(value.strip())
@@ -113,7 +117,7 @@ def set_metrics_exporter():
         else:
             if not end_point.endswith("/v1/metrics"):
                 end_point += "/v1/metrics"
-            from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+            from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter  # type: ignore
 
             otlp_metrics_exporter = OTLPMetricExporter(endpoint=end_point, timeout=5)
         metric_reader = PeriodicExportingMetricReader(otlp_metrics_exporter)
@@ -123,7 +127,7 @@ def set_metrics_exporter():
         SystemMetricsInstrumentor().instrument(meter=meter)
 
 
-def get_trace_provider(service_name: str):
+def get_trace_provider(service_name: str) -> TracerProvider:
     # fetching resource attr else returning empty dict
     resource_attr = (
         {
@@ -163,11 +167,11 @@ def get_trace_provider(service_name: str):
     return provider
 
 
-def set_global_trace():
+def set_global_trace() -> None:
     trace.set_tracer_provider(get_trace_provider(OTELConfig.service_name))
 
 
-def get_trace(name: str):
+def get_trace(name: str) -> trace.Tracer:
     return trace.get_tracer(name)
 
 
@@ -241,10 +245,10 @@ class OTELConfig:
 
 
 class DatabaseEngine:
-    _instance = None
+    _instance: Optional[Engine] = None
 
     @staticmethod
-    def get_engine():
+    def get_engine() -> Engine:
         if DatabaseEngine._instance is None:
             DatabaseEngine._instance = create_engine(
                 DBConfig.url,
@@ -268,7 +272,7 @@ def get_prediction_duration(account_id: str) -> int:
             for row in result:
                 return int(row[0])
     except Exception as e:
-        logger.warning(f"Failed to get prediction duration from DB fro account:{account_id}, {e}")
+        logger.warning(f"Failed to get prediction duration from DB for account:{account_id}, {e}")
     return int(MetricsServerConfigs.duration)
 
 

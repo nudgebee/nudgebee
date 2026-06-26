@@ -1475,15 +1475,90 @@ func (e *plannerExecutor) doIterationParallel(
 	return newStepsThisIteration, nil, nil
 }
 
+// toolStatusToExitCode maps the internal tool status to the integer the
+// planner sees in the footer: 0 success, 1 failure, 2 empty-but-successful.
+// Not a literal shell exit code — it's a uniform POSIX-shaped signal so
+// planner heuristics can distinguish "no match" from "actually failed".
+func toolStatusToExitCode(status ToolStatus) int {
+	switch status {
+	case ToolStatusFailure:
+		return 1
+	case ToolStatusEmptyResult:
+		return 2
+	default:
+		return 0
+	}
+}
+
+// isNoMatchEnvelope returns true when the tool emitted the canonical
+// empty-result envelope shape: a JSON object that contains the
+// `"no_matches":true` key/value, allowing tolerant whitespace between
+// the key, colon, and value. The classifier needs this because tools
+// that return an explicit `no_matches:true` JSON envelope (today:
+// shell_execute / kubectl_execute / helm_execute via
+// successResponseNoMatches; potentially others later) carry the
+// semantic in their Data — but Data is non-empty, so without this
+// recognition the classifier defaults to ToolStatusSuccess (ExitStatus=0)
+// instead of ToolStatusEmptyResult (ExitStatus=2), losing the
+// "empty-but-successful" signal the footer is supposed to expose.
+//
+// Substring-match deliberately — anchoring to start-of-string would
+// miss envelopes that put `"stdout":""` first (Go's encoding/json
+// orders map keys alphabetically, so `no_matches` lands before
+// `stdout`; but any future tool that uses a different key order or
+// nests the envelope inside an outer struct should still hit). False
+// positives require a tool to genuinely contain the literal
+// `"no_matches":true` in its output — vanishingly rare for normal
+// command output and conservative on purpose.
+func isNoMatchEnvelope(data string) bool {
+	if data == "" {
+		return false
+	}
+	// Tolerate one optional whitespace char between the `"` and `:`
+	// (encoders that pretty-print or hand-built shapes).
+	return strings.Contains(data, `"no_matches":true`) ||
+		strings.Contains(data, `"no_matches": true`)
+}
+
+// formatToolMetadataFooter renders the trailing
+// "[exitStatus: N | executionDuration: Xms]" marker the planner sees
+// appended to every tool observation. Built from Metadata at prompt-render
+// time (in the scratchpad seams), not stored — so the persisted observation
+// column the UI reads remains byte-for-byte what the tool produced.
+// Nil metadata returns "" so steps without telemetry (legacy rows, terminal
+// payloads, waiting prompts) render unchanged.
+func formatToolMetadataFooter(metadata *toolcore.NBToolResponseMetadata) string {
+	if metadata == nil {
+		return ""
+	}
+	ms := metadata.ExecutionDurationMs
+	if ms < 0 {
+		ms = 0
+	}
+	return fmt.Sprintf("\n[exitStatus: %d | executionDuration: %dms]", metadata.ExitStatus, ms)
+}
+
+// renderObservationWithMetadata is the single entry point the prompt-assembly
+// seams (ConstructScratchPad, planner_react_2.resolveToolResponse,
+// planner_react_3.resolveToolResponse) use to materialize the planner-visible
+// observation text. Centralizing it keeps the three sites from drifting on
+// footer format.
+func renderObservationWithMetadata(observation string, metadata *toolcore.NBToolResponseMetadata) string {
+	return observation + formatToolMetadataFooter(metadata)
+}
+
 // truncateToolResponse caps a tool's observation at a configured byte budget
 // before it enters the cache, DB, or scratchpad. Success outputs use
 // LlmServerMaxToolOutputLen; failure outputs use the smaller
 // LlmServerMaxToolErrorOutputLen (stack traces are repetitive — less data
 // captures the useful bits). Empty/sentinel payloads are never touched.
-// A limit of 0 disables truncation entirely (opt-out).
-func truncateToolResponse(ctx *security.RequestContext, data string, status ToolStatus, toolName string) string {
+// A limit of 0 disables truncation entirely (opt-out). Returns the (possibly
+// untouched) data alongside the original byte length so the caller can stamp
+// Metadata.Truncated / Metadata.OriginalLen without re-measuring.
+func truncateToolResponse(ctx *security.RequestContext, data string, status ToolStatus, toolName string) (string, int) {
+	originalLen := len(data)
 	if data == "" || data == plannerToolNoData || data == "[]" {
-		return data
+		return data, originalLen
 	}
 
 	var maxLen int
@@ -1494,7 +1569,7 @@ func truncateToolResponse(ctx *security.RequestContext, data string, status Tool
 	}
 
 	if maxLen <= 0 || len(data) <= maxLen {
-		return data
+		return data, originalLen
 	}
 
 	truncated := SmartTruncateToolOutput(data, maxLen)
@@ -1502,11 +1577,11 @@ func truncateToolResponse(ctx *security.RequestContext, data string, status Tool
 		ctx.GetLogger().Info("plannerexecutor: tool output truncated at source",
 			"tool", toolName,
 			"status", string(status),
-			"original_len", len(data),
+			"original_len", originalLen,
 			"truncated_len", len(truncated),
 			"max_len", maxLen)
 	}
-	return truncated
+	return truncated, originalLen
 }
 
 func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action NBAgentPlannerToolAction, queryContext string) (NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error) {
@@ -1862,7 +1937,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	var status ToolStatus
 	if observation.Status == toolcore.NBToolResponseStatusError {
 		status = ToolStatusFailure
-	} else if observation.Data == "" || observation.Data == plannerToolNoData || observation.Data == "[]" {
+	} else if observation.Data == "" || observation.Data == plannerToolNoData || observation.Data == "[]" || isNoMatchEnvelope(observation.Data) {
 		status = ToolStatusEmptyResult
 	} else {
 		status = ToolStatusSuccess
@@ -1873,7 +1948,24 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 	if !observation.IsTerminal &&
 		observation.Status != toolcore.NBToolResponseStatusWaiting &&
 		observation.Status != toolcore.NBToolResponseStatusWaitingForClient {
-		observation.Data = truncateToolResponse(e.ctx, observation.Data, status, toolName)
+		var originalLen int
+		observation.Data, originalLen = truncateToolResponse(e.ctx, observation.Data, status, toolName)
+		// Populate Metadata for the prompt-assembly seam (footer is rendered
+		// from this at scratchpad-build time, not appended to Data here).
+		// Preserve any tool-set fields like Metadata.Stderr (kubectl).
+		if observation.Metadata == nil {
+			observation.Metadata = &toolcore.NBToolResponseMetadata{}
+		}
+		observation.Metadata.ExitStatus = toolStatusToExitCode(status)
+		ms := toolExecDur.Milliseconds()
+		if ms < 0 {
+			ms = 0
+		}
+		observation.Metadata.ExecutionDurationMs = ms
+		if len(observation.Data) < originalLen {
+			observation.Metadata.Truncated = true
+			observation.Metadata.OriginalLen = originalLen
+		}
 	}
 
 	if e.toolCallbackHandler != nil {
@@ -1942,6 +2034,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 		Status:      status,
 		IsTerminal:  observation.IsTerminal,
 		References:  observation.References,
+		Metadata:    observation.Metadata,
 	}
 
 	// Cache successful results under both original and rewritten inputs

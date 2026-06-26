@@ -171,52 +171,52 @@ func TestParseSplunkTriggerTime_Invalid(t *testing.T) {
 // --- Unit tests: severity mapping (webhook, still in use) ---
 
 func TestMapSplunkSeverity_Critical(t *testing.T) {
-	assert.Equal(t, event.EventPriortiyHigh, mapSplunkSeverity("critical", "", ""))
+	assert.Equal(t, event.EventPriorityHigh, mapSplunkSeverity("critical", "", ""))
 }
 
 func TestMapSplunkSeverity_High(t *testing.T) {
-	assert.Equal(t, event.EventPriortiyHigh, mapSplunkSeverity("high", "", ""))
+	assert.Equal(t, event.EventPriorityHigh, mapSplunkSeverity("high", "", ""))
 }
 
 func TestMapSplunkSeverity_Error(t *testing.T) {
-	assert.Equal(t, event.EventPriortiyHigh, mapSplunkSeverity("error", "", ""))
+	assert.Equal(t, event.EventPriorityHigh, mapSplunkSeverity("error", "", ""))
 }
 
 func TestMapSplunkSeverity_Medium(t *testing.T) {
-	assert.Equal(t, event.EventPriortiyMedium, mapSplunkSeverity("medium", "", ""))
+	assert.Equal(t, event.EventPriorityMedium, mapSplunkSeverity("medium", "", ""))
 }
 
 func TestMapSplunkSeverity_Warning(t *testing.T) {
-	assert.Equal(t, event.EventPriortiyMedium, mapSplunkSeverity("warning", "", ""))
+	assert.Equal(t, event.EventPriorityMedium, mapSplunkSeverity("warning", "", ""))
 }
 
 func TestMapSplunkSeverity_Low(t *testing.T) {
-	assert.Equal(t, event.EventPriortiyLow, mapSplunkSeverity("low", "", ""))
+	assert.Equal(t, event.EventPriorityLow, mapSplunkSeverity("low", "", ""))
 }
 
 func TestMapSplunkSeverity_Info(t *testing.T) {
-	assert.Equal(t, event.EventPriortiyInfo, mapSplunkSeverity("info", "", ""))
+	assert.Equal(t, event.EventPriorityInfo, mapSplunkSeverity("info", "", ""))
 }
 
 func TestMapSplunkSeverity_Debug(t *testing.T) {
-	assert.Equal(t, event.EventPriortiyInfo, mapSplunkSeverity("debug", "", ""))
+	assert.Equal(t, event.EventPriorityInfo, mapSplunkSeverity("debug", "", ""))
 }
 
 func TestMapSplunkSeverity_FallbackToUrgency(t *testing.T) {
-	assert.Equal(t, event.EventPriortiyHigh, mapSplunkSeverity("", "critical", ""))
+	assert.Equal(t, event.EventPriorityHigh, mapSplunkSeverity("", "critical", ""))
 }
 
 func TestMapSplunkSeverity_FallbackToPriority(t *testing.T) {
-	assert.Equal(t, event.EventPriortiyMedium, mapSplunkSeverity("", "", "medium"))
+	assert.Equal(t, event.EventPriorityMedium, mapSplunkSeverity("", "", "medium"))
 }
 
 func TestMapSplunkSeverity_Unknown(t *testing.T) {
-	assert.Equal(t, event.EventPriortiyLow, mapSplunkSeverity("", "", ""))
+	assert.Equal(t, event.EventPriorityLow, mapSplunkSeverity("", "", ""))
 }
 
 func TestMapSplunkSeverity_CaseInsensitive(t *testing.T) {
-	assert.Equal(t, event.EventPriortiyHigh, mapSplunkSeverity("CRITICAL", "", ""))
-	assert.Equal(t, event.EventPriortiyMedium, mapSplunkSeverity("Warning", "", ""))
+	assert.Equal(t, event.EventPriorityHigh, mapSplunkSeverity("CRITICAL", "", ""))
+	assert.Equal(t, event.EventPriorityMedium, mapSplunkSeverity("Warning", "", ""))
 }
 
 // --- Unit tests: webhook struct ---

@@ -21,9 +21,9 @@ const EventsAgentName = "events"
 
 func init() {
 	// This describes the 'events' agent when it is used as a tool by another agent (e.g., k8s_debug).
-	toolDescription := `Retrieves and summarizes Kubernetes, Anomaly, SLO, and configuration event data. This tool is "smart" and handles its own discovery of relevant events, alerts, and incidents based on your natural language query. Use this agent directly for questions about errors, anomalies, SLO violations, deployments, and configuration changes without needing separate reconnaissance.
-KEYWORDS: configuration, deployment, kubernetes, alert, anomaly, slo, error, event, monitoring, incident, crash, oom, outage.
-ROUTING_KEYWORDS: configuration_changes, configuration, config, kube-state-metrics, kube state metrics, events, event, alert.`
+	toolDescription := `Retrieves and summarizes Kubernetes, Anomaly, SLO, and configuration event data. This tool is "smart" and handles its own discovery of relevant events, alerts, and incidents based on your natural language query. Use this agent directly for questions about errors, anomalies, SLO violations, deployments, and configuration changes without needing separate reconnaissance. It also explains Nudgebee's auto-triage decisions (why an event is suppressed/duplicate/scored), reports alert noise, surfaces threshold-tuning suggestions, and previews proposed triage rules.
+KEYWORDS: configuration, deployment, kubernetes, alert, anomaly, slo, error, event, monitoring, incident, crash, oom, outage, triage, suppress, duplicate, noise, noisy alert, threshold, alert tuning, triage rule, event rule, alert rule, alert definition.
+ROUTING_KEYWORDS: configuration_changes, configuration, config, kube-state-metrics, kube state metrics, events, event, alert, triage, alert_noise, threshold_suggestion, triage_rule, event_rule, alert_rule, alert_definition.`
 
 	toolInput := "Provide events question in natural language"
 	toolOutput := "The tool will return the events data retrieved your query"
@@ -107,6 +107,21 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 		"      pod_events, node_events, pod_data, alert_labels, noisy_neighbours,",
 		"      related_events, api_failures, metrics_data, markdowns, all.",
 		"    - When events_execute returns ≤5 events, full evidence is included. Use event_summary to format the response.",
+		"",
+		"## Triage Literacy (how Nudgebee auto-triages events)",
+		"    Every event flows through an automatic pipeline: deduplicate → triage rules → correlation → scoring → AI-analysis gate.",
+		"    - nb_status is set by the HIGHEST-PRIORITY matching triage rule, INDEPENDENT of the score. A P0 event can still be SUPPRESSED if a suppression rule matched.",
+		"    - Triage rule types: 'suppression' (suppress/drop noisy events), 'scoring' (adjust computed_score, e.g. service-tier bonuses), 'classification' (auto-classify duplicates/false-positives).",
+		"    - computed_score is fully explained by the `score_factors` column: base_severity × env_multiplier × 4 = raw_score, then duplicate_penalty, correlation_adjustment, finding_type_adjustment and evidence_bonus are applied. Always SELECT score_factors when asked WHY an event has a given priority.",
+		"    - fingerprint groups recurring occurrences; the duplicate chain tracks occurrence_number and time-since-first/previous. The 1st occurrence has no penalty; later ones are penalised and often auto-classified DUPLICATE.",
+		"    - Correlations classify related events as likely_root_cause (boosts score) vs downstream_impact/upstream_dependency (lowers score) — use them to separate the root cause from its symptoms in an alert storm.",
+		"    Use the triage tools to go beyond raw event rows:",
+		"    - To EXPLAIN one event's triage decision: SELECT score_factors,nb_status,computed_priority via events_execute, then call get_triage_explanation(event_id) for the dedup chain + correlations.",
+		"    - For an ALERT-NOISE / HYGIENE report: aggregate with events_execute (GROUP BY aggregation_key, count(*) vs count(DISTINCT fingerprint), nb_status distribution, COUNT(*) FILTER (WHERE computed_priority IS NULL) for unscored events), then call get_triage_rules to surface coverage gaps.",
+		"    - For THRESHOLD tuning: call list_threshold_suggestions; highlight high estimated_reduction + tune_threshold/disable rows, flag low-confidence MAD=0 rows as weak.",
+		"    - To PROPOSE a new triage rule: call dryrun_triage_rule with the candidate criteria to get the projected volume reduction, present the number, then direct the user to create the rule in the UI.",
+		"    Distinguish two kinds of rules: EVENT RULES (alert definitions that GENERATE events — alert name, expr/threshold, duration, severity, enabled; read with get_event_rules) vs TRIAGE RULES (suppress/score/classify events AFTER they fire; read with get_triage_rules). A threshold suggestion targets the expr/threshold inside an EVENT RULE — use get_event_rules to show the rule's current definition; use get_triage_rules for suppression/scoring coverage.",
+		"    READ-ONLY: you explain and recommend. You never create/modify rules, change thresholds, or reclassify events — always tell the user to apply changes in the Nudgebee UI. Never claim to have applied a change.",
 	}
 
 	constraints := []string{
@@ -161,6 +176,48 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			"Output: the requested evidence data for the event.",
 			"Strategy: Start with 'logs' (most diagnostic), then 'deployment' or 'pod_metrics' for context.",
 		},
+		tools.ToolTriageExplanation: {
+			"Use this tool to explain HOW a single event was triaged (why it is DUPLICATE/SUPPRESSED or has a given computed_priority).",
+			"Input: event_id (required).",
+			"Output: duplicate chain (occurrence_number, total_occurrences, time since first/previous), correlated events (root-cause vs downstream), historical firing stats and hourly trend.",
+			"Strategy: combine this with the event's `score_factors` column (from events_execute) to give a complete, evidence-backed explanation of the triage decision.",
+		},
+		tools.ToolTriageRules: {
+			"Use this tool to list the configured triage rules (suppression / scoring / classification) for the current account/tenant.",
+			"Input: optional rule_type ('suppression'|'scoring'|'classification'), optional enabled (bool).",
+			"Output: the rules with their match criteria, actions and priorities.",
+			"Use it for rule-coverage analysis and to check whether a rule already exists before proposing a new one.",
+		},
+		tools.ToolThresholdSuggestions: {
+			"Use this tool to list threshold-tuning suggestions for noisy alerts.",
+			"Input: optional source, optional confidence ('high'|'medium'|'low'), optional limit.",
+			"Output: current vs suggested threshold, recommendation_type, confidence, estimated_reduction (%), and metric stats per alert.",
+			"Flag low-confidence flat-metric (MAD=0) rows as weak. These are advisory only — recommend, do not claim to apply.",
+		},
+		tools.ToolTriageDryRun: {
+			"Use this tool to PREVIEW the impact of a candidate triage rule before recommending it — it does NOT create the rule.",
+			"Input: rule_type and action (required), plus one or more match criteria (match_alertname, match_source, match_namespace, match_service, match_fingerprint, match_priority, match_finding_type, match_labels).",
+			"Output: how many existing events match (projected volume reduction).",
+			"Use it to quantify a proposed rule, then direct the user to create it in the UI.",
+		},
+		tools.ToolGetEventRules: {
+			"Use this tool to inspect the alert/event RULE DEFINITIONS that generate events (the alerting rules), NOT triage rules.",
+			"Input: optional filters alert (substring), source, severity, alert_type, namespace, enabled, limit.",
+			"Output: rules with alert name, expr (condition/threshold), duration, severity, source, metric_provider, namespace and enabled.",
+			"Use it to see how an alert is defined, to map a threshold suggestion or noisy alert back to its rule, and to find disabled/misconfigured rules.",
+		},
+		tools.ToolEventClassification: {
+			"Use this tool to get the classification VERDICT for an event (true_positive/false_positive/benign_positive/duplicate) and its reason_code, linked_event_id and rule.",
+			"Input: event_id.",
+			"Output: the classification record, or a clear note that none was recorded.",
+			"Use it to answer how an event was classified and why — complements get_triage_explanation (dedup chain/correlations/score).",
+		},
+		tools.ToolTriageRuleEvents: {
+			"Use this tool to list the events a specific triage rule matched (rule effectiveness).",
+			"Input: rule_id (from get_triage_rules), optional limit.",
+			"Output: the matched events.",
+			"Use it to answer 'what is this rule actually catching / is it still firing?'.",
+		},
 	}
 
 	schema := []string{
@@ -188,6 +245,8 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 		"urgency text = event urgency, possible values (DEBUG, HIGH, LOW, MEDIUM)",
 		"computed_priority text = scored priority (P0=critical ≥80, P1=high 60-79, P2=medium 40-59, P3=low <40). Based on computed_score.",
 		"computed_score integer = severity score (0-100) based on priority, environment, service tier, duplicate count, correlations, and evidence factors.",
+		"score_factors jsonb = full breakdown of how computed_score was derived. Sub-fields: base_severity (HIGH=25/MEDIUM=15/LOW=10/INFO=5/DEBUG=3), base_severity_source, env_multiplier (prod=1.0/non_prod=0.3/unknown=0.5), raw_score (base_severity×env_multiplier×4), duplicate_penalty (−5 per repeat occurrence, capped −30), correlation_type, correlation_adjustment (likely_root_cause +15/same_service −5/downstream −10/upstream −10), finding_type_adjustment (slo +10/anomaly +5/configuration_change −10), evidence_bonus (OOMKilled +15/restarts≥3 +10), total_adjustments, final_score, confidence. Select this column to EXPLAIN why an event has its computed_priority.",
+		"score_confidence numeric = confidence (0-1) in the computed_score, higher when more scoring factors and a known environment were available.",
 		"cluster text = kubernetes cluster name",
 		"service_key text = service identifier",
 		"subject_owner text = owner of the subject resource (e.g. deployment name for a pod)",
@@ -420,6 +479,64 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 			},
 			Explanation: "We are counting anomalies by type for the last 7 days, grouping by anomaly_type. No LIMIT needed for aggregation.",
 		},
+		{
+			Question:    "Why is this event suppressed / why is it only P3?",
+			Explanation: "First read the score breakdown and triage status from the events table, then fetch the dedup chain and correlations to explain the decision end-to-end.",
+			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
+				{
+					Tool:  tools.ToolEventExecuteSql,
+					Input: "SELECT id, nb_status, computed_priority, computed_score, score_factors, fingerprint FROM events WHERE id = 'your-event-id'",
+				},
+				{
+					Tool:  tools.ToolTriageExplanation,
+					Input: "{\"event_id\": \"your-event-id\"}",
+				},
+			},
+		},
+		{
+			Question:    "Give me an alert-noise report for the last 30 days.",
+			Explanation: "Aggregate firings vs distinct fingerprints per alert to find noisy alerts, then surface configured rules to spot coverage gaps.",
+			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
+				{
+					Tool:  tools.ToolEventExecuteSql,
+					Input: "SELECT aggregation_key, source, count(*) AS firings, count(DISTINCT fingerprint) AS distinct_patterns FROM events GROUP BY aggregation_key, source ORDER BY firings DESC",
+				},
+				{
+					Tool:  tools.ToolTriageRules,
+					Input: "{\"rule_type\": \"suppression\"}",
+				},
+			},
+		},
+		{
+			Question:    "Which alerts should I tune?",
+			Explanation: "List threshold suggestions; recommend the high-reduction tune_threshold/disable ones and flag low-confidence flat-metric rows as weak.",
+			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
+				{
+					Tool:  tools.ToolThresholdSuggestions,
+					Input: "{\"confidence\": \"high\"}",
+				},
+			},
+		},
+		{
+			Question:    "Propose a rule to cut the RabbitmqNoQueueConsumer noise and show the impact.",
+			Explanation: "Dry-run the candidate suppression rule to get the projected volume reduction, then direct the user to create it in the UI (read-only — we do not create it).",
+			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
+				{
+					Tool:  tools.ToolTriageDryRun,
+					Input: "{\"rule_type\": \"suppression\", \"action\": \"suppress\", \"match_alertname\": \"RabbitmqNoQueueConsumer\"}",
+				},
+			},
+		},
+		{
+			Question:    "What's the current threshold/definition for the HighP95Latency alert, and is it enabled?",
+			Explanation: "Inspect the alert rule definition (expr holds the threshold) via get_event_rules.",
+			AnswerSteps: []core.NBAgentPromptExampleAnswerStep{
+				{
+					Tool:  tools.ToolGetEventRules,
+					Input: "{\"alert\": \"HighP95Latency\"}",
+				},
+			},
+		},
 	}
 
 	return core.NBAgentPrompt{
@@ -437,7 +554,11 @@ func (l AgentEvents) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 }
 
 func (p AgentEvents) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
-	return []toolcore.NBTool{tools.EventsExecuteTool{}, tools.AnomalyExecuteTool{}, EventSummaryTool{}, tools.GetEventEvidenceTool{}}
+	return []toolcore.NBTool{
+		tools.EventsExecuteTool{}, tools.AnomalyExecuteTool{}, EventSummaryTool{}, tools.GetEventEvidenceTool{},
+		tools.TriageExplanationTool{}, tools.TriageRulesTool{}, tools.ThresholdSuggestionsTool{}, tools.TriageDryRunTool{},
+		tools.EventRulesTool{}, tools.EventClassificationTool{}, tools.TriageRuleEventsTool{},
+	}
 }
 
 func (p AgentEvents) GetSummaryToolName() string {
@@ -488,6 +609,36 @@ func reduceEventData(event events.Event) map[string]any {
 		"subject_namespace": event.SubjectNamespace,
 		"subject_node":      event.SubjectNode,
 		"aggregation_key":   event.AggregationKey,
+	}
+
+	// Carry triage columns through so "explain a triage decision" works even on
+	// SELECT * detail queries (this reducer otherwise drops them).
+	if event.NbStatus != "" {
+		eventData["nb_status"] = event.NbStatus
+	}
+	if event.ComputedPriority != "" {
+		eventData["computed_priority"] = event.ComputedPriority
+	}
+	if event.ComputedScore != nil {
+		eventData["computed_score"] = event.ComputedScore
+	}
+	if event.ScoreFactors != nil {
+		// score_factors arrives as a ::text JSON string; parse it back into a
+		// nested object so the LLM sees structured fields rather than an escaped
+		// JSON string. Fall back to the raw value if it isn't parseable.
+		if s, ok := event.ScoreFactors.(string); ok {
+			var parsed any
+			if err := json.Unmarshal([]byte(s), &parsed); err == nil {
+				eventData["score_factors"] = parsed
+			} else {
+				eventData["score_factors"] = event.ScoreFactors
+			}
+		} else {
+			eventData["score_factors"] = event.ScoreFactors
+		}
+	}
+	if event.ScoreConfidence != nil {
+		eventData["score_confidence"] = event.ScoreConfidence
 	}
 
 	logData := ""

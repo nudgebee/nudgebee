@@ -25,7 +25,6 @@ test("Add Daily High notification rule", async ({ page }, testInfo) => {
     msTeamsChannel: channels.msteams.msteams_daily_high,
     gChat: channels.gchat.gchat_daily_high,
     email: users[0].email,
-    excludeUsers: [users[1].email, users[2].email],
   });
 
   await submitAndVerify(page, locators, channels.ruleNames.rule_5, anyConfigured, testInfo);

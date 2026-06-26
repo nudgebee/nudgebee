@@ -1,10 +1,12 @@
 import apiAccount from '@api1/account';
+import apiIntegrations from '@api1/integrations';
 import Text from '@common-new/format/Text';
 import ThreeDotsMenu from '@common-new/ThreeDotsMenu';
 import { ListingLayout } from '@components1/ds/ListingLayout';
 import { Button as DsButton } from '@components1/ds/Button';
 import CloudProviderIcon from '@components1/common/CloudIcon';
 import { Select } from '@components1/ds/Select';
+import { Input } from '@components1/ds/Input';
 import Datetime from '@common-new/format/Datetime';
 import { Modal } from '@components1/ds/Modal';
 import { toast as snackbar } from '@components1/ds/Toast';
@@ -41,11 +43,15 @@ const MessagingIntegrationTile = ({
   const [teamName, setTeamName] = useState('');
   const [isSendingTest, setIsSendingTest] = useState(false);
 
+  const [openInstallModal, setOpenInstallModal] = useState(false);
+  const [botToken, setBotToken] = useState('');
+  const [isInstalling, setIsInstalling] = useState(false);
+
   // Fetch installations
   const listMessagingPlatform = () => {
     setIsLoading(true);
     apiAccount
-      .getMessagingPlatform(provider)
+      .getMessagingInstallations(provider)
       .then((res) => {
         setIsLoading(false);
         if (res?.data?.length === 1) {
@@ -96,6 +102,11 @@ const MessagingIntegrationTile = ({
   }, []);
 
   const handleInstall = () => {
+    if (provider === 'discord') {
+      setOpenInstallModal(true);
+      return;
+    }
+
     // Open as popup instead of new tab
     const width = 600;
     const height = 700;
@@ -115,6 +126,22 @@ const MessagingIntegrationTile = ({
         fetchChannelList();
       }
     }, 500);
+  };
+
+  const handleDiscordInstall = async () => {
+    if (!botToken) return;
+    setIsInstalling(true);
+    const result = await apiAccount.installDiscord(botToken);
+    setIsInstalling(false);
+    if (result?.success) {
+      snackbar.success('Discord integration installed successfully!');
+      setOpenInstallModal(false);
+      setBotToken('');
+      listMessagingPlatform();
+      fetchChannelList();
+    } else {
+      snackbar.error(result?.error || 'Failed to install Discord integration');
+    }
   };
 
   const handleSendTest = async () => {
@@ -270,6 +297,53 @@ const MessagingIntegrationTile = ({
 
   const updateChannel = () => {
     setIsLoading(true);
+
+    const inst = installationData?.[0];
+    if (inst?._origin === 'integration') {
+      // Integration installs store the default destination as scalar config values
+      // (sending uses the IDs; names are kept only for display here).
+      const values =
+        provider === 'ms_teams'
+          ? [
+              { name: 'default_team_id', value: teamVal || '' },
+              { name: 'default_team_name', value: teamName || '' },
+              { name: 'default_channel_id', value: channelsValues?.id || '' },
+              { name: 'default_channel_name', value: channelsValues?.name || '' },
+            ]
+          : [
+              { name: 'default_channel_id', value: channelsValues?.id || '' },
+              { name: 'default_channel_name', value: channelsValues?.name || '' },
+            ];
+      apiIntegrations
+        .addIntegrations({
+          integration_name: provider,
+          integration_config_name: inst._integration_name,
+          integration_config_values: values,
+          account_ids: [],
+          source: 'user',
+          skip_validation: true,
+          // integration_id switches the backend from create (which rejects the
+          // existing team/workspace name) to update, so re-saving the default
+          // channel for an installed integration persists instead of erroring.
+          ...(inst.id ? { integration_id: inst.id } : {}),
+        })
+        .then((res) => {
+          setIsLoading(false);
+          if (res?.data?.data?.integrations_create_config?.id) {
+            listMessagingPlatform();
+            snackbar.success(`${displayName} channel updated successfully`);
+            closeModal();
+          } else {
+            snackbar.error(`Failed to update ${displayName} channel`);
+          }
+        })
+        .catch(() => {
+          setIsLoading(false);
+          snackbar.error(`Failed to update ${displayName} channel`);
+        });
+      return;
+    }
+
     let payload;
 
     if (provider === 'ms_teams') {
@@ -299,6 +373,33 @@ const MessagingIntegrationTile = ({
 
   const handleDelete = () => {
     setIsLoading(true);
+
+    const inst = installationData?.[0];
+    if (inst?._origin === 'integration') {
+      apiIntegrations
+        .deleteIntegrations({
+          integration_name: provider,
+          integration_config_name: inst._integration_name,
+          source: 'user',
+        })
+        .then((res) => {
+          setIsLoading(false);
+          if (res?.data?.data?.integrations_delete_config?.status) {
+            snackbar.success(`${displayName} configuration deleted successfully`);
+            listMessagingPlatform();
+          } else {
+            snackbar.error(`Failed to delete ${displayName} configuration`);
+          }
+          setDeleteConfig(false);
+        })
+        .catch(() => {
+          setIsLoading(false);
+          setDeleteConfig(false);
+          snackbar.error(`Failed to delete ${displayName} configuration`);
+        });
+      return;
+    }
+
     apiAccount
       .deleteMessagingPlatform(installationData?.[0]?.id)
       .then((res) => {
@@ -320,6 +421,35 @@ const MessagingIntegrationTile = ({
 
   return (
     <>
+      <Modal
+        width='sm'
+        open={openInstallModal}
+        handleClose={() => setOpenInstallModal(false)}
+        title='Install Discord Integration'
+        loader={isInstalling}
+        actionButtons={
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', p: '12px 24px' }}>
+            <DsButton id='cancel-install-modal-btn' size='md' tone='secondary' onClick={() => setOpenInstallModal(false)} disabled={isInstalling}>
+              Cancel
+            </DsButton>
+            <DsButton id='save-install-modal-btn' size='md' tone='primary' disabled={isInstalling || !botToken} onClick={handleDiscordInstall}>
+              Install
+            </DsButton>
+          </Box>
+        }
+      >
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: '20px', padding: '20px 24px' }}>
+          <Input
+            id='bot-token'
+            label='Discord Bot Token'
+            required
+            value={botToken}
+            onChange={(val) => setBotToken(val)}
+            placeholder='Enter your Discord bot token'
+          />
+        </Box>
+      </Modal>
+
       <Modal
         open={deleteConfig}
         handleClose={() => setDeleteConfig(false)}

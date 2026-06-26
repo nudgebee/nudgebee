@@ -481,6 +481,30 @@ func TestDatadogAPMFlowSource_inferProtocol(t *testing.T) {
 	}
 }
 
+func TestDatadogAPMFlowSource_inferProtocol_Deterministic(t *testing.T) {
+	source := NewDatadogAPMFlowSource(slog.Default())
+
+	// Operation strings that contain more than one known pattern. With the
+	// previous map-based implementation the returned protocol could vary across
+	// runs due to randomized map iteration order. The ordered slice must always
+	// return the same protocol.
+	operations := []string{
+		"http.request.grpc",
+		"web.request.http.client",
+		"kafka.consume.redis.command",
+	}
+
+	for _, operation := range operations {
+		first := source.inferProtocol(operation)
+		for i := 0; i < 100; i++ {
+			if got := source.inferProtocol(operation); got != first {
+				t.Fatalf("inferProtocol(%q) is non-deterministic: got %q then %q",
+					operation, first, got)
+			}
+		}
+	}
+}
+
 func TestDatadogAPMFlowSource_buildEdgeProperties(t *testing.T) {
 	logger := slog.Default()
 	source := NewDatadogAPMFlowSource(logger)

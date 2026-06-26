@@ -265,6 +265,11 @@ type appConfig struct {
 	// LlmServerLlmInitialBackoffSeconds defines the starting delay for exponential backoff during LLM retries.
 	LlmServerLlmInitialBackoffSeconds int `mapstructure:"llm_server_llm_initial_backoff_seconds"`
 
+	// LlmHFEnableThinking controls whether HF/vLLM OpenAI-compat requests opt out of chat-template
+	// thinking mode. Default false (we send chat_template_kwargs.enable_thinking=false). Set true
+	// only when a vLLM-served thinking model is intentionally used for reasoning-tier work.
+	LlmHFEnableThinking bool `mapstructure:"llm_hf_enable_thinking"`
+
 	LlmServerMaxConcurrentLlmCalls int `mapstructure:"llm_server_max_concurrent_llm_calls"`
 
 	SecurityContextRetryAttempts int `mapstructure:"security_context_retry_attempts"`
@@ -644,6 +649,7 @@ func init() {
 	viper.SetDefault("llm_server_llm_retry_attempts", 5)
 	viper.SetDefault("llm_server_max_concurrent_llm_calls", 20)
 	viper.SetDefault("llm_server_llm_initial_backoff_seconds", 1)
+	viper.SetDefault("llm_hf_enable_thinking", false)
 	viper.SetDefault("llm_server_relay_command_execution_timeout_seconds", 120)
 	viper.SetDefault("llm_server_relay_pod_execution_timeout_seconds", 120)
 	viper.SetDefault("llm_server_mcp_discovery_timeout_seconds", 15)
@@ -826,6 +832,7 @@ func init() {
 }
 
 const insecureJWTSecret = "default-jwt-secret"
+const insecureRelaySecret = "default"
 
 // LogSecurityWarnings emits warnings for insecure config defaults that operators
 // should override before deploying. Intentionally non-blocking: existing
@@ -839,10 +846,19 @@ func LogSecurityWarnings() {
 	if Config.LlmServerJwtSecret == insecureJWTSecret {
 		if Config.LlmServerSecurityMode == "local" {
 			slog.Warn("config: llm_server_jwt_secret is set to the insecure default — acceptable for local dev only")
-			return
+		} else {
+			slog.Warn("config: SECURITY — llm_server_jwt_secret is set to the publicly known default value; " +
+				"any attacker who knows this default can forge workspace JWTs and execute commands in the workspace pod. " +
+				"Set LLM_SERVER_JWT_SECRET to a strong random value before deploying.")
 		}
-		slog.Warn("config: SECURITY — llm_server_jwt_secret is set to the publicly known default value; " +
-			"any attacker who knows this default can forge workspace JWTs and execute commands in the workspace pod. " +
-			"Set LLM_SERVER_JWT_SECRET to a strong random value before deploying.")
+	}
+
+	if Config.RelayServerSecretKey == insecureRelaySecret {
+		if Config.LlmServerSecurityMode == "local" {
+			slog.Warn("config: relay_server_secret_key is set to the insecure default — acceptable for local dev only")
+		} else {
+			slog.Warn("config: SECURITY — relay_server_secret_key is set to the publicly known default value; " +
+				"set RELAY_SERVER_SECRET_KEY to a strong random value before deploying.")
+		}
 	}
 }

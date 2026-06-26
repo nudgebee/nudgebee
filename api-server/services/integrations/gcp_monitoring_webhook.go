@@ -161,22 +161,22 @@ func (m GCPMonitoringWebhook) ProcessEventWebook(sc *security.RequestContext, se
 	}
 
 	// Map severity from policy user labels, default to HIGH
-	var eventPriority event.EventPriortiy
+	var eventPriority event.EventPriority
 	if sev, ok := inc.PolicyUserLabels["severity"]; ok {
 		switch strings.ToLower(sev) {
 		case "critical":
-			eventPriority = event.EventPriortiyHigh
+			eventPriority = event.EventPriorityHigh
 		case "high":
-			eventPriority = event.EventPriortiyHigh
+			eventPriority = event.EventPriorityHigh
 		case "medium", "warning":
-			eventPriority = event.EventPriortiyMedium
+			eventPriority = event.EventPriorityMedium
 		case "low", "info":
-			eventPriority = event.EventPriortiyLow
+			eventPriority = event.EventPriorityLow
 		default:
-			eventPriority = event.EventPriortiyHigh
+			eventPriority = event.EventPriorityHigh
 		}
 	} else {
-		eventPriority = event.EventPriortiyHigh
+		eventPriority = event.EventPriorityHigh
 	}
 
 	// Determine subject name from resource (needed for fingerprint and labels).
@@ -452,7 +452,7 @@ func (m GCPMonitoringWebhook) ProcessEventWebook(sc *security.RequestContext, se
 		}
 
 		alertSeverity := "warning"
-		if eventPriority == event.EventPriortiyHigh {
+		if eventPriority == event.EventPriorityHigh {
 			alertSeverity = "critical"
 		}
 

@@ -458,8 +458,14 @@ func QueryTraces(ctx security.RequestContext, request core.ObservabilityTracesV3
 		return observabilityResp, fmt.Errorf("unauthorized: %v", string(jsonBody))
 	}
 
-	if resp.StatusCode == 500 {
-		return observabilityResp, fmt.Errorf("internal Server Error from Services Server, %v", string(jsonBody))
+	// Any non-2xx is a real failure and must surface as an error. The services-server
+	// trace handler returns HTTP 400 when the (LLM-generated) SQL is invalid — e.g. it
+	// references a column that does not exist in the traces_view projection. Previously
+	// only 401/500 were treated as errors, so a 400 error body silently unmarshalled
+	// into an empty trace slice with a nil error, and the agent read a failed query as
+	// "no traces exist". Returning the error lets the agent reflect and fix its query.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return observabilityResp, fmt.Errorf("services: traces query failed (status %d): %s", resp.StatusCode, string(jsonBody))
 	}
 
 	response := make([]core.ObservabilityTrace, 0, 100)

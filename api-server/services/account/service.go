@@ -2387,30 +2387,25 @@ func RegenerateAgentKeys(ctx *security.RequestContext, accountId string, agentTy
 		return AgentRegenerateKeyResponse{}, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	audit.LogChange(ctx, audit.ChangeInput{
-		EventCategory: audit.EventCategoryAccount,
-		EventType:     audit.EventTypeAccountUpdate,
-		EventAction:   audit.EventActionUpdate,
-		TargetID:      accountId,
-		AccountID:     accountId,
-		TableName:     "cloud_accounts",
-		NewData:       map[string]any{"id": accountId, "agent_access_key": *agent.AccessKey},
-	})
-
-	if err := audit.PublishAuditEvent(ctx, audit.Audit{
+	// Single audit row under the K8s Agent category so token (re)generation
+	// surfaces on the Audit page's "K8s Agent" tab. Emitted here (not in the
+	// API handler) so it reflects the real success path and isn't double-written
+	// alongside a separate ACCOUNTS change-log row.
+	if auditErr := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{{
 		AccountId:     accountId,
 		TenantId:      ctx.GetSecurityContext().GetTenantId(),
 		UserId:        ctx.GetSecurityContext().GetUserId(),
-		EventTime:     time.Now(),
-		EventCategory: audit.EventCategoryAccount,
+		EventTime:     time.Now().UTC(),
+		EventCategory: audit.EventCategoryK8sAgent,
 		EventType:     audit.EventTypeUpdateAgentToken,
-		EventState:    map[string]string{"account_id": accountId, "agent_type": agentType},
+		EventState:    map[string]any{"account_id": accountId, "agent_type": agentType},
 		EventActor:    audit.EventActorApiService,
-		EventTarget:   "agent",
+		EventTarget:   accountId,
 		EventAction:   audit.EventActionUpdate,
 		EventStatus:   audit.EventStatusSuccess,
-	}); err != nil {
-		ctx.GetLogger().Error("failed to publish audit event", "error", err)
+		EventAttr:     map[string]any{"agent_type": agentType},
+	}}}); auditErr != nil {
+		ctx.GetLogger().Error("failed to create agent token audit", "error", auditErr)
 	}
 
 	return AgentRegenerateKeyResponse{

@@ -18,6 +18,14 @@ import { Skeleton } from '@components1/ds/Skeleton';
 import { SeverityIcon } from '@components1/ds/SeverityIcon';
 import { hasWriteAccess } from '@lib/auth';
 import SafeIcon from '@components1/common/SafeIcon';
+import ViewInArOutlinedIcon from '@mui/icons-material/ViewInArOutlined';
+import StorageOutlinedIcon from '@mui/icons-material/StorageOutlined';
+import SwapHorizOutlinedIcon from '@mui/icons-material/SwapHorizOutlined';
+import GridViewOutlinedIcon from '@mui/icons-material/GridViewOutlined';
+import BlockOutlinedIcon from '@mui/icons-material/BlockOutlined';
+import SaveOutlinedIcon from '@mui/icons-material/SaveOutlined';
+import BoltOutlinedIcon from '@mui/icons-material/BoltOutlined';
+import TuneOutlinedIcon from '@mui/icons-material/TuneOutlined';
 
 // Maps the legacy severity labels to ds/SeverityIcon levels (Debug has no DS level → info).
 const SEVERITY_LEVEL_BY_LABEL = {
@@ -26,6 +34,23 @@ const SEVERITY_LEVEL_BY_LABEL = {
   Low: 'low',
   Debug: 'info',
 };
+
+// Leading icon per optimization card, keyed by title. The optimize cards render from
+// a single map (optimizeBlockData), so the icon lives here in one lookup — not seven
+// inline JSX blocks. Any title not listed falls back to OPTIMIZATION_ICON_FALLBACK.
+const OPTIMIZATION_ICON_BY_TITLE = {
+  'Workload right sizing': ViewInArOutlinedIcon,
+  'Unused volumes': StorageOutlinedIcon,
+  'Move to Graviton': SwapHorizOutlinedIcon,
+  'Replica Right Sizing': GridViewOutlinedIcon,
+  'Abandoned workloads': BlockOutlinedIcon,
+  'PV Right Sizing': SaveOutlinedIcon,
+  'Spot Instances': BoltOutlinedIcon,
+};
+const OPTIMIZATION_ICON_FALLBACK = TuneOutlinedIcon;
+
+// Muted slate icon sitting before each optimization card title.
+const OPTIMIZATION_ICON_SX = { fontSize: '18px', color: 'var(--ds-slate-600)' };
 
 const KubernetesClusterSummaryUtilization = ({ accountId }) => {
   const router = useRouter();
@@ -843,14 +868,19 @@ const KubernetesClusterSummaryUtilization = ({ accountId }) => {
                 <Grid item md={4} key={index}>
                   <DSCard variant='outlined' size='sm'>
                     <Box display='flex' alignItems={'center'} justifyContent={'space-between'}>
-                      <HeadingWithBorder
-                        value={data.title}
-                        borderColor='var(--ds-yellow-500)'
-                        borderWidth='2px'
-                        sx={{
-                          '& p': { fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-gray-700)' },
-                        }}
-                      />
+                      {(() => {
+                        const OptimizationIcon = OPTIMIZATION_ICON_BY_TITLE[data.title] || OPTIMIZATION_ICON_FALLBACK;
+                        return (
+                          <Box display='flex' alignItems='center' gap='8px'>
+                            <OptimizationIcon sx={OPTIMIZATION_ICON_SX} />
+                            <Typography
+                              sx={{ fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-gray-700)' }}
+                            >
+                              {data.title}
+                            </Typography>
+                          </Box>
+                        );
+                      })()}
                       <Box>
                         <Text value={'Est. Savings'} secondaryText sx={{ fontSize: 'var(--ds-text-caption)', textAlign: 'end' }} />
                         <Box display='flex' alignItems={'end'}>

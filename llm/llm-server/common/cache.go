@@ -2,6 +2,8 @@ package common
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -250,5 +252,53 @@ func CacheSubscribe(channel string, handler func(message string)) {
 				handler(msg.Payload)
 			}
 		}()
+	}
+}
+
+// releaseLockScript releases a distributed lock only if the caller still owns it
+// (compare-and-delete), so a slow holder whose lock already expired and was
+// re-acquired by a peer can't delete the peer's lock.
+const releaseLockScript = `if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end`
+
+// CacheTryLock attempts a cross-replica lock on `key`, held for at most `ttl`,
+// via Redis SETNX. It returns (token, true) when the lock was acquired; pass the
+// token to CacheUnlock to release it.
+//
+// When the cache provider is not Redis (single-process bigcache) there are no
+// peer replicas to coordinate with, so it always "acquires" with an empty token
+// and CacheUnlock is a no-op. It also fails open (acquires) on a Redis error, so
+// a transient Redis problem degrades to the in-process guard rather than
+// blocking work.
+func CacheTryLock(ctx context.Context, key string, ttl time.Duration) (string, bool) {
+	rc, ok := cacheClient.(*redis.Client)
+	if !ok || rc == nil {
+		return "", true
+	}
+	tokenBytes := make([]byte, 16)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		slog.Warn("cache: failed to generate lock token; proceeding without cross-replica lock", "error", err)
+		return "", true
+	}
+	token := hex.EncodeToString(tokenBytes)
+	acquired, err := rc.SetNX(ctx, "lock:"+key, token, ttl).Result()
+	if err != nil {
+		slog.Warn("cache: distributed lock SETNX failed; proceeding without it", "error", err, "key", key)
+		return "", true
+	}
+	return token, acquired
+}
+
+// CacheUnlock releases a lock acquired via CacheTryLock. A no-op for the empty
+// token (non-Redis / fail-open case).
+func CacheUnlock(ctx context.Context, key, token string) {
+	if token == "" {
+		return
+	}
+	rc, ok := cacheClient.(*redis.Client)
+	if !ok || rc == nil {
+		return
+	}
+	if err := rc.Eval(ctx, releaseLockScript, []string{"lock:" + key}, token).Err(); err != nil {
+		slog.Warn("cache: distributed lock release failed", "error", err, "key", key)
 	}
 }

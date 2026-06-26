@@ -32,15 +32,20 @@ func pinnedSafeDialContext(ctx context.Context, network, addr string) (net.Conn,
 	if err != nil {
 		return nil, err
 	}
-	d := net.Dialer{Timeout: 30 * time.Second}
+	// Shared deadline across the whole dial — caps total latency at 30s even
+	// when iterating multiple resolved IPs below, so worst-case time matches
+	// the original single-dial behaviour.
+	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	d := net.Dialer{}
 	// If the host is already a literal IP, skip DNS and validate directly.
 	if ip := net.ParseIP(host); ip != nil {
 		if isRestrictedIP(ip) {
 			return nil, fmt.Errorf("blocked dial to restricted IP %s", ip.String())
 		}
-		return d.DialContext(ctx, network, addr)
+		return d.DialContext(dialCtx, network, addr)
 	}
-	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	ips, err := net.DefaultResolver.LookupIP(dialCtx, "ip", host)
 	if err != nil {
 		return nil, fmt.Errorf("unable to resolve host %q: %w", host, err)
 	}
@@ -52,7 +57,22 @@ func pinnedSafeDialContext(ctx context.Context, network, addr string) (net.Conn,
 			return nil, fmt.Errorf("blocked dial to restricted IP %s", ip.String())
 		}
 	}
-	return d.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+	// Try each validated IP in turn so a single unreachable address (e.g. an
+	// IPv6 record on an IPv4-only host) doesn't fail the whole dial. All IPs
+	// were already checked against isRestrictedIP above, so falling through
+	// is safe.
+	var lastErr error
+	for _, ip := range ips {
+		conn, err := d.DialContext(dialCtx, network, net.JoinHostPort(ip.String(), port))
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		if dialCtx.Err() != nil {
+			break
+		}
+	}
+	return nil, fmt.Errorf("dial %q: all %d resolved addresses failed: %w", host, len(ips), lastErr)
 }
 
 // noRedirectMCPClient disables HTTP redirects so the MCP server can't redirect

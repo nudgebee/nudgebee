@@ -17,7 +17,7 @@ import Charts from '@components1/common/charts/LineCharts';
 import SafeIcon from '@components1/common/SafeIcon';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
 import TicketCreatePopupForm from '@components1/tickets/TicketCreatePopupForm';
-import useTicketFliter from '@hooks/useTicketFliter';
+import useTicketFilter from '@hooks/useTicketFilter';
 import NubiChatSidebar from '@components1/common/NubiChatSidebar';
 import { md5 } from '@lib/encode';
 import {
@@ -425,7 +425,7 @@ const PerformanceInsights: React.FC<PerformanceInsightsProps> = ({ accountId, da
     getTicketReferenceId,
     handleTicketSuccess,
     handleTicketFailure,
-  } = useTicketFliter();
+  } = useTicketFilter();
 
   const handleAnalyzeQuery = useCallback(
     (query: PerformanceQuery) => {

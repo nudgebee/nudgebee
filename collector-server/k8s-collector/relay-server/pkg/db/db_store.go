@@ -57,7 +57,7 @@ type AgentStore interface {
 	IsWSEnabled(ctx context.Context, accountID, agentType string) (bool, string, error)
 	IsAgentConnected(ctx context.Context, accountID, agentType string) (bool, error)
 	GetAgentStatus(ctx context.Context, accountID, agentType string) (connected bool, wsEnabled bool, fallbackURL string, prometheusAdditionalLabel string, err error)
-	UpdateRelayConnectionStatus(ctx context.Context, accountID, agentType string, relayConnected bool, sessionStart time.Time) error
+	UpdateRelayConnectionStatus(ctx context.Context, accountID, agentType string, relayConnected bool, sessionStart time.Time) (transitioned bool, tenantID string, err error)
 	UpdateAgentVersion(ctx context.Context, accountID, agentType, version, commit, buildTime, protocolVersion string) error
 	UpdateDatasourceHealth(ctx context.Context, accountID, agentType string, datasources map[string]any) error
 	UpsertAgentDatasources(ctx context.Context, accountID, agentType string, datasources []AgentDatasource) error
@@ -304,50 +304,79 @@ func (p *pgStore) GetAgentStatus(ctx context.Context, accountID, agentType strin
 // sessionStart is the time this session began. When disconnecting, the update is skipped if a newer
 // session has already connected (i.e. last_connected_at > sessionStart), preventing stale sessions
 // from clobbering the status of active ones.
-func (p *pgStore) UpdateRelayConnectionStatus(ctx context.Context, accountID, agentType string, relayConnected bool, sessionStart time.Time) error {
+//
+// It returns whether the agent's status actually transitioned (old status != new status) and the
+// agent's tenant id. transitioned is true only when a row was updated AND its status changed, so
+// callers can audit genuine connect/disconnect transitions without emitting on every reconnect,
+// pod restart, or guarded stale-session cleanup.
+func (p *pgStore) UpdateRelayConnectionStatus(ctx context.Context, accountID, agentType string, relayConnected bool, sessionStart time.Time) (transitioned bool, tenantID string, err error) {
 	// Update the connection_status JSON, agent status, and last_connected_at
 	status := "NOT_CONNECTED"
 	if relayConnected {
 		status = "CONNECTED"
 	}
 
+	// A row-locked CTE reads the prior status so we can both gate the disconnect
+	// (newer-session guard) and report whether the status changed, in one
+	// statement. RETURNING surfaces the pre-update status and the tenant.
 	var query string
-	var err error
+	var args []any
 	if relayConnected {
-		// On connect: always update
+		// On connect: always update.
 		query = `
+			WITH prev AS (
+				SELECT id, status FROM agent
+				WHERE cloud_account_id = $1 AND "type" = $3
+				FOR UPDATE
+			)
 			UPDATE agent
 			SET connection_status = COALESCE(connection_status, '{}'::jsonb) || jsonb_build_object('relayConnection', $2::boolean),
 			    status = $4,
 			    last_connected_at = NOW()
-			WHERE cloud_account_id = $1 AND "type" = $3
+			FROM prev
+			WHERE agent.id = prev.id
+			RETURNING prev.status AS old_status, agent.tenant AS tenant
 		`
-		_, err = p.db.ExecContext(ctx, query, accountID, relayConnected, agentType, status)
+		args = []any{accountID, relayConnected, agentType, status}
 	} else {
 		// On disconnect: only update if no newer session has connected since this one started.
 		// This prevents a stale session's cleanup from overwriting a newer session's CONNECTED status.
 		query = `
+			WITH prev AS (
+				SELECT id, status, last_connected_at FROM agent
+				WHERE cloud_account_id = $1 AND "type" = $3
+				FOR UPDATE
+			)
 			UPDATE agent
 			SET connection_status = COALESCE(connection_status, '{}'::jsonb) || jsonb_build_object('relayConnection', $2::boolean),
 			    status = $4,
 			    last_connected_at = NOW()
-			WHERE cloud_account_id = $1 AND "type" = $3
-			  AND (last_connected_at IS NULL OR last_connected_at <= $5)
+			FROM prev
+			WHERE agent.id = prev.id
+			  AND (prev.last_connected_at IS NULL OR prev.last_connected_at <= $5)
+			RETURNING prev.status AS old_status, agent.tenant AS tenant
 		`
-		_, err = p.db.ExecContext(ctx, query, accountID, relayConnected, agentType, status, sessionStart)
+		args = []any{accountID, relayConnected, agentType, status, sessionStart}
 	}
 
-	if err != nil {
-		return fmt.Errorf("failed to update relay connection status for account %s (type=%s): %w", accountID, agentType, err)
+	var oldStatus, tenant sql.NullString
+	scanErr := p.db.QueryRowxContext(ctx, query, args...).Scan(&oldStatus, &tenant)
+	if scanErr != nil {
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			// No row updated: either no matching agent, or the disconnect guard
+			// skipped a stale session. Neither an error nor a transition.
+			return false, "", nil
+		}
+		return false, "", fmt.Errorf("failed to update relay connection status for account %s (type=%s): %w", accountID, agentType, scanErr)
 	}
 
 	// Invalidate cache after successful DB write to prevent a concurrent read
-	// from repopulating stale data between Delete and ExecContext.
-	if err := p.wsCache.Delete(ctx, wsCacheKey(accountID, agentType)); err != nil {
-		slog.Warn("failed to invalidate wsCache after status update", "account_id", accountID, "agent_type", agentType, "error", err)
+	// from repopulating stale data between Delete and the update.
+	if cerr := p.wsCache.Delete(ctx, wsCacheKey(accountID, agentType)); cerr != nil {
+		slog.Warn("failed to invalidate wsCache after status update", "account_id", accountID, "agent_type", agentType, "error", cerr)
 	}
 
-	return nil
+	return oldStatus.String != status, tenant.String, nil
 }
 
 // UpdateAgentVersion persists the running agent build info to the agent row.

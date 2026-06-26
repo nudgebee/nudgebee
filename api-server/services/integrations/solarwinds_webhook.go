@@ -505,22 +505,22 @@ func buildSolarWindsAlertEvidence(payload SolarWindsWebhookPayload, severityStr 
 // ---------------------------------------------------------------------------
 
 // mapSolarWindsSeverity converts an upper-cased SWO severity/priority string to
-// an internal EventPriortiy. Unknown values default to Medium (not Low) because
+// an internal EventPriority. Unknown values default to Medium (not Low) because
 // SWO only fires alerts for meaningful threshold breaches.
-func mapSolarWindsSeverity(severity string) event.EventPriortiy {
+func mapSolarWindsSeverity(severity string) event.EventPriority {
 	switch severity {
 	case "CRITICAL":
-		return event.EventPriortiyHigh
+		return event.EventPriorityHigh
 	case "HIGH":
-		return event.EventPriortiyHigh
+		return event.EventPriorityHigh
 	case "WARNING", "MEDIUM":
-		return event.EventPriortiyMedium
+		return event.EventPriorityMedium
 	case "LOW":
-		return event.EventPriortiyLow
+		return event.EventPriorityLow
 	case "INFO":
-		return event.EventPriortiyInfo
+		return event.EventPriorityInfo
 	default:
-		return event.EventPriortiyMedium
+		return event.EventPriorityMedium
 	}
 }
 

@@ -55,22 +55,44 @@ func (s *ElasticSource) ExtractIndexFieldValues(resp map[string]any) ([]string, 
 		return nil, fmt.Errorf("outer 'data' field not found or not an object")
 	}
 
-	rawList, ok := outer["data"].([]any)
-	if !ok {
-		return nil, fmt.Errorf("inner 'data' field not found or not an array")
+	// The agent returns its payload as a JSON-stringified string (the dispatch
+	// contract — see ExtractIndexNamesAny, which reads the same shape). For the
+	// query_es_field_index_values action that payload is the raw Elasticsearch
+	// _search response, with the distinct values under the `unique_values`
+	// terms-aggregation buckets. (The legacy receiver pre-flattened this into a
+	// string array; the Go agent does not, so we extract the buckets here.)
+	raw, ok := outer["data"].(string)
+	if !ok || raw == "" {
+		return nil, fmt.Errorf("inner 'data' field not found or not a string")
 	}
 
-	result := make([]string, 0, len(rawList))
+	var decoded struct {
+		Aggregations struct {
+			UniqueValues struct {
+				Buckets []struct {
+					Key any `json:"key"`
+				} `json:"buckets"`
+			} `json:"unique_values"`
+		} `json:"aggregations"`
+	}
+	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal inner 'data' JSON: %w", err)
+	}
 
-	for i, v := range rawList {
-		if v == nil {
-			continue // skip null entry at index 0
+	buckets := decoded.Aggregations.UniqueValues.Buckets
+	result := make([]string, 0, len(buckets))
+	for _, b := range buckets {
+		switch k := b.Key.(type) {
+		case nil:
+			continue
+		case string:
+			if k != "" {
+				result = append(result, k)
+			}
+		default:
+			// Numeric / boolean keys (non-keyword fields) — render as-is.
+			result = append(result, fmt.Sprintf("%v", k))
 		}
-		s, ok := v.(string)
-		if !ok {
-			return nil, fmt.Errorf("element at index %d is not a string", i)
-		}
-		result = append(result, s)
 	}
 
 	return result, nil

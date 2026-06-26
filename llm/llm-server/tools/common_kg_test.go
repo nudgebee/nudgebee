@@ -287,4 +287,20 @@ func TestFormatKGGetNodeResponse(t *testing.T) {
 		})
 		assert.Contains(t, out, "[output truncated")
 	})
+
+	t.Run("name/namespace/cluster nested under properties render in header and metadata", func(t *testing.T) {
+		out := formatKGGetNodeResponse(map[string]any{
+			"id":        testKGNodeID,
+			"node_type": "Workload",
+			"properties": map[string]any{
+				"name":      testKGTraverseSeedName,
+				"namespace": "nudgebee",
+				"cluster":   "k8s-dev",
+			},
+		})
+		assert.Contains(t, out, fmt.Sprintf("**%s** (Workload) — id: %s", testKGTraverseSeedName, testKGNodeID))
+		assert.NotContains(t, out, "(unnamed)")
+		assert.Contains(t, out, "- Namespace: nudgebee")
+		assert.Contains(t, out, "- Cluster: k8s-dev")
+	})
 }

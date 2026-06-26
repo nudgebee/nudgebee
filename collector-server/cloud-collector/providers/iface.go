@@ -520,6 +520,11 @@ type AvailableMetric struct {
 	Namespace  string            `json:"namespace"`
 	Statistics []string          `json:"statistics,omitempty"`
 	Attributes map[string]string `json:"attributes,omitempty"`
+	// Dimensions holds the deduped dimension sets observed for this metric
+	// (each a name->value map). Populated by the dynamic CloudWatch lister so
+	// the metric-query builder can discover dimension keys/values; capped to
+	// keep the response bounded for high-cardinality metrics.
+	Dimensions []map[string]string `json:"dimensions,omitempty"`
 }
 
 type CloudProvider interface {

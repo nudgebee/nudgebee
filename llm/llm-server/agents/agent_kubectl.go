@@ -94,10 +94,6 @@ func (l KubectlAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 		"- Node maintenance: stop scheduling → `kubectl cordon <node-name>`; resume scheduling → `kubectl uncordon <node-name>`.",
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		instructions = append(instructions, core.GetWorkspaceInstructions()...)
-	}
-
 	constraints := []string{
 		"**CRITICAL WORKFLOW:** Your first step MUST be to call the `kubectl_execute` tool. Only if that fails or if resource names are ambiguous should you use `resource_search`.",
 		"Always specify namespace (or `<namespace>` placeholder in TEMPLATE MODE).",

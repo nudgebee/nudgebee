@@ -44,7 +44,7 @@ func TestScoring(t *testing.T) {
 	t.Logf("Subject Owner: %v", event.SubjectOwner)
 
 	// Compute the score
-	result, err := ComputeScore(ctx, db, &event)
+	result, err := ComputeScore(ctx, db, &event, 1, "", 0.0)
 	require.NoError(t, err, "Failed to compute score")
 
 	// Print the results
@@ -108,7 +108,7 @@ func TestScoringMultipleEvents(t *testing.T) {
 				return
 			}
 
-			result, err := ComputeScore(ctx, db, &event)
+			result, err := ComputeScore(ctx, db, &event, 1, "", 0.0)
 			require.NoError(t, err)
 
 			t.Logf("Event: %s", event.Title)
@@ -158,7 +158,7 @@ func TestComputeAndUpdateScore(t *testing.T) {
 	}
 
 	// Compute the score
-	result, err := ComputeScore(ctx, db, &event)
+	result, err := ComputeScore(ctx, db, &event, 1, "", 0.0)
 	require.NoError(t, err)
 
 	// Print detailed breakdown

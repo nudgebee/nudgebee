@@ -452,7 +452,12 @@ func getRelayCommandResponseData(relayResponse map[string]any) (map[string]any, 
 
 	findings, ok := data1["findings"].([]any)
 	if !ok || findings == nil {
-		return nil, errors.New("findings field not found or is nil from data")
+		// Issue #32240: command-style executions (kubectl, helm) return
+		// a relay response without the findings envelope. Treat data
+		// itself as the already-extracted payload so the caller's
+		// response lookup can proceed. Mirrors the same relaxation in
+		// llm/llm-server/tools/common_relay.go.
+		return data1, nil
 	}
 
 	if len(findings) == 0 {

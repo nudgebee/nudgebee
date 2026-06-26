@@ -69,10 +69,16 @@ func (t *TicketsGetTask) Execute(taskCtx types.TaskContext, params map[string]an
 		"status":      resp.Status,
 		"severity":    resp.Severity,
 		"assignee":    resp.Assignee,
+		"assignees":   resp.Assignees,
+		"reporter":    resp.Reporter,
+		"labels":      resp.Labels,
+		"milestone":   resp.Milestone,
+		"project_key": resp.ProjectKey,
 		"url":         resp.URL,
 		"platform":    resp.Platform,
 		"ticket_id":   resp.TicketID,
 		"created_at":  resp.CreatedAt,
+		"updated_at":  resp.UpdatedAt,
 		"raw":         resp.Raw,
 	}, nil
 }
@@ -148,7 +154,32 @@ func (t *TicketsGetTask) OutputSchema() *types.Schema {
 			},
 			"assignee": {
 				Type:        types.PropertyTypeString,
-				Description: "Ticket assignee",
+				Description: "Primary ticket assignee (login or display name)",
+				Required:    false,
+			},
+			"assignees": {
+				Type:        types.PropertyTypeArray,
+				Description: "All assignees. Single-assignee platforms (Jira, ServiceNow) return a one-element list; omitted when unassigned.",
+				Required:    false,
+			},
+			"reporter": {
+				Type:        types.PropertyTypeString,
+				Description: "User who reported/created the ticket. Empty for platforms without a reporter concept (e.g. PagerDuty/ZenDuty).",
+				Required:    false,
+			},
+			"labels": {
+				Type:        types.PropertyTypeArray,
+				Description: "Ticket labels (GitHub, GitLab, Jira). Omitted for platforms without labels.",
+				Required:    false,
+			},
+			"milestone": {
+				Type:        types.PropertyTypeString,
+				Description: "Milestone title (GitHub, GitLab). Empty when none is set or unsupported.",
+				Required:    false,
+			},
+			"project_key": {
+				Type:        types.PropertyTypeString,
+				Description: "Project/repository the ticket belongs to (Jira project key, GitHub/GitLab owner/repo). Empty for incident platforms.",
 				Required:    false,
 			},
 			"url": {
@@ -163,7 +194,12 @@ func (t *TicketsGetTask) OutputSchema() *types.Schema {
 			},
 			"created_at": {
 				Type:        types.PropertyTypeString,
-				Description: "Creation timestamp",
+				Description: "Creation timestamp (RFC 3339)",
+				Required:    false,
+			},
+			"updated_at": {
+				Type:        types.PropertyTypeString,
+				Description: "Last update timestamp (RFC 3339). Empty for platforms that do not expose one (e.g. ZenDuty).",
 				Required:    false,
 			},
 			"raw": {

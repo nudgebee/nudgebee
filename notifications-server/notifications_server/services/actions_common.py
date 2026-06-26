@@ -301,7 +301,7 @@ class SlackEventsService(SlackActionsBaseService):
         error_message, user_email = self.get_user_email(slack_user_id, team_id)
         if error_message or not user_email:
             message = error_message or "Unable to get user info"
-            self.common_service.post_slack_ephimeral_response(channel_id, team_id, slack_user_id, message)
+            self.common_service.post_slack_ephemeral_response(channel_id, team_id, slack_user_id, message)
             LOG.warning(f"Failed to resolve user email for user={slack_user_id}: {message}")
             return
 

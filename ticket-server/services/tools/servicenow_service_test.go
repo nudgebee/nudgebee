@@ -69,6 +69,9 @@ func TestServiceNowService_Get_PopulatesRawWithAllFields(t *testing.T) {
 		      "state":             {"value": "1", "display_value": "New"},
 		      "urgency":           {"value": "2", "display_value": "2 - Medium"},
 		      "sys_created_on":    "2026-05-04 18:29:04",
+		      "sys_updated_on":    "2026-05-05 09:15:00",
+		      "assigned_to":       {"value": "u-1", "display_value": "Alice Smith"},
+		      "opened_by":         {"value": "u-2", "display_value": "Bob Jones"},
 		      "cmdb_ci":           {"value": "ci-sys-id", "display_value": "Storage Area Network 001"},
 		      "business_service":  {"value": "bs-sys-id", "display_value": "Email"},
 		      "u_cloud_technology": "AWS",
@@ -125,6 +128,25 @@ func TestServiceNowService_Get_PopulatesRawWithAllFields(t *testing.T) {
 	}
 	if got.Platform != "servicenow" {
 		t.Errorf("Platform = %q", got.Platform)
+	}
+
+	// Normalized metadata promoted to top-level fields (issue #32155):
+	// reference fields resolve to display_value, single assignee mirrors into
+	// the Assignees list, and SNOW datetimes parse into *time.Time.
+	if got.Assignee != "Alice Smith" {
+		t.Errorf("Assignee = %q, want Alice Smith (assigned_to.display_value)", got.Assignee)
+	}
+	if len(got.Assignees) != 1 || got.Assignees[0] != "Alice Smith" {
+		t.Errorf("Assignees = %v, want [Alice Smith]", got.Assignees)
+	}
+	if got.Reporter != "Bob Jones" {
+		t.Errorf("Reporter = %q, want Bob Jones (opened_by.display_value)", got.Reporter)
+	}
+	if got.CreatedAt == nil || got.CreatedAt.Format("2006-01-02 15:04:05") != "2026-05-04 18:29:04" {
+		t.Errorf("CreatedAt = %v, want 2026-05-04 18:29:04", got.CreatedAt)
+	}
+	if got.UpdatedAt == nil || got.UpdatedAt.Format("2006-01-02 15:04:05") != "2026-05-05 09:15:00" {
+		t.Errorf("UpdatedAt = %v, want 2026-05-05 09:15:00", got.UpdatedAt)
 	}
 
 	// Raw must carry every field from the API verbatim, including the

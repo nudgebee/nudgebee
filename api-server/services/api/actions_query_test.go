@@ -47,3 +47,61 @@ func TestGQLFieldParsing(t *testing.T) {
 		assert.Equal(t, []string{"tenant_id", "account_id", "warehouse_name", "query_count", "sum_query_exec_duration_micro", "sum_bill"}, lo.Map(cols, func(item query.QueryColumn, index int) string { return item.Name }))
 	})
 }
+
+// TestParseSelectColumnsMalformed covers GraphQL shapes that previously triggered
+// unchecked type assertions / index access and panicked the request goroutine.
+// Each must now return cleanly (an error or a result), never panic.
+func TestParseSelectColumnsMalformed(t *testing.T) {
+	t.Run("FragmentOnlyDefinition", func(t *testing.T) {
+		// First definition is a FragmentDefinition, not an OperationDefinition.
+		assert.NotPanics(t, func() {
+			_, err := parseSelectColumns(&ActionRequest{
+				RequestQuery: `fragment F on T { a b }`,
+			})
+			assert.Error(t, err)
+		})
+	})
+
+	t.Run("InlineFragmentSelection", func(t *testing.T) {
+		// Top-level selection is an inline fragment, not a *ast.Field.
+		assert.NotPanics(t, func() {
+			_, err := parseSelectColumns(&ActionRequest{
+				RequestQuery: `query MyQuery { ... on Foo { a b } }`,
+				Action:       ActionRequestAction{Name: "foo"},
+			})
+			assert.Error(t, err)
+		})
+	})
+
+	t.Run("RootFieldNoSubSelections", func(t *testing.T) {
+		// Root field has no selection set; previously a nil-deref panic.
+		cols, err := parseSelectColumns(&ActionRequest{
+			RequestQuery: `query MyQuery { foo }`,
+			Action:       ActionRequestAction{Name: "foo"},
+		})
+		assert.Nil(t, err)
+		assert.Empty(t, cols)
+	})
+
+	t.Run("NonStringFieldArgument", func(t *testing.T) {
+		// A non-string argument literal (boolean) previously panicked on the
+		// unchecked .(string) assertion; it must now be stringified instead.
+		cols, err := parseSelectColumns(&ActionRequest{
+			RequestQuery: `query MyQuery { foo { k:a(x: true) b } }`,
+			Action:       ActionRequestAction{Name: "foo"},
+		})
+		assert.Nil(t, err)
+		assert.Equal(t, []string{"a", "b"}, lo.Map(cols, func(item query.QueryColumn, index int) string { return item.Name }))
+		assert.Equal(t, []string{"true"}, cols[0].Args)
+	})
+
+	t.Run("MultiSelectionActionNotFound", func(t *testing.T) {
+		// Multiple top-level selections but the action name matches none: must
+		// error rather than silently projecting the first field's columns.
+		_, err := parseSelectColumns(&ActionRequest{
+			RequestQuery: `query MyQuery { foo { a } bar { b } }`,
+			Action:       ActionRequestAction{Name: "baz"},
+		})
+		assert.Error(t, err)
+	})
+}

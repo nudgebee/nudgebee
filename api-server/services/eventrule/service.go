@@ -265,6 +265,40 @@ func normalizeEventSource(req *EventConfig) {
 	}
 }
 
+// EnsureEventRuleSource inserts the given value into the event_rule_source FK
+// lookup table if it is missing, so an event_rules row can carry it as its
+// source. Idempotent.
+func EnsureEventRuleSource(context *security.RequestContext, source string) error {
+	if source == "" {
+		return nil
+	}
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return fmt.Errorf("failed to get database manager: %w", err)
+	}
+	_, err = dbms.Db.ExecContext(stdctx.Background(),
+		`INSERT INTO event_rule_source (value) VALUES ($1) ON CONFLICT (value) DO NOTHING`, source)
+	return err
+}
+
+// EventRuleExists reports whether an event_rule already exists for the given
+// account + alert in the caller's tenant. Callers that auto-register native
+// event types use this before CreateEventRule so its ON CONFLICT DO UPDATE
+// never clobbers an existing real (prometheus/webhook/user) rule for the alert.
+func EventRuleExists(context *security.RequestContext, accountID, alert string) (bool, error) {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return false, fmt.Errorf("failed to get database manager: %w", err)
+	}
+	var exists bool
+	if err := dbms.QueryRowAndScan(&exists,
+		`SELECT EXISTS(SELECT 1 FROM event_rules WHERE tenant_id = $1::uuid AND account_id = $2::uuid AND alert = $3)`,
+		context.GetSecurityContext().GetTenantId(), accountID, alert); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
 func CreateEventRule(context *security.RequestContext, eventRequest EventConfig) (map[string]bool, error) {
 	data := make(map[string]bool)
 
@@ -354,8 +388,9 @@ func CreateEventRule(context *security.RequestContext, eventRequest EventConfig)
 	context.GetLogger().Info("CreateEventRule", "rule_id", ruleId)
 	data["response"] = ok
 
-	// Skip playbook creation for webhook-ingested rules
-	if isWebhookSource(eventRequest.Source) {
+	// Skip playbook creation for webhook-ingested rules and for auto-registered
+	// native event-type rules (SkipPlaybook) — neither has a playbook to run.
+	if isWebhookSource(eventRequest.Source) || eventRequest.SkipPlaybook {
 		return data, nil
 	}
 

@@ -25,6 +25,8 @@ RUN apt-get update && \
     redis-tools \
     # mysql / mariadb client
     default-mysql-client \
+    # kafka (kcat — light single-binary metadata/produce/consume client)
+    kcat \
     # ssh client
     openssh-client \
     && rm -rf /var/lib/apt/lists/*

@@ -185,7 +185,7 @@ func processAbandonedRecommendations(ctx *security.RequestContext, accountId str
 		}
 		jsonStr, err := common.MarshalJson(r)
 		if err != nil {
-			ctx.GetLogger().Error("error marshalling recommendation", "error", r)
+			ctx.GetLogger().Error("error marshalling recommendation", "error", err)
 			return err
 		}
 

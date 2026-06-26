@@ -79,8 +79,8 @@ func (t *NBLogTool) QueryLabels() []string {
 	}
 	labels := make([]string, 0, len(logLabels.Labels))
 	for _, label := range logLabels.Labels {
-		// skip some labels like k8s_** as they are only applicable for otel based system, causing consusion
-		// on downside, it may skip some sceanrioswhere data is pushed from outside to loki using otel (TBD)
+		// skip some labels like k8s_** as they are only applicable for otel based system, causing confusion
+		// on downside, it may skip some scenarios where data is pushed from outside to loki using otel (TBD)
 		if strings.EqualFold(t.logProvider.Provider, "loki") {
 			if label.Label == "k8s_pod_name" || label.Label == "k8s_pod_namespace" || label.Label == "k8s_deployment_name" {
 				continue

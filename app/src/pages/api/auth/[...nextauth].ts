@@ -36,7 +36,7 @@ import { getLicenseDetails, SERVICES_SERVER_UNREACHABLE_MSG, type LicenseTier } 
 import { enrichAuthToken, enrichSession, onReturningOAuthSignIn, onUnknownOAuthSignIn, resolveLicensedTenantUser } from '@lib/authHooks';
 
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
-import _ from 'lodash';
+import uniq from 'lodash/uniq';
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 export interface NudgebeeUser extends AdapterUser {
@@ -173,11 +173,11 @@ export async function adapterUser(user: any): Promise<NudgebeeUser> {
     );
   }
 
-  roles = _.uniq(roles);
-  accountIds = _.uniq(accountIds);
-  readonlyAccountIds = _.uniq(readonlyAccountIds);
-  namespacedAccountIds = _.uniq(namespacedAccountIds);
-  namespacedReadOnlyAccountIds = _.uniq(namespacedReadOnlyAccountIds);
+  roles = uniq(roles);
+  accountIds = uniq(accountIds);
+  readonlyAccountIds = uniq(readonlyAccountIds);
+  namespacedAccountIds = uniq(namespacedAccountIds);
+  namespacedReadOnlyAccountIds = uniq(namespacedReadOnlyAccountIds);
 
   if (accountIds.length > 0 || readonlyAccountIds.length > 0) {
     // get accountIds from given tenant
@@ -1198,11 +1198,11 @@ async function jwtUpdateTokenOnUpdateTrigger(token: any, session: any, trigger: 
             roles.push(role.role);
           }
         }
-        token.roles = _.uniq(roles);
-        token.accountIds = _.uniq(accountIds);
-        token.readOnlyAccountIds = _.uniq(readOnlyAccountIds);
-        token.namespacedAccountIds = _.uniq(namespacedAccountIds);
-        token.namespacedReadOnlyAccountIds = _.uniq(namespacedReadOnlyAccountIds);
+        token.roles = uniq(roles);
+        token.accountIds = uniq(accountIds);
+        token.readOnlyAccountIds = uniq(readOnlyAccountIds);
+        token.namespacedAccountIds = uniq(namespacedAccountIds);
+        token.namespacedReadOnlyAccountIds = uniq(namespacedReadOnlyAccountIds);
         token.k8sNamespaces = k8sNamespaces;
       } else if (token.isSuperAdmin || token.isSuperAdminReadonly) {
         // Super admin with no direct access to this tenant → readonly

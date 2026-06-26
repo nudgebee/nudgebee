@@ -36,6 +36,13 @@ const FEATURE_TICKETS_ADD_EVENT_COMMENTS = "TICKETS_ADD_EVENT_COMMENTS"
 const FEATURE_VERTICAL_RIGHTSIZING = "VERTICAL_RIGHTSIZING"
 const FEATURE_WEBHOOK_LLM_RESOLUTION = "WEBHOOK_LLM_RESOLUTION"
 
+// FEATURE_OPENCOST_SERVER_SIDE_SPEND is a default-ON kill-switch for the
+// server-side OpenCost spend-sync cron. Enrollment is automatic: the cron runs
+// for any connected K8s cluster whose agent has its own OpenCost disabled
+// (opencostConnection != true). Set this flag to 'disabled' for a tenant to force
+// that tenant's clusters off the server-side path regardless.
+const FEATURE_OPENCOST_SERVER_SIDE_SPEND = "OPENCOST_SERVER_SIDE_SPEND"
+
 var featureFlagCache *cache.Cache[[]byte]
 
 func init() {

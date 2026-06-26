@@ -1624,6 +1624,26 @@ func (ah *AgenticAnalyzeHandler) performFollowupAnalysis(ctx context.Context, re
 			"workspace": workspaceDir,
 			"branch":    branch,
 		})
+
+		// Configure a repo-local git identity so the agent's commits succeed.
+		// The PRFollowupAgent's own helper (buildCLIEnv) sets GIT_AUTHOR_* for
+		// the commands it runs directly, but the ReAct planner commits via the
+		// generic git/cli tools, which don't carry that env. Without a repo-local
+		// user.name/email, `git commit` fails with "Author identity unknown",
+		// the agent burns its step budget retrying `git config`, and the run
+		// ends with uncommitted changes (a silent no_op). Set it once here so
+		// every git invocation in this workspace — whatever tool issues it —
+		// has the nudgebee-bot identity. Matches orchestrator_agent.go.
+		for _, kv := range [][2]string{{"user.name", "nudgebee-bot"}, {"user.email", "bot@nudgebee.com"}} {
+			cfgCmd := exec.CommandContext(ctx, "git", "-C", workspaceDir, "config", kv[0], kv[1])
+			if cfgOut, cfgErr := cfgCmd.CombinedOutput(); cfgErr != nil {
+				logger.Log(common.EventStepFailure, "Failed to set git identity for followup workspace", map[string]any{
+					"key":    kv[0],
+					"error":  cfgErr.Error(),
+					"output": string(cfgOut),
+				})
+			}
+		}
 	}
 
 	// Create and execute the PRFollowupAgent

@@ -383,7 +383,6 @@ const Investigate = () => {
   const [isClassifyModalOpen, setIsClassifyModalOpen] = useState(false);
   const [recurrenceInfo, setRecurrenceInfo] = useState(null);
   const [eventResolutions, setEventResolutions] = useState([]);
-  const [triggeredExecutions, setTriggeredExecutions] = useState([]);
   const [knowledgeBase, setKnowledgeBase] = useState([]);
   const [kbLoading, setKbLoading] = useState(false);
   const [showTemplatesModal, setShowTemplatesModal] = useState(false);
@@ -910,12 +909,6 @@ const Investigate = () => {
           }
         });
 
-      if (eventAccountId) {
-        apiWorkflow.listExecutionsForEvent(eventAccountId, row.id).then((resp) => {
-          if (!cancelled && isMountedRef.current) setTriggeredExecutions(resp?.data?.executions || []);
-        });
-      }
-
       if (row?.fingerprint) {
         getTicketData();
       }
@@ -1407,7 +1400,6 @@ const Investigate = () => {
     setCollapsedObj([]);
     setGenerateRcaVisible(false);
     setEventResolutions([]);
-    setTriggeredExecutions([]);
   };
 
   const getResolutionForCard = (cardId) => {
@@ -2486,7 +2478,7 @@ const Investigate = () => {
                             return (
                               <RunAutomationMenu
                                 accountId={automationAccountId}
-                                triggeredExecutions={triggeredExecutions}
+                                eventId={row.id}
                                 canRun={hasWriteAccess(automationAccountId)}
                                 onCreateAutomation={() => setShowTemplatesModal(true)}
                               />

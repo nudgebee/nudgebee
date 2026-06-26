@@ -237,6 +237,15 @@ func getConfluenceIntegrationConfig(accountId string) (map[string]string, error)
 		if err := rows.Scan(&id, &name, &value); err != nil {
 			return nil, err
 		}
+		// The token is encrypted at rest (confluence.go schema marks it
+		// IsEncrypted). Try-decrypt best-effort: legacy rows written before
+		// encryption was enabled are plaintext and fail common.Decrypt's
+		// hex/AES-GCM cleanly, so fall back to the raw value rather than error.
+		if name == "token" {
+			if dec, derr := common.Decrypt(value); derr == nil {
+				value = dec
+			}
+		}
 		if _, ok := allconfig[id]; !ok {
 			allconfig[id] = make(map[string]string)
 		}

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+	"sync"
+	"time"
 
 	"nudgebee/services/internal/database/models"
 
@@ -63,7 +65,7 @@ const (
 // Tenants edit or override them via the existing triage rules UI.
 
 // ComputeScore calculates the priority score for an event
-func ComputeScore(ctx context.Context, db *sqlx.DB, event *models.Event) (*ScoreResult, error) {
+func ComputeScore(ctx context.Context, db *sqlx.DB, event *models.Event, occurrenceNumber int, correlationType string, correlationScore float64) (*ScoreResult, error) {
 	factors := make(map[string]interface{})
 	var factorCount int
 
@@ -88,7 +90,7 @@ func ComputeScore(ctx context.Context, db *sqlx.DB, event *models.Event) (*Score
 	// 4. Get duplicate penalty
 	duplicatePenalty := 0
 	if event.Id != "" {
-		duplicatePenalty = getDuplicatePenalty(ctx, db, event.Id)
+		duplicatePenalty = getDuplicatePenalty(occurrenceNumber)
 	}
 	factors["duplicate_penalty"] = duplicatePenalty
 	if duplicatePenalty != 0 {
@@ -97,9 +99,8 @@ func ComputeScore(ctx context.Context, db *sqlx.DB, event *models.Event) (*Score
 
 	// 5. Get correlation adjustment
 	correlationAdj := 0
-	correlationType := ""
 	if event.Id != "" {
-		correlationAdj, correlationType = getCorrelationAdjustment(ctx, db, event.Id)
+		correlationAdj, correlationType = getCorrelationAdjustment(correlationType, correlationScore)
 	}
 	factors["correlation_adjustment"] = correlationAdj
 	factors["correlation_type"] = correlationType
@@ -177,8 +178,30 @@ func getBaseSeverity(priority *string) int {
 	}
 }
 
+// Environment cache for getEnvironmentMultiplier
+type envCacheEntry struct {
+	env       string
+	expiresAt time.Time
+}
+
+var (
+	envCache    = make(map[string]envCacheEntry)
+	envCacheMu  sync.RWMutex
+	envCacheTTL = 5 * time.Minute
+)
+
 // getEnvironmentMultiplier fetches the environment multiplier from cloud_accounts
 func getEnvironmentMultiplier(ctx context.Context, db *sqlx.DB, cloudAccountID string) float64 {
+	if cloudAccountID == "" {
+		return EnvMultiplierDefault
+	}
+	envCacheMu.RLock()
+	if entry, found := envCache[cloudAccountID]; found && time.Now().Before(entry.expiresAt) {
+		envCacheMu.RUnlock()
+		return parseEnvMultiplier(entry.env)
+	}
+	envCacheMu.RUnlock()
+
 	query := `SELECT account_env FROM cloud_accounts WHERE id = $1`
 
 	var accountEnv string
@@ -191,6 +214,17 @@ func getEnvironmentMultiplier(ctx context.Context, db *sqlx.DB, cloudAccountID s
 		return EnvMultiplierDefault
 	}
 
+	envCacheMu.Lock()
+	envCache[cloudAccountID] = envCacheEntry{
+		env:       accountEnv,
+		expiresAt: time.Now().Add(envCacheTTL),
+	}
+	envCacheMu.Unlock()
+
+	return parseEnvMultiplier(accountEnv)
+}
+
+func parseEnvMultiplier(accountEnv string) float64 {
 	switch strings.ToLower(accountEnv) {
 	case "prod":
 		return EnvMultiplierProd
@@ -202,20 +236,7 @@ func getEnvironmentMultiplier(ctx context.Context, db *sqlx.DB, cloudAccountID s
 }
 
 // getDuplicatePenalty calculates the penalty based on occurrence number
-func getDuplicatePenalty(ctx context.Context, db *sqlx.DB, eventID string) int {
-	query := `
-		SELECT occurrence_number
-		FROM event_duplicates
-		WHERE event_id = $1
-	`
-
-	var occurrenceNumber int
-	err := db.GetContext(ctx, &occurrenceNumber, query, eventID)
-	if err != nil {
-		// No duplicate record means first occurrence
-		return 0
-	}
-
+func getDuplicatePenalty(occurrenceNumber int) int {
 	if occurrenceNumber <= 1 {
 		return 0
 	}
@@ -230,42 +251,22 @@ func getDuplicatePenalty(ctx context.Context, db *sqlx.DB, eventID string) int {
 }
 
 // getCorrelationAdjustment calculates the score adjustment based on correlation type
-func getCorrelationAdjustment(ctx context.Context, db *sqlx.DB, eventID string) (int, string) {
-	query := `
-		SELECT correlation_type, correlation_score
-		FROM event_correlations
-		WHERE event_id = $1
-		ORDER BY correlation_score DESC
-		LIMIT 1
-	`
-
-	var correlation struct {
-		CorrelationType  string  `db:"correlation_type"`
-		CorrelationScore float64 `db:"correlation_score"`
-	}
-
-	err := db.GetContext(ctx, &correlation, query, eventID)
-	if err != nil {
-		// No correlation record
-		return 0, ""
-	}
-
+func getCorrelationAdjustment(correlationType string, correlationScore float64) (int, string) {
 	// Only apply adjustment if correlation score is above threshold
-	if correlation.CorrelationScore < 0.5 {
-		return 0, correlation.CorrelationType
+	if correlationScore < 0.5 {
+		return 0, correlationType
 	}
-
-	switch correlation.CorrelationType {
+	switch correlationType {
 	case "likely_root_cause":
-		return CorrelationBonusRootCause, correlation.CorrelationType
+		return CorrelationBonusRootCause, correlationType
 	case "downstream_impact":
-		return CorrelationPenaltyDownstream, correlation.CorrelationType
+		return CorrelationPenaltyDownstream, correlationType
 	case "upstream_dependency":
-		return CorrelationPenaltyUpstream, correlation.CorrelationType
+		return CorrelationPenaltyUpstream, correlationType
 	case "same_service":
-		return CorrelationPenaltySameService, correlation.CorrelationType
+		return CorrelationPenaltySameService, correlationType
 	default:
-		return 0, correlation.CorrelationType
+		return 0, correlationType
 	}
 }
 

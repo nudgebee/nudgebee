@@ -1396,16 +1396,28 @@ func (c *ChronosphereTraceSource) combineChronosphereResponses(responses []map[s
 
 		agentData, ok := response["data"]
 		if !ok {
-			slog.Warn("Unexpected 'data' field in response, expected 'traces'",
-				"response_index", i,
-				"data_type", fmt.Sprintf("%T", agentData))
+			slog.Warn("Response missing 'data' field, skipping",
+				"response_index", i)
+			continue
 		}
 
-		data, ok := agentData.(map[string]any)["data"].(map[string]any)
+		// agentData is an untyped value from the API response; assert it is a
+		// map before indexing. The previous chained assertion
+		// (agentData.(map[string]any)["data"]) panicked when "data" was not a map.
+		agentMap, ok := agentData.(map[string]any)
 		if !ok {
-			slog.Warn("Unexpected 'data' field in response, expected 'traces'",
+			slog.Warn("Response 'data' is not a map, skipping",
 				"response_index", i,
-				"data_type", fmt.Sprintf("%T", data))
+				"data_type", fmt.Sprintf("%T", agentData))
+			continue
+		}
+
+		data, ok := agentMap["data"].(map[string]any)
+		if !ok {
+			slog.Warn("Response nested 'data' is not a map, skipping",
+				"response_index", i,
+				"data_type", fmt.Sprintf("%T", agentMap["data"]))
+			continue
 		}
 
 		if traces, ok := data["traces"].([]any); ok {

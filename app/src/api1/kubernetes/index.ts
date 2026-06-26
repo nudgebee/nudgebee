@@ -826,6 +826,11 @@ function buildEventFilterParams(query: any) {
   if (query?.searchByLabel) {
     filterParams['labels'] = { _contains: query.searchByLabel };
   }
+  if (query?.messageSearch?.trim()) {
+    // Use `and` so we don't clobber an existing exact-match `title` filter
+    // set by a drilldown defaultQuery.
+    and.push({ title: { _ilike: `%${query.messageSearch.trim()}%` } });
+  }
   if (query?.resource_ids) {
     filterParams['resource_id'] = { _in: query.resource_ids };
   }

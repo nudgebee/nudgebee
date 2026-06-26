@@ -56,10 +56,6 @@ func (l HelmAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAg
 		"**Large Data Optimization:** When dealing with logs or describe commands, pipe output to `grep`, `tail`, `head`, or other formatting tools for readability: `kubectl logs <pod_name> -n <namespace> | grep -i <keyword>` or `kubectl describe pod <pod_name> -n <namespace> | grep -i <keyword>`.",
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		instructions = append(instructions, core.GetWorkspaceInstructions()...)
-	}
-
 	constraints := []string{
 		"You can ONLY use helm to interact with the cluster",
 		"Always specify namespace",

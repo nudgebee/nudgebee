@@ -78,6 +78,7 @@ class NudgebeeStrategySettings(StrategySettings):
         for percentile_name, per_data in data.items():
             if len(per_data) == 0:
                 result[percentile_name] = float("NaN")
+                continue
 
             if len(per_data) > 1:
                 data_ = np.concatenate([values[:, 1] for values in per_data.values()])

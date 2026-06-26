@@ -5,12 +5,20 @@ on:
   pull_request:
     branches: ['main']
     paths:
-      - llm/benchmark/server/**
-      - .github/workflows/benchmark-server-dev-civo.yaml
+      - llm/benchmark/**
+      - .github/workflows/benchmark-server.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   app-build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v3
@@ -29,6 +37,9 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: "llm/benchmark/uv.lock"
 
       - name: Install dependencies with uv
         working-directory: ./llm/benchmark

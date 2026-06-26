@@ -53,6 +53,10 @@ func (a *FinOpsAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeReAct
 }
 
+func (a *FinOpsAgent) GetModelCategory() core.ModelTier {
+	return core.ModelTierReasoning
+}
+
 func (a *FinOpsAgent) GetCacheScope() core.CacheScope {
 	return core.CacheScopeAccount
 }

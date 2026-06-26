@@ -64,7 +64,7 @@ class LogsCard {
                 return regex.test(line.toLowerCase());
               });
               const containsErrorLibrary = libraryErrors.some((keyword) => {
-                const regex = new RegExp(`(?<!w)${keyword.toLowerCase()}(?!w)`);
+                const regex = new RegExp(`(?<!\\w)${keyword.toLowerCase()}(?!\\w)`);
                 return regex.test(line.toLowerCase());
               });
 

@@ -33,6 +33,8 @@ ACTION_TRIGGER_PLAYBOOK = "trigger_playbook"
 ACTION_LINK = "link"
 SlackBlock = Dict[str, Any]
 MAX_BLOCK_CHARS = 3000
+# Maximum number of data rows rendered in a markdown table before truncation.
+MAX_MARKDOWN_TABLE_ROWS = 10
 SLACK_SIGNIN_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "signing_secret")
 
 try:
@@ -467,8 +469,8 @@ class Transformer:
             encoded_data = encoded_data[2:-1]
             decoded_data = base64.b64decode(encoded_data)
             return gzip.decompress(decoded_data)
-        except Exception as e:
-            print(f"Error extracting text: {e}")
+        except Exception:
+            LOG.exception("Error extracting text from base64 gzip data")
             return None
 
     @staticmethod
@@ -477,8 +479,8 @@ class Transformer:
             encoded_data = encoded_data[2:-1]
             decoded_data = base64.b64decode(encoded_data)
             return decoded_data
-        except Exception as e:
-            print(f"Error extracting text: {e}")
+        except Exception:
+            LOG.exception("Error extracting text from base64 data")
             return None
 
     @staticmethod
@@ -649,7 +651,10 @@ class Transformer:
             return result["file"]["permalink"]
 
     @staticmethod
-    def prepare_slack_text(slack_app, installation, message: str, max_file_size_kb: int, files: List[FileBlock] = []):
+    def prepare_slack_text(
+        slack_app, installation, message: str, max_file_size_kb: int, files: Optional[List[FileBlock]] = None
+    ):
+        files = files or []
         if files:
             # it's a little annoying but it seems like files need to be referenced in `title` and not just `blocks`
             # in order to be actually shared. well, I'm actually not sure about that, but when I tried adding the files
@@ -749,7 +754,7 @@ class Transformer:
     @staticmethod
     def json_to_markdown_table(data):
         headers = data["headers"]
-        rows = data["rows"][:7]  # limit to 10 rows
+        rows = data["rows"][:MAX_MARKDOWN_TABLE_ROWS]  # limit to MAX_MARKDOWN_TABLE_ROWS rows
 
         if len(headers) == 2:
             table_rows: List[str] = []

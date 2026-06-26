@@ -137,12 +137,14 @@ const KubernetesInsertApplicationGroupingModal: React.FC<KubernetesInsertApplica
 
   const handleSelectAllCheckbox = () => {
     if (selectAllChecked) {
-      const filterDeselectedWorkloads = selectedWorkloads.filter((item) => !relevantWorkloads.map((i) => i.id).includes(item?.id));
+      // O(n+m) via Set instead of O(n*m) via nested .map().includes()
+      const relevantIds = new Set(relevantWorkloads.map((i) => i.id));
+      const filterDeselectedWorkloads = selectedWorkloads.filter((item) => !relevantIds.has(item.id));
       setSelectedWorkloads(filterDeselectedWorkloads);
       setSelectAllChecked(false);
     } else {
-      //below is the array declaration of workloads that are not present in selected workloads
-      const newlySelectedWorkloads: WorkloadDetails[] = relevantWorkloads.filter((item) => !selectedWorkloads.map((i) => i.id).includes(item?.id));
+      const selectedIds = new Set(selectedWorkloads.map((i) => i.id));
+      const newlySelectedWorkloads: WorkloadDetails[] = relevantWorkloads.filter((item) => !selectedIds.has(item.id));
       setSelectedWorkloads(selectedWorkloads.concat(newlySelectedWorkloads));
       setSelectAllChecked(true);
     }
@@ -264,8 +266,10 @@ const KubernetesInsertApplicationGroupingModal: React.FC<KubernetesInsertApplica
   };
 
   useEffect(() => {
-    const extraWorkload: WorkloadDetails | undefined = relevantWorkloads.find((item) => !selectedWorkloads.map((i) => i.id).includes(item?.id));
-    if (extraWorkload || selectedWorkloads.length == 0) {
+    // O(n+m) via Set instead of O(n*m) via nested .map().includes()
+    const selectedIds = new Set(selectedWorkloads.map((i) => i.id));
+    const hasUnselected = relevantWorkloads.some((item) => !selectedIds.has(item.id));
+    if (hasUnselected || selectedWorkloads.length == 0) {
       setSelectAllChecked(false);
     } else {
       setSelectAllChecked(true);

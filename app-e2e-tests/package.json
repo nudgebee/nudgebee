@@ -22,7 +22,7 @@
   "license": "ISC",
   "devDependencies": {
     "@playwright/test": "^1.60.0",
-    "@types/node": "^25.9.1",
+    "@types/node": "^25.9.2",
     "cross-env": "^10.1.0",
     "dotenv": "^16.6.1",
     "ts-node": "^10.9.2",

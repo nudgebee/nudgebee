@@ -179,7 +179,7 @@ func (s agentWarehouseStmt) executeChronosphereRequestWithRetry(requestData map[
 	}
 
 	// All retries exhausted
-	return nil, fmt.Errorf("request failed after %d retries: %v", maxRetries, lastErr)
+	return nil, fmt.Errorf("request failed after %d retries: %w", maxRetries, lastErr)
 }
 
 const driverName = "agent_warehouse"

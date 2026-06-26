@@ -163,13 +163,13 @@ func TestMapDavisEventStatus(t *testing.T) {
 }
 
 func TestMapDavisEventSeverity(t *testing.T) {
-	assert.Equal(t, event.EventPriortiyMedium, mapDavisEventSeverity("INFO", "PROCESS_RESTART"))
-	assert.Equal(t, event.EventPriortiyHigh, mapDavisEventSeverity("INFO", "PROCESS_CRASH"))
-	assert.Equal(t, event.EventPriortiyLow, mapDavisEventSeverity("INFO", "CONFIG_CHANGE"))
-	assert.Equal(t, event.EventPriortiyHigh, mapDavisEventSeverity("ERROR", ""))
-	assert.Equal(t, event.EventPriortiyMedium, mapDavisEventSeverity("PERFORMANCE", ""))
-	assert.Equal(t, event.EventPriortiyLow, mapDavisEventSeverity("INFO", ""))
-	assert.Equal(t, event.EventPriortiyLow, mapDavisEventSeverity("", ""))
+	assert.Equal(t, event.EventPriorityMedium, mapDavisEventSeverity("INFO", "PROCESS_RESTART"))
+	assert.Equal(t, event.EventPriorityHigh, mapDavisEventSeverity("INFO", "PROCESS_CRASH"))
+	assert.Equal(t, event.EventPriorityLow, mapDavisEventSeverity("INFO", "CONFIG_CHANGE"))
+	assert.Equal(t, event.EventPriorityHigh, mapDavisEventSeverity("ERROR", ""))
+	assert.Equal(t, event.EventPriorityMedium, mapDavisEventSeverity("PERFORMANCE", ""))
+	assert.Equal(t, event.EventPriorityLow, mapDavisEventSeverity("INFO", ""))
+	assert.Equal(t, event.EventPriorityLow, mapDavisEventSeverity("", ""))
 }
 
 func TestExtractDavisEventEntityNames(t *testing.T) {

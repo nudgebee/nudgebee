@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -237,4 +238,93 @@ func TestSSHOverrideRegexes(t *testing.T) {
 	for _, u := range badUsers {
 		assert.False(t, sshUserRe.MatchString(u), "bad user accepted: %q", u)
 	}
+}
+
+// TestGetRelayCommandResponseData_LegacyFindingsShape pins the
+// deeply-nested findings/evidence/data structure used by the analysis
+// path. Walks the full chain and asserts the inner response payload is
+// returned to the caller.
+func TestGetRelayCommandResponseData_LegacyFindingsShape(t *testing.T) {
+	// Inner shape: findings[0].evidence[0].data is a JSON-encoded array
+	// (carried as a Go string), element 0's `data` is itself a
+	// JSON-encoded object (also a Go string) holding the command
+	// response. The walker unwraps both layers via json.Unmarshal.
+	innerCmdResponseJSON := `{"response":"pod/app-1 created\n","exit_code":0}`
+	innerArrayJSON := `[{"data":` + strconv.Quote(innerCmdResponseJSON) + `}]`
+	relayResp := map[string]any{
+		"data": map[string]any{
+			"findings": []any{
+				map[string]any{
+					"evidence": []any{
+						map[string]any{
+							"data": innerArrayJSON,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	got, err := getRelayCommandResponseData(relayResp)
+	assert.NoError(t, err)
+	assert.Equal(t, "pod/app-1 created\n", got["response"])
+}
+
+// TestGetRelayCommandResponseData_SimpleDataShape covers issue #32240:
+// command-style executions (kubectl, helm, etc.) return a relay response
+// without the findings envelope. Before this fix the parser hard-errored
+// with "findings field not found or is nil from data", which the shim
+// surfaced to the LLM as the opaque "Server returned 500" error that
+// affected ~10–15% of kubectl_execute calls in production.
+//
+// New contract: when data.findings is absent, data itself is the
+// already-extracted payload and is returned as-is so the caller's
+// responseParsed["response"] lookup can proceed.
+func TestGetRelayCommandResponseData_SimpleDataShape(t *testing.T) {
+	relayResp := map[string]any{
+		"data": map[string]any{
+			"response": "deployment.apps/app-dev REVISION  CHANGE-CAUSE\n1  <none>\n2  <none>\n",
+			"command":  "kubectl rollout history deployment/app-dev -n nudgebee",
+		},
+	}
+	got, err := getRelayCommandResponseData(relayResp)
+	assert.NoError(t, err)
+	assert.Equal(t, "deployment.apps/app-dev REVISION  CHANGE-CAUSE\n1  <none>\n2  <none>\n", got["response"])
+	assert.Equal(t, "kubectl rollout history deployment/app-dev -n nudgebee", got["command"])
+}
+
+// TestGetRelayCommandResponseData_EmptyFindings preserves the
+// "ran but produced nothing" path — empty findings list returns an empty
+// map, not an error.
+func TestGetRelayCommandResponseData_EmptyFindings(t *testing.T) {
+	relayResp := map[string]any{
+		"data": map[string]any{
+			"findings": []any{},
+		},
+	}
+	got, err := getRelayCommandResponseData(relayResp)
+	assert.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+// TestGetRelayCommandResponseData_MissingData asserts the parser still
+// errors when even the outer `data` field is absent — we only relaxed
+// the findings requirement, not the data requirement.
+func TestGetRelayCommandResponseData_MissingData(t *testing.T) {
+	relayResp := map[string]any{
+		"status": "error",
+	}
+	_, err := getRelayCommandResponseData(relayResp)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "data1 field not found")
+}
+
+// TestGetRelayCommandResponseData_NilData covers the explicit nil case.
+func TestGetRelayCommandResponseData_NilData(t *testing.T) {
+	relayResp := map[string]any{
+		"data": nil,
+	}
+	_, err := getRelayCommandResponseData(relayResp)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "data1 field not found")
 }
