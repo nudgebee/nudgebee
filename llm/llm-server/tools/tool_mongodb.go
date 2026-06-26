@@ -20,7 +20,7 @@ func init() {
 		return MongoExecuteTool{
 			toolName:    ToolMongoServerStatus,
 			description: "Returns MongoDB serverStatus output as readable JSON.",
-			command:     `db.adminCommand({ serverStatus: 1 })`,
+			actionName:  "mongo_server_status",
 		}, nil
 	})
 
@@ -28,7 +28,7 @@ func init() {
 		return MongoExecuteTool{
 			toolName:    ToolMongoReplicaSetStatus,
 			description: "Returns MongoDB replSetGetStatus output as readable JSON.",
-			command:     `db.adminCommand({ replSetGetStatus: 1 })`,
+			actionName:  "mongo_repl_status",
 		}, nil
 	})
 
@@ -36,7 +36,7 @@ func init() {
 		return MongoExecuteTool{
 			toolName:    ToolMongoCurrentOperations,
 			description: "Returns MongoDB currentOp output as readable JSON.",
-			command:     `db.adminCommand({ currentOp: 1, $all: true })`,
+			actionName:  "mongo_current_ops",
 		}, nil
 	})
 }
@@ -44,7 +44,7 @@ func init() {
 type MongoExecuteTool struct {
 	toolName    string
 	description string
-	command     string
+	actionName  string
 }
 
 func (m MongoExecuteTool) Name() string {
@@ -76,9 +76,9 @@ func (m MongoExecuteTool) Call(nbRequestContext core.NbToolContext, input core.N
 		return core.NBToolResponse{}, fmt.Errorf("no tool configs found for - %s, please configure", m.Name())
 	}
 
-	response, err := ExecuteContainerJob(nbRequestContext, RelayJobMongo, m.command, nbRequestContext.AccountId, nil, false)
+	response, err := executeMongoViaProxyAgent(nbRequestContext, m.actionName, nbRequestContext.AccountId, nil)
 	if err != nil {
-		nbRequestContext.Ctx.GetLogger().Error("mongo: unable to execute mongodb command", "error", err.Error())
+		nbRequestContext.Ctx.GetLogger().Error("mongo: unable to execute mongodb action", "error", err.Error())
 		responseData := ""
 		if response != nil {
 			if responseData1, ok := response.(string); ok {

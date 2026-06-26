@@ -33,6 +33,40 @@ func TestParseProxyMongoResponseError(t *testing.T) {
 	assert.Contains(t, err.Error(), "proxy mongo error: authentication failed")
 }
 
+func TestBuildMongoProxyAction(t *testing.T) {
+	ctx := core.NbToolContext{
+		ToolConfig: core.ToolConfig{
+			Id: "mongo-ds",
+		},
+		Ctx: security.NewRequestContextForSuperAdmin(),
+	}
+
+	body, err := buildMongoProxyAction(ctx, "mongo_server_status", "acct-1", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "mongo_server_status", body.ActionName)
+	assert.Equal(t, "acct-1", body.AccountID)
+	assert.Equal(t, "mongo-ds", body.ActionParams["datasource_id"])
+	_, hasQuery := body.ActionParams["query"]
+	assert.False(t, hasQuery)
+}
+
+func TestMongoToolRegistryUsesMongoActions(t *testing.T) {
+	cases := map[string]string{
+		ToolMongoServerStatus:      "mongo_server_status",
+		ToolMongoReplicaSetStatus:  "mongo_repl_status",
+		ToolMongoCurrentOperations: "mongo_current_ops",
+	}
+
+	for toolName, expectedAction := range cases {
+		tool, ok := core.GetNBTool("acct", toolName)
+		require.True(t, ok, "expected tool %s to be registered", toolName)
+
+		mongoTool, ok := tool.(MongoExecuteTool)
+		require.True(t, ok, "expected tool %s to resolve to MongoExecuteTool", toolName)
+		assert.Equal(t, expectedAction, mongoTool.actionName)
+	}
+}
+
 func TestMongoToolInputSchema(t *testing.T) {
 	schema := MongoExecuteTool{}.InputSchema()
 	assert.Equal(t, core.ToolSchemaTypeObject, schema.Type)

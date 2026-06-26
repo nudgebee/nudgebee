@@ -410,7 +410,7 @@ func executeViaProxyAgent(toolContext core.NbToolContext, module RelayJob, query
 		// Derive from connection_mode: vm_agent → proxy, otherwise k8s
 		connectionMode := getConfigValue(toolContext.ToolConfig.Values, "connection_mode")
 		proxyType := getConfigValue(toolContext.ToolConfig.Values, "proxy_type")
-		if connectionMode == "vm_agent" || module == RelayJobMongo || strings.EqualFold(proxyType, "mongo-proxy") {
+		if connectionMode == "vm_agent" || strings.EqualFold(proxyType, "mongo-proxy") {
 			agentType = "proxy"
 		} else {
 			agentType = "k8s"
@@ -441,11 +441,65 @@ func executeViaProxyAgent(toolContext core.NbToolContext, module RelayJob, query
 		return nil, fmt.Errorf("proxy agent db_query failed: %w", err)
 	}
 
-	if module == RelayJobMongo {
-		return parseProxyMongoResponse(response)
+	return parseProxyDBResponse(response)
+}
+
+func buildMongoProxyAction(toolContext core.NbToolContext, actionName string, accountId string, configs map[string]any) (relay.ActionExecuteBody, error) {
+	if actionName == "" {
+		return relay.ActionExecuteBody{}, errors.New("mongo action name is required")
 	}
 
-	return parseProxyDBResponse(response)
+	datasourceKey := getConfigValue(toolContext.ToolConfig.Values, "datasource_key")
+	if datasourceKey == "" {
+		if toolContext.ToolConfig.Id != "" {
+			datasourceKey = toolContext.ToolConfig.Id
+		} else {
+			return relay.ActionExecuteBody{}, errors.New("vm_agent integration missing datasource_key config value")
+		}
+	}
+
+	agentType := getConfigValue(toolContext.ToolConfig.Values, "agent_type")
+	if agentType == "" {
+		connectionMode := getConfigValue(toolContext.ToolConfig.Values, "connection_mode")
+		proxyType := getConfigValue(toolContext.ToolConfig.Values, "proxy_type")
+		if connectionMode == "vm_agent" || strings.EqualFold(proxyType, "mongo-proxy") {
+			agentType = "proxy"
+		} else {
+			agentType = "k8s"
+		}
+	}
+
+	params := map[string]any{
+		"datasource_id": datasourceKey,
+		"timeout_ms":    float64(config.Config.LlmServerRelayPodExecutionTimeoutSeconds * 1000),
+	}
+	if dbName, ok := configs["database"]; ok {
+		if dbNameStr, ok := dbName.(string); ok && dbNameStr != "" {
+			params["database"] = dbNameStr
+		}
+	}
+
+	return relay.ActionExecuteBody{
+		AccountID:    accountId,
+		ActionName:   actionName,
+		ActionParams: params,
+		AgentType:    agentType,
+		Timeout:      time.Second * time.Duration(config.Config.LlmServerRelayPodExecutionTimeoutSeconds),
+	}, nil
+}
+
+func executeMongoViaProxyAgent(toolContext core.NbToolContext, actionName string, accountId string, configs map[string]any) (any, error) {
+	actionParam, err := buildMongoProxyAction(toolContext, actionName, accountId, configs)
+	if err != nil {
+		return nil, err
+	}
+
+	response, err := relay.Execute(actionParam)
+	if err != nil {
+		return nil, fmt.Errorf("proxy agent %s failed: %w", actionName, err)
+	}
+
+	return parseProxyMongoResponse(response)
 }
 
 // parseProxyDBResponse converts the proxy agent's {columns, rows, row_count} response
@@ -613,12 +667,8 @@ func parseProxySSHResponse(response map[string]any) (string, error) {
 
 func ExecuteContainerJob(toolContext core.NbToolContext, module RelayJob, query string, accountId string, configs map[string]any, raw bool) (any, error) {
 
-	if !slices.Contains([]RelayJob{RelayJobShell, RelayJobPostgres, RelayJobMongo, RelayJobMysql, RelayJobMssql, RelayJobClickhouse, RelayJobOracle, RelayJobKubectl, RelayJobRabbitmq, RelayJobRedis, RelayJobHelm, RelayJobArgoCD, RelayJobSSH}, module) {
+	if !slices.Contains([]RelayJob{RelayJobShell, RelayJobPostgres, RelayJobMysql, RelayJobMssql, RelayJobClickhouse, RelayJobOracle, RelayJobKubectl, RelayJobRabbitmq, RelayJobRedis, RelayJobHelm, RelayJobArgoCD, RelayJobSSH}, module) {
 		return nil, errors.New("module not supported")
-	}
-
-	if module == RelayJobMongo {
-		return executeViaProxyAgent(toolContext, module, query, accountId, configs)
 	}
 
 	// Route DB queries to proxy agent for vm_agent integrations
