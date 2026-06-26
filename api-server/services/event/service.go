@@ -417,6 +417,11 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 
 	revert, okRevert := queryData["revert"].(bool)
 	raisePR, okRaisePR := queryData["raisePR"].(bool)
+	// AggregationKey is a nullable column and is dereferenced throughout the
+	// branches below; fail fast instead of panicking on a nil pointer.
+	if r.AggregationKey == nil {
+		return EventRecommendationApplyResponse{}, fmt.Errorf("recommendation: event has no aggregation key")
+	}
 	if *r.AggregationKey == "KubePersistentVolumeFillingUp" || *r.AggregationKey == "KubernetesVolumeOutOfDiskSpace" {
 		if queryData["size"] == "" || queryData["size"] == nil {
 			return EventRecommendationApplyResponse{}, fmt.Errorf("recommendation: to increase persistent volume size is required")
@@ -732,22 +737,36 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 				},
 			},
 		})
-		if _, ok := resp["data"]; !ok {
+		if err1 != nil {
 			return EventRecommendationApplyResponse{}, err1
 		}
+		dataMap, ok := resp["data"].(map[string]any)
+		if !ok {
+			return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: unexpected relay response shape (data is not an object)")
+		}
 		var result map[any]any
-		if v, ok := resp["data"].(map[string]any)["findings"]; ok {
-			findings := v.([]any)
-			if len(findings) > 0 {
-				if evidenceRaw, ok := findings[0].(map[string]any)["evidence"]; ok {
-					evidence := evidenceRaw.([]any)
-					if len(evidence) > 0 {
+		if v, ok := dataMap["findings"]; ok {
+			findings, isArr := v.([]any)
+			if isArr && len(findings) > 0 {
+				firstFinding, isMap := findings[0].(map[string]any)
+				if !isMap {
+					return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: first finding is not an object")
+				}
+				if evidenceRaw, ok := firstFinding["evidence"]; ok {
+					evidence, isArr := evidenceRaw.([]any)
+					if isArr && len(evidence) > 0 {
 						data := []map[string]any{}
-						evidenceDataRaw := evidence[0].(map[string]any)["data"]
-						evidenceDataRawBytes := []byte(evidenceDataRaw.(string))
-						err := common.UnmarshalJson(evidenceDataRawBytes, &data)
+						firstEvidence, isMap := evidence[0].(map[string]any)
+						if !isMap {
+							return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: first evidence is not an object")
+						}
+						evidenceDataStr, isStr := firstEvidence["data"].(string)
+						if !isStr {
+							return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: evidence data missing or not a string")
+						}
+						err := common.UnmarshalJson([]byte(evidenceDataStr), &data)
 						if err != nil {
-							return EventRecommendationApplyResponse{}, err1
+							return EventRecommendationApplyResponse{}, err
 						}
 						for _, d := range data {
 							if d["type"] == "yaml" {
@@ -767,8 +786,12 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 								}
 							}
 						}
+					} else {
+						return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: evidence is missing, not an array, or empty")
 					}
 				}
+			} else {
+				return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: findings is missing, not an array, or empty")
 			}
 		}
 		updatedResult, err4 := updateContainerImage(result, imageChangeContainerName, imageNameWithTag)

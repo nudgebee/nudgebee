@@ -516,7 +516,16 @@ func commitCodeForEvent(ctx AccountAdapterContext, dir string, request ApplyReco
 
 	recommendationMap, _ := request.Recommendation.Recommendation.Object().(map[string]any)
 	fileName, _ := recommendationMap["fileName"].(string)
-	lineNumber := recommendationMap["lineNumber"].(int)
+	// JSON numbers decode as float64, so the bare `.(int)` assertion panicked
+	// whenever lineNumber was present. Accept both, mirroring the comma-ok the
+	// sibling fields already use.
+	lineNumber := 0
+	switch n := recommendationMap["lineNumber"].(type) {
+	case float64:
+		lineNumber = int(n)
+	case int:
+		lineNumber = n
+	}
 	newLine, _ := recommendationMap["newLine"].(string)
 	oldLine, _ := recommendationMap["oldLine"].(string)
 

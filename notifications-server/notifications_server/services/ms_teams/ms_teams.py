@@ -61,7 +61,6 @@ class MsTeamsService:
                 config=config,
                 created_by=user_id,
             )
-            self.session.close()
             return integration
         except IntegrityError as exc:
             LOG.exception("Unable to save teams installation: %s", exc)
@@ -69,3 +68,7 @@ class MsTeamsService:
         except Exception as exc:
             LOG.exception("Unable to save teams installation: %s", exc)
             raise BeeException(Err.OS0009, [exc])
+        finally:
+            # Close on every path: the success-only close leaked the session
+            # (and its pooled DB connection) whenever an exception was raised.
+            self.session.close()

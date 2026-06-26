@@ -2,6 +2,8 @@ package triage
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -144,8 +146,11 @@ func detectAndRecordDuplicate(ctx context.Context, db *sqlx.DB, event *models.Ev
 	)
 
 	if err != nil {
-		// sql.ErrNoRows means this is the first event with this fingerprint
-		if err.Error() == "sql: no rows in result set" {
+		// sql.ErrNoRows means this is the first event with this fingerprint.
+		// Use errors.Is, not a string match — a wrapped error (or a driver whose
+		// message differs) would otherwise be misclassified and break the
+		// first-occurrence path.
+		if errors.Is(err, sql.ErrNoRows) {
 			// This is the first occurrence, insert with occurrence_number = 1
 			insertQuery := `
 				INSERT INTO event_duplicates (

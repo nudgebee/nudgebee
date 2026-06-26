@@ -56,6 +56,12 @@ const (
 	RelayJobMssql      RelayJob = "mssql"
 	RelayJobOracle     RelayJob = "oracle"
 	RelayJobSSH        RelayJob = "ssh"
+	// RelayJobMongo identifies the MongoDB datasource module. MongoDB is routed
+	// to forager via the proxy-agent path (executeMongoViaProxyAgent in
+	// tool_mongodb.go), NOT through ExecuteContainerJob, so it is intentionally
+	// absent from the ExecuteContainerJob allowlist below. The constant exists
+	// for naming consistency with the other datasource modules.
+	RelayJobMongo RelayJob = "mongo"
 )
 
 // getRelayCommandResponseData extracts the command-execution payload from a

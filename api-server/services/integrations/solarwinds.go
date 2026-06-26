@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -8,7 +9,12 @@ import (
 	"nudgebee/services/common"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/security"
+	"time"
 )
+
+// solarWindsDefaultGETTimeout bounds context-less SolarWinds GETs so a
+// non-responsive API can't hang the caller indefinitely.
+const solarWindsDefaultGETTimeout = 30 * time.Second
 
 const (
 	SolarWindsConfigAPIToken   = "api_token"
@@ -76,13 +82,13 @@ func (m SolarWinds) ConfigSchema() core.IntegrationSchema {
 				AutoGenerateFunc: "",
 				Priority:         30,
 			},
-			// core.DefaultTraceProvider: {
-			// 	Type:             core.ToolSchemaTypeBoolean,
-			// 	Description:      "Make SolarWinds default Trace Provider",
-			// 	Default:          false,
-			// 	AutoGenerateFunc: "",
-			// 	Priority:         25,
-			// },
+			core.DefaultTraceProvider: {
+				Type:             core.ToolSchemaTypeBoolean,
+				Description:      "Make SolarWinds default Trace Provider",
+				Default:          false,
+				AutoGenerateFunc: "",
+				Priority:         25,
+			},
 			core.DefaultMetricsProvider: {
 				Type:             core.ToolSchemaTypeBoolean,
 				Description:      "Make SolarWinds default Metric Provider",
@@ -192,12 +198,22 @@ func SolarWindsAPIBaseURL(dataCenter string) string {
 // DoSolarWindsGET performs an authenticated GET request to the SolarWinds REST API.
 // Returns (body, httpStatusCode, error).
 func DoSolarWindsGET(apiToken, baseURL, path string, params map[string]string) ([]byte, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), solarWindsDefaultGETTimeout)
+	defer cancel()
+	return DoSolarWindsGETWithContext(ctx, apiToken, baseURL, path, params)
+}
+
+// DoSolarWindsGETWithContext is DoSolarWindsGET with caller-supplied context, so
+// a cancelled/timed-out request aborts the in-flight HTTP call instead of running
+// to completion. DoSolarWindsGET remains as a context.Background() wrapper for
+// callers without a request context.
+func DoSolarWindsGETWithContext(ctx context.Context, apiToken, baseURL, path string, params map[string]string) ([]byte, int, error) {
 	url := baseURL + path
 	headers := map[string]string{
 		"Authorization": "Bearer " + apiToken,
 		"Accept":        "application/json",
 	}
-	resp, err := common.HttpGet(url, common.HttpWithHeaders(headers), common.HttpWithQueryParams(params))
+	resp, err := common.HttpGet(url, common.HttpWithHeaders(headers), common.HttpWithQueryParams(params), common.HttpWithContext(ctx))
 	if err != nil {
 		return nil, 0, fmt.Errorf("request to SolarWinds API failed: %w", err)
 	}

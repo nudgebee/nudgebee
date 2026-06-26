@@ -32,6 +32,8 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
+          cache: true
+          cache-dependency-path: collector-server/k8s-collector/relay-server/go.sum
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9

@@ -513,7 +513,7 @@ func parseBillingPeriodStart(commonPrefix, pathPrefix string) (time.Time, bool) 
 func getAwsUsageReport(ctx providers.CloudProviderContext, account providers.Account, month time.Month, year int) (providers.GetUsageReportResponse, error) {
 	cfg, err := getAwsConfigFromAccount(ctx.GetContext(), account)
 	if err != nil {
-		return providers.GetUsageReportResponse{}, nil
+		return providers.GetUsageReportResponse{}, fmt.Errorf("failed to get AWS config for usage report: %w", err)
 	}
 	s3Bucket, region, pathPrefix, compression, reportVersion, reportName, timeUnit, err := resolveCostReportDefinition(ctx, account)
 	if err != nil {
