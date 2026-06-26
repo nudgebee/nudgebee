@@ -3,8 +3,8 @@ import logging
 import os
 import tempfile
 import threading
-from typing import Optional
 
+from typing import Any, Optional
 import aiofiles
 import aiofiles.os
 from fastapi import APIRouter, HTTPException
@@ -78,7 +78,7 @@ class KBLineByLineLoader:
     Each non-empty line becomes a separate document for semantic search.
     """
 
-    def __init__(self, base_loader, data_format: str):
+    def __init__(self, base_loader: Any, data_format: str) -> None:
         self.base_loader = base_loader
         self.data_format = data_format
 

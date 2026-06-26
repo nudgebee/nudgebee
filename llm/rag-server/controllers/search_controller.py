@@ -5,7 +5,7 @@ Handles document search endpoints with token tracking and metadata filtering.
 """
 
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -57,8 +57,7 @@ def _validate_token_tracking(
             f"Got conversation_id={conversation_id}, message_id={message_id}",
         )
 
-
-def _accumulate_token_usage(total_usage: dict, new_usage: dict) -> None:
+def _accumulate_token_usage(total_usage: dict[str, Any], new_usage: dict[str, Any]) -> None:
     """Accumulate token usage metrics into total."""
     if not new_usage:
         return
