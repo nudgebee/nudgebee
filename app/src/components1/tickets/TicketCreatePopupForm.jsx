@@ -50,6 +50,7 @@ const AddModalForm = ({
     const labels = required.map((_key) => selectedIssueTypeTicketMetadata?.[0].fields[_key].name);
     if (labels && labels.length > 0) {
       snackbar.error(labels.join(', ') + ' cannot be empty');
+      setIsLoading(false);
       return;
     }
     setIsLoading(true);
