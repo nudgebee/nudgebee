@@ -383,6 +383,8 @@ query ResolveEventRecord($id:String!) {
       snoozed_until
       computed_priority
       computed_score
+      score_factors
+      score_confidence
     }
   }
 }

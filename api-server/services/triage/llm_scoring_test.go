@@ -1,0 +1,145 @@
+package triage
+
+import (
+	"testing"
+
+	"nudgebee/services/internal/database/models"
+)
+
+func sp(s string) *string { return &s }
+
+func TestComputeVerdictScore_ValidatedCases(t *testing.T) {
+	tests := []struct {
+		name      string
+		verdict   SignalVerdict
+		env       string
+		recur     int
+		wantScore int
+		wantPrio  string
+	}{
+		{
+			// OOMKilled on the monitoring backbone, recurring in non-prod -> P2 (was 0/P3).
+			name: "oom_monitoring_backbone_recurring_nonprod",
+			verdict: SignalVerdict{Intrinsic: "high", Blast: "monitoring_backbone",
+				RecurrenceSemantics: "escalating", EnvSensitivity: "partial",
+				BandFloor: "P3", BandCeiling: "P2"},
+			env: "non_prod", recur: 22, wantScore: 59, wantPrio: "P2",
+		},
+		{
+			// Control-plane component down: critical, barely discounted by non-prod -> P0.
+			name: "control_plane_down",
+			verdict: SignalVerdict{Intrinsic: "critical", Blast: "control_plane",
+				RecurrenceSemantics: "neutral", EnvSensitivity: "partial",
+				BandFloor: "P2", BandCeiling: "P0"},
+			env: "non_prod", recur: 3, wantScore: 82, wantPrio: "P0",
+		},
+		{
+			// Planned maintenance (GKE upgrade): info + expected_change + full discount -> P3.
+			name: "planned_maintenance_noise",
+			verdict: SignalVerdict{Intrinsic: "info", Blast: "expected_change",
+				RecurrenceSemantics: "neutral", EnvSensitivity: "full",
+				BandFloor: "P3", BandCeiling: "P3"},
+			env: "non_prod", recur: 2, wantScore: 0, wantPrio: "P3",
+		},
+		{
+			// Chronic-but-known queue backlog: recurrence as NOISE dampens it -> stays P3.
+			name: "chronic_noise_dampened",
+			verdict: SignalVerdict{Intrinsic: "medium", Blast: "single_workload",
+				RecurrenceSemantics: "noise", EnvSensitivity: "full",
+				BandFloor: "P3", BandCeiling: "P3"},
+			env: "non_prod", recur: 954, wantScore: 12, wantPrio: "P3",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, prio, _ := computeVerdictScore(&tt.verdict, tt.env, tt.recur)
+			if got != tt.wantScore || prio != tt.wantPrio {
+				t.Fatalf("got score=%d prio=%s, want score=%d prio=%s", got, prio, tt.wantScore, tt.wantPrio)
+			}
+		})
+	}
+}
+
+// Recurrence ESCALATES crash/chronic classes (opposite of the legacy duplicate penalty).
+func TestRecurrenceAdjustment_Direction(t *testing.T) {
+	if recurrenceAdjustment(22, "escalating") <= 0 {
+		t.Fatal("escalating recurrence should raise score")
+	}
+	if recurrenceAdjustment(22, "noise") >= 0 {
+		t.Fatal("noise recurrence should lower score")
+	}
+	if recurrenceAdjustment(1, "escalating") != 0 || recurrenceAdjustment(100, "neutral") != 0 {
+		t.Fatal("first-occurrence or neutral recurrence should be 0")
+	}
+	// escalating with the same count must beat the legacy flat -30 penalty regime
+	if escalating, _, _ := computeVerdictScore(&SignalVerdict{Intrinsic: "high", Blast: "monitoring_backbone",
+		RecurrenceSemantics: "escalating", EnvSensitivity: "partial", BandFloor: "P3", BandCeiling: "P2"}, "non_prod", 22); escalating == 0 {
+		t.Fatal("recurring OOM must not score 0 (the legacy bug)")
+	}
+}
+
+// Env is ADDITIVE, not a multiplicative cap: a HIGH alert in non-prod must be able to exceed P3.
+func TestEnvAdditive_NonProdHighNotFloored(t *testing.T) {
+	v := SignalVerdict{Intrinsic: "high", Blast: "customer_facing",
+		RecurrenceSemantics: "escalating", EnvSensitivity: "partial", BandFloor: "P3", BandCeiling: "P1"}
+	score, prio, _ := computeVerdictScore(&v, "non_prod", 21)
+	if prio == "P3" {
+		t.Fatalf("non-prod HIGH customer-facing should escape P3 floor, got %d/%s", score, prio)
+	}
+}
+
+func TestFallbackVerdict_FromPriority(t *testing.T) {
+	v := fallbackVerdict(&models.Event{Priority: sp("HIGH")})
+	if v.Intrinsic != "high" || v.SourceModel != "fallback" {
+		t.Fatalf("unexpected fallback verdict: %+v", v)
+	}
+	if v := fallbackVerdict(&models.Event{}); v.Intrinsic != "low" {
+		t.Fatalf("nil priority should default intrinsic=low, got %s", v.Intrinsic)
+	}
+}
+
+// Cascade dampening: root stays prominent (+), downstream/co-occurring symptoms dampen (-),
+// and same_resource is no longer ignored (the legacy 0 bug).
+func TestCorrelationTypeAdjustment(t *testing.T) {
+	if correlationTypeAdjustment("likely_root_cause") <= 0 {
+		t.Fatal("root cause should be boosted")
+	}
+	if correlationTypeAdjustment("downstream_impact") >= 0 {
+		t.Fatal("downstream symptom should be dampened")
+	}
+	if correlationTypeAdjustment("same_resource") >= 0 {
+		t.Fatal("same_resource must dampen, not be ignored (legacy 0 bug)")
+	}
+	if correlationTypeAdjustment("unknown_type") != 0 {
+		t.Fatal("unknown correlation type should be neutral")
+	}
+}
+
+func TestParseVerdict(t *testing.T) {
+	// fenced JSON + string confidence + min/max -> band mapping
+	in := "```json\n{\"category\":\"OOMKill\",\"intrinsic\":\"High\",\"blast\":\"monitoring_backbone\"," +
+		"\"recurrence_semantics\":\"escalating\",\"env_sensitivity\":\"partial\"," +
+		"\"min_priority\":\"P2\",\"max_priority\":\"P1\",\"confidence\":\"high\",\"reasoning\":\"x\"}\n```"
+	v, err := parseVerdict(in)
+	if err != nil {
+		t.Fatalf("parseVerdict err: %v", err)
+	}
+	if v.Intrinsic != "high" || v.BandFloor != "P2" || v.BandCeiling != "P1" || v.Confidence != 0.9 {
+		t.Fatalf("unexpected verdict: %+v", v)
+	}
+}
+
+func TestClassKey(t *testing.T) {
+	// owner present -> used as scope; aggregation_key lowercased.
+	e := &models.Event{AggregationKey: sp("Pod_OOM_Killer_Enricher"), FindingType: sp("issue"),
+		SubjectOwner: sp("vmagent"), SubjectNamespace: sp("victoria")}
+	if got := ClassKey(e); got != "pod_oom_killer_enricher|issue|vmagent" {
+		t.Fatalf("ClassKey = %q", got)
+	}
+	// owner empty -> falls back to namespace.
+	e2 := &models.Event{AggregationKey: sp("GCP Alerts for db"), FindingType: sp("issue"),
+		SubjectOwner: sp(""), SubjectNamespace: sp("nudgebee")}
+	if got := ClassKey(e2); got != "gcp alerts for db|issue|nudgebee" {
+		t.Fatalf("ClassKey(empty owner) = %q", got)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"nudgebee/services/config"
 	"nudgebee/services/internal/database/models"
 
 	"github.com/jmoiron/sqlx"
@@ -64,8 +65,51 @@ const (
 // action='adjust_score') and applied by processor.go after ComputeScore.
 // Tenants edit or override them via the existing triage rules UI.
 
-// ComputeScore calculates the priority score for an event
-func ComputeScore(ctx context.Context, db *sqlx.DB, event *models.Event, occurrenceNumber int, correlationType string, correlationScore float64) (*ScoreResult, error) {
+// ComputeScore calculates the priority score for an event. It dispatches between the
+// LLM-verdict-per-class path (feature-flagged) and the legacy severity*env formula. In
+// shadow mode the new score is recorded in score_factors for comparison while the legacy
+// score stays authoritative.
+func ComputeScore(ctx context.Context, db *sqlx.DB, event *models.Event) (*ScoreResult, error) {
+	// Human overrides are authoritative and bypass the machine score entirely. This MUST be
+	// the first check so a per-event correction or a class priority_pin is never overwritten by
+	// the LLM/legacy verdict on re-score (events upsert on recurrence and re-run ComputeScore).
+	// It applies in both legacy and LLM modes, and even in shadow mode (a human correction is
+	// not a "shadow" — it is the answer). The additive scoring-rule pass in processor.go checks
+	// IsHumanAuthority and skips when set.
+	if override := resolveHumanOverride(ctx, db, event); override != nil {
+		return override, nil
+	}
+
+	if !config.Config.FeatureLLMTriageScoringEnabled {
+		return computeLegacyScore(ctx, db, event)
+	}
+
+	llmResult, llmErr := ComputeScoreLLM(ctx, db, event)
+
+	if !config.Config.FeatureLLMTriageScoringShadow {
+		if llmErr != nil || llmResult == nil {
+			slog.WarnContext(ctx, "LLM triage scoring failed; falling back to legacy",
+				"event_id", event.Id, "error", llmErr)
+			return computeLegacyScore(ctx, db, event)
+		}
+		return llmResult, nil
+	}
+
+	// Shadow: legacy authoritative, attach the LLM result to factors for comparison.
+	legacy, err := computeLegacyScore(ctx, db, event)
+	if err != nil {
+		return legacy, err
+	}
+	if llmErr == nil && llmResult != nil && legacy != nil {
+		legacy.Factors["shadow_llm_score"] = llmResult.Score
+		legacy.Factors["shadow_llm_priority"] = llmResult.Priority
+		legacy.Factors["shadow_llm_factors"] = llmResult.Factors
+	}
+	return legacy, nil
+}
+
+// computeLegacyScore is the original severity*env scoring formula.
+func computeLegacyScore(ctx context.Context, db *sqlx.DB, event *models.Event) (*ScoreResult, error) {
 	factors := make(map[string]interface{})
 	var factorCount int
 

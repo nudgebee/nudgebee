@@ -2,14 +2,22 @@ package triage
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
 )
+
+// execer is satisfied by both *sqlx.DB and *sqlx.Tx, so provenance/log writes work inside or
+// outside a transaction.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+}
 
 // ClassifyPreview returns a preview of the impact of classifying an event
 func ClassifyPreview(ctx context.Context, db *sqlx.DB, req ClassifyPreviewRequest, cloudAccountID, tenantID string) (*ClassifyPreviewResponse, error) {
@@ -204,6 +212,31 @@ func ClassifyEvent(ctx context.Context, db *sqlx.DB, req ClassifyEventRequest, c
 		ruleExpiresAt = rule.EffectiveUntil
 	}
 
+	// 10b. Append a provenance row for a priority correction (within the same transaction, so the
+	// log and the score change commit atomically). This is the tamper-evident source of truth for
+	// "who set this score and why"; score_factors is merely a reconstructable cache of it.
+	if req.CorrectedPriority != nil {
+		classKey := event.classKey()
+		newScore := priorityToMinScore(*req.CorrectedPriority)
+		if err = insertCorrectionLog(ctx, tx, correctionLogEntry{
+			TenantID:       tenantID,
+			CloudAccountID: cloudAccountID,
+			EventID:        &req.EventID,
+			ClassKey:       &classKey,
+			OldPriority:    event.ComputedPriority,
+			NewPriority:    req.CorrectedPriority,
+			OldScore:       event.ComputedScore,
+			NewScore:       &newScore,
+			Source:         "human_event_pin",
+			Authority:      authorityHumanEvent,
+			RuleID:         ruleID,
+			CorrectedBy:    userID,
+			Reason:         req.ReasonText,
+		}); err != nil {
+			return nil, fmt.Errorf("failed to write correction log: %w", err)
+		}
+	}
+
 	// 11. Commit transaction
 	if err = tx.Commit(); err != nil {
 		return nil, fmt.Errorf("failed to commit transaction: %w", err)
@@ -305,18 +338,35 @@ func GetDuplicateSuggestions(ctx context.Context, db *sqlx.DB, eventID, cloudAcc
 
 // eventBasicInfo holds basic event info for internal use
 type eventBasicInfo struct {
-	ID             string  `db:"id"`
-	Title          string  `db:"title"`
-	Fingerprint    *string `db:"fingerprint"`
-	ComputedScore  *int    `db:"computed_score"`
-	CloudAccountID string  `db:"cloud_account_id"`
-	TenantID       string  `db:"tenant"`
+	ID               string  `db:"id"`
+	Title            string  `db:"title"`
+	Fingerprint      *string `db:"fingerprint"`
+	ComputedScore    *int    `db:"computed_score"`
+	ComputedPriority *string `db:"computed_priority"`
+	CloudAccountID   string  `db:"cloud_account_id"`
+	TenantID         string  `db:"tenant"`
+	AggregationKey   *string `db:"aggregation_key"`
+	FindingType      *string `db:"finding_type"`
+	SubjectOwner     *string `db:"subject_owner"`
+	SubjectNamespace *string `db:"subject_namespace"`
+}
+
+// classKey derives the signal-class key for this event projection (same formula as ClassKey).
+func (e *eventBasicInfo) classKey() string {
+	get := func(p *string) string {
+		if p == nil {
+			return ""
+		}
+		return *p
+	}
+	return classKeyFromParts(get(e.AggregationKey), get(e.FindingType), get(e.SubjectOwner), get(e.SubjectNamespace))
 }
 
 // loadEventByID loads basic event info by ID
 func loadEventByID(ctx context.Context, db *sqlx.DB, eventID, cloudAccountID string) (*eventBasicInfo, error) {
 	query := `
-		SELECT id, title, fingerprint, computed_score, cloud_account_id, tenant
+		SELECT id, title, fingerprint, computed_score, computed_priority, cloud_account_id, tenant,
+		       aggregation_key, finding_type, subject_owner, subject_namespace
 		FROM events
 		WHERE id = $1 AND cloud_account_id = $2
 	`
@@ -496,19 +546,63 @@ func insertClassificationTx(ctx context.Context, tx *sqlx.Tx, c *EventClassifica
 
 // updateEventScoreTx updates computed_score and computed_priority within a transaction.
 // Used when a user manually corrects the priority so that score stays in sync.
-// Also sets score_factors to indicate this was a manual correction and score_confidence to 1.0.
+// score_factors is MERGED (jsonb ||), not clobbered: the human-correction layer (authority,
+// scoring_path, corrected_*) is overlaid on top of the machine's prior factors so the original
+// verdict lineage (category/intrinsic/blast/reasoning/class_key) is preserved for the explain
+// surface. The append-only triage_correction_log remains the tamper-evident source of truth.
 func updateEventScoreTx(ctx context.Context, tx *sqlx.Tx, eventID string, score int, priority string) error {
 	query := `
 		UPDATE events
 		SET computed_score = $1,
 		    computed_priority = $2,
-		    score_factors = jsonb_build_object('manual_correction', true, 'corrected_priority', $2, 'corrected_score', $1),
+		    score_factors = COALESCE(score_factors, '{}'::jsonb) || jsonb_build_object(
+		        'manual_correction', true,
+		        'scoring_path', 'human_override',
+		        'authority', 'human:event',
+		        'corrected_priority', $2::text,
+		        'corrected_score', $1::int,
+		        'final_score', $1::int
+		    ),
 		    score_confidence = 1.0,
 		    updated_at = NOW()
 		WHERE id = $3
 	`
 
 	_, err := tx.ExecContext(ctx, query, score, priority, eventID)
+	return err
+}
+
+// correctionLogEntry is one append-only provenance row for triage_correction_log — the
+// tamper-evident record of who changed a score/priority and why. score_factors on the event is
+// reconstructable from this; this is the authority.
+type correctionLogEntry struct {
+	TenantID       string
+	CloudAccountID string
+	EventID        *string
+	ClassKey       *string
+	OldPriority    *string
+	NewPriority    *string
+	OldScore       *int
+	NewScore       *int
+	Source         string // human_event_pin | human_class_pin
+	Authority      string // human:event | human:class
+	RuleID         *string
+	CorrectedBy    string
+	Reason         *string
+}
+
+// insertCorrectionLog appends a provenance row. Works on a *sqlx.Tx (atomic with a per-event
+// correction) or a *sqlx.DB (best-effort, for class-pin creation).
+func insertCorrectionLog(ctx context.Context, db execer, e correctionLogEntry) error {
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO triage_correction_log
+			(tenant_id, cloud_account_id, event_id, class_key,
+			 old_priority, new_priority, old_score, new_score,
+			 source, authority, rule_id, corrected_by, reason)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		e.TenantID, e.CloudAccountID, e.EventID, e.ClassKey,
+		e.OldPriority, e.NewPriority, e.OldScore, e.NewScore,
+		e.Source, e.Authority, e.RuleID, e.CorrectedBy, e.Reason)
 	return err
 }
 
@@ -629,6 +723,44 @@ func createRuleFromClassificationTx(ctx context.Context, tx *sqlx.Tx, c *EventCl
 
 	var ruleType, action string
 	var actionValue *string
+
+	// A corrected priority is an ABSOLUTE class pin (e.g. "this class is always P3"). It takes
+	// precedence over the classification-derived rule: the priority intent is what the user is
+	// asserting, and it must resolve via the authoritative priority_pin path, not an additive
+	// scoring rule. The per-event case never reaches here (scope this_event skips rule creation).
+	if c.CorrectedPriority != nil && isValidPriority(*c.CorrectedPriority) {
+		pinned := strings.ToUpper(strings.TrimSpace(*c.CorrectedPriority))
+		avBytes, _ := json.Marshal(ActionValueData{Priority: &pinned, ReasonCode: &c.ReasonCode})
+		avStr := string(avBytes)
+		rule := &TriageRule{
+			ID:               ruleID,
+			TenantID:         &c.TenantID,
+			AccountID:        &c.CloudAccountID,
+			RuleType:         RuleTypePriorityPin,
+			Action:           ActionPinPriority,
+			MatchFingerprint: event.Fingerprint,
+			ActionValue:      &avStr,
+			Priority:         200,
+			IsEditable:       true,
+			CanOverride:      true,
+			Enabled:          true,
+			EffectiveUntil:   c.ApplyUntil,
+			CreatedBy:        &userID,
+			CreatedAt:        time.Now().UTC(),
+			UpdatedAt:        time.Now().UTC(),
+		}
+		name := fmt.Sprintf("Pin %s: %s", pinned, event.Title)
+		if len(name) > 255 {
+			name = name[:255]
+		}
+		rule.Name = &name
+		if err := insertTriageRuleTx(ctx, tx, rule); err != nil {
+			return nil, err
+		}
+		slog.InfoContext(ctx, "Created priority_pin rule from classification",
+			"rule_id", rule.ID, "pinned_priority", pinned)
+		return rule, nil
+	}
 
 	switch c.Classification {
 	case ClassificationFalsePositive:

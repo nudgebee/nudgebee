@@ -21,6 +21,7 @@ import NewIssueChip from '@shared/widgets/NewIssueChip';
 import ScoreDisplay from '@shared/widgets/ScoreDisplay';
 import CustomTicketLink from '@shared/CustomTicketLink';
 import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
+import PriorityPinControl from '@shared/widgets/PriorityPinControl';
 import { snackbar } from '@shared/snackbarService';
 import { Button as DsButton } from '@ui/Button';
 import { DropdownMenu } from '@ui/DropdownMenu';
@@ -199,12 +200,21 @@ const transformTableData = (
         { component: <Text showAutoEllipsis value={item.fingerprint_event_count ?? item.event_count} /> },
         {
           component: (
-            <ScoreDisplay
-              score={item.latest_computed_score}
-              priority={item.latest_computed_priority}
-              scoreFactors={item.latest_score_factors}
-              confidence={item.latest_score_confidence}
-            />
+            <Box display='flex' alignItems='center' gap={ds.space[1]}>
+              <ScoreDisplay
+                score={item.latest_computed_score}
+                priority={item.latest_computed_priority}
+                scoreFactors={item.latest_score_factors}
+                confidence={item.latest_score_confidence}
+              />
+              <PriorityPinControl
+                eventId={item.latest_event_id}
+                accountId={item.account_id}
+                currentPriority={item.latest_computed_priority}
+                canWrite={canWrite}
+                onChanged={onStatusChange}
+              />
+            </Box>
           ),
         },
         {

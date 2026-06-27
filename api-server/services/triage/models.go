@@ -39,6 +39,9 @@ const (
 	RuleTypeSuppression    = "suppression"
 	RuleTypeScoring        = "scoring"
 	RuleTypeClassification = "classification"
+	// RuleTypePriorityPin is an ABSOLUTE human correction: it pins computed_priority for matched
+	// events, overriding the LLM verdict and suppressing additive scoring rules. Authoritative.
+	RuleTypePriorityPin = "priority_pin"
 )
 
 // Rule action constants
@@ -48,6 +51,7 @@ const (
 	ActionAdjustScore           = "adjust_score"
 	ActionAutoClassifyDuplicate = "auto_classify_duplicate"
 	ActionAutoClassifyFP        = "auto_classify_fp"
+	ActionPinPriority           = "pin_priority"
 )
 
 // Priority direction constants
@@ -336,6 +340,11 @@ type ActionValueData struct {
 	LinkedEventID  *string `json:"linked_event_id,omitempty"`
 	Classification *string `json:"classification,omitempty"`
 	ReasonCode     *string `json:"reason_code,omitempty"`
+	// Priority is the absolute pinned P-level for a rule_type='priority_pin' (P0..P3).
+	Priority *string `json:"priority,omitempty"`
+	// Intrinsic / Category optionally correct the LLM verdict for the class (display + future re-score).
+	Intrinsic *string `json:"intrinsic,omitempty"`
+	Category  *string `json:"category,omitempty"`
 }
 
 // ParseActionValue parses the action_value JSON string

@@ -22,6 +22,7 @@ import TicketLink from '@shared/links/TicketLink';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { toast as snackbar } from '@ui/Toast';
 import ScoreDisplay from '@shared/widgets/ScoreDisplay';
+import PriorityPinControl from '@shared/widgets/PriorityPinControl';
 import Chip from '@ui/Chip';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 
@@ -1036,12 +1037,19 @@ const KubernetesEventsTable = ({
         if (headersArray.includes('Triage Score')) {
           row.push({
             component: (
-              <Box sx={{ justifySelf: 'center' }}>
+              <Box sx={{ justifySelf: 'center', display: 'flex', alignItems: 'center', gap: ds.space[1] }}>
                 <ScoreDisplay
                   score={item.computed_score}
                   priority={item.computed_priority}
                   scoreFactors={item.score_factors}
                   confidence={item.score_confidence}
+                />
+                <PriorityPinControl
+                  eventId={item.id}
+                  accountId={item.account_id}
+                  currentPriority={item.computed_priority}
+                  canWrite={hasWriteAccess(item.account_id)}
+                  onChanged={listEvents}
                 />
               </Box>
             ),
