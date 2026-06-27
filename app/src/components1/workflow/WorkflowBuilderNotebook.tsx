@@ -41,8 +41,9 @@ import CloseIcon from '@mui/icons-material/Close';
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import PublishedWithChangesIcon from '@mui/icons-material/PublishedWithChanges';
+import WorkflowVersionCompareModal from './components/WorkflowVersionCompareModal';
 
-type WorkflowVersionEntry = {
+export type WorkflowVersionEntry = {
   id: string;
   workflow_id: string;
   version_number: number;
@@ -464,6 +465,8 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   // Version history (revert) state. Lives in this component so the drawer and
   // confirm dialog can share data without prop drilling.
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [comparePreselected, setComparePreselected] = useState<WorkflowVersionEntry | null>(null);
   const [versions, setVersions] = useState<WorkflowVersionEntry[]>([]);
   const [loadingVersions, setLoadingVersions] = useState(false);
   const [confirmRestoreVersion, setConfirmRestoreVersion] = useState<WorkflowVersionEntry | null>(null);
@@ -4424,6 +4427,14 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                 result={dryRunResult}
                 draftVersionNumber={workflowData?.draft_version_number ?? undefined}
               />
+          <WorkflowVersionCompareModal
+            open={compareOpen}
+            onClose={() => { setCompareOpen(false); setComparePreselected(null); }}
+            accountId={accountId}
+            workflowId={workflowId ?? ""}
+            versions={versions}
+            preselectedBase={comparePreselected ?? undefined}
+          />
             </Suspense>
           )}
 
@@ -4597,6 +4608,15 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                                 disabled={statusUpdatingVersionNumber !== null || settingLive || restoring || deleting}
                               >
                                 Checkout
+                              </Button>
+                              <Button
+                                id={`workflow-compare-v${v.version_number}-btn`}
+                                tone="ghost"
+                                size="sm"
+                                onClick={() => { setComparePreselected(v); setCompareOpen(true); }}
+                                disabled={versions.length < 2}
+                              >
+                                Compare
                               </Button>
                               {/* Delete is always shown, but disabled for the two
                                 versions the workflow still depends on — the live
