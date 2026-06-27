@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"nudgebee/services/common"
+	"nudgebee/services/event"
 	"nudgebee/services/eventrule"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/security"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -235,14 +237,6 @@ func (m PrometheusAlertManagerWebhook) ProcessEventWebook(sc *security.RequestCo
 }
 
 // extractPromSubject picks the K8s subject from Prometheus alert labels.
-// Priority: K8s controllers > service-mesh workload > service > pod > instance.
-// Controllers preferred over pod because pod names are ephemeral. Service
-// preferred over pod when no controller label is present since prometheus
-// usually labels alerts with the K8s Service name. The `job` label is
-// intentionally NOT a controller fallback — in Prometheus it almost always
-// refers to the scrape job, not a K8s Job; use `kube_job` for that.
-// `destination_workload_name` / `workload` come from service-mesh telemetry
-// (Istio, Linkerd) where the K8s controller kind is not in the label set.
 func extractPromSubject(labels map[string]string) (kind, name string) {
 	for _, k := range []string{"deployment", "statefulset", "daemonset", "replicaset", "cronjob", "kube_job"} {
 		if v := labels[k]; v != "" {
@@ -270,9 +264,7 @@ func extractPromSubject(labels map[string]string) (kind, name string) {
 	return "", ""
 }
 
-// extractPromNamespace picks the namespace from Prometheus alert labels,
-// falling through service-mesh telemetry conventions when the canonical
-// `namespace` label is absent.
+// extractPromNamespace picks the namespace from Prometheus alert labels.
 func extractPromNamespace(labels map[string]string) string {
 	for _, k := range []string{"namespace", "destination_workload_namespace", "workload_namespace", "source_workload_namespace", "kubernetes_namespace"} {
 		if v := labels[k]; v != "" {

@@ -3,7 +3,7 @@ import logging
 import os
 import tempfile
 import threading
-from typing import Optional
+from typing import Any, Optional, Union
 
 import aiofiles
 import aiofiles.os
@@ -54,7 +54,10 @@ class KBRetriggerIntegrationRequest(BaseModel):
     triggered_by: str = "system"
 
 
-def _create_kb_document_loader(file_path: str, data_format: str):
+DocumentLoader = Union[JSONLoader, UnstructuredXMLLoader, CSVLoader, TextLoader]
+
+
+def _create_kb_document_loader(file_path: str, data_format: str) -> DocumentLoader:
     """
     Create appropriate document loader based on data format.
     """
@@ -78,11 +81,11 @@ class KBLineByLineLoader:
     Each non-empty line becomes a separate document for semantic search.
     """
 
-    def __init__(self, base_loader, data_format: str):
+    def __init__(self, base_loader: DocumentLoader, data_format: str) -> None:
         self.base_loader = base_loader
         self.data_format = data_format
 
-    def load(self):
+    def load(self) -> "list[Document]":
         """Load documents and split by lines for text format."""
         from rag.core.types import Document
 
@@ -112,7 +115,7 @@ class KBLineByLineLoader:
 
 
 @router.post("/kb/create")
-async def create_kb(request: KBCreateRequest):
+async def create_kb(request: KBCreateRequest) -> dict[str, Any]:
     """
     Create a knowledgebase vector collection with embeddings.
 
@@ -182,7 +185,7 @@ async def create_kb(request: KBCreateRequest):
 
 
 @router.delete("/kb/{account_id}/{kb_id}")
-async def delete_kb(account_id: str, kb_id: str):
+async def delete_kb(account_id: str, kb_id: str) -> dict[str, Any]:
     """
     Delete a knowledgebase vector collection.
 
@@ -210,7 +213,7 @@ async def delete_kb(account_id: str, kb_id: str):
 
 
 @router.post("/kb/search")
-async def search_kb(request: KBSearchRequest):
+async def search_kb(request: KBSearchRequest) -> dict[str, Any]:
     """
     Semantic search in a knowledgebase.
 
@@ -249,7 +252,7 @@ async def search_kb(request: KBSearchRequest):
 
 
 @router.post("/kb/retrigger_integration")
-async def retrigger_integration_kb(request: KBRetriggerIntegrationRequest):
+async def retrigger_integration_kb(request: KBRetriggerIntegrationRequest) -> dict[str, str]:
     """Re-scrape a single integration's knowledge base.
 
     Dispatches to the right scraper (Confluence/ServiceNow) in a background
