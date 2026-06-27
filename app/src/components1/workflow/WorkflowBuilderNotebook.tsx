@@ -4427,14 +4427,17 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                 result={dryRunResult}
                 draftVersionNumber={workflowData?.draft_version_number ?? undefined}
               />
-          <WorkflowVersionCompareModal
-            open={compareOpen}
-            onClose={() => { setCompareOpen(false); setComparePreselected(null); }}
-            accountId={accountId}
-            workflowId={workflowId ?? ""}
-            versions={versions}
-            preselectedBase={comparePreselected ?? undefined}
-          />
+              <WorkflowVersionCompareModal
+                open={compareOpen}
+                onClose={() => {
+                  setCompareOpen(false);
+                  setComparePreselected(null);
+                }}
+                accountId={accountId}
+                workflowId={workflowId ?? ''}
+                versions={versions}
+                preselectedBase={comparePreselected ?? undefined}
+              />
             </Suspense>
           )}
 
@@ -4611,9 +4614,12 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                               </Button>
                               <Button
                                 id={`workflow-compare-v${v.version_number}-btn`}
-                                tone="ghost"
-                                size="sm"
-                                onClick={() => { setComparePreselected(v); setCompareOpen(true); }}
+                                tone='ghost'
+                                size='sm'
+                                onClick={() => {
+                                  setComparePreselected(v);
+                                  setCompareOpen(true);
+                                }}
                                 disabled={versions.length < 2}
                               >
                                 Compare
