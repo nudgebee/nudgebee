@@ -215,7 +215,7 @@ class LastDeploymentCard {
     }
     return (
       <Typography marginTop={ds.space.mul(0, 5)} fontSize={ds.text.bodyLg} fontWeight={500}>
-        No diff availabe.
+        No diff available.
       </Typography>
     );
   };
