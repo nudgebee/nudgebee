@@ -49,6 +49,7 @@ import {
   RedisLogoIcon,
   GithubIcon,
   ArgocdIcon,
+  TektonIcon,
   K8sIcon,
   newAwsLogo,
   ouAzure,
@@ -88,6 +89,7 @@ const getTaskIcon = (taskType: string) => {
 
     // CI/CD
     'cicd.argocd.cli': ArgocdIcon,
+    'cicd.tekton.cli': TektonIcon,
   };
 
   // Return specific task icon if available

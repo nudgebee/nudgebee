@@ -190,6 +190,9 @@ export const getCloudProviderLabel = (cloudProvider: string) => {
     case 'ARGOCD':
       label = 'ArgoCD';
       break;
+    case 'TEKTON':
+      label = 'Tekton';
+      break;
     case 'LLM':
       label = 'LLM';
       break;

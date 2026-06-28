@@ -27,6 +27,7 @@ import {
   RedisLogoIcon,
   GithubIcon,
   ArgocdIcon,
+  TektonIcon,
   K8sIcon,
   newAwsLogo,
   ouAzure,
@@ -91,6 +92,7 @@ const getTaskIcon = (taskType: string) => {
     'dbms.redis.cli': RedisLogoIcon,
     'scm.github.cli': GithubIcon,
     'cicd.argocd.cli': ArgocdIcon,
+    'cicd.tekton.cli': TektonIcon,
   };
 
   if (specificTaskIcons[taskType]) {

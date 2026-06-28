@@ -52,6 +52,7 @@ var sshHostRe = regexp.MustCompile(`^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0
 // sshUserRe matches a POSIX-ish username (must start with a letter or
 // underscore, followed by alphanumerics / dot / underscore / hyphen).
 var sshUserRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9._-]{0,31}$`)
+var tektonNamespaceRegex = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 
 // workspaceTokenClaims are the JWT claims embedded in workspace tokens issued by llm-server.
 type workspaceTokenClaims struct {
@@ -236,6 +237,8 @@ func workspaceToolToIntegrationType(tool string) string {
 		return "redis"
 	case "argocd":
 		return "argocd"
+	case "tekton", "tkn":
+		return "tekton"
 	case "clickhouse", "clickhouse-client":
 		return "clickhouse"
 	case "rabbitmq", "rabbitmqadmin":
@@ -488,6 +491,27 @@ func buildWorkspaceAction(tool, command string, configValues []db.WorkspaceConfi
 			"env_from_secret_keys": envFromSecret,
 		}
 		injectK8sSecret(params, configValues)
+		return "pod_script_run_enricher", params, nil
+
+	// ── tekton ────────────────────────────────────────────────────────────────
+	case "tekton", "tkn":
+		if !strings.HasPrefix(command, "tkn") {
+			command = "tkn " + command
+		}
+		ns := configVal(configValues, "namespace")
+		if ns != "" {
+			if !tektonNamespaceRegex.MatchString(ns) || len(ns) > 63 {
+				return "", nil, fmt.Errorf("invalid tekton namespace %q", ns)
+			}
+			if !strings.Contains(command, " -n ") && !strings.Contains(command, " --namespace") {
+				command = strings.Replace(command, "tkn ", "tkn -n "+ns+" ", 1)
+			}
+		}
+		params := map[string]any{
+			"image":    shellImage,
+			"command":  command,
+			"pod_name": podName,
+		}
 		return "pod_script_run_enricher", params, nil
 
 	// ── ssh ───────────────────────────────────────────────────────────────────

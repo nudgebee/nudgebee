@@ -44,7 +44,7 @@ const PROVIDERS = {
     'WORKFLOW_WEBHOOK',
   ],
   REPOS: ['GITHUB'],
-  CI_CD: ['ARGOCD', 'GITHUB'],
+  CI_CD: ['ARGOCD', 'GITHUB', 'TEKTON'],
   QUEUE: ['RABBITMQ'],
   DATABASE: ['POSTGRES', 'MYSQL', 'CLICKHOUSE', 'MSSQL', 'ORACLE'],
   IN_MEMORY: ['REDIS'],
@@ -166,7 +166,7 @@ const SECTIONS_CONFIG = [
     id: 'ci_cd',
     label: 'CI/CD',
     icon: RepoBlueIcon,
-    providers: ['ARGOCD', 'GITHUB'],
+    providers: ['ARGOCD', 'GITHUB', 'TEKTON'],
     tab: 9,
   },
   {

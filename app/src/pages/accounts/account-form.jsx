@@ -56,6 +56,8 @@ export default function AddAccountForm() {
             return <ListIntegrations integrationName={'zenduty_webhook'} />;
           case 'argocd':
             return <ListIntegrations integrationName={'argocd'} />;
+          case 'tekton':
+            return <ListIntegrations integrationName={'tekton'} />;
           case 'prometheus_alertmanager_webhook':
             return <ListIntegrations integrationName={'prometheus_alertmanager_webhook'} />;
           case 'datadog_webhook':

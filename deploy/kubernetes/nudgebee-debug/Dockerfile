@@ -66,6 +66,17 @@ RUN ARCH=$([ "$(uname -m)" = "x86_64" ] && echo "amd64" || echo "arm64") && \
     "https://github.com/argoproj/argo-cd/releases/download/v3.0.11/argocd-linux-${ARCH}" && \
     chmod +x /usr/local/bin/argocd
 
+# tkn (Tekton CLI) — PipelineRuns spawn multiple TaskRun pods with multiple
+# step containers; tkn aggregates logs across this hierarchy, which raw
+# kubectl cannot do.
+RUN ARCH=$([ "$(uname -m)" = "x86_64" ] && echo "x86_64" || echo "aarch64") && \
+    curl -fsSL --retry 3 --retry-delay 5 \
+    -o tkn.tar.gz \
+    "https://github.com/tektoncd/cli/releases/download/v0.45.0/tkn_0.45.0_Linux_${ARCH}.tar.gz" && \
+    tar xzf tkn.tar.gz -C /usr/local/bin tkn && \
+    chmod +x /usr/local/bin/tkn && \
+    rm tkn.tar.gz
+
 # ClickHouse client — copied from the official clickhouse image on Docker Hub
 # (already reachable; same approach as helm). This pins the version (vs the
 # rolling /master build, which is non-reproducible and can ship a broken binary)
