@@ -21,6 +21,17 @@ import (
 var (
 	rewooSolverContentRegex      = regexp.MustCompile("(?s)<content>(.*?)</content>")
 	rewooSolverRequiredInfoRegex = regexp.MustCompile("(?s)<required_information>(.*?)</required_information>")
+	// rewooSolverMetricLikeRegex matches number+unit patterns commonly used for metric
+	// values (latency, throughput, percentages, byte sizes). This is a DETECTION-ONLY
+	// heuristic for observability into the metric-fabrication bug (#291) — it is
+	// intentionally not used to block or alter the answer, since reliably matching
+	// derived/rounded numbers against scratchpad values is not feasible with a regex.
+	// The actual guard is enforced via prompt rules in prompt_rewoo_solver.txt and
+	// prompt_rewoo_critiquer.txt. "%" is split into its own alternative because a
+	// trailing \b does not match immediately after a non-word character like "%".
+	rewooSolverMetricLikeRegex = regexp.MustCompile(
+		`\b\d+(\.\d+)?\s*(ms|req/s|rps|req/sec|MB|GB|KB|bytes)\b|\b\d+(\.\d+)?\s*%`,
+	)
 )
 
 type rewooSolverFinalAnswer struct {
@@ -302,6 +313,21 @@ func (s *ReWooSolver) parseOutput(output string, insufficientData bool) (*NBAgen
 			thought = finalAnswer.Content
 		}
 
+		// Detection-only observability for bug #291 (AI assistant sometimes reports
+		// made-up metric values when the underlying query returned no data). This does
+		// NOT block or alter the answer — the actual guard against fabrication is enforced
+		// via the provenance rules added to prompt_rewoo_solver.txt and
+		// prompt_rewoo_critiquer.txt. This log line exists purely so we can track/alert on
+		// how often the model still attempts this pattern after the prompt fix, since
+		// reliably string-matching exact values against the scratchpad is not feasible
+		// (rounding, unit conversions, derived rates all break naive matching).
+		if insufficientData && rewooSolverMetricLikeRegex.MatchString(finalAnswer.Content) {
+			s.ctx.GetLogger().Warn(
+				"rewoosolver: potential metric fabrication — insufficient tool data but answer contains metric-like values",
+				"content_excerpt", truncateForLog(finalAnswer.Content, 500),
+			)
+		}
+
 		return &NBAgentPlannerFinishAction{
 				Log:  thought,
 				Data: finalAnswer.Content,
@@ -421,4 +447,13 @@ func hasToolFailureMajority(scratchpad string) bool {
 	// Conservative: only true when there is no usable data, or no-data results outnumber successes.
 	noData := failed + empty
 	return (noData+success) > 0 && (success == 0 || noData > success)
+}
+
+// truncateForLog trims s to at most n runes, appending "..." if truncated. Used to avoid
+// dumping full answer content into structured logs.
+func truncateForLog(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
