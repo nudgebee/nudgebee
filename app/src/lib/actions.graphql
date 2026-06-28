@@ -2128,6 +2128,13 @@ type Query {
 }
 
 type Query {
+  workflow_get_state(
+    request: WorkflowGetRequest!
+  ): [WorkflowStateItem]
+}
+
+
+type Query {
   workflows_count(
     request: WorkflowCountRequest!
   ): WorkflowCountResponse
@@ -8165,6 +8172,15 @@ type WorkflowCountResponse {
 
 type WorkflowExecutionCountResponse {
   count: Int!
+}
+
+type WorkflowStateItem {
+  key: String!
+  value: jsonb
+  updated_at: timestamp!
+  expires_at: timestamp
+  last_updated_by_execution_id: String
+  last_updated_by_task_id: String
 }
 
 type WorkflowUser {

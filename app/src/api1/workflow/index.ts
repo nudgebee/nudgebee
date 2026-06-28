@@ -443,6 +443,19 @@ query getWorkflowExecution($request: WorkflowExecutionGetRequest!) {
 }
 `;
 
+export const GET_WORKFLOW_STATE = `
+query getWorkflowState($request: WorkflowGetRequest!) {
+  workflow_get_state(request: $request) {
+    key
+    value
+    updated_at
+    expires_at
+    last_updated_by_execution_id
+    last_updated_by_task_id
+  }
+}
+`;
+
 export const TRIGGER_WORKFLOW = `
 mutation triggerWorkflow($request: WorkflowTriggerRequest!) {
   workflow_execute(request: $request) {
@@ -1412,6 +1425,23 @@ const apiWorkflow = {
       };
     } catch (error) {
       console.error('Failed to update workflow version metadata:', error);
+      return { data: null, errors: [error] };
+    }
+  },
+  async getWorkflowState(accountId: string, workflowId: string) {
+    try {
+      const response = await queryGraphQL(GET_WORKFLOW_STATE, 'getWorkflowState', {
+        request: {
+          account_id: accountId,
+          id: workflowId,
+        },
+      });
+      return {
+        data: response?.data?.data,
+        errors: response?.data?.errors,
+      };
+    } catch (error) {
+      console.error('Failed to get workflow state:', error);
       return { data: null, errors: [error] };
     }
   },
