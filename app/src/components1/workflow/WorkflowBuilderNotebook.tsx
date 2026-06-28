@@ -4427,18 +4427,22 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                 result={dryRunResult}
                 draftVersionNumber={workflowData?.draft_version_number ?? undefined}
               />
-              <WorkflowVersionCompareModal
-                open={compareOpen}
-                onClose={() => {
-                  setCompareOpen(false);
-                  setComparePreselected(null);
-                }}
-                accountId={accountId}
-                workflowId={workflowId ?? ''}
-                versions={versions}
-                preselectedBase={comparePreselected ?? undefined}
-              />
             </Suspense>
+          )}
+
+          {/* Workflow Version Compare Modal */}
+          {compareOpen && (
+            <WorkflowVersionCompareModal
+              open={compareOpen}
+              onClose={() => {
+                setCompareOpen(false);
+                setComparePreselected(null);
+              }}
+              accountId={accountId}
+              workflowId={workflowId ?? ''}
+              versions={versions}
+              preselectedBase={comparePreselected ?? undefined}
+            />
           )}
 
           {/* Trigger Input Modal for Run/Dry Run (lazy-loaded) */}

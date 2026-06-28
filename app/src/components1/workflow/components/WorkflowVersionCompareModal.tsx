@@ -83,26 +83,18 @@ const WorkflowVersionCompareModal: React.FC<WorkflowVersionCompareModalProps> = 
       return;
     }
     editorRef.current.innerHTML = '';
-        <Box sx={{ minWidth: 220 }}>
-          <Select
-            label="Base Version"
-            value={baseVersion}
-            onChange={(val) => { setBaseVersion(val as number); setError(null); }}
-            options={versionOptions}
-            clearable={false}
-            size="sm"
-          />
-        </Box>
-        <Box sx={{ minWidth: 220 }}>
-          <Select
-            label="Compare Version"
-            value={compareVersion}
-            onChange={(val) => { setCompareVersion(val as number); setError(null); }}
-            options={versionOptions}
-            clearable={false}
-            size="sm"
-          />
-        </Box>
+    try {
+      mergeViewRef.current = new MergeView({
+        a: {
+          doc: baseJson,
+          extensions: [
+            json(),
+            EditorView.editable.of(false),
+            EditorState.readOnly.of(true),
+            EditorView.theme({ '&': { height: '100%' }, '.cm-scroller': { overflow: 'auto' } }),
+          ],
+        },
+        b: {
           doc: compareJson,
           extensions: [
             json(),
