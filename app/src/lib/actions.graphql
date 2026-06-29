@@ -2047,6 +2047,18 @@ type Mutation {
 }
 
 type Mutation {
+  auth_delete_session(
+    object: auth_delete_session_input!
+  ): auth_delete_session_output
+}
+
+type Mutation {
+  auth_check_session(
+    object: auth_check_session_input!
+  ): auth_check_session_output
+}
+
+type Mutation {
   users_update_default_tenant(
     object: user_update_default_tenant_input!
   ): user_update_default_tenant_output
@@ -2442,6 +2454,18 @@ input user_update_accessed_input {
   auth_id: String
   username: String
   tenant_id: String!
+}
+
+input auth_delete_session_input {
+  user_id: String!
+  jti: String
+  expires_at: Int!
+}
+
+input auth_check_session_input {
+  user_id: String!
+  jti: String
+  iat: Int!
 }
 
 input user_create_auth_input {
@@ -5734,6 +5758,14 @@ type user_onboard_output {
 
 type user_update_accessed_output {
   updated: Int!
+}
+
+type auth_delete_session_output {
+  revoked: Boolean!
+}
+
+type auth_check_session_output {
+  revoked: Boolean!
 }
 
 type user_create_auth_output {

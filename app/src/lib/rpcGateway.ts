@@ -2,6 +2,7 @@ import { getToken, type JWT } from 'next-auth/jwt';
 import type { NextApiRequest } from 'next';
 import { parse, type FieldNode, type OperationDefinitionNode, type SelectionSetNode, type TypeNode, type ValueNode } from 'graphql';
 import { decodeSessionJWT, decrypt } from '@lib/internal';
+import { isSessionRevoked } from '@lib/sessionRevocation';
 import { loadActionInputSchema, loadRpcRoutes, type SchemaFieldInfo } from '@lib/rpcRoutes';
 import { elevateRoles } from '@lib/authHooks';
 import { pickDefaultRole } from '@lib/rolePriority';
@@ -115,6 +116,7 @@ export async function authenticateRequest(req: NextApiRequest): Promise<AuthCont
     }
   }
   let jwt = await getToken({ req });
+  const fromCookie = !!jwt && !token;
   // Bearer-only flow (no NextAuth cookie): decode the bearer JWT and
   // synthesize the JWT shape buildSessionVariables expects. Without this,
   // callers like nbctl get 401 even though the token is valid.
@@ -127,6 +129,19 @@ export async function authenticateRequest(req: NextApiRequest): Promise<AuthCont
   // forwardAction already gates Authorization-header emission on a
   // non-empty clientAuthorization, so missing token is a no-op there.
   if (!jwt) return null;
+  // Cookie flow: getToken just unwraps the NextAuth cookie — it does NOT
+  // consult any denylist. Without this check a captured cookie would keep
+  // working post-logout. We key on the NextAuth wrapper's iat (session
+  // creation / rotation time) since that's the credential the cookie
+  // carries; a user-wide revocation (revoked_at > NextAuth iat) catches
+  // every session this user holds.
+  if (fromCookie) {
+    const userId = (jwt.id as string | undefined) || (jwt.sub as string | undefined);
+    const wrapperIat = typeof jwt.iat === 'number' ? (jwt.iat as number) : undefined;
+    if (userId && wrapperIat !== undefined) {
+      if (await isSessionRevoked(userId, null, wrapperIat)) return null;
+    }
+  }
   return { token: token ?? '', jwt };
 }
 

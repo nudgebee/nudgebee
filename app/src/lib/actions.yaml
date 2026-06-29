@@ -4185,6 +4185,27 @@ actions:
       headers:
         - name: X-ACTION-TOKEN
           value_from_env: ACTION_API_SERVER_TOKEN
+  # Session revocation actions are server-only — invoked by NextAuth signOut /
+  # /api/auth/revoke / authenticateRequest via bypassGraphQLAsServer (which
+  # synthesises super_admin). No `permissions` block by design: a frontend
+  # caller must never be able to forge a revocation for another user, and the
+  # cookie-flow denylist check would loop if it required user auth.
+  - name: auth_delete_session
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/user'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+  - name: auth_check_session
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/user'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
   - name: users_update_default_tenant
     definition:
       kind: synchronous
@@ -5592,6 +5613,8 @@ custom_types:
     - name: user_tenant_roles_input
     - name: user_sync_roles_input
     - name: user_onboard_input
+    - name: auth_delete_session_input
+    - name: auth_check_session_input
     - name: user_update_accessed_input
     - name: user_create_auth_input
     - name: user_update_status_input
@@ -6023,6 +6046,8 @@ custom_types:
     - name: user_tenant_roles_output
     - name: user_sync_roles_output
     - name: user_onboard_output
+    - name: auth_delete_session_output
+    - name: auth_check_session_output
     - name: user_update_accessed_output
     - name: user_create_auth_output
     - name: user_update_status_output

@@ -2,6 +2,7 @@ import * as crypto from 'crypto';
 import * as jose from 'jose';
 import * as bcrypt from 'bcrypt';
 import { pickDefaultRole } from '@lib/rolePriority';
+import { isSessionRevoked } from '@lib/sessionRevocation';
 
 const NUDGEBEE_ENCRYPTION_KEY_HEX = process.env.NUDGEBEE_ENCRYPTION_KEY || '';
 let ENCRYPTION_KEY: Buffer;
@@ -51,12 +52,19 @@ export async function encodeSessionJWT(user: any, claims: any, exp: number, iat:
     claims.namespaced_readonly_account_ids = user?.namespacedReadOnlyAccountIds ?? [];
     claims.allowed_roles = roles;
   }
+  // jti is the per-token identifier the server-side denylist
+  // (sessionRevocation) keys on for per-jti revocations from
+  // /api/auth/revoke. User-wide revocations (NextAuth signOut event) ignore
+  // jti and key on user_id + revoked_at vs iat, so old tokens minted before
+  // this field existed remain checkable too.
+  const jti = crypto.randomUUID();
   const jwt = await new jose.SignJWT(claims)
     .setProtectedHeader({ alg: 'HS256' })
+    .setJti(jti)
     .setIssuedAt(iat)
     .setIssuer('urn:nudgebee:issuer')
     .setAudience('urn:nudgebee:app')
-    .setExpirationTime(exp || '2h')
+    .setExpirationTime(exp || '1h')
     .sign(JWT_SECRET);
 
   return jwt;
@@ -67,11 +75,27 @@ export async function decodeSessionJWT(token: string): Promise<jose.JWTVerifyRes
   // cross-token-reuse vector where a token signed by NEXTAUTH_SECRET for a
   // different purpose (e.g. a future API token) would otherwise be accepted
   // here. Both values must match what encodeSessionJWT() sets above.
-  return await jose.jwtVerify(token, JWT_SECRET, {
+  const result = await jose.jwtVerify(token, JWT_SECRET, {
     algorithms: ['HS256'],
     issuer: 'urn:nudgebee:issuer',
     audience: 'urn:nudgebee:app',
   });
+  // Server-side revocation check. NextAuth uses a stateless JWT strategy,
+  // so a captured token outlives logout without this hook. Runs after
+  // signature+expiry+iss+aud verification (so we never query the cache for
+  // a token jose already rejected). Old (pre-jti) tokens still get the
+  // user-wide revoked_at > iat check; only per-jti revocations are
+  // skipped for them.
+  const userId = typeof result.payload.sub === 'string' ? result.payload.sub : undefined;
+  const tokenJti = typeof result.payload.jti === 'string' ? result.payload.jti : null;
+  const tokenIat = typeof result.payload.iat === 'number' ? result.payload.iat : undefined;
+  if (userId && tokenIat !== undefined) {
+    const revoked = await isSessionRevoked(userId, tokenJti, tokenIat);
+    if (revoked) {
+      throw new jose.errors.JWTInvalid('Session has been revoked');
+    }
+  }
+  return result;
 }
 
 export async function encrypt(message: string): Promise<string> {

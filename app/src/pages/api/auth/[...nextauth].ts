@@ -11,6 +11,7 @@ import AzureADB2CProvider from 'next-auth/providers/azure-ad-b2c';
 import Auth0Provider from 'next-auth/providers/auth0';
 import { Client } from 'ldapts';
 import axios from 'axios';
+import { isSessionRevoked, revokeAllUserSessions } from '@lib/sessionRevocation';
 
 import {
   updateUserAccountAccessed,
@@ -1225,7 +1226,14 @@ async function jwtUpdateTokenOnUpdateTrigger(token: any, session: any, trigger: 
 }
 
 function getSessionExpirationSeconds() {
-  let expiration = 1 * 24 * 60 * 60;
+  // 1-hour default chosen as part of the F03 logout-fix work: bounds the
+  // replay window for a captured NextAuth cookie even when the user never
+  // explicitly logs out (signOut clears the session immediately via the
+  // sessionRevocation denylist). Session is sliding — every request
+  // rewrites the cookie with a fresh maxAge — so active users stay
+  // logged in. Bump via NEXTAUTH_SESSION_EXPIRATION_HOURS / _DAYS for
+  // deployments that want a longer idle window.
+  let expiration = 60 * 60;
   if (process.env.NEXTAUTH_SESSION_EXPIRATION_DAYS) {
     expiration = parseInt(process.env.NEXTAUTH_SESSION_EXPIRATION_DAYS) * 24 * 60 * 60;
   } else if (process.env.NEXTAUTH_SESSION_EXPIRATION_HOURS) {
@@ -1255,6 +1263,23 @@ export const authOptions: NextAuthOptions = {
   callbacks: {
     async jwt({ token, user, account: oauthAccount, trigger, session }) {
       try {
+        // Server-side revocation gate. NextAuth's stateless JWT strategy
+        // means a captured cookie survives logout until natural expiry on
+        // its own; this hook reads the sessionRevocation denylist and
+        // wipes the token if the user signed out (or their session was
+        // revoked) after this cookie was issued. Runs only on subsequent
+        // requests (not on signIn — `user` / `oauthAccount` populated
+        // means a fresh login that creates a brand-new iat anyway).
+        // Returning {} on a hit means NextAuth re-encodes the cookie with
+        // an empty payload, so even subsequent /api/auth/session refreshes
+        // can't restore claims from the revoked cookie.
+        if (!user && !oauthAccount && token?.id && typeof token.iat === 'number') {
+          const revoked = await isSessionRevoked(String(token.id), null, token.iat);
+          if (revoked) {
+            return {};
+          }
+        }
+
         //firsttime login flow for email
         if (oauthAccount?.provider === 'email' || oauthAccount?.provider === 'credentials' || oauthAccount?.provider === 'ldap') {
           await jwtUpdateTokenForCredentialToken(token, user, oauthAccount, trigger, session);
@@ -1508,7 +1533,27 @@ export const authOptions: NextAuthOptions = {
       }
     },
     signOut: async (message) => {
-      console.log('signOut called', message);
+      // Insert a user-wide row in the sessionRevocation denylist so every
+      // JWT for this user with iat < now is rejected on its next replay.
+      // Covers the captured-cookie / captured-Bearer attack the F03 pentest
+      // exposed.
+      //
+      // jti-less (user-wide) is the right shape here: it kills every
+      // outstanding cookie/Bearer for this user in one row, including
+      // tokens this user holds on other devices. expires_at = now + max
+      // NextAuth session lifetime — by then any in-flight token is dead.
+      const tokenLike = (message as { token?: { id?: unknown; sub?: unknown } }).token;
+      const userId = (tokenLike?.id ?? tokenLike?.sub) as string | undefined;
+      if (userId) {
+        const expiresAtSec = Math.floor(Date.now() / 1000) + getSessionExpirationSeconds();
+        try {
+          await revokeAllUserSessions(userId, expiresAtSec);
+        } catch (err) {
+          console.error('signOut: failed to revoke sessions for', userId, err);
+        }
+      } else {
+        console.log('signOut called without resolvable user id', message);
+      }
     },
   },
   pages: {
