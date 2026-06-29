@@ -669,7 +669,7 @@ const AutomationsCard = ({ workflowData, accountId, onManage }) => {
             flexShrink: 0,
           }}
         >
-          <SafeIcon src={WorkflowIconBlue} alt='Workflows' width={16} height={16} />
+          <SafeIcon src={WorkflowIconBlue} alt='Automations' width={16} height={16} />
         </Box>
         <Typography
           sx={{
@@ -680,7 +680,7 @@ const AutomationsCard = ({ workflowData, accountId, onManage }) => {
             letterSpacing: '-0.01em',
           }}
         >
-          Workflows
+          Automations
         </Typography>
       </Box>
       <Button tone='ghost' size='xs' icon={<KeyboardArrowRightIcon />} iconPlacement='end' onClick={() => onManage?.(accountId)}>

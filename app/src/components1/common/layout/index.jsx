@@ -231,7 +231,7 @@ const PageLayout = ({ children }) => {
       { path: '/optimise', icon: WhiteOptimizeIcon, text: 'Optimize', id: 'optimize-sidenavbutton' },
       { path: '/kubernetes', icon: KubernetesClusterIcon, text: 'Clusters', haveSubItems: true, id: 'clusters-sidenavbutton' },
       { path: '/cloud-account', icon: CloudAccountIcon, text: 'Cloud', haveSubItems: true, id: 'cloud-sidenavbutton' },
-      { path: '/auto-pilot', icon: WorkflowIconWhite, text: 'Workflows', id: 'auto-pilot-sidenavbutton' },
+      { path: '/auto-pilot', icon: WorkflowIconWhite, text: 'Automations', id: 'auto-pilot-sidenavbutton' },
       { path: '/tickets', icon: ticketsIcon1, text: 'Tickets', id: 'tickets-sidenavbutton' },
     ];
     if (hasReadAccess()) {

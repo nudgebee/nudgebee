@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Box, Typography, CircularProgress, MenuItem, Select as MuiSelect, FormControl, InputLabel } from '@mui/material';
+import { Box, Typography, CircularProgress } from '@mui/material';
 import { Modal } from '@components1/ds/Modal';
 import { Button } from '@components1/ds/Button';
+import { Select } from '@components1/ds/Select';
 import { MergeView } from '@codemirror/merge';
 import { EditorView } from '@codemirror/view';
 import { EditorState } from '@codemirror/state';
@@ -134,44 +135,38 @@ const WorkflowVersionCompareModal: React.FC<WorkflowVersionCompareModalProps> = 
       }
     >
       <Box sx={{ p: 2, display: 'flex', gap: 2, alignItems: 'flex-end', borderBottom: `1px solid ${colors.border.primary}`, flexWrap: 'wrap' }}>
-        <FormControl size='small' sx={{ minWidth: 220 }}>
-          <InputLabel>Base Version</InputLabel>
-          <MuiSelect
-            value={baseVersion}
+        <Box sx={{ minWidth: 220 }}>
+          <Select
             label='Base Version'
-            onChange={(e) => {
-              setBaseVersion(e.target.value as number);
+            value={baseVersion !== '' ? String(baseVersion) : null}
+            onChange={(val) => {
+              setBaseVersion(val !== '' ? Number(val) : '');
               setError(null);
             }}
-          >
-            {versions.map((v) => (
-              <MenuItem key={v.id} value={v.version_number}>
-                v{v.version_number}
-                {v.name ? ` — ${v.name}` : ''}
-                {v.is_live ? ' (Live)' : ''}
-              </MenuItem>
-            ))}
-          </MuiSelect>
-        </FormControl>
-        <FormControl size='small' sx={{ minWidth: 220 }}>
-          <InputLabel>Compare Version</InputLabel>
-          <MuiSelect
-            value={compareVersion}
+            options={versions.map((v) => ({
+              value: String(v.version_number),
+              label: `v${v.version_number}${v.name ? ` — ${v.name}` : ''}${v.is_live ? ' (Live)' : ''}`,
+            }))}
+            clearable={false}
+            size='sm'
+          />
+        </Box>
+        <Box sx={{ minWidth: 220 }}>
+          <Select
             label='Compare Version'
-            onChange={(e) => {
-              setCompareVersion(e.target.value as number);
+            value={compareVersion !== '' ? String(compareVersion) : null}
+            onChange={(val) => {
+              setCompareVersion(val !== '' ? Number(val) : '');
               setError(null);
             }}
-          >
-            {versions.map((v) => (
-              <MenuItem key={v.id} value={v.version_number}>
-                v{v.version_number}
-                {v.name ? ` — ${v.name}` : ''}
-                {v.is_live ? ' (Live)' : ''}
-              </MenuItem>
-            ))}
-          </MuiSelect>
-        </FormControl>
+            options={versions.map((v) => ({
+              value: String(v.version_number),
+              label: `v${v.version_number}${v.name ? ` — ${v.name}` : ''}${v.is_live ? ' (Live)' : ''}`,
+            }))}
+            clearable={false}
+            size='sm'
+          />
+        </Box>
         <Button tone='primary' size='md' onClick={handleCompare} disabled={!canCompare}>
           {loading ? 'Loading…' : 'Compare'}
         </Button>
