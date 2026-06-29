@@ -1,0 +1,241 @@
+import React, { useEffect, useRef, useState } from 'react';
+import { Box, CircularProgress } from '@mui/material';
+import { Modal } from '@components1/ds/Modal';
+import { Button } from '@components1/ds/Button';
+import { Select } from '@components1/ds/Select';
+import { EmptyState } from '@components1/ds/EmptyState';
+import { MergeView } from '@codemirror/merge';
+import { EditorView } from '@codemirror/view';
+import { EditorState } from '@codemirror/state';
+import { json } from '@codemirror/lang-json';
+import { colors } from 'src/utils/colors';
+import apiWorkflow from '@api1/workflow';
+import type { WorkflowVersionEntry } from '../WorkflowBuilderNotebook';
+
+interface WorkflowVersionCompareModalProps {
+  open: boolean;
+  onClose: () => void;
+  accountId: string;
+  workflowId: string;
+  versions: WorkflowVersionEntry[];
+  preselectedBase?: WorkflowVersionEntry;
+}
+
+const WorkflowVersionCompareModal: React.FC<WorkflowVersionCompareModalProps> = ({
+  open,
+  onClose,
+  accountId,
+  workflowId,
+  versions,
+  preselectedBase,
+}) => {
+  const editorRef = useRef<HTMLDivElement>(null);
+  const mergeViewRef = useRef<MergeView | null>(null);
+  const [baseVersion, setBaseVersion] = useState<number | ''>('');
+  const [compareVersion, setCompareVersion] = useState<number | ''>('');
+  const [baseJson, setBaseJson] = useState<string>('');
+  const [compareJson, setCompareJson] = useState<string>('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (open && preselectedBase) setBaseVersion(preselectedBase.version_number);
+    if (!open) {
+      setBaseVersion('');
+      setCompareVersion('');
+      setBaseJson('');
+      setCompareJson('');
+      setError(null);
+    }
+  }, [open, preselectedBase]);
+
+  async function handleCompare() {
+    if (!baseVersion || !compareVersion) return;
+    if (baseVersion === compareVersion) {
+      setError('Please select two different versions.');
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const [baseRes, compareRes]: [any, any] = await Promise.all([
+        apiWorkflow.getWorkflowVersion(accountId, workflowId, baseVersion as number),
+        apiWorkflow.getWorkflowVersion(accountId, workflowId, compareVersion as number),
+      ]);
+      const baseDef = baseRes?.data?.workflow_get_version?.definition;
+      const compareDef = compareRes?.data?.workflow_get_version?.definition;
+      if (!baseDef || !compareDef) {
+        setError('Could not load version definitions.');
+        return;
+      }
+      setBaseJson(JSON.stringify(baseDef, null, 2));
+      setCompareJson(JSON.stringify(compareDef, null, 2));
+    } catch (err) {
+      console.error('Failed to compare versions:', err);
+      setError('Failed to fetch versions. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!baseJson || !compareJson || !editorRef.current) {
+      mergeViewRef.current?.destroy();
+      mergeViewRef.current = null;
+      return;
+    }
+    editorRef.current.innerHTML = '';
+    try {
+      mergeViewRef.current = new MergeView({
+        a: {
+          doc: baseJson,
+          extensions: [
+            json(),
+            EditorView.editable.of(false),
+            EditorState.readOnly.of(true),
+            EditorView.theme({ '&': { height: '100%' }, '.cm-scroller': { overflow: 'auto' } }),
+          ],
+        },
+        b: {
+          doc: compareJson,
+          extensions: [
+            json(),
+            EditorView.editable.of(false),
+            EditorState.readOnly.of(true),
+            EditorView.theme({ '&': { height: '100%' }, '.cm-scroller': { overflow: 'auto' } }),
+          ],
+        },
+        parent: editorRef.current,
+      });
+    } catch (err) {
+      console.error('MergeView init failed:', err);
+    }
+    return () => {
+      mergeViewRef.current?.destroy();
+      mergeViewRef.current = null;
+    };
+  }, [baseJson, compareJson]);
+
+  const canCompare = baseVersion !== '' && compareVersion !== '' && baseVersion !== compareVersion && !loading;
+
+  return (
+    <Modal
+      open={open}
+      handleClose={onClose}
+      width='xl'
+      title='Compare Versions'
+      subtitle='Select a base and compare version to see what changed'
+      maxHeight='90vh'
+      contentStyles={{ padding: 0 }}
+      actionButtons={
+        <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, p: 2 }}>
+          <Button tone='ghost' size='md' onClick={onClose}>
+            Close
+          </Button>
+        </Box>
+      }
+    >
+      <Box sx={{ p: 2, display: 'flex', gap: 2, alignItems: 'flex-end', borderBottom: `1px solid ${colors.border.primary}`, flexWrap: 'wrap' }}>
+        <Box sx={{ minWidth: 220 }}>
+          <Select
+            label='Base Version'
+            value={baseVersion !== '' ? String(baseVersion) : null}
+            onChange={(val) => {
+              setBaseVersion(val !== '' ? Number(val) : '');
+              setError(null);
+            }}
+            options={versions.map((v) => ({
+              value: String(v.version_number),
+              label: `v${v.version_number}${v.name ? ` — ${v.name}` : ''}${v.is_live ? ' (Live)' : ''}`,
+            }))}
+            clearable={false}
+            size='sm'
+          />
+        </Box>
+        <Box sx={{ minWidth: 220 }}>
+          <Select
+            label='Compare Version'
+            value={compareVersion !== '' ? String(compareVersion) : null}
+            onChange={(val) => {
+              setCompareVersion(val !== '' ? Number(val) : '');
+              setError(null);
+            }}
+            options={versions.map((v) => ({
+              value: String(v.version_number),
+              label: `v${v.version_number}${v.name ? ` — ${v.name}` : ''}${v.is_live ? ' (Live)' : ''}`,
+            }))}
+            clearable={false}
+            size='sm'
+          />
+        </Box>
+        <Button tone='primary' size='md' onClick={handleCompare} disabled={!canCompare}>
+          {loading ? 'Loading…' : 'Compare'}
+        </Button>
+        {error && (
+          <Box component='span' sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-red-600)', width: '100%', mt: 0.5 }}>
+            {error}
+          </Box>
+        )}
+      </Box>
+      <Box sx={{ height: '65vh', overflow: 'hidden', backgroundColor: colors.background.white }}>
+        {loading ? (
+          <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
+            <CircularProgress size={32} />
+          </Box>
+        ) : !baseJson ? (
+          <EmptyState
+            title='No version selected'
+            description='Select two versions above and click Compare to view the changes.'
+            size='section'
+            illustration='none'
+            sx={{ height: '100%', border: 'none' }}
+          />
+        ) : (
+          <>
+            <Box sx={{ display: 'flex', borderBottom: `1px solid ${colors.border.primary}`, backgroundColor: colors.background.secondary }}>
+              <Box sx={{ flex: 1, px: 2, py: 1, borderRight: `1px solid ${colors.border.primary}` }}>
+                <Box
+                  component='span'
+                  sx={{
+                    fontFamily: 'var(--ds-font-display)',
+                    fontSize: 'var(--ds-text-small)',
+                    fontWeight: 'var(--ds-font-weight-semibold)',
+                    color: colors.text.secondary,
+                  }}
+                >
+                  Base — v{baseVersion}
+                </Box>
+              </Box>
+              <Box sx={{ flex: 1, px: 2, py: 1 }}>
+                <Box
+                  component='span'
+                  sx={{
+                    fontFamily: 'var(--ds-font-display)',
+                    fontSize: 'var(--ds-text-small)',
+                    fontWeight: 'var(--ds-font-weight-semibold)',
+                    color: colors.text.secondary,
+                  }}
+                >
+                  Compare — v{compareVersion}
+                </Box>
+              </Box>
+            </Box>
+            <Box
+              ref={editorRef}
+              sx={{
+                width: '100%',
+                height: 'calc(100% - 36px)',
+                '& .cm-merge': { height: '100%' },
+                '& .cm-mergeView': { height: '100%' },
+                '& .cm-editor': { height: '100%' },
+                '& .cm-gutters': { backgroundColor: colors.background.secondary, borderRight: `1px solid ${colors.border.primary}` },
+              }}
+            />
+          </>
+        )}
+      </Box>
+    </Modal>
+  );
+};
+
+export default WorkflowVersionCompareModal;

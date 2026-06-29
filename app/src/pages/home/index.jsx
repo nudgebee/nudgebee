@@ -821,7 +821,7 @@ const renderContent = (title, accountId, cloudProvider) => {
               {[
                 { label: 'Scan images for vulnerabilities', action: 'Start Scan', type: 'image-scan' },
                 { label: 'Check certificate expire', action: 'View Status', type: 'certificate' },
-                { label: 'Create automations', action: 'Create Now', type: 'workflow' },
+                { label: 'Create workflows', action: 'Create Now', type: 'workflow' },
                 { label: "Upgrading K8s? Let's figure it out", action: 'Explore upgrade path', type: 'upgrade' },
               ].map((item, index) => (
                 <Box key={index} sx={{ borderBottom: '0.5px dotted #D0D0D0', padding: '9px 0px 0px 0px', width: '60%' }}>
