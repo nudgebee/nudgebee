@@ -63,6 +63,11 @@ func ComputeScoreLLM(ctx context.Context, db *sqlx.DB, event *models.Event) (*Sc
 		}
 	}
 
+	// Deterministic guardrails correct the cached verdict for event-level facts it can't see
+	// (e.g. a provider lifecycle/state-change notification the LLM mis-rated as a control-plane
+	// incident). Applied to a copy — the shared cached verdict is never mutated.
+	verdict, guardrails := applyDeterministicGuardrails(verdict, event)
+
 	envCategory := "unknown"
 	if event.CloudAccountId != nil {
 		envCategory = getEnvironmentCategory(ctx, db, *event.CloudAccountId)
@@ -72,6 +77,9 @@ func ComputeScoreLLM(ctx context.Context, db *sqlx.DB, event *models.Event) (*Sc
 	score, priority, factors := computeVerdictScore(verdict, envCategory, recurrenceCount)
 	factors["class_key"] = classKey
 	factors["verdict_lookup"] = lookup
+	if len(guardrails) > 0 {
+		factors["guardrails"] = guardrails
+	}
 
 	// Correlation-aware cascade dampening: consume the existing event_correlations so a likely
 	// root cause stays prominent and downstream/co-occurring symptoms are quieted — collapsing a

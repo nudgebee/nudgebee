@@ -8,6 +8,66 @@ import (
 
 func sp(s string) *string { return &s }
 
+// Provider lifecycle/state-change notifications must be recognized; real metric alarms must not.
+func TestIsProviderLifecycleNotification(t *testing.T) {
+	cases := []struct {
+		agg  *string
+		want bool
+	}{
+		{sp("EC2 Instance State-change Notification"), true},
+		{sp("ec2 instance state change notification"), true},
+		{sp("EC2 Spot Instance Interruption Warning"), true},
+		{sp("CloudWatch Alarm: sqs-rackspace-eventbridge-queue-depth"), false}, // real alarm
+		{sp("SQS Messages Age - nudgebee-eventbridge-queue"), false},
+		{sp("KubePodCrashLooping"), false},
+		{sp("configurationchange/kubernetesresource/change"), false}, // already expected_change via verdict
+		{nil, false},
+	}
+	for _, c := range cases {
+		got := isProviderLifecycleNotification(&models.Event{AggregationKey: c.agg})
+		label := "<nil>"
+		if c.agg != nil {
+			label = *c.agg
+		}
+		if got != c.want {
+			t.Errorf("isProviderLifecycleNotification(%q) = %v, want %v", label, got, c.want)
+		}
+	}
+}
+
+// A lifecycle notification the LLM mis-rated as a control-plane P1 incident must be floored to
+// info/expected_change/P3 — its score must land P3 regardless of the cached verdict's band.
+func TestApplyDeterministicGuardrails_LifecycleFloor(t *testing.T) {
+	// The EC2 state-change miscall: ControlPlane / high / control_plane, band P1..P0.
+	v := &SignalVerdict{Category: "ControlPlane", Intrinsic: "high", Blast: "control_plane",
+		RecurrenceSemantics: "neutral", EnvSensitivity: "none", BandFloor: "P1", BandCeiling: "P0"}
+	ev := &models.Event{AggregationKey: sp("EC2 Instance State-change Notification")}
+
+	out, applied := applyDeterministicGuardrails(v, ev)
+	if len(applied) != 1 || applied[0] != "lifecycle_floor" {
+		t.Fatalf("expected lifecycle_floor guardrail, got %v", applied)
+	}
+	if out == v {
+		t.Fatal("guardrail must not mutate the input verdict (returned same pointer)")
+	}
+	if v.Intrinsic != "high" || v.BandFloor != "P1" {
+		t.Fatalf("input verdict was mutated: %+v", v)
+	}
+	if out.Intrinsic != "info" || out.Blast != "expected_change" || out.BandFloor != "P3" || out.BandCeiling != "P3" {
+		t.Fatalf("floored verdict wrong: %+v", out)
+	}
+	score, prio, _ := computeVerdictScore(out, "prod", 1)
+	if prio != "P3" {
+		t.Fatalf("lifecycle notification scored %d/%s, want P3", score, prio)
+	}
+
+	// A non-lifecycle event leaves the verdict untouched.
+	out2, applied2 := applyDeterministicGuardrails(v, &models.Event{AggregationKey: sp("KubePodCrashLooping")})
+	if len(applied2) != 0 || out2 != v {
+		t.Fatalf("non-lifecycle event should be a no-op, got applied=%v", applied2)
+	}
+}
+
 func TestComputeVerdictScore_ValidatedCases(t *testing.T) {
 	tests := []struct {
 		name      string

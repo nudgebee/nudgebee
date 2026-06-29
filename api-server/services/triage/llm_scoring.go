@@ -202,6 +202,55 @@ func fallbackVerdict(event *models.Event) *SignalVerdict {
 	}
 }
 
+// isProviderLifecycleNotification reports whether an alert is a cloud-provider lifecycle /
+// state-change NOTIFICATION (e.g. AWS EventBridge "EC2 Instance State-change Notification",
+// EBS/AutoScaling state-change events) rather than a real failure alarm. These are informational
+// by nature — an instance entering 'stopped' is not itself an incident; the impact, if any,
+// surfaces as separate symptom alerts (a workload going unschedulable, a service alerting). The
+// per-class LLM verdict can't see the source and sometimes mis-rates these as control-plane
+// incidents, so they need a deterministic floor. Real metric alarms (CloudWatch / GCP metric
+// alerts) are deliberately excluded — those carry a genuine condition.
+func isProviderLifecycleNotification(event *models.Event) bool {
+	if event == nil || event.AggregationKey == nil {
+		return false
+	}
+	agg := strings.ToLower(*event.AggregationKey)
+	// A CloudWatch/metric alarm rides EventBridge too, but it represents a real threshold breach,
+	// not a lifecycle transition — never floor it.
+	if strings.Contains(agg, "alarm") || strings.Contains(agg, "cloudwatch") {
+		return false
+	}
+	// Lifecycle / state-change / scheduled-change notifications.
+	return strings.Contains(agg, "state-change notification") ||
+		strings.Contains(agg, "state change notification") ||
+		strings.Contains(agg, "instance interruption") || // spot interruption warning
+		strings.Contains(agg, "scheduled change")
+}
+
+// applyDeterministicGuardrails adjusts a (cached, per-class) verdict for deterministic, event-level
+// facts the LLM verdict can't see, returning a possibly-new verdict plus the names of the guardrails
+// applied (for the score breakdown / audit). It NEVER mutates the input verdict — a copy is taken
+// before any change, so the shared cached verdict pointer is left intact.
+//
+// Currently one guardrail: provider lifecycle/state-change notifications are floored to
+// info/expected_change and pinned to the P3 band, regardless of how the LLM classified the class.
+// A genuinely impactful one is still free to rise via correlation cascade dampening downstream (if
+// it is recorded as a correlated root cause), which is the "unless there is correlated failure
+// evidence" carve-out.
+func applyDeterministicGuardrails(v *SignalVerdict, event *models.Event) (*SignalVerdict, []string) {
+	var applied []string
+	if isProviderLifecycleNotification(event) {
+		nv := *v
+		nv.Intrinsic = "info"
+		nv.Blast = "expected_change"
+		nv.BandFloor = "P3"
+		nv.BandCeiling = "P3"
+		v = &nv
+		applied = append(applied, "lifecycle_floor")
+	}
+	return v, applied
+}
+
 // getEnvironmentCategory returns prod|non_prod|unknown for a cloud account (the additive
 // policy needs the category, not the legacy multiplier).
 func getEnvironmentCategory(ctx context.Context, db *sqlx.DB, cloudAccountID string) string {
