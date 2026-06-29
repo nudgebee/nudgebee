@@ -165,7 +165,11 @@ func triggerMint(db *sqlx.DB, event *models.Event, tenantID, classKey string) {
 			}
 			slog.WarnContext(ctx, "failed to persist minted verdict",
 				"class_key", classKey, "error", err)
+			return
 		}
+		// Verdict is now active — refresh events of this class that were scored with the
+		// conservative fallback before the mint completed, so they pick up the real verdict.
+		rescoreFreshlyMintedClass(context.Background(), db, tenantID, classKey)
 	}()
 }
 
@@ -204,8 +208,60 @@ func triggerRemint(db *sqlx.DB, event *models.Event, tenantID, classKey string) 
 			revertRemint(context.Background(), db, tenantID, classKey)
 			slog.WarnContext(ctx, "failed to persist re-minted verdict; reverted to active",
 				"class_key", classKey, "error", err)
+			return
 		}
+		// New verdict promoted — refresh any events still carrying the fallback for this class.
+		rescoreFreshlyMintedClass(context.Background(), db, tenantID, classKey)
 	}()
+}
+
+// rescoreMaxOnMint bounds how many fallback events one mint refreshes, so a burst of new classes
+// (e.g. when the flag is first enabled for a tenant) can't trigger an unbounded re-score storm.
+const rescoreMaxOnMint = 30
+
+// rescoreFreshlyMintedClass refreshes a class's recent fallback-scored events once a real verdict is
+// active, so events scored before the mint completed stop carrying a stale 'unclassified' score
+// forever (the cause of "the same alert shows P3 then P1 then P0"). It re-runs the normal
+// ProcessEvent path, which re-reads the now-cached verdict — so the re-scored events are consistent
+// with freshly-ingested ones (same additive rules, same band clamp). It does NOT emit lifecycle /
+// notification events, so it only corrects the stored score and never re-pages. Bounded + async
+// (called from the mint goroutine on a fresh context); matches the class by the class_key stored in
+// score_factors (exact, no re-derivation).
+func rescoreFreshlyMintedClass(ctx context.Context, db *sqlx.DB, tenantID, classKey string) {
+	if tenantID == "" || classKey == "" {
+		return
+	}
+	var ids []string
+	if err := db.SelectContext(ctx, &ids, `
+		SELECT id::text FROM events
+		WHERE tenant = $1
+		  AND score_factors->>'class_key' = $2
+		  AND COALESCE(score_factors->>'verdict_source', '') = 'fallback'
+		  AND nb_status IN ('OPEN', 'ACKNOWLEDGED', 'INVESTIGATING', 'ACTION_REQUIRED')
+		  AND updated_at > now() - interval '24 hours'
+		ORDER BY updated_at DESC
+		LIMIT $3`, tenantID, classKey, rescoreMaxOnMint); err != nil {
+		slog.WarnContext(ctx, "rescore-on-mint: failed to load fallback events", "class_key", classKey, "error", err)
+		return
+	}
+	if len(ids) == 0 {
+		return
+	}
+	rescored := 0
+	for _, id := range ids {
+		var ev models.Event
+		if err := db.Unsafe().GetContext(ctx, &ev, `SELECT * FROM events WHERE id = $1`, id); err != nil {
+			slog.WarnContext(ctx, "rescore-on-mint: failed to load event", "event_id", id, "error", err)
+			continue
+		}
+		if err := ProcessEvent(ctx, db, &ev); err != nil {
+			slog.WarnContext(ctx, "rescore-on-mint: ProcessEvent failed", "event_id", id, "error", err)
+			continue
+		}
+		rescored++
+	}
+	slog.InfoContext(ctx, "rescore-on-mint: refreshed fallback events with minted verdict",
+		"class_key", classKey, "candidates", len(ids), "rescored", rescored)
 }
 
 // releaseClaim removes a still-minting placeholder so the class can be re-claimed later.
