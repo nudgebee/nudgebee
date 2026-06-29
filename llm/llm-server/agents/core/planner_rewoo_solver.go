@@ -450,10 +450,13 @@ func hasToolFailureMajority(scratchpad string) bool {
 }
 
 // truncateForLog trims s to at most n runes, appending "..." if truncated. Used to avoid
-// dumping full answer content into structured logs.
+// dumping full answer content into structured logs. Operates on runes, not bytes, so it
+// never splits a multi-byte UTF-8 character mid-sequence (log content may include non-ASCII
+// text from logs, error messages, or service names).
 func truncateForLog(s string, n int) string {
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	return string(r[:n]) + "..."
 }

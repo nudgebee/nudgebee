@@ -58,6 +58,8 @@ func TestTruncateForLog(t *testing.T) {
 		{"exactly at limit returned as-is", "hello", 5, "hello"},
 		{"longer than limit truncated with ellipsis", "hello world", 5, "hello..."},
 		{"empty string", "", 5, ""},
+		{"multi-byte UTF-8 chars not split mid-rune", "hëllo wörld", 5, "hëllo..."},
+		{"4-byte emoji not split mid-rune", "abc😀😀😀def", 4, "abc😀..."},
 	}
 
 	for _, tc := range cases {
