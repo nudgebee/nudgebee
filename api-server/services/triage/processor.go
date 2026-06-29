@@ -73,6 +73,10 @@ func ProcessEvent(ctx context.Context, db *sqlx.DB, event *models.Event) error {
 		// final number; respect it.
 		if ruleResult != nil && ruleResult.ScoreAdjustment != nil && !IsHumanAuthority(result) {
 			result.Score = clamp(result.Score+ruleResult.ScoreAdjustment.Adjustment, 0, 100)
+			// Re-assert the LLM verdict's priority band: an additive rule must not push the score
+			// past the ceiling the model chose (a dev disk alert capped at P1 must not land at P0).
+			// No-op for legacy-scored events (no band in factors).
+			result.Score = clampToBand(result.Score, result.Factors)
 			result.Priority = scoreToPriority(result.Score)
 			slog.InfoContext(ctx, "Applied score adjustment from rule",
 				"event_id", event.Id,

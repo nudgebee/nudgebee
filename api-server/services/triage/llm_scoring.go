@@ -53,6 +53,30 @@ var blastAdj = map[string]int{
 var bandFloorScore = map[string]int{"P0": 80, "P1": 60, "P2": 40, "P3": 0}
 var bandCeilScore = map[string]int{"P0": 100, "P1": 79, "P2": 59, "P3": 39}
 
+// clampToBand re-asserts the LLM verdict's priority band on a score. score_factors carries the
+// band as "<floor>..<ceiling>" (least-severe..most-severe). Additive scoring rules run AFTER the
+// verdict policy and could otherwise push the score past the ceiling the model chose (e.g. a dev
+// disk alert the model capped at P1 landing at P0). This re-clamps after those rules. Events with
+// no band (legacy path) are returned unchanged.
+func clampToBand(score int, factors map[string]interface{}) int {
+	band, ok := factors["band"].(string)
+	if !ok || band == "" {
+		return score
+	}
+	parts := strings.SplitN(band, "..", 2)
+	if len(parts) != 2 {
+		return score
+	}
+	floor, okFloor := bandFloorScore[strings.ToUpper(strings.TrimSpace(parts[0]))]
+	ceil, okCeil := bandCeilScore[strings.ToUpper(strings.TrimSpace(parts[1]))]
+	// Reject a malformed (typo'd key) or inverted (floor > ceiling) band rather than clamp to a
+	// nonsensical range — a bad verdict band should leave the score untouched, not corrupt it.
+	if !okFloor || !okCeil || floor > ceil {
+		return score
+	}
+	return clamp(score, floor, ceil)
+}
+
 // recurrenceAdjustment raises severity for crash/chronic classes and lowers it for known
 // noise, by recurrence-count tier. The current formula does the opposite (a flat penalty),
 // which zeroes recurring OOMs — the exact bug this replaces.

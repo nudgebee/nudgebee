@@ -134,6 +134,15 @@ func triggerMint(db *sqlx.DB, event *models.Event, tenantID, classKey string) {
 		return // another event/replica is already minting this class
 	}
 	go func() {
+		// A mint must never crash the process. If anything in the mint path panics (e.g. a failed
+		// security-context build), recover and release the claim so the class can re-mint later.
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("signal-class mint panicked; recovered and released claim",
+					"class_key", classKey, "panic", r)
+				releaseClaim(context.Background(), db, tenantID, classKey)
+			}
+		}()
 		// Detached but BOUNDED: cap the LLM call so a hung llm-server can't leak this goroutine.
 		ctx, cancel := context.WithTimeout(context.Background(), mintTimeout)
 		defer cancel()
@@ -169,6 +178,14 @@ func triggerRemint(db *sqlx.DB, event *models.Event, tenantID, classKey string) 
 		return // another serve already claimed the re-mint, or it's no longer stale
 	}
 	go func() {
+		// A re-mint must never crash the process; recover and revert so the old verdict keeps serving.
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("signal-class re-mint panicked; recovered and reverted",
+					"class_key", classKey, "panic", r)
+				revertRemint(context.Background(), db, tenantID, classKey)
+			}
+		}()
 		// Bounded LLM call (see triggerMint); DB revert/persist use a fresh context.
 		ctx, cancel := context.WithTimeout(context.Background(), mintTimeout)
 		defer cancel()

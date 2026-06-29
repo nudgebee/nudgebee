@@ -143,3 +143,33 @@ func TestClassKey(t *testing.T) {
 		t.Fatalf("ClassKey(empty owner) = %q", got)
 	}
 }
+
+func TestClampToBand(t *testing.T) {
+	cases := []struct {
+		name  string
+		score int
+		band  interface{}
+		want  int
+	}{
+		{"above ceiling P2..P1 -> 79", 84, "P3..P1", 79},
+		{"storage P2..P1 80 -> 79", 80, "P2..P1", 79},
+		{"within band unchanged", 57, "P2..P1", 57},
+		{"below floor lifted", 10, "P2..P1", 40},
+		{"no band (legacy) unchanged", 84, nil, 84},
+		{"empty band unchanged", 84, "", 84},
+		{"malformed band unchanged", 84, "P2", 84},
+		{"P1..P1 pins to that level", 90, "P1..P1", 79},
+		{"invalid floor key unchanged", 84, "foo..P1", 84},
+		{"invalid ceil key unchanged", 30, "P2..bar", 30},
+		{"inverted band P1..P2 unchanged", 70, "P1..P2", 70},
+	}
+	for _, c := range cases {
+		f := map[string]interface{}{}
+		if c.band != nil {
+			f["band"] = c.band
+		}
+		if got := clampToBand(c.score, f); got != c.want {
+			t.Errorf("%s: clampToBand(%d, band=%v) = %d, want %d", c.name, c.score, c.band, got, c.want)
+		}
+	}
+}

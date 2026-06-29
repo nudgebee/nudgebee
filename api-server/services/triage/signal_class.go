@@ -77,11 +77,23 @@ func claimSignalClass(ctx context.Context, db *sqlx.DB, tenantID, classKey strin
 	if tenantID == "" || classKey == "" {
 		return false
 	}
+	// The 'minting' row is a lease. Without a TTL, a mint whose process died mid-flight (pod
+	// restart/crash) leaves the row stuck in 'minting' forever — getSignalVerdict then misses and
+	// every event of the class serves the fallback ('unclassified') permanently, while DO NOTHING
+	// blocks any retry. So steal a STALE 'minting' lease (older than the 2-min mint timeout, with
+	// margin) in the same atomic UPSERT. A fresh 'minting' (< TTL) or an 'active'/'reminting' row
+	// keeps the WHERE false → no steal → claim returns false (correct). Self-heals orphaned claims.
+	// updated_at is set explicitly (not relying on the column default) since the lease TTL check
+	// below depends on it being a real timestamp, never NULL.
 	res, err := db.ExecContext(ctx, `
-		INSERT INTO triage_signal_class (tenant_id, class_key, status)
-		VALUES ($1, $2, 'minting')
-		ON CONFLICT (tenant_id, class_key) DO NOTHING`, tenantID, classKey)
+		INSERT INTO triage_signal_class (tenant_id, class_key, status, updated_at)
+		VALUES ($1, $2, 'minting', now())
+		ON CONFLICT (tenant_id, class_key) DO UPDATE
+		    SET status = 'minting', updated_at = now()
+		    WHERE triage_signal_class.status = 'minting'
+		      AND triage_signal_class.updated_at < now() - interval '15 minutes'`, tenantID, classKey)
 	if err != nil {
+		slog.ErrorContext(ctx, "failed to claim signal class", "tenant_id", tenantID, "class_key", classKey, "error", err)
 		return false
 	}
 	n, _ := res.RowsAffected()
