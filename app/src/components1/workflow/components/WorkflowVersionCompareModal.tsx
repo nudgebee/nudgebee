@@ -1,8 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Box, Typography, CircularProgress } from '@mui/material';
+import { Box, CircularProgress } from '@mui/material';
 import { Modal } from '@components1/ds/Modal';
 import { Button } from '@components1/ds/Button';
 import { Select } from '@components1/ds/Select';
+import { EmptyState } from '@components1/ds/EmptyState';
 import { MergeView } from '@codemirror/merge';
 import { EditorView } from '@codemirror/view';
 import { EditorState } from '@codemirror/state';
@@ -171,9 +172,9 @@ const WorkflowVersionCompareModal: React.FC<WorkflowVersionCompareModalProps> = 
           {loading ? 'Loading…' : 'Compare'}
         </Button>
         {error && (
-          <Typography variant='caption' color='error' sx={{ width: '100%', mt: 0.5 }}>
+          <Box component='span' sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-red-600)', width: '100%', mt: 0.5 }}>
             {error}
-          </Typography>
+          </Box>
         )}
       </Box>
       <Box sx={{ height: '65vh', overflow: 'hidden', backgroundColor: colors.background.white }}>
@@ -182,21 +183,41 @@ const WorkflowVersionCompareModal: React.FC<WorkflowVersionCompareModalProps> = 
             <CircularProgress size={32} />
           </Box>
         ) : !baseJson ? (
-          <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-            <Typography color='text.secondary'>Select two versions above and click Compare</Typography>
-          </Box>
+          <EmptyState
+            title='No version selected'
+            description='Select two versions above and click Compare to view the changes.'
+            size='section'
+            illustration='none'
+            sx={{ height: '100%', border: 'none' }}
+          />
         ) : (
           <>
             <Box sx={{ display: 'flex', borderBottom: `1px solid ${colors.border.primary}`, backgroundColor: colors.background.secondary }}>
               <Box sx={{ flex: 1, px: 2, py: 1, borderRight: `1px solid ${colors.border.primary}` }}>
-                <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.secondary }}>
+                <Box
+                  component='span'
+                  sx={{
+                    fontFamily: 'var(--ds-font-display)',
+                    fontSize: 'var(--ds-text-small)',
+                    fontWeight: 'var(--ds-font-weight-semibold)',
+                    color: colors.text.secondary,
+                  }}
+                >
                   Base — v{baseVersion}
-                </Typography>
+                </Box>
               </Box>
               <Box sx={{ flex: 1, px: 2, py: 1 }}>
-                <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.secondary }}>
+                <Box
+                  component='span'
+                  sx={{
+                    fontFamily: 'var(--ds-font-display)',
+                    fontSize: 'var(--ds-text-small)',
+                    fontWeight: 'var(--ds-font-weight-semibold)',
+                    color: colors.text.secondary,
+                  }}
+                >
                   Compare — v{compareVersion}
-                </Typography>
+                </Box>
               </Box>
             </Box>
             <Box
