@@ -178,7 +178,7 @@ func (m *MockWorkflowStore) SetState(ctx context.Context, workflowID string, upd
 func (m *MockWorkflowStore) DeleteExpiredState(ctx context.Context, limit int) (int64, error) {
 	return 0, nil
 }
-func (m *MockWorkflowStore) SetLastExecutionStatus(ctx context.Context, tenantID, accountID, id string, status model.WorkflowExecutionStatus, executionTime time.Time, statusMessage string) error {
+func (m *MockWorkflowStore) SetLastExecutionStatus(ctx context.Context, tenantID, accountID, id string, status model.WorkflowExecutionStatus, executionTime time.Time, statusMessage string, version *int) error {
 	return nil
 }
 func (m *MockWorkflowStore) CountWorkflows(ctx context.Context, tenantID, accountID string, status model.WorkflowStatus, triggerType string) (int64, error) {

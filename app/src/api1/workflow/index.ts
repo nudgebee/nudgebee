@@ -157,6 +157,7 @@ query ListWorkflows($accountId:String!, $status:String, $last_execution_status:S
         display_name
       }
       last_execution_time
+      last_execution_version
       definition {
         output
         timeout

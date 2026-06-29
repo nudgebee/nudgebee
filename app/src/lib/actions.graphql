@@ -8181,6 +8181,7 @@ type Workflow {
   status: String
   last_execution_status: String
   last_execution_time: timestamp
+  last_execution_version: Int
   name: String!
   created_by: String
   created_by_user: WorkflowUser

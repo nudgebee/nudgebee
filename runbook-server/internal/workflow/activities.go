@@ -18,7 +18,7 @@ type WorkflowActivities struct {
 
 // Internal_UpdateLastExecutionStatus updates the last execution status of a workflow.
 func (a *WorkflowActivities) Internal_UpdateLastExecutionStatus(ctx context.Context, wf model.Workflow, status model.WorkflowExecutionStatus, statusMessage string) error {
-	return a.Store.SetLastExecutionStatus(ctx, wf.TenantID, wf.AccountID, wf.ID, status, time.Now().UTC(), statusMessage)
+	return a.Store.SetLastExecutionStatus(ctx, wf.TenantID, wf.AccountID, wf.ID, status, time.Now().UTC(), statusMessage, wf.LastExecutionVersion)
 }
 
 // FetchWorkflowDefinitionActivity fetches a workflow definition by its name.

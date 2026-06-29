@@ -138,7 +138,7 @@ func (s *ExecutorTestSuite) registerFanInActivities() {
 func (s *ExecutorTestSuite) newFanInExecutor() *WorkflowExecutor {
 	mockStore := new(MockWorkflowStore)
 	mockStore.On("GetState", mock.Anything, mock.Anything).Return([]model.WorkflowStateItem{}, nil).Maybe()
-	mockStore.On("SetLastExecutionStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+	mockStore.On("SetLastExecutionStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
 	return &WorkflowExecutor{workflowStore: mockStore}
 }
 
@@ -353,7 +353,7 @@ func (s *ExecutorTestSuite) runSwitchWorkflow(wf *model.Workflow) ([]string, err
 
 	mockStore := new(MockWorkflowStore)
 	mockStore.On("GetState", mock.Anything, mock.Anything).Return([]model.WorkflowStateItem{}, nil).Maybe()
-	mockStore.On("SetLastExecutionStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+	mockStore.On("SetLastExecutionStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	executor := &WorkflowExecutor{workflowStore: mockStore}
 	s.env.RegisterWorkflow(executor.ExecuteWorkflowInternal)
@@ -464,7 +464,7 @@ func (s *ExecutorTestSuite) TestExecuteWorkflow_NilInputs() {
 
 	mockStore := new(MockWorkflowStore)
 	mockStore.On("GetState", mock.Anything, mock.Anything).Return([]model.WorkflowStateItem{}, nil).Maybe()
-	mockStore.On("SetLastExecutionStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+	mockStore.On("SetLastExecutionStatus", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
 
 	executor := &WorkflowExecutor{
 		workflowStore: mockStore,

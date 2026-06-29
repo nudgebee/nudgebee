@@ -74,6 +74,7 @@ type Workflow struct {
 	LastExecutionStatus        WorkflowExecutionStatus `json:"last_execution_status,omitempty" yaml:"last_execution_status,omitempty"`
 	LastExecutionStatusMessage *string                 `json:"last_execution_status_message,omitempty" yaml:"last_execution_status_message,omitempty"`
 	LastExecutionTime          *time.Time              `json:"last_execution_time,omitempty" yaml:"last_execution_time,omitempty"`
+	LastExecutionVersion       *int                    `json:"last_execution_version,omitempty" yaml:"last_execution_version,omitempty"`
 	Name                       string                  `json:"name" yaml:"name" validate:"required,workflowname"`
 	CreatedBy                  string                  `json:"created_by,omitempty" yaml:"created_by,omitempty"`
 	CreatedByUser              *WorkflowUser           `json:"created_by_user,omitempty" yaml:"created_by_user,omitempty"`

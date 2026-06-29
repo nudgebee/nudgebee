@@ -698,8 +698,8 @@ func (m *MockWorkflowStore) DeleteExpiredState(ctx context.Context, limit int) (
 	return args.Get(0).(int64), args.Error(1)
 }
 
-func (m *MockWorkflowStore) SetLastExecutionStatus(ctx context.Context, tenantID, accountID, id string, status model.WorkflowExecutionStatus, executionTime time.Time, statusMessage string) error {
-	args := m.Called(ctx, tenantID, accountID, id, status, executionTime, statusMessage)
+func (m *MockWorkflowStore) SetLastExecutionStatus(ctx context.Context, tenantID, accountID, id string, status model.WorkflowExecutionStatus, executionTime time.Time, statusMessage string, version *int) error {
+	args := m.Called(ctx, tenantID, accountID, id, status, executionTime, statusMessage, version)
 	if args.Get(0) == nil {
 		return nil
 	}
