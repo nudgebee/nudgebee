@@ -77,7 +77,7 @@ const AgentHealth = () => {
   const [proxyData, setProxyData] = useState([]);
   const [proxyAgentHealthData, setProxyAgentHealthData] = useState([]);
   const [proxyLoading, setProxyLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState(0);
+  const [activeTab, setActiveTab] = useState(null);
 
   const latestVersionsRef = useRef(latestVersions);
   const router = useRouter();

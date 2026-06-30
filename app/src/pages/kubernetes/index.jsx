@@ -57,7 +57,7 @@ const Kubernetes = () => {
     [hasClusters]
   );
 
-  const [selectedFilter, setSelectedFilter] = React.useState(0);
+  const [selectedFilter, setSelectedFilter] = React.useState(null);
 
   useEffect(() => {
     setSelectedCluster({});
@@ -69,11 +69,8 @@ const Kubernetes = () => {
       setSelectedFilter(0);
       return;
     }
-    const fragment = hash;
-    const filter = filterOptions.find((option) => option.fragment === fragment);
-    if (filter) {
-      setSelectedFilter(filter.value);
-    }
+    const filter = filterOptions.find((option) => option.fragment === hash);
+    setSelectedFilter(filter ? filter.value : 0);
   }, []);
 
   return (

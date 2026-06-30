@@ -24,7 +24,7 @@ const tabOptions = [
 
 const Tickets = () => {
   const router = useRouter();
-  const [tab, setTab] = useState(0);
+  const [tab, setTab] = useState(null);
   const [selectedPriority, setSelectedPriority] = useState(null);
   const [statusFilter, setStatusFilter] = useState([]);
   const [selectedStatus, setSelectedStatus] = useState(null);
@@ -45,14 +45,18 @@ const Tickets = () => {
 
   useEffect(() => {
     const hash = router.asPath.split('#')[1];
-    if (!hash || !tabOptions.length) return;
-    const fragment = hash;
-    const filter = tabOptions.find((option) => option.fragment === fragment);
+    if (!hash || !tabOptions.length) {
+      setTab(0);
+      return;
+    }
+    const filter = tabOptions.find((option) => option.fragment === hash);
     if (filter) {
       if (filter.value === 1) {
         tabOptions[filter.value].defaultQuery['assignee'] = getUserSession()?.user?.email;
       }
       setTab(filter.value);
+    } else {
+      setTab(0);
     }
   }, []);
 
@@ -93,51 +97,53 @@ const Tickets = () => {
     <>
       <AnchorComponent manageRoute={true} filterOptions={tabOptions} onChangeFilter={(t, s) => handleChangeTab(t, s)} />
 
-      <ErrorBoundary key={tab}>
-        <Box>
-          <TicketListInfograph
-            heading=''
-            id={'tickets-infographics'}
-            defaultQuery={{
-              ...tabOptions?.[tab]?.defaultQuery,
-              tool: selectedTool,
-              account_id: selectedAccount,
-            }}
-            selectedStatus={selectedStatus}
-            selectedPriority={selectedPriority}
-            setSelectedPriority={setSelectedPriority}
-            setSelectedStatus={setSelectedStatus}
-          />
-          <Box mb={2} />
-          <TicketListTable
-            heading=''
-            id={'all-tickets'}
-            defaultQuery={tabOptions?.[tab]?.defaultQuery}
-            enableAssigneeFilter={tabOptions?.[tab]?.enableAssigneeFilter === undefined ? true : tabOptions?.[tab]?.enableAssigneeFilter}
-            selectedPriority={selectedPriority}
-            statusFilter={statusFilter}
-            setStatusFilter={setStatusFilter}
-            selectedStatus={selectedStatus}
-            assigneeFilter={assigneeFilter}
-            setAssigneeFilter={setAssigneeFilter}
-            selectedAssignee={selectedAssignee}
-            selectedTitle={selectedTitle}
-            onPriorityFilterChange={onPriorityFilterChange}
-            onStatusFilterChange={onStatusFilterChange}
-            onAssigneeFilterChange={onAssigneeFilterChange}
-            onTitleFilterChange={onTitleFilterChange}
-            toolFilter={toolFilter}
-            setToolFilter={setToolFilter}
-            selectedTool={selectedTool}
-            onToolFilterChange={onToolFilterChange}
-            accountFilter={accountFilter}
-            setAccountFilter={setAccountFilter}
-            selectedAccount={selectedAccount}
-            onAccountFilterChange={onAccountFilterChange}
-            onClearAllFilters={onClearAllFilters}
-          />
-        </Box>
-      </ErrorBoundary>
+      {tab !== null && (
+        <ErrorBoundary key={tab}>
+          <Box>
+            <TicketListInfograph
+              heading=''
+              id={'tickets-infographics'}
+              defaultQuery={{
+                ...tabOptions?.[tab]?.defaultQuery,
+                tool: selectedTool,
+                account_id: selectedAccount,
+              }}
+              selectedStatus={selectedStatus}
+              selectedPriority={selectedPriority}
+              setSelectedPriority={setSelectedPriority}
+              setSelectedStatus={setSelectedStatus}
+            />
+            <Box mb={2} />
+            <TicketListTable
+              heading=''
+              id={'all-tickets'}
+              defaultQuery={tabOptions?.[tab]?.defaultQuery}
+              enableAssigneeFilter={tabOptions?.[tab]?.enableAssigneeFilter === undefined ? true : tabOptions?.[tab]?.enableAssigneeFilter}
+              selectedPriority={selectedPriority}
+              statusFilter={statusFilter}
+              setStatusFilter={setStatusFilter}
+              selectedStatus={selectedStatus}
+              assigneeFilter={assigneeFilter}
+              setAssigneeFilter={setAssigneeFilter}
+              selectedAssignee={selectedAssignee}
+              selectedTitle={selectedTitle}
+              onPriorityFilterChange={onPriorityFilterChange}
+              onStatusFilterChange={onStatusFilterChange}
+              onAssigneeFilterChange={onAssigneeFilterChange}
+              onTitleFilterChange={onTitleFilterChange}
+              toolFilter={toolFilter}
+              setToolFilter={setToolFilter}
+              selectedTool={selectedTool}
+              onToolFilterChange={onToolFilterChange}
+              accountFilter={accountFilter}
+              setAccountFilter={setAccountFilter}
+              selectedAccount={selectedAccount}
+              onAccountFilterChange={onAccountFilterChange}
+              onClearAllFilters={onClearAllFilters}
+            />
+          </Box>
+        </ErrorBoundary>
+      )}
     </>
   );
 };

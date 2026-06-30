@@ -99,12 +99,15 @@ const CloudAccounts = () => {
   const [loading, setLoading] = useState(false);
   const [clusterSummary, setClusterSummary] = useState({});
   const [optimizeRadioTabValue, setOptimizeRadioTabValue] = useState('right-sizing');
-  const [selectedFilter, setSelectedFilter] = useState(0);
+  const [selectedFilter, setSelectedFilter] = useState(null);
   const [selectedSubTab, setSelectedSubTab] = useState(0);
 
   useEffect(() => {
     const hash = router.asPath.split('#')[1];
-    if (!hash || !filterOptions.length) return;
+    if (!hash) {
+      setSelectedFilter(0);
+      return;
+    }
     const [fragment, subFragment] = hash.split('/');
     const filter = filterOptions.find((option) => option.fragment === fragment);
     if (filter) {
@@ -113,8 +116,15 @@ const CloudAccounts = () => {
       if (subTab) {
         setSelectedSubTab(subTab.value);
       }
+    } else if (selectedCluster?.cloud_provider) {
+      // cloud_provider is known so filterOptions is final — fragment not found means
+      // invalid hash or wrong provider. Fall back to Summary.
+      setSelectedFilter(0);
     }
-  }, []);
+    // If cloud_provider is not yet set, cloud-specific tabs (ec2, rds, etc.)
+    // may not be in filterOptions yet. The effect re-runs when filterOptions updates.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterOptions]);
 
   const { selectedCluster } = useData();
 

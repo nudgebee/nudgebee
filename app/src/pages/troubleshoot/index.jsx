@@ -47,7 +47,10 @@ const renderEventContent = (activeToggle) => {
 };
 
 const TroubleshootPage = () => {
-  const [selectedFilter, setSelectedFilter] = useState(0);
+  // selectedFilter is the parent-tab selection: 0 = All Events, 1 = Investigations,
+  // 2 = Knowledge Graph. Investigations was promoted from a NewToggleButtons sub-tab
+  // inside "All Events" to its own top-level AnchorComponent tab.
+  const [selectedFilter, setSelectedFilter] = useState(null);
   const [activeToggleGroupedEvents, setActiveToggleGroupedEvents] = useState('fingerprint');
   const [activeTab, setActiveTab] = useState('events');
   const [investigationTab, setInvestigationTab] = useState('auto');
@@ -180,7 +183,10 @@ const TroubleshootPage = () => {
 
   useEffect(() => {
     const hash = router.asPath.split('#')[1];
-    if (!hash || !filterOptions.length) return;
+    if (!hash || !filterOptions.length) {
+      setSelectedFilter(0);
+      return;
+    }
     const fragment = hash;
     const filter = filterOptions.find((option) => option.fragment === fragment);
     if (filter) {
@@ -195,6 +201,8 @@ const TroubleshootPage = () => {
         if (invTab) {
           setActiveTab('investigations');
           setInvestigationTab(invTab.value);
+        } else {
+          setSelectedFilter(0);
         }
       }
     }

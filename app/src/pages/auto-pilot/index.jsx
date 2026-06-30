@@ -21,7 +21,7 @@ const AutoPilot = () => {
   const isAdmin = session?.roles?.includes('tenant_admin') || session?.roles?.includes('account_admin');
 
   // 1. Initialize state with defaults (0) instead of router.query
-  const [selectedFilter, setSelectedFilter] = React.useState(0);
+  const [selectedFilter, setSelectedFilter] = React.useState(null);
   const [subTab, setSubTab] = React.useState(0);
   const [openCreateAutoOptimize, setOpenCreateAutoOptimize] = React.useState(false);
   const [openCreateAutoOptimizeType, setOpenCreateAutoOptimizeType] = React.useState(null);
@@ -56,7 +56,10 @@ const AutoPilot = () => {
 
   useEffect(() => {
     const hash = router.asPath.split('#')[1];
-    if (!hash || !filterOptions.length) return;
+    if (!hash || !filterOptions.length) {
+      setSelectedFilter(0);
+      return;
+    }
     const [fragment, subFragment] = hash.split('/');
     const filter = filterOptions.find((option) => option.fragment === fragment && !option.disabled);
     if (filter) {
@@ -66,6 +69,8 @@ const AutoPilot = () => {
       if (subTab) {
         setSubTab(subTab.value);
       }
+    } else {
+      setSelectedFilter(0);
     }
   }, []);
 

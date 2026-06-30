@@ -606,7 +606,7 @@ const AutoOptimizeDetails = () => {
   };
   const router = useRouter();
 
-  const [autoOptimizeTab, setAutoOptimizeTab] = useState(0);
+  const [autoOptimizeTab, setAutoOptimizeTab] = useState(null);
 
   // Sync tab from hash — runs on mount and on back/forward navigation
   useEffect(() => {

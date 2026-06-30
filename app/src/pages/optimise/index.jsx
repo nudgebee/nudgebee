@@ -21,7 +21,7 @@ export async function getServerSideProps() {
 const Optimise = ({ enableLlmAnalyser }) => {
   const router = useRouter();
   const { selectedCluster } = useData();
-  const [activeTab, setActiveTab] = useState(0);
+  const [activeTab, setActiveTab] = useState(null);
   // Gate the admin-only tab on mount so the first client render matches the
   // server HTML (hasReadAccess reads a client-populated session) — avoids any
   // hydration mismatch; the tab resolves on the next tick.
@@ -62,23 +62,22 @@ const Optimise = ({ enableLlmAnalyser }) => {
       setActiveTab(0);
       return;
     }
-    const fragment = hash;
-    const filter = filterOptions.find((option) => option.fragment === fragment);
-    if (filter) {
-      setActiveTab(filter.value);
-    }
+    const filter = filterOptions.find((option) => option.fragment === hash);
+    setActiveTab(filter ? filter.value : 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterOptions]);
 
   return (
     <>
       <AnchorComponent manageRoute={true} filterOptions={filterOptions} onChangeFilter={(val) => setActiveTab(val)} />
-      <ErrorBoundary key={activeTab}>
-        {activeTab === 0 && <SummaryView />}
-        {activeTab === 1 && <OptimizeNewPage />}
-        {activeTab === 2 && <ResolutionsView />}
-        {activeTab === 3 && <CostAnalyser />}
-      </ErrorBoundary>
+      {activeTab !== null && (
+        <ErrorBoundary key={activeTab}>
+          {activeTab === 0 && <SummaryView />}
+          {activeTab === 1 && <OptimizeNewPage />}
+          {activeTab === 2 && <ResolutionsView />}
+          {activeTab === 3 && <CostAnalyser />}
+        </ErrorBoundary>
+      )}
     </>
   );
 };

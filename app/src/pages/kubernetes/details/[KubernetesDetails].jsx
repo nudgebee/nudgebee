@@ -187,7 +187,7 @@ const KubernetesDetails = () => {
 
   const [kubeId, setKubeId] = useState(router.query.KubernetesDetails);
   const [clusterSummary, setClusterSummary] = useState({});
-  const [selectedTab, setSelectedTab] = useState(0);
+  const [selectedTab, setSelectedTab] = useState(null);
   const [selectedSubTab, setSelectedSubTab] = useState(0);
   const [podRadioTabValue, setPodRadioTabValue] = useState('__all__');
   const [scalerRadioTabValue, setScalerRadioTabValue] = useState(0);
@@ -616,7 +616,10 @@ const KubernetesDetails = () => {
 
   useEffect(() => {
     const hash = router.asPath.split('#')[1];
-    if (!hash || !tabOptions.length) return;
+    if (!hash || !tabOptions.length) {
+      setSelectedTab(0);
+      return;
+    }
     const [fragment, subFragment] = hash.split('/');
     const filter = tabOptions.find((option) => option.fragment === fragment);
     if (filter) {
@@ -626,6 +629,8 @@ const KubernetesDetails = () => {
       if (subTab) {
         setSelectedSubTab(subTab.value);
       }
+    } else {
+      setSelectedTab(0);
     }
   }, []);
 

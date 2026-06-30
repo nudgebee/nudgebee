@@ -41,14 +41,12 @@ export default function UserManagement() {
     }));
   }, [session]);
 
-  const [selectedFilter, setSelectedFilter] = React.useState(0);
+  const [selectedFilter, setSelectedFilter] = React.useState(null);
 
   useEffect(() => {
     const fragment = router.asPath.split('#')[1];
     const option = filterOptions.find((opt) => opt.fragment == fragment);
-    if (option) {
-      setSelectedFilter(option.value);
-    }
+    setSelectedFilter(option ? option.value : 0);
   }, [filterOptions, router.asPath]);
 
   const SelectedBody = filterOptions[selectedFilter]?.Body;
