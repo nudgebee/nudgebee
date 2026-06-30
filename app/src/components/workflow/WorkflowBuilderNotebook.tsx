@@ -1860,13 +1860,37 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
     }
     assistantReloadInFlightRef.current = true;
     try {
-      const reload: any = await apiWorkflow.getWorkflowById(accountId, workflowId);
-      const reloaded = reload?.data?.workflow_get;
+      // Detect the assistant's server-side edit by comparing the fetched definition to the one
+      // currently loaded — NOT updated_at, which can lag or fail to bump and silently left the
+      // canvas stale. Read-after-write: the save committed moments ago, so retry briefly until the
+      // server reflects it before giving up.
+      const currentDefStr = JSON.stringify(workflowData?.definition ?? null);
+      let reloaded: WorkflowData | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const reload: any = await apiWorkflow.getWorkflowById(accountId, workflowId);
+        // Fail-closed: on an error response, stop and leave the canvas on its current definition
+        // rather than risk applying partial/stale data.
+        if (parseHttpResponseBodyMessage(reload)) {
+          reloaded = null;
+          break;
+        }
+        reloaded = reload?.data?.workflow_get;
+        if (!reloaded) {
+          break;
+        }
+        if (JSON.stringify(reloaded.definition ?? null) !== currentDefStr) {
+          break; // server change is now visible
+        }
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 700));
+        }
+      }
       if (!reloaded) {
         return;
       }
-      // No server-side change since our last load/save → nothing for the assistant to refresh.
-      if (reloaded.updated_at && workflowData?.updated_at && reloaded.updated_at === workflowData.updated_at) {
+      // The turn did not change the saved definition (e.g. the assistant answered a question
+      // without editing) → nothing for the canvas to refresh.
+      if (JSON.stringify(reloaded.definition ?? null) === currentDefStr) {
         return;
       }
       if (hasUnsavedChanges) {

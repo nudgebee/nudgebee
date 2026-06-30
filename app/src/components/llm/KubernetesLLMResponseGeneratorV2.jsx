@@ -742,19 +742,30 @@ const KubernetesLLMResponseGenerator = ({
   // the workflow server-side (workflow_update tool) without restating the full definition,
   // so the JSON-gated onWorkflowGenerated path above misses those edits. The parent
   // reconciles by re-fetching and applying only if the server actually changed.
-  // Fire only on a real IN_PROGRESS -> COMPLETED transition so it doesn't fire on mount
-  // (an already-completed historical conversation) or on a session switch.
-  const prevConversationStatusRef = useRef(conversationStatus);
+  //
+  // Fire on the transition INTO COMPLETED *after* we observed the assistant actively
+  // working (IN_PROGRESS or WAITING for a clarification/approval). The previous guard
+  // required the immediately-preceding status to be exactly 'IN_PROGRESS', which silently
+  // dropped the signal whenever the polled status passed through any other value (e.g. a
+  // brief reset to '') before COMPLETED — leaving the editor canvas stale after an AI edit.
+  // The active-latch is reset on a session switch so opening a historical (already-completed)
+  // thread never fires this.
+  const assistantWasActiveRef = useRef(false);
+  const completionSessionRef = useRef(selectedSessionId);
   useEffect(() => {
-    if (
-      apiMode === 'workflow' &&
-      conversationStatus === 'COMPLETED' &&
-      prevConversationStatusRef.current === 'IN_PROGRESS' &&
-      onConversationComplete
-    ) {
+    if (apiMode !== 'workflow') {
+      return;
+    }
+    if (completionSessionRef.current !== selectedSessionId) {
+      completionSessionRef.current = selectedSessionId;
+      assistantWasActiveRef.current = false;
+    }
+    if (conversationStatus === 'IN_PROGRESS' || conversationStatus === 'WAITING') {
+      assistantWasActiveRef.current = true;
+    } else if (conversationStatus === 'COMPLETED' && assistantWasActiveRef.current && onConversationComplete) {
+      assistantWasActiveRef.current = false;
       onConversationComplete(selectedSessionId);
     }
-    prevConversationStatusRef.current = conversationStatus;
   }, [conversationStatus, apiMode, onConversationComplete, selectedSessionId]);
 
   const handleDropdownChange = useCallback(
