@@ -39,7 +39,7 @@ When an alert is created or updated it does not directly send notifications. Ins
 
 ---
 
-### Architechture Flow
+### Architecture Flow
 
 Alert Service
     ↓
