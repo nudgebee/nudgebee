@@ -604,6 +604,16 @@ func storeResourcesInsert(ctx *security.RequestContext, dbms *common.DatabaseMan
 			}
 		}
 
+		// Fold legacy/case-divergent rows onto the canonical external_resource_id
+		// before the (account, external_resource_id) upsert below. See
+		// reconcileExternalResourceIds for why the two unique constraints on
+		// cloud_resourses otherwise collide into a hard duplicate-key error.
+		if !strings.EqualFold(cloudProvider, "azure") {
+			if err := reconcileExternalResourceIds(tx, accountId, maps.Values(resourceMap)); err != nil {
+				return nil, fmt.Errorf("reconcile external_resource_id: %w", err)
+			}
+		}
+
 		for _, batch := range batches {
 			batchMap := lo.SliceToMap(batch, func(item map[string]any) (string, map[string]any) {
 				return item["external_resource_id"].(string), item
@@ -632,9 +642,15 @@ func storeResourcesInsert(ctx *security.RequestContext, dbms *common.DatabaseMan
 												region = EXCLUDED.region,
 												service_name = EXCLUDED.service_name`
 			} else {
-				// AWS, GCP, and others use 5-column constraint
+				// AWS/GCP: arbiter on (account, external_resource_id) — the
+				// canonical identity, referenced by spends and events — paired
+				// with the reconcileExternalResourceIds pre-step before this
+				// loop. Deliberately does NOT update the natural-key columns
+				// (resourse_id/type/region/service_name): an external_resource_id
+				// match can land on a row whose 5-column key differs, and
+				// rewriting it could violate the 5-column unique index.
 				conflictClause = `
-								 on conflict (account, resourse_id, type, region, service_name)
+								 on conflict (account, external_resource_id)
 								 	do update set
 												last_seen = EXCLUDED.last_seen,
 												status = EXCLUDED.status,
@@ -643,8 +659,7 @@ func storeResourcesInsert(ctx *security.RequestContext, dbms *common.DatabaseMan
 												tags = EXCLUDED.tags,
 												arn = EXCLUDED.arn,
 												resourse_created_on = EXCLUDED.resourse_created_on,
-												name = EXCLUDED.name,
-												external_resource_id = EXCLUDED.external_resource_id`
+												name = EXCLUDED.name`
 			}
 			query := baseQuery + conflictClause
 

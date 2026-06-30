@@ -114,6 +114,94 @@ func buildExternalResourceId(provider string, accountId, region, serviceName, re
 	return common.BuildExternalResourceId(provider, accountId, region, serviceName, resourceType, resourceId, resourceSubId)
 }
 
+// reconcileExternalResourceIds folds existing AWS/GCP rows onto the canonical
+// external_resource_id before an upsert that arbiters on
+// (account, external_resource_id).
+//
+// cloud_resourses carries two unique constraints — (account, external_resource_id)
+// and the natural 5-column key (account, resourse_id, type, region, service_name).
+// external_resource_id is a *lossy* normalization of the same fields (it
+// lowercases, collapses whitespace, and strips the amazon/aws/gcp/google service
+// prefix; see common.BuildExternalResourceId), so two rows that are distinct
+// under the raw 5-column key can collapse to the same external_resource_id. An
+// upsert can only name one arbiter; whichever it names, the *other* constraint
+// can still be violated and Postgres then raises a hard duplicate-key error
+// instead of doing DO UPDATE.
+//
+// We standardize on external_resource_id as the identity (it is the lookup key
+// referenced by spends and events). This pre-step matches each batch resource to
+// an existing row by the 5-column key (resourse_id case-insensitively, mirroring
+// the Azure realtime path) and rewrites that row's external_resource_id to the
+// canonical value, so the following INSERT ... ON CONFLICT (account,
+// external_resource_id) updates that row rather than inserting a duplicate that
+// would violate the unique index.
+//
+// The statement is collision-proof on both fronts so it can never raise a
+// duplicate-key error of its own:
+//   - NOT EXISTS: if the canonical external_resource_id is already held by some
+//     other row, no candidate is touched (the upsert then updates that row).
+//   - ROW_NUMBER() ... PARTITION BY erid: when several existing rows match the
+//     same canonical id (e.g. resourse_id differing only in case, each carrying
+//     a different legacy external_resource_id), only the most-recently-seen one
+//     is rewritten — otherwise the single UPDATE would set two rows to the same
+//     external_resource_id at once and violate the unique index.
+func reconcileExternalResourceIds(tx common.DatabaseManagerTx, accountId string, resources []map[string]any) error {
+	rids := make([]string, 0, len(resources))
+	types := make([]string, 0, len(resources))
+	regions := make([]string, 0, len(resources))
+	services := make([]string, 0, len(resources))
+	erids := make([]string, 0, len(resources))
+	for _, r := range resources {
+		rid, _ := r["resourse_id"].(string)
+		erid, _ := r["external_resource_id"].(string)
+		if rid == "" || erid == "" {
+			continue
+		}
+		typ, _ := r["type"].(string)
+		region, _ := r["region"].(string)
+		svc, _ := r["service_name"].(string)
+		rids = append(rids, rid)
+		types = append(types, typ)
+		regions = append(regions, region)
+		services = append(services, svc)
+		erids = append(erids, erid)
+	}
+	if len(erids) == 0 {
+		return nil
+	}
+	const reconcileQuery = `
+		WITH candidates AS (
+			SELECT c.id, v.erid,
+				ROW_NUMBER() OVER (
+					PARTITION BY v.erid
+					ORDER BY c.last_seen DESC NULLS LAST, c.created_at DESC NULLS LAST, c.id
+				) AS rn
+			FROM cloud_resourses c
+			JOIN (
+				SELECT * FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[])
+					AS t(resourse_id, type, region, service_name, erid)
+			) v
+				ON c.account = $1
+				AND LOWER(c.resourse_id) = LOWER(v.resourse_id)
+				AND c.type = v.type
+				AND c.region = v.region
+				AND c.service_name = v.service_name
+				AND c.external_resource_id IS DISTINCT FROM v.erid
+			WHERE NOT EXISTS (
+				SELECT 1 FROM cloud_resourses g
+				WHERE g.account = $1 AND g.external_resource_id = v.erid
+			)
+		)
+		UPDATE cloud_resourses c
+		SET external_resource_id = candidates.erid
+		FROM candidates
+		WHERE c.id = candidates.id
+			AND candidates.rn = 1`
+	_, err := tx.Exec(reconcileQuery, accountId,
+		pq.Array(rids), pq.Array(types), pq.Array(regions), pq.Array(services), pq.Array(erids))
+	return err
+}
+
 func getUsageDataInternal(ctx *security.RequestContext, accountId string, month time.Month, year int) (providers.GetUsageReportResponse, providers.Account, error) {
 	account, _, err := getAccount(ctx, accountId)
 	if err != nil {
