@@ -268,6 +268,7 @@ type IConversationDao interface {
 	GetConversationCosts(models []string) (map[string]modelPricing, error)
 	GetConversationTokenUsageDetailed(conversationId, accountId string) ([]TokenUsageDetailedRecord, error)
 	GetConversationToolCallAgents(conversationId string) ([]ToolCallAgent, error)
+	ResolveSessionId(idOrSessionId string) string
 	GetConversationLifecycleStorageCost(conversationId string, tenantId string) (float64, error)
 	GetConversationToolCallsStats(conversationId, accountId string) (ToolCallsStats, error)
 	GetConversationTimeBreakdown(conversationId, accountId string) (TimeBreakdown, error)
@@ -2621,6 +2622,27 @@ type ToolCallAgent struct {
 	ToolCallID string
 	AgentID    string
 	CreatedAt  time.Time
+}
+
+// ResolveSessionId normalizes a usage-metrics lookup key. The metrics queries all match on
+// session_id, but callers may pass a conversation id instead (e.g. workflow/autopilot
+// conversations are opened by conversation_id, which differs from their wf__… session_id).
+// If the value matches a conversation's id, that conversation's session_id is returned;
+// otherwise the value is assumed to already be a session_id and returned unchanged.
+func (chat *ConversationDao) ResolveSessionId(idOrSessionId string) string {
+	// Only a conversation id is a UUID; a non-UUID value (e.g. a wf__… workflow session id)
+	// can never match a conversation id, so skip the query entirely — saving a round-trip.
+	// Matching on the parsed uuid (not id::text) keeps the primary-key index in play.
+	id, err := uuid.Parse(idOrSessionId)
+	if err != nil {
+		return idOrSessionId
+	}
+	var sessionId string
+	if err := chat.dbManager.Db.Get(&sessionId,
+		`SELECT session_id FROM llm_conversations WHERE id = $1 LIMIT 1`, id); err != nil || sessionId == "" {
+		return idOrSessionId
+	}
+	return sessionId
 }
 
 // GetConversationToolCallAgents returns the tool_call_id, agent_id and created_at for

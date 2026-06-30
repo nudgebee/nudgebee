@@ -881,11 +881,15 @@ const KubernetesLLMResponseGenerator = ({
   }, [conversationIdAtDb, conversationStatus, stopInvestigation, setConversationStatus, clearSuggestions]);
 
   const handleTokenUsageHover = useCallback(async () => {
-    // Only fetch if we haven't already fetched and we're not currently fetching
-    if (!isTokenDataFetched && !isFetchingTokenData && selectedSessionId) {
+    // Usage metrics resolve by either key — session_id (normal chats) or conversation_id
+    // (workflow/autopilot conversations are opened by conversation_id and have no session_id
+    // in the URL). The backend normalizes whichever is passed. Mirror the same fallback the
+    // rest of this component uses (e.g. fetchConversation, share id).
+    const usageKey = selectedSessionId || selectedConversationId;
+    if (!isTokenDataFetched && !isFetchingTokenData && usageKey) {
       setIsFetchingTokenData(true);
       try {
-        await fetchTokenUsage(selectedSessionId);
+        await fetchTokenUsage(usageKey);
         setIsTokenDataFetched(true);
       } catch (error) {
         console.error('Failed to fetch token usage:', error);
@@ -893,7 +897,7 @@ const KubernetesLLMResponseGenerator = ({
         setIsFetchingTokenData(false);
       }
     }
-  }, [isTokenDataFetched, isFetchingTokenData, selectedSessionId, fetchTokenUsage]);
+  }, [isTokenDataFetched, isFetchingTokenData, selectedSessionId, selectedConversationId, fetchTokenUsage]);
 
   // For a conversation that isn't actively running, prefetch token usage (incl.
   // reasoning) up front so the reasoning rows are ready the instant a tool is opened —
@@ -902,10 +906,11 @@ const KubernetesLLMResponseGenerator = ({
   // the conversation has loaded. Runs once (same guard as the hover fetch).
   useEffect(() => {
     const isLoaded = conversationStatus && conversationStatus !== 'NOT_FOUND';
-    if (!isSystemBusy && isLoaded && selectedSessionId && !isTokenDataFetched && !isFetchingTokenData) {
+    const usageKey = selectedSessionId || selectedConversationId;
+    if (!isSystemBusy && isLoaded && usageKey && !isTokenDataFetched && !isFetchingTokenData) {
       handleTokenUsageHover();
     }
-  }, [isSystemBusy, conversationStatus, selectedSessionId, isTokenDataFetched, isFetchingTokenData, handleTokenUsageHover]);
+  }, [isSystemBusy, conversationStatus, selectedSessionId, selectedConversationId, isTokenDataFetched, isFetchingTokenData, handleTokenUsageHover]);
 
   const clusterDropdownContent = (
     <ClusterDropDown

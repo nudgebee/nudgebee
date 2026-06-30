@@ -110,6 +110,11 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 		return ConversationUsageMetricsResponse{}, fmt.Errorf("HandleConversationUsageMetricsApi: forbidden account_id")
 	}
 
+	// All metrics queries key off session_id, but callers may pass a conversation id
+	// (e.g. workflow/autopilot conversations opened by conversation_id, whose session_id is
+	// a wf__… id). Normalize once here so every downstream lookup resolves either way.
+	request.ConversationId = GetConversationDao().ResolveSessionId(request.ConversationId)
+
 	// Get aggregated token usage (for backward compatibility)
 	agents, err := GetConversationDao().GetConversationTokenUsage(request.ConversationId, request.AccountId)
 	if err != nil {
