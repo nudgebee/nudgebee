@@ -61,7 +61,17 @@ func (w *wrappedModel) Call(ctx context.Context, prompt string, options ...llms.
 
 func (w *wrappedModel) scanAndDecide(ctx context.Context, payload string) error {
 	start := time.Now()
+
+	// Resolve per-tenant overrides (nil → env defaults apply).
+	tcfg := Resolve(ctx)
+	if tcfg != nil && !tcfg.Enabled {
+		// Per-tenant kill switch: skip scan entirely for this tenant.
+		recordScan(ctx, w.provider, w.model, w.mode, "skipped", len(payload), 0, nil)
+		return nil
+	}
+
 	result := Scan(payload)
+	result = applyTenantOverrides(result, payload, tcfg)
 	latency := time.Since(start).Seconds()
 
 	if !result.HasHits() {
@@ -69,18 +79,25 @@ func (w *wrappedModel) scanAndDecide(ctx context.Context, payload string) error 
 		return nil
 	}
 
+	// Effective mode: tenant override wins over the wrapper-constructed
+	// default (which is env-level). Empty tenant Mode → use env.
+	effectiveMode := w.mode
+	if tcfg != nil && tcfg.Mode != "" {
+		effectiveMode = tcfg.Mode
+	}
+
 	ruleIDs := result.RuleIDs()
 	auditID := newAuditID()
 	// Build the structured event once; the reporter (if any) and the
 	// returned typed Error share these fields.
-	event := newFilterEvent(auditID, w.mode, len(payload), result)
+	event := newFilterEvent(auditID, effectiveMode, len(payload), result)
 
 	// Mode is operator config; Action is what we actually do. The gate
 	// indirection lets a deployment plug in its own post-detection policy
 	// — see action_gate.go.
-	switch resolveAction(w.mode, result) {
+	switch resolveAction(effectiveMode, result) {
 	case ActionBlock:
-		recordScan(ctx, w.provider, w.model, w.mode, "blocked", len(payload), latency, result.Hits)
+		recordScan(ctx, w.provider, w.model, effectiveMode, "blocked", len(payload), latency, result.Hits)
 		err := &Error{AuditID: auditID, RuleIDs: ruleIDs}
 		slog.Warn("egressfilter: outbound LLM call blocked",
 			"audit_id", auditID,
@@ -99,7 +116,7 @@ func (w *wrappedModel) scanAndDecide(ctx context.Context, payload string) error 
 	default:
 		// ActionAudit (and any future non-blocking action): record + log,
 		// forward unchanged.
-		recordScan(ctx, w.provider, w.model, w.mode, "detect", len(payload), latency, result.Hits)
+		recordScan(ctx, w.provider, w.model, effectiveMode, "detect", len(payload), latency, result.Hits)
 		slog.Warn("egressfilter: outbound LLM payload contains potential secret (detect mode, not blocking)",
 			"audit_id", auditID,
 			"provider", w.provider,

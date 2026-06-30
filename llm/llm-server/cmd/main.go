@@ -18,6 +18,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/prompts"
+	"nudgebee/llm/security/egressfilter"
 	toolscore "nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
 
@@ -169,6 +170,16 @@ func main() {
 			return
 		}
 	}
+
+	// Bootstrap the egressfilter allowlist from env. Loaded once at startup;
+	// the registry has no runtime change path. No-op when the env is empty.
+	egressfilter.LoadAllowlistFromCSV(config.Config.LlmServerEgressFilterAllowlist)
+
+	// Wire the per-tenant config loader so the wrapper's Resolve() can fetch
+	// overrides from the public.llm_egressfilter_tenant_config table. Without
+	// this, Resolve returns nil for every tenant and env defaults apply
+	// universally — which is the safe fallback when the table is empty.
+	egressfilter.InitTenantConfigLoader()
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()

@@ -880,6 +880,26 @@ func getAgentNameFromAgentId(agentId string) string {
 	return agentName
 }
 
+// attachTenantIDForEgressFilter attaches the security-context tenant id to
+// ctx so the egressfilter wrapper can resolve per-tenant overrides. Silently
+// leaves ctx untouched when the SecurityContext is nil, the tenant id is
+// empty, or the tenant id is not a valid UUID — in any of those cases,
+// egressfilter.Resolve falls back to env defaults (fail-open).
+func attachTenantIDForEgressFilter(ctx context.Context, sc *security.SecurityContext) context.Context {
+	if sc == nil {
+		return ctx
+	}
+	tid := sc.GetTenantId()
+	if tid == "" {
+		return ctx
+	}
+	parsed, err := uuid.Parse(tid)
+	if err != nil {
+		return ctx
+	}
+	return egressfilter.WithTenantID(ctx, parsed)
+}
+
 func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 	if rc == nil {
 		return nil, fmt.Errorf("retryContext is nil")
@@ -917,6 +937,11 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 
 	ctx, cancel := context.WithTimeout(previousContext, callTimeout)
 	defer cancel()
+
+	// Attach tenant id so egressfilter.Resolve() can look up per-tenant
+	// overrides on the LLM call path. See attachTenantIDForEgressFilter
+	// for the missing-tenant / parse-failure / missing-SC fallback rules.
+	ctx = attachTenantIDForEgressFilter(ctx, rc.ctx.GetSecurityContext())
 
 	// Apply cache for current model (if enabled)
 	// This ensures cache is always correct for the current model, including fallback models
