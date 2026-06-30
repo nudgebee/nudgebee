@@ -33,7 +33,7 @@ For a richer walkthrough, see the LLM execution-flow section in [`llm/llm-server
 ## Notification System Alert flow
 
 ### Overview
-Nudgebee uses an event-driven architechture for handling notifications trigerred by alerts.
+Nudgebee uses an event-driven architecture for handling notifications triggered by alerts.
 
 When an alert is created or updated it does not directly send notifications. Instead it emits an event that is consumed by the notification system
 
