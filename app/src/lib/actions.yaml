@@ -148,6 +148,9 @@ actions:
       kind: "synchronous"
       handler: '{{LLM_SERVER_URL}}/v1/watches/list-by-conversation'
       forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
     permissions:
       - role: tenant_admin
       - role: tenant_admin_readonly
@@ -159,6 +162,9 @@ actions:
       kind: "synchronous"
       handler: '{{LLM_SERVER_URL}}/v1/watches/cancel'
       forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: LLM_SERVER_TOKEN
     permissions:
       - role: tenant_admin
       - role: account_admin
