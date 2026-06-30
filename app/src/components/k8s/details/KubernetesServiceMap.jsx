@@ -4,7 +4,6 @@ import dayjs from 'dayjs';
 import { useRouter } from 'next/router';
 import ReactFlow, { ReactFlowProvider, Controls, Background, BackgroundVariant, MiniMap, useNodesState, useEdgesState } from 'reactflow';
 import 'reactflow/dist/style.css';
-import ELK from 'elkjs/lib/elk.bundled.js';
 import { Box, Typography } from '@mui/material';
 import { Switch } from '@ui/Switch';
 import EmptyData from '@shared/EmptyData';
@@ -33,8 +32,6 @@ import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import AccessTimeOutlinedIcon from '@mui/icons-material/AccessTimeOutlined';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 
-const elk = new ELK();
-
 // Optimized options for a cleaner "Circuit Board" style layout
 const ELK_OPTIONS = {
   'elk.algorithm': 'layered',
@@ -53,8 +50,16 @@ const ELK_OPTIONS = {
   'elk.layered.mergeEdges': 'true',
 };
 
+// Cached promise of the dynamically-loaded ELK instance. The constructor spawns
+// a worker, so keeping it to one instance across the many re-layouts triggered
+// by filter / date / slider changes avoids repeated worker spawn cost. Reset
+// to null on import failure so a transient network blip can be retried.
+let elkPromise = null;
+
 /**
- * Calculates layout positions using ELK.
+ * Calculates layout positions using ELK. elkjs is loaded dynamically so the
+ * 1.4MB bundle ships only when the service map actually mounts, not on every
+ * page via the static import chain.
  */
 const getLayoutedElements = async (nodes, edges, options = {}) => {
   const isHorizontal = options?.['elk.direction'] === 'RIGHT';
@@ -75,6 +80,15 @@ const getLayoutedElements = async (nodes, edges, options = {}) => {
   };
 
   try {
+    if (!elkPromise) {
+      elkPromise = import('elkjs/lib/elk.bundled.js')
+        .then((M) => new M.default())
+        .catch((err) => {
+          elkPromise = null;
+          throw err;
+        });
+    }
+    const elk = await elkPromise;
     const layoutedGraph = await elk.layout(graph);
     return {
       nodes: layoutedGraph.children.map((node) => ({

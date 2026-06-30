@@ -11,11 +11,8 @@ import ReactFlow, {
   Position,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import ELK from 'elkjs/lib/elk.bundled.js';
 import { Box, Typography } from '@mui/material';
 import { ds } from 'src/utils/colors';
-
-const elk = new ELK();
 
 const ELK_OPTIONS = {
   'elk.algorithm': 'layered',
@@ -55,6 +52,15 @@ const NODE_TYPE_LABELS = {
   ServerlessFunction: 'FN',
 };
 
+// Cached promise of the dynamically-loaded ELK instance. The constructor spawns
+// a worker, so keeping it to one instance across re-layouts avoids repeated
+// worker spawn cost. Reset to null on import failure so a transient network
+// blip can be retried.
+let elkPromise = null;
+
+// elkjs is loaded dynamically so the 1.4MB bundle ships only when the
+// knowledge-graph map actually mounts, not on every page via the static
+// import chain.
 const getLayoutedElements = async (nodes, edges) => {
   const graph = {
     id: 'root',
@@ -70,6 +76,15 @@ const getLayoutedElements = async (nodes, edges) => {
   };
 
   try {
+    if (!elkPromise) {
+      elkPromise = import('elkjs/lib/elk.bundled.js')
+        .then((M) => new M.default())
+        .catch((err) => {
+          elkPromise = null;
+          throw err;
+        });
+    }
+    const elk = await elkPromise;
     const layoutedGraph = await elk.layout(graph);
     return {
       nodes: layoutedGraph.children.map((node) => ({
