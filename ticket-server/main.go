@@ -54,9 +54,14 @@ func main() {
 	}()
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
-	pprof.Register(router)
 	router.Use(gin.Recovery())
 	router.Use(sloggin.NewWithFilters(logger, sloggin.IgnorePath("/health")))
+
+	// ticket-server has no global inbound service-token middleware yet (it relies
+	// on network isolation); the service token will be added later, at which
+	// point pprof inherits the gate like the other services. Registered after
+	// Recovery + logging so the debug routes still get panic recovery and logs.
+	pprof.Register(router)
 
 	routes.InitializeRoutes(router)
 

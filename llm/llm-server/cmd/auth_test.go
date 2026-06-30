@@ -32,6 +32,9 @@ func TestAuthHandlerMiddleware(t *testing.T) {
 		r.GET("/api/v1/workspace/anything", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 		r.GET("/api/admin/prompts/config", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 		r.POST("/v1/llm-config/test-connection", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
+		// /debug/pprof is no longer exempted from the gate; model it as a route
+		// registered behind the middleware (mirrors main()'s ordering).
+		r.GET("/debug/pprof/heap", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 		return r
 	}
 
@@ -76,5 +79,12 @@ func TestAuthHandlerMiddleware(t *testing.T) {
 		r := build()
 		assert.Equal(t, http.StatusOK, do(r, "GET", "/health", ""))
 		assert.Equal(t, http.StatusOK, do(r, "GET", "/api/v1/workspace/anything", ""))
+	})
+
+	t.Run("debug pprof is gated: token configured + missing header → 401", func(t *testing.T) {
+		config.Config.LlmServerToken = "secret"
+		r := build()
+		assert.Equal(t, http.StatusUnauthorized, do(r, "GET", "/debug/pprof/heap", ""))
+		assert.Equal(t, http.StatusOK, do(r, "GET", "/debug/pprof/heap", "secret"))
 	})
 }

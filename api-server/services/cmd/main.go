@@ -182,12 +182,16 @@ func main() {
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	pprof.Register(r)
 	r.Use(gin.Recovery())
 	r.Use(sloggin.NewWithFilters(logger, sloggin.IgnorePath("/health")))
 	r.Use(otelgin.Middleware(config.SERVICE_NAME))
 	r.Use(traceResponseHeaderMiddleware())
 	r.Use(authHandlerMiddleware())
+	// Register pprof AFTER the auth middleware so /debug/pprof inherits the
+	// service-token gate. Gin snapshots middleware at registration time, so
+	// registering before r.Use(authHandlerMiddleware()) left the debug
+	// endpoints unauthenticated (heap/goroutine dumps can leak request state).
+	pprof.Register(r)
 
 	var tracer = otel.Tracer(config.SERVICE_NAME)
 	var meter = otel.Meter(config.SERVICE_NAME)

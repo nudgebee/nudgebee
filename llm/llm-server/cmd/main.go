@@ -58,7 +58,7 @@ var logger = slog.New(
 func authHandlerMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 
-		if c.Request.URL.Path == "/health" || strings.HasPrefix(c.Request.URL.Path, "/debug") || strings.HasPrefix(c.Request.URL.Path, "/swagger") || c.Request.URL.Path == "/openapi.json" {
+		if c.Request.URL.Path == "/health" || strings.HasPrefix(c.Request.URL.Path, "/swagger") || c.Request.URL.Path == "/openapi.json" {
 			c.Set(CTX_IS_PUBLIC, true)
 			c.Next()
 			return
@@ -172,12 +172,16 @@ func main() {
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	pprof.Register(r)
 	r.Use(gin.Recovery())
 	r.Use(sloggin.NewWithFilters(logger, sloggin.IgnorePath("/health")))
 	r.Use(otelgin.Middleware(config.SERVICE_NAME))
 	r.Use(traceResponseHeaderMiddleware())
 	r.Use(authHandlerMiddleware())
+	// Register pprof AFTER the auth middleware so /debug/pprof inherits the
+	// service-token gate. pprof heap/goroutine dumps can leak in-flight
+	// request state, tokens, and tenant identifiers, so they must not be
+	// served unauthenticated. (Gin snapshots middleware at registration time.)
+	pprof.Register(r)
 
 	var tracer = otel.Tracer(config.SERVICE_NAME)
 	var meter = otel.Meter(config.SERVICE_NAME)
