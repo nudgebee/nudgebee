@@ -238,6 +238,41 @@ func TestPodMostRecentOOMKilledContainer(t *testing.T) {
 	assert.Nil(t, term)
 }
 
+func TestPodMostRecentOOMKilledContainer_StateTerminatedNoRestart(t *testing.T) {
+	// restartPolicy:Never / Job pod OOMs once: the kill is in state.terminated
+	// with no lastState. The enricher must still find it — regression guard
+	// for the previously lastState-only logic.
+	pod := map[string]any{
+		"spec": map[string]any{
+			"containers": []any{
+				map[string]any{
+					"name":      "app",
+					"resources": map[string]any{"limits": map[string]any{"memory": "64Mi"}},
+				},
+			},
+		},
+		"status": map[string]any{
+			"container_statuses": []any{
+				map[string]any{
+					"name": "app",
+					"state": map[string]any{
+						"terminated": map[string]any{
+							"reason":      "OOMKilled",
+							"started_at":  "2026-05-11T06:38:41Z",
+							"finished_at": "2026-05-11T06:38:45Z",
+						},
+					},
+				},
+			},
+		},
+	}
+	container, term := podMostRecentOOMKilledContainer(pod)
+	assert.NotNil(t, container)
+	assert.Equal(t, "app", container["name"])
+	assert.NotNil(t, term)
+	assert.Equal(t, "OOMKilled", term["reason"])
+}
+
 func TestEventListToTable(t *testing.T) {
 	events := []any{
 		map[string]any{

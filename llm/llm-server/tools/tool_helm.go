@@ -76,6 +76,14 @@ func (m HelmExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NB
 			workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
 		})
 		if err != nil {
+			// Pipeline-tail no-match reclassification (issue #32240).
+			// Same as kubectl_execute: `helm list -A | grep <name>` with
+			// no match exits 1 and surfaces as an opaque failure. Reuse
+			// the helpers from tool_shell.go (PR #32007).
+			if isNoMatchExit(err, command) {
+				nbRequestContext.Ctx.GetLogger().Info("helm: reclassified pipeline-tail no-match as success", "command", command)
+				return successResponseNoMatches(nbRequestContext, response)
+			}
 			nbRequestContext.Ctx.GetLogger().Error("helm: unable to execute shell script", "error", err.Error(), "command", command)
 			if response == "" {
 				response = err.Error()

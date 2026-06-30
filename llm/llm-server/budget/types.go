@@ -20,8 +20,20 @@ var validModules = map[string]bool{
 // moduleQueryFilters maps module names to their SQL query filters
 // This is a whitelist approach to prevent SQL injection
 var moduleQueryFilters = map[string]string{
-	ModuleInvestigation:     " AND c.session_id LIKE '" + events.SessionIdPrefixEvent + "%'",
-	ModuleUserInvestigation: "", // No additional filter for user investigation
+	ModuleInvestigation: " AND c.session_id LIKE '" + events.SessionIdPrefixEvent + "%'",
+	// user_investigation (AI chat) is the complement of investigation: every
+	// conversation that is NOT an event-analysis session. This mirrors the
+	// enforcement routing in api/chains.go and api/conversation_sync.go
+	// (session_id "event-" prefix -> investigation, otherwise ->
+	// user_investigation), so reported usage and enforced limits agree.
+	// Previously this filter was empty, so user_investigation usage swept in the
+	// event-* sessions that investigation already accounts for — double-counting
+	// event-analysis spend against the chat budget. ("event-rca-" also starts
+	// with "event-", so it is excluded too.) The IS NULL guard keeps any
+	// session-less conversation in the chat budget instead of silently dropping
+	// it (NOT LIKE evaluates to NULL for a NULL session_id), matching
+	// enforcement's "otherwise -> user_investigation" branch.
+	ModuleUserInvestigation: " AND (c.session_id IS NULL OR c.session_id NOT LIKE '" + events.SessionIdPrefixEvent + "%')",
 }
 
 // Entity type constants

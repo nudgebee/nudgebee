@@ -200,6 +200,8 @@ var InfraAuthoritativeNodeTypes = map[NodeType]bool{
 	NodeTypeWorkload:          true,
 	NodeTypeK8sServiceAccount: true,
 	NodeTypeCRD:               true,
+	NodeTypeConfigMap:         true, // k8s_source is authoritative; tombstone if not re-stamped
+	NodeTypeK8sSecret:         true, // k8s_source is authoritative; tombstone if not re-stamped
 }
 
 // IsInfraAuthoritative reports whether static infra sources are the ground-truth oracle
@@ -994,10 +996,10 @@ var QueryablePropertiesMap = map[NodeType][]string{
 		"name", "namespace", "cluster", "environment", "policy_types",
 	},
 	NodeTypeConfigMap: {
-		"name", "namespace", "cluster", "environment",
+		"name", "namespace", "cluster", "environment", "key_count", "managed_by",
 	},
 	NodeTypeK8sSecret: {
-		"name", "namespace", "cluster", "environment", "secret_type",
+		"name", "namespace", "cluster", "environment", "secret_type", "key_count", "managed_by",
 	},
 	NodeTypeK8sServiceAccount: {
 		"name", "namespace", "cluster", "environment", "role_arn",

@@ -24,10 +24,14 @@ func TestPerformanceInsightAws(t *testing.T) {
 }
 
 func TestPerformanceInsightGCP(t *testing.T) {
+	dbID := os.Getenv("TEST_GCP_DATABASE_ID")
+	if dbID == "" {
+		t.Skip("Skipping test - TEST_GCP_DATABASE_ID must be set (Cloud SQL instance identifier)")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	resp, err := QueryDatabasePerformance(ctx, os.Getenv("TEST_GCP_ACCOUNT"), providers.DatabasePerformanceRequest{
 		Region:             "us-central1",
-		DatabaseIdentifier: "beehive-dev-pg",
+		DatabaseIdentifier: dbID,
 		IncludeTopQueries:  true,
 	})
 
@@ -39,8 +43,8 @@ func TestPerformanceInsightGCP(t *testing.T) {
 	if resp.Provider != "gcp" {
 		t.Errorf("Expected provider 'gcp', got '%s'", resp.Provider)
 	}
-	if resp.DatabaseIdentifier != "beehive-dev-pg" {
-		t.Errorf("Expected database 'beehive-dev-pg', got '%s'", resp.DatabaseIdentifier)
+	if resp.DatabaseIdentifier != dbID {
+		t.Errorf("Expected database '%s', got '%s'", dbID, resp.DatabaseIdentifier)
 	}
 
 	// Log the response as JSON for inspection

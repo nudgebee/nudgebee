@@ -35,6 +35,15 @@ type LLMRequest struct {
 	// agent raising a PR) can link the result back to the workflow. Empty for
 	// non-workflow callers.
 	WorkflowId string `json:"workflow_id,omitempty"`
+	// ExecutionId is the per-run workflow execution id (Temporal WorkflowRunID).
+	// Forwarded into NBQueryConfig.ExecutionId on llm-server so logs, tool
+	// contexts, and audit rows trace back to a single workflow run. Empty for
+	// non-workflow callers.
+	ExecutionId string `json:"execution_id,omitempty"`
+	// Labels is an optional traceability bag forwarded into NBQueryConfig.Labels
+	// on llm-server. Use for arbitrary per-run metadata that doesn't deserve a
+	// typed slot (e.g. task_id, workflow_name).
+	Labels map[string]any `json:"labels,omitempty"`
 }
 
 type LLMEventRequest struct {
@@ -54,10 +63,15 @@ type llmAction struct {
 }
 
 type llmChatInputRequest struct {
-	Query          string         `json:"query,omitempty"`
-	AccountId      string         `json:"account_id"`
-	ConversationId string         `json:"conversation_id,omitempty"`
-	Capabilities   map[string]any `json:"capabilities,omitempty"`
+	Query          string `json:"query,omitempty"`
+	AccountId      string `json:"account_id"`
+	ConversationId string `json:"conversation_id,omitempty"`
+	// SessionId is the caller-supplied stable identifier for the conversation on
+	// llm-server. Reusing the same SessionId resumes the same conversation
+	// (lookup by (account_id, session_id) in api/chains.go). Runbook-server sets
+	// this to a structured workflow-run identifier for traceability.
+	SessionId    string         `json:"session_id,omitempty"`
+	Capabilities map[string]any `json:"capabilities,omitempty"`
 	// Source tags the conversation's origin on llm-server (persisted to
 	// llm_conversations.source). Runbook-server requests are always part of a
 	// workflow step, so they are tagged "Automation" to keep them out of the
@@ -121,7 +135,7 @@ func ProcessRequest(ctx *security.RequestContext, request LLMRequest) (LLMRespon
 	}
 
 	var configOverride map[string]any
-	if request.LlmProvider != "" || request.LlmModelName != "" || request.WorkflowId != "" {
+	if request.LlmProvider != "" || request.LlmModelName != "" || request.WorkflowId != "" || request.ExecutionId != "" || len(request.Labels) > 0 {
 		configOverride = map[string]any{}
 		if request.LlmProvider != "" {
 			configOverride["llm_provider"] = request.LlmProvider
@@ -132,6 +146,12 @@ func ProcessRequest(ctx *security.RequestContext, request LLMRequest) (LLMRespon
 		if request.WorkflowId != "" {
 			configOverride["workflow_id"] = request.WorkflowId
 		}
+		if request.ExecutionId != "" {
+			configOverride["execution_id"] = request.ExecutionId
+		}
+		if len(request.Labels) > 0 {
+			configOverride["labels"] = request.Labels
+		}
 	}
 
 	chatReq := llmChatRequest{
@@ -140,6 +160,7 @@ func ProcessRequest(ctx *security.RequestContext, request LLMRequest) (LLMRespon
 			Request: llmChatInputRequest{
 				Query:        request.Message,
 				AccountId:    request.AccountId,
+				SessionId:    request.SessionId,
 				Capabilities: capabilities,
 				Config:       configOverride,
 				Source:       conversationSourceAutomation,

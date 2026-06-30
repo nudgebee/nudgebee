@@ -165,7 +165,7 @@ func TestDelegateAgentTool_Metadata(t *testing.T) {
 
 	assert.Equal(t, DelegateAgentToolName, tool.Name())
 	assert.Equal(t, toolcore.NBToolTypeTool, tool.GetType())
-	assert.Contains(t, tool.Description(), "dynamically-composed specialist sub-agent")
+	assert.Contains(t, tool.Description(), "scoped specialist sub-investigator")
 
 	schema := tool.InputSchema()
 	assert.Equal(t, toolcore.ToolSchemaTypeObject, schema.Type)

@@ -77,23 +77,44 @@ func (a *noisyNeighboursAction) Execute(ctx PlaybookActionContext, rawParams map
 	// fields verbatim; missing `name` or `memory_requested` renders as
 	// "Container undefined does not have a memory requests".
 	//
-	// Label conventions are split between two metric families:
-	//   - cAdvisor (container_memory_working_set_bytes): K8s node lives
-	//     on `instance` (the scrape target); the `node` label is often
-	//     relabelled to a node-pool category, so filtering by
-	//     `node=<k8s-node>` returns zero series on vmsingle /
-	//     kube-prometheus-stack.
-	//   - kube-state-metrics (kube_*): K8s node lives on `node`.
-	// Per-container topk keeps the `container` label intact so we can
-	// join against the kube_pod_container_resource_{requests,limits}
-	// series, which only carry `pod` / `namespace` / `container`.
+	// Where the K8s node name lands on cAdvisor
+	// (container_memory_working_set_bytes) depends on the Prometheus scrape
+	// config, and we've observed three real-world variations:
+	//   1. kube-prometheus-stack (EKS): node name on `node`, `instance` is
+	//      the kubelet scrape target (`<nodeIP>:10250`).
+	//   2. older relabel rules: node name on `instance`, `node` relabelled
+	//      to a node-pool category (e.g. `node="db"`).
+	//   3. BOTH at once (a vmsingle cluster scraping kubelets via two jobs):
+	//      one job emits convention 1, the other convention 2, so every
+	//      container has TWO near-duplicate series.
+	// We can't know the convention up front, so we match the node name on
+	// EITHER `node` or `instance`. The catch is variation 3: a naive
+	// `{node="X"} or {instance="X"}` at the selector level keeps both
+	// duplicate series and DOUBLE-COUNTS memory. So we aggregate to
+	// (pod, namespace, container) on each branch FIRST, then `or` — after
+	// aggregation both branches share an identical label signature, so the
+	// `or` takes the `node=` side and only fills in containers it's
+	// missing. One scrape's view wins; no double counting.
+	//   - kube-state-metrics (kube_*): node name is always on `node` (its
+	//     `instance` is the kube-state-metrics pod), so those queries below
+	//     filter by `node=` alone.
+	// Keeping the `container` label intact lets us join against the
+	// kube_pod_container_resource_{requests,limits} series, which only
+	// carry `pod` / `namespace` / `container`.
+	perContainerUsage := func(extraFilters string) string {
+		return fmt.Sprintf(
+			`sum by (pod, namespace, container) (container_memory_working_set_bytes{__CLUSTER__ node="%s"%s}) `+
+				`or sum by (pod, namespace, container) (container_memory_working_set_bytes{__CLUSTER__ instance="%s"%s})`,
+			nodeName, extraFilters, nodeName, extraFilters,
+		)
+	}
 	topPodsQuery := fmt.Sprintf(
-		`topk(15, sum by (pod, namespace, container) (container_memory_working_set_bytes{__CLUSTER__ instance="%s", pod!="", container!="", container!="POD", image!=""}))`,
-		nodeName,
+		`topk(15, %s)`,
+		perContainerUsage(`, pod!="", container!="", container!="POD", image!=""`),
 	)
 	nodeUsageQuery := fmt.Sprintf(
-		`sum(container_memory_working_set_bytes{__CLUSTER__ instance="%s", pod!="", image!=""})`,
-		nodeName,
+		`sum(%s)`,
+		perContainerUsage(`, pod!="", image!=""`),
 	)
 	nodeAllocatableQuery := fmt.Sprintf(
 		`kube_node_status_allocatable{__CLUSTER__ resource="memory", node="%s"}`,

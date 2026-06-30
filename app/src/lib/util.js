@@ -1,4 +1,4 @@
-import MarkDowns from '@components1/common/MarkDowns';
+import MarkDowns from '@shared/viewers/MarkDowns';
 import { Typography } from '@mui/material';
 import { isMarkdown } from 'src/utils/common';
 

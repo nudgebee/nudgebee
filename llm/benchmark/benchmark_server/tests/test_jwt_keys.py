@@ -79,7 +79,9 @@ def _make_pem_with_corrupt_d() -> bytes:
     der[d_value_off : d_value_off + d_length] = b"\x00" + b"\xab" * (d_length - 1)
 
     new_body = base64.encodebytes(bytes(der)).strip()
-    return b"-----BEGIN PRIVATE KEY-----\n" + new_body + b"\n-----END PRIVATE KEY-----\n"
+    return (
+        b"-----BEGIN PRIVATE KEY-----\n" + new_body + b"\n-----END PRIVATE KEY-----\n"
+    )
 
 
 # ---------- Happy path ----------
@@ -223,7 +225,9 @@ def test_propagates_non_d_failures_unchanged():
     pem = _good_pem()
     body = pem.split(b"-----BEGIN PRIVATE KEY-----")[1].split(b"-----END")[0].strip()
     truncated = (
-        b"-----BEGIN PRIVATE KEY-----\n" + body[: len(body) // 2] + b"\n-----END PRIVATE KEY-----\n"
+        b"-----BEGIN PRIVATE KEY-----\n"
+        + body[: len(body) // 2]
+        + b"\n-----END PRIVATE KEY-----\n"
     )
     with pytest.raises(ValueError) as exc:
         load_private_key_tolerant(truncated)

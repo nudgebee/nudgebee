@@ -18,11 +18,12 @@ import (
 )
 
 type ErrorRCAAgent struct {
-	llmClient    *llm.Client
-	planner      *planners.ReActPlanner
-	logger       *common.Logger
-	tools        []core.NBTool
-	promptLoader *common.PromptLoader
+	llmClient     *llm.Client
+	planner       *planners.ReActPlanner
+	logger        *common.Logger
+	tools         []core.NBTool
+	promptLoader  *common.PromptLoader
+	repoCloneTool *tools.RepoCloneTool // kept to seed its default branch from the request at Execute time
 }
 
 func NewErrorRCAAgent(cfg *config.Config, llmClient *llm.Client, gitClient *git.GitClient, logger *common.Logger, workspaceDir string) *ErrorRCAAgent {
@@ -55,8 +56,10 @@ func NewErrorRCAAgentWithTracker(cfg *config.Config, llmClient *llm.Client, gitC
 
 	// Add repo_clone tool - RCA needs to clone repo at Step 1 when URL provided
 	// Note: Tool should only be used ONCE at start, not re-attempted mid-analysis
+	var repoCloneTool *tools.RepoCloneTool
 	if gitClient != nil {
-		rawTools = append(rawTools, tools.NewRepoCloneTool(workspaceDir, gitClient))
+		repoCloneTool = tools.NewRepoCloneTool(workspaceDir, gitClient)
+		rawTools = append(rawTools, repoCloneTool)
 	}
 
 	// Use the provided shared tracker and wrap tools for comprehensive tracking
@@ -75,11 +78,12 @@ func NewErrorRCAAgentWithTracker(cfg *config.Config, llmClient *llm.Client, gitC
 	planner.SetLogger(logger)
 
 	return &ErrorRCAAgent{
-		llmClient:    llmClient,
-		planner:      planner,
-		logger:       logger,
-		tools:        trackedTools,
-		promptLoader: common.NewPromptLoader(),
+		llmClient:     llmClient,
+		planner:       planner,
+		logger:        logger,
+		tools:         trackedTools,
+		promptLoader:  common.NewPromptLoader(),
+		repoCloneTool: repoCloneTool,
 	}
 }
 
@@ -93,6 +97,10 @@ func (a *ErrorRCAAgent) SetLogger(logger *common.Logger) {
 func (a *ErrorRCAAgent) Execute(ctx context.Context, sessionCtx *session.SessionContext) (string, error) {
 	// Set repository context in the planner
 	a.planner.SetRepositoryContext(sessionCtx.RepoContext)
+
+	// Seed repo_clone's default branch from the request's target/base branch so the
+	// clone (and any fix branch cut from it) starts on the branch the PR targets.
+	seedRepoCloneBranch(a.repoCloneTool, sessionCtx)
 
 	// Set credentials for repository operations
 	if sessionCtx.Credentials != nil {

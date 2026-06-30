@@ -800,31 +800,31 @@
               "recommendation": "{\"name\": \"registry-dev-collector-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"35e1eaec-5bd1-4285-b068-3e19d1e9311b\", \"kind\": \"Ingress\", \"name\": \"ecr-proxy-server\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee\", \"expiry_date\": \"2025-02-28 09:03:15+00:00\", \"days_until_expiry\": 38}"
             },
             {
-              "recommendation": "{\"name\": \"nudgebee-test-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"d04c80ae-b06a-4e00-a524-0c167de6319f\", \"kind\": \"Ingress\", \"name\": \"app-test\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee-test\", \"expiry_date\": \"2025-03-02 05:57:57+00:00\", \"days_until_expiry\": 40}"
+              "recommendation": "{\"name\": \"test-cluster-test-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"d04c80ae-b06a-4e00-a524-0c167de6319f\", \"kind\": \"Ingress\", \"name\": \"app-test\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"test-cluster-test\", \"expiry_date\": \"2025-03-02 05:57:57+00:00\", \"days_until_expiry\": 40}"
             },
             {
-              "recommendation": "{\"name\": \"relay-test-collector-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"d5ca0991-d329-4ff6-8993-63c96a42ef92\", \"kind\": \"Ingress\", \"name\": \"relay-server\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee-test\", \"expiry_date\": \"2025-03-02 05:58:14+00:00\", \"days_until_expiry\": 40}"
+              "recommendation": "{\"name\": \"relay-test-collector-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"d5ca0991-d329-4ff6-8993-63c96a42ef92\", \"kind\": \"Ingress\", \"name\": \"relay-server\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"test-cluster-test\", \"expiry_date\": \"2025-03-02 05:58:14+00:00\", \"days_until_expiry\": 40}"
             },
             {
-              "recommendation": "{\"name\": \"nudgebee-test-collector-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"9d4d3a6d-2ba3-4491-8cbe-010c5c9b4816\", \"kind\": \"Ingress\", \"name\": \"k8s-collector\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee-test\", \"expiry_date\": \"2025-03-02 05:58:47+00:00\", \"days_until_expiry\": 40}"
+              "recommendation": "{\"name\": \"test-cluster-test-collector-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"9d4d3a6d-2ba3-4491-8cbe-010c5c9b4816\", \"kind\": \"Ingress\", \"name\": \"k8s-collector\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"test-cluster-test\", \"expiry_date\": \"2025-03-02 05:58:47+00:00\", \"days_until_expiry\": 40}"
             },
             {
               "recommendation": "{\"name\": \"actions-runner-controller-serving-cert\", \"metadata\": {\"owners\": [], \"managed-by\": \"Helm\"}, \"namespace\": \"actions-runner-system-1\", \"expiry_date\": \"2025-03-06 07:14:12+00:00\", \"days_until_expiry\": 44}"
             },
             {
-              "recommendation": "{\"name\": \"nudgebee-dev-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"a9977b63-00a6-42f0-8fde-73c712500386\", \"kind\": \"Ingress\", \"name\": \"app-dev\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee\", \"expiry_date\": \"2025-03-07 08:37:19+00:00\", \"days_until_expiry\": 45}"
+              "recommendation": "{\"name\": \"test-cluster-dev-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"a9977b63-00a6-42f0-8fde-73c712500386\", \"kind\": \"Ingress\", \"name\": \"app-dev\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee\", \"expiry_date\": \"2025-03-07 08:37:19+00:00\", \"days_until_expiry\": 45}"
             },
             {
               "recommendation": "{\"name\": \"relay-dev-collector-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"9746fb24-0082-43ce-ab58-cb7f89c28a75\", \"kind\": \"Ingress\", \"name\": \"relay-server\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee\", \"expiry_date\": \"2025-03-07 08:39:47+00:00\", \"days_until_expiry\": 45}"
             },
             {
-              "recommendation": "{\"name\": \"nudgebee-dev-collector-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"709eb8f8-ba4d-464c-8303-47e088f55312\", \"kind\": \"Ingress\", \"name\": \"k8s-collector\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee\", \"expiry_date\": \"2025-03-07 08:44:41+00:00\", \"days_until_expiry\": 45}"
+              "recommendation": "{\"name\": \"test-cluster-dev-collector-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"709eb8f8-ba4d-464c-8303-47e088f55312\", \"kind\": \"Ingress\", \"name\": \"k8s-collector\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee\", \"expiry_date\": \"2025-03-07 08:44:41+00:00\", \"days_until_expiry\": 45}"
             },
             {
-              "recommendation": "{\"name\": \"nudgebee-dev-docs-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"6e6e7e1c-be7f-411a-9164-925cc40a1aa5\", \"kind\": \"Ingress\", \"name\": \"nudgebee-doc-docs\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee\", \"expiry_date\": \"2025-03-08 05:52:00+00:00\", \"days_until_expiry\": 46}"
+              "recommendation": "{\"name\": \"test-cluster-dev-docs-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"6e6e7e1c-be7f-411a-9164-925cc40a1aa5\", \"kind\": \"Ingress\", \"name\": \"nudgebee-doc-docs\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee\", \"expiry_date\": \"2025-03-08 05:52:00+00:00\", \"days_until_expiry\": 46}"
             },
             {
-              "recommendation": "{\"name\": \"nudgebee-test-docs-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"46a406c8-93a2-4d41-b5bf-b41d6e101ae8\", \"kind\": \"Ingress\", \"name\": \"nudgebee-doc-docs\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"nudgebee-test\", \"expiry_date\": \"2025-03-11 02:32:21+00:00\", \"days_until_expiry\": 49}"
+              "recommendation": "{\"name\": \"test-cluster-test-docs-example-tls\", \"metadata\": {\"owners\": [{\"uid\": \"46a406c8-93a2-4d41-b5bf-b41d6e101ae8\", \"kind\": \"Ingress\", \"name\": \"nudgebee-doc-docs\", \"api-version\": \"networking.k8s.io/v1\"}], \"managed-by\": \"Helm\"}, \"namespace\": \"test-cluster-test\", \"expiry_date\": \"2025-03-11 02:32:21+00:00\", \"days_until_expiry\": 49}"
             },
             {
               "recommendation": "{\"name\": \"ca-cert\", \"metadata\": {\"owners\": [], \"managed-by\": \"\"}, \"namespace\": \"cert-manager\", \"expiry_date\": \"2029-12-11 04:07:02+00:00\", \"days_until_expiry\": 1785}"
@@ -844,14 +844,14 @@
               "account_id": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
               "count_severity_critical": 1,
               "workload_name": "auto-pilot-server",
-              "namespace": "nudgebee-test"
+              "namespace": "test-cluster-test"
             },
             {
               "count_image": 1,
               "account_id": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
               "count_severity_critical": 1,
               "workload_name": "auto-pilot-worker",
-              "namespace": "nudgebee-test"
+              "namespace": "test-cluster-test"
             },
             {
               "count_image": 1,
@@ -900,14 +900,14 @@
               "account_id": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
               "count_severity_critical": 2,
               "workload_name": "nudgebee-doc-docs",
-              "namespace": "nudgebee-test"
+              "namespace": "test-cluster-test"
             },
             {
               "count_image": 1,
               "account_id": "a2a30b02-0f67-42e5-a2ab-c658230fd798",
               "count_severity_critical": 1,
               "workload_name": "postgres-postgresql",
-              "namespace": "nudgebee-test"
+              "namespace": "test-cluster-test"
             },
             {
               "count_image": 2,

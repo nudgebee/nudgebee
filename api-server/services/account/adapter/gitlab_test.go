@@ -17,14 +17,15 @@ import (
 )
 
 func TestCheckoutCodeRepoGitLab(t *testing.T) {
-	// Skip if GitLab token not configured
+	// Skip if GitLab integration env vars not configured
 	gitlabToken := os.Getenv("GITLAB_TOKEN")
-	if gitlabToken == "" {
-		t.Skip("Skipping test - GITLAB_TOKEN not configured")
+	projectPath := os.Getenv("TEST_GITLAB_PROJECT_PATH")
+	if gitlabToken == "" || projectPath == "" {
+		t.Skip("Skipping test - GITLAB_TOKEN and TEST_GITLAB_PROJECT_PATH must be set")
 	}
 
 	details := gitLabDetailFromDeployment{
-		ProjectPath: "nudgebee/nudgebee-test", // Test project path
+		ProjectPath: projectPath,
 		BaseBranch:  "main",
 		FilePath:    "deploy/kubernetes/app/values-dev.yaml",
 		Annotations: map[string]string{
@@ -75,14 +76,15 @@ func TestCheckoutCodeRepoGitLab(t *testing.T) {
 }
 
 func TestCommitCodeGitLab(t *testing.T) {
-	// Skip if GitLab token not configured
+	// Skip if GitLab integration env vars not configured
 	gitlabToken := os.Getenv("GITLAB_TOKEN")
-	if gitlabToken == "" {
-		t.Skip("Skipping test - GITLAB_TOKEN not configured")
+	projectPath := os.Getenv("TEST_GITLAB_PROJECT_PATH")
+	if gitlabToken == "" || projectPath == "" {
+		t.Skip("Skipping test - GITLAB_TOKEN and TEST_GITLAB_PROJECT_PATH must be set")
 	}
 
 	details := gitLabDetailFromDeployment{
-		ProjectPath: "nudgebee/nudgebee-test",
+		ProjectPath: projectPath,
 		BaseBranch:  "main",
 		FilePath:    "deploy/kubernetes/app/values-dev.yaml",
 		Annotations: map[string]string{

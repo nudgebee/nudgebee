@@ -396,10 +396,26 @@ func (c *Client) createChat(ctx context.Context, payload *ChatRequest) (*ChatCom
 func parseStreamingChatResponse(ctx context.Context, r *http.Response, payload *ChatRequest) (*ChatCompletionResponse,
 	error,
 ) { //nolint:cyclop,lll
+	// Cancel the producer goroutine when this function returns (e.g. the
+	// consumer below stops reading after a stream error), so it can't block
+	// forever on the unbuffered channel and leak.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	scanner := bufio.NewScanner(r.Body)
 	responseChan := make(chan StreamedChatResponsePayload)
 	go func() {
 		defer close(responseChan)
+		// send guards every channel write against context cancellation so the
+		// producer exits instead of blocking when the consumer has stopped.
+		send := func(p StreamedChatResponsePayload) bool {
+			select {
+			case responseChan <- p:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
 		for scanner.Scan() {
 			line := scanner.Text()
 			if line == "" {
@@ -415,13 +431,15 @@ func parseStreamingChatResponse(ctx context.Context, r *http.Response, payload *
 			err := json.NewDecoder(bytes.NewReader([]byte(data))).Decode(&streamPayload)
 			if err != nil {
 				streamPayload.Error = fmt.Errorf("error decoding streaming response: %w", err)
-				responseChan <- streamPayload
+				send(streamPayload)
 				return
 			}
-			responseChan <- streamPayload
+			if !send(streamPayload) {
+				return
+			}
 		}
 		if err := scanner.Err(); err != nil {
-			responseChan <- StreamedChatResponsePayload{Error: fmt.Errorf("error reading streaming response: %w", err)}
+			send(StreamedChatResponsePayload{Error: fmt.Errorf("error reading streaming response: %w", err)})
 			return
 		}
 	}()

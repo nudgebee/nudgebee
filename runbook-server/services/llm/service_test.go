@@ -12,8 +12,24 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 )
+
+// newTestSecurityContext builds a SecurityContext with freshly generated
+// tenant/user UUIDs. Tests don't hit a real DB so any well-formed UUID works —
+// generating per-test avoids hardcoded ids that could be mistaken for real
+// fixtures.
+func newTestSecurityContext(t *testing.T) (*security.SecurityContext, string, string) {
+	t.Helper()
+	tenantID := uuid.NewString()
+	userID := uuid.NewString()
+	sc := &security.SecurityContext{}
+	scBytes, err := json.Marshal(map[string]any{"TenantId": tenantID, "UserId": userID})
+	assert.NoError(t, err)
+	assert.NoError(t, sc.UnmarshalJSON(scBytes))
+	return sc, tenantID, userID
+}
 
 func TestProcessRequest_AsyncPolling(t *testing.T) {
 	convID := "test-conv-123"
@@ -84,27 +100,17 @@ func TestProcessRequest_AsyncPolling(t *testing.T) {
 	defer func() { config.Config.LlmServerUrl = oldURL }()
 
 	// Setup context manually to avoid DB calls in NewSecurityContextForTenantAdmin
-	sc := &security.SecurityContext{}
-	tenantID := "890cad87-c452-4aa7-b84a-742cee0454a1"
-	userID := "30b9833e-f667-4b0b-b2c1-065169968e24"
-	scData := map[string]any{
-		"TenantId": tenantID,
-		"UserId":   userID,
-	}
-	scBytes, _ := json.Marshal(scData)
-	err := sc.UnmarshalJSON(scBytes)
-	assert.NoError(t, err)
-
+	sc, _, _ := newTestSecurityContext(t)
 	ctx := security.NewRequestContext(context.Background(), sc, nil, nil, nil)
 
 	req := LLMRequest{
 		Message:   "hi",
-		AccountId: "a2a30b02-0f67-42e5-a2ab-c658230fd798",
+		AccountId: uuid.NewString(),
 	}
 
 	start := time.Now()
 	var resp LLMResponse
-	resp, err = ProcessRequest(ctx, req)
+	resp, err := ProcessRequest(ctx, req)
 	duration := time.Since(start)
 
 	assert.NoError(t, err)
@@ -134,11 +140,7 @@ func TestProcessRequest_Timeout(t *testing.T) {
 	config.Config.RunbookServerLlmInitialBackoffSeconds = 1
 	defer func() { config.Config.LlmServerUrl = oldURL }()
 
-	sc := &security.SecurityContext{}
-	scData := map[string]any{"TenantId": "890cad87-c452-4aa7-b84a-742cee0454a1"}
-	scBytes, _ := json.Marshal(scData)
-	err := sc.UnmarshalJSON(scBytes)
-	assert.NoError(t, err)
+	sc, _, _ := newTestSecurityContext(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -149,7 +151,7 @@ func TestProcessRequest_Timeout(t *testing.T) {
 		AccountId: "acc-1",
 	}
 
-	_, err = ProcessRequest(reqCtx, req)
+	_, err := ProcessRequest(reqCtx, req)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), context.DeadlineExceeded.Error())
 }
@@ -173,11 +175,7 @@ func TestProcessRequest_MaxRetries(t *testing.T) {
 	config.Config.RunbookServerLlmInitialBackoffSeconds = 1
 	defer func() { config.Config.LlmServerUrl = oldURL }()
 
-	sc := &security.SecurityContext{}
-	scData := map[string]any{"TenantId": "890cad87-c452-4aa7-b84a-742cee0454a1"}
-	scBytes, _ := json.Marshal(scData)
-	err := sc.UnmarshalJSON(scBytes)
-	assert.NoError(t, err)
+	sc, _, _ := newTestSecurityContext(t)
 
 	reqCtx := security.NewRequestContext(context.Background(), sc, nil, nil, nil)
 
@@ -186,7 +184,7 @@ func TestProcessRequest_MaxRetries(t *testing.T) {
 		AccountId: "acc-1",
 	}
 
-	_, err = ProcessRequest(reqCtx, req)
+	_, err := ProcessRequest(reqCtx, req)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "max retry attempts reached")
 }
@@ -226,11 +224,7 @@ func TestProcessRequest_ForwardsModelOverride(t *testing.T) {
 	config.Config.RunbookServerLlmInitialBackoffSeconds = 1
 	defer func() { config.Config.LlmServerUrl = oldURL }()
 
-	sc := &security.SecurityContext{}
-	scData := map[string]any{"TenantId": "890cad87-c452-4aa7-b84a-742cee0454a1"}
-	scBytes, _ := json.Marshal(scData)
-	err := sc.UnmarshalJSON(scBytes)
-	assert.NoError(t, err)
+	sc, _, _ := newTestSecurityContext(t)
 	reqCtx := security.NewRequestContext(context.Background(), sc, nil, nil, nil)
 
 	req := LLMRequest{
@@ -240,7 +234,7 @@ func TestProcessRequest_ForwardsModelOverride(t *testing.T) {
 		LlmModelName: "claude-3-5-sonnet",
 	}
 
-	_, err = ProcessRequest(reqCtx, req)
+	_, err := ProcessRequest(reqCtx, req)
 	assert.NoError(t, err)
 	assert.NotNil(t, capturedInitialBody)
 	input, _ := capturedInitialBody["input"].(map[string]any)
@@ -285,19 +279,77 @@ func TestProcessRequest_OmitsConfigWhenNoModelOverride(t *testing.T) {
 	config.Config.RunbookServerLlmInitialBackoffSeconds = 1
 	defer func() { config.Config.LlmServerUrl = oldURL }()
 
-	sc := &security.SecurityContext{}
-	scData := map[string]any{"TenantId": "890cad87-c452-4aa7-b84a-742cee0454a1"}
-	scBytes, _ := json.Marshal(scData)
-	err := sc.UnmarshalJSON(scBytes)
-	assert.NoError(t, err)
+	sc, _, _ := newTestSecurityContext(t)
 	reqCtx := security.NewRequestContext(context.Background(), sc, nil, nil, nil)
 
-	_, err = ProcessRequest(reqCtx, LLMRequest{Message: "hi", AccountId: "acc-1"})
+	_, err := ProcessRequest(reqCtx, LLMRequest{Message: "hi", AccountId: "acc-1"})
 	assert.NoError(t, err)
 	input, _ := capturedInitialBody["input"].(map[string]any)
 	request, _ := input["request"].(map[string]any)
 	_, hasConfig := request["config"]
 	assert.False(t, hasConfig, "config key should be omitted when no provider/model override set")
+}
+
+func TestProcessRequest_ForwardsWorkflowTrace(t *testing.T) {
+	var capturedInitialBody map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.URL.Path == "/v1/completions/chat" {
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &capturedInitialBody)
+			_ = json.NewEncoder(w).Encode(llmChatResponse{
+				Data: llmAgentResponse{ConversationId: "c1", SessionId: "wf__wfid__runid", Status: "IN_PROGRESS"},
+			})
+			return
+		}
+		if r.URL.Path == "/v1/completions/chat_get" {
+			_ = json.NewEncoder(w).Encode(llmChatResponse{
+				Data: llmAgentResponse{
+					ConversationId: "c1",
+					SessionId:      "wf__wfid__runid",
+					Status:         "COMPLETED",
+					Messages:       []llmMessage{{Id: "m1", ConversationId: "c1", Response: "ok", Status: "COMPLETED"}},
+				},
+			})
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	oldURL := config.Config.LlmServerUrl
+	config.Config.LlmServerUrl = server.URL
+	config.Config.RunbookServerLlmRetryAttempts = 2
+	config.Config.RunbookServerLlmInitialBackoffSeconds = 1
+	defer func() { config.Config.LlmServerUrl = oldURL }()
+
+	sc, _, _ := newTestSecurityContext(t)
+	reqCtx := security.NewRequestContext(context.Background(), sc, nil, nil, nil)
+
+	req := LLMRequest{
+		Message:     "hi",
+		AccountId:   "acc-1",
+		SessionId:   "wf__wfid__runid",
+		WorkflowId:  "wfid",
+		ExecutionId: "runid",
+		Labels:      map[string]any{"workflow_name": "my_wf", "task_id": "step-1"},
+	}
+
+	_, err := ProcessRequest(reqCtx, req)
+	assert.NoError(t, err)
+	assert.NotNil(t, capturedInitialBody)
+	input, _ := capturedInitialBody["input"].(map[string]any)
+	request, _ := input["request"].(map[string]any)
+	assert.Equal(t, "wf__wfid__runid", request["session_id"])
+
+	cfg, _ := request["config"].(map[string]any)
+	assert.Equal(t, "wfid", cfg["workflow_id"])
+	assert.Equal(t, "runid", cfg["execution_id"])
+	labels, _ := cfg["labels"].(map[string]any)
+	assert.Equal(t, "my_wf", labels["workflow_name"])
+	assert.Equal(t, "step-1", labels["task_id"])
 }
 
 func TestProcessRequest_E2E(t *testing.T) {

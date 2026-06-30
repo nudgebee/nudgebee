@@ -1,7 +1,6 @@
 package core
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -264,11 +263,11 @@ func (t *CallWorkflowTask) GetChildWorkflowDefinition(taskCtx types.TaskContext,
 	// Fetch the workflow row, then resolve its LIVE published version. The child
 	// must run the callee's live version, not its draft (workflows.definition) —
 	// otherwise a published parent silently runs the callee's unpublished edits (H2).
-	wf, err := taskCtx.GetStore().FindByName(context.TODO(), tenantID, accountID, workflowName)
+	wf, err := taskCtx.GetStore().FindByName(taskCtx.GetContext(), tenantID, accountID, workflowName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find workflow '%s' referenced by core.call-workflow task: %w", workflowName, err)
 	}
-	liveVersion, err := taskCtx.GetStore().GetLiveWorkflowVersion(context.TODO(), wf.ID)
+	liveVersion, err := taskCtx.GetStore().GetLiveWorkflowVersion(taskCtx.GetContext(), wf.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load live version of workflow '%s' for core.call-workflow task: %w", workflowName, err)
 	}

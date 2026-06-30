@@ -2,19 +2,19 @@ import React, { useEffect, useState } from 'react';
 import { Box, Typography } from '@mui/material';
 import apiAutoPilot from '@api1/autoPilot';
 import { useRouter } from 'next/router';
-import { ListingLayout } from '@components1/ds/ListingLayout';
-import FilterDropdown from '@components1/ds/FilterDropdown';
+import { ListingLayout } from '@ui/ListingLayout';
+import FilterDropdown from '@ui/FilterDropdown';
 import KubernetesTable2, {
   KubernetesUtilizationCharts,
   KubernetesCostCharts,
   KubernetesPVCUtilization,
-} from '@components1/k8s/common/KubernetesTable2';
-import CustomTable2 from '@common-new/tables/CustomTable2';
+} from '@components/k8s/common/KubernetesTable2';
+import CustomTable2 from '@shared/tables/CustomTable2';
 
-import KubernetesDeploymentHistory from '@components1/k8s/common/KubernetesDeploymentHistory';
+import KubernetesDeploymentHistory from '@components/k8s/common/KubernetesDeploymentHistory';
 
 import LinkIcon from '@mui/icons-material/Link';
-import { Label } from '@components1/ds/Label';
+import { Label } from '@ui/Label';
 const LISTING_HEADER = [
   { name: 'Scheduled Time', width: '10%' },
   { name: 'Status', width: '8%' },
@@ -25,26 +25,26 @@ const LISTING_HEADER = [
 ];
 const DRILL_DOWN_LISTING_HEADER = ['Name', 'Old Value', 'New Value'];
 
-import DateTime from '@common-new/format/Datetime';
+import DateTime from '@shared/format/Datetime';
 import { titleCase } from '@lib/formatter';
 import PropTypes from 'prop-types';
-import WidgetCard from '@components1/ds/WidgetCard';
-import { Stat } from '@components1/ds/Stat';
+import WidgetCard from '@ui/WidgetCard';
+import { Stat } from '@ui/Stat';
 import k8sApi from '@api1/kubernetes';
 import apiUser from '@api1/user';
-import Text from '@common-new/format/Text';
-import { Link } from '@components1/ds/Link';
-import CustomTabs from '@common-new/CustomTabs';
+import Text from '@shared/format/Text';
+import { Link } from '@ui/Link';
+import CustomTabs from '@shared/CustomTabs';
 import { hasWriteAccess } from '@lib/auth';
-import { Button } from '@components1/ds/Button';
-import { toast as snackbar } from '@components1/ds/Toast';
-import AutoPilotApprovalStatusListingModal from '@components1/autopilot/AutoPilotApprovalStatusListingModal';
+import { Button } from '@ui/Button';
+import { toast as snackbar } from '@ui/Toast';
+import AutoPilotApprovalStatusListingModal from '@components/autopilot/AutoPilotApprovalStatusListingModal';
 
-import AutoOptimizeVerticalRightSizingSingleConfiguration from '@components1/autopilot/form/AutoOptimizeVerticalRightSizingSingleConfiguration';
-import AutoOptimizeHorizontalRightSizingSingleConfiguration from '@components1/autopilot/form/AutoOptimizeHorizontalRightSizingSingleConfiguration';
-import AutoOptimizePVRightSizingSingleConfiguration from '@components1/autopilot/form/AutoOptimizePVRightSizingSingleConfiguration';
-import AutoOptimizeContinuousVerticalRightSizingSingleConfiguration from '@components1/autopilot/form/AutoOptimizeContinuousVerticalRightSizingSingleConfiguration';
-import { Modal } from '@components1/ds/Modal';
+import AutoOptimizeVerticalRightSizingSingleConfiguration from '@components/autopilot/form/AutoOptimizeVerticalRightSizingSingleConfiguration';
+import AutoOptimizeHorizontalRightSizingSingleConfiguration from '@components/autopilot/form/AutoOptimizeHorizontalRightSizingSingleConfiguration';
+import AutoOptimizePVRightSizingSingleConfiguration from '@components/autopilot/form/AutoOptimizePVRightSizingSingleConfiguration';
+import AutoOptimizeContinuousVerticalRightSizingSingleConfiguration from '@components/autopilot/form/AutoOptimizeContinuousVerticalRightSizingSingleConfiguration';
+import { Modal } from '@ui/Modal';
 import apiAccount from '@api1/account';
 import apiRecommendations from '@api1/recommendation';
 import { ds } from 'src/utils/colors';

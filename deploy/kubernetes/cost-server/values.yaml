@@ -1,0 +1,62 @@
+# Default values for cost-server.
+# This is a YAML-formatted file.
+
+replicaCount: 1
+
+global:
+  image:
+    registry: 'ghcr.io/nudgebee'
+  imagePullSecrets: []
+
+image:
+  repository: nudgebee-cost-server
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: 'latest'
+
+imagePullSecrets: []
+nameOverride: ''
+fullnameOverride: ''
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ''
+
+podAnnotations: {}
+
+podSecurityContext: {}
+
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 9003
+
+secretName: 'nudgebee'
+
+# Per cluster, the engine caches one upstream costmodel.Accesses and holds the
+# PromQL allocation result (~1.5k pod rows) in memory; memory grows with the number
+# of clusters served. Tune limits.memory after the multi-cluster memory check.
+resources:
+  limits:
+    cpu: '1'
+    memory: 2Gi
+  requests:
+    cpu: 200m
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+annotations: {}

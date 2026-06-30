@@ -1,14 +1,14 @@
 import { Box, FormControlLabel, Grid, Radio, RadioGroup } from '@mui/material';
-import { Checkbox } from '@components1/ds/Checkbox';
+import { Checkbox } from '@ui/Checkbox';
 import React, { useState } from 'react';
 import PropTypes from 'prop-types';
 import apiAccount from '@api1/account';
-import { Modal } from '@components1/common/modal';
-import { Input } from '@components1/ds/Input';
+import { Modal } from '@shared/modal';
+import { Input } from '@ui/Input';
 import { isK8sAccountNameValid } from 'src/utils/common';
-import { Button } from '@components1/ds/Button';
-import { snackbar } from '@components1/common/snackbarService';
-import MarkDowns from '@components1/common/MarkDowns';
+import { Button } from '@ui/Button';
+import { snackbar } from '@shared/snackbarService';
+import MarkDowns from '@shared/viewers/MarkDowns';
 
 const SETUP_INSTRUCTIONS = `### Cloud Foundry Account Setup
   ### Step 1. Enter Account Name

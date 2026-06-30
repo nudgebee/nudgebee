@@ -5,7 +5,7 @@ Handles document search endpoints with token tracking and metadata filtering.
 """
 
 import logging
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -17,6 +17,8 @@ from utils.config import Config
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+TokenUsage = dict[str, Any]
 
 
 # Pydantic models
@@ -31,7 +33,7 @@ class GetMatchingDocRequest(BaseModel):
     user_id: Optional[str] = None
     agent_id: Optional[str] = None
     track_token_usage: bool = True
-    metadata_filter: Optional[dict] = None  # Optional metadata filtering
+    metadata_filter: Optional[dict[str, Any]] = None  # Optional metadata filtering
     # Optional tenant scope. When omitted, the server resolves it from
     # ``account_id`` so tenant-scoped integration collections (Confluence,
     # ServiceNow) are visible without the caller needing to know about tenants.
@@ -58,7 +60,7 @@ def _validate_token_tracking(
         )
 
 
-def _accumulate_token_usage(total_usage: dict, new_usage: dict) -> None:
+def _accumulate_token_usage(total_usage: TokenUsage, new_usage: Optional[Mapping[str, Any]]) -> None:
     """Accumulate token usage metrics into total."""
     if not new_usage:
         return
@@ -240,9 +242,9 @@ async def get_prometheus_doc(request: GetMatchingDocRequest):
             request.agent_id,
         )
 
-    except Exception as e:
-        logger.exception(f"Error getting matching document df: {e}")
-        return {"status": "error", "error": str(e)}
+    except Exception:
+        logger.exception("Error getting matching document df")
+        return {"status": "error", "error": "Failed to get matching documents"}
 
     content = [doc.page_content for doc, score in documents]
     if not content:

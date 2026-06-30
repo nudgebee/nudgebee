@@ -1,6 +1,7 @@
 package account
 
 import (
+	"fmt"
 	"nudgebee/collector/cloud/security"
 	"os"
 	"testing"
@@ -34,11 +35,16 @@ func TestExecuteCliCommandAzure(t *testing.T) {
 }
 
 func TestExecuteCliVmCommandAzure(t *testing.T) {
+	rg := os.Getenv("TEST_AZURE_RESOURCE_GROUP")
+	vm := os.Getenv("TEST_AZURE_VM_NAME")
+	if rg == "" || vm == "" {
+		t.Skip("Skipping test - TEST_AZURE_RESOURCE_GROUP and TEST_AZURE_VM_NAME must be set")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := ExecuteCliCommand(
 		ctx,
 		"c3a2d91d-17b7-4df4-93a0-7a777a399e29",
-		"az vm run-command invoke --resource-group aks-dev-rg --name nudgebee-dev --command-id RunShellScript --scripts 'ls /home'",
+		fmt.Sprintf("az vm run-command invoke --resource-group %s --name %s --command-id RunShellScript --scripts 'ls /home'", rg, vm),
 	)
 	assert.Nil(t, err)
 	assert.NotNil(t, response)

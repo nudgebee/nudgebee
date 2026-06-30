@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useMemo, useState } from 'react';
 
 const DataContext = createContext();
 
@@ -14,24 +14,25 @@ export const DataProvider = ({ children }) => {
   const [allCluster, setAllCluster] = useState(null);
   const [providerCapabilities, setProviderCapabilities] = useState([]);
 
-  const setAutoOptimizeNameRequest = (name) => {
+  // Stable references so the useMemo below only recomputes when state changes,
+  // not on every parent re-render (e.g. route navigation). 47 components consume this context.
+  const setAutoOptimizeNameRequest = useCallback((name) => {
     setAutoOptimizeName(name);
-  };
+  }, []);
 
-  const setPodLogRequest = (accountId, query) => {
+  const setPodLogRequest = useCallback((accountId, query) => {
     setPodLog((prevPodLog) => {
-      return {
-        ...prevPodLog,
-        accountId,
-        query,
-      };
+      if (prevPodLog.accountId === accountId && prevPodLog.query === query) {
+        return prevPodLog;
+      }
+      return { ...prevPodLog, accountId, query };
     });
-  };
+  }, []);
 
-  const setAllClusterGlobal = (clusters) => {
+  const setAllClusterGlobal = useCallback((clusters) => {
     globalClusterData = clusters;
     setAllCluster(clusters);
-  };
+  }, []);
 
   const value = useMemo(
     () => ({

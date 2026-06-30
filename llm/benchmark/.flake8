@@ -4,3 +4,9 @@ max-complexity = 18
 select = B,C,E,F,W,T4,B9
 exclude = .git,__pycache__,docs/source/conf.py,old,build,dist,.venv,.ml-env,notebooks,data
 extend-ignore = E203, W503
+per-file-ignores =
+    benchmark_server/controllers/agent_analyzer_controller.py:C901
+    benchmark_server/controllers/agent_benchmark_controller.py:C901
+    benchmark_server/orchestrator.py:C901
+    benchmark_server/utils/email_templates.py:E501
+    benchmark_server/utils/llm_client.py:C901

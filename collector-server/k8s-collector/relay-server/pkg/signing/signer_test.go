@@ -132,6 +132,66 @@ func TestSign_ConfigSync(t *testing.T) {
 	}
 }
 
+// TestSign_MongoDiagnosticActions verifies the three read-only MongoDB
+// diagnostic actions are in the signer allowlist and sign with the expected
+// fields (action, datasource_id, params), and that the Ed25519 signature
+// verifies. This guards the relay side of the MongoDB tool (#385): without
+// these entries the relay could not sign/forward them.
+func TestSign_MongoDiagnosticActions(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	s, err := NewSigner(base64.StdEncoding.EncodeToString(priv), "test-key", testLogger())
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+
+	for _, action := range []string{"mongo_server_status", "mongo_repl_status", "mongo_current_ops"} {
+		t.Run(action, func(t *testing.T) {
+			if _, ok := SigningFields[action]; !ok {
+				t.Fatalf("action %q is not in SigningFields allowlist", action)
+			}
+
+			msg := map[string]any{
+				"action":        action,
+				"datasource_id": "ds-mongo-1",
+				"params":        map[string]any{"datasource_id": "ds-mongo-1"},
+			}
+			msgBytes, _ := json.Marshal(msg)
+
+			signed, err := s.Sign(msgBytes)
+			if err != nil {
+				t.Fatalf("Sign(%s): %v", action, err)
+			}
+
+			var result map[string]any
+			if err := json.Unmarshal(signed, &result); err != nil {
+				t.Fatalf("unmarshal signed: %v", err)
+			}
+
+			// Ed25519 signature over the canonical signed_payload must verify.
+			payloadStr, _ := result["signed_payload"].(string)
+			sigBytes, _ := base64.StdEncoding.DecodeString(result["signature"].(string))
+			if !ed25519.Verify(pub, []byte(payloadStr), sigBytes) {
+				t.Fatalf("signature did not verify for %s", action)
+			}
+
+			// signed_payload must carry exactly the allowlisted fields.
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(payloadStr), &payload); err != nil {
+				t.Fatalf("unmarshal payload: %v", err)
+			}
+			if payload["action"] != action {
+				t.Fatalf("expected action %q, got %v", action, payload["action"])
+			}
+			if payload["datasource_id"] != "ds-mongo-1" {
+				t.Fatalf("expected datasource_id ds-mongo-1, got %v", payload["datasource_id"])
+			}
+			if _, ok := payload["params"]; !ok {
+				t.Fatalf("expected params in signed payload for %s", action)
+			}
+		})
+	}
+}
+
 func TestSign_ActionRequest(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(nil)
 	s, _ := NewSigner(base64.StdEncoding.EncodeToString(priv), "test-key", testLogger())

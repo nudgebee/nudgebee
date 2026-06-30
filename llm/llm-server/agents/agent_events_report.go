@@ -222,3 +222,7 @@ Context
 	}
 	return content, err
 }
+
+func (l AgentEventRCAReport) GetModelCategory() core.ModelTier {
+	return core.ModelTierSummary
+}

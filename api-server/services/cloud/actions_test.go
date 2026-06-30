@@ -53,6 +53,76 @@ func TestCloudLogAction(t *testing.T) {
 	assert.Nil(t, err)
 }
 
+// TestGCPEnricherGating covers the region-optional gating and the incident-ID guard
+// for GCP events. Pure unit test — only reads event labels, no cloud/DB access.
+func TestGCPEnricherGating(t *testing.T) {
+	ctxWith := func(source string, labels map[string]string) playbooks.PlaybookActionContext {
+		return playbooks.NewPlaybookActionContext("t", "a", slog.Default(),
+			playbooks.PlaybookEvent{Source: source, Labels: labels})
+	}
+	logAction := cloudLogAction{}
+	resAction := cloudResourceAction{}
+	metricsAction := cloudMetricsAction{}
+
+	// Cloud Run metric alert: real service_name, NO region -> enrich (region optional).
+	cloudRun := map[string]string{
+		"gcp_account": "live-fullspectrum", "gcp_project_id": "live-fullspectrum",
+		"gcp_service_name": "Cloud Run", "gcp_event_instance": "frontoffice-pre-alpha",
+		"gcp_incident_id": "0.o9i3cz02x353", "gcp_event_resource_type": "cloud_run_revision",
+	}
+	assert.True(t, logAction.CanAutoExecute(ctxWith("GCP_Metric_Alert", cloudRun)),
+		"cloud_logs should enrich a GCP metric alert with a real resource id even without region")
+	assert.True(t, resAction.CanAutoExecute(ctxWith("GCP_Metric_Alert", cloudRun)),
+		"cloud_resources should enrich a GCP metric alert with a real resource id even without region")
+
+	// Incident-ID fallback (gcp_event_instance == gcp_incident_id), plain metric alert
+	// with no log-based metric -> do NOT auto-enrich (filter would match nothing).
+	incidentOnly := map[string]string{
+		"gcp_account": "full-auth", "gcp_project_id": "full-auth",
+		"gcp_service_name":   "Cloud Monitoring",
+		"gcp_event_instance": "0.o9abc", "gcp_incident_id": "0.o9abc",
+	}
+	assert.False(t, logAction.CanAutoExecute(ctxWith("GCP_Metric_Alert", incidentOnly)),
+		"cloud_logs should not enrich when the only identifier is the incident id")
+	assert.False(t, resAction.CanAutoExecute(ctxWith("GCP_Metric_Alert", incidentOnly)),
+		"cloud_resources should not enrich when the only identifier is the incident id")
+
+	// User-defined log-based metric alert (e.g. l7_lb Log4j): no region, no real resource
+	// id, but the metric's own filter scopes the logs -> enrich.
+	logMetric := map[string]string{
+		"gcp_account": "full-auth", "gcp_project_id": "full-auth",
+		"gcp_service_name":   "Cloud Monitoring",
+		"gcp_event_instance": "0.o9def", "gcp_incident_id": "0.o9def",
+		"gcp_metric_type": "logging.googleapis.com/user/log4j_exploits",
+	}
+	assert.True(t, logAction.CanAutoExecute(ctxWith("GCP_Metric_Alert", logMetric)),
+		"cloud_logs should enrich a user-defined log-based metric alert via its filter")
+
+	// Native GCP log alert with no region -> enrich.
+	logAlert := map[string]string{
+		"gcp_account": "full-auth", "gcp_alert_type": "log",
+	}
+	assert.True(t, logAction.CanAutoExecute(ctxWith("GCP_Metric_Alert", logAlert)),
+		"cloud_logs should enrich a native GCP log alert even without region")
+
+	// cloud_metrics: a GCP metric alert (has gcp_event_metric_type, not log-based) should
+	// fetch the metric timeseries even without region (Cloud Monitoring is global).
+	metricAlert := map[string]string{
+		"gcp_account": "full-auth", "gcp_project_id": "full-auth",
+		"gcp_alert_type": "metric", "gcp_service_name": "Cloud Run",
+		"gcp_event_metric_type": "run.googleapis.com/request_count",
+		"gcp_event_instance":    "0.o9xyz", "gcp_incident_id": "0.o9xyz",
+	}
+	assert.True(t, metricsAction.CanAutoExecute(ctxWith("GCP_Metric_Alert", metricAlert)),
+		"cloud_metrics should fetch the metric timeseries for a GCP metric alert without region")
+
+	// cloud_metrics must skip log-based alerts (no metric to chart) and alerts with no metric type.
+	assert.False(t, metricsAction.CanAutoExecute(ctxWith("GCP_Metric_Alert", logAlert)),
+		"cloud_metrics should skip log-based GCP alerts")
+	assert.False(t, metricsAction.CanAutoExecute(ctxWith("GCP_Metric_Alert", cloudRun)),
+		"cloud_metrics should not fire when there is no gcp_event_metric_type")
+}
+
 func TestCloudServiceMap(t *testing.T) {
 	testenv.RequireEnv(t, testenv.Tenant, "TEST_CLOUD_ACCOUNT", "TEST_AWS_ECS_RESOURCE_ID")
 	cloudServiceMap := cloudServiceMapAction{}
@@ -186,4 +256,27 @@ func TestCloudPerformanceInsightsCanAutoExecute_StandardRDSAlarm(t *testing.T) {
 		assert.NotNil(t, response)
 		t.Logf("Performance Insights AutoExecute for standard alarm response: %+v", response)
 	}
+}
+
+// TestCloudGCPAuditLogGating covers the deploy/change enricher gate: fires for GCP Cloud
+// Run events with a project, skips other GCP resources and project-less events.
+func TestCloudGCPAuditLogGating(t *testing.T) {
+	ctxWith := func(labels map[string]string) playbooks.PlaybookActionContext {
+		return playbooks.NewPlaybookActionContext("t", "a", slog.Default(),
+			playbooks.PlaybookEvent{Source: "GCP_Metric_Alert", Labels: labels})
+	}
+	audit := cloudGCPAuditLogAction{}
+
+	assert.True(t, audit.CanAutoExecute(ctxWith(map[string]string{
+		"gcp_project_id": "full-auth", "gcp_event_resource_type": "cloud_run_revision",
+	})), "Cloud Run event (by resource type) should fetch recent changes")
+	assert.True(t, audit.CanAutoExecute(ctxWith(map[string]string{
+		"gcp_project_id": "full-auth", "gcp_service_name": "Cloud Run",
+	})), "Cloud Run event (by service name) should fetch recent changes")
+	assert.False(t, audit.CanAutoExecute(ctxWith(map[string]string{
+		"gcp_project_id": "full-auth", "gcp_event_resource_type": "cloudsql_database",
+	})), "non-Cloud-Run GCP resource should not run the run.googleapis.com audit query")
+	assert.False(t, audit.CanAutoExecute(ctxWith(map[string]string{
+		"gcp_service_name": "Cloud Run",
+	})), "no project -> skip")
 }

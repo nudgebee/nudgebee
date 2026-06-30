@@ -162,21 +162,33 @@ func (s *AzureAppInsightsTraceSource) CountTraces(sc *security.RequestContext, t
 	if err := common.UnmarshalJson(bodyBytes, &azureAppInsightsLogs); err != nil {
 		return common.OpenTelemetryTraceCount{}, fmt.Errorf("failed to unmarshal azure traces: %w", err)
 	}
-	count := azureAppInsightsLogs.Tables[0].Rows[0][0]
-	var finalCount int
-	switch v := count.(type) {
-	case int:
-		finalCount = v
-	case float64:
-		finalCount = int(v)
-	default:
-		sc.GetLogger().Error("CountTraces: Unknown type")
-		return common.OpenTelemetryTraceCount{}, fmt.Errorf("unknown type for count: %T", v)
+	finalCount, err := azureCountFromResponse(azureAppInsightsLogs)
+	if err != nil {
+		sc.GetLogger().Error("CountTraces: failed to extract count", "error", err)
+		return common.OpenTelemetryTraceCount{}, err
 	}
 	otelTraces := common.OpenTelemetryTraceCount{
 		Count: finalCount,
 	}
 	return otelTraces, nil
+}
+
+// azureCountFromResponse extracts the scalar count from a `| count` KQL response.
+// An empty result set (no tables/rows) is a valid "zero traces" answer rather
+// than a panic — the previous direct `Tables[0].Rows[0][0]` indexing crashed on
+// any empty Azure response.
+func azureCountFromResponse(resp AzureResponse) (int, error) {
+	if len(resp.Tables) == 0 || len(resp.Tables[0].Rows) == 0 || len(resp.Tables[0].Rows[0]) == 0 {
+		return 0, nil
+	}
+	switch v := resp.Tables[0].Rows[0][0].(type) {
+	case int:
+		return v, nil
+	case float64:
+		return int(v), nil
+	default:
+		return 0, fmt.Errorf("unknown type for count: %T", v)
+	}
 }
 
 func (s *AzureAppInsightsTraceSource) QueryTracesHeatmap(ctx *security.RequestContext, fetchHeatMapRequest TracesHeatMapRequest) ([]common.OpenTelemetryTraceHeatMap, error) {
@@ -235,16 +247,27 @@ func (s *AzureAppInsightsTraceSource) GetLabelValues(sc *security.RequestContext
 	if err := common.UnmarshalJson(bodyBytes, &azureAppInsightsLogs); err != nil {
 		return common.OpenTelemetryTraceLabelValues{}, fmt.Errorf("failed to unmarshal azure traces: %w", err)
 	}
-	rows := azureAppInsightsLogs.Tables[0].Rows
-	labelValues := []string{}
-	for _, row := range rows {
-		labelValues = append(labelValues, fmt.Sprintf("%v", row[0]))
-	}
-
 	otelTraces := common.OpenTelemetryTraceLabelValues{
-		Values: labelValues,
+		Values: azureLabelValuesFromResponse(azureAppInsightsLogs),
 	}
 	return otelTraces, nil
+}
+
+// azureLabelValuesFromResponse pulls the first column of each row from a
+// `| distinct <label>` KQL response, tolerating an empty result set and empty
+// rows instead of panicking on `Tables[0]` / `row[0]` like the prior code did.
+func azureLabelValuesFromResponse(resp AzureResponse) []string {
+	labelValues := []string{}
+	if len(resp.Tables) == 0 {
+		return labelValues
+	}
+	for _, row := range resp.Tables[0].Rows {
+		if len(row) == 0 || row[0] == nil {
+			continue
+		}
+		labelValues = append(labelValues, fmt.Sprintf("%v", row[0]))
+	}
+	return labelValues
 }
 
 // injectTimeFilter adds a timestamp _between filter from StartTime/EndTime into the where clause

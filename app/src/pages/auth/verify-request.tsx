@@ -4,7 +4,7 @@ import Typography from '@mui/material/Typography';
 import Head from 'next/head';
 import { useRouter } from 'next/router';
 import { StarsIcon } from '@assets';
-import SafeIcon from '@components1/common/SafeIcon';
+import SafeIcon from '@shared/icons/SafeIcon';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
 
 const FALLBACK_LOGO = '/branding/default/logo.svg';

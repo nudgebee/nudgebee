@@ -16,10 +16,11 @@ from notifications_server.schemas.message import (
 from notifications_server.services.common import CommonService
 from notifications_server.services.message import MessageService
 from notifications_server.services.rules import NotificationRulesService
+from notifications_server.clients.google_chat_app_client import GoogleChatAppClient
 
 
 class PlatformInput(BaseModel):
-    platform: Literal["slack", "ms_teams", "google_chat"] = Field(..., description="Target platform")
+    platform: Literal["slack", "ms_teams", "google_chat", "discord"] = Field(..., description="Target platform")
 
 
 class HasuraActionPayload(BaseModel):
@@ -43,6 +44,16 @@ def _get_message_service() -> MessageService:
 # Error message constants
 ERROR_MISSING_TENANT_HEADER = "Missing tenant header"
 ERROR_TENANT_NOT_FOUND = "Tenant id not found"
+
+# Broad-`except` rationale (applies to every endpoint below):
+# Known/user-actionable errors travel through the structured `{"error": {"message": ...}}`
+# return path from the service layer (`if "error" in result: return JSONResponse(result, ...)`).
+# Only unexpected bugs/infra failures (DB outage, library crash, etc.) reach the broad
+# `except Exception:` blocks. Exposing `str(e)` to clients there risks leaking internals
+# (DB hosts, file paths, secrets) without giving the user any actionable information.
+# `LOG.exception(...)` preserves the full traceback in server logs for debugging.
+# Distributed-trace-based correlation will be added in a follow-up that wires a
+# traceparent-aware log formatter; for now ops correlate by timestamp + endpoint.
 
 ACTION_TOKEN_HEADER = "X-ACTION-TOKEN"
 
@@ -94,8 +105,9 @@ async def list_channels(request: Request, body: HasuraActionPayload):
         with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
             channels = controller.list_channels(platform, tenant)
             return JSONResponse(content=channels)
-    except Exception as e:
-        return JSONResponse({"error": {"message": "Unable to list channels", "cause": "".join(map(str, e.args))}})
+    except Exception:
+        LOG.exception("Error in list_channels endpoint")
+        return JSONResponse({"error": {"message": "Unable to list channels"}})
 
 
 @router.post("/users/list", dependencies=[Depends(verify_action_token)])
@@ -111,8 +123,9 @@ async def list_users(request: Request, body: HasuraActionPayload):
         with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
             users = controller.list_users(platform, tenant)
             return JSONResponse(content=users)
-    except Exception as e:
-        return JSONResponse({"error": {"message": "Unable to list users", "cause": "".join(map(str, e.args))}})
+    except Exception:
+        LOG.exception("Error in list_users endpoint")
+        return JSONResponse({"error": {"message": "Unable to list users"}})
 
 
 @router.post("/channels/join", status_code=201)
@@ -140,12 +153,13 @@ async def join_channel(request: Request, payload: Dict[Any, Any], background_tas
                 status_code=400,
             )
 
-        # Only support Slack for now
-        if platform.lower() not in ["slack"]:
+        # Slack joins a channel; Google Chat self-joins a space (service-account bot).
+        if platform.lower() not in ["slack", "google_chat"]:
             return JSONResponse(
                 {
                     "error": {
-                        "message": f"Platform {platform} is not supported yet. Only 'slack' is currently supported."
+                        "message": f"Platform {platform} is not supported yet. "
+                        "Only 'slack' and 'google_chat' are currently supported."
                     }
                 },
                 status_code=400,
@@ -166,9 +180,9 @@ async def join_channel(request: Request, payload: Dict[Any, Any], background_tas
                 return JSONResponse(result, status_code=400)
 
             return JSONResponse(content=result)
-    except Exception as e:
-        LOG.exception(f"Error in join_channel endpoint: {e}")
-        return JSONResponse({"error": {"message": "Unable to join channel", "cause": str(e)}}, status_code=500)
+    except Exception:
+        LOG.exception("Error in join_channel endpoint")
+        return JSONResponse({"error": {"message": "Unable to join channel"}}, status_code=500)
 
 
 @router.post("/channels/message", status_code=201)
@@ -212,9 +226,9 @@ async def send_channel_message(request: Request, payload: Dict[Any, Any]):
                 return JSONResponse(result, status_code=400)
 
             return JSONResponse(content=result)
-    except Exception as e:
-        LOG.exception(f"Error in send_channel_message endpoint: {e}")
-        return JSONResponse({"error": {"message": "Unable to send message", "cause": str(e)}}, status_code=500)
+    except Exception:
+        LOG.exception("Error in send_channel_message endpoint")
+        return JSONResponse({"error": {"message": "Unable to send message"}}, status_code=500)
 
 
 @router.post("/users/send", status_code=201)
@@ -264,9 +278,9 @@ async def send_direct_message(request: Request, payload: Dict[Any, Any]):
                 return JSONResponse(result, status_code=400)
 
             return JSONResponse(content=result)
-    except Exception as e:
-        LOG.exception(f"Error in send_direct_message endpoint: {e}")
-        return JSONResponse({"error": {"message": "Unable to send direct message", "cause": str(e)}}, status_code=500)
+    except Exception:
+        LOG.exception("Error in send_direct_message endpoint")
+        return JSONResponse({"error": {"message": "Unable to send direct message"}}, status_code=500)
 
 
 @router.post("/notifications/test", dependencies=[Depends(verify_action_token)])
@@ -293,9 +307,32 @@ async def send_test_notification(request: Request, body: Dict[Any, Any]):
                 team_id=team_id,
             )
             return JSONResponse(content=result)
-    except Exception as e:
-        LOG.exception("Error in send_test_notification endpoint: %s", e)
-        return JSONResponse({"success": False, "error": f"Unexpected error: {str(e)}"})
+    except Exception:
+        LOG.exception("Error in send_test_notification endpoint")
+        return JSONResponse({"success": False, "error": "Unexpected error"})
+
+
+@router.post("/integrations/google-chat/notify", dependencies=[Depends(verify_action_token)])
+async def notify_google_chat_binding(body: Dict[Any, Any]):
+    """Post a binding-change notice into a Google Chat space (and leave on unbind).
+
+    Called by api-server when a google_chat_space integration is created/deleted;
+    `event` is "bound" or "unbound"."""
+    space_id = body.get("space_id")
+    event = body.get("event")
+    if not space_id or event not in ("bound", "unbound"):
+        raise HTTPException(status_code=400, detail="space_id and event ('bound'|'unbound') are required")
+    if not GoogleChatAppClient.is_enabled():
+        return JSONResponse({"success": False, "reason": "sa_not_configured"})
+    tenant = body.get("tenant_id")
+    if event == "bound":
+        text = f"✅ This space is now connected to {settings.urls.branding_name}. Mention me to get started."
+        result = GoogleChatAppClient.post_message(space=space_id, message=text, tenant=tenant)
+        return JSONResponse({"success": bool(result.get("success"))})
+    text = f"🔌 This space has been disconnected from {settings.urls.branding_name}. Re-add me to reconnect."
+    GoogleChatAppClient.post_message(space=space_id, message=text, tenant=tenant)
+    leave_result = GoogleChatAppClient.leave_space(space_id)
+    return JSONResponse({"success": bool(leave_result.get("success"))})
 
 
 @router.post("/rules/save", status_code=201, dependencies=[Depends(verify_action_token)])
@@ -375,9 +412,9 @@ async def send_email(payload: Dict[Any, Any]):
                 return JSONResponse(result, status_code=400)
 
             return JSONResponse(content=result)
-    except Exception as e:
-        LOG.exception(f"Error in send_email endpoint: {e}")
-        return JSONResponse({"success": False, "error": f"Unexpected error: {str(e)}"}, status_code=500)
+    except Exception:
+        LOG.exception("Error in send_email endpoint")
+        return JSONResponse({"success": False, "error": "Unexpected error"}, status_code=500)
 
 
 @router.post("/reactions/add", status_code=201)
@@ -441,9 +478,9 @@ async def add_reaction(request: Request, payload: Dict[Any, Any]):
                 return JSONResponse(result, status_code=400)
 
             return JSONResponse(content=result)
-    except Exception as e:
-        LOG.exception(f"Error in add_reaction endpoint: {e}")
-        return JSONResponse({"success": False, "error": f"Unexpected error: {str(e)}"}, status_code=500)
+    except Exception:
+        LOG.exception("Error in add_reaction endpoint")
+        return JSONResponse({"success": False, "error": "Unexpected error"}, status_code=500)
 
 
 @router.post("/threads/messages", status_code=200, response_model=GetThreadMessagesResponse)

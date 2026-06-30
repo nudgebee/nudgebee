@@ -259,7 +259,7 @@ type IConversationDao interface {
 	GetAgentNameFromAgentId(agentId string) (string, error)
 	UpdateConversationAgentThought(agentId, thought string) error
 	GetConversationAgentInput(agentId, accountId string) (string, error)
-	SaveConversationToolCall(conversationID, accountID, userID, messageId, agenId, toolId, toolName, toolArgs, thought, toolArgsSql, toolResult string, status toolcore.NBToolResponseStatus, toolType toolcore.NBToolType, childAgentId *string, references []toolcore.NBToolResponseReference) error
+	SaveConversationToolCall(conversationID, accountID, userID, messageId, agenId, toolId, toolName, toolArgs, thought, toolArgsSql, toolResult string, status toolcore.NBToolResponseStatus, toolType toolcore.NBToolType, childAgentId *string, references []toolcore.NBToolResponseReference, metadata []byte) error
 	TerminateConversation(context *security.RequestContext, accountId, conversationId string) error
 	CountWaitingSubAgents(parentAgentId, messageId string) (int, error)
 	MarkInProgressConversationAsKilled() error
@@ -1772,7 +1772,7 @@ func (chat *ConversationDao) GetConversationToolResponse(toolId, messageId, conv
 	return response, status, nil
 }
 
-func (chat *ConversationDao) SaveConversationToolCall(conversationID, accountID, userID, messageId, agenId, toolId, toolName, toolArgs, thought, toolArgsSql, toolResult string, status toolcore.NBToolResponseStatus, toolType toolcore.NBToolType, childAgentId *string, references []toolcore.NBToolResponseReference) error {
+func (chat *ConversationDao) SaveConversationToolCall(conversationID, accountID, userID, messageId, agenId, toolId, toolName, toolArgs, thought, toolArgsSql, toolResult string, status toolcore.NBToolResponseStatus, toolType toolcore.NBToolType, childAgentId *string, references []toolcore.NBToolResponseReference, metadata []byte) error {
 
 	// Termination override — see UpdateConversationToolResponse for rationale.
 	// SaveConversationToolCall is the primary persistence path (planner_callback_handler
@@ -1800,23 +1800,34 @@ func (chat *ConversationDao) SaveConversationToolCall(conversationID, accountID,
 		referenceText = string(referenceTextBytes)
 	}
 
+	// metadata carries the JSON-encoded NBToolResponseMetadata blob for the
+	// new V751 `metadata` JSONB column. nil ⇒ pass NULL so historical rows
+	// and synthetic visibility entries (compression cards, react_critique)
+	// stay unencumbered. Stringify (matches referenceText above) — passing a
+	// raw []byte makes pq route through bytea, which a JSONB column rejects
+	// at insert ("invalid input syntax for type json").
+	var metadataParam any
+	if len(metadata) > 0 {
+		metadataParam = string(metadata)
+	}
+
 	query := `INSERT INTO public.llm_conversation_tool_calls
-	(conversation_id, message_id, tool_id, tool_name, parameters, response, user_id, account_id, agent_id, thought, params_sql, status, tool_type, child_agent_id, "references")
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+	(conversation_id, message_id, tool_id, tool_name, parameters, response, user_id, account_id, agent_id, thought, params_sql, status, tool_type, child_agent_id, "references", metadata)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 	ON CONFLICT (conversation_id, message_id, tool_id, tool_name, agent_id)
-	DO UPDATE SET response = EXCLUDED.response, updated_at = now(), status = EXCLUDED.status, tool_type = EXCLUDED.tool_type, child_agent_id = EXCLUDED.child_agent_id, "references" = EXCLUDED.references
+	DO UPDATE SET response = EXCLUDED.response, updated_at = now(), status = EXCLUDED.status, tool_type = EXCLUDED.tool_type, child_agent_id = EXCLUDED.child_agent_id, "references" = EXCLUDED.references, metadata = EXCLUDED.metadata
 	WHERE llm_conversation_tool_calls.status NOT IN ('success', 'error', 'terminated');`
 
 	if childAgentId == nil || *childAgentId == "" {
 		query = `INSERT INTO public.llm_conversation_tool_calls
-		(conversation_id, message_id, tool_id, tool_name, parameters, response, user_id, account_id, agent_id, thought, params_sql, status, tool_type, child_agent_id, "references")
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		(conversation_id, message_id, tool_id, tool_name, parameters, response, user_id, account_id, agent_id, thought, params_sql, status, tool_type, child_agent_id, "references", metadata)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		ON CONFLICT (conversation_id, message_id, tool_id, tool_name, agent_id)
-		DO UPDATE SET response = EXCLUDED.response, updated_at = now(), status = EXCLUDED.status, tool_type = EXCLUDED.tool_type, "references" = EXCLUDED.references
+		DO UPDATE SET response = EXCLUDED.response, updated_at = now(), status = EXCLUDED.status, tool_type = EXCLUDED.tool_type, "references" = EXCLUDED.references, metadata = EXCLUDED.metadata
 		WHERE llm_conversation_tool_calls.status NOT IN ('success', 'error', 'terminated');`
 	}
 
-	_, err := chat.dbManager.Db.Exec(query, conversationID, messageId, toolId, toolName, toolArgs, toolResult, userIDSql, accountID, agenId, thought, toolArgsSql, strings.ToLower(string(status)), toolType, childAgentId, referenceText)
+	_, err := chat.dbManager.Db.Exec(query, conversationID, messageId, toolId, toolName, toolArgs, toolResult, userIDSql, accountID, agenId, thought, toolArgsSql, strings.ToLower(string(status)), toolType, childAgentId, referenceText, metadataParam)
 	if err != nil {
 		return fmt.Errorf("history: error inserting tool call: %w", err)
 	}
@@ -1841,6 +1852,9 @@ func (chat *ConversationDao) GetConversationToolCallChildAgentId(conversationId,
 }
 
 func (chat *ConversationDao) LoadConversationMessages(accountID, conversationID, userID string, requestType MessageType, k int) ([]map[string]string, error) {
+	if _, err := uuid.Parse(conversationID); err != nil {
+		return nil, nil
+	}
 	var rows *sqlx.Rows
 	var err error
 	var args []interface{}

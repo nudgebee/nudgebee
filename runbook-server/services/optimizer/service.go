@@ -26,7 +26,9 @@ type Service interface {
 	ChangeStatus(ctx context.Context, sc *security.RequestContext, accountID uuid.UUID, autoOptimizeID uuid.UUID, status model.AutoOptimizeStatus) error
 	GetActiveAutoOptimizes(ctx context.Context) ([]model.AutoOptimize, error)
 	GenerateTasks(ctx context.Context, autoOptimizeID uuid.UUID) ([]model.AutoOptimizeTask, error)
-	CompleteAutoOptimize(ctx context.Context, autoOptimizeID uuid.UUID) error
+	CompleteAutoOptimize(ctx context.Context, autoOptimizeID uuid.UUID, taskIDs []uuid.UUID) error
+	CollectPRResults(ctx context.Context, autoOptimizeID uuid.UUID, taskIDs []uuid.UUID) (hasPRTasks bool, allSettled bool, err error)
+	NotifyPRsReady(ctx context.Context, autoOptimizeID uuid.UUID, taskIDs []uuid.UUID) error
 	ExecuteAutoOptimize(ctx context.Context, autoOptimizeID uuid.UUID) error
 	SyncSchedules(ctx context.Context) error
 }
@@ -122,7 +124,7 @@ func (s *optimizerService) ExecuteAutoOptimize(ctx context.Context, autoOptimize
 	return nil
 }
 
-func (s *optimizerService) CompleteAutoOptimize(ctx context.Context, autoOptimizeID uuid.UUID) error {
+func (s *optimizerService) CompleteAutoOptimize(ctx context.Context, autoOptimizeID uuid.UUID, taskIDs []uuid.UUID) error {
 	ao, err := s.dao.GetAutoOptimize(ctx, autoOptimizeID)
 	if err != nil {
 		return err
@@ -130,7 +132,71 @@ func (s *optimizerService) CompleteAutoOptimize(ctx context.Context, autoOptimiz
 	ao.ExecutionStatus = string(model.AutopilotExecutionStatusIdle)
 	now := time.Now().UTC()
 	ao.LastExecutedTime = &now
-	return s.dao.SaveAutoOptimize(ctx, *ao)
+	saveErr := s.dao.SaveAutoOptimize(ctx, *ao)
+
+	// Change-gated completion summary (best-effort; never fails the activity).
+	s.sendCompletionSummary(ctx, ao, taskIDs)
+
+	return saveErr
+}
+
+// CollectPRResults reports whether the run produced GitOps PR tasks and whether
+// their asynchronously-created PRs have all settled (URL populated, or creation
+// failed). Used by the workflow's PR-ready poll loop.
+func (s *optimizerService) CollectPRResults(ctx context.Context, autoOptimizeID uuid.UUID, taskIDs []uuid.UUID) (bool, bool, error) {
+	tasks, err := s.dao.GetAutoOptimizeTasksByIDs(ctx, taskIDs)
+	if err != nil {
+		return false, false, err
+	}
+
+	recIDs := prTaskRecommendationIDs(tasks)
+	if len(recIDs) == 0 {
+		return false, true, nil
+	}
+
+	resolutions, err := s.dao.GetResolutionsForRecommendations(ctx, recIDs)
+	if err != nil {
+		return true, false, err
+	}
+
+	for _, rid := range recIDs {
+		if !resolutionSettled(resolutions[rid]) {
+			return true, false, nil
+		}
+	}
+	return true, true, nil
+}
+
+// NotifyPRsReady sends the aggregated "PRs ready" follow-up with the real PR
+// URLs (and any PR-creation failures) for the run. Best-effort.
+func (s *optimizerService) NotifyPRsReady(ctx context.Context, autoOptimizeID uuid.UUID, taskIDs []uuid.UUID) error {
+	ao, err := s.dao.GetAutoOptimize(ctx, autoOptimizeID)
+	if err != nil {
+		return err
+	}
+
+	tasks, err := s.dao.GetAutoOptimizeTasksByIDs(ctx, taskIDs)
+	if err != nil {
+		return err
+	}
+
+	recIDs := prTaskRecommendationIDs(tasks)
+	if len(recIDs) == 0 {
+		return nil
+	}
+
+	resolutions, err := s.dao.GetResolutionsForRecommendations(ctx, recIDs)
+	if err != nil {
+		return err
+	}
+
+	if buildPRsReadySummary(ao, tasks, resolutions, "") == "" {
+		return nil
+	}
+	s.sendToConfiguredChannels(ao, func(platform string) string {
+		return buildPRsReadySummary(ao, tasks, resolutions, platform)
+	})
+	return nil
 }
 
 func (s *optimizerService) calculateNextScheduleTime(cronExpr string, from time.Time) *time.Time {

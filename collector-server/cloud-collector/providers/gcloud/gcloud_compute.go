@@ -128,15 +128,17 @@ zoneLoop:
 			}
 
 			// Convert instance to Resource
-			resource := s.instanceToResource(ctx, instance, session.ProjectId, zone, machineTypesClient, machineTypeCache)
-			resources = append(resources, resource)
+			resource, ok := s.instanceToResource(ctx, instance, session.ProjectId, zone, machineTypesClient, machineTypeCache)
+			if ok {
+				resources = append(resources, resource)
+			}
 		}
 	}
 
 	return resources, nil
 }
 
-func (s *computeEngineService) instanceToResource(ctx providers.CloudProviderContext, instance *computepb.Instance, projectId, zone string, machineTypesClient *compute.MachineTypesClient, machineTypeCache map[string]*computepb.MachineType) providers.Resource {
+func (s *computeEngineService) instanceToResource(ctx providers.CloudProviderContext, instance *computepb.Instance, projectId, zone string, machineTypesClient *compute.MachineTypesClient, machineTypeCache map[string]*computepb.MachineType) (providers.Resource, bool) {
 	// Extract region from zone (e.g., us-central1-a -> us-central1)
 	region := zone
 	if lastHyphen := strings.LastIndex(zone, "-"); lastHyphen > 0 {
@@ -147,6 +149,10 @@ func (s *computeEngineService) instanceToResource(ctx providers.CloudProviderCon
 	// This is consistent with how AWS uses instance IDs (e.g., i-0abc123)
 	// GCP Monitoring API uses the numeric instance.Id (e.g., 1020227973377891447)
 	// NOT the selfLink URL that was previously stored
+	if instance.Id == nil {
+		ctx.GetLogger().Warn("skipping compute instance with nil ID", "zone", zone, "project", projectId)
+		return providers.Resource{}, false
+	}
 	resourceId := fmt.Sprintf("%d", *instance.Id)
 
 	// Extract tags
@@ -199,7 +205,7 @@ func (s *computeEngineService) instanceToResource(ctx providers.CloudProviderCon
 		Tags:        tags,
 		Meta:        meta,
 		CreatedAt:   createdAt,
-	}
+	}, true
 }
 
 func gcpComputeStatusToNbStatus(status *string) providers.ResourceStatus {

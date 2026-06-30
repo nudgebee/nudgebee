@@ -370,7 +370,12 @@ func (s *IntegrationK8sTestSuite) TestK8sVerticalRightsizeTask() {
 
 func (s *IntegrationK8sTestSuite) TestK8sVerticalRightsizeTask_Gitops() {
 	s.T().Log("Running TestK8sVerticalRightsizeTask_Gitops integration test...")
-	namespace := "nudgebee-test"
+	// Override via TEST_K8S_NAMESPACE for real-cluster runs; default is synthetic
+	// so the fixture file alone reveals no internal cluster topology.
+	namespace := os.Getenv("TEST_K8S_NAMESPACE")
+	if namespace == "" {
+		namespace = "test-cluster-test"
+	}
 	deploymentName := "ticket-server"
 	containerName := "ticket-server"
 

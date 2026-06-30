@@ -600,3 +600,34 @@ func isValidUTF8(s string) bool {
 	}
 	return true
 }
+
+func TestDedupeEvidencesByContent(t *testing.T) {
+	ev := func(action, data string) any {
+		return map[string]any{
+			"additional_info": map[string]any{"action_name": action},
+			"data":            data,
+		}
+	}
+	in := []any{
+		ev("cloud_logs", "A"),
+		ev("prometheus_enricher", "M"),
+		ev("prometheus_enricher", "M"), // exact duplicate (double-emit)
+		ev("cloud_logs", "B"),          // same action, different content -> kept
+	}
+	out := dedupeEvidencesByContent(in)
+	assert.Len(t, out, 3, "the identical prometheus_enricher copy should be collapsed")
+
+	// Order preserved, first occurrence kept.
+	first := out[0].(map[string]any)
+	assert.Equal(t, "A", first["data"])
+	// Both distinct cloud_logs survive (content differs).
+	var cloudLogs int
+	for _, e := range out {
+		if m, ok := e.(map[string]any); ok {
+			if ai, ok := m["additional_info"].(map[string]any); ok && ai["action_name"] == "cloud_logs" {
+				cloudLogs++
+			}
+		}
+	}
+	assert.Equal(t, 2, cloudLogs)
+}

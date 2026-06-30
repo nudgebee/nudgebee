@@ -1,18 +1,18 @@
 import React, { useEffect } from 'react';
 import { Box } from '@mui/material';
-import AnchorComponent from '@common-new/AnchorComponent';
-import ErrorBoundary from '@components1/common/ErrorBoundary';
+import AnchorComponent from '@shared/navigation/AnchorComponent';
+import ErrorBoundary from '@shared/ErrorBoundary';
 import { useRouter } from 'next/router';
 import { hasWriteAccess } from '@lib/auth';
-import { DropdownMenu as DsDropdownMenu } from '@components1/ds/DropdownMenu';
-import { Button as DsButton } from '@components1/ds/Button';
+import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
+import { Button as DsButton } from '@ui/Button';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import { BetaIcon, WorkflowIconBlue, AutomateBlue } from '@assets';
 import { ds } from '@utils/colors';
 
-import AutoOptimizeTabs from '@components1/autopilot/tables/AutoOptimizeTabs';
-import WorkflowListing from '@components1/workflow/WorkflowListing';
-import SafeIcon from '@components1/common/SafeIcon';
+import AutoOptimizeTabs from '@components/autopilot/tables/AutoOptimizeTabs';
+import WorkflowListing from '@components/workflow/WorkflowListing';
+import SafeIcon from '@shared/icons/SafeIcon';
 
 const AutoPilot = () => {
   const router = useRouter();

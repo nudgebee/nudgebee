@@ -76,13 +76,12 @@ func (t *LLMRouterClassifyTask) Execute(taskCtx types.TaskContext, params map[st
 	}
 
 	requestContext := taskCtx.GetNewRequestContext()
-	resp, err := llm.ProcessRequest(requestContext, llm.LLMRequest{
+	resp, err := llm.ProcessRequest(requestContext, applyWorkflowTrace(taskCtx, llm.LLMRequest{
 		Message:      "@llm " + sb.String(),
 		AccountId:    taskCtx.GetAccountID(),
-		SessionId:    taskCtx.GetWorkflowRunID(),
 		LlmProvider:  modelProvider,
 		LlmModelName: modelName,
-	})
+	}))
 
 	if err != nil {
 		return nil, err

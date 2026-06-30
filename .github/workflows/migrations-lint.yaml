@@ -1,0 +1,55 @@
+name: Migrations Lint
+
+on:
+  pull_request:
+    paths:
+      - 'api-server/migrations/migrations/app/**'
+      - '.github/workflows/migrations-lint.yaml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  no-concurrently:
+    name: Reject CONCURRENTLY in migrations
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # golang-migrate wraps every .up.sql / .down.sql in a transaction and
+      # ignores the dbmate-style `-- migrate:no-transaction` header. CREATE/DROP
+      # INDEX CONCURRENTLY cannot run inside a transaction → migration fails
+      # mid-statement and leaves nudgebee.schema_migrations stuck dirty=true,
+      # blocking every subsequent migration on every environment. Block at PR
+      # time instead. Real cause + recovery: see CLAUDE.md "Database Migrations".
+      # Scan migration files for CONCURRENTLY in *executable* SQL — strip
+      # `-- ...` line comments first so the historical files that document the
+      # rule in comments (e.g. "-- Do not use CREATE INDEX CONCURRENTLY ...")
+      # don't trip the lint.
+      - name: Grep for CONCURRENTLY in executable SQL
+        run: |
+          set -e
+          fail=0
+          for f in api-server/migrations/migrations/app/*.sql; do
+            [ -e "$f" ] || continue
+            hits=$(sed -E 's/--.*$//' "$f" | grep -nE '\bCONCURRENTLY\b' || true)
+            if [ -n "$hits" ]; then
+              fail=1
+              echo "::error file=$f::contains CONCURRENTLY in executable SQL"
+              echo "$hits" | sed "s|^|  $f:|"
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo ""
+            echo "::error::CONCURRENTLY is not allowed in migration files — golang-migrate runs every migration in a transaction and ignores the dbmate-style '-- migrate:no-transaction' header."
+            echo "Fix: apply the CREATE/DROP INDEX CONCURRENTLY manually via psql against the live DB *before* merging the PR,"
+            echo "     then write the migration with plain CREATE INDEX IF NOT EXISTS / DROP INDEX IF EXISTS."
+            echo "     The migration becomes a no-op where you pre-applied it, and a quick locked statement elsewhere."
+            exit 1
+          fi
+          echo "OK: no CONCURRENTLY in executable SQL in migration files."

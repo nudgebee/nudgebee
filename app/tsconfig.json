@@ -22,13 +22,10 @@
       "@config": ["./src/config"],
       "@components": ["./src/components"],
       "@components/*": ["./src/components/*"],
-      "@components1": ["./src/components1"],
-      "@components1/ds/*": ["./src/component-new/ds/*"],
-      "@components1/*": ["./src/components1/*"],
-      "@common": ["./src/components1/common"],
-      "@common/*": ["./src/components1/common/*"],
-      "@common-new": ["./src/component-new/common"],
-      "@common-new/*": ["./src/component-new/common/*"],
+      "@ui": ["./src/components/common/ds"],
+      "@ui/*": ["./src/components/common/ds/*"],
+      "@shared": ["./src/components/common"],
+      "@shared/*": ["./src/components/common/*"],
       "@data": ["./src/data"],
       "@data/*": ["./src/data/*"],
       "@assets": ["./src/assets/images"],
@@ -48,5 +45,5 @@
     }
   },
   "include": ["src", "**/*.d.ts", "src/types/*.d.ts"],
-  "exclude": ["node_modules", "src/component-new"]
+  "exclude": ["node_modules", "src/components/in-progress"]
 }

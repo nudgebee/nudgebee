@@ -1,0 +1,164 @@
+name: nudgebee-debug image
+
+# Builds and publishes the nudgebee-debug utility image — the shell / script-runner
+# image that container-job tools spawn pods from (bash, python, kubectl, helm,
+# psql, redis-cli, kcat, ssh, ...).
+#
+# Why a dedicated workflow (not release.yaml): unlike the first-party service
+# images, nudgebee-debug has its own independent version
+# (deploy/kubernetes/nudgebee-debug/VERSION) and no Helm chart. It is pinned by a
+# literal tag in the api-server / llm-server / runbook-server configs
+# (LLM_SERVER_TOOL_SHELL_IMAGE = ghcr.io/<owner>/nudgebee-debug:<VERSION>), so it
+# must build on changes to the image dir, decoupled from the v*-tag release.
+#
+# Behaviour:
+#   - PR touching the image dir      -> build BOTH arches, validate only (no push).
+#     Catches build breakage (e.g. a new apt package that doesn't resolve on the
+#     base, or an arch-specific failure) before it lands on main.
+#   - push to main / manual dispatch -> build each arch on its native runner,
+#     push per-arch images, then stitch a multi-arch manifest.
+#
+# Runners mirror release.yaml: amd64 on ubuntu-latest, arm64 on ubuntu-24.04-arm
+# (native, no QEMU — the debug image's large apt install is slow/flaky emulated).
+#
+# Tagging mirrors release.yaml: :<VERSION> (the tag the configs pin),
+# :<VERSION>-<sha7> and :sha-<sha7> (immutable), and :latest. Bump the VERSION
+# file when the image contents change; otherwise the existing :<VERSION> tag is
+# overwritten in place.
+#
+# Note on visibility: a new GHCR package defaults to *private*. After the first
+# push, flip ghcr.io/<owner>/nudgebee-debug to public in Settings -> Packages.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - deploy/kubernetes/nudgebee-debug/**
+      - .github/workflows/nudgebee-debug.yaml
+  pull_request:
+    branches: ["main"]
+    paths:
+      - deploy/kubernetes/nudgebee-debug/**
+      - .github/workflows/nudgebee-debug.yaml
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: nudgebee-debug
+  CONTEXT: deploy/kubernetes/nudgebee-debug
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      namespace: ${{ steps.v.outputs.namespace }}
+      sha_short: ${{ steps.v.outputs.sha_short }}
+      push: ${{ steps.v.outputs.push }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          set -euo pipefail
+          v="$(cat "${CONTEXT}/VERSION" | tr -d '[:space:]')"
+          [ -n "$v" ] || { echo "VERSION file is empty"; exit 1; }
+          # Publish at ghcr.io/<owner>/nudgebee-debug. repository_owner (not
+          # github.repository) keeps the path flat, matching release.yaml.
+          ns="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          # PRs validate only; main / manual dispatch push.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then push=false; else push=true; fi
+          {
+            echo "version=$v"
+            echo "namespace=$ns"
+            echo "sha_short=${GITHUB_SHA:0:7}"
+            echo "push=$push"
+          } >> "$GITHUB_OUTPUT"
+          echo "nudgebee-debug version=$v push=$push -> ${REGISTRY}/$ns/${IMAGE}"
+
+  # One cell per arch, built on its native runner (no QEMU). On push the per-arch
+  # image is published as :<VERSION>-<arch>; merge-manifest stitches them after.
+  build:
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: needs.prepare.outputs.push == 'true'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build ${{ matrix.arch }} (push=${{ needs.prepare.outputs.push }})
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.CONTEXT }}
+          push: ${{ needs.prepare.outputs.push == 'true' }}
+          platforms: ${{ matrix.platform }}
+          tags: ${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ env.IMAGE }}:${{ needs.prepare.outputs.version }}-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.title=${{ env.IMAGE }}
+          # Registry cache only when pushing (cache export needs the login above).
+          # PR builds run cacheless — correct, just slower.
+          cache-from: ${{ needs.prepare.outputs.push == 'true' && format('type=registry,ref={0}/{1}/{2}:buildcache-{3}', env.REGISTRY, needs.prepare.outputs.namespace, env.IMAGE, matrix.arch) || '' }}
+          cache-to: ${{ needs.prepare.outputs.push == 'true' && format('type=registry,ref={0}/{1}/{2}:buildcache-{3},mode=max', env.REGISTRY, needs.prepare.outputs.namespace, env.IMAGE, matrix.arch) || '' }}
+
+  # Stitch the per-arch images into one multi-arch manifest and apply the
+  # canonical tags. Skipped on PRs (nothing was pushed to merge).
+  merge-manifest:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.push == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      REPO: ghcr.io/${{ needs.prepare.outputs.namespace }}/nudgebee-debug
+      VERSION: ${{ needs.prepare.outputs.version }}
+      SHA_SHORT: ${{ needs.prepare.outputs.sha_short }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest
+        run: |
+          set -euo pipefail
+          echo "Merging ${REPO}:${VERSION} from per-arch images"
+          docker buildx imagetools create \
+            -t "${REPO}:${VERSION}" \
+            -t "${REPO}:${VERSION}-${SHA_SHORT}" \
+            -t "${REPO}:sha-${SHA_SHORT}" \
+            -t "${REPO}:latest" \
+            --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --annotation "index:org.opencontainers.image.revision=${{ github.sha }}" \
+            --annotation "index:org.opencontainers.image.version=${VERSION}" \
+            --annotation "index:org.opencontainers.image.title=${IMAGE}" \
+            "${REPO}:${VERSION}-amd64" \
+            "${REPO}:${VERSION}-arm64"
+
+          docker buildx imagetools inspect "${REPO}:${VERSION}" || true

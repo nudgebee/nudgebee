@@ -16,19 +16,19 @@ import {
   Tab,
   Tabs,
 } from '@mui/material';
-import { Input } from '@components1/ds/Input';
+import { Input } from '@ui/Input';
 import { ContentCopy, CheckCircleOutline, Check, HelpOutline, ExpandMore, ExpandLess, InfoOutlined, Search, ErrorOutline } from '@mui/icons-material';
 import { useState, useMemo } from 'react';
 import apiAccount from '@api1/account';
 import apiIntegrations from '@api1/integrations';
 // TODO: Re-enable after Pub/Sub testing
 // import apiKubernetes1 from '@api1/kubernetes1';
-import { Modal } from '@components1/common/modal';
+import { Modal } from '@shared/modal';
 import { isK8sAccountNameValid, parseHttpResponseBodyMessage } from 'src/utils/common';
-import { Button } from '@components1/ds/Button';
-import { snackbar } from '@components1/common/snackbarService';
-import MarkDowns from '@components1/common/MarkDowns';
-import ValidationResultBanner from '@components1/accounts/ValidationResultBanner';
+import { Button } from '@ui/Button';
+import { snackbar } from '@shared/snackbarService';
+import MarkDowns from '@shared/viewers/MarkDowns';
+import ValidationResultBanner from '@components/accounts/ValidationResultBanner';
 
 const StepConnectorStyled = styled(StepConnector)(() => ({
   [`&.${stepConnectorClasses.alternativeLabel}`]: {

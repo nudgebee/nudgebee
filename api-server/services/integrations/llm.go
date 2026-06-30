@@ -853,8 +853,12 @@ func isValidHTTPURL(raw string) bool {
 // the resolver learns a new field.
 func (m LLM) AllowsDynamicKey(name string) bool {
 	overridePrefixes := []string{
-		"llm_tier_provider_",
-		"llm_tier_model_",
+		// Blanket per-tier prefix: covers llm_tier_provider_<tier>,
+		// llm_tier_model_<tier>, llm_tier_model_fallbacks_<tier> AND every
+		// per-tier credential key (llm_tier_api_key_<tier>,
+		// llm_tier_api_endpoint_<tier>, llm_tier_api_type_<tier>,
+		// llm_tier_access_key_<tier>, etc.) added by the per-tier resolvers.
+		"llm_tier_",
 		"llm_provider_",
 		"llm_model_name_",
 		"llm_model_fallbacks_",

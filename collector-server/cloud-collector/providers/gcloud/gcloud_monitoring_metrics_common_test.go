@@ -69,3 +69,35 @@ func TestListGcloudMonitoringMetrics_HasStatistics(t *testing.T) {
 		t.Error("expected at least some Compute Engine metrics to have statistics")
 	}
 }
+
+// TestCloudRunMetricSetHasErrorAndScalingSignals verifies the expanded Cloud Run metric
+// set (P2): request_count (5xx signal), latency, cpu/mem, and the scaling/startup metrics
+// needed for availability RCA — and that each has a default statistic.
+func TestCloudRunMetricSetHasErrorAndScalingSignals(t *testing.T) {
+	metrics := gcloudServiceMetricsMap["cloud run"]["cloud-run"]
+	want := []string{
+		"request_count",
+		"request_latencies",
+		"container/cpu/utilizations",
+		"container/memory/utilizations",
+		"container/instance_count",
+		"container/startup_latencies",
+		"container/max_request_concurrencies",
+		"container/billable_instance_time",
+	}
+	for _, m := range want {
+		found := false
+		for _, got := range metrics {
+			if got == m {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Cloud Run metric set missing %q", m)
+		}
+		if _, ok := gcloudMetricsStatsMap[m]; !ok {
+			t.Errorf("Cloud Run metric %q has no default statistic in gcloudMetricsStatsMap", m)
+		}
+	}
+}

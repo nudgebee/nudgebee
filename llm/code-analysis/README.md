@@ -138,15 +138,7 @@ Perform code analysis by correlating application logs with source code.
 }
 ```
 
-##### 4. Encrypted Credentials
-```json
-{
-  "type": "encrypted",
-  "encrypted_data": "base64-encoded-encrypted-json-credentials"
-}
-```
-
-##### 5. Environment Variable Reference
+##### 4. Environment Variable Reference
 ```json
 {
   "type": "env_ref",
@@ -248,8 +240,7 @@ github:
   retry_attempts: 3
 
 credentials:
-  encryption_key: your-secret-key
-  allowed_types: ["token", "ssh_key", "basic", "encrypted", "env_ref"]
+  allowed_types: ["token", "ssh_key", "basic", "env_ref"]
 ```
 
 ## Development

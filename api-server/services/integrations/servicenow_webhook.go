@@ -255,11 +255,11 @@ func processPrometheusEvent(servicenowEvent ServicenowEvent) (core.EventIncoming
 	if severity, ok := additionalInfo["flattened.labels.severity"].(string); ok {
 		switch severity {
 		case "critical", "high":
-			investigation.Severity = event.EventPriortiyHigh
+			investigation.Severity = event.EventPriorityHigh
 		case "warning", "medium":
-			investigation.Severity = event.EventPriortiyMedium
+			investigation.Severity = event.EventPriorityMedium
 		case "info", "low":
-			investigation.Severity = event.EventPriortiyLow
+			investigation.Severity = event.EventPriorityLow
 		}
 	}
 
@@ -581,41 +581,41 @@ func (m ServiceNowWebhook) MergeEventWebhooks(sc *security.RequestContext, previ
 	return new, nil
 }
 
-// mapServiceNowSeverity maps em_event severity to EventPriortiy.
+// mapServiceNowSeverity maps em_event severity to EventPriority.
 // Accepts both raw codes ("2") and display strings ("2 - Critical") since
 // different SNOW configurations send one or the other.
 // SNOW em_event severity: 1=Clear, 2=Critical, 3=Major, 4=Minor, 5=Warning, 0=Info
-func mapServiceNowSeverity(severity string) event.EventPriortiy {
+func mapServiceNowSeverity(severity string) event.EventPriority {
 	rank, ok := snowPriorityRank(severity)
 	if !ok {
-		return event.EventPriortiyInfo
+		return event.EventPriorityInfo
 	}
 	switch rank {
 	case 2, 3: // Critical, Major
-		return event.EventPriortiyHigh
+		return event.EventPriorityHigh
 	case 4: // Minor
-		return event.EventPriortiyLow
+		return event.EventPriorityLow
 	case 5: // Warning
-		return event.EventPriortiyMedium
+		return event.EventPriorityMedium
 	default: // 0=Info, 1=Clear, anything else
-		return event.EventPriortiyInfo
+		return event.EventPriorityInfo
 	}
 }
 
-// mapServiceNowPriority maps incident priority (with urgency/impact fallback) to EventPriortiy.
+// mapServiceNowPriority maps incident priority (with urgency/impact fallback) to EventPriority.
 // Accepts both raw codes ("3") and display strings ("3 - Moderate") since SNOW
 // Business Rules / Flow Designer typically send the latter.
 // Priority uses a 1-5 scale: 1=Critical, 2=High, 3=Moderate, 4=Low, 5=Planning
 // Urgency/Impact use a 1-3 scale: 1=High, 2=Medium, 3=Low
-func mapServiceNowPriority(priority, urgency, impact string) event.EventPriortiy {
+func mapServiceNowPriority(priority, urgency, impact string) event.EventPriority {
 	if rank, ok := snowPriorityRank(priority); ok {
 		switch rank {
 		case 1, 2: // Critical, High
-			return event.EventPriortiyHigh
+			return event.EventPriorityHigh
 		case 3: // Moderate
-			return event.EventPriortiyMedium
+			return event.EventPriorityMedium
 		case 4, 5: // Low, Planning
-			return event.EventPriortiyLow
+			return event.EventPriorityLow
 		}
 	}
 
@@ -627,14 +627,14 @@ func mapServiceNowPriority(priority, urgency, impact string) event.EventPriortiy
 	if rank, ok := snowPriorityRank(value); ok {
 		switch rank {
 		case 1: // High
-			return event.EventPriortiyHigh
+			return event.EventPriorityHigh
 		case 2: // Medium
-			return event.EventPriortiyMedium
+			return event.EventPriorityMedium
 		case 3: // Low
-			return event.EventPriortiyLow
+			return event.EventPriorityLow
 		}
 	}
-	return event.EventPriortiyMedium
+	return event.EventPriorityMedium
 }
 
 // snowPriorityRank extracts the leading numeric rank from a SNOW

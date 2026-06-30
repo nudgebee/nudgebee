@@ -1,11 +1,11 @@
 import { Grid, Typography, Alert } from '@mui/material';
-import { Checkbox } from '@components1/ds/Checkbox';
+import { Checkbox } from '@ui/Checkbox';
 import React, { useRef, useState } from 'react';
 import PropTypes from 'prop-types';
-import { Modal } from '@components1/common/modal';
-import { Button } from '@components1/ds/Button';
-import { snackbar } from '@components1/common/snackbarService';
-import MarkDowns from '@components1/common/MarkDowns';
+import { Modal } from '@shared/modal';
+import { Button } from '@ui/Button';
+import { snackbar } from '@shared/snackbarService';
+import MarkDowns from '@shared/viewers/MarkDowns';
 import apiKubernetes1 from '@api1/kubernetes1';
 import { getBrandTitle } from '@hooks/useTenantBranding';
 

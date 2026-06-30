@@ -18,10 +18,22 @@ from notifications_server.exceptions.common_exc import BeeHTTPError
 from notifications_server.exceptions.exceptions import Err
 from notifications_server.message_templates.blocks import MarkdownBlock, ContextBlock
 from notifications_server.models.db_base import BaseDB
-from notifications_server.models.models import MessagingPlatform, SentNotifications, ConfigurationStore
+from notifications_server.models.models import (
+    MessagingPlatform,
+    SentNotifications,
+    ConfigurationStore,
+    Integration,
+    IntegrationConfigValue,
+)
 from notifications_server.utils.datetime_utils import utc_now
 from notifications_server.utils.transformer import Transformer
 from notifications_server.services.cache import Cache
+from notifications_server.services.messaging_installations import (
+    load_installation,
+    load_installation_by_team,
+    load_installations,
+    persist_messaging_token,
+)
 
 from botbuilder.core import TurnContext, BotFrameworkAdapterSettings, BotFrameworkAdapter
 from botbuilder.schema import Activity, ActivityTypes, Attachment
@@ -67,14 +79,20 @@ class CommonService:
 
     def list_channels(self, platform, tenant):
         try:
-            if platform not in ["slack", "ms_teams", "google_chat"]:
+            if platform not in ["slack", "ms_teams", "google_chat", "discord"]:
                 return BeeHTTPError(400, Err.OS0011, ["platform"])
 
-            messaging_platform = (
-                self.session.query(MessagingPlatform)
-                .filter(MessagingPlatform.tenant_id == tenant, MessagingPlatform.platform == platform)
-                .one_or_none()
-            )
+            # Google Chat uses the service-account bot + space bindings: the
+            # selectable destinations are the spaces bound to this tenant
+            # (google_chat_space integrations), not OAuth-listed channels. No
+            # MessagingPlatform row is involved.
+            if platform == "google_chat":
+                return self.get_google_chat_channels(tenant)
+
+            # Slack/MS Teams may live in the integrations table (token encrypted) or
+            # the legacy messaging_platforms table; load_installations unions both.
+            installations = load_installations(self.session, tenant, platform)
+            messaging_platform = installations[0] if installations else None
             if not messaging_platform:
                 LOG.info("Unable to list channels for %s, no installation in tenant: %s ", platform, tenant)
                 return {"data": []}
@@ -83,8 +101,8 @@ class CommonService:
                 return self.get_slack_channels(messaging_platform)
             elif platform == "ms_teams":
                 return self.get_ms_teams_channels(messaging_platform)
-            elif platform == "google_chat":
-                return self.get_google_chat_channels(messaging_platform)
+            elif platform == "discord":
+                return self.get_discord_channels(messaging_platform)
             return {}
         except Exception as e:
             self.session.rollback()
@@ -120,16 +138,31 @@ class CommonService:
 
         return {"data": channels}
 
+    def get_discord_channels(self, messaging_platform):
+        """List text channels the Discord bot has access to across all guilds."""
+        from notifications_server.clients.discord_client import DiscordClient
+
+        if not messaging_platform:
+            return {"data": []}
+
+        token = messaging_platform.token
+        result = DiscordClient.channels_list(token)
+        if not result.get("ok"):
+            LOG.error("Failed to list Discord channels: %s", result.get("error"))
+            return {"data": []}
+        return {"data": [{"name": c["name"], "id": c["id"]} for c in result.get("channels", [])]}
+
     def list_users(self, platform, tenant):
         try:
-            if platform not in ["slack", "ms_teams", "google_chat"]:
+            if platform not in ["slack", "ms_teams", "google_chat", "discord"]:
                 return BeeHTTPError(400, Err.OS0011, ["platform"])
 
-            messaging_platform = (
-                self.session.query(MessagingPlatform)
-                .filter(MessagingPlatform.tenant_id == tenant, MessagingPlatform.platform == platform)
-                .one_or_none()
-            )
+            # Google Chat (service-account bot) has no per-user/DM routing in the
+            # space-binding model — notifications target bound spaces only.
+            if platform == "google_chat":
+                return {"data": []}
+
+            messaging_platform = load_installation(self.session, tenant, platform)
             if not messaging_platform:
                 LOG.info("Unable to list users for %s, no installation in tenant: %s", platform, tenant)
                 return {"data": []}
@@ -138,8 +171,8 @@ class CommonService:
                 return self.get_slack_users(messaging_platform)
             elif platform == "ms_teams":
                 return self.get_ms_teams_users(messaging_platform)
-            elif platform == "google_chat":
-                return self.get_google_chat_users(messaging_platform)
+            elif platform == "discord":
+                return {"data": []}  # Discord bots need privileged intents to list members
             return {}
         except Exception as e:
             self.session.rollback()
@@ -186,16 +219,6 @@ class CommonService:
         users = MsTeamsClient.list_users(messaging_platform.token)
         return {"data": users}
 
-    def get_google_chat_users(self, messaging_platform):
-        error = self._refresh_google_chat_token(messaging_platform)
-        if error:
-            return {"data": []}
-
-        # Google Chat can only list DM spaces that the bot is already part of
-        # Return list of users from existing DM conversations
-        dm_spaces = GoogleChatClient.list_dm_spaces(messaging_platform.token)
-        return {"data": dm_spaces}
-
     def get_ms_teams_channels(self, messaging_platform):
         error = self._refresh_ms_teams_token(messaging_platform)
         if error:
@@ -203,15 +226,45 @@ class CommonService:
 
         return {"data": MsTeamsClient.list_joined_teams(messaging_platform.token)}
 
-    def get_google_chat_channels(self, messaging_platform):
-        error = self._refresh_google_chat_token(messaging_platform)
-        if error:
-            return None
+    def get_google_chat_channels(self, tenant):
+        """List the Google Chat spaces bound to this tenant (google_chat_space integrations).
 
-        return {"data": GoogleChatClient.list_spaces(messaging_platform.token)}
+        Replaces the old user-OAuth space listing: in the service-account model the
+        selectable destinations are exactly the spaces an admin has bound to the tenant.
+        Returns the {id, name} shape the notification-rule picker already consumes.
+        """
+        bindings = (
+            self.session.query(Integration)
+            .filter(
+                Integration.tenant_id == tenant,
+                Integration.type == "google_chat_space",
+                Integration.status != "disabled",
+            )
+            .all()
+        )
+
+        binding_ids = [binding.id for binding in bindings]
+        display_rows = (
+            self.session.query(IntegrationConfigValue)
+            .filter(
+                IntegrationConfigValue.integration_id.in_(binding_ids),
+                IntegrationConfigValue.name == "display_name",
+            )
+            .all()
+            if binding_ids
+            else []
+        )
+        display_names = {row.integration_id: row.value for row in display_rows if row.value}
+
+        spaces = [{"id": binding.name, "name": display_names.get(binding.id) or binding.name} for binding in bindings]
+
+        return {"data": spaces}
 
     def join_channel(self, platform, account_id, tenant_id, channel_id, session_id=None, team_id=None, text=None):
         try:
+            if platform == "google_chat":
+                return self._join_google_chat_space(account_id, tenant_id, channel_id, session_id, text)
+
             if platform != "slack":
                 return {"error": {"message": f"Platform {platform} is not supported yet"}}
 
@@ -267,25 +320,85 @@ class CommonService:
                 "data": {"channel_id": channel_id, "session_id": session_id, "platform": platform},
             }
 
-        except Exception as e:
-            LOG.exception(f"Error joining channel: {e}")
-            return {"error": {"message": f"Unexpected error: {str(e)}"}}
+        except Exception:
+            # Known errors return via the structured paths above; this branch only
+            # fires for unhandled bugs/infra failures whose `str(e)` text can leak
+            # internals (DB hosts, file paths, credentials) without giving the
+            # user any actionable information. Server-side log keeps the
+            # traceback via LOG.exception for debugging.
+            LOG.exception("Error joining channel")
+            return {"error": {"message": "Unexpected error while joining channel"}}
+
+    def _join_google_chat_space(self, account_id, tenant_id, channel_id, session_id=None, text=None):
+        """Self-join a Google Chat space and bind its incident thread to a session.
+
+        Parity with the Slack /channels/join flow. Google Chat differs in two ways:
+        one service-account bot serves all tenants (no per-tenant token lookup), and
+        conversations are thread-scoped — so the proactive post anchors a thread and
+        we bind thread -> session (not space -> session). That keeps a shared incident
+        space correct (one thread per incident) and is resolved on the inbound side in
+        events._handle_gchat_message.
+        """
+        if not GoogleChatAppClient.is_enabled():
+            return {"error": {"message": "Google Chat service account is not configured"}}
+
+        join_result = GoogleChatAppClient.join_space(channel_id)
+        if not join_result.get("success"):
+            if join_result.get("reason") == "needs_authorization":
+                return {
+                    "error": {
+                        "message": "Google Chat app needs admin authorization "
+                        "(chat.app.memberships) before it can join spaces."
+                    }
+                }
+            return {
+                "error": {"message": f"Failed to join Google Chat space: {join_result.get('error') or 'unknown error'}"}
+            }
+
+        message = text or f"{settings.urls.branding_name} has joined for this incident — reply here with questions."
+        post_result = GoogleChatAppClient.post_message(space=channel_id, message=message, tenant=tenant_id)
+        thread_name = post_result.get("thread_name") if post_result.get("success") else None
+
+        if session_id and thread_name:
+            # team_id := space name so the key pairs with the inbound lookup
+            # get_channel_session_mapping(thread_name, space_name).
+            cache.cache_channel_session_mapping(
+                channel_id=thread_name,
+                team_id=channel_id,
+                session_id=session_id,
+                account_id=account_id,
+                tenant_id=tenant_id,
+            )
+            LOG.info(
+                "Bound Google Chat incident thread %s (space %s) -> session_id=%s",
+                thread_name,
+                channel_id,
+                session_id,
+            )
+        elif session_id:
+            LOG.warning(
+                "Joined Google Chat space %s but could not post the anchor message; "
+                "follow-ups will not carry incident context",
+                channel_id,
+            )
+
+        return {
+            "success": True,
+            "message": "Successfully joined Google Chat space",
+            "data": {
+                "channel_id": channel_id,
+                "thread_name": thread_name,
+                "session_id": session_id,
+                "platform": "google_chat",
+            },
+        }
 
     def _get_messaging_platform(self, tenant_id, team_id, platform):
-        query = self.session.query(MessagingPlatform).filter(
-            MessagingPlatform.tenant_id == tenant_id, MessagingPlatform.platform == platform
-        )
-
-        # Only filter by team_id for Slack where the DB column stores the
-        # workspace team ID matching what callers pass.  For MS Teams the
-        # column holds the Microsoft account home_account_id, and Google Chat
-        # never sets team_id at all, so the filter only makes sense for Slack.
+        # Slack callers may target a specific workspace by team_id; MS Teams/Google
+        # Chat resolve by tenant. Unions integrations + legacy messaging_platforms.
         if team_id and platform == "slack":
-            query = query.filter(MessagingPlatform.team_id == team_id)
-
-        messaging_platform = query.one_or_none()
-
-        return messaging_platform
+            return load_installation_by_team(self.session, team_id, platform)
+        return load_installation(self.session, tenant_id, platform)
 
     def _refresh_ms_teams_token(self, messaging_platform):
         """Refresh MS Teams token if expired. Returns error string on failure, None on success."""
@@ -298,12 +411,15 @@ class CommonService:
         if "error" in response and response["error"]:
             LOG.error("Unable to refresh MS Teams token: %s", response.get("error_description", ERR_UNKNOWN))
             return ERR_TOKEN_REFRESH_FAILED
-        messaging_platform.token = response.get("access_token")
-        messaging_platform.refresh_token = response.get("refresh_token")
         expires_in = response.get("expires_in")
-        messaging_platform.token_expires_at = utc_now() + timedelta(seconds=expires_in - 100) if expires_in else None
-        self.session.add(messaging_platform)
-        self.session.commit()
+        new_expiry = utc_now() + timedelta(seconds=expires_in - 100) if expires_in else None
+        persist_messaging_token(
+            self.session,
+            messaging_platform,
+            response.get("access_token"),
+            refresh_token=response.get("refresh_token"),
+            token_expires_at=new_expiry,
+        )
         return None
 
     def _refresh_google_chat_token(self, messaging_platform):
@@ -390,9 +506,9 @@ class CommonService:
 
                 return self._check_error_msg(error_msg, "chat:write")
 
-        except Exception as e:
-            LOG.exception(f"Error sending message to channel: {e}")
-            return {"error": {"message": f"Unexpected error: {str(e)}"}}
+        except Exception:
+            LOG.exception("Error sending message to channel")
+            return {"error": {"message": "Unexpected error while sending message"}}
 
     def send_direct_message(self, platform, tenant_id, user_id, text, team_id=None):
         try:
@@ -410,9 +526,9 @@ class CommonService:
             elif platform == "google_chat":
                 return self._send_google_chat_direct_message(messaging_platform, user_id, text, tenant_id)
 
-        except Exception as e:
-            LOG.exception(f"Error sending direct message: {e}")
-            return {"error": {"message": f"Unexpected error: {str(e)}"}}
+        except Exception:
+            LOG.exception("Error sending direct message")
+            return {"error": {"message": "Unexpected error while sending direct message"}}
 
     def _send_slack_direct_message(self, messaging_platform, user_id, text):
         try:
@@ -560,11 +676,7 @@ class CommonService:
 
     def get_user_info(self, platform, team_id, user_id):
         if platform == "slack":
-            bot = (
-                self.session.query(MessagingPlatform)
-                .filter(MessagingPlatform.team_id == team_id, MessagingPlatform.platform == "slack")
-                .first()
-            )
+            bot = load_installation_by_team(self.session, team_id, "slack")
             if not bot:
                 LOG.info("Could not complete action for %s, no installation found for team: %s ", platform, team_id)
                 return None
@@ -738,9 +850,9 @@ class CommonService:
             # This should not be reached due to validation above, but handle gracefully
             return {"success": False, "error": f"Unsupported platform: {platform}"}
 
-        except Exception as e:
-            LOG.exception("Error adding reaction on %s: %s", platform, e)
-            return {"success": False, "error": f"Unexpected error: {str(e)}"}
+        except Exception:
+            LOG.exception("Error adding reaction on %s", platform)
+            return {"success": False, "error": "Unexpected error while adding reaction"}
 
     def _add_slack_reaction(self, messaging_platform, channel_id, message_id, emoji):
         """Add a reaction to a Slack message."""
@@ -854,9 +966,9 @@ class CommonService:
 
             return self._build_email_response(sent_to, errors)
 
-        except Exception as e:
-            LOG.exception("Error sending email: %s", e)
-            return {"success": False, "error": f"Unexpected error: {str(e)}"}
+        except Exception:
+            LOG.exception("Error sending email")
+            return {"success": False, "error": "Unexpected error while sending email"}
 
     @staticmethod
     def _normalize_address_list(addresses):
@@ -1213,7 +1325,7 @@ class CommonService:
         return text
 
     def get_slack_installation(self, team_id):
-        return self.session.query(MessagingPlatform).filter_by(team_id=team_id, platform="slack").first()
+        return load_installation_by_team(self.session, team_id, "slack")
 
     def get_slack_user_display_name(self, team_id, user_id):
         """
@@ -1257,9 +1369,9 @@ class CommonService:
 
             return self._fetch_thread_messages(messaging_platform, channel_id, thread_ts)
 
-        except Exception as e:
-            LOG.exception(f"Error fetching thread messages: {e}")
-            return {"success": False, "error": f"Unexpected error: {str(e)}"}
+        except Exception:
+            LOG.exception("Error fetching thread messages")
+            return {"success": False, "error": "Unexpected error while fetching thread messages"}
 
     def _fetch_thread_messages(self, messaging_platform, channel_id, thread_ts):
         """Fetch thread messages from Slack API."""
@@ -1442,11 +1554,7 @@ class CommonService:
                 LOG.warning("No AAD user ID provided")
                 return None
 
-            messaging_platform = (
-                self.session.query(MessagingPlatform)
-                .filter(MessagingPlatform.team_id.contains(teams_account_id), MessagingPlatform.platform == "ms_teams")
-                .one_or_none()
-            )
+            messaging_platform = load_installation_by_team(self.session, teams_account_id, "ms_teams", contains=True)
 
             if not messaging_platform:
                 LOG.debug(f"No Teams messaging platform found for teams account {teams_account_id}")
@@ -1797,7 +1905,7 @@ class CommonService:
 
     def send_test_notification(self, platform, tenant_id, channel_id, team_id=None):
         try:
-            if platform not in ["slack", "ms_teams", "google_chat"]:
+            if platform not in ["slack", "ms_teams", "google_chat", "discord"]:
                 return {"success": False, "platform": platform, "error": f"Unsupported platform: {platform}"}
 
             messaging_platform = self._get_messaging_platform(tenant_id, team_id, platform)
@@ -1808,9 +1916,12 @@ class CommonService:
                     "error": f"No {platform} installation found for tenant: {tenant_id}",
                 }
 
-            platform_display = {"slack": "Slack", "ms_teams": "MS Teams", "google_chat": "Google Chat"}.get(
-                platform, platform
-            )
+            platform_display = {
+                "slack": "Slack",
+                "ms_teams": "MS Teams",
+                "google_chat": "Google Chat",
+                "discord": "Discord",
+            }.get(platform, platform)
             test_message = (
                 f"This is a test notification from Nudgebee. "
                 f"Your {platform_display} integration is working correctly!"
@@ -1822,10 +1933,12 @@ class CommonService:
                 return self._send_test_ms_teams(messaging_platform, channel_id, team_id, test_message, tenant_id)
             elif platform == "google_chat":
                 return self._send_test_google_chat(messaging_platform, channel_id, test_message, tenant_id)
+            elif platform == "discord":
+                return self._send_test_discord(messaging_platform, channel_id, test_message)
 
-        except Exception as e:
-            LOG.exception("Error sending test notification on %s: %s", platform, e)
-            return {"success": False, "platform": platform, "error": f"Unexpected error: {str(e)}"}
+        except Exception:
+            LOG.exception("Error sending test notification on %s", platform)
+            return {"success": False, "platform": platform, "error": "Unexpected error while sending test notification"}
 
     def _send_test_slack(self, messaging_platform, channel_id, message):
         try:
@@ -1871,6 +1984,19 @@ class CommonService:
             LOG.error("MS Teams test notification error: %s", e)
             return {"success": False, "platform": "ms_teams", "error": str(e)}
 
+    def _send_test_discord(self, messaging_platform, channel_id, message):
+        from notifications_server.clients.discord_client import DiscordClient
+
+        try:
+            token = messaging_platform.token
+            response = DiscordClient.chat_post(token=token, channel_id=channel_id, content=message)
+            if not response.get("ok"):
+                return {"success": False, "platform": "discord", "error": response.get("error", "Unknown error")}
+            return {"success": True, "platform": "discord"}
+        except Exception as e:
+            LOG.error("Error sending Discord test notification: %s", e)
+            return {"success": False, "platform": "discord", "error": str(e)}
+
     def _send_test_google_chat(self, messaging_platform, channel_id, message, tenant_id):
         error = self._refresh_google_chat_token(messaging_platform)
         if error:
@@ -1912,25 +2038,11 @@ class CommonService:
         return messaging_platform
 
     def gchat_reply_in_thread(self, space_name, thread_name, message, tenant_id):
-        """Post a text reply in a Google Chat thread.
-
-        Uses app-credential auth when GOOGLE_CHAT_SA_KEY is set (replies appear
-        as the Nudgebee bot). Falls back to user-OAuth from the tenant's
-        installation when not — same behavior as before the SA migration.
-        """
-        if GoogleChatAppClient.is_enabled():
-            return GoogleChatAppClient.post_message(
-                space=space_name,
-                message=message,
-                tenant=tenant_id,
-                thread_name=thread_name,
-            )
-        messaging_platform = self.get_google_chat_installation(tenant_id)
-        if not messaging_platform:
-            LOG.error("No Google Chat installation found for tenant %s", tenant_id)
+        """Post a text reply in a Google Chat thread as the Nudgebee bot (service account)."""
+        if not GoogleChatAppClient.is_enabled():
+            LOG.error("Cannot reply in Google Chat space %s — GOOGLE_CHAT_SA_KEY is not configured.", space_name)
             return None
-        return GoogleChatClient.post_to_google_chat(
-            token=messaging_platform.token,
+        return GoogleChatAppClient.post_message(
             space=space_name,
             message=message,
             tenant=tenant_id,
@@ -1938,30 +2050,11 @@ class CommonService:
         )
 
     def gchat_reply_with_card(self, space_name, thread_name, card, tenant_id):
-        """Post a Cards v2 message in a Google Chat thread.
-
-        Cards require app-credential auth — Google rejects card payloads
-        carrying user-OAuth tokens with 400 INVALID_ARGUMENT. When SA auth
-        isn't configured, attempts user-OAuth so the error path is uniform
-        with reply_in_thread (and logs a warning naming the missing env var).
-        """
-        if GoogleChatAppClient.is_enabled():
-            return GoogleChatAppClient.post_message(
-                space=space_name,
-                message=card,
-                tenant=tenant_id,
-                thread_name=thread_name,
-            )
-        LOG.warning(
-            "Google Chat card reply attempted without SA auth — "
-            "Google will reject card payloads on user-OAuth. Set GOOGLE_CHAT_SA_KEY."
-        )
-        messaging_platform = self.get_google_chat_installation(tenant_id)
-        if not messaging_platform:
-            LOG.error("No Google Chat installation found for tenant %s", tenant_id)
+        """Post a Cards v2 message in a Google Chat thread as the Nudgebee bot (service account)."""
+        if not GoogleChatAppClient.is_enabled():
+            LOG.error("Cannot post Google Chat card to space %s — GOOGLE_CHAT_SA_KEY is not configured.", space_name)
             return None
-        return GoogleChatClient.post_to_google_chat(
-            token=messaging_platform.token,
+        return GoogleChatAppClient.post_message(
             space=space_name,
             message=card,
             tenant=tenant_id,
@@ -2031,6 +2124,66 @@ class CommonService:
                                 "widgets": [
                                     {"textParagraph": {"text": question}},
                                     {"buttonList": {"buttons": buttons}},
+                                ]
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+
+    @staticmethod
+    def create_gchat_connect_card(space_name, display_name=""):
+        """Build a Cards v2 connect card for spaces without a tenant binding.
+
+        Routing key is `space_id`; `display_name` is a UI label only and is
+        URL-encoded into the connect-page query string for the post-bind UX.
+        """
+        import urllib.parse
+
+        branding_name = settings.urls.branding_name
+        branding_logo = settings.urls.branding_logo_url
+        base_url = settings.urls.base_url
+
+        qs = {"cloudProvider": "google_chat", "space_id": space_name}
+        if display_name:
+            qs["display_name"] = display_name
+        connect_url = f"{base_url}/accounts/account-form?{urllib.parse.urlencode(qs)}"
+
+        return {
+            "cardsV2": [
+                {
+                    "cardId": "connect-space",
+                    "card": {
+                        "header": {
+                            "title": f"Connect this space to {branding_name}",
+                            "imageUrl": branding_logo,
+                            "imageType": "CIRCLE",
+                        },
+                        "sections": [
+                            {
+                                "widgets": [
+                                    {
+                                        "textParagraph": {
+                                            "text": (
+                                                f"This space isn't linked to a {branding_name} "
+                                                "organization you can use here yet. If it's already "
+                                                f"connected to another of your {branding_name} "
+                                                "organizations, switch to that organization to start "
+                                                "using it. Otherwise, an admin can connect it below."
+                                            )
+                                        }
+                                    },
+                                    {
+                                        "buttonList": {
+                                            "buttons": [
+                                                {
+                                                    "text": f"Connect to {branding_name}",
+                                                    "onClick": {"openLink": {"url": connect_url}},
+                                                }
+                                            ]
+                                        }
+                                    },
                                 ]
                             }
                         ],

@@ -186,6 +186,9 @@ func (m *MockWorkflowStore) SetLiveVersion(ctx context.Context, tenantID, accoun
 func (m *MockWorkflowStore) SetDraftVersionID(ctx context.Context, tenantID, accountID, workflowID, versionID string) error {
 	return nil
 }
+func (m *MockWorkflowStore) DeleteWorkflowVersion(ctx context.Context, tenantID, accountID, workflowID, versionID string) error {
+	return nil
+}
 func (m *MockWorkflowStore) UpdateVersionMetadata(ctx context.Context, workflowID string, versionNumber int, name, description *string) (*model.WorkflowVersion, error) {
 	return nil, nil
 }

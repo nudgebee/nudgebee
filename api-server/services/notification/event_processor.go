@@ -18,9 +18,9 @@ func ProcessEvent(ctx *security.RequestContext, newEvent map[string]any) (err er
 		return nil
 	}
 
-	if priortiyStr, ok := newEvent["priority"].(string); ok && priortiyStr != "HIGH" {
+	if priorityStr, ok := newEvent["priority"].(string); ok && priorityStr != "HIGH" {
 		return nil
-	} else if priortiyStr, ok := newEvent["priority"].(string); ok && priortiyStr != "HIGH" {
+	} else if priorityStr, ok := newEvent["priority"].(string); ok && priorityStr != "HIGH" {
 		return nil
 	}
 

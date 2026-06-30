@@ -3,7 +3,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 import requests
 
@@ -12,6 +12,15 @@ from benchmark_server.utils.utils import Config
 logger = logging.getLogger(__name__)
 
 TERMINAL_STATUSES = ("COMPLETED", "FAILED", "KILLED", "TERMINATED", "WAITING")
+
+
+def _service_token() -> str:
+    """Token for the llm-server's X-ACTION-TOKEN service-to-service gate.
+
+    LLM_SERVER_TOKEN is the canonical key in the `nudgebee` secret that the
+    llm-server validates against and every other service caller sends.
+    """
+    return os.getenv("LLM_SERVER_TOKEN", "")
 
 
 # --- Error categories ---
@@ -82,11 +91,17 @@ def call_llm(
     message_id=None,
     timeout=LLM_POLL_TIMEOUT,
     poll_interval=LLM_POLL_INTERVAL,
+    on_submit: Optional[Callable[[str], None]] = None,
 ) -> LLMResult:
     """
     Call the LLM server. Uses async mode by default (sends ``async: true``,
     polls ``/v1/completions/chat_get`` for results).  Falls back to sync mode
     when ``BENCHMARK_ASYNC=false`` env-var is set.
+
+    ``on_submit`` is invoked with the ``conversation_id`` the instant the
+    async server accepts the request (HTTP 202), before polling begins. This
+    lets callers persist the conversation handle immediately so a restart can
+    re-attach and reconcile the in-flight test rather than losing it.
 
     Returns an ``LLMResult`` with structured error classification.
     On success, ``result.data`` contains the response dict::
@@ -119,7 +134,7 @@ def call_llm(
         "x-user-id": user_id,
         "Content-Type": "application/json",
     }
-    action_token = os.getenv("ACTION_TOKEN", "")
+    action_token = _service_token()
     if action_token:
         headers["x-action-token"] = action_token
 
@@ -159,8 +174,20 @@ def call_llm(
 
     # Async path — 202 accepted, need to poll
     if response.status_code == 202:
+        accepted = response.json()
+        # Persist the conversation handle the moment the server accepts the
+        # request — before the (potentially long) poll — so a benchmark restart
+        # can re-attach to this in-flight conversation instead of orphaning it.
+        if on_submit:
+            try:
+                data = accepted.get("data") if isinstance(accepted, dict) else None
+                submit_cid = (data or {}).get("conversation_id")
+                if submit_cid:
+                    on_submit(submit_cid)
+            except Exception as e:  # best-effort — never fail the call on this
+                logger.warning("on_submit callback failed: %s", e)
         return _poll_for_result(
-            response.json(), account_id, tenant_id, user_id, timeout, poll_interval
+            accepted, account_id, tenant_id, user_id, timeout, poll_interval
         )
 
     # HTTP errors
@@ -198,7 +225,7 @@ def fetch_conversation(
         "x-user-id": user_id or "",
         "Content-Type": "application/json",
     }
-    action_token = os.getenv("ACTION_TOKEN", "")
+    action_token = _service_token()
     if action_token:
         headers["x-action-token"] = action_token
     try:
@@ -287,7 +314,7 @@ def _poll_for_result(
         "x-user-id": user_id,
         "Content-Type": "application/json",
     }
-    action_token = os.getenv("ACTION_TOKEN", "")
+    action_token = _service_token()
     if action_token:
         headers["x-action-token"] = action_token
     deadline = time.time() + timeout
@@ -402,14 +429,21 @@ def _poll_for_result(
 
 
 def _extract_agent_error(conv: dict) -> str:
-    """Extract the error message from a failed conversation's agent responses."""
-    messages = conv.get("llm_conversation_messages", [])
+    """Extract the error message from a failed conversation's agent responses.
+
+    Defensive against null-valued keys: the llm-server may serialize
+    ``llm_conversation_messages`` / ``llm_conversation_agents`` as ``null``
+    (not absent), so ``dict.get(key, [])`` would return ``None`` and the
+    iteration would raise. ``or []`` collapses both missing and null to ``[]``.
+    """
+    messages = conv.get("llm_conversation_messages") or []
     if not messages:
         return ""
-    last_message = messages[-1]
-    for agent in last_message.get("llm_conversation_agents", []):
-        status = agent.get("status", "")
-        if status == "fail":
+    last_message = messages[-1] if isinstance(messages[-1], dict) else {}
+    for agent in last_message.get("llm_conversation_agents") or []:
+        if not isinstance(agent, dict):
+            continue
+        if agent.get("status", "") == "fail":
             resp = agent.get("response", "")
             if resp:
                 return resp[:500]

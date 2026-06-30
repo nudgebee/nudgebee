@@ -2,10 +2,12 @@ package aws
 
 import (
 	"context"
+	"fmt"
 	"nudgebee/collector/cloud/providers"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -199,4 +201,52 @@ func TestGetAwsRdsMetricsWithoutResourceType(t *testing.T) {
 	assert.Nil(t, err)
 	assert.NotNil(t, metrics)
 	// If the bug exists, this test would fail with "MetricDataQueries is required" error
+}
+
+func TestBuildAvailableMetricsWithDimensions(t *testing.T) {
+	mk := func(name string, dims map[string]string) types.Metric {
+		m := types.Metric{MetricName: strPtr(name)}
+		for k, v := range dims {
+			kk, vv := k, v
+			m.Dimensions = append(m.Dimensions, types.Dimension{Name: &kk, Value: &vv})
+		}
+		return m
+	}
+
+	metrics := []types.Metric{
+		mk("CPUUtilization", map[string]string{"InstanceId": "i-1"}),
+		mk("CPUUtilization", map[string]string{"InstanceId": "i-2"}),
+		mk("CPUUtilization", map[string]string{"InstanceId": "i-1"}), // dup combo
+		mk("NetworkIn", map[string]string{"InstanceId": "i-1", "AutoScalingGroupName": "asg-a"}),
+		{MetricName: strPtr("NoDims")}, // metric with no dimensions
+	}
+
+	out := buildAvailableMetricsWithDimensions(metrics, "AWS/EC2", 100)
+
+	// sorted by name: CPUUtilization, NetworkIn, NoDims
+	assert.Equal(t, []string{"CPUUtilization", "NetworkIn", "NoDims"}, []string{out[0].Name, out[1].Name, out[2].Name})
+	for _, m := range out {
+		assert.Equal(t, "AWS/EC2", m.Namespace)
+	}
+	// CPUUtilization: two distinct InstanceId combos, dup collapsed
+	assert.Len(t, out[0].Dimensions, 2)
+	// NetworkIn: one combo with two dimension keys
+	assert.Len(t, out[1].Dimensions, 1)
+	assert.Equal(t, "asg-a", out[1].Dimensions[0]["AutoScalingGroupName"])
+	// NoDims: no dimension sets
+	assert.Empty(t, out[2].Dimensions)
+}
+
+func TestBuildAvailableMetricsWithDimensions_CapsSets(t *testing.T) {
+	var metrics []types.Metric
+	for i := 0; i < 10; i++ {
+		v := fmt.Sprintf("i-%d", i)
+		metrics = append(metrics, types.Metric{
+			MetricName: strPtr("CPUUtilization"),
+			Dimensions: []types.Dimension{{Name: strPtr("InstanceId"), Value: &v}},
+		})
+	}
+	out := buildAvailableMetricsWithDimensions(metrics, "AWS/EC2", 3)
+	assert.Len(t, out, 1)
+	assert.Len(t, out[0].Dimensions, 3, "dimension sets capped at maxSets")
 }

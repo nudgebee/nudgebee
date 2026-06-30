@@ -51,7 +51,7 @@
         },
         {
           "id": "11be64d8-e870-5081-95dc-6995e3dfa446",
-          "namespace": "nudgebee-test",
+          "namespace": "test-cluster-test",
           "name": "services-server-68b96f6847-k2wjq",
           "status": "Running",
           "is_active": true,
@@ -65,7 +65,7 @@
         },
         {
           "id": "9fc5100e-b382-5e4a-868e-370f84b63885",
-          "namespace": "nudgebee-test",
+          "namespace": "test-cluster-test",
           "name": "relay-server-5d78b476c5-mfpxt",
           "status": "Running",
           "is_active": true,
@@ -79,7 +79,7 @@
         },
         {
           "id": "732bccb0-2ffb-54eb-8bab-a8ef1144beea",
-          "namespace": "nudgebee-test",
+          "namespace": "test-cluster-test",
           "name": "pg-main-proxy-57d665d7bb-ht2gt",
           "status": "Running",
           "is_active": true,
@@ -93,7 +93,7 @@
         },
         {
           "id": "83de19a5-67eb-5a8c-9216-b0802e77ba5c",
-          "namespace": "nudgebee-test",
+          "namespace": "test-cluster-test",
           "name": "nudgebee-doc-docs-57495f98cb-hhjbk",
           "status": "Running",
           "is_active": true,
@@ -107,7 +107,7 @@
         },
         {
           "id": "46b205a4-5834-5b72-ac2b-0673b5d62ed1",
-          "namespace": "nudgebee-test",
+          "namespace": "test-cluster-test",
           "name": "notifications-775cb5975d-x8zmw",
           "status": "Running",
           "is_active": true,
@@ -121,7 +121,7 @@
         },
         {
           "id": "783b40db-b9fe-5d5f-8d86-c92e77849bda",
-          "namespace": "nudgebee-test",
+          "namespace": "test-cluster-test",
           "name": "ml-k8s-server-f98c67d78-q5jwn",
           "status": "Running",
           "is_active": true,
@@ -135,7 +135,7 @@
         },
         {
           "id": "656e3501-0924-56c8-b22f-74d0f6371d03",
-          "namespace": "nudgebee-test",
+          "namespace": "test-cluster-test",
           "name": "auto-pilot-worker-7d78849644-tz66b",
           "status": "Running",
           "is_active": true,

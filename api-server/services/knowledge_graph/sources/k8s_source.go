@@ -12,6 +12,7 @@ import (
 	"nudgebee/services/knowledge_graph/core"
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
+	"sort"
 	"strings"
 	"time"
 
@@ -317,6 +318,43 @@ func (s *K8sSource) BuildGraph(reqCtx *security.RequestContext, req *core.Source
 	edges = append(edges, workloadSAEdges...)
 	s.logger.Info("emitted ServiceAccount nodes + Workload→SA edges",
 		"sa_nodes", len(saNodes), "workload_sa_edges", len(workloadSAEdges))
+
+	// Fetch ConfigMaps + Secrets, emit nodes + BELONGS_TO edges to
+	// namespaces, and wire Workload → USES_CONFIG / USES_SECRET edges by
+	// walking each workload's pod spec for volume mounts and envFrom refs.
+	// Secrets values are NEVER persisted — only key names + type +
+	// metadata. Helm release state (`helm.sh/release.v1` type) is dropped
+	// at fetch time to avoid drowning the graph in 500+ noise nodes per
+	// cluster.
+	k8sConfigMaps, err := s.fetchK8sConfigMapsFromRelay(ctx, req)
+	if err != nil {
+		s.logger.Warn("failed to fetch K8s ConfigMaps from relay, continuing without them", "error", err)
+		k8sConfigMaps = []K8sConfigMapFromRelay{}
+	}
+	cmNodes, cmEdges, configMapByKey := s.convertK8sConfigMapsToGraph(k8sConfigMaps, workloads, k8sNAmespaceMap, req)
+	nodes = append(nodes, cmNodes...)
+	edges = append(edges, cmEdges...)
+
+	k8sSecrets, err := s.fetchK8sSecretsFromRelay(ctx, req)
+	if err != nil {
+		s.logger.Warn("failed to fetch K8s Secrets from relay, continuing without them", "error", err)
+		k8sSecrets = []K8sSecretFromRelay{}
+	}
+	secNodes, secEdges, secretByKey := s.convertK8sSecretsToGraph(k8sSecrets, workloads, k8sNAmespaceMap, req)
+	nodes = append(nodes, secNodes...)
+	edges = append(edges, secEdges...)
+
+	// Workload pod-template volume/envFrom refs are NOT in k8s_workloads
+	// (the existing meta column strips them for everything except PVCs).
+	// One round-trip per workload kind against the relay rebuilds the
+	// ConfigMap / Secret reference map.
+	workloadSpecRefs := s.fetchWorkloadConfigSecretRefs(ctx, req)
+	workloadCMSecEdges := s.createWorkloadConfigSecretEdges(workloads, workloadNodesMap, configMapByKey, secretByKey, workloadSpecRefs, req)
+	edges = append(edges, workloadCMSecEdges...)
+	s.logger.Info("emitted ConfigMap/Secret nodes + Workload edges",
+		"configmap_nodes", len(cmNodes), "secret_nodes", len(secNodes),
+		"workloads_with_spec_refs", len(workloadSpecRefs),
+		"workload_config_secret_edges", len(workloadCMSecEdges))
 
 	// Fetch + emit Karpenter NodePool / NodeClaim. Karpenter NodePool is a
 	// declarative provisioning spec; NodeClaim is a per-node lifecycle record.
@@ -894,7 +932,23 @@ func (s *K8sSource) parseRelayDataArray(response map[string]interface{}, resourc
 		return nil, fmt.Errorf("response.data is not a map")
 	}
 
-	findings, ok := data["findings"].([]interface{})
+	// Treat a missing / null `findings` as "no findings". The relay returns
+	// this shape when the requested resource type does not exist in the
+	// cluster — e.g. Karpenter CRDs on a GKE cluster, which currently
+	// surface as a noisy WARN with full stack trace on every build:
+	//
+	//   level=WARN msg="failed to parse Karpenter CRD response"
+	//   resource_type=nodepools error="response.data.findings is not an array"
+	//
+	// Distinguish only the truly-malformed case (key present, non-null,
+	// non-array) from the benign empty-cluster case.
+	findingsRaw, present := data["findings"]
+	if !present || findingsRaw == nil {
+		s.logger.Info("no findings in response (key absent or null)",
+			"resource_type", resourceType)
+		return []interface{}{}, nil
+	}
+	findings, ok := findingsRaw.([]interface{})
 	if !ok {
 		return nil, fmt.Errorf("response.data.findings is not an array")
 	}
@@ -1170,6 +1224,746 @@ func (s *K8sSource) parseK8sServiceAccountsResponse(response map[string]interfac
 	}
 
 	return sas, nil
+}
+
+// K8sConfigMapFromRelay represents the K8s ConfigMap structure from a relay
+// `get_resource` response. We store the key names but never the values:
+// ConfigMaps can carry sizeable blobs (whole JSON / YAML configs) and the
+// per-tenant graph is supposed to model topology, not act as a cluster-state
+// archive. Callers can fetch the full data live via the relay when needed.
+type K8sConfigMapFromRelay struct {
+	Metadata K8sServiceMetadata     `json:"metadata"`
+	Data     map[string]interface{} `json:"data"`
+	// BinaryData holds non-UTF-8 entries; we record the keys only.
+	BinaryData map[string]interface{} `json:"binary_data"`
+}
+
+// K8sSecretFromRelay represents the K8s Secret structure from a relay
+// `get_resource` response. We deliberately drop `Data` (base64-encoded
+// secret material) — the KG records the key names and the secret Type
+// only. Values stay on the cluster.
+type K8sSecretFromRelay struct {
+	Metadata K8sServiceMetadata     `json:"metadata"`
+	Type     string                 `json:"type"`
+	Data     map[string]interface{} `json:"data"`
+}
+
+// fetchK8sConfigMapsFromRelay fetches every ConfigMap across the cluster
+// via the relay's get_resource action. Same shape as the ServiceAccount /
+// Service fetches.
+func (s *K8sSource) fetchK8sConfigMapsFromRelay(ctx context.Context, req *core.SourceBuildRequest) ([]K8sConfigMapFromRelay, error) {
+	if req.CloudAccountID == "" {
+		s.logger.Warn("skipping relay ConfigMap fetch: cloud_account_id is empty")
+		return []K8sConfigMapFromRelay{}, nil
+	}
+
+	s.logger.Info("fetching K8s ConfigMaps from relay server",
+		"resource_type", "configmaps",
+		"account_id", req.CloudAccountID)
+
+	relayRequest := relay.RelayExecuteRequest{
+		NoSinks: false,
+		Cache:   false,
+		Body: relay.ActionExecuteBody{
+			AccountID:  req.CloudAccountID,
+			ActionName: "get_resource",
+			ActionParams: map[string]interface{}{
+				"group":          "",
+				"version":        "v1",
+				"resource_type":  "configmaps",
+				"all_namespaces": true,
+			},
+		},
+	}
+
+	relayResponse, err := relay.Execute(relayRequest)
+	if err != nil {
+		s.logger.Error("failed to execute relay request for ConfigMaps", "error", err)
+		return nil, fmt.Errorf("failed to execute relay request for ConfigMaps: %w", err)
+	}
+
+	cms, err := s.parseK8sConfigMapsResponse(relayResponse)
+	if err != nil {
+		s.logger.Error("failed to parse ConfigMaps response", "error", err)
+		return nil, fmt.Errorf("failed to parse ConfigMaps response: %w", err)
+	}
+
+	s.logger.Info("successfully fetched K8s ConfigMaps from relay", "count", len(cms))
+	return cms, nil
+}
+
+// parseK8sConfigMapsResponse unwraps the relay envelope and decodes each
+// ConfigMap. Errors on individual entries are logged and skipped — we don't
+// want one malformed CM to fail the whole sync.
+func (s *K8sSource) parseK8sConfigMapsResponse(response map[string]interface{}) ([]K8sConfigMapFromRelay, error) {
+	cms := make([]K8sConfigMapFromRelay, 0)
+
+	actualDataArray, err := s.parseRelayDataArray(response, "ConfigMaps")
+	if err != nil {
+		return cms, err
+	}
+
+	if len(actualDataArray) == 0 {
+		return cms, nil
+	}
+
+	for _, cmAny := range actualDataArray {
+		cmMap, ok := cmAny.(map[string]interface{})
+		if !ok {
+			s.logger.Warn("skipping invalid ConfigMap entry")
+			continue
+		}
+
+		cmBytes, err := json.Marshal(cmMap)
+		if err != nil {
+			s.logger.Warn("failed to marshal ConfigMap", "error", err)
+			continue
+		}
+
+		var cm K8sConfigMapFromRelay
+		if err := json.Unmarshal(cmBytes, &cm); err != nil {
+			s.logger.Warn("failed to unmarshal ConfigMap", "error", err)
+			continue
+		}
+
+		cms = append(cms, cm)
+	}
+
+	return cms, nil
+}
+
+// helmReleaseSecretType is the Type Helm stamps on the per-release Secret
+// it stores in `kube-system` / the install namespace. These dominate the
+// secret count in any Helm-managed cluster (591 of 813 in the surveyed
+// production tenant) and don't represent a credential the workload uses —
+// they're release state. Filtered out at the source so they don't pollute
+// the graph or the SaveNodes batch.
+const helmReleaseSecretType = "helm.sh/release.v1"
+
+// helmManagedByLabel — Helm stamps this on every resource it owns. Used
+// for the optional `managed_by` query_attribute on ConfigMap nodes.
+const helmManagedByLabel = "app.kubernetes.io/managed-by"
+
+// fetchK8sSecretsFromRelay fetches every Secret across the cluster, drops
+// helm release state, and returns metadata-only records (no .data values
+// land in the KG payload).
+func (s *K8sSource) fetchK8sSecretsFromRelay(ctx context.Context, req *core.SourceBuildRequest) ([]K8sSecretFromRelay, error) {
+	if req.CloudAccountID == "" {
+		s.logger.Warn("skipping relay Secret fetch: cloud_account_id is empty")
+		return []K8sSecretFromRelay{}, nil
+	}
+
+	s.logger.Info("fetching K8s Secrets from relay server",
+		"resource_type", "secrets",
+		"account_id", req.CloudAccountID)
+
+	relayRequest := relay.RelayExecuteRequest{
+		NoSinks: false,
+		Cache:   false,
+		Body: relay.ActionExecuteBody{
+			AccountID:  req.CloudAccountID,
+			ActionName: "get_resource",
+			ActionParams: map[string]interface{}{
+				"group":          "",
+				"version":        "v1",
+				"resource_type":  "secrets",
+				"all_namespaces": true,
+			},
+		},
+	}
+
+	relayResponse, err := relay.Execute(relayRequest)
+	if err != nil {
+		s.logger.Error("failed to execute relay request for Secrets", "error", err)
+		return nil, fmt.Errorf("failed to execute relay request for Secrets: %w", err)
+	}
+
+	secrets, dropped, err := s.parseK8sSecretsResponse(relayResponse)
+	if err != nil {
+		s.logger.Error("failed to parse Secrets response", "error", err)
+		return nil, fmt.Errorf("failed to parse Secrets response: %w", err)
+	}
+
+	s.logger.Info("successfully fetched K8s Secrets from relay",
+		"count", len(secrets), "dropped_helm_release_state", dropped)
+	return secrets, nil
+}
+
+// parseK8sSecretsResponse unwraps the relay envelope, drops Helm release
+// state, strips .Data values, and returns the surviving secrets plus the
+// drop count for logging. Each surviving secret keeps Data set to a map
+// with key→nil so downstream code can count keys without holding values.
+func (s *K8sSource) parseK8sSecretsResponse(response map[string]interface{}) ([]K8sSecretFromRelay, int, error) {
+	secrets := make([]K8sSecretFromRelay, 0)
+	dropped := 0
+
+	actualDataArray, err := s.parseRelayDataArray(response, "Secrets")
+	if err != nil {
+		return secrets, dropped, err
+	}
+
+	if len(actualDataArray) == 0 {
+		return secrets, dropped, nil
+	}
+
+	for _, secAny := range actualDataArray {
+		secMap, ok := secAny.(map[string]interface{})
+		if !ok {
+			s.logger.Warn("skipping invalid Secret entry")
+			continue
+		}
+
+		secBytes, err := json.Marshal(secMap)
+		if err != nil {
+			s.logger.Warn("failed to marshal Secret", "error", err)
+			continue
+		}
+
+		var sec K8sSecretFromRelay
+		if err := json.Unmarshal(secBytes, &sec); err != nil {
+			s.logger.Warn("failed to unmarshal Secret", "error", err)
+			continue
+		}
+
+		// Drop Helm per-release state secrets — they're not credentials
+		// and they dominate the count.
+		if sec.Type == helmReleaseSecretType {
+			dropped++
+			continue
+		}
+
+		// Replace .Data values with nil placeholders so downstream code
+		// can iterate the keys but never touches the values. This is
+		// belt-and-suspenders: the node-creation path also never emits
+		// these values, but stripping them here means a stray log line
+		// or panic dump can't leak the material either.
+		if len(sec.Data) > 0 {
+			stripped := make(map[string]interface{}, len(sec.Data))
+			for k := range sec.Data {
+				stripped[k] = nil
+			}
+			sec.Data = stripped
+		}
+
+		secrets = append(secrets, sec)
+	}
+
+	return secrets, dropped, nil
+}
+
+// createK8sConfigMapNode builds a ConfigMap DbNode. data/binaryData keys
+// are recorded; values are not.
+func (s *K8sSource) createK8sConfigMapNode(cm *K8sConfigMapFromRelay, clusterName string, req *core.SourceBuildRequest) *core.DbNode {
+	properties := map[string]interface{}{
+		"name":      cm.Metadata.Name,
+		"namespace": cm.Metadata.Namespace,
+		"cluster":   clusterName,
+	}
+	keyCount := len(cm.Data) + len(cm.BinaryData)
+	properties["key_count"] = keyCount
+	if len(cm.Data) > 0 {
+		keys := make([]string, 0, len(cm.Data))
+		for k := range cm.Data {
+			keys = append(keys, k)
+		}
+		// Go map iteration is non-deterministic; sort so the property is
+		// byte-stable across syncs and the upsert doesn't churn the row
+		// every build.
+		sort.Strings(keys)
+		properties["data_keys"] = keys
+	}
+	if len(cm.BinaryData) > 0 {
+		keys := make([]string, 0, len(cm.BinaryData))
+		for k := range cm.BinaryData {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		properties["binary_data_keys"] = keys
+	}
+	if len(cm.Metadata.Labels) > 0 {
+		properties["labels"] = cm.Metadata.Labels
+		if mb, ok := cm.Metadata.Labels[helmManagedByLabel].(string); ok && mb != "" {
+			properties["managed_by"] = mb
+		}
+	}
+	if len(cm.Metadata.Annotations) > 0 {
+		properties["annotations"] = cm.Metadata.Annotations
+	}
+
+	tempNode := &core.DbNode{
+		NodeType:       core.NodeTypeConfigMap,
+		Properties:     properties,
+		CloudAccountID: req.CloudAccountID,
+	}
+	uniqueKey := s.GenerateUniqueKey(tempNode)
+	return core.NewNode(core.NodeTypeConfigMap, uniqueKey, properties, req.TenantID, req.CloudAccountID, "k8s")
+}
+
+// createK8sSecretNode builds a K8sSecret DbNode. data values are not stored;
+// only the key names + the Type + metadata land in the graph.
+func (s *K8sSource) createK8sSecretNode(sec *K8sSecretFromRelay, clusterName string, req *core.SourceBuildRequest) *core.DbNode {
+	properties := map[string]interface{}{
+		"name":        sec.Metadata.Name,
+		"namespace":   sec.Metadata.Namespace,
+		"cluster":     clusterName,
+		"secret_type": sec.Type,
+	}
+	properties["key_count"] = len(sec.Data)
+	if len(sec.Data) > 0 {
+		keys := make([]string, 0, len(sec.Data))
+		for k := range sec.Data {
+			keys = append(keys, k)
+		}
+		// Go map iteration is non-deterministic; sort so the property is
+		// byte-stable across syncs and the upsert doesn't churn the row.
+		sort.Strings(keys)
+		properties["data_keys"] = keys
+	}
+	if len(sec.Metadata.Labels) > 0 {
+		properties["labels"] = sec.Metadata.Labels
+		if mb, ok := sec.Metadata.Labels[helmManagedByLabel].(string); ok && mb != "" {
+			properties["managed_by"] = mb
+		}
+	}
+	if len(sec.Metadata.Annotations) > 0 {
+		properties["annotations"] = sec.Metadata.Annotations
+	}
+
+	tempNode := &core.DbNode{
+		NodeType:       core.NodeTypeK8sSecret,
+		Properties:     properties,
+		CloudAccountID: req.CloudAccountID,
+	}
+	uniqueKey := s.GenerateUniqueKey(tempNode)
+	return core.NewNode(core.NodeTypeK8sSecret, uniqueKey, properties, req.TenantID, req.CloudAccountID, "k8s")
+}
+
+// buildNamespaceClusterMap walks the workload slice once to produce a
+// namespace → cluster-name lookup plus an account-wide fallback cluster.
+// Callers can then resolve a namespace's cluster in O(1) instead of the
+// O(M) linear scan getClusterNameForResource does. Mirrors the
+// first-choice-same-namespace, then-any-workload semantics of the older
+// helper without re-walking the slice per resource.
+func buildNamespaceClusterMap(workloads []K8sWorkloadRow) (perNamespace map[string]string, fallback string) {
+	perNamespace = make(map[string]string)
+	for _, w := range workloads {
+		if w.ClusterName == "" {
+			continue
+		}
+		if fallback == "" {
+			fallback = w.ClusterName
+		}
+		if _, present := perNamespace[w.Namespace]; !present {
+			perNamespace[w.Namespace] = w.ClusterName
+		}
+	}
+	return perNamespace, fallback
+}
+
+// resolveCluster returns the cluster name for a namespace via the
+// pre-computed lookup, falling back to the account-wide cluster when the
+// namespace has no workloads of its own.
+func resolveCluster(perNamespace map[string]string, fallback, namespace string) string {
+	if c, ok := perNamespace[namespace]; ok {
+		return c
+	}
+	return fallback
+}
+
+// convertK8sConfigMapsToGraph emits ConfigMap nodes and BELONGS_TO edges to
+// their owning namespace. Returns a lookup map keyed by "namespace/name"
+// for the Workload → USES_CONFIG → ConfigMap wiring downstream.
+func (s *K8sSource) convertK8sConfigMapsToGraph(cms []K8sConfigMapFromRelay, workloads []K8sWorkloadRow, namespaceNodes map[string]*core.DbNode, req *core.SourceBuildRequest) ([]*core.DbNode, []*core.DbEdge, map[string]*core.DbNode) {
+	nodes := make([]*core.DbNode, 0, len(cms))
+	edges := make([]*core.DbEdge, 0)
+	byKey := make(map[string]*core.DbNode, len(cms))
+
+	// Pre-compute namespace → cluster lookup so the per-CM cluster
+	// resolution is O(1) instead of O(workloads). Cluster name is needed
+	// twice per CM (node properties + namespace edge key).
+	perNamespace, fallback := buildNamespaceClusterMap(workloads)
+
+	for i := range cms {
+		cm := &cms[i]
+		clusterName := resolveCluster(perNamespace, fallback, cm.Metadata.Namespace)
+		node := s.createK8sConfigMapNode(cm, clusterName, req)
+		nodes = append(nodes, node)
+		byKey[fmt.Sprintf("%s/%s", cm.Metadata.Namespace, cm.Metadata.Name)] = node
+
+		namespaceKey := fmt.Sprintf("%s/%s", clusterName, cm.Metadata.Namespace)
+		if nsNode, ok := namespaceNodes[namespaceKey]; ok {
+			edges = append(edges, core.NewEdge(
+				node.ID, nsNode.ID,
+				core.RelationshipBelongsTo,
+				map[string]interface{}{"connection_type": "namespace_membership"},
+				req.TenantID, req.CloudAccountID, "k8s",
+			))
+		}
+	}
+
+	return nodes, edges, byKey
+}
+
+// convertK8sSecretsToGraph emits K8sSecret nodes and BELONGS_TO edges to
+// their owning namespace. Returns the lookup map for Workload →
+// USES_SECRET wiring.
+func (s *K8sSource) convertK8sSecretsToGraph(secrets []K8sSecretFromRelay, workloads []K8sWorkloadRow, namespaceNodes map[string]*core.DbNode, req *core.SourceBuildRequest) ([]*core.DbNode, []*core.DbEdge, map[string]*core.DbNode) {
+	nodes := make([]*core.DbNode, 0, len(secrets))
+	edges := make([]*core.DbEdge, 0)
+	byKey := make(map[string]*core.DbNode, len(secrets))
+
+	// Pre-compute namespace → cluster lookup; see
+	// convertK8sConfigMapsToGraph for the rationale.
+	perNamespace, fallback := buildNamespaceClusterMap(workloads)
+
+	for i := range secrets {
+		sec := &secrets[i]
+		clusterName := resolveCluster(perNamespace, fallback, sec.Metadata.Namespace)
+		node := s.createK8sSecretNode(sec, clusterName, req)
+		nodes = append(nodes, node)
+		byKey[fmt.Sprintf("%s/%s", sec.Metadata.Namespace, sec.Metadata.Name)] = node
+
+		namespaceKey := fmt.Sprintf("%s/%s", clusterName, sec.Metadata.Namespace)
+		if nsNode, ok := namespaceNodes[namespaceKey]; ok {
+			edges = append(edges, core.NewEdge(
+				node.ID, nsNode.ID,
+				core.RelationshipBelongsTo,
+				map[string]interface{}{"connection_type": "namespace_membership"},
+				req.TenantID, req.CloudAccountID, "k8s",
+			))
+		}
+	}
+
+	return nodes, edges, byKey
+}
+
+// workloadSpecRefs holds the de-duplicated ConfigMap and Secret names
+// referenced by one workload's pod-template spec. Keyed by
+// "kind/namespace/name" in WorkloadSpecRefsMap.
+type workloadSpecRefs struct {
+	ConfigMaps []string
+	Secrets    []string
+}
+
+// workloadSpecRefsKey returns the lookup key for a (kind, namespace, name)
+// triple — same shape used elsewhere in this file.
+func workloadSpecRefsKey(kind, namespace, name string) string {
+	return fmt.Sprintf("%s/%s/%s", kind, namespace, name)
+}
+
+// fetchWorkloadConfigSecretRefs queries each workload-template-bearing kind
+// from the relay (Deployments, StatefulSets, DaemonSets, ReplicaSets, Jobs,
+// CronJobs) and returns a map keyed by "kind/namespace/name" with the
+// ConfigMap and Secret names each workload's pod template references.
+//
+// The kg's existing k8s_workloads table strips volume.configMap /
+// volume.secret / envFrom source info, only preserving the volume name and
+// PVC refs. So the pod-template walk has to happen against the relay-
+// returned spec, not against the workload row.
+//
+// One relay call per kind (apps/v1 for Deployments / StatefulSets /
+// DaemonSets / ReplicaSets, batch/v1 for Jobs / CronJobs). Errors on
+// individual kinds are logged and skipped so a single missing RBAC
+// permission doesn't blank the whole map.
+func (s *K8sSource) fetchWorkloadConfigSecretRefs(ctx context.Context, req *core.SourceBuildRequest) map[string]workloadSpecRefs {
+	result := make(map[string]workloadSpecRefs)
+	if req.CloudAccountID == "" {
+		return result
+	}
+
+	type kindFetch struct {
+		Kind     string
+		Group    string
+		Resource string
+	}
+	fetches := []kindFetch{
+		{"Deployment", "apps", "deployments"},
+		{"StatefulSet", "apps", "statefulsets"},
+		{"DaemonSet", "apps", "daemonsets"},
+		{"ReplicaSet", "apps", "replicasets"},
+		{"Job", "batch", "jobs"},
+		{"CronJob", "batch", "cronjobs"},
+	}
+
+	for _, f := range fetches {
+		relayRequest := relay.RelayExecuteRequest{
+			NoSinks: false,
+			Cache:   false,
+			Body: relay.ActionExecuteBody{
+				AccountID:  req.CloudAccountID,
+				ActionName: "get_resource",
+				ActionParams: map[string]interface{}{
+					"group":          f.Group,
+					"version":        "v1",
+					"resource_type":  f.Resource,
+					"all_namespaces": true,
+				},
+			},
+		}
+		resp, err := relay.Execute(relayRequest)
+		if err != nil {
+			s.logger.Warn("workload-spec relay fetch failed",
+				"kind", f.Kind, "error", err)
+			continue
+		}
+		items, err := s.parseRelayDataArray(resp, f.Kind)
+		if err != nil {
+			s.logger.Warn("workload-spec relay parse failed",
+				"kind", f.Kind, "error", err)
+			continue
+		}
+
+		count := 0
+		for _, raw := range items {
+			obj, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			md, _ := obj["metadata"].(map[string]interface{})
+			if md == nil {
+				continue
+			}
+			name, _ := md["name"].(string)
+			namespace, _ := md["namespace"].(string)
+			if name == "" || namespace == "" {
+				continue
+			}
+
+			// Spec → template → spec → {volumes, containers, init_containers}
+			// CronJob nests one more layer: spec → jobTemplate → spec → template → spec
+			podSpec := s.extractPodTemplateSpec(obj, f.Kind)
+			if podSpec == nil {
+				continue
+			}
+			configs, secrets := s.refsFromPodSpec(podSpec)
+			if len(configs) == 0 && len(secrets) == 0 {
+				continue
+			}
+			result[workloadSpecRefsKey(f.Kind, namespace, name)] = workloadSpecRefs{
+				ConfigMaps: configs,
+				Secrets:    secrets,
+			}
+			count++
+		}
+		s.logger.Info("collected workload pod-template refs",
+			"kind", f.Kind, "workloads_with_refs", count)
+	}
+
+	return result
+}
+
+// extractPodTemplateSpec navigates the workload object to the pod spec.
+// All apps/v1 + batch/v1.Job have spec.template.spec; CronJob nests it
+// under spec.jobTemplate.spec.template.spec. Returns nil when missing.
+func (s *K8sSource) extractPodTemplateSpec(obj map[string]interface{}, kind string) map[string]interface{} {
+	spec, _ := obj["spec"].(map[string]interface{})
+	if spec == nil {
+		return nil
+	}
+	if kind == "CronJob" {
+		// Both snake_case ("job_template") and camelCase ("jobTemplate") in the wild.
+		jt, _ := spec["job_template"].(map[string]interface{})
+		if jt == nil {
+			jt, _ = spec["jobTemplate"].(map[string]interface{})
+		}
+		if jt == nil {
+			return nil
+		}
+		spec, _ = jt["spec"].(map[string]interface{})
+		if spec == nil {
+			return nil
+		}
+	}
+	tmpl, _ := spec["template"].(map[string]interface{})
+	if tmpl == nil {
+		return nil
+	}
+	podSpec, _ := tmpl["spec"].(map[string]interface{})
+	return podSpec
+}
+
+// refsFromPodSpec walks a pod spec and returns the de-duplicated ConfigMap
+// and Secret names referenced via volumes[], containers[].envFrom[],
+// containers[].env[].valueFrom, and the init_containers equivalents.
+// Accepts both snake_case and camelCase relay shapes.
+func (s *K8sSource) refsFromPodSpec(podSpec map[string]interface{}) (configNames, secretNames []string) {
+	pickList := func(parent map[string]interface{}, keys ...string) []interface{} {
+		for _, k := range keys {
+			if v, ok := parent[k].([]interface{}); ok {
+				return v
+			}
+		}
+		return nil
+	}
+	pickMap := func(parent map[string]interface{}, keys ...string) map[string]interface{} {
+		for _, k := range keys {
+			if v, ok := parent[k].(map[string]interface{}); ok {
+				return v
+			}
+		}
+		return nil
+	}
+	pickString := func(parent map[string]interface{}, keys ...string) string {
+		for _, k := range keys {
+			if v, ok := parent[k].(string); ok && v != "" {
+				return v
+			}
+		}
+		return ""
+	}
+
+	configSet := make(map[string]struct{})
+	secretSet := make(map[string]struct{})
+
+	addConfig := func(name string) {
+		if name != "" {
+			configSet[name] = struct{}{}
+		}
+	}
+	addSecret := func(name string) {
+		if name != "" {
+			secretSet[name] = struct{}{}
+		}
+	}
+
+	for _, vol := range pickList(podSpec, "volumes") {
+		volMap, ok := vol.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if cm := pickMap(volMap, "config_map", "configMap"); cm != nil {
+			addConfig(pickString(cm, "name"))
+		}
+		if sec := pickMap(volMap, "secret"); sec != nil {
+			addSecret(pickString(sec, "secret_name", "secretName"))
+		}
+		// projected: { sources: [{ configMap: ..., secret: ... }] }
+		if proj := pickMap(volMap, "projected"); proj != nil {
+			for _, src := range pickList(proj, "sources") {
+				srcMap, ok := src.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if cm := pickMap(srcMap, "config_map", "configMap"); cm != nil {
+					addConfig(pickString(cm, "name"))
+				}
+				if sec := pickMap(srcMap, "secret"); sec != nil {
+					addSecret(pickString(sec, "name"))
+				}
+			}
+		}
+	}
+
+	walkContainers := func(containers []interface{}) {
+		for _, c := range containers {
+			cm, ok := c.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			for _, ef := range pickList(cm, "env_from", "envFrom") {
+				efm, ok := ef.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if cmRef := pickMap(efm, "config_map_ref", "configMapRef"); cmRef != nil {
+					addConfig(pickString(cmRef, "name"))
+				}
+				if sRef := pickMap(efm, "secret_ref", "secretRef"); sRef != nil {
+					addSecret(pickString(sRef, "name"))
+				}
+			}
+			for _, e := range pickList(cm, "env") {
+				em, ok := e.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				vf := pickMap(em, "value_from", "valueFrom")
+				if vf == nil {
+					continue
+				}
+				if cmRef := pickMap(vf, "config_map_key_ref", "configMapKeyRef"); cmRef != nil {
+					addConfig(pickString(cmRef, "name"))
+				}
+				if sRef := pickMap(vf, "secret_key_ref", "secretKeyRef"); sRef != nil {
+					addSecret(pickString(sRef, "name"))
+				}
+			}
+		}
+	}
+	walkContainers(pickList(podSpec, "containers"))
+	walkContainers(pickList(podSpec, "init_containers", "initContainers"))
+
+	configNames = make([]string, 0, len(configSet))
+	for n := range configSet {
+		configNames = append(configNames, n)
+	}
+	secretNames = make([]string, 0, len(secretSet))
+	for n := range secretSet {
+		secretNames = append(secretNames, n)
+	}
+	return configNames, secretNames
+}
+
+// createWorkloadConfigSecretEdges emits Workload → USES_CONFIG → ConfigMap
+// and Workload → USES_SECRET → K8sSecret edges. The refs map is built once
+// per build by fetchWorkloadConfigSecretRefs (relay round-trip per workload
+// kind). Silently skips references to ConfigMaps / Secrets that aren't in
+// the per-build lookup — e.g. cross-namespace mounts or auto-mounted SA
+// tokens whose target object lives in kube-system.
+func (s *K8sSource) createWorkloadConfigSecretEdges(
+	workloads []K8sWorkloadRow,
+	workloadNodes map[string]*core.DbNode,
+	configMapByKey, secretByKey map[string]*core.DbNode,
+	specRefs map[string]workloadSpecRefs,
+	req *core.SourceBuildRequest,
+) []*core.DbEdge {
+	if len(workloadNodes) == 0 {
+		return nil
+	}
+	if len(configMapByKey) == 0 && len(secretByKey) == 0 {
+		return nil
+	}
+	if len(specRefs) == 0 {
+		return nil
+	}
+	edges := make([]*core.DbEdge, 0)
+	for i := range workloads {
+		w := &workloads[i]
+		workloadKey := fmt.Sprintf("%s/%s/%s/%s", w.ClusterName, w.Kind, w.Namespace, w.Name)
+		wNode, ok := workloadNodes[workloadKey]
+		if !ok || wNode == nil {
+			continue
+		}
+		refs, ok := specRefs[workloadSpecRefsKey(w.Kind, w.Namespace, w.Name)]
+		if !ok {
+			continue
+		}
+		for _, cmName := range refs.ConfigMaps {
+			cmNode, ok := configMapByKey[fmt.Sprintf("%s/%s", w.Namespace, cmName)]
+			if !ok {
+				continue
+			}
+			edges = append(edges, core.NewEdge(
+				wNode.ID, cmNode.ID,
+				core.RelationshipUsesConfig,
+				map[string]interface{}{"connection_type": "configmap", "configmap_name": cmName},
+				req.TenantID, req.CloudAccountID, "k8s",
+			))
+		}
+		for _, secName := range refs.Secrets {
+			sNode, ok := secretByKey[fmt.Sprintf("%s/%s", w.Namespace, secName)]
+			if !ok {
+				continue
+			}
+			edges = append(edges, core.NewEdge(
+				wNode.ID, sNode.ID,
+				core.RelationshipUsesSecret,
+				map[string]interface{}{"connection_type": "secret", "secret_name": secName},
+				req.TenantID, req.CloudAccountID, "k8s",
+			))
+		}
+	}
+	return edges
 }
 
 // K8sCRDMetadata captures the operator-CRD metadata shape we care about

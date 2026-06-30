@@ -64,6 +64,7 @@ type WorkflowStore interface {
 	// → nil-UUID system user.
 	SetLiveVersion(ctx context.Context, tenantID, accountID, workflowID, versionID, updatedBy string) error
 	SetDraftVersionID(ctx context.Context, tenantID, accountID, workflowID, versionID string) error
+	DeleteWorkflowVersion(ctx context.Context, tenantID, accountID, workflowID, versionID string) error
 	UpdateVersionMetadata(ctx context.Context, workflowID string, versionNumber int, name, description *string) (*WorkflowVersion, error)
 	// UpdateVersionStatus writes a new status onto a single workflow_versions row
 	// and, when the target is the live version, mirrors workflows.status (plus

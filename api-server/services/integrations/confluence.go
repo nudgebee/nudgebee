@@ -2,7 +2,9 @@ package integrations
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"nudgebee/services/common"
@@ -53,6 +55,7 @@ func (m Confluence) ConfigSchema() core.IntegrationSchema {
 				Description: "Confluence API token",
 				Default:     "",
 				IsTestable:  true,
+				IsEncrypted: true,
 				Priority:    68,
 			},
 			"host": {
@@ -120,7 +123,7 @@ func (m Confluence) ValidateConfig(securityContext *security.SecurityContext, in
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return nil
+		// credentials/host valid; fall through to namespace validation below
 	case http.StatusUnauthorized:
 		return []error{fmt.Errorf("invalid Confluence credentials (HTTP 401)")}
 	case http.StatusForbidden:
@@ -128,4 +131,57 @@ func (m Confluence) ValidateConfig(securityContext *security.SecurityContext, in
 	default:
 		return []error{fmt.Errorf("Confluence API returned unexpected status: HTTP %d", resp.StatusCode)}
 	}
+
+	// namespace is the Confluence space key the RAG scraper walks. When set it must
+	// resolve to a real, accessible space — otherwise the connection test would report
+	// success for a space that yields zero pages. An empty namespace means "all spaces"
+	// and is left unvalidated by design.
+	namespace := strings.TrimSpace(configMap["namespace"])
+	if namespace == "" {
+		return nil
+	}
+
+	// Query the space-key-filtered list endpoint. Unlike the per-space path, this
+	// returns HTTP 200 with an EMPTY results list for an unknown/inaccessible key
+	// (it does not 404), so the response body must be inspected to decide presence.
+	spaceResp, err := common.HttpGet(
+		fmt.Sprintf("%s/wiki/rest/api/space", host),
+		common.HttpWithHeaders(map[string]string{
+			"Authorization": "Basic " + authToken,
+			"Accept":        "application/json",
+		}),
+		common.HttpWithQueryParams(map[string]string{
+			"spaceKey": namespace,
+			"limit":    "1",
+		}),
+	)
+	if err != nil {
+		return []error{fmt.Errorf("failed to verify Confluence space %q: %w", namespace, err)}
+	}
+	defer func() { _ = spaceResp.Body.Close() }()
+
+	if spaceResp.StatusCode != http.StatusOK {
+		return []error{fmt.Errorf("failed to verify Confluence space %q: Confluence API returned HTTP %d", namespace, spaceResp.StatusCode)}
+	}
+
+	body, err := io.ReadAll(spaceResp.Body)
+	if err != nil {
+		return []error{fmt.Errorf("failed to read Confluence space response for %q: %w", namespace, err)}
+	}
+
+	var spaceList struct {
+		Results []struct {
+			Key string `json:"key"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(body, &spaceList); err != nil {
+		return []error{fmt.Errorf("failed to parse Confluence space response for %q: %w", namespace, err)}
+	}
+
+	for _, s := range spaceList.Results {
+		if strings.EqualFold(s.Key, namespace) {
+			return nil
+		}
+	}
+	return []error{fmt.Errorf("Confluence space %q does not exist or is not accessible", namespace)}
 }

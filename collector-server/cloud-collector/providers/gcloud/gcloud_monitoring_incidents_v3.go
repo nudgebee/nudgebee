@@ -289,6 +289,21 @@ func convertAlertToEvent(ctx providers.CloudProviderContext, httpClient *http.Cl
 		if resourceID == "" {
 			resourceID = alert.Resource.Labels["function_name"]
 		}
+
+		// Resource-type-specific identifiers for services whose monitored-resource
+		// labels don't use instance_*/pod_name/etc. — Cloud Run, App Engine, Cloud
+		// Tasks, Pub/Sub, Cloud Storage, load balancers. These keys carry the value
+		// the per-service Cloud Logging filters key on (e.g. Cloud Run scopes logs by
+		// resource.labels.service_name). Without this we fall through to the incident
+		// ID below, which matches no logs/resources.
+		if resourceID == "" {
+			for _, key := range gcpResourceIDLabelKeys(resourceType) {
+				if v := alert.Resource.Labels[key]; v != "" {
+					resourceID = v
+					break
+				}
+			}
+		}
 	}
 
 	// Ensure we always have a resource type and ID (required for DB storage)
@@ -522,6 +537,38 @@ func getAlertDescription(alert *Alert) string {
 	}
 
 	return desc
+}
+
+// gcpResourceIDLabelKeys returns the monitored-resource label keys that identify a
+// resource for a given GCP resource type, in preference order. These are the labels
+// the per-service Cloud Logging filters (gcloud_*.go GetLogFilter) and the resource
+// inventory key on. Returns nil for types covered by the generic instance_*/pod_name
+// fallback chain above.
+func gcpResourceIDLabelKeys(resourceType string) []string {
+	switch resourceType {
+	case "cloud_run_revision":
+		return []string{"service_name", "configuration_name", "revision_name"}
+	case "gae_app":
+		return []string{"module_id", "version_id"}
+	case "cloud_tasks_queue":
+		return []string{"queue_id"}
+	case "pubsub_topic":
+		return []string{"topic_id"}
+	case "pubsub_subscription":
+		return []string{"subscription_id"}
+	case "gcs_bucket":
+		return []string{"bucket_name"}
+	case "https_lb_rule", "http_load_balancer", "l7_lb_rule", "tcp_ssl_proxy_rule":
+		return []string{"forwarding_rule_name", "url_map_name", "backend_service_name", "target_proxy_name", "backend_name"}
+	case "bigquery_dataset", "bigquery_table":
+		return []string{"dataset_id", "table_id"}
+	case "redis_instance":
+		return []string{"instance_id", "node_id"}
+	case "spanner_instance":
+		return []string{"instance_id"}
+	default:
+		return nil
+	}
 }
 
 // deriveResourceTypeFromMetric attempts to derive the resource type from the metric type

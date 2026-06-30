@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"nudgebee/services/cloud"
 	"nudgebee/services/security"
+	"sort"
 	"time"
 
 	"github.com/samber/lo"
@@ -147,9 +148,28 @@ func (c *cloudLogs) QueryLogs(ctx *security.RequestContext, fetchLogRequest Fetc
 
 type cloudMetrics struct{}
 
-// FetchMetricLabelValues implements MetricSource.
-func (c *cloudMetrics) FetchMetricLabelValues(ctx *security.RequestContext, fetchMetricsLabelRequest FetchMetricsLabelValueRequest) ([]OutputMetricsLabelValues, error) {
-	return []OutputMetricsLabelValues{}, nil
+// FetchMetricLabelValues returns the distinct CloudWatch dimension values for
+// the requested dimension (req.Label), discovered from the dimension sets the
+// collector attaches to each metric. An optional "metric_name" in req.Request
+// scopes the values to a single metric.
+func (c *cloudMetrics) FetchMetricLabelValues(ctx *security.RequestContext, req FetchMetricsLabelValueRequest) ([]OutputMetricsLabelValues, error) {
+	if req.Label == "" {
+		return []OutputMetricsLabelValues{}, nil
+	}
+	serviceName, _ := requestString(req.Request, "service_name")
+	metricFilter, _ := requestString(req.Request, "metric_name")
+
+	resp, err := cloud.ListMetrics(ctx, req.AccountId, cloud.ListMetricsRequest{ServiceName: serviceName})
+	if err != nil {
+		return nil, err
+	}
+
+	values := dimensionValuesFromMetrics(resp.Metrics, req.Label, metricFilter)
+	out := make([]OutputMetricsLabelValues, 0, len(values))
+	for _, v := range values {
+		out = append(out, OutputMetricsLabelValues{Value: v, Attributes: map[string]any{}})
+	}
+	return out, nil
 }
 
 // FetchMetricList implements MetricSource.
@@ -181,9 +201,77 @@ func (c *cloudMetrics) FetchMetricList(ctx *security.RequestContext, req FetchMe
 	return output, nil
 }
 
-// FetchMetricsLabels implements MetricSource.
-func (c *cloudMetrics) FetchMetricsLabels(ctx *security.RequestContext, fetchMetricsRequest FetchMetricLabelsRequest) ([]OutputMetricLabels, error) {
-	return []OutputMetricLabels{}, nil
+// FetchMetricsLabels returns the CloudWatch dimension keys available for a
+// metric (req.MetricName), discovered from the dimension sets the collector
+// attaches to each metric. With no MetricName it unions keys across all metrics
+// in the service.
+func (c *cloudMetrics) FetchMetricsLabels(ctx *security.RequestContext, req FetchMetricLabelsRequest) ([]OutputMetricLabels, error) {
+	serviceName, _ := requestString(req.Request, "service_name")
+
+	resp, err := cloud.ListMetrics(ctx, req.AccountId, cloud.ListMetricsRequest{ServiceName: serviceName})
+	if err != nil {
+		return nil, err
+	}
+
+	keys := dimensionLabelsFromMetrics(resp.Metrics, req.MetricName)
+	out := make([]OutputMetricLabels, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, OutputMetricLabels{Label: k, Attributes: map[string]any{}})
+	}
+	return out, nil
+}
+
+// requestString safely reads a string field from an optional request map.
+func requestString(m map[string]any, key string) (string, bool) {
+	if m == nil {
+		return "", false
+	}
+	v, ok := m[key].(string)
+	return v, ok
+}
+
+// dimensionLabelsFromMetrics returns the sorted, distinct dimension keys across
+// the given metrics. If metricName is non-empty, only that metric contributes.
+func dimensionLabelsFromMetrics(metrics []cloud.MetricListItem, metricName string) []string {
+	keySet := map[string]struct{}{}
+	for _, m := range metrics {
+		if metricName != "" && m.Name != metricName {
+			continue
+		}
+		for _, dimSet := range m.Dimensions {
+			for k := range dimSet {
+				keySet[k] = struct{}{}
+			}
+		}
+	}
+	return sortedSetKeys(keySet)
+}
+
+// dimensionValuesFromMetrics returns the sorted, distinct values for the given
+// dimension key across the metrics. If metricName is non-empty, only that
+// metric contributes.
+func dimensionValuesFromMetrics(metrics []cloud.MetricListItem, label, metricName string) []string {
+	valueSet := map[string]struct{}{}
+	for _, m := range metrics {
+		if metricName != "" && m.Name != metricName {
+			continue
+		}
+		for _, dimSet := range m.Dimensions {
+			if v, ok := dimSet[label]; ok && v != "" {
+				valueSet[v] = struct{}{}
+			}
+		}
+	}
+	return sortedSetKeys(valueSet)
+}
+
+func sortedSetKeys(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (c *cloudMetrics) GetSupportedOperators() []string {

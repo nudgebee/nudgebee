@@ -53,7 +53,7 @@ describe('extractGraphQLErrorMessage', () => {
                   body: [
                     {
                       message:
-                        "Failed to apply command: failed to start instance: googleapi: Error 403: Required 'compute.instances.start' permission for 'projects/nudgebee-dev/zones/us-central1-c/instances/for-testing'",
+                        "Failed to apply command: failed to start instance: googleapi: Error 403: Required 'compute.instances.start' permission for 'projects/test-cluster-dev/zones/us-central1-c/instances/for-testing'",
                     },
                   ],
                 },

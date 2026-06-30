@@ -8,12 +8,12 @@ jest.mock('@api1/kubernetes', () => ({
   },
 }));
 
-jest.mock('@components1/common/snackbarService', () => ({
+jest.mock('@shared/snackbarService', () => ({
   snackbar: { success: jest.fn(), error: jest.fn() },
 }));
 
 import apiKubernetes from '@api1/kubernetes';
-import { snackbar } from '@components1/common/snackbarService';
+import { snackbar } from '@shared/snackbarService';
 
 const mockGenerateRCA = apiKubernetes.generateRCA;
 

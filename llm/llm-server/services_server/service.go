@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"net/http"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/relay"
@@ -31,21 +32,12 @@ func ExecuteQuery(serviceRequest ServicesQueryRequest) (map[string]string, error
 		return response, fmt.Errorf("services: executequery, unable to process request: %v", err)
 	}
 
-	if resp.StatusCode == 401 {
-		return response, fmt.Errorf("unauthorized: %v", resp.Body)
-	}
-
-	if resp.StatusCode == 500 {
-		return response, fmt.Errorf("internal Server Error from Services Server, %v", resp.Body)
-	}
-
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			slog.Info("services_server: failed to close response body", "error", err)
-		}
-	}()
-	jsonBody, err := io.ReadAll(resp.Body)
+	jsonBody, err := readAndCloseServicesResponseBody(resp, "services_server")
 	if err != nil {
+		return response, err
+	}
+
+	if err := servicesHTTPStatusError("executequery", resp.StatusCode, jsonBody); err != nil {
 		return response, err
 	}
 
@@ -111,21 +103,12 @@ func ExecuteScanImageQuery(scanImageRequest ScanImageServiceRequest) (map[string
 		return response, fmt.Errorf("services: scanimage, unable to process request: %v", err)
 	}
 
-	if resp.StatusCode == 401 {
-		return response, fmt.Errorf("unauthorized: %v", resp.Body)
-	}
-
-	if resp.StatusCode == 500 {
-		return response, fmt.Errorf("internal Server Error from Services Server, %v", resp.Body)
-	}
-
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			slog.Info("services_server: failed to close response body", "error", err)
-		}
-	}()
-	jsonBody, err := io.ReadAll(resp.Body)
+	jsonBody, err := readAndCloseServicesResponseBody(resp, "services_server")
 	if err != nil {
+		return response, err
+	}
+
+	if err := servicesHTTPStatusError("scanimage", resp.StatusCode, jsonBody); err != nil {
 		return response, err
 	}
 
@@ -157,21 +140,12 @@ func ExecuteScanCisQuery(scanCisRequest ScanCisServiceRequest) (map[string]strin
 		return response, fmt.Errorf("services: scancis, unable to process request: %v", err)
 	}
 
-	if resp.StatusCode == 401 {
-		return response, fmt.Errorf("unauthorized: %v", resp.Body)
-	}
-
-	if resp.StatusCode == 500 {
-		return response, fmt.Errorf("internal Server Error from Services Server, %v", resp.Body)
-	}
-
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			slog.Info("services: failed to close response body", "error", err)
-		}
-	}()
-	jsonBody, err := io.ReadAll(resp.Body)
+	jsonBody, err := readAndCloseServicesResponseBody(resp, "services_server")
 	if err != nil {
+		return response, err
+	}
+
+	if err := servicesHTTPStatusError("scancis", resp.StatusCode, jsonBody); err != nil {
 		return response, err
 	}
 
@@ -188,6 +162,46 @@ func ExecuteScanCisQuery(scanCisRequest ScanCisServiceRequest) (map[string]strin
 	}
 	response["result"] = string(dataJson)
 	return response, nil
+}
+
+func readAndCloseServicesResponseBody(resp *http.Response, logPrefix string) ([]byte, error) {
+	if resp == nil || resp.Body == nil {
+		return nil, errors.New("services: response body is empty")
+	}
+	defer closeResponseBody(resp.Body, logPrefix)
+	return io.ReadAll(resp.Body)
+}
+
+func servicesHTTPStatusError(operation string, statusCode int, body []byte) error {
+	if statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices {
+		return nil
+	}
+
+	bodyText := strings.TrimSpace(string(body))
+	if statusCode == http.StatusUnauthorized {
+		if bodyText == "" {
+			return errors.New("unauthorized")
+		}
+		return fmt.Errorf("unauthorized: %s", bodyText)
+	}
+
+	if statusCode >= http.StatusInternalServerError {
+		return fmt.Errorf("services: %s failed with status %d", operation, statusCode)
+	}
+
+	if bodyText == "" {
+		return fmt.Errorf("services: %s failed with status %d", operation, statusCode)
+	}
+	return fmt.Errorf("services: %s failed with status %d: %s", operation, statusCode, bodyText)
+}
+
+func closeResponseBody(body io.Closer, logPrefix string) {
+	if body == nil {
+		return
+	}
+	if err := body.Close(); err != nil {
+		slog.Info(logPrefix+": failed to close response body", "error", err)
+	}
 }
 
 func GetServiceDependencyGraph(ctx security.RequestContext, accountId, namespace, workload string) (GetServiceDependencyGraphResponse, error) {
@@ -458,8 +472,14 @@ func QueryTraces(ctx security.RequestContext, request core.ObservabilityTracesV3
 		return observabilityResp, fmt.Errorf("unauthorized: %v", string(jsonBody))
 	}
 
-	if resp.StatusCode == 500 {
-		return observabilityResp, fmt.Errorf("internal Server Error from Services Server, %v", string(jsonBody))
+	// Any non-2xx is a real failure and must surface as an error. The services-server
+	// trace handler returns HTTP 400 when the (LLM-generated) SQL is invalid — e.g. it
+	// references a column that does not exist in the traces_view projection. Previously
+	// only 401/500 were treated as errors, so a 400 error body silently unmarshalled
+	// into an empty trace slice with a nil error, and the agent read a failed query as
+	// "no traces exist". Returning the error lets the agent reflect and fix its query.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return observabilityResp, fmt.Errorf("services: traces query failed (status %d): %s", resp.StatusCode, string(jsonBody))
 	}
 
 	response := make([]core.ObservabilityTrace, 0, 100)

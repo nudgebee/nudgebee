@@ -1,6 +1,6 @@
 import { error404Image } from '@assets';
-import CustomButton from '@components1/common/NewCustomButton';
-import SafeIcon from '@components1/common/SafeIcon';
+import CustomButton from '@shared/NewCustomButton';
+import SafeIcon from '@shared/icons/SafeIcon';
 import { signOut } from 'next-auth/react';
 import { useRouter } from 'next/router';
 

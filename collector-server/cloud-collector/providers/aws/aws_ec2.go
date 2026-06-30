@@ -1164,6 +1164,16 @@ func (a *amazonEc2) GetRecommendations(ctx providers.CloudProviderContext, accou
 										"recommendedInstances": instanceTypesPriceMap,
 										"recommendedMemoryMiB": recommendedMemory,
 										"recommendedVCpu":      recommendedCPU,
+										// instance_id and recommended_instance_type are consumed by the
+										// Apply Mitigation CLI template (frontend recommendation/data.tsx).
+										// Without them the {{...}} placeholders render literally and the
+										// generated `aws ec2 modify-instance-attribute` fails (exit 252).
+										"instance_id": resource.Id,
+									}
+									if len(instanceTypesPriceMap) > 0 {
+										if recommendedType, ok := instanceTypesPriceMap[0]["instanceType"].(string); ok {
+											underutilizedData["recommended_instance_type"] = recommendedType
+										}
 									}
 									if len(cpuMetrics.Items) > 0 { // Safe access
 										underutilizedData["cpu"] = cpuMetrics.Items[0]
@@ -1258,17 +1268,23 @@ func (a *amazonEc2) GetRecommendations(ctx providers.CloudProviderContext, accou
 										}
 
 										if savings > 0 { // Only recommend if there's a saving
+											generationUpgradeData := map[string]any{
+												"instance_id":        resource.Id,
+												"instance_arn":       resource.Arn,
+												"instance_type":      instanceTypeStr,
+												"latest_generations": instanceTypesPriceMap,
+											}
+											// recommended_instance_type feeds the Apply Mitigation CLI
+											// template; latest_generations is sorted cheapest-first above.
+											if recommendedType, ok := instanceTypesPriceMap[0]["instanceType"].(string); ok {
+												generationUpgradeData["recommended_instance_type"] = recommendedType
+											}
 											recommendation := providers.Recommendation{
-												CategoryName: providers.RecommendationCategoryRightSizing,
-												RuleName:     "aws_ec2_instance_generation_upgrade",
-												Severity:     providers.RecommendationSeverityMedium,
-												Savings:      savings,
-												Data: map[string]any{
-													"instance_id":        resource.Id,
-													"instance_arn":       resource.Arn,
-													"instance_type":      instanceTypeStr,
-													"latest_generations": instanceTypesPriceMap,
-												},
+												CategoryName:        providers.RecommendationCategoryRightSizing,
+												RuleName:            "aws_ec2_instance_generation_upgrade",
+												Severity:            providers.RecommendationSeverityMedium,
+												Savings:             savings,
+												Data:                generationUpgradeData,
 												Action:              providers.RecommendationActionModify,
 												ResourceServiceName: resource.ServiceName,
 												ResourceId:          resource.Id,
@@ -1358,14 +1374,21 @@ func (a *amazonEc2) GetRecommendations(ctx providers.CloudProviderContext, accou
 								}
 
 								if savings > 0 { // Only recommend if there's a saving
+									alternateInstancesData := map[string]any{
+										"alternate_instances": altInstanceTypesPriceMap,
+										// Consumed by the Apply Mitigation CLI template; alternate_instances
+										// is sorted cheapest-first above.
+										"instance_id": resource.Id,
+									}
+									if recommendedType, ok := altInstanceTypesPriceMap[0]["instanceType"].(string); ok {
+										alternateInstancesData["recommended_instance_type"] = recommendedType
+									}
 									recommendation := providers.Recommendation{
-										CategoryName: providers.RecommendationCategoryRightSizing,
-										RuleName:     "aws_ec2_alternate_instances",
-										Severity:     providers.RecommendationSeverityMedium,
-										Savings:      savings,
-										Data: map[string]any{
-											"alternate_instances": altInstanceTypesPriceMap,
-										},
+										CategoryName:        providers.RecommendationCategoryRightSizing,
+										RuleName:            "aws_ec2_alternate_instances",
+										Severity:            providers.RecommendationSeverityMedium,
+										Savings:             savings,
+										Data:                alternateInstancesData,
 										Action:              providers.RecommendationActionModify,
 										ResourceServiceName: resource.ServiceName,
 										ResourceId:          resource.Id,

@@ -50,6 +50,12 @@ type NBReActPlanner3 struct {
 	enableCritique          bool
 	Notebook                string
 
+	// hypothesisModeEnabled mirrors the prompt-build gate (top-level +
+	// notebook-enabled investigation orchestrator). Carried on the planner so
+	// runCritique can fence the hypothesis completion-gate checks to the same
+	// scope the system prompt uses, without recomputing the gate inline.
+	hypothesisModeEnabled bool
+
 	// Notebook telemetry — for visibility into whether the agent is
 	// actually exercising the notebook discipline the prompt asks for.
 	// These are NOT part of planner correctness; they exist so operators
@@ -528,7 +534,7 @@ func (o *NBReActPlanner3) resolveToolResponse(step NBAgentPlannerToolActionStep)
 	if toolResponse == "" {
 		toolResponse = "No Data Found"
 	}
-	return toolResponse
+	return renderObservationWithMetadata(toolResponse, step.Metadata)
 }
 
 // getToolResponse processes the observation for a step and applies semantic
@@ -1718,19 +1724,20 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 }) (string, string) {
 	critiquePrompt := prompts.NewPromptTemplate(
 		prompts_repo.GetPrompt(prompts_repo.PromptPlannerReactCritiquer),
-		[]string{"input", "scratchpad", "final_answer", "question_type", "tool_names", "tool_descriptions", "shell_tool_enabled", "tools_invoked"},
+		[]string{"input", "scratchpad", "final_answer", "question_type", "tool_names", "tool_descriptions", "shell_tool_enabled", "tools_invoked", "hypothesis_mode_enabled", "notebook", "today"},
 	)
 	critiquePromptStr, promptErr := critiquePrompt.Format(map[string]any{
-		"input":              input,
-		"scratchpad":         scratchpad,
-		"final_answer":       finalAnswer,
-		"today":              time.Now().Format(time.RFC1123),
-		"notebook":           o.Notebook,
-		"question_type":      lo.Ternary(IsInvestigationRequestTask(o.request.Query), "investigation", "query"),
-		"tool_names":         reActPromptToolNames(o.tools),
-		"tool_descriptions":  reActPromptToolDescriptions(o.tools),
-		"shell_tool_enabled": config.Config.LlmServerShellToolEnabled && HasShellTool(o.tools),
-		"tools_invoked":      extractToolsInvoked(intermediateSteps),
+		"input":                   input,
+		"scratchpad":              scratchpad,
+		"final_answer":            finalAnswer,
+		"today":                   time.Now().Format(time.RFC1123),
+		"notebook":                o.Notebook,
+		"question_type":           lo.Ternary(IsInvestigationRequestTask(o.request.Query), "investigation", "query"),
+		"tool_names":              reActPromptToolNames(o.tools),
+		"tool_descriptions":       reActPromptToolDescriptions(o.tools),
+		"shell_tool_enabled":      config.Config.LlmServerShellToolEnabled && HasShellTool(o.tools),
+		"tools_invoked":           extractToolsInvoked(intermediateSteps),
+		"hypothesis_mode_enabled": o.hypothesisModeEnabled,
 	})
 	if promptErr != nil {
 		logger.Error("reactagent3: failed to format critique prompt, accepting answer", "error", promptErr)
@@ -1792,6 +1799,17 @@ func (o *NBReActPlanner3) runCritique(input, scratchpad, finalAnswer string, int
 
 	feedback := common.XmlExtractTagContent(critiqueResult.Choices[0].Content, "feedback")
 
+	// Hypothesis-mode telemetry: log the independent completion-gate's decision +
+	// reason so operators can watch the false-rejection rate before the gate is
+	// relied upon (or turned on by default). Gated on hypothesis mode to avoid
+	// noise on plain queries that carry no hypothesis tree.
+	if o.hypothesisModeEnabled {
+		logger.Info("reactagent3: hypothesis-mode critique decision",
+			"decision", decision,
+			"refinement_attempt", o.refinementAttempts,
+			"reason", feedback)
+	}
+
 	err := o.saveCritique("react_answer", input, finalAnswer, critiqueResult.Choices[0].Content, decision)
 	if err != nil {
 		logger.Error("reactagent3: failed to save critique", "error", err)
@@ -1834,7 +1852,19 @@ func (o *NBReActPlanner3) saveCritiqueAsToolCall(feedback string) error {
 		toolcore.NBToolTypeTool,
 		nil,
 		nil,
+		nil,
 	)
+}
+
+// resolveHypothesisModeEnabled mirrors the gating used when building the
+// react_3 system prompt: the heavier hypothesis-driven discipline (Scope →
+// Hypothesis Tree → completion gate) is fenced to top-level investigation
+// orchestrators that have the notebook enabled. Sub-agents (ParentAgentId set
+// to another agent) keep only the lightweight notebook. Kept as a single source
+// of truth so the prompt-build path and the critique path agree on scope.
+func resolveHypothesisModeEnabled(request NBAgentRequest, agent NBAgent) bool {
+	isTopLevel := request.ParentAgentId == "" || request.ParentAgentId == request.AgentId
+	return ResolveAgentNotebookEnabled(agent) && isTopLevel
 }
 
 // reActCreatePrompt3 builds the chat prompt template for the react_3 planner.
@@ -1846,6 +1876,15 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	if reactBasePrompt == "" {
 		reactBasePrompt = prompts_repo.GetPrompt(prompts_repo.PromptPlannerReactBase3)
 	}
+
+	// hypothesis_mode_enabled fences the heavier hypothesis-driven investigation
+	// discipline (Scope → Hypothesis Tree → completion gate) to the top-level
+	// orchestrator. Sub-agents (ParentAgentId set to another agent) keep only the
+	// lightweight notebook so they don't each spin up their own hypothesis tree —
+	// that nesting blows up tokens/latency. Both inputs are stable for a given
+	// agent role, so the cached system prefix is not busted per request.
+	notebookEnabled := ResolveAgentNotebookEnabled(agent)
+	hypothesisModeEnabled := resolveHypothesisModeEnabled(request, agent)
 
 	// Only declare template variables actually referenced in planner_react_3_base.txt.
 	// Dynamic vars (history, conversation_context, input, scratchpad) are in the human
@@ -1861,6 +1900,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 				"shell_tool_enabled",
 				"delegate_agent_enabled",
 				"notebook_enabled",
+				"hypothesis_mode_enabled",
 				"conversation_context_enabled",
 				"context_management_rules",
 				"time_handling_rules",
@@ -1975,7 +2015,8 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"workspace_enabled":            config.Config.LlmServerWorkspaceEnabled,
 		"shell_tool_enabled":           config.Config.LlmServerShellToolEnabled && HasShellTool(tools),
 		"delegate_agent_enabled":       HasDelegateAgentTool(tools),
-		"notebook_enabled":             ResolveAgentNotebookEnabled(agent),
+		"notebook_enabled":             notebookEnabled,
+		"hypothesis_mode_enabled":      hypothesisModeEnabled,
 		"conversation_context_enabled": config.Config.ConversationContextEnabled,
 		"context_management_rules":     prompts_repo.GetPrompt(prompts_repo.PromptContextContinuity),
 		"time_handling_rules":          prompts_repo.GetPrompt(prompts_repo.PromptSharedTimeHandlingRules),
@@ -2031,6 +2072,7 @@ func NewReActAgent3(ctx *security.RequestContext, request NBAgentRequest, nbAgen
 		tools:                 tools,
 		enableCritique:        request.EnableCritique,
 		Notebook:              initialNotebook,
+		hypothesisModeEnabled: resolveHypothesisModeEnabled(request, nbAgent),
 		// -1 sentinels mean "no notebook update yet observed".
 		notebookLastUpdateTurn:  -1,
 		notebookFirstUpdateTurn: -1,

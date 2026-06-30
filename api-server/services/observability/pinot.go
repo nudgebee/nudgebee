@@ -3,15 +3,17 @@ package observability
 import (
 	"encoding/json"
 	"fmt"
-	"nudgebee/services/common"
 	"nudgebee/services/query"
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
+	// NOTE: "nudgebee/services/common" and "strconv" are only used by the Pinot
+	// log-group code block below, which is currently commented out (Pinot log
+	// grouping disabled — the UI falls back to the metrics provider). Re-add both
+	// imports when re-enabling that block.
 )
 
 // ---- Shared types ----
@@ -349,8 +351,15 @@ func (p *PinotSource) QueryLabelValues(ctx *security.RequestContext, req FetchLo
 	return parsePinotLabelValuesBytes(rawBytes)
 }
 
-// ---- Log groups (shared helpers + relay-mode implementation) ----
-
+// ---- Log groups (DISABLED) ----
+//
+// Pinot log grouping is intentionally disabled: with no QueryLogGroup method,
+// PinotSource no longer satisfies LogGroupSource (see getLogGroupSource's type
+// assertion in service.go), so the UI does not show Pinot-backed log groups and
+// callers fall back to the metrics provider. The implementation below is kept
+// (commented out) so it can be re-enabled by removing the /* */ wrapper and
+// restoring the "nudgebee/services/common" and "strconv" imports.
+/*
 // pinotLogGroupCols carries the column names needed to build & parse a log-group query.
 type pinotLogGroupCols struct {
 	Table, TsCol, MsgCol, SevCol, NsCol, PodCol, ContainerCol string
@@ -652,6 +661,7 @@ func (p *PinotSource) QueryLogGroup(ctx *security.RequestContext, req FetchLogGr
 	}
 	return parsePinotLogGroupBytes(rawBytes, cols, tsMode, req.EndTime)
 }
+*/
 
 // fetchPinotSchema fetches and caches the Pinot table schema via relay.
 // Cache key: "agent:{accountId}:{table}"

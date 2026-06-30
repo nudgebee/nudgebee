@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from notifications_server.configs import settings
 from notifications_server.configs.settings import ACCOUNT_SECURITY_CONTEXT, LLM_CHAT_ENDPOINT
 from notifications_server.message_templates.blocks import MarkdownBlock, ContextBlock
-from notifications_server.models.models import ChannelAccountMapping, MessagingPlatform
+from notifications_server.models.models import ChannelAccountMapping
 from notifications_server.services.cache import Cache
 from notifications_server.services.actions import (
     validate_and_get_user_tenants,
@@ -42,9 +42,13 @@ from notifications_server.services.bot_messages import (
     is_budget_exceeded_error,
     get_budget_exceeded_message,
 )
+from notifications_server.clients.google_chat_app_client import GoogleChatAppClient
 from notifications_server.repositories.account_repository import (
     get_active_accounts_with_connected_agents,
     get_account_by_id,
+)
+from notifications_server.repositories.google_chat_binding_repository import (
+    find_google_chat_binding,
 )
 from notifications_server.repositories.user_repository import get_llm_conversation_by_session
 from notifications_server.utils.transformer import Transformer
@@ -58,6 +62,12 @@ SLACK_TEXT_BLOCK_LIMIT = settings.slack.text_block_limit
 FOLLOWUP_OPTIONS_THRESHOLD = settings.slack.followup_options_threshold
 # Slack static_select hard-caps at 100 options; reject-payload territory beyond that.
 SLACK_STATIC_SELECT_MAX_OPTIONS = 100
+# How an inbound Google Chat space interaction is dispatched (see
+# Events._resolve_gchat_disposition). The join and message paths render each
+# disposition differently, but the bound-vs-unbound decision is identical.
+GCHAT_SIGNUP = "signup"
+GCHAT_CONNECT = "connect"
+GCHAT_SERVE = "serve"
 _SENTENCE_PATTERN = re.compile(r"(?<=[.!?])\s+")
 _DELIMITER_PATTERN = re.compile(r"([,;:])\s+")
 
@@ -1612,12 +1622,73 @@ class Events:
             elif event_type == "ADDED_TO_SPACE":
                 self._handle_gchat_added_to_space(event_data)
             elif event_type == "REMOVED_FROM_SPACE":
-                LOG.info("Bot removed from Google Chat space: %s", event_data.get("space", {}).get("name"))
+                self._handle_gchat_removed_from_space(event_data)
             else:
                 LOG.debug("Unhandled Google Chat event type: %s", event_type)
         except Exception as e:
             LOG.exception("Error handling Google Chat event type=%s: %s", event_type, e)
             raise
+
+    def _handle_gchat_removed_from_space(self, event_data: dict):
+        """Drop the binding when the bot is removed from a space so the listing and
+        notification routing stay accurate. api-server owns the delete."""
+        space_name = (event_data.get("space") or {}).get("name")
+        if not space_name:
+            return
+        try:
+            requests.post(
+                f"{settings.services.api_server}/v1/integration/google-chat/unbind",
+                json={"space_id": space_name},
+                headers={"X-ACTION-TOKEN": settings.action_api_server_token},
+                timeout=10,
+            )
+            LOG.info("Requested Google Chat binding cleanup for removed space %s", space_name)
+        except Exception as e:
+            LOG.warning("Failed to clean up Google Chat binding for removed space %s: %s", space_name, e)
+
+    @staticmethod
+    def _resolve_incident_binding(incident_binding, tenant_id):
+        """Resolve an incident-thread binding written by the join workflow action.
+
+        Honored only when the binding's tenant matches the validated bound tenant, so
+        reusing the incident's session/account never widens the binding security
+        boundary. Returns (session_id, account_id) — both None when not applicable.
+        """
+        if (
+            incident_binding
+            and incident_binding.get("session_id")
+            and incident_binding.get("tenant_id")
+            and tenant_id
+            and str(incident_binding.get("tenant_id")) == str(tenant_id)
+        ):
+            return incident_binding["session_id"], incident_binding.get("account_id")
+        return None, None
+
+    def _resolve_gchat_disposition(self, space_name, user_email):
+        """Decide how to handle an inbound Google Chat interaction in a space.
+
+        Returns ``(kind, tenant_id, user_id)`` where ``kind`` is one of:
+          * ``GCHAT_SIGNUP``  — the sender has no Nudgebee account; prompt sign-up.
+          * ``GCHAT_SERVE``   — the space is bound to one of the sender's tenants;
+            converse, scoped to that tenant (``tenant_id``). The binding is the
+            security boundary, so the sender only ever sees that tenant's accounts.
+          * ``GCHAT_CONNECT`` — the sender has an account but the space is unbound,
+            or bound to a tenant they don't belong to; prompt to connect the space.
+
+        ``tenant_id``/``user_id`` are only meaningful for SERVE/CONNECT. The binding
+        lookup is deliberately allowed to raise so callers fail closed instead of
+        mistaking a DB error for "no binding".
+        """
+        if not user_email:
+            return GCHAT_SIGNUP, None, None
+        user_id, tenants = validate_and_get_user_tenants(user_email)
+        if not user_id or not tenants:
+            return GCHAT_SIGNUP, None, None
+        with Session(self.session.get_bind()) as session:
+            binding = find_google_chat_binding(session, space_name)
+        if binding and str(binding.tenant_id) in [str(t) for t in tenants]:
+            return GCHAT_SERVE, str(binding.tenant_id), str(user_id)
+        return GCHAT_CONNECT, None, str(user_id)
 
     async def _handle_gchat_message(self, event_data: dict):
         """Process an incoming Google Chat message."""
@@ -1640,22 +1711,30 @@ class Events:
                 await self._process_gchat_message(cached_entry, message_text, space_name, thread_name, tenant_id)
                 return
 
-            # Validate user first (like Slack resolves user email from team_id + user_id)
-            if not user_email:
-                LOG.warning("Google Chat event missing user email in space %s", space_name)
+            # Decide how to handle this space: sign up (no account), connect
+            # (account but unbound / bound to another tenant), or serve (bound to
+            # one of the user's tenants). The binding is the security boundary —
+            # a served user only ever sees the bound tenant's accounts.
+            try:
+                kind, tenant_id, user_id = self._resolve_gchat_disposition(space_name, user_email)
+            except Exception:
+                # Fail closed: a lookup error must not downgrade a bound (secured)
+                # space to a permissive path — drop the message instead.
+                LOG.exception("Google Chat disposition lookup failed for space %s; dropping message", space_name)
                 return
 
-            user_id, tenants = validate_and_get_user_tenants(user_email)
-            if not user_id or not tenants:
-                LOG.warning("No Nudgebee account found for Google Chat user email: %s", user_email)
+            if kind == GCHAT_SIGNUP:
+                self.common_service.gchat_reply_with_card(
+                    space_name, thread_name, self.common_service.create_gchat_welcome_card(), None
+                )
                 return
 
-            # Find which of the user's tenants has a google_chat installation
-            # (like Slack uses team_id from the event to find the bot installation)
-            tenant_id = self._find_gchat_tenant(tenants)
-            if not tenant_id:
-                LOG.error("No Google Chat installation found for user %s tenants", user_email)
+            if kind == GCHAT_CONNECT:
+                self._send_connect_card(space_name, thread_name, event_data)
                 return
+
+            # GCHAT_SERVE: the space is bound to one of the user's tenants.
+            scoped_tenants = [tenant_id]
 
             if not message_text:
                 self.common_service.gchat_reply_in_thread(
@@ -1668,6 +1747,14 @@ class Events:
                 self.common_service.gchat_reply_in_thread(space_name, thread_name, get_exit_message(), tenant_id)
                 return
 
+            # Incident-thread binding (parity with Slack /channels/join): if this
+            # thread was anchored by a "Join Notification Channel" workflow action,
+            # follow-ups carry the incident's session + account so the bot answers
+            # with the incident's context instead of starting a fresh conversation.
+            incident_binding = self.cache.get_channel_session_mapping(thread_name, space_name)
+            incident_session_id, incident_account_id = self._resolve_incident_binding(incident_binding, tenant_id)
+            session_id = incident_session_id or thread_name
+
             # Cache the event entry
             event_entry = {
                 "event_id": message_name,
@@ -1676,15 +1763,21 @@ class Events:
                 "user_email": user_email,
                 "space_name": space_name,
                 "thread_name": thread_name,
-                "session_id": thread_name,
+                "session_id": session_id,
                 "platform": "google_chat",
                 "tenant_id": tenant_id,
             }
             self.cache.cache_event_entry(thread_name, event_entry)
 
-            await self._handle_gchat_new_conversation(
-                user_id, tenants, space_name, thread_name, tenant_id, message_text
-            )
+            if incident_account_id:
+                # Account is known from the incident binding — skip account selection.
+                await self._handle_gchat_mapped_account(
+                    {"id": incident_account_id}, thread_name, space_name, tenant_id, message_text
+                )
+            else:
+                await self._handle_gchat_new_conversation(
+                    user_id, scoped_tenants, space_name, thread_name, tenant_id, message_text
+                )
 
         except Exception as e:
             LOG.exception("Error handling Google Chat message: %s", e)
@@ -1803,28 +1896,65 @@ class Events:
         await self.async_query_llm_server(payload, headers)
 
     def _handle_gchat_added_to_space(self, event_data: dict):
-        """Post welcome card when bot is added to a Google Chat space."""
+        """On bot-join: greet a bound space's members; otherwise prompt the joiner
+        to sign up (no Nudgebee account) or connect the space (account, but the
+        space is unbound or bound to a tenant they're not in)."""
         try:
-            space_name = event_data.get("space", {}).get("name")
-            user_email = event_data.get("user", {}).get("email")
+            space_name = (event_data.get("space") or {}).get("name")
+            user_email = (event_data.get("user") or {}).get("email")
 
-            # Resolve tenant from the user who added the bot (like Slack uses team_id)
-            tenant_id = None
-            if user_email:
-                _, tenants = validate_and_get_user_tenants(user_email)
-                if tenants:
-                    tenant_id = self._find_gchat_tenant(tenants)
-
-            if not tenant_id:
-                LOG.warning("Could not resolve tenant for ADDED_TO_SPACE event in space %s", space_name)
+            try:
+                kind, tenant_id, _user_id = self._resolve_gchat_disposition(space_name, user_email)
+            except Exception:
+                # Fail closed (see _handle_gchat_message): a lookup error must not
+                # pick a card from partial state — skip this event.
+                LOG.exception("Google Chat disposition lookup failed for space %s; skipping ADDED_TO_SPACE", space_name)
                 return
 
-            welcome_card = self.common_service.create_gchat_welcome_card()
-            self.common_service.gchat_reply_with_card(space_name, None, welcome_card, tenant_id)
-            LOG.info("Sent welcome card to Google Chat space %s", space_name)
+            if kind == GCHAT_SIGNUP:
+                self.common_service.gchat_reply_with_card(
+                    space_name, None, self.common_service.create_gchat_welcome_card(), None
+                )
+                LOG.info("Sent sign-up card to Google Chat space %s (no Nudgebee account)", space_name)
+                return
+
+            if kind == GCHAT_CONNECT:
+                self._send_connect_card(space_name, None, event_data)
+                LOG.info("Sent connect card to unbound/cross-tenant Google Chat space %s", space_name)
+                return
+
+            # GCHAT_SERVE: bound to the joiner's tenant. Greet without the sign-up
+            # CTA; account selection happens on the first @mention.
+            self.common_service.gchat_reply_in_thread(
+                space_name,
+                None,
+                (
+                    f"Hi! I'm connected to your {settings.urls.branding_name} organization — "
+                    "@mention me with a question and I'll dig in."
+                ),
+                tenant_id,
+            )
+            LOG.info("Sent connected greeting to bound Google Chat space %s", space_name)
         except Exception as e:
             LOG.exception("Error handling Google Chat ADDED_TO_SPACE: %s", e)
             raise
+
+    def _send_connect_card(self, space_name, thread_name, event_data):
+        """Post the bind-this-space card to a space that has no tenant binding."""
+        if not GoogleChatAppClient.is_enabled():
+            LOG.warning(
+                "Cannot post Google Chat connect card to space %s — " "GOOGLE_CHAT_SA_KEY is not configured.",
+                space_name,
+            )
+            return
+        display_name = (event_data.get("space") or {}).get("displayName", "") if event_data else ""
+        card = self.common_service.create_gchat_connect_card(space_name, display_name)
+        GoogleChatAppClient.post_message(
+            space=space_name,
+            message=card,
+            tenant=None,
+            thread_name=thread_name,
+        )
 
     def _request_gchat_account_confirmation(self, space_name, thread_name, valid_accounts, tenant_id):
         """Send account selection card to Google Chat thread."""
@@ -1886,28 +2016,6 @@ class Events:
         except Exception as e:
             LOG.error("Failed to process Google Chat message: %s", e)
             self.common_service.gchat_reply_in_thread(space_name, thread_name, get_llm_offline_message(), tenant_id)
-
-    def _find_gchat_tenant(self, tenants):
-        """Find which of the user's tenants has a google_chat installation.
-
-        This mirrors how Slack uses team_id from the event payload to find
-        the bot installation — here we use the user's tenants to find the
-        matching google_chat MessagingPlatform row.
-        """
-        try:
-            with Session(self.session.get_bind()) as session:
-                platform = (
-                    session.query(MessagingPlatform)
-                    .filter(
-                        MessagingPlatform.platform == "google_chat",
-                        MessagingPlatform.tenant_id.in_(tenants),
-                    )
-                    .first()
-                )
-                return platform.tenant_id if platform else None
-        except Exception as e:
-            LOG.warning("Failed to find Google Chat tenant from user tenants: %s", e)
-            return None
 
     # ==================== Google Chat LLM Response Handlers ====================
 

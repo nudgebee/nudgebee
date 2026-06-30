@@ -18,6 +18,7 @@ const (
 	EventCategoryK8sAgent       EventCategory = "K8S_AGENT"
 	EventCategoryK8sRelay       EventCategory = "K8S_RELAY"
 	EventAlertManagerRelay      EventCategory = "ALERT_MANAGER"
+	EventCategoryCloudCommand   EventCategory = "CLOUD_COMMAND"
 )
 
 type EventType string
@@ -73,6 +74,7 @@ const (
 	EventTypeRecommendationApply     EventType = "RECOMMENDATION_APPLY"
 	EventTypeK8sAgentTask            EventType = "K8SAGENT_TASK_CREATE"
 	EventTypeK8sRelayTask            EventType = "K8SRELAY_TASK_CREATE"
+	EventTypeCliExecute              EventType = "CLI_EXECUTE"
 
 	EventTypeTicketConfigCreate EventType = "TICKET_CONFIGURATION_CREATE"
 	EventTypeTicketConfigUpdate EventType = "TICKET_CONFIGURATION_UPDATE"
@@ -121,10 +123,11 @@ const (
 type EventAction string
 
 const (
-	EventActionCreate EventAction = "CREATE"
-	EventActionUpdate EventAction = "UPDATE"
-	EventActionDelete EventAction = "DELETE"
-	EventActionRead   EventAction = "READ"
+	EventActionCreate  EventAction = "CREATE"
+	EventActionUpdate  EventAction = "UPDATE"
+	EventActionDelete  EventAction = "DELETE"
+	EventActionRead    EventAction = "READ"
+	EventActionExecute EventAction = "EXECUTE"
 )
 
 type EventStatus string

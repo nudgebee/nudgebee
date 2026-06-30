@@ -2,7 +2,6 @@ package agents
 
 import (
 	"nudgebee/llm/agents/core"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
@@ -73,10 +72,6 @@ func (a GcpAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAge
 		"**Cloud Trace fallback:** If both paths are empty or unauthorized, don't conclude the system is healthy — fall back to `severity>=ERROR`, latency/timeout patterns in textPayload (e.g., Postgres `duration:` on `cloudsql_database`), and narrow by resource labels (service, revision, pod, instance) in the recent window.",
 		"**Best practices**: Use best practices for all GCP services such as IAM, Cloud Storage, Compute Engine, Cloud Functions, Cloud Run, GKE etc.",
 		"**State clear assumptions**: If you are making any assumptions, please state clearly in the response.",
-	}
-
-	if config.Config.LlmServerShellToolEnabled {
-		instructions = append(instructions, core.GetWorkspaceInstructions()...)
 	}
 
 	constraints := []string{

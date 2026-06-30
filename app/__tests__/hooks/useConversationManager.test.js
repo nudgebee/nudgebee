@@ -9,12 +9,12 @@ jest.mock('@api1/ask-nudgebee', () => ({
   },
 }));
 
-jest.mock('@components1/common/snackbarService', () => ({
+jest.mock('@shared/snackbarService', () => ({
   snackbar: { success: jest.fn(), error: jest.fn() },
 }));
 
 import apiAskNudgebee from '@api1/ask-nudgebee';
-import { snackbar } from '@components1/common/snackbarService';
+import { snackbar } from '@shared/snackbarService';
 
 const mockSave = apiAskNudgebee.saveConversation;
 const mockDelete = apiAskNudgebee.deleteSavedConversation;

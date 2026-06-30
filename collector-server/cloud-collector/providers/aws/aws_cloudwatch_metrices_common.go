@@ -690,8 +690,13 @@ func getNamespaceForService(serviceName string) string {
 }
 
 // listAwsCloudwatchMetricsDynamic calls the CloudWatch ListMetrics API to discover metrics dynamically.
+// maxDimensionSetsPerMetric bounds the dimension sets carried per metric so a
+// high-cardinality metric (e.g. one combo per instance) can't bloat the
+// list-metrics response. Discovery only needs a representative sample.
+const maxDimensionSetsPerMetric = 100
+
 func listAwsCloudwatchMetricsDynamic(ctx context.Context, cwClient *cloudwatch.Client, namespace string) (providers.ListMetricsResponse, error) {
-	metricSet := make(map[string]bool)
+	var allMetrics []types.Metric
 	paginator := cloudwatch.NewListMetricsPaginator(cwClient, &cloudwatch.ListMetricsInput{
 		Namespace: aws.String(namespace),
 	})
@@ -700,22 +705,83 @@ func listAwsCloudwatchMetricsDynamic(ctx context.Context, cwClient *cloudwatch.C
 		if err != nil {
 			return providers.ListMetricsResponse{}, err
 		}
-		for _, m := range page.Metrics {
-			if m.MetricName != nil {
-				metricSet[*m.MetricName] = true
-			}
-		}
+		allMetrics = append(allMetrics, page.Metrics...)
 	}
 
-	metrics := make([]providers.AvailableMetric, 0, len(metricSet))
-	for name := range metricSet {
-		metrics = append(metrics, providers.AvailableMetric{
-			Name:      name,
-			Namespace: namespace,
+	return providers.ListMetricsResponse{Metrics: buildAvailableMetricsWithDimensions(allMetrics, namespace, maxDimensionSetsPerMetric)}, nil
+}
+
+// buildAvailableMetricsWithDimensions groups CloudWatch metrics by name and
+// attaches the deduped (capped) dimension sets observed for each. Pure so the
+// grouping/dedup/cap logic is unit-testable without an AWS client.
+func buildAvailableMetricsWithDimensions(metrics []types.Metric, namespace string, maxSets int) []providers.AvailableMetric {
+	type acc struct {
+		sets []map[string]string
+		seen map[string]struct{}
+	}
+	byName := map[string]*acc{}
+	order := []string{}
+	for _, m := range metrics {
+		if m.MetricName == nil {
+			continue
+		}
+		name := *m.MetricName
+		a, ok := byName[name]
+		if !ok {
+			a = &acc{seen: map[string]struct{}{}}
+			byName[name] = a
+			order = append(order, name)
+		}
+		dims := cloudwatchDimensionMap(m)
+		if len(dims) == 0 {
+			continue
+		}
+		key := dimensionSetKey(dims)
+		if _, dup := a.seen[key]; dup {
+			continue
+		}
+		if len(a.sets) >= maxSets {
+			continue
+		}
+		a.seen[key] = struct{}{}
+		a.sets = append(a.sets, dims)
+	}
+
+	out := make([]providers.AvailableMetric, 0, len(order))
+	for _, name := range order {
+		out = append(out, providers.AvailableMetric{
+			Name:       name,
+			Namespace:  namespace,
+			Dimensions: byName[name].sets,
 		})
 	}
-	sort.Slice(metrics, func(i, j int) bool { return metrics[i].Name < metrics[j].Name })
-	return providers.ListMetricsResponse{Metrics: metrics}, nil
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// cloudwatchDimensionMap converts a metric's dimensions into a name->value map.
+func cloudwatchDimensionMap(m types.Metric) map[string]string {
+	out := map[string]string{}
+	for _, d := range m.Dimensions {
+		if d.Name != nil && d.Value != nil {
+			out[*d.Name] = *d.Value
+		}
+	}
+	return out
+}
+
+// dimensionSetKey produces a stable key for a dimension set for dedup.
+func dimensionSetKey(dims map[string]string) string {
+	keys := make([]string, 0, len(dims))
+	for k := range dims {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%s", k, dims[k]))
+	}
+	return strings.Join(parts, "\x00")
 }
 
 func listAwsCloudwatchMetrics(request providers.ListMetricsRequest) (providers.ListMetricsResponse, error) {

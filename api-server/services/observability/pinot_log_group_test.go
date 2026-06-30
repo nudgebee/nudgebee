@@ -1,5 +1,9 @@
 package observability
 
+// DISABLED: Pinot log grouping is commented out (see the "Log groups (DISABLED)"
+// note in pinot.go). These tests exercise the commented-out helpers, so they are
+// kept here but excluded from compilation. Re-enable them together with that block.
+/*
 import (
 	"strings"
 	"testing"
@@ -128,3 +132,4 @@ func TestParsePinotLogGroupBytes_FallsBackToEndTime_WhenMaxTsMissing(t *testing.
 		t.Errorf("expected fallback to endTime 1700000060 s, got %d", got)
 	}
 }
+*/

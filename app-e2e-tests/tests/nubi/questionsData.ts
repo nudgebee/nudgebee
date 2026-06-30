@@ -1,3 +1,9 @@
+// Namespace name used inside the LLM prompts below. Default is obviously
+// synthetic so the constants file alone reveals no internal cluster topology;
+// real e2e runs override via E2E_NAMESPACE so the LLM is asked about a
+// namespace that actually exists in the target test cluster.
+const NAMESPACE = process.env.E2E_NAMESPACE ?? "test-cluster-test";
+
 export const questions: string[] = [
   "@visualizer Create a simple line chart showing monthly electricity consumption (kWh) for a household: Jan 320, Feb 300, Mar 280, Apr 260, May 240, Jun 230, Jul 250, Aug 270, Sep 290, Oct 310, Nov 330, Dec 350. X-axis: Month, Y-axis: Consumption",
   "@docs how to configure slack in nudgebee?",
@@ -52,7 +58,7 @@ export const questions: string[] = [
   // --- DevOps Cluster Monitoring — CI/CD & Deployments ---
   "what got deployed in the last 24 hours and by whom? I want a deployment log",
   "something broke after the last deploy to nudgebee namespace — can you show me what changed and when?",
-  "are there any failed jobs or cronjobs in nudgebee-test namespace from the last 24 hours?",
+  `are there any failed jobs or cronjobs in ${NAMESPACE} namespace from the last 24 hours?`,
 
   // --- DevOps Cluster Monitoring — Security ---
   "are there any pods running as root or with privileged: true in the cluster right now?",

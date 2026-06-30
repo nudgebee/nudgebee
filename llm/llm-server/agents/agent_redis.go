@@ -51,10 +51,6 @@ func (l RedisAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBA
 		"**Safe Operations:** Prioritize read-only commands (e.g., `GET`, `KEYS`, `INFO`, `SCAN`, `LLEN`, `HGETALL`). Avoid destructive commands unless explicitly requested.",
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		instructions = append(instructions, core.GetWorkspaceInstructions()...)
-	}
-
 	constraints := []string{
 		"Always use the `redis_execute` tool for Redis interactions.",
 		"Avoid fetching large amounts of data at once; use `SCAN` instead of `KEYS *` if possible.",

@@ -50,14 +50,21 @@ async def list_tenants(authz=Depends(get_authz)):
             name_by_id = {str(r[0]): str(r[1]) for r in rows}
             return {
                 "tenants": [
-                    {"id": ta.tenant_id, "name": name_by_id.get(ta.tenant_id, ta.tenant_id)}
+                    {
+                        "id": ta.tenant_id,
+                        "name": name_by_id.get(ta.tenant_id, ta.tenant_id),
+                    }
                     for ta in authz.tenants
                 ]
             }
     except Exception as e:
         logger.error("list_tenants name resolution failed: %s", e)
         # Fall back to ID-only display if the name lookup fails.
-        return {"tenants": [{"id": ta.tenant_id, "name": ta.tenant_id} for ta in authz.tenants]}
+        return {
+            "tenants": [
+                {"id": ta.tenant_id, "name": ta.tenant_id} for ta in authz.tenants
+            ]
+        }
 
 
 @router.get("/tenants/{tenant_id}/users")
@@ -70,7 +77,9 @@ async def list_users(tenant_id: str, authz=Depends(get_authz)):
     (cross-tenant info disclosure).
     """
     if not authz.is_super_admin and not authz.has_tenant(tenant_id):
-        raise HTTPException(status_code=403, detail="You do not have access to this tenant.")
+        raise HTTPException(
+            status_code=403, detail="You do not have access to this tenant."
+        )
     if not db_engine:
         return {"users": [], "error": "DB not configured"}
     try:
@@ -181,7 +190,9 @@ async def get_tool_configs(
     # Resolve target tenant.
     if tenant_id:
         if not authz.is_super_admin and not authz.has_tenant(tenant_id):
-            raise HTTPException(status_code=403, detail="You do not have access to this tenant.")
+            raise HTTPException(
+                status_code=403, detail="You do not have access to this tenant."
+            )
         effective_tenant_id = tenant_id
     else:
         # Fall back to the caller's only / first tenant (the typical
@@ -200,7 +211,9 @@ async def get_tool_configs(
     if not authz.is_super_admin:
         ta = authz.tenant(effective_tenant_id)
         if ta is None:
-            raise HTTPException(status_code=403, detail="You do not have access to this tenant.")
+            raise HTTPException(
+                status_code=403, detail="You do not have access to this tenant."
+            )
         if ta.account_ids and account_id not in ta.account_ids:
             raise HTTPException(
                 status_code=403,

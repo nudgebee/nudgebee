@@ -152,7 +152,7 @@ const (
 	// a stable system prompt can create a sub-context that overrides this to false.
 	ContextKeyDisableCaching LLMContextKey = "disable_caching"
 	ContextKeyCacheScope     LLMContextKey = "cache_scope"
-	// ContextKeyCapabilities carries the request's Capabilities map into the LLM call
+	// ContextKeyCapabilities carries the request's AgentCapabilities into the LLM call
 	// stack so the cache layer can fingerprint capability-constrained requests and give
 	// them distinct Google AI CachedContent slots.
 	ContextKeyCapabilities LLMContextKey = "capabilities"
@@ -212,13 +212,18 @@ type retryContext struct {
 	userId                   string
 	lastCacheInfo            *CacheResponse // Track cache info from last LLM call
 	cacheScope               CacheScope
-	capabilities             map[string]any // Forwarded to CacheRequest for capability fingerprinting
-	totalStart               time.Time      // Track when the entire retry loop started
-	maxTotalDuration         time.Duration  // Maximum allowed time for the entire retry loop
-	enableCaching            bool           // Whether provider-level prompt caching is enabled for this call
-	hasMalformedFunctionCall bool           // Sticky flag: set when Gemini returns MALFORMED_FUNCTION_CALL, never cleared during retries
-	lastTTFTMs               *int64         // Wall-clock ms from call start → first streamed chunk (last attempt)
-	lastWasStreaming         bool           // Whether the last attempt actually streamed (≥1 chunk seen)
+	capabilities             toolcore.AgentCapabilities // Forwarded to CacheRequest for capability fingerprinting
+	totalStart               time.Time                  // Track when the entire retry loop started
+	maxTotalDuration         time.Duration              // Maximum allowed time for the entire retry loop
+	enableCaching            bool                       // Whether provider-level prompt caching is enabled for this call
+	hasMalformedFunctionCall bool                       // Sticky flag: set when Gemini returns MALFORMED_FUNCTION_CALL, never cleared during retries
+	lastTTFTMs               *int64                     // Wall-clock ms from call start → first streamed chunk (last attempt)
+	lastWasStreaming         bool                       // Whether the last attempt actually streamed (≥1 chunk seen)
+	// resolution is the per-request tier-aware LLM config resolution (carries
+	// Tier + dbConfig). Stored so downstream calls — notably the cache-path
+	// getLLMApiKey — resolve the SAME tier-specific key as the client-build
+	// path, instead of dropping the tier and falling back to the global key.
+	resolution *LLMConfigResolution
 }
 
 func GetLLMNumTokensFromStringMessages(context *security.RequestContext, messages []string, provider string, model string) (numTokens int) {
@@ -254,6 +259,13 @@ func GetLLMNumTokensFromMessages(context *security.RequestContext, messages []ll
 	return numTokens
 }
 
+// newLLMModel constructs the llms.Model used by GenerateAndTrackLLMContent.
+// It is a package-level seam: production points it at GetLLMModel, while tests
+// override it to inject a fake llms.Model and exercise the generation path
+// (summarization, planners, agents, …) without real provider credentials or
+// network calls. Behaviour is identical to calling GetLLMModel directly.
+var newLLMModel = GetLLMModel
+
 // GenerateAndTrackLLMContent generates content using an LLM and tracks token usage
 func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, accountId string, conversationId string, messageId string, agentId string, trackContent bool, promptMessages []llms.MessageContent, cleanupMarkdown bool, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	t0 := time.Now()
@@ -285,8 +297,9 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 	provider := res.Provider
 	model := res.Model
 
-	// Step 2: Initialize LLM using the resolution context
-	llm, err := GetLLMModel(provider, model, agentName, agentName != "", accountId, res)
+	// Step 2: Initialize LLM using the resolution context (newLLMModel is a test
+	// seam; in production it is GetLLMModel).
+	llm, err := newLLMModel(provider, model, agentName, agentName != "", accountId, res)
 	if err != nil {
 		ctx.GetLogger().Error("Failed to initialize LLM model", "error", err, "agentName", agentName, "provider", provider, "model", model)
 		return nil, ErrLlmUnableToGenerate(err)
@@ -398,6 +411,9 @@ func GenerateAndTrackLLMContent(ctx *security.RequestContext, userId string, acc
 			totalStart:       t0, // Budget tracks from initial start
 			maxTotalDuration: time.Duration(config.Config.LlmServerGlobalRetryBudgetMinutes) * time.Minute,
 			enableCaching:    config.Config.LlmEnableCaching && !disableCachingCont,
+			// Carry the tier-aware resolution so the cache-path getLLMApiKey in
+			// tryWithModel resolves the same tier-specific key as the main call.
+			resolution: res,
 		}
 
 		const maxContinuations = 3
@@ -899,7 +915,7 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 
 		cacheManager := GetCacheManager()
 		appendAgentName := rc.agentName != ""
-		apiKey := getLLMApiKey(rc.accountId, rc.currentProvider, rc.agentName, appendAgentName)
+		apiKey := getLLMApiKey(rc.accountId, rc.currentProvider, rc.agentName, appendAgentName, rc.resolution)
 
 		// Pull tenant_id from security context so the lifecycle row gets the right
 		// tenant scoping for budget rollups. Best-effort — caller-context loss here
@@ -1121,8 +1137,8 @@ func tryFallbackModel(rc *retryContext, nextModel string, attempt int) (*llms.Co
 		"nextModel", nextModel,
 		"attempt", attempt+1)
 
-	provider := GetLLMProvider(rc.ctx, rc.accountId, rc.agentName, false, rc.conversationId)
-	newLLM, err := GetLLMModel(provider, nextModel, rc.agentName, false, rc.accountId)
+	provider := GetLLMProvider(rc.ctx, rc.accountId, rc.agentName, false, rc.conversationId, rc.resolution)
+	newLLM, err := GetLLMModel(provider, nextModel, rc.agentName, false, rc.accountId, rc.resolution)
 	if err != nil {
 		rc.ctx.GetLogger().Warn("Failed to create fallback model",
 			"model", nextModel,
@@ -1628,7 +1644,7 @@ func handleQuotaError(rc *retryContext, fallbackModels []string, recordPrimaryHi
 		// Analyze failure reason
 		if isQuotaError(err) {
 			// Record rate limit hit for the fallback model too
-			fallbackProvider := GetLLMProvider(rc.ctx, rc.accountId, rc.agentName, false, rc.conversationId)
+			fallbackProvider := GetLLMProvider(rc.ctx, rc.accountId, rc.agentName, false, rc.conversationId, rc.resolution)
 			RecordModelRateLimitHit(fallbackProvider, model)
 			common.MetricsLLMRateLimitHitsTotal(fallbackProvider, model, rc.accountId)
 			ctx.GetLogger().Warn("Fallback model also has quota issues, trying next",
@@ -1879,7 +1895,7 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 	if cacheScope == "" {
 		cacheScope = CacheScopeConversation
 	}
-	capabilities, _ := ctx.GetContext().Value(ContextKeyCapabilities).(map[string]any)
+	capabilities, _ := ctx.GetContext().Value(ContextKeyCapabilities).(toolcore.AgentCapabilities)
 
 	rc := &retryContext{
 		ctx:              ctx,
@@ -1905,6 +1921,10 @@ func generateLLMContentWithRetry(ctx *security.RequestContext, llm llms.Model, p
 	if res == nil {
 		res, _ = ResolveLLMConfig(ctx, accountId, agentName, conversationId)
 	}
+	// Keep the tier-aware resolution on rc so the cache-path getLLMApiKey (and
+	// any other downstream key lookup) resolves the same tier-specific key the
+	// client was built with — provider/model are already threaded via res here.
+	rc.resolution = res
 
 	rc.currentProvider = GetLLMProvider(ctx, accountId, rc.agentName, true, conversationId, res)
 	rc.currentModel = GetLLMModelName(ctx, accountId, rc.currentProvider, rc.agentName, true, conversationId, res)
@@ -2408,7 +2428,14 @@ func recordTokenUsageFailure(
 
 	bgCtx := security.NewRequestContext(context.Background(), ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
 	insertFn := func() {
-		if err := GetConversationDao().InsertTokenUsage(record); err != nil {
+		// Best-effort: skip if the DAO is unavailable rather than panicking this
+		// background goroutine on a nil interface (see trackTokenUsage).
+		dao := GetConversationDao()
+		if dao == nil {
+			bgCtx.GetLogger().Debug("recordTokenUsageFailure: skipping — conversation DAO unavailable")
+			return
+		}
+		if err := dao.InsertTokenUsage(record); err != nil {
 			bgCtx.GetLogger().Error("recordTokenUsageFailure: failed to insert failure row", "error", err,
 				"agentName", agentName, "messageId", messageId, "model", model)
 		}
@@ -2569,15 +2596,25 @@ func trackTokenUsage(
 		}
 	}
 
+	// Best-effort tracking: if the conversation DAO is unavailable (e.g. the
+	// metastore DB is down, or in hermetic tests), skip silently rather than
+	// dereferencing a nil interface and panicking this background goroutine —
+	// which would otherwise crash the process.
+	dao := GetConversationDao()
+	if dao == nil {
+		ctx.GetLogger().Debug("llm: skipping token usage tracking — conversation DAO unavailable")
+		return
+	}
+
 	// Insert into new token usage table
-	err := GetConversationDao().InsertTokenUsage(record)
+	err := dao.InsertTokenUsage(record)
 	if err != nil {
 		ctx.GetLogger().Error("llm: unable to insert token usage", "error", err)
 	}
 
 	// Update thought content on the agent record (if applicable)
 	if agentUUID != nil && trackContent && content != "" {
-		if err := GetConversationDao().UpdateConversationAgentThought(*agentUUID, content); err != nil {
+		if err := dao.UpdateConversationAgentThought(*agentUUID, content); err != nil {
 			ctx.GetLogger().Error("llm: unable to update agent thought", "error", err)
 		}
 	}

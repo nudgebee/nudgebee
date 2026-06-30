@@ -144,12 +144,12 @@ func TestCorrelation_SameCloudResource_DifferentAlerts(t *testing.T) {
 	// This is the case that was MISSED before (score 0.40 < 0.50 threshold)
 	now := time.Now()
 	e1 := makeEvent("1", now,
-		withServiceKey("arn:gcp:cloud sql:us-central:nudgebee-dev:cloudsql_database:beehive-test-pg"),
+		withServiceKey("arn:gcp:cloud sql:us-central:test-cluster-dev:cloudsql_database:test-db-test"),
 		withCloudResourceId("11111111-1111-1111-1111-111111111111"),
 		withNamespace("cloudsql_database"),
 	)
 	e2 := makeEvent("2", now.Add(3*time.Minute),
-		withServiceKey("arn:gcp:cloud sql:us-central:nudgebee-dev:cloudsql_database:beehive-test-pg"),
+		withServiceKey("arn:gcp:cloud sql:us-central:test-cluster-dev:cloudsql_database:test-db-test"),
 		withCloudResourceId("11111111-1111-1111-1111-111111111111"),
 		withNamespace("cloudsql_database"),
 	)
@@ -229,11 +229,11 @@ func TestCorrelation_DifferentResource_DifferentService_BelowThreshold(t *testin
 func TestCorrelation_TooFarApart(t *testing.T) {
 	now := time.Now()
 	e1 := makeEvent("1", now,
-		withServiceKey("arn:gcp:cloud sql:test:beehive-test-pg"),
+		withServiceKey("arn:gcp:cloud sql:test:test-db-test"),
 		withCloudResourceId("same-resource"),
 	)
 	e2 := makeEvent("2", now.Add(15*time.Minute),
-		withServiceKey("arn:gcp:cloud sql:test:beehive-test-pg"),
+		withServiceKey("arn:gcp:cloud sql:test:test-db-test"),
 		withCloudResourceId("same-resource"),
 	)
 

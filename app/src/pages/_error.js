@@ -1,4 +1,4 @@
-import CustomButton from '@components1/common/NewCustomButton';
+import CustomButton from '@shared/NewCustomButton';
 import { error404Image, ErrorIcon } from '@assets';
 import Image from 'next/image';
 import { useRouter } from 'next/router';

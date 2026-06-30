@@ -16,12 +16,12 @@ type awsBackup struct {
 
 func (a *awsBackup) ApplyRecommendation(ctx providers.CloudProviderContext, account providers.Account, recommendation providers.Recommendation) error {
 	// Applying recommendations is not supported for AWS Backup yet.
-	return errors.New("Unsupported")
+	return errors.New("unsupported")
 }
 
 func (a *awsBackup) ApplyCommand(ctx providers.CloudProviderContext, account providers.Account, command providers.ApplyCommandRequest) (providers.ApplyCommandResponse, error) {
 	// Applying commands is not supported for AWS Backup yet.
-	return providers.ApplyCommandResponse{}, errors.New("Unsupported")
+	return providers.ApplyCommandResponse{}, errors.New("unsupported")
 }
 
 func (a *awsBackup) QueryMetrices(ctx providers.CloudProviderContext, account providers.Account, filter providers.QueryMetricsRequest) (providers.QueryMetricsResponse, error) {

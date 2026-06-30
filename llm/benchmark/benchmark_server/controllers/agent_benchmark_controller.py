@@ -1,29 +1,30 @@
-import asyncio
-import json
-import logging
 import os
-import sys
 
 os.environ["RAGAS_DO_NOT_TRACK"] = "true"
-import re
-import signal
-import time
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import List, Optional, Union
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from pydantic import BaseModel
+import asyncio  # noqa: E402
+import json  # noqa: E402
+import logging  # noqa: E402
+import re  # noqa: E402
+import signal  # noqa: E402
+import sys  # noqa: E402
+import time  # noqa: E402
+from datetime import datetime, timedelta, timezone  # noqa: E402
+from pathlib import Path  # noqa: E402
+from typing import List, Optional, Union  # noqa: E402
 
-from benchmark_server.middleware.auth import (
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
+
+from benchmark_server.middleware.auth import (  # noqa: E402
     AuthUser,
     get_authz,
     get_current_user,
 )
-from benchmark_server.utils import run_manager
-from benchmark_server.utils.db_utils import get_user_email
-from benchmark_server.utils.email_utils import send_email_async
-from benchmark_server.utils.email_templates import build_benchmark_email
+from benchmark_server.utils import run_manager  # noqa: E402
+from benchmark_server.utils.db_utils import get_user_email  # noqa: E402
+from benchmark_server.utils.email_utils import send_email_async  # noqa: E402
+from benchmark_server.utils.email_templates import build_benchmark_email  # noqa: E402
 
 router = APIRouter(prefix="/agent-benchmark", tags=["agent-benchmark"])
 logger = logging.getLogger(__name__)
@@ -115,7 +116,11 @@ def _kill_process(key: str):
 
 def _kill_all_for_run(run_id: str):
     """Kill the main process and all single-test processes for a run."""
-    keys = [k for k in list(_active_processes.keys()) if k == run_id or k.startswith(f"{run_id}__")]
+    keys = [
+        k
+        for k in list(_active_processes.keys())
+        if k == run_id or k.startswith(f"{run_id}__")
+    ]
     for key in keys:
         _kill_process(key)
 
@@ -125,7 +130,9 @@ def _kill_by_prefix(prefix: str):
     all_keys = list(_active_processes.keys())
     keys = [k for k in all_keys if k.startswith(prefix)]
     if not keys:
-        logger.warning("No active processes matching prefix '%s' (active: %s)", prefix, all_keys)
+        logger.warning(
+            "No active processes matching prefix '%s' (active: %s)", prefix, all_keys
+        )
         return
     for key in keys:
         _kill_process(key)
@@ -134,7 +141,11 @@ def _kill_by_prefix(prefix: str):
 
 # Unified benchmark test file — all agents use the same file
 _UNIFIED_BENCHMARK = (
-    Path(__file__).resolve().parent.parent.parent / "llm" / "agents" / "common" / "benchmark.py"
+    Path(__file__).resolve().parent.parent.parent
+    / "llm"
+    / "agents"
+    / "common"
+    / "benchmark.py"
 )
 
 
@@ -293,7 +304,7 @@ class GatherBenchmarkRequest(BaseModel):
     cc_emails: Optional[List[str]] = None
 
 
-USE_ORCHESTRATOR = os.getenv("USE_ORCHESTRATOR", "false").lower() == "true"
+USE_ORCHESTRATOR = os.getenv("USE_ORCHESTRATOR", "true").lower() == "true"
 
 
 async def run_agent_benchmark_and_notify(  # noqa: C901
@@ -319,7 +330,9 @@ async def run_agent_benchmark_and_notify(  # noqa: C901
         run_manager.fail_run(run_id, f"Invalid agent name: {agent}")
         return
 
-    logger.info(f"Starting {agent} agent benchmark for user {user_id} (account: {account_id})")
+    logger.info(
+        f"Starting {agent} agent benchmark for user {user_id} (account: {account_id})"
+    )
 
     benchmark_trigger_time = datetime.now()
 
@@ -338,12 +351,18 @@ async def run_agent_benchmark_and_notify(  # noqa: C901
     # Define paths
     project_root = Path(__file__).resolve().parent.parent.parent
     agent_dir = _resolve_agent_dir(agent)
-    config_file = (agent_dir / "config.yaml") if agent_dir else (_agents_root() / agent / "config.yaml")
+    config_file = (
+        (agent_dir / "config.yaml")
+        if agent_dir
+        else (_agents_root() / agent / "config.yaml")
+    )
 
     # Validate agent by checking if config.yaml exists
     if not config_file.exists():
         available_agents = sorted({cf.parent.name for cf in _iter_agent_config_files()})
-        error_msg = f"config.yaml not found for agent: {agent}<br>Expected path: {config_file}"
+        error_msg = (
+            f"config.yaml not found for agent: {agent}<br>Expected path: {config_file}"
+        )
         if available_agents:
             error_msg += f"<br><br>Available agents: {', '.join(available_agents)}"
 
@@ -371,7 +390,7 @@ async def run_agent_benchmark_and_notify(  # noqa: C901
             logger.info(
                 "Using custom orchestrator (workers=%d) instead of pytest", workers
             )
-            success = await asyncio.to_thread(
+            await asyncio.to_thread(
                 orchestrator.run,
                 agent_dir=str(agent_dir),
                 run_id=run_id,
@@ -600,8 +619,12 @@ async def run_agent_benchmark_and_notify(  # noqa: C901
         _unregister_process(run_id)
 
         if process.returncode not in [0, 1]:
-            logger.error(f"Pytest execution failed with return code {process.returncode}")
-            run_manager.fail_run(run_id, f"Pytest exited with code {process.returncode}")
+            logger.error(
+                f"Pytest execution failed with return code {process.returncode}"
+            )
+            run_manager.fail_run(
+                run_id, f"Pytest exited with code {process.returncode}"
+            )
             await send_email_async(
                 email,
                 f"{agent.upper()} Agent Benchmark Failed",
@@ -668,7 +691,9 @@ async def run_agent_benchmark_and_notify(  # noqa: C901
         except OSError:
             pass
 
-        logger.info(f"Successfully completed {agent} benchmark and sent email to {email}")
+        logger.info(
+            f"Successfully completed {agent} benchmark and sent email to {email}"
+        )
 
     except Exception as e:
         logger.exception(f"Error during {agent} benchmark execution or notification")
@@ -786,16 +811,16 @@ async def gather_benchmark_tests(
     if not re.match(r"^[a-z0-9_-]+$", agent_name):
         raise HTTPException(status_code=400, detail=f"Invalid agent name: {agent_name}")
 
-    project_root = Path(__file__).resolve().parent.parent.parent
     agent_dir = _resolve_agent_dir(agent_name)
     if agent_dir is None:
         raise HTTPException(
             status_code=404, detail=f"config.yaml not found for agent: {agent_name}"
         )
-    config_file = agent_dir / "config.yaml"
 
     fixtures_dir = agent_dir / "fixtures"
-    max_tests = request.max_tests if request.max_tests and request.max_tests > 0 else None
+    max_tests = (
+        request.max_tests if request.max_tests and request.max_tests > 0 else None
+    )
     test_cases = find_test_cases(
         fixtures_dir,
         max_tests=max_tests,
@@ -843,7 +868,6 @@ async def list_agent_tests(agent_name: str, tag_filter: Optional[str] = None):
     if not re.match(r"^[a-z0-9_-]+$", agent_name):
         raise HTTPException(status_code=400, detail=f"Invalid agent name: {agent_name}")
 
-    project_root = Path(__file__).resolve().parent.parent.parent
     agent_dir = _resolve_agent_dir(agent_name)
     if agent_dir is None:
         raise HTTPException(
@@ -890,7 +914,9 @@ async def list_available_agents():
         agent_name = config_file.parent.name
         fixtures_dir = config_file.parent / "fixtures"
         fixture_count = (
-            len(list(fixtures_dir.glob("*/test_case.yaml"))) if fixtures_dir.exists() else 0
+            len(list(fixtures_dir.glob("*/test_case.yaml")))
+            if fixtures_dir.exists()
+            else 0
         )
         # Read config_types from config.yaml
         config_types = []
@@ -1039,7 +1065,9 @@ def _set_infra_state(
         db.close()
 
 
-INFRA_STALE_TIMEOUT_MINUTES = int(os.environ.get("BENCHMARK_INFRA_STALE_TIMEOUT_MINUTES", "120"))
+INFRA_STALE_TIMEOUT_MINUTES = int(
+    os.environ.get("BENCHMARK_INFRA_STALE_TIMEOUT_MINUTES", "120")
+)
 
 
 def _is_infra_state_stale(state: dict) -> bool:
@@ -1158,7 +1186,9 @@ async def _standalone_deploy_task(
         conftest_path = agent_dir / "conftest.py"
         if not scenarios or not conftest_path.exists():
             logger.info("No infrastructure needed for agent %s", agent)
-            _set_infra_state(agent, "deployed", finished_at=datetime.utcnow(), scenarios=[])
+            _set_infra_state(
+                agent, "deployed", finished_at=datetime.utcnow(), scenarios=[]
+            )
             return
 
         # Store resolved scenarios
@@ -1256,7 +1286,9 @@ async def _standalone_deploy_task(
                 len(batch),
                 agent,
             )
-            deploy_log.append(f"--- Batch {i // max_parallel + 1}: {', '.join(batch)} ---")
+            deploy_log.append(
+                f"--- Batch {i // max_parallel + 1}: {', '.join(batch)} ---"
+            )
             _set_infra_state(agent, None, output="\n".join(deploy_log)[-4000:])
 
             results = await asyncio.gather(*[deploy_one(s) for s in batch])
@@ -1278,7 +1310,9 @@ async def _standalone_deploy_task(
             return
 
         if failed_deploys:
-            logger.warning("Scenarios failed to deploy for %s: %s", agent, failed_deploys)
+            logger.warning(
+                "Scenarios failed to deploy for %s: %s", agent, failed_deploys
+            )
             _set_infra_state(
                 agent,
                 "failed",
@@ -1310,7 +1344,6 @@ async def nuke_standalone_infra(
     """
     _require_admin(authz)
     agent = req.agent
-    project_root = Path(__file__).resolve().parent.parent.parent
     agent_dir = _resolve_agent_dir(agent)
 
     if agent_dir is None:
@@ -1353,21 +1386,27 @@ async def nuke_standalone_infra(
             break
 
     if not nuke_script:
-        raise HTTPException(status_code=404, detail=f"No nuke script found for agent '{agent}'")
+        raise HTTPException(
+            status_code=404, detail=f"No nuke script found for agent '{agent}'"
+        )
 
     _set_infra_state(agent, "nuking", started_at=datetime.utcnow(), output="", error="")
     background_tasks.add_task(_standalone_nuke_task, agent, nuke_script)
     return {"agent": agent, "message": f"Infrastructure nuke started for '{agent}'"}
 
 
-INFRA_LOG_FLUSH_INTERVAL = int(os.environ.get("BENCHMARK_INFRA_LOG_FLUSH_SECONDS", "10"))
+INFRA_LOG_FLUSH_INTERVAL = int(
+    os.environ.get("BENCHMARK_INFRA_LOG_FLUSH_SECONDS", "10")
+)
 
 
 async def _flush_output_to_db(agent: str, lines: list):
     """Flush output to DB in a thread pool to avoid blocking the event loop."""
     output = "\n".join(lines)[-4000:]
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, lambda: _set_infra_state(agent, None, output=output))
+    await loop.run_in_executor(
+        None, lambda: _set_infra_state(agent, None, output=output)
+    )
 
 
 async def _stream_process_output(process, agent: str, lines: list):
@@ -1456,7 +1495,9 @@ async def _standalone_nuke_task(agent: str, nuke_script: Path):
             )
         else:
             logger.info("Standalone nuke succeeded for %s", agent)
-            _set_infra_state(agent, "nuked", output=combined_output, finished_at=datetime.utcnow())
+            _set_infra_state(
+                agent, "nuked", output=combined_output, finished_at=datetime.utcnow()
+            )
     except Exception as e:
         logger.exception("Standalone nuke error for %s", agent)
         _unregister_process(proc_key)
@@ -1479,14 +1520,20 @@ async def cancel_infra_operation(
     agent = req.agent
     current = _get_infra_state(agent)
     if not current or current.get("status") not in ("deploying", "nuking"):
+        current_status = current.get("status") if current else "unknown"
         raise HTTPException(
             status_code=409,
-            detail=f"No active infra operation to cancel for '{agent}' (status: {current.get('status') if current else 'unknown'})",
+            detail=(
+                f"No active infra operation to cancel for '{agent}' "
+                f"(status: {current_status})"
+            ),
         )
 
     prev_status = current["status"]
     # Kill the main process and all parallel scenario processes
-    prefix = f"infra_deploy_{agent}" if prev_status == "deploying" else f"infra_nuke_{agent}"
+    prefix = (
+        f"infra_deploy_{agent}" if prev_status == "deploying" else f"infra_nuke_{agent}"
+    )
     _kill_by_prefix(prefix)
 
     new_status = "failed" if prev_status == "deploying" else "nuke_failed"
@@ -1513,7 +1560,9 @@ async def reset_infra_state(
     agent = req.agent
     current = _get_infra_state(agent)
     if not current:
-        raise HTTPException(status_code=404, detail=f"No infra state found for '{agent}'")
+        raise HTTPException(
+            status_code=404, detail=f"No infra state found for '{agent}'"
+        )
 
     prev_status = current["status"]
 
@@ -1527,7 +1576,9 @@ async def reset_infra_state(
         error=f"Force-reset by user (was {prev_status})",
         finished_at=datetime.utcnow(),
     )
-    logger.warning("Infra state force-reset: agent=%s was '%s' → 'unknown'", agent, prev_status)
+    logger.warning(
+        "Infra state force-reset: agent=%s was '%s' → 'unknown'", agent, prev_status
+    )
     return {
         "agent": agent,
         "previous_status": prev_status,
@@ -2117,7 +2168,8 @@ async def _run_followup_task(  # noqa: C901
 
                 if session_id:
                     token_metrics = (
-                        get_token_metrics(session_id, account_id, tenant_id, user_id) or {}
+                        get_token_metrics(session_id, account_id, tenant_id, user_id)
+                        or {}
                     )
                 tool_names_data = get_tool_names(convo_id=convo_id) or {}
                 if convo_id:
@@ -2143,7 +2195,9 @@ async def _run_followup_task(  # noqa: C901
                     llm = LangchainLLMWrapper(base_llm)
                     eval_result = await loop.run_in_executor(
                         None,
-                        lambda: evaluate_single(original_query, answer, expected_answer, llm, None),
+                        lambda: evaluate_single(
+                            original_query, answer, expected_answer, llm, None
+                        ),
                     )
                     sim_score = eval_result.similarity
                     rel_score = eval_result.quality
@@ -2155,13 +2209,17 @@ async def _run_followup_task(  # noqa: C901
 
                         p_score, p_reason = await loop.run_in_executor(
                             None,
-                            lambda: _evaluate_planner(execution_trace, original_query, llm),
+                            lambda: _evaluate_planner(
+                                execution_trace, original_query, llm
+                            ),
                         )
                         planner_score = p_score or 0.0
                         if p_reason:
                             score_reason += f"\n[Planner] {p_reason}"
                 except Exception as e:
-                    logger.warning("RAGAS evaluation failed for test %d: %s", test_index, e)
+                    logger.warning(
+                        "RAGAS evaluation failed for test %d: %s", test_index, e
+                    )
 
             result = {
                 "test_index": test_index,
@@ -2198,25 +2256,49 @@ async def _run_followup_task(  # noqa: C901
                 {
                     "test_index": test_index,
                     "status": "fail",
-                    "error_message": llm_result.error_message or "LLM call failed after followup",
+                    "error_message": llm_result.error_message
+                    or "LLM call failed after followup",
                     "error_category": llm_result.error_category or "agent_failed",
                 },
             )
     except Exception as e:
-        logger.exception("Error in followup task for test %d in run %s", test_index, run_id)
-        run_manager.store_test_result(
-            run_id,
-            {
-                "test_index": test_index,
-                "status": "fail",
-                "error_message": f"Followup task error: {e}",
-                "error_category": "client_error",
-            },
+        logger.exception(
+            "Error in followup task for test %d in run %s", test_index, run_id
         )
+        # A benchmark-side error while processing the followup result does NOT
+        # mean the test failed — the llm-server may have accepted the answer and
+        # the conversation may be resuming/completing. Mark the row DETACHED
+        # (non-terminal) with its conversation handle so the reconciler
+        # re-attaches and finalizes from the real conversation state, instead of
+        # throwing away a possibly-good result with a hard fail.
+        store_payload = {
+            "test_index": test_index,
+            "status": "detached",
+            "error_message": f"Followup processing error (reconciling): {e}",
+            "error_category": "",
+        }
+        if conversation_id:
+            store_payload["conversation_id"] = conversation_id
+        run_manager.store_test_result(run_id, store_payload)
     # NOTE: Do NOT call finish_single_test here. The main benchmark subprocess
     # manages run lifecycle. Calling it here would see only the DB rows that
     # exist so far (not all 45 tests), miscalculate pending=0, and mark the
     # run as COMPLETED — causing the subprocess to skip remaining tests.
+
+    # Immediately reconcile this run's non-terminal rows so the UI reflects the
+    # resumed conversation's state (and any sibling/parent rows the llm-server
+    # bubble-up completed out-of-band) right away, instead of waiting up to one
+    # sweep interval (~60s). nudge_complete=False: row-sync only — run lifecycle
+    # stays owned by the orchestrator subprocess / sweeper. Best-effort: a
+    # reconcile failure must not surface as a followup-task error.
+    try:
+        await asyncio.to_thread(
+            run_manager.reconcile_waiting_tests, run_id, nudge_complete=False
+        )
+    except Exception:
+        logger.exception(
+            "Followup task: post-resume reconcile failed for run %s", run_id
+        )
 
 
 @router.post("/{run_id}/run-all", status_code=202)
@@ -2376,7 +2458,9 @@ async def restart_benchmark(
     # Compute skip_indices as a comma-separated string for the env var
     # The benchmark process will use SKIP_INDICES to skip already-passed tests
     skip_indices = (
-        ",".join(str(i) for i in sorted(completed_indices)) if completed_indices else None
+        ",".join(str(i) for i in sorted(completed_indices))
+        if completed_indices
+        else None
     )
 
     background_tasks.add_task(
@@ -2416,7 +2500,7 @@ async def re_evaluate_benchmark(
     """
     _verify_run_access(run_id, authz)
     try:
-        config = run_manager.set_run_evaluating(run_id)
+        run_manager.set_run_evaluating(run_id)
     except ValueError as e:
         msg = str(e)
         if "not found" in msg:
@@ -2452,7 +2536,9 @@ def _run_re_evaluation(run_id: str):
     )
     from llm.agents.common.ragas_evaluation import evaluate_batch
 
-    account_id, tenant_id, user_id, test_results = run_manager.get_test_results_for_eval(run_id)
+    account_id, tenant_id, user_id, test_results = (
+        run_manager.get_test_results_for_eval(run_id)
+    )
     if not test_results:
         logger.warning("No evaluable test results for run %s", run_id)
         run_manager.add_error(run_id, "No pass results to re-evaluate")
@@ -2504,7 +2590,9 @@ def _run_re_evaluation(run_id: str):
             try:
                 from llm.agents.common.benchmark import _evaluate_planner
 
-                planner_score, planner_reason = _evaluate_planner(trace, tr["query"], llm)
+                planner_score, planner_reason = _evaluate_planner(
+                    trace, tr["query"], llm
+                )
                 if planner_reason:
                     existing = tr.get("_reason", "")
                     tr["_reason"] = (existing + f"\n[Planner] {planner_reason}").strip()
@@ -2521,7 +2609,9 @@ def _run_re_evaluation(run_id: str):
             if convo_uuid:
                 session_id = lookup_session_id(convo_uuid) or ""
         if session_id and account_id:
-            token_metrics = get_token_metrics(session_id, account_id, tenant_id, user_id)
+            token_metrics = get_token_metrics(
+                session_id, account_id, tenant_id, user_id
+            )
             if token_metrics:
                 token_update = {
                     "cost": token_metrics.get("cost", 0.0),
@@ -2530,7 +2620,9 @@ def _run_re_evaluation(run_id: str):
                     "output_tokens": token_metrics.get("completion_tokens", 0),
                     "cache_read_tokens": token_metrics.get("cached_input_tokens", 0),
                     "tool_calls_total": token_metrics.get("total_tool_calls", 0),
-                    "tool_calls_successful": token_metrics.get("successful_tool_calls", 0),
+                    "tool_calls_successful": token_metrics.get(
+                        "successful_tool_calls", 0
+                    ),
                     "model_names": token_metrics.get("model_names", []),
                     "model_providers": token_metrics.get("model_providers", []),
                 }
@@ -2576,7 +2668,6 @@ def _run_re_evaluation(run_id: str):
             import yaml
             from llm.agents.common.fixtures import load_test_case
 
-            project_root = Path(__file__).resolve().parent.parent.parent
             agent_dir = _resolve_agent_dir(agent_name)
             config_path = (agent_dir / "config.yaml") if agent_dir else None
             if config_path and config_path.exists():
@@ -2621,7 +2712,9 @@ def _run_re_evaluation(run_id: str):
                             result_dict.get("answer_relevancy"),
                         )
         except Exception as e:
-            logger.warning("Failed to load re-evaluate enricher for %s: %s", agent_name, e)
+            logger.warning(
+                "Failed to load re-evaluate enricher for %s: %s", agent_name, e
+            )
 
     run_manager.finish_re_evaluation(run_id)
     logger.info("Re-evaluation complete for run %s", run_id)

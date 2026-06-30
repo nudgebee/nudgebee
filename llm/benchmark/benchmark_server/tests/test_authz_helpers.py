@@ -11,20 +11,22 @@ from unittest.mock import patch
 import pytest
 from fastapi import HTTPException
 
-
 # ---------- _verify_run_access ----------
 
 
 def _patch_run_tenant(tenant_id):
     """Helper to mock run_manager.get_run_tenant_id."""
     return patch(
-        "benchmark_server.controllers.agent_benchmark_controller." "run_manager.get_run_tenant_id",
+        "benchmark_server.controllers.agent_benchmark_controller."
+        "run_manager.get_run_tenant_id",
         return_value=tenant_id,
     )
 
 
 def test_verify_run_access_404_when_run_not_found(make_authz):
-    from benchmark_server.controllers.agent_benchmark_controller import _verify_run_access
+    from benchmark_server.controllers.agent_benchmark_controller import (
+        _verify_run_access,
+    )
 
     authz = make_authz(tenants=["tenant-A"])
     with _patch_run_tenant(None):
@@ -35,7 +37,9 @@ def test_verify_run_access_404_when_run_not_found(make_authz):
 
 def test_verify_run_access_403_for_cross_tenant(make_authz):
     """User in tenant-A attempts to read run owned by tenant-B → 403."""
-    from benchmark_server.controllers.agent_benchmark_controller import _verify_run_access
+    from benchmark_server.controllers.agent_benchmark_controller import (
+        _verify_run_access,
+    )
 
     authz = make_authz(tenants=["tenant-A"])
     with _patch_run_tenant("tenant-B"):
@@ -46,7 +50,9 @@ def test_verify_run_access_403_for_cross_tenant(make_authz):
 
 def test_verify_run_access_super_admin_bypasses(make_authz):
     """Super_admin can reach any tenant's run."""
-    from benchmark_server.controllers.agent_benchmark_controller import _verify_run_access
+    from benchmark_server.controllers.agent_benchmark_controller import (
+        _verify_run_access,
+    )
 
     authz = make_authz(is_super_admin=True)
     with _patch_run_tenant("tenant-B"):
@@ -55,7 +61,9 @@ def test_verify_run_access_super_admin_bypasses(make_authz):
 
 def test_verify_run_access_member_passes(make_authz):
     """User who's a member of the run's tenant passes."""
-    from benchmark_server.controllers.agent_benchmark_controller import _verify_run_access
+    from benchmark_server.controllers.agent_benchmark_controller import (
+        _verify_run_access,
+    )
 
     authz = make_authz(tenants=["tenant-A"])
     with _patch_run_tenant("tenant-A"):
@@ -99,7 +107,9 @@ def _make_request(**fields):
 
 
 def test_resolve_run_identity_400_missing_tenant(make_authz, make_user):
-    from benchmark_server.controllers.agent_benchmark_controller import _resolve_run_identity
+    from benchmark_server.controllers.agent_benchmark_controller import (
+        _resolve_run_identity,
+    )
 
     user = make_user()
     authz = make_authz(tenants=["tenant-A"])
@@ -110,7 +120,9 @@ def test_resolve_run_identity_400_missing_tenant(make_authz, make_user):
 
 
 def test_resolve_run_identity_400_missing_account(make_authz, make_user):
-    from benchmark_server.controllers.agent_benchmark_controller import _resolve_run_identity
+    from benchmark_server.controllers.agent_benchmark_controller import (
+        _resolve_run_identity,
+    )
 
     user = make_user()
     authz = make_authz(tenants=["tenant-A"])
@@ -122,7 +134,9 @@ def test_resolve_run_identity_400_missing_account(make_authz, make_user):
 
 def test_resolve_run_identity_403_when_tenant_not_in_authz(make_authz, make_user):
     """Cross-tenant: user in tenant-A tries to launch a run for tenant-B."""
-    from benchmark_server.controllers.agent_benchmark_controller import _resolve_run_identity
+    from benchmark_server.controllers.agent_benchmark_controller import (
+        _resolve_run_identity,
+    )
 
     user = make_user()
     authz = make_authz(tenants=["tenant-A"])
@@ -134,10 +148,14 @@ def test_resolve_run_identity_403_when_tenant_not_in_authz(make_authz, make_user
 
 def test_resolve_run_identity_403_when_account_not_in_allowed(make_authz, make_user):
     """Account scoping: user is in tenant-A but doesn't own the requested account."""
-    from benchmark_server.controllers.agent_benchmark_controller import _resolve_run_identity
+    from benchmark_server.controllers.agent_benchmark_controller import (
+        _resolve_run_identity,
+    )
 
     user = make_user()
-    authz = make_authz(tenants=[{"id": "tenant-A", "role": "user", "account_ids": ["acct-1"]}])
+    authz = make_authz(
+        tenants=[{"id": "tenant-A", "role": "user", "account_ids": ["acct-1"]}]
+    )
     request = _make_request(tenant_id="tenant-A", account_id="acct-other")
     with pytest.raises(HTTPException) as exc:
         _resolve_run_identity(user, authz, request)
@@ -148,11 +166,17 @@ def test_resolve_run_identity_returns_authenticated_user_id(make_authz, make_use
     """``request.user_id`` must be ignored — the launched run is always
     attributed to the authenticated user, never to a request-supplied
     impersonation."""
-    from benchmark_server.controllers.agent_benchmark_controller import _resolve_run_identity
+    from benchmark_server.controllers.agent_benchmark_controller import (
+        _resolve_run_identity,
+    )
 
     user = make_user(user_id="real-user")
-    authz = make_authz(tenants=[{"id": "tenant-A", "role": "user", "account_ids": ["acct-1"]}])
-    request = _make_request(tenant_id="tenant-A", account_id="acct-1", user_id="impersonated-user")
+    authz = make_authz(
+        tenants=[{"id": "tenant-A", "role": "user", "account_ids": ["acct-1"]}]
+    )
+    request = _make_request(
+        tenant_id="tenant-A", account_id="acct-1", user_id="impersonated-user"
+    )
     user_id, tenant_id, account_id = _resolve_run_identity(user, authz, request)
     assert user_id == "real-user"  # NOT "impersonated-user"
     assert tenant_id == "tenant-A"
@@ -160,7 +184,9 @@ def test_resolve_run_identity_returns_authenticated_user_id(make_authz, make_use
 
 
 def test_resolve_run_identity_super_admin_can_use_any_tenant(make_authz, make_user):
-    from benchmark_server.controllers.agent_benchmark_controller import _resolve_run_identity
+    from benchmark_server.controllers.agent_benchmark_controller import (
+        _resolve_run_identity,
+    )
 
     user = make_user()
     authz = make_authz(is_super_admin=True)

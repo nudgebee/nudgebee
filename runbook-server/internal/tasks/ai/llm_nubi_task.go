@@ -35,13 +35,12 @@ func (t *LLMNubiTask) Execute(taskCtx types.TaskContext, params map[string]any) 
 		return nil, err
 	}
 	requestContext := taskCtx.GetNewRequestContext()
-	resp, err := llm.ProcessRequest(requestContext, llm.LLMRequest{
+	resp, err := llm.ProcessRequest(requestContext, applyWorkflowTrace(taskCtx, llm.LLMRequest{
 		Message:      params["message"].(string),
 		AccountId:    taskCtx.GetAccountID(),
-		SessionId:    taskCtx.GetWorkflowRunID(),
 		LlmProvider:  modelProvider,
 		LlmModelName: modelName,
-	})
+	}))
 
 	if err != nil {
 		return nil, err

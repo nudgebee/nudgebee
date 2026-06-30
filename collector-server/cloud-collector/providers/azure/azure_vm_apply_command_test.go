@@ -21,16 +21,16 @@ func TestParseAzureVMResourceID_CaseInsensitive(t *testing.T) {
 	}{
 		{
 			name:             "canonical PascalCase segments",
-			resourceID:       "/subscriptions/19e207a9-769d-4afd-b261-10bbed2d43e8/resourceGroups/nudgebee-dev_group/providers/Microsoft.Compute/virtualMachines/nudgebee-windows-vm",
+			resourceID:       "/subscriptions/19e207a9-769d-4afd-b261-10bbed2d43e8/resourceGroups/test-cluster-dev_group/providers/Microsoft.Compute/virtualMachines/nudgebee-windows-vm",
 			wantSubscription: "19e207a9-769d-4afd-b261-10bbed2d43e8",
-			wantRG:           "nudgebee-dev_group",
+			wantRG:           "test-cluster-dev_group",
 			wantVM:           "nudgebee-windows-vm",
 		},
 		{
 			name:             "all-lowercase segments (real-world failure case)",
-			resourceID:       "/subscriptions/19e207a9-769d-4afd-b261-10bbed2d43e8/resourcegroups/nudgebee-dev_group/providers/microsoft.compute/virtualmachines/nudgebee-windows-vm",
+			resourceID:       "/subscriptions/19e207a9-769d-4afd-b261-10bbed2d43e8/resourcegroups/test-cluster-dev_group/providers/microsoft.compute/virtualmachines/nudgebee-windows-vm",
 			wantSubscription: "19e207a9-769d-4afd-b261-10bbed2d43e8",
-			wantRG:           "nudgebee-dev_group",
+			wantRG:           "test-cluster-dev_group",
 			wantVM:           "nudgebee-windows-vm",
 		},
 		{

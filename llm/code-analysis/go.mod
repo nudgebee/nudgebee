@@ -9,7 +9,7 @@ require (
 	github.com/spf13/viper v1.21.0
 	github.com/stretchr/testify v1.11.1
 	github.com/tmc/langchaingo v0.1.14
-	google.golang.org/genai v1.58.0
+	google.golang.org/genai v1.59.0
 )
 
 require (

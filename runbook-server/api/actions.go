@@ -118,6 +118,8 @@ func (s *Server) handleAction(c *gin.Context) {
 		s.handleUpdateWorkflowVersionMetadata(c, sc, args)
 	case "workflows_update_version_status":
 		s.handleUpdateWorkflowVersionStatus(c, sc, args)
+	case "workflows_delete_version":
+		s.handleDeleteWorkflowVersion(c, sc, args)
 	default:
 		c.JSON(http.StatusBadRequest, buildApiResponse(nil, []error{fmt.Errorf("action '%s' not supported", actionReq.Action.Name)}))
 	}

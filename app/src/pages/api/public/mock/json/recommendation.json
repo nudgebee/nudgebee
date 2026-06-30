@@ -84,7 +84,7 @@
     "k8s_recommendation_summary": {
       "recommendation_aggregate": {
         "aggregate": {
-          "count": 19
+          "count": 10
         }
       }
     },
@@ -144,7 +144,7 @@
               "kubeVersion": ""
             },
             "chartName": "app",
-            "namespace": "nudgebee-test",
+            "namespace": "test-cluster-test",
             "deprecated": false,
             "overridden": false,
             "description": "",
@@ -152,7 +152,7 @@
             "repositoryUrl": "https://moinologics.github.io/helm-charts"
           },
           "estimated_savings": 0,
-          "account_object_id": "app-test-app-nudgebee-test-0.1",
+          "account_object_id": "app-test-app-test-cluster-test-0.1",
           "updated_at": "2024-06-03T11:20:43.88656",
           "id": "6047646a-8dfc-4798-9e6f-b76d697c5afa"
         },
@@ -352,7 +352,7 @@
               "kubeVersion": ""
             },
             "chartName": "webapp",
-            "namespace": "nudgebee-test",
+            "namespace": "test-cluster-test",
             "deprecated": false,
             "overridden": false,
             "description": "A Helm chart to install Webapp graphql engine in a Kubernetes cluster.",
@@ -360,7 +360,7 @@
             "repositoryUrl": "https://webapp-extra.github.io/webapp-extra"
           },
           "estimated_savings": 0,
-          "account_object_id": "webapp-nudgebee-test-2.10.0",
+          "account_object_id": "webapp-test-cluster-test-2.10.0",
           "updated_at": "2024-06-03T11:20:43.88656",
           "id": "2702a7fd-221d-41e4-99b4-c15faf43556d"
         },
@@ -437,7 +437,7 @@
       ],
       "recommendation_aggregate": {
         "aggregate": {
-          "count": 19
+          "count": 10
         }
       }
     }
@@ -511,7 +511,7 @@
           "category": "Configuration",
           "rule_name": "certificate_expiry",
           "recommendation": {
-            "name": "nudgebee-test-example-tls",
+            "name": "test-cluster-test-example-tls",
             "metadata": {
               "owners": [
                 {
@@ -523,12 +523,12 @@
               ],
               "managed-by": "Helm"
             },
-            "namespace": "nudgebee-test",
+            "namespace": "test-cluster-test",
             "expiry_date": "2024-09-16 07:49:38+00:00",
             "days_until_expiry": 75
           },
           "estimated_savings": 0,
-          "account_object_id": "nudgebee-test-example-tls-nudgebee-test-Helm",
+          "account_object_id": "test-cluster-test-example-tls-test-cluster-test-Helm",
           "updated_at": "2024-06-10T10:11:45.097183",
           "id": "be0f1d81-a00c-4953-95f2-95fa80d4ce0a"
         },
@@ -538,7 +538,7 @@
           "category": "Configuration",
           "rule_name": "certificate_expiry",
           "recommendation": {
-            "name": "nudgebee-test-collector-example-tls",
+            "name": "test-cluster-test-collector-example-tls",
             "metadata": {
               "owners": [
                 {
@@ -550,12 +550,12 @@
               ],
               "managed-by": "Helm"
             },
-            "namespace": "nudgebee-test",
+            "namespace": "test-cluster-test",
             "expiry_date": "2024-09-16 07:49:39+00:00",
             "days_until_expiry": 75
           },
           "estimated_savings": 0,
-          "account_object_id": "nudgebee-test-collector-example-tls-nudgebee-test-Helm",
+          "account_object_id": "test-cluster-test-collector-example-tls-test-cluster-test-Helm",
           "updated_at": "2024-06-10T10:11:45.097183",
           "id": "598b53b3-095a-4178-8f35-58797f20f0f4"
         },
@@ -565,7 +565,7 @@
           "category": "Configuration",
           "rule_name": "certificate_expiry",
           "recommendation": {
-            "name": "nudgebee-dev-collector-example-tls",
+            "name": "test-cluster-dev-collector-example-tls",
             "metadata": {
               "owners": [
                 {
@@ -582,7 +582,7 @@
             "days_until_expiry": 74
           },
           "estimated_savings": 0,
-          "account_object_id": "nudgebee-dev-collector-example-tls-nudgebee-Helm",
+          "account_object_id": "test-cluster-dev-collector-example-tls-nudgebee-Helm",
           "updated_at": "2024-06-10T10:11:45.097183",
           "id": "102ce4c2-e568-4bf1-9a84-4bcd6ff8ba39"
         },
@@ -631,12 +631,12 @@
               ],
               "managed-by": "Helm"
             },
-            "namespace": "nudgebee-test",
+            "namespace": "test-cluster-test",
             "expiry_date": "2024-09-16 07:49:37+00:00",
             "days_until_expiry": 75
           },
           "estimated_savings": 0,
-          "account_object_id": "relay-test-collector-example-tls-nudgebee-test-Helm",
+          "account_object_id": "relay-test-collector-example-tls-test-cluster-test-Helm",
           "updated_at": "2024-06-10T10:11:45.097183",
           "id": "ac858cf5-dd7b-4522-b3f3-e568cd6fd310"
         },
@@ -646,7 +646,7 @@
           "category": "Configuration",
           "rule_name": "certificate_expiry",
           "recommendation": {
-            "name": "nudgebee-dev-example-tls",
+            "name": "test-cluster-dev-example-tls",
             "metadata": {
               "owners": [
                 {
@@ -663,7 +663,7 @@
             "days_until_expiry": 74
           },
           "estimated_savings": 0,
-          "account_object_id": "nudgebee-dev-example-tls-nudgebee-Helm",
+          "account_object_id": "test-cluster-dev-example-tls-nudgebee-Helm",
           "updated_at": "2024-06-10T10:11:45.097183",
           "id": "0902adce-75a0-46cc-87f4-512b980d7e4e"
         },
@@ -851,7 +851,7 @@
                   "backoff_limit": 1,
                   "node_selector": {}
                 },
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "completions": 1,
                 "controllerKind": "Job"
               }
@@ -862,7 +862,7 @@
             "recommendation": {
               "account": "MDA1M2I4MTYtNGI0NS00ZGNkLWE2MTItMTk1NDUxMTBmOGFh",
               "controller_name": "postgres-migration-job",
-              "namespace": "nudgebee-test",
+              "namespace": "test-cluster-test",
               "resource_id": "1bb7a324-9129-5015-8cf5-9623542d116f",
               "sum": null,
               "tenant": "ODkwY2FkODctYzQ1Mi00YWE3LWI4NGEtNzQyY2VlMDQ1NGEx"
@@ -1182,7 +1182,7 @@
                   "toleration": [],
                   "annotations": {
                     "meta.helm.sh/release-name": "app-test",
-                    "meta.helm.sh/release-namespace": "nudgebee-test",
+                    "meta.helm.sh/release-namespace": "test-cluster-test",
                     "workloads.nudgebee.com/git.hash": "e8d077a3f37d4f2e3b398499677ab6edbf22065f",
                     "workloads.nudgebee.com/git.repo": "https://github.com/nudgebee/nudgebee",
                     "deployment.kubernetes.io/revision": "42",
@@ -1198,7 +1198,7 @@
                   "service_account": null
                 },
                 "status": null,
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "ready_pods": 0,
                 "total_pods": 0,
                 "restart_count": null,
@@ -1215,7 +1215,7 @@
               "id": "e278b6a9-c558-57dc-8044-782c60a1288f",
               "instance_cost_on_demand": 0.192,
               "is_active": true,
-              "namespace": "nudgebee-test",
+              "namespace": "test-cluster-test",
               "node_flavor": "m5.xlarge",
               "node_type": "ON_DEMAND",
               "sum": 0.01783,
@@ -1288,7 +1288,12 @@
             "updated_at": "2024-01-28T06:33:40.858615",
             "id": "69a268e6-8d16-4391-a9a5-970e9af0771f"
           }
-        ]
+        ],
+        "recommendation_aggregate": {
+          "aggregate": {
+            "count": 7
+          }
+        }
       }
     },
     "k8s_recommendation_summary": {
@@ -7085,7 +7090,12 @@
             "updated_at": "2024-02-28T17:50:13.19098",
             "id": "04a7608d-51b1-4e8d-b96f-07ae6c01ed02"
           }
-        ]
+        ],
+        "recommendation_aggregate": {
+          "aggregate": {
+            "count": 4
+          }
+        }
       }
     },
     "k8s_recommendation_summary": {
@@ -8787,7 +8797,12 @@
             "updated_at": "2024-03-19T14:06:47.260558",
             "id": "c0116ad6-5982-42ac-be73-99dad6c88916"
           }
-        ]
+        ],
+        "recommendation_aggregate": {
+          "aggregate": {
+            "count": 10
+          }
+        }
       }
     },
     "k8s_recommendation_summary": {
@@ -8950,7 +8965,12 @@
             "updated_at": "2024-03-19T14:00:27.171255",
             "id": "71535c02-58b4-4739-bec6-b7b03aff68ab"
           }
-        ]
+        ],
+        "recommendation_aggregate": {
+          "aggregate": {
+            "count": 1
+          }
+        }
       }
     },
     "k8s_recommendation_summary": {
@@ -9981,7 +10001,7 @@
                 "message": "Do you mean it? ServiceAccount is automounting APIServer credentials"
               },
               {
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "kind": "serviceaccounts",
                 "container": "",
                 "name": "ticket-server",
@@ -10462,105 +10482,105 @@
                 "message": "Only one Pod associated with this endpoint"
               },
               {
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "kind": "services",
                 "container": "",
                 "name": "app-test",
                 "message": "Only one Pod associated with this endpoint"
               },
               {
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "kind": "services",
                 "container": "",
                 "name": "auto-pilot-server",
                 "message": "Only one Pod associated with this endpoint"
               },
               {
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "kind": "services",
                 "container": "",
                 "name": "auto-pilot-worker",
                 "message": "Only one Pod associated with this endpoint"
               },
               {
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "kind": "services",
                 "container": "",
                 "name": "etl-server",
                 "message": "No pods match service selector"
               },
               {
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "kind": "services",
                 "container": "",
                 "name": "etl-server",
                 "message": "No associated endpoints"
               },
               {
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "kind": "services",
                 "container": "",
                 "name": "webapp",
                 "message": "Only one Pod associated with this endpoint"
               },
               {
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "kind": "services",
                 "container": "",
                 "name": "k8s-collector",
                 "message": "Only one Pod associated with this endpoint"
               },
               {
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "kind": "services",
                 "container": "",
                 "name": "ml-k8s-server",
                 "message": "Only one Pod associated with this endpoint"
               },
               {
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "kind": "services",
                 "container": "",
                 "name": "notifications",
                 "message": "Only one Pod associated with this endpoint"
               },
               {
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "kind": "services",
                 "container": "",
                 "name": "nudgebee-doc-docs",
                 "message": "Only one Pod associated with this endpoint"
               },
               {
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "kind": "services",
                 "container": "",
                 "name": "pg-main-proxy-service",
                 "message": "Use of target port #5432 for service port TCP::5432. Prefer named port"
               },
               {
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "kind": "services",
                 "container": "",
                 "name": "pg-main-proxy-service",
                 "message": "Only one Pod associated with this endpoint"
               },
               {
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "kind": "services",
                 "container": "",
                 "name": "relay-server",
                 "message": "Only one Pod associated with this endpoint"
               },
               {
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "kind": "services",
                 "container": "",
                 "name": "services-server",
                 "message": "Only one Pod associated with this endpoint"
               },
               {
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "kind": "services",
                 "container": "",
                 "name": "ticket-server",
@@ -12015,7 +12035,12 @@
             "updated_at": "2023-11-22T11:42:13.251214",
             "id": "e732e457-b327-43b7-b8ba-62e089bd7a0c"
           }
-        ]
+        ],
+        "recommendation_aggregate": {
+          "aggregate": {
+            "count": 10
+          }
+        }
       }
     },
     "k8s_recommendation_summary": {
@@ -12176,7 +12201,7 @@
                         },
                         {
                           "name": "CLUSTER_NAME",
-                          "value": "nudgebee-dev"
+                          "value": "test-cluster-dev"
                         },
                         {
                           "name": "VM_MEMORY_OVERHEAD_PERCENT",
@@ -12200,7 +12225,7 @@
                         },
                         {
                           "name": "AWS_ROLE_ARN",
-                          "value": "arn:aws:iam::123456789012:role/KarpenterControllerRole-nudgebee-dev"
+                          "value": "arn:aws:iam::123456789012:role/KarpenterControllerRole-test-cluster-dev"
                         },
                         {
                           "name": "AWS_WEB_IDENTITY_TOKEN_FILE",
@@ -12375,7 +12400,7 @@
                   "service_account": null
                 },
                 "status": "Running",
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "ready_pods": 0,
                 "total_pods": 1,
                 "restart_count": null,
@@ -12581,7 +12606,7 @@
                   "service_account": "default"
                 },
                 "status": "Running",
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "controller": "k8s-collector",
                 "ready_pods": 1,
                 "total_pods": 1,
@@ -13497,7 +13522,7 @@
                   "service_account": null
                 },
                 "status": "Running",
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "ready_pods": 0,
                 "total_pods": 1,
                 "restart_count": null,
@@ -13622,7 +13647,7 @@
                   "service_account": null
                 },
                 "status": "Running",
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "ready_pods": 0,
                 "total_pods": 1,
                 "restart_count": null,
@@ -13746,7 +13771,7 @@
                   "service_account": null
                 },
                 "status": "Running",
-                "namespace": "nudgebee-test",
+                "namespace": "test-cluster-test",
                 "ready_pods": 0,
                 "total_pods": 1,
                 "restart_count": null,
@@ -14115,7 +14140,12 @@
             "updated_at": "2024-03-19T12:02:33.760871",
             "id": "0e13ad39-4684-485a-a0e2-24f2880c0d62"
           }
-        ]
+        ],
+        "recommendation_aggregate": {
+          "aggregate": {
+            "count": 10
+          }
+        }
       }
     },
     "k8s_workload_namespace_list": {
@@ -14179,7 +14209,7 @@
             "namespace_name": "nudgebee-agent-prod"
           },
           {
-            "namespace_name": "nudgebee-test"
+            "namespace_name": "test-cluster-test"
           },
           {
             "namespace_name": "on-prem-nudgebee"
@@ -14481,7 +14511,7 @@
             "count_severity_critical": 0,
             "count_severity_medium": 10,
             "workload_name": "app-test",
-            "namespace": "nudgebee-test"
+            "namespace": "test-cluster-test"
           },
           {
             "count_severity_low": 74,
@@ -14536,7 +14566,7 @@
             "count_severity_critical": 0,
             "count_severity_medium": 4,
             "workload_name": "cloud-collector-server",
-            "namespace": "nudgebee-test"
+            "namespace": "test-cluster-test"
           },
           {
             "count_severity_low": 0,
@@ -14634,7 +14664,7 @@
             "count_severity_high": 4,
             "count_severity_critical": 0,
             "count_severity_medium": 15,
-            "workload_name": "nudgebee-prod-agent-forwarder",
+            "workload_name": "test-cluster-prod-agent-forwarder",
             "namespace": "nudgebee-agent-prod"
           },
           {

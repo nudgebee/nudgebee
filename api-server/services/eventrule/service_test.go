@@ -272,6 +272,33 @@ func TestEval(t *testing.T) {
 	}, response)
 }
 
+// TestTemplateEvaluationMissingExtractedLabels reproduces the "Can't use getattr on None"
+// error: a later step references a value extracted by an earlier step that was skipped, e.g.
+// {{ extracted_labels['signoz_logs_enricher_5']['service.name'] }}. When the earlier step is
+// skipped its key is never populated, so the first subscript resolves to nil and the second
+// subscript does getattr on None, failing the whole step before its `if` guard can skip it.
+// ExecutePlaybook now pre-seeds an empty map for every action's output key, which turns the
+// inner subscript into a clean lookup on {} instead. This test verifies both the broken (key
+// absent) and fixed (key seeded to empty map) behaviour.
+func TestTemplateEvaluationMissingExtractedLabels(t *testing.T) {
+	params := map[string]any{
+		"value": `{{ extracted_labels['signoz_logs_enricher_5']['service.name'] }}`,
+	}
+	event := playbooks.PlaybookEvent{
+		Labels: map[string]string{"job": "data-ingestion-service"},
+	}
+
+	// Key absent (earlier step skipped) -> getattr on None errors. This is the bug.
+	_, err := evaluateRawParamsTemplates(params, event, map[string]any{}, map[string]map[string]any{})
+	assert.Error(t, err)
+
+	// Key seeded with an empty map (the fix) -> inner lookup is empty, no error.
+	_, err = evaluateRawParamsTemplates(params, event, map[string]any{}, map[string]map[string]any{
+		"signoz_logs_enricher_5": {},
+	})
+	assert.NoError(t, err)
+}
+
 func TestNormalizeEventSource(t *testing.T) {
 	cases := []struct {
 		name    string

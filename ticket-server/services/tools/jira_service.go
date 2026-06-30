@@ -62,10 +62,28 @@ func (s *JiraService) Get(ctx *gin.Context, config models.TicketConfigurations, 
 		assignee = issue.Fields.Assignee.DisplayName
 	}
 
+	// Jira issues carry a single assignee; mirror it into Assignees so workflow
+	// authors can treat the list field uniformly across platforms.
+	var assignees []string
+	if assignee != "" {
+		assignees = []string{assignee}
+	}
+
+	var reporter string
+	if issue.Fields.Reporter != nil {
+		reporter = issue.Fields.Reporter.DisplayName
+	}
+
 	var createdAt *time.Time
 	if !time.Time(issue.Fields.Created).IsZero() {
 		t := time.Time(issue.Fields.Created)
 		createdAt = &t
+	}
+
+	var updatedAt *time.Time
+	if !time.Time(issue.Fields.Updated).IsZero() {
+		t := time.Time(issue.Fields.Updated)
+		updatedAt = &t
 	}
 
 	var priority string
@@ -85,9 +103,14 @@ func (s *JiraService) Get(ctx *gin.Context, config models.TicketConfigurations, 
 		Status:      status,
 		Severity:    priority,
 		Assignee:    assignee,
+		Assignees:   assignees,
+		Reporter:    reporter,
+		Labels:      issue.Fields.Labels,
 		Platform:    "jira",
+		ProjectKey:  issue.Fields.Project.Key,
 		URL:         "https://" + jiraClient.GetBaseURL().Host + "/browse/" + issue.Key,
 		CreatedAt:   createdAt,
+		UpdatedAt:   updatedAt,
 		Raw:         marshalToMap(issue),
 	}, nil
 }

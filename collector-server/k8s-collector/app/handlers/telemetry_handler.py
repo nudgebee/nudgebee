@@ -27,14 +27,117 @@ def _upsert_cloud_account_attrs(cloud_account_id: str, attrs: Dict[str, str]):
         database.run_query(upsert_attr, [str(uuid.uuid4()), cloud_account_id, name, value])
 
 
+def _maybe_set_default_provider(
+    integration_id: str,
+    cloud_account_id: str,
+    tenant_id: str,
+    default_column: str,
+):
+    """Auto-mark an agent-synced provider as the account default for its
+    category (logs / metrics / traces) — without ever stomping a default the
+    user has explicitly chosen.
+
+    Issue #25714: when a log provider like Loki is wired up via the agent file,
+    the "Default Log Provider" toggle should turn on by itself. But a user can
+    later pick a different provider as default from the Integrations UI
+    (integration source='user'); a subsequent heartbeat must not flip that back
+    to the agent's provider. So we only claim the default when no user-sourced
+    default exists for this account+category, and we no-op once this integration
+    already holds it (keeps heartbeats from rewriting the table every cycle).
+
+    `default_column` is one of the fixed `integrations_cloud_accounts` flag
+    columns; it is code-controlled, never user input, so interpolating it as an
+    identifier is safe.
+    """
+    # Fail-fast: every query below is scoped by tenant + account. An empty id
+    # would widen the WHERE clause into a cross-tenant scan, so bail before
+    # touching the DB.
+    if not integration_id or not cloud_account_id or not tenant_id:
+        return
+
+    col = sql.Identifier(default_column)
+
+    # Who, if anyone, currently holds the default for this category?
+    current_defaults = database.run_query(
+        sql.SQL("""
+            SELECT i.source, ica.integration_id = %s AS is_self
+            FROM integrations_cloud_accounts ica
+            JOIN integrations i ON i.id = ica.integration_id
+            WHERE ica.cloud_account_id = %s
+              AND ica.tenant_id = %s
+              AND ica.{col} = true
+            """).format(col=col),
+        [integration_id, cloud_account_id, tenant_id],
+    )
+
+    # User has explicitly chosen a default -> respect it, leave everything alone.
+    if any(row[0] == "user" for row in current_defaults):
+        return
+    # This agent integration is already the default -> nothing to do (no write).
+    if any(row[1] for row in current_defaults):
+        return
+
+    # No user-chosen default and we don't already hold it: claim it. Clear any
+    # stale agent-sourced default first so exactly one row wins, then flag self.
+    #
+    # Both statements re-assert the source/no-user-default condition so a user
+    # default set concurrently (between the SELECT above and these writes) is
+    # never clobbered and we never leave two rows defaulted:
+    #   - the reset only clears OTHER agent-sourced rows (a user row set in the
+    #     race is left untouched);
+    #   - the set-self is guarded by NOT EXISTS(user default), so if a user
+    #     default appeared mid-flight we simply no-op instead of duplicating it.
+    database.run_query(
+        sql.SQL("""
+            UPDATE integrations_cloud_accounts ica
+            SET {col} = false
+            FROM integrations i
+            WHERE ica.integration_id = i.id
+              AND ica.cloud_account_id = %s
+              AND ica.tenant_id = %s
+              AND ica.integration_id != %s
+              AND ica.{col} = true
+              AND i.source = 'agent'
+            """).format(col=col),
+        [cloud_account_id, tenant_id, integration_id],
+    )
+    database.run_query(
+        sql.SQL("""
+            UPDATE integrations_cloud_accounts ica
+            SET {col} = true
+            WHERE ica.integration_id = %s
+              AND ica.cloud_account_id = %s
+              AND ica.tenant_id = %s
+              AND ica.{col} = false
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM integrations_cloud_accounts u
+                  JOIN integrations ui ON ui.id = u.integration_id
+                  WHERE u.cloud_account_id = %s
+                    AND u.tenant_id = %s
+                    AND u.{col} = true
+                    AND ui.source = 'user'
+              )
+            """).format(col=col),
+        [integration_id, cloud_account_id, tenant_id, cloud_account_id, tenant_id],
+    )
+    logging.info(
+        f"Set {default_column}=true for agent integration {integration_id} on "
+        f"cloud_account {cloud_account_id} (no user-chosen default present)"
+    )
+
+
 def _upsert_integration(
     tenant_id: str,
     cloud_account_id: str,
     provider: Optional[str],
     connection_enabled: bool,
     provider_type: str,
+    default_column: Optional[str] = None,
 ):
-    if not provider:
+    # Fail-fast: skip when the tenant/account scope or the provider is missing,
+    # rather than writing an unscoped or half-formed integration row.
+    if not provider or not tenant_id or not cloud_account_id:
         return
 
     status_value = "enabled" if connection_enabled else "disabled"
@@ -81,6 +184,12 @@ def _upsert_integration(
     )
 
     logging.info(f"Upserted integration + mapping for {provider_type}={provider}")
+
+    # Auto-enable the "default <category> provider" toggle for an agent-wired
+    # provider, but only when the provider is actually connected and the user
+    # hasn't already chosen a default. See _maybe_set_default_provider.
+    if default_column and connection_enabled:
+        _maybe_set_default_provider(integration_id, cloud_account_id, tenant_id, default_column)
 
 
 def _post_scanner_heartbeat(
@@ -195,6 +304,7 @@ def handle_telemetry(tenant_id: str, cloud_account_id: str, agent_id: str, data:
         activity_stats.get("logsConnectionProvider"),
         activity_stats.get("logsConnection", False),
         "logsConnectionProvider",
+        default_column="default_log_provider",
     )
 
     prometheus_url = activity_stats.get("prometheusUrl")
@@ -212,6 +322,7 @@ def handle_telemetry(tenant_id: str, cloud_account_id: str, agent_id: str, data:
         metrics_provider,
         activity_stats.get("prometheusConnection", False),
         "metricsConnectionProvider",
+        default_column="default_metrics_provider",
     )
 
     _upsert_integration(
@@ -220,4 +331,5 @@ def handle_telemetry(tenant_id: str, cloud_account_id: str, agent_id: str, data:
         activity_stats.get("traceProvider"),
         activity_stats.get("tracesEnabled", False),
         "tracesConnectionProvider",
+        default_column="default_traces_provider",
     )

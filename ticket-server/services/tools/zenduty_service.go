@@ -49,16 +49,42 @@ func (s *ZenDutyService) Get(ctx *gin.Context, config models.TicketConfiguration
 	}
 
 	createdAt, _ := time.Parse(time.RFC3339, incident.CreationDate)
+
+	assignees := make([]string, 0, len(incident.AssignedTo))
+	for _, u := range incident.AssignedTo {
+		if name := zenDutyUserLabel(u); name != "" {
+			assignees = append(assignees, name)
+		}
+	}
+	var assignee string
+	if len(assignees) > 0 {
+		assignee = assignees[0]
+	}
+
 	return &models.Ticket{
 		TicketID:    incident.UniqueID,
 		Title:       incident.Title,
 		Description: incident.Summary,
 		Status:      clients.MapStatusToString(incident.Status),
+		Assignee:    assignee,
+		Assignees:   assignees,
 		Platform:    "zenduty",
 		URL:         incident.HTMLURL,
 		CreatedAt:   &createdAt,
 		Raw:         marshalToMap(incident),
 	}, nil
+}
+
+// zenDutyUserLabel picks the most human-readable identifier available on a
+// ZenDuty user reference: username, then email, then full name.
+func zenDutyUserLabel(u clients.ZenDutyUserRef) string {
+	if u.Username != "" {
+		return u.Username
+	}
+	if u.Email != "" {
+		return u.Email
+	}
+	return strings.TrimSpace(u.FirstName + " " + u.LastName)
 }
 
 // Acknowledge acknowledges an incident.

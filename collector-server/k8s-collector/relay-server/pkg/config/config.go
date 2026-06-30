@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -47,6 +48,11 @@ type Config struct {
 		EncryptionKey string `mapstructure:"encryption_key"`
 		// RELAY_WORKSPACE_JWT_SECRET - shared with llm-server's LLM_SERVER_JWT_SECRET
 		WorkspaceJWTSecret string `mapstructure:"workspace_jwt_secret"`
+		// RELAY_PROXY_BLOCK_PRIVATE_TARGETS - when true, the generic /api/proxy
+		// also rejects RFC1918 / ULA private-range target IPs (loopback,
+		// link-local, and cloud-metadata addresses are always rejected). Default
+		// false to avoid breaking proxies to legitimate internal services.
+		BlockPrivateProxyTargets bool `mapstructure:"block_private_proxy_targets"`
 	} `mapstructure:"security"`
 
 	Signing struct {
@@ -74,6 +80,16 @@ type Config struct {
 		// RELAY_WORKSPACE_SHELL_IMAGE - image used for pod_script_run_enricher jobs
 		ShellImage string `mapstructure:"shell_image"`
 	} `mapstructure:"workspace"`
+
+	Audit struct {
+		// APIServerURL is the base URL of api-server, whose /v1/audit endpoint
+		// ingests relay-emitted audit events. Env: SERVICE_API_SERVER_URL.
+		// When empty (along with ActionToken), audit emission is a no-op.
+		APIServerURL string `mapstructure:"api_server_url"`
+		// ActionToken is the shared X-ACTION-TOKEN secret api-server requires on
+		// /v1/audit. Env: ACTION_API_SERVER_TOKEN. Empty disables audit emission.
+		ActionToken string `mapstructure:"action_token"`
+	} `mapstructure:"audit"`
 
 	Otel struct {
 		ServiceName string `mapstructure:"service_name"`
@@ -108,7 +124,10 @@ func Load() (*Config, error) {
 	_ = v.BindEnv("security.encryption_key", "NUDGEBEE_ENCRYPTION_KEY")
 	_ = v.BindEnv("security.secret_key", "RELAY_SERVER_SECRET_KEY")
 	_ = v.BindEnv("security.workspace_jwt_secret", "RELAY_WORKSPACE_JWT_SECRET")
+	_ = v.BindEnv("security.block_private_proxy_targets", "RELAY_PROXY_BLOCK_PRIVATE_TARGETS")
 	_ = v.BindEnv("workspace.shell_image", "RELAY_WORKSPACE_SHELL_IMAGE")
+	_ = v.BindEnv("audit.api_server_url", "SERVICE_API_SERVER_URL")
+	_ = v.BindEnv("audit.action_token", "ACTION_API_SERVER_TOKEN")
 	_ = v.BindEnv("rabbitmq.exchange_name", "RABBITMQ_EXCHANGE_NAME")
 	_ = v.BindEnv("rabbitmq.request_queue", "RABBITMQ_REQUEST_QUEUE")
 
@@ -220,6 +239,14 @@ func Load() (*Config, error) {
 			// ultimate fallback
 			cfg.RabbitMQ.URL = "amqp://guest:guest@localhost:5672/"
 		}
+	}
+
+	// Insecure-default surfacing. Empty SecretKey makes sha256("") == sha256("")
+	// and any request without an X-SECRET-KEY header authenticates. The Helm chart
+	// auto-generates a secret; Docker Compose / bare deploys do not. Warn loudly
+	// so operators see it in logs, but don't refuse to boot.
+	if cfg.Security.SecretKey == "" {
+		slog.Warn("config: SECURITY — security.secret_key is empty; ClientAuthMiddleware authenticates ANY request without an X-SECRET-KEY header. Set RELAY_SERVER_SECRET_KEY to a strong random value before exposing this service.")
 	}
 
 	return &cfg, nil

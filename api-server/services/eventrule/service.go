@@ -265,6 +265,40 @@ func normalizeEventSource(req *EventConfig) {
 	}
 }
 
+// EnsureEventRuleSource inserts the given value into the event_rule_source FK
+// lookup table if it is missing, so an event_rules row can carry it as its
+// source. Idempotent.
+func EnsureEventRuleSource(context *security.RequestContext, source string) error {
+	if source == "" {
+		return nil
+	}
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return fmt.Errorf("failed to get database manager: %w", err)
+	}
+	_, err = dbms.Db.ExecContext(stdctx.Background(),
+		`INSERT INTO event_rule_source (value) VALUES ($1) ON CONFLICT (value) DO NOTHING`, source)
+	return err
+}
+
+// EventRuleExists reports whether an event_rule already exists for the given
+// account + alert in the caller's tenant. Callers that auto-register native
+// event types use this before CreateEventRule so its ON CONFLICT DO UPDATE
+// never clobbers an existing real (prometheus/webhook/user) rule for the alert.
+func EventRuleExists(context *security.RequestContext, accountID, alert string) (bool, error) {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return false, fmt.Errorf("failed to get database manager: %w", err)
+	}
+	var exists bool
+	if err := dbms.QueryRowAndScan(&exists,
+		`SELECT EXISTS(SELECT 1 FROM event_rules WHERE tenant_id = $1::uuid AND account_id = $2::uuid AND alert = $3)`,
+		context.GetSecurityContext().GetTenantId(), accountID, alert); err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
 func CreateEventRule(context *security.RequestContext, eventRequest EventConfig) (map[string]bool, error) {
 	data := make(map[string]bool)
 
@@ -354,8 +388,9 @@ func CreateEventRule(context *security.RequestContext, eventRequest EventConfig)
 	context.GetLogger().Info("CreateEventRule", "rule_id", ruleId)
 	data["response"] = ok
 
-	// Skip playbook creation for webhook-ingested rules
-	if isWebhookSource(eventRequest.Source) {
+	// Skip playbook creation for webhook-ingested rules and for auto-registered
+	// native event-type rules (SkipPlaybook) — neither has a playbook to run.
+	if isWebhookSource(eventRequest.Source) || eventRequest.SkipPlaybook {
 		return data, nil
 	}
 
@@ -705,6 +740,20 @@ func ExecutePlaybook(context *security.RequestContext, accountId string, event p
 	outputs := map[string]any{}
 	extractedLabels := map[string]map[string]any{}
 	executedAction := []string{}
+
+	// Pre-seed extractedLabels with an empty map for every action's output key.
+	// A later step's guard often references the extracted labels of an earlier step,
+	// e.g. {{ 'service.name' in extracted_labels['signoz_logs_enricher_5'] }}. When the
+	// earlier step is skipped (its own `if` is false) its key is never populated, so the
+	// subscript resolves to nil and gonja's `in`/getattr panics with "Can't use getattr on
+	// None" — failing the whole step before its `if` guard can short-circuit it. Seeding an
+	// empty map makes such guards evaluate to false cleanly. Real execution overwrites these.
+	for i, actionMap := range playbooksData {
+		for actionName := range actionMap {
+			extractedLabels[fmt.Sprintf("%s_%d", actionName, i)] = map[string]any{}
+		}
+	}
+
 	for i, actionMap := range playbooksData {
 		for actionName, rawParams := range actionMap {
 			action, found := playbooks.GetAction(actionName)

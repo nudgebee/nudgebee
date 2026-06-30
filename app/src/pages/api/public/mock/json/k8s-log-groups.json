@@ -1,0 +1,90 @@
+{
+  "log_group": {
+    "groups": [
+      {
+        "sample": "ERROR Failed to connect to database: connection refused after 3 retries",
+        "namespace": "test-cluster-test",
+        "workload": "notifications",
+        "container": "notifications",
+        "container_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+        "pattern_hash": "hash-001-notifications-db-error",
+        "level": "error",
+        "count": 142,
+        "timestamps": [1781383490876, 1781390690876, 1781397890876, 1781405090876, 1781412290876],
+        "values": [12, 28, 35, 41, 26]
+      },
+      {
+        "sample": "WARN High memory usage detected: 87% of limit consumed",
+        "namespace": "test-cluster-test",
+        "workload": "auto-pilot-worker",
+        "container": "auto-pilot-worker",
+        "container_id": "b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3",
+        "pattern_hash": "hash-002-autopilot-memory-warn",
+        "level": "warn",
+        "count": 89,
+        "timestamps": [1781383490876, 1781390690876, 1781397890876, 1781405090876, 1781412290876],
+        "values": [8, 15, 22, 30, 14]
+      },
+      {
+        "sample": "INFO Successfully processed 1024 events in batch",
+        "namespace": "test-cluster-test",
+        "workload": "k8s-collector",
+        "container": "k8s-collector",
+        "container_id": "c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+        "pattern_hash": "hash-003-collector-batch-info",
+        "level": "info",
+        "count": 310,
+        "timestamps": [1781383490876, 1781390690876, 1781397890876, 1781405090876, 1781412290876],
+        "values": [55, 68, 72, 61, 54]
+      },
+      {
+        "sample": "ERROR HTTP 500 Internal Server Error on POST /api/v1/events",
+        "namespace": "test-cluster-test",
+        "workload": "webapp",
+        "container": "webapp",
+        "container_id": "d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5",
+        "pattern_hash": "hash-004-webapp-http500",
+        "level": "error",
+        "count": 57,
+        "timestamps": [1781383490876, 1781390690876, 1781397890876, 1781405090876, 1781412290876],
+        "values": [5, 11, 18, 14, 9]
+      },
+      {
+        "sample": "ERROR OOMKilled: container exceeded memory limit of 512Mi",
+        "namespace": "clickhouse",
+        "workload": "clickhouse",
+        "container": "clickhouse",
+        "container_id": "e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+        "pattern_hash": "hash-005-clickhouse-oom",
+        "level": "error",
+        "count": 23,
+        "timestamps": [1781383490876, 1781390690876, 1781397890876, 1781405090876, 1781412290876],
+        "values": [2, 4, 7, 6, 4]
+      },
+      {
+        "sample": "WARN Slow query detected: 4.2s for SELECT * FROM events WHERE account_id = ?",
+        "namespace": "clickhouse",
+        "workload": "clickhouse",
+        "container": "clickhouse",
+        "container_id": "e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6",
+        "pattern_hash": "hash-006-clickhouse-slow-query",
+        "level": "warn",
+        "count": 74,
+        "timestamps": [1781383490876, 1781390690876, 1781397890876, 1781405090876, 1781412290876],
+        "values": [10, 16, 20, 18, 10]
+      },
+      {
+        "sample": "DEBUG Reconciling NodePool default: 0 nodes added, 1 node removed",
+        "namespace": "karpenter",
+        "workload": "karpenter",
+        "container": "controller",
+        "container_id": "f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1",
+        "pattern_hash": "hash-007-karpenter-reconcile",
+        "level": "debug",
+        "count": 198,
+        "timestamps": [1781383490876, 1781390690876, 1781397890876, 1781405090876, 1781412290876],
+        "values": [38, 42, 45, 40, 33]
+      }
+    ]
+  }
+}

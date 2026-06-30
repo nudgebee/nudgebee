@@ -2,14 +2,14 @@ package types
 
 import "time"
 
-type EventPriortiy string
+type EventPriority string
 
 const (
-	EventPriortiyDebug  EventPriortiy = "DEBUG"
-	EventPriortiyInfo   EventPriortiy = "INFO"
-	EventPriortiyLow    EventPriortiy = "LOW"
-	EventPriortiyMedium EventPriortiy = "MEDIUM"
-	EventPriortiyHigh   EventPriortiy = "HIGH"
+	EventPriorityDebug  EventPriority = "DEBUG"
+	EventPriorityInfo   EventPriority = "INFO"
+	EventPriorityLow    EventPriority = "LOW"
+	EventPriorityMedium EventPriority = "MEDIUM"
+	EventPriorityHigh   EventPriority = "HIGH"
 )
 
 type EventStatus string
@@ -31,7 +31,7 @@ type Event struct {
 	Failure          string            `json:"failure" db:"failure"`
 	FindingType      string            `json:"finding_type" db:"finding_type"`
 	Category         string            `json:"category" db:"category"`
-	Priority         EventPriortiy     `json:"priority" db:"priority"`
+	Priority         EventPriority     `json:"priority" db:"priority"`
 	SubjectType      string            `json:"subject_type" db:"subject_type,omitempty"`
 	SubjectName      string            `json:"subject_name" db:"subject_name,omitempty"`
 	SubjectNamespace string            `json:"subject_namespace" db:"subject_namespace,omitempty"`

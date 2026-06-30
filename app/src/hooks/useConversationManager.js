@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from 'react';
 import apiAskNudgebee from '@api1/ask-nudgebee'; // Adjust path if needed
-import { snackbar } from '@components1/common/snackbarService';
+import { snackbar } from '@shared/snackbarService';
 
 export const useConversationManager = () => {
   // Unified state object to reduce re-renders and clutter

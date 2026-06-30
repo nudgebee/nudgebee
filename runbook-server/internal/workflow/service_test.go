@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -774,6 +775,11 @@ func (m *MockWorkflowStore) SetDraftVersionID(ctx context.Context, tenantID, acc
 	return args.Error(0)
 }
 
+func (m *MockWorkflowStore) DeleteWorkflowVersion(ctx context.Context, tenantID, accountID, workflowID, versionID string) error {
+	args := m.Called(ctx, tenantID, accountID, workflowID, versionID)
+	return args.Error(0)
+}
+
 func (m *MockWorkflowStore) UpdateVersionMetadata(ctx context.Context, workflowID string, versionNumber int, name, description *string) (*model.WorkflowVersion, error) {
 	args := m.Called(ctx, workflowID, versionNumber, name, description)
 	if args.Get(0) == nil {
@@ -1223,6 +1229,18 @@ func TestWebhookTriggerMatchesIntegration(t *testing.T) {
 		Internal: &model.TriggerInternal{Name: "wf-fb836ea7-fa0a-4044-a3d2-0375636a43c9-github_ci_webhook"},
 	}
 
+	// Clobbered legacy workflow: a builder save dropped trigger.internal, so the
+	// backend re-derived internal.name back to the bare form. params and internal
+	// are now both bare, but the api-server integration row (and the URL it
+	// forwards) is still the prefixed name. Matching must reconstruct the prefix
+	// from workflowID + the bare params name — otherwise fan-out drops the
+	// subscriber even though the workflow is ACTIVE.
+	clobberedLegacyTrigger := model.Trigger{
+		Type:     model.WorkflowTriggerWebhook,
+		Params:   map[string]any{"integration_name": "github_ci_webhook"},
+		Internal: &model.TriggerInternal{Name: "github_ci_webhook"},
+	}
+
 	// Triggers without internal.name populated yet (newly-created in-memory
 	// objects pre-normalize). Should still match by params.integration_name.
 	preNormalizeTrigger := model.Trigger{
@@ -1235,26 +1253,34 @@ func TestWebhookTriggerMatchesIntegration(t *testing.T) {
 		Params: map[string]any{"integration_name": "my-hook"},
 	}
 
+	const legacyWfID = "fb836ea7-fa0a-4044-a3d2-0375636a43c9"
+
 	cases := []struct {
 		name            string
 		trigger         model.Trigger
+		workflowID      string
 		integrationName string
 		want            bool
 	}{
-		{"picker flow matches", pickerTrigger, "workflowWebhookVK", true},
-		{"picker flow mismatch", pickerTrigger, "something-else", false},
-		{"legacy matches via internal.name", legacyTrigger, "wf-fb836ea7-fa0a-4044-a3d2-0375636a43c9-github_ci_webhook", true},
-		{"legacy matches via params (bare name)", legacyTrigger, "github_ci_webhook", true},
-		{"legacy mismatch", legacyTrigger, "different-integration", false},
-		{"pre-normalize matches by params", preNormalizeTrigger, "my-hook", true},
-		{"pre-normalize mismatch", preNormalizeTrigger, "wf-someid-my-hook", false},
-		{"non-webhook trigger never matches", nonWebhookTrigger, "my-hook", false},
-		{"empty integrationName never matches", pickerTrigger, "", false},
+		{"picker flow matches", pickerTrigger, "any-id", "workflowWebhookVK", true},
+		{"picker flow mismatch", pickerTrigger, "any-id", "something-else", false},
+		{"legacy matches via internal.name", legacyTrigger, legacyWfID, "wf-fb836ea7-fa0a-4044-a3d2-0375636a43c9-github_ci_webhook", true},
+		{"legacy matches via params (bare name)", legacyTrigger, legacyWfID, "github_ci_webhook", true},
+		{"legacy mismatch", legacyTrigger, legacyWfID, "different-integration", false},
+		// The regression this change closes: internal.name clobbered to bare, but
+		// the prefixed URL still matches via the reconstructed wf-<id>- prefix.
+		{"clobbered legacy matches via reconstructed prefix", clobberedLegacyTrigger, legacyWfID, "wf-fb836ea7-fa0a-4044-a3d2-0375636a43c9-github_ci_webhook", true},
+		{"clobbered legacy still matches bare URL", clobberedLegacyTrigger, legacyWfID, "github_ci_webhook", true},
+		{"reconstructed prefix does not match a different workflow's id", clobberedLegacyTrigger, "00000000-0000-0000-0000-000000000000", "wf-fb836ea7-fa0a-4044-a3d2-0375636a43c9-github_ci_webhook", false},
+		{"pre-normalize matches by params", preNormalizeTrigger, "any-id", "my-hook", true},
+		{"pre-normalize mismatch", preNormalizeTrigger, "someid", "wf-someid-other", false},
+		{"non-webhook trigger never matches", nonWebhookTrigger, "any-id", "my-hook", false},
+		{"empty integrationName never matches", pickerTrigger, "any-id", "", false},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := webhookTriggerMatchesIntegration(tc.trigger, tc.integrationName)
+			got := webhookTriggerMatchesIntegration(tc.trigger, tc.workflowID, tc.integrationName)
 			assert.Equal(t, tc.want, got)
 		})
 	}
@@ -1389,6 +1415,106 @@ func TestGetWorkflowVersion(t *testing.T) {
 		got, err := service.GetWorkflowVersion(sc, "test-account", "wf-ok", 1)
 		assert.NoError(t, err)
 		assert.Equal(t, expected, got)
+		mockStore.AssertExpectations(t)
+	})
+}
+
+func TestDeleteWorkflowVersion(t *testing.T) {
+	sc := security.NewRequestContextForTenantAccountAdmin("test-tenant", "test-user", []string{"test-account"})
+	liveID := "v-live"
+	draftID := "v-draft"
+
+	t.Run("Invalid args return error", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		assert.Error(t, service.DeleteWorkflowVersion(sc, "", "wf-1", 1))
+		assert.Error(t, service.DeleteWorkflowVersion(sc, "test-account", "", 1))
+		assert.Error(t, service.DeleteWorkflowVersion(sc, "test-account", "wf-1", 0))
+		mockStore.AssertNotCalled(t, "GetWorkflowVersion")
+	})
+
+	t.Run("Account not accessible returns unauthorized", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		err := service.DeleteWorkflowVersion(sc, "other-account", "wf-1", 1)
+		var commonErr common.Error
+		assert.ErrorAs(t, err, &commonErr)
+		assert.Equal(t, http.StatusForbidden, commonErr.Code)
+	})
+
+	t.Run("Workflow not found wraps ErrNoRows", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-gone").Return((*model.Workflow)(nil), sql.ErrNoRows)
+		err := service.DeleteWorkflowVersion(sc, "test-account", "wf-gone", 2)
+		assert.ErrorIs(t, err, sql.ErrNoRows)
+		mockStore.AssertNotCalled(t, "GetWorkflowVersion")
+		mockStore.AssertNotCalled(t, "DeleteWorkflowVersion")
+	})
+
+	t.Run("Version not found wraps ErrNoRows", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-ok").Return(&model.Workflow{ID: "wf-ok"}, nil)
+		mockStore.On("GetWorkflowVersion", mock.Anything, "wf-ok", 99).Return((*model.WorkflowVersion)(nil), sql.ErrNoRows)
+		err := service.DeleteWorkflowVersion(sc, "test-account", "wf-ok", 99)
+		assert.ErrorIs(t, err, sql.ErrNoRows)
+		mockStore.AssertNotCalled(t, "DeleteWorkflowVersion")
+	})
+
+	t.Run("DAO ErrNoRows (lost race) wraps ErrNoRows", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		mockStore.On("GetWorkflowVersion", mock.Anything, "wf-ok", 2).Return(&model.WorkflowVersion{ID: "v-2", WorkflowID: "wf-ok", VersionNumber: 2}, nil)
+		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-ok").Return(&model.Workflow{ID: "wf-ok", LiveVersionID: &liveID, DraftVersionID: &draftID}, nil)
+		mockStore.On("DeleteWorkflowVersion", mock.Anything, "test-tenant", "test-account", "wf-ok", "v-2").Return(sql.ErrNoRows)
+		err := service.DeleteWorkflowVersion(sc, "test-account", "wf-ok", 2)
+		assert.ErrorIs(t, err, sql.ErrNoRows)
+	})
+
+	t.Run("DAO generic error is surfaced", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		mockStore.On("GetWorkflowVersion", mock.Anything, "wf-ok", 2).Return(&model.WorkflowVersion{ID: "v-2", WorkflowID: "wf-ok", VersionNumber: 2}, nil)
+		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-ok").Return(&model.Workflow{ID: "wf-ok", LiveVersionID: &liveID, DraftVersionID: &draftID}, nil)
+		mockStore.On("DeleteWorkflowVersion", mock.Anything, "test-tenant", "test-account", "wf-ok", "v-2").Return(errors.New("db kaboom"))
+		err := service.DeleteWorkflowVersion(sc, "test-account", "wf-ok", 2)
+		assert.Error(t, err)
+		assert.NotErrorIs(t, err, sql.ErrNoRows)
+	})
+
+	t.Run("Deleting live version is rejected", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		mockStore.On("GetWorkflowVersion", mock.Anything, "wf-ok", 3).Return(&model.WorkflowVersion{ID: liveID, WorkflowID: "wf-ok", VersionNumber: 3}, nil)
+		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-ok").Return(&model.Workflow{ID: "wf-ok", LiveVersionID: &liveID}, nil)
+		err := service.DeleteWorkflowVersion(sc, "test-account", "wf-ok", 3)
+		var commonErr common.Error
+		assert.ErrorAs(t, err, &commonErr)
+		assert.Equal(t, http.StatusBadRequest, commonErr.Code)
+		mockStore.AssertNotCalled(t, "DeleteWorkflowVersion")
+	})
+
+	t.Run("Deleting draft-base version is rejected", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		mockStore.On("GetWorkflowVersion", mock.Anything, "wf-ok", 4).Return(&model.WorkflowVersion{ID: draftID, WorkflowID: "wf-ok", VersionNumber: 4}, nil)
+		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-ok").Return(&model.Workflow{ID: "wf-ok", LiveVersionID: &liveID, DraftVersionID: &draftID}, nil)
+		err := service.DeleteWorkflowVersion(sc, "test-account", "wf-ok", 4)
+		var commonErr common.Error
+		assert.ErrorAs(t, err, &commonErr)
+		assert.Equal(t, http.StatusBadRequest, commonErr.Code)
+		mockStore.AssertNotCalled(t, "DeleteWorkflowVersion")
+	})
+
+	t.Run("Success deletes a non-live non-draft version", func(t *testing.T) {
+		mockStore := new(MockWorkflowStore)
+		service := newVersioningService(mockStore, &MockTemporalClient{})
+		mockStore.On("GetWorkflowVersion", mock.Anything, "wf-ok", 2).Return(&model.WorkflowVersion{ID: "v-2", WorkflowID: "wf-ok", VersionNumber: 2}, nil)
+		mockStore.On("Find", mock.Anything, "test-tenant", "test-account", "wf-ok").Return(&model.Workflow{ID: "wf-ok", LiveVersionID: &liveID, DraftVersionID: &draftID}, nil)
+		mockStore.On("DeleteWorkflowVersion", mock.Anything, "test-tenant", "test-account", "wf-ok", "v-2").Return(nil)
+		err := service.DeleteWorkflowVersion(sc, "test-account", "wf-ok", 2)
+		assert.NoError(t, err)
 		mockStore.AssertExpectations(t)
 	})
 }

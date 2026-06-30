@@ -11,10 +11,11 @@ import (
 var layouts = []string{
 	time.RFC3339Nano,
 	time.RFC3339,
-	"2006-01-02T15:04:05Z0700", // RFC3339 without colon in offset
-	"2006-01-02T15:04:05",      // ISO8601 without timezone
-	"2006-01-02",               // Date only
-	"15:04:05",                 // Time only
+	"2006-01-02T15:04:05Z0700",      // RFC3339 without colon in offset
+	"2006-01-02T15:04:05.999999999", // ISO8601 without timezone (with fractional seconds)
+	"2006-01-02T15:04:05",           // ISO8601 without timezone
+	"2006-01-02",                    // Date only
+	"15:04:05",                      // Time only
 }
 
 // HasTimezoneIndicator checks if a timestamp string has a timezone indicator (Z or ±offset),

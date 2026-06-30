@@ -1,7 +1,7 @@
 {
     "apiVersion": "v1",
     "data": {
-        "mapRoles": "- groups:\n  - system:bootstrappers\n  - system:nodes\n  rolearn: arn:aws:iam::xxxxxxxxxxxx:role/nudgebee-dev-node-role\n  username: system:node:{{EC2PrivateDNSName}}\n- groups:\n  - system:bootstrappers\n  - system:nodes\n  rolearn: arn:aws:iam::xxxxxxxxxxxx:role/KarpenterNodeRole-nudgebee-dev\n  username: system:node:{{EC2PrivateDNSName}}\n",
+        "mapRoles": "- groups:\n  - system:bootstrappers\n  - system:nodes\n  rolearn: arn:aws:iam::xxxxxxxxxxxx:role/test-cluster-dev-node-role\n  username: system:node:{{EC2PrivateDNSName}}\n- groups:\n  - system:bootstrappers\n  - system:nodes\n  rolearn: arn:aws:iam::xxxxxxxxxxxx:role/KarpenterNodeRole-test-cluster-dev\n  username: system:node:{{EC2PrivateDNSName}}\n",
         "mapUsers": "- groups:\n  - system:bootstrappers\n  - system:nodes\n  - system:masters\n  userarn: arn:aws:iam::xxxxxxxxxxxx:user/random\n",
         "username": "system:node:{{EC2PrivateDNSName}}"
     },

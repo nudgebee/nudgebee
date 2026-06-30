@@ -58,6 +58,25 @@ func QueryLogs(ctx *security.RequestContext, accountId string, query providers.Q
 	return cloudProvider.QueryLogs(ctx, account, query)
 }
 
+// QueryDeploymentDiff fetches a service's recent deployment revisions (for a
+// before/after diff), if the provider supports it.
+func QueryDeploymentDiff(ctx *security.RequestContext, accountId string, query providers.QueryDeploymentDiffRequest) (providers.QueryDeploymentDiffResponse, error) {
+	account, provider, err := getAccount(ctx, accountId)
+	if err != nil {
+		ctx.GetLogger().Error("unable to fetch account", "error", err)
+		return providers.QueryDeploymentDiffResponse{}, err
+	}
+	cloudProvider, ok := providers.GetProvider(provider)
+	if !ok {
+		return providers.QueryDeploymentDiffResponse{}, fmt.Errorf("provider not found")
+	}
+	diffProvider, ok := cloudProvider.(providers.DeploymentDiffProvider)
+	if !ok {
+		return providers.QueryDeploymentDiffResponse{}, fmt.Errorf("deployment diff not supported for provider %s", provider)
+	}
+	return diffProvider.QueryDeploymentDiff(ctx, account, query)
+}
+
 func ListResources(ctx *security.RequestContext, accountId string, request providers.ListResourceRequest) (providers.ListResourcesResponse, error) {
 	resources, _, err := getResourcesInternal(ctx, accountId, request)
 	return resources, err

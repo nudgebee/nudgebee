@@ -1,8 +1,8 @@
-import PodTitleBox from '@components1/k8s/pods/PodTitleBox';
+import PodTitleBox from '@components/k8s/pods/PodTitleBox';
 import k8sApi from '@api1/kubernetes';
 import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
-import PodDetailsPage from '@components1/k8s/pods/PodsDetails';
+import PodDetailsPage from '@components/k8s/pods/PodsDetails';
 import { Box } from '@mui/material';
 import { useData } from '@context/DataContext';
 

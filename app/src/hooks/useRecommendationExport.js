@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import recommendationApi from '@api1/recommendation';
-import { snackbar } from '@components1/common/snackbarService';
+import { snackbar } from '@shared/snackbarService';
 import { downloadBase64File } from 'src/utils/fileDownload';
 
 /**

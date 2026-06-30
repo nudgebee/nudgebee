@@ -136,7 +136,7 @@ func TestZenduty_GrafanaRouted_FixesAllFourBugs(t *testing.T) {
 	assert.Equal(t, "00000000-0000-0000-0000-00000000fake", inv.Labels["nb_zenduty_service_id"])
 
 	// Severity refinement: warning → Medium
-	assert.Equal(t, event.EventPriortiyMedium, inv.Severity)
+	assert.Equal(t, event.EventPriorityMedium, inv.Severity)
 
 	// nb_alert_* normalization wired so buildAlertRuleEvidence has data to render
 	assert.Equal(t, "grafana", inv.Labels["nb_alert_source"])
@@ -198,7 +198,7 @@ func TestZenduty_PrometheusRouted_ResolvesSubjectFromLabels(t *testing.T) {
 	assert.Equal(t, "prom-KubePodCrashLooping-checkout-api", inv.Fingerprint)
 
 	// Severity refinement: critical → High
-	assert.Equal(t, event.EventPriortiyHigh, inv.Severity)
+	assert.Equal(t, event.EventPriorityHigh, inv.Severity)
 
 	// Source classified as prometheus (no grafana_folder/datasource_uid)
 	assert.Equal(t, "prometheus", inv.Labels["nb_alert_source"])

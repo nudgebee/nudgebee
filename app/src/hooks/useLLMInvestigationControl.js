@@ -1,9 +1,9 @@
 import { useCallback, useRef, useEffect, useReducer } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import apiAskNudgebee, { createConversationFetcher } from '@api1/ask-nudgebee'; // Adjust path
-import { snackbar } from '@components1/common/snackbarService';
+import { snackbar } from '@shared/snackbarService';
 import { parseHttpResponseBodyMessage, safeJSONParse } from 'src/utils/common'; // Adjust path
-import { buildWorkflowConversationMessages } from '@components1/workflow/utils';
+import { buildWorkflowConversationMessages } from '@components/workflow/utils';
 import apiWorkflow from '@api1/workflow';
 import { getUserSession } from '@lib/auth';
 import { getBrandTitle } from '@hooks/useTenantBranding';

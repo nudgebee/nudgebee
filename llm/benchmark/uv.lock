@@ -6,10 +6,11 @@ aiohappyeyeballs==2.6.1
     # via
     #   benchmark (pyproject.toml)
     #   aiohttp
-aiohttp==3.13.4
+aiohttp==3.14.0
     # via
     #   benchmark (pyproject.toml)
     #   fsspec
+    #   instructor
     #   langchain-azure-ai
     #   langchain-community
     #   litellm
@@ -155,7 +156,7 @@ dataclasses-json==0.6.7
     # via
     #   benchmark (pyproject.toml)
     #   langchain-community
-datasets==3.6.0
+datasets==4.0.0
     # via
     #   benchmark (pyproject.toml)
     #   ragas
@@ -196,6 +197,7 @@ docstring-parser==0.16
     #   benchmark (pyproject.toml)
     #   anthropic
     #   google-cloud-aiplatform
+    #   instructor
 editor==1.8.0
     # via inquirer
 exceptiongroup==1.3.1
@@ -395,6 +397,8 @@ iniconfig==2.1.0
     #   pytest
 inquirer==3.4.1
     # via terminal-bench
+instructor==1.15.1
+    # via ragas
 isodate==0.7.2
     # via
     #   benchmark (pyproject.toml)
@@ -409,6 +413,7 @@ itsdangerous==2.2.0
 jinja2==3.1.6
     # via
     #   altair
+    #   instructor
     #   litellm
     #   pydeck
     #   terminal-bench
@@ -416,6 +421,7 @@ jiter==0.10.0
     # via
     #   benchmark (pyproject.toml)
     #   anthropic
+    #   instructor
     #   openai
 jmespath==1.0.1
     # via
@@ -556,6 +562,8 @@ nest-asyncio==1.6.0
     # via
     #   benchmark (pyproject.toml)
     #   ragas
+networkx==3.6.1
+    # via ragas
 nodeenv==1.9.1
     # via
     #   benchmark (pyproject.toml)
@@ -577,6 +585,8 @@ numpy==2.4.4
     #   pandas
     #   pydeck
     #   ragas
+    #   scikit-network
+    #   scipy
     #   shapely
     #   streamlit
 ollama==0.6.2
@@ -587,6 +597,7 @@ openai==2.36.0
     # via
     #   benchmark (pyproject.toml)
     #   azure-ai-projects
+    #   instructor
     #   langchain-openai
     #   litellm
     #   ragas
@@ -673,7 +684,9 @@ pathspec==1.1.1
     #   benchmark (pyproject.toml)
     #   black
 pillow==12.2.0
-    # via streamlit
+    # via
+    #   ragas
+    #   streamlit
 platformdirs==4.3.8
     # via
     #   benchmark (pyproject.toml)
@@ -751,6 +764,7 @@ pydantic==2.11.5
     #   google-cloud-aiplatform
     #   google-genai
     #   gotrue
+    #   instructor
     #   langchain
     #   langchain-aws
     #   langchain-classic
@@ -770,6 +784,7 @@ pydantic==2.11.5
 pydantic-core==2.33.2
     # via
     #   benchmark (pyproject.toml)
+    #   instructor
     #   pydantic
 pydantic-settings==2.14.1
     # via
@@ -847,7 +862,7 @@ pyyaml==6.0.3
     #   langchain-core
     #   pre-commit
     #   vcrpy
-ragas==0.3.0rc2
+ragas==0.4.3
     # via benchmark (pyproject.toml)
 readchar==4.2.2
     # via inquirer
@@ -873,6 +888,7 @@ requests==2.33.1
     #   google-cloud-storage
     #   google-genai
     #   huggingface-hub
+    #   instructor
     #   langchain-classic
     #   langchain-community
     #   langsmith
@@ -885,9 +901,11 @@ requests-toolbelt==1.0.0
     # via
     #   benchmark (pyproject.toml)
     #   langsmith
-rich==15.0.0
+rich==14.3.4
     # via
+    #   instructor
     #   pytest-codspeed
+    #   ragas
     #   typer
 rpds-py==0.30.0
     # via
@@ -903,6 +921,10 @@ s3transfer==0.17.0
     # via
     #   benchmark (pyproject.toml)
     #   boto3
+scikit-network==0.33.5
+    # via ragas
+scipy==1.17.1
+    # via scikit-network
 shapely==2.1.1
     # via benchmark (pyproject.toml)
 shellingham==1.5.4
@@ -955,6 +977,7 @@ tenacity==9.1.2
     # via
     #   benchmark (pyproject.toml)
     #   google-genai
+    #   instructor
     #   langchain-community
     #   langchain-core
     #   streamlit
@@ -979,9 +1002,13 @@ tqdm==4.67.1
     #   datasets
     #   huggingface-hub
     #   openai
+    #   ragas
     #   terminal-bench
 typer==0.25.1
-    # via terminal-bench
+    # via
+    #   instructor
+    #   ragas
+    #   terminal-bench
 types-requests==2.32.0.20250515
     # via benchmark (pyproject.toml)
 typing-extensions==4.15.0

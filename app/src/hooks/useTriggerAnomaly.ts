@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import apiKubernetes1 from '@api1/kubernetes1';
-import { snackbar } from '@components1/common/snackbarService';
+import { snackbar } from '@shared/snackbarService';
 
 /**
  * Custom hook for triggering anomaly detection

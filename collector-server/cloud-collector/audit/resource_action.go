@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"nudgebee/collector/cloud/common"
 	"nudgebee/collector/cloud/providers"
+	"nudgebee/collector/cloud/security"
 	"strings"
 	"time"
 )
@@ -160,6 +161,107 @@ func logResourceActionWithTarget(
 
 	if err != nil {
 		ctx.GetLogger().Error("failed to insert audit record", "error", err)
+		return fmt.Errorf("failed to insert audit record: %w", err)
+	}
+
+	return nil
+}
+
+// CommandStatus represents the execution state of a single command.
+type CommandStatus string
+
+const (
+	CommandStatusSuccess     CommandStatus = "SUCCESS"
+	CommandStatusFailed      CommandStatus = "FAILED"
+	CommandStatusNotExecuted CommandStatus = "NOT_EXECUTED"
+)
+
+// CommandExecutionResult holds the result of a single command in a batch execution.
+type CommandExecutionResult struct {
+	Command string        `json:"command"`
+	Status  CommandStatus `json:"status"`
+	Output  string        `json:"output,omitempty"`
+	Error   string        `json:"error,omitempty"`
+}
+
+// LogCliBatchCommand logs a batch CLI command execution as a single audit record.
+// event_attr stores {"recommendation_id": "...", "commands": [{command, output, error}, ...]}.
+// status should be EventStatusSuccess only if every command succeeded.
+func LogCliBatchCommand(
+	ctx *security.RequestContext,
+	accountId string,
+	recommendationId string,
+	resolutionId string,
+	results []CommandExecutionResult,
+	status EventStatus,
+) error {
+	var userID string
+	var tenantID string
+
+	if sc := ctx.GetSecurityContext(); sc != nil {
+		userID = sc.GetUserId()
+		tenantID = sc.GetTenantId()
+	}
+
+	eventAttr := map[string]interface{}{
+		"commands": results,
+	}
+	if recommendationId != "" {
+		eventAttr["recommendation_id"] = recommendationId
+	}
+	if resolutionId != "" {
+		eventAttr["resolution_id"] = resolutionId
+	}
+
+	eventAttrJSON, err := json.Marshal(eventAttr)
+	if err != nil {
+		ctx.GetLogger().Error("failed to marshal batch event attributes", "error", err)
+		eventAttrJSON = []byte("{}")
+	}
+
+	dbm, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		return fmt.Errorf("failed to get database manager: %w", err)
+	}
+
+	eventState := "Command Execution Succeeded"
+	if status == EventStatusFailure {
+		eventState = "Command Execution Failed"
+	}
+
+	eventTarget := accountId
+	if recommendationId != "" {
+		eventTarget = recommendationId
+	}
+
+	query := `
+		INSERT INTO audit (
+			user_id, tenant_id, account_id, event_time, event_category, event_type,
+			event_prev_state, event_state, event_actor, event_target, event_action,
+			event_status, transaction_id, event_attr
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+		)`
+
+	_, err = dbm.Exec(
+		query,
+		valueOrNil(userID),
+		tenantID,
+		accountId,
+		time.Now().UTC(),
+		EventCategoryCloudCommand,
+		EventTypeCliExecute,
+		"",
+		eventState,
+		EventActorCloudCollector,
+		eventTarget,
+		EventActionExecute,
+		status,
+		resolutionId,
+		string(eventAttrJSON),
+	)
+	if err != nil {
+		ctx.GetLogger().Error("failed to insert batch audit record for CLI commands", "error", err)
 		return fmt.Errorf("failed to insert audit record: %w", err)
 	}
 

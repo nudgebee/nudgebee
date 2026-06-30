@@ -82,21 +82,26 @@ type AgentDetails struct {
 }
 
 type AgentDetailsFeatures struct {
-	AlertManagerConnection  *bool          `json:"alertManagerConnection" mapstructure:"alertManagerConnection"`
-	AlertmanagerUrl         *string        `json:"alertmanagerUrl" mapstructure:"alertmanagerUrl"`
-	GrafanaEnabled          *bool          `json:"grafanaEnabled" mapstructure:"grafanaEnabled"`
-	InstallationNamespace   *string        `json:"installationNamespace" mapstructure:"installationNamespace"`
-	AutoscalerEnabled       *bool          `json:"autoScalerEnabled" mapstructure:"autoScalerEnabled"`
-	AutoscalerNamespace     *string        `json:"autoScalerNamespace" mapstructure:"autoScalerNamespace"`
-	AutoscalerVersion       *string        `json:"autoScalerVersion" mapstructure:"autoScalerVersion"`
-	AutoscalerType          *string        `json:"autoScalerType" mapstructure:"autoScalerType"`
-	LogProviderUrl          *string        `json:"logProviderUrl" mapstructure:"logProviderUrl"`
-	LogProviderConfig       map[string]any `json:"logProviderConfig" mapstructure:"logProviderConfig"`
-	LogsConnection          *bool          `json:"logsConnection" mapstructure:"logsConnection"`
-	LogsConnectionProvider  *string        `json:"logsConnectionProvider" mapstructure:"logsConnectionProvider"`
-	NodeAgentConnection     *bool          `json:"nodeAgentConnection" mapstructure:"nodeAgentConnection"`
-	NodeAgentCount          *int           `json:"nodeAgentCount" mapstructure:"nodeAgentCount"`
-	OpencostConnection      *bool          `json:"opencostConnection" mapstructure:"opencostConnection"`
+	AlertManagerConnection *bool          `json:"alertManagerConnection" mapstructure:"alertManagerConnection"`
+	AlertmanagerUrl        *string        `json:"alertmanagerUrl" mapstructure:"alertmanagerUrl"`
+	GrafanaEnabled         *bool          `json:"grafanaEnabled" mapstructure:"grafanaEnabled"`
+	InstallationNamespace  *string        `json:"installationNamespace" mapstructure:"installationNamespace"`
+	AutoscalerEnabled      *bool          `json:"autoScalerEnabled" mapstructure:"autoScalerEnabled"`
+	AutoscalerNamespace    *string        `json:"autoScalerNamespace" mapstructure:"autoScalerNamespace"`
+	AutoscalerVersion      *string        `json:"autoScalerVersion" mapstructure:"autoScalerVersion"`
+	AutoscalerType         *string        `json:"autoScalerType" mapstructure:"autoScalerType"`
+	LogProviderUrl         *string        `json:"logProviderUrl" mapstructure:"logProviderUrl"`
+	LogProviderConfig      map[string]any `json:"logProviderConfig" mapstructure:"logProviderConfig"`
+	LogsConnection         *bool          `json:"logsConnection" mapstructure:"logsConnection"`
+	LogsConnectionProvider *string        `json:"logsConnectionProvider" mapstructure:"logsConnectionProvider"`
+	NodeAgentConnection    *bool          `json:"nodeAgentConnection" mapstructure:"nodeAgentConnection"`
+	NodeAgentCount         *int           `json:"nodeAgentCount" mapstructure:"nodeAgentCount"`
+	OpencostConnection     *bool          `json:"opencostConnection" mapstructure:"opencostConnection"`
+	// OpencostServerSide is a server-managed marker stamped by the spend sync
+	// (spend.setOpenCostServerSide). It is true when OpenCost is collected
+	// server-side for this cluster (the migrated default, agent OpenCost off);
+	// not reported by the agent itself.
+	OpencostServerSide      *bool          `json:"opencostServerSide" mapstructure:"opencostServerSide"`
 	OpencostUrl             *string        `json:"opencostUrl" mapstructure:"opencostUrl"`
 	PrometheusConnection    *bool          `json:"prometheusConnection" mapstructure:"prometheusConnection"`
 	PrometheusRetentionTime *string        `json:"prometheusRetentionTime" mapstructure:"prometheusRetentionTime"`

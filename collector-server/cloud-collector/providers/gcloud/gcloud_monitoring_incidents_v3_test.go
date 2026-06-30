@@ -26,11 +26,8 @@ func TestGCPIncidentsV3API(t *testing.T) {
 	projectID := os.Getenv("GCP_PROJECT_ID")
 	credsPath := os.Getenv("GCP_CREDENTIALS_JSON")
 
-	if projectID == "" {
-		projectID = "nudgebee-dev"
-	}
-	if credsPath == "" {
-		credsPath = "/path/to/creds.json"
+	if projectID == "" || credsPath == "" {
+		t.Skip("Skipping integration test: GCP_PROJECT_ID and GCP_CREDENTIALS_JSON required")
 	}
 
 	credsJSON, err := os.ReadFile(credsPath)
@@ -156,13 +153,13 @@ func TestGCPIncidentsV3API(t *testing.T) {
 func TestAlertStructureParsing(t *testing.T) {
 	// Sample alert JSON from GCP API
 	alertJSON := `{
-		"name": "projects/nudgebee-dev/alerts/12345",
+		"name": "projects/test-cluster-dev/alerts/12345",
 		"state": "OPEN",
 		"openTime": "2026-03-10T12:00:00Z",
 		"resource": {
 			"type": "gce_instance",
 			"labels": {
-				"project_id": "nudgebee-dev",
+				"project_id": "test-cluster-dev",
 				"instance_id": "1234567890",
 				"zone": "us-central1-a"
 			}
@@ -174,7 +171,7 @@ func TestAlertStructureParsing(t *testing.T) {
 			}
 		},
 		"policy": {
-			"name": "projects/nudgebee-dev/alertPolicies/67890",
+			"name": "projects/test-cluster-dev/alertPolicies/67890",
 			"displayName": "High CPU Usage",
 			"severity": "CRITICAL",
 			"userLabels": {
@@ -189,7 +186,7 @@ func TestAlertStructureParsing(t *testing.T) {
 	require.NoError(t, err, "Failed to parse alert JSON")
 
 	// Validate parsing
-	assert.Equal(t, "projects/nudgebee-dev/alerts/12345", alert.Name)
+	assert.Equal(t, "projects/test-cluster-dev/alerts/12345", alert.Name)
 	assert.Equal(t, AlertStateOpen, alert.State)
 	assert.Equal(t, "2026-03-10T12:00:00Z", alert.OpenTime)
 	assert.NotNil(t, alert.Resource)
@@ -199,14 +196,14 @@ func TestAlertStructureParsing(t *testing.T) {
 	assert.Equal(t, "High CPU Usage", alert.Policy.DisplayName)
 	assert.Equal(t, "CRITICAL", alert.Policy.Severity)
 
-	account := &providers.Account{AccountNumber: "nudgebee-dev"}
+	account := &providers.Account{AccountNumber: "test-cluster-dev"}
 	event := convertAlertToEvent(nil, nil, &alert, account)
 
 	assert.Equal(t, "test-vm", event.ResourceId, "Should use instance_name from metric labels")
 
 	// EventId should be stable fingerprint: policy:resource_type:resource_id
 
-	assert.Equal(t, "projects/nudgebee-dev/alertPolicies/67890:gce_instance:test-vm", event.EventId)
+	assert.Equal(t, "projects/test-cluster-dev/alertPolicies/67890:gce_instance:test-vm", event.EventId)
 	assert.Equal(t, "gce_instance: High CPU Usage", event.Title)
 	assert.Equal(t, providers.EventStatusFiring, event.EventStatus)
 	assert.Equal(t, providers.EventSeverityHigh, event.EventSeverity)
@@ -221,7 +218,7 @@ func TestAlertStructureParsing(t *testing.T) {
 	assert.Equal(t, "test-vm", event.Labels["gcp_event_instance"], "Should set gcp_event_instance for actions")
 	assert.Equal(t, "gce_instance", event.Labels["gcp_event_resource_type"], "Should set gcp_event_resource_type for actions")
 	assert.Equal(t, "Compute Engine", event.Labels["gcp_service_name"], "Should set gcp_service_name for actions")
-	assert.Equal(t, "nudgebee-dev", event.Labels["gcp_account"], "Should set gcp_account for actions")
+	assert.Equal(t, "test-cluster-dev", event.Labels["gcp_account"], "Should set gcp_account for actions")
 	assert.Equal(t, "us-central1-a", event.Labels["gcp_zone"], "Should set gcp_zone for CLI commands")
 	assert.Equal(t, "compute.googleapis.com/instance/cpu/utilization", event.Labels["gcp_event_metric_type"], "Should set gcp_event_metric_type for actions")
 }
@@ -301,7 +298,7 @@ func TestDeriveResourceTypeFromMetric(t *testing.T) {
 func TestDeriveResourceTypeWhenResourceTypeEmpty(t *testing.T) {
 	// Alert with NO resource.type but WITH metric.type
 	alertJSON := `{
-		"name": "projects/nudgebee-dev/alerts/12345",
+		"name": "projects/test-cluster-dev/alerts/12345",
 		"state": "OPEN",
 		"openTime": "2026-03-10T12:00:00Z",
 		"metric": {
@@ -309,7 +306,7 @@ func TestDeriveResourceTypeWhenResourceTypeEmpty(t *testing.T) {
 			"labels": {}
 		},
 		"policy": {
-			"name": "projects/nudgebee-dev/alertPolicies/67890",
+			"name": "projects/test-cluster-dev/alertPolicies/67890",
 			"displayName": "High CPU Usage"
 		}
 	}`
@@ -318,7 +315,7 @@ func TestDeriveResourceTypeWhenResourceTypeEmpty(t *testing.T) {
 	err := json.Unmarshal([]byte(alertJSON), &alert)
 	require.NoError(t, err)
 
-	account := &providers.Account{AccountNumber: "nudgebee-dev"}
+	account := &providers.Account{AccountNumber: "test-cluster-dev"}
 	event := convertAlertToEvent(nil, nil, &alert, account)
 
 	// Should derive resource type from metric type
@@ -330,13 +327,13 @@ func TestDeriveResourceTypeWhenResourceTypeEmpty(t *testing.T) {
 func TestAlertFallbackToInstanceID(t *testing.T) {
 	// Alert WITHOUT instance_name in metric labels
 	alertJSON := `{
-		"name": "projects/nudgebee-dev/alerts/12345",
+		"name": "projects/test-cluster-dev/alerts/12345",
 		"state": "OPEN",
 		"openTime": "2026-03-10T12:00:00Z",
 		"resource": {
 			"type": "gce_instance",
 			"labels": {
-				"project_id": "nudgebee-dev",
+				"project_id": "test-cluster-dev",
 				"instance_id": "3346138238029787252",
 				"zone": "us-central1-a"
 			}
@@ -346,7 +343,7 @@ func TestAlertFallbackToInstanceID(t *testing.T) {
 			"labels": {}
 		},
 		"policy": {
-			"name": "projects/nudgebee-dev/alertPolicies/67890",
+			"name": "projects/test-cluster-dev/alertPolicies/67890",
 			"displayName": "High CPU Usage"
 		}
 	}`
@@ -356,12 +353,79 @@ func TestAlertFallbackToInstanceID(t *testing.T) {
 	require.NoError(t, err)
 
 	// Convert to Event without HTTP client (simulates no API lookup available)
-	account := &providers.Account{AccountNumber: "nudgebee-dev"}
+	account := &providers.Account{AccountNumber: "test-cluster-dev"}
 	event := convertAlertToEvent(nil, nil, &alert, account)
 
 	// Without metric instance_name and without API lookup, should fall back to instance_id
 	assert.Equal(t, "3346138238029787252", event.ResourceId, "Should fall back to instance_id when instance_name not available")
 
 	// EventId fingerprint uses the fallback instance_id
-	assert.Equal(t, "projects/nudgebee-dev/alertPolicies/67890:gce_instance:3346138238029787252", event.EventId)
+	assert.Equal(t, "projects/test-cluster-dev/alertPolicies/67890:gce_instance:3346138238029787252", event.EventId)
+}
+
+// TestCloudRunResourceIDFromServiceName verifies the resource-type-aware identifier
+// extraction: Cloud Run monitored resources carry service_name (not instance_*/pod_name),
+// which is exactly the label the Cloud Run log filter scopes by. Before the fix this
+// fell back to the incident ID and matched no logs/resources.
+func TestCloudRunResourceIDFromServiceName(t *testing.T) {
+	alertJSON := `{
+		"name": "projects/live-fullspectrum/alerts/0.o9i3cz02x353",
+		"state": "OPEN",
+		"openTime": "2026-06-26T12:37:20Z",
+		"resource": {
+			"type": "cloud_run_revision",
+			"labels": {
+				"project_id": "live-fullspectrum",
+				"location": "us-central1",
+				"service_name": "frontoffice-pre-alpha"
+			}
+		},
+		"policy": {
+			"name": "projects/live-fullspectrum/alertPolicies/9999",
+			"displayName": "Manual_Deployment_Notification"
+		}
+	}`
+
+	var alert Alert
+	require.NoError(t, json.Unmarshal([]byte(alertJSON), &alert))
+
+	account := &providers.Account{AccountNumber: "live-fullspectrum"}
+	event := convertAlertToEvent(nil, nil, &alert, account)
+
+	assert.Equal(t, "frontoffice-pre-alpha", event.Labels["gcp_event_instance"],
+		"Cloud Run resource id should come from resource.labels.service_name, not the incident id")
+	assert.NotEqual(t, event.Labels["gcp_incident_id"], event.Labels["gcp_event_instance"],
+		"resource id must not fall back to the incident id when service_name is present")
+	assert.Equal(t, "Cloud Run", event.Labels["gcp_service_name"])
+	assert.Equal(t, "us-central1", event.Labels["gcp_region"], "location label should populate gcp_region")
+}
+
+// TestResourceIDFallsBackToIncidentWhenNoIdentifier verifies the downstream guard's
+// premise: when the alert payload carries no resource-scoped identifier, gcp_event_instance
+// equals gcp_incident_id, which the enrichers detect and treat as "unknown".
+func TestResourceIDFallsBackToIncidentWhenNoIdentifier(t *testing.T) {
+	alertJSON := `{
+		"name": "projects/full-auth/alerts/0.o9i8yjzr6wbk",
+		"state": "OPEN",
+		"openTime": "2026-06-26T16:42:32Z",
+		"resource": {
+			"type": "cloud_run_revision",
+			"labels": {"project_id": "full-auth"}
+		},
+		"metric": {"type": "logging.googleapis.com/user/log4j_exploits"},
+		"policy": {
+			"name": "projects/full-auth/alertPolicies/6486795358793071263",
+			"displayName": "Log4j Vulnerability Alert"
+		}
+	}`
+
+	var alert Alert
+	require.NoError(t, json.Unmarshal([]byte(alertJSON), &alert))
+
+	account := &providers.Account{AccountNumber: "full-auth"}
+	event := convertAlertToEvent(nil, nil, &alert, account)
+
+	assert.Equal(t, "0.o9i8yjzr6wbk", event.Labels["gcp_incident_id"])
+	assert.Equal(t, event.Labels["gcp_incident_id"], event.Labels["gcp_event_instance"],
+		"with no resource identifier in the payload, gcp_event_instance falls back to the incident id")
 }

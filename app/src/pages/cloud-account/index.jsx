@@ -4,8 +4,8 @@ import { useEffect, useState } from 'react';
 import apiHome from '@api1/home';
 import { Box, CircularProgress, Typography, Stack } from '@mui/material';
 import { CloudAccountIcon } from '@assets';
-import SafeIcon from '@components1/common/SafeIcon';
-import { Button as DsButton } from '@components1/ds/Button';
+import SafeIcon from '@shared/icons/SafeIcon';
+import { Button as DsButton } from '@ui/Button';
 import { hasWriteAccess } from '@lib/auth';
 import { ds } from '@utils/colors';
 

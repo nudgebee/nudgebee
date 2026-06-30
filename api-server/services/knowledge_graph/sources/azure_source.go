@@ -44,6 +44,19 @@ var DefaultAzureServiceTypeFilter = map[string][]string{
 	// Niche / non-resources
 	"microsoft.eventgrid/extensiontopics": {}, // helper records, not actual topics
 	"microsoft.compute/locations":         {}, // location-level diagnostics rows
+
+	// Compute storage artifacts — not topology nodes. Without an explicit entry in
+	// azureTypeToNodeType these fall through determineNodeType to the coarse
+	// "microsoft.compute" → ComputeInstance prefix fallback, polluting the VM set.
+	// Worse, AKS/Databricks per-pod volumes (osdisk / containerrootvolume /
+	// scratchvolume) are ephemeral: each build sees fresh GUIDs, so the old set is
+	// tombstoned and a new one created, churning thousands of dead rows. They carry
+	// no dependency meaning (the KG has no disk node type or attachment edges), so
+	// drop them here.
+	"microsoft.compute/disks":     {},
+	"microsoft.compute/snapshots": {},
+	"microsoft.compute/images":    {},
+	"microsoft.compute/galleries": {},
 }
 
 // AzureSource implements the Source interface for Azure cloud resources
@@ -327,6 +340,16 @@ func (s *AzureSource) convertResourcesToGraph(reqCtx *security.RequestContext, r
 			edges = append(edges, s.createDefaultVNetEdges(nodeList, lookup, req)...)
 		}
 	}
+
+	// Step 5: Derive cross-resource edges from the embedded resource IDs in each
+	// resource's ARG meta (LoadBalancer frontend/backend, etc.) — connects
+	// resource types the networking-only builders above leave orphaned.
+	edges = append(edges, s.createReferenceEdges(resources, lookup, req)...)
+
+	// Private DNS zone → VNet links are resolved by the azure_private_dns
+	// cross-account enricher (Phase 2.1), since a zone and its linked VNet are
+	// frequently in different subscriptions and only the unified graph can match
+	// them.
 
 	return nodes, edges
 }

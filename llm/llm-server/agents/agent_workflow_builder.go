@@ -25,8 +25,6 @@ var uuidRegex = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}
 // outputRefRegex matches {{ Tasks['task-id'].output.fieldname }} patterns for schema-driven validation.
 var outputRefRegex = regexp.MustCompile(`Tasks\[['"]([^'"]+)['"]\]\.output\.(\w+)`)
 
-const WorkflowBuilderSummarizerToolName = "automation_builder_summarizer"
-
 const (
 	PlanApprovalOptionApprove = "Approve and Build"
 	PlanApprovalOptionChanges = "Request Changes"
@@ -76,11 +74,6 @@ func init() {
 	core.RegisterNBAgentFactoryAndTool(WorkflowBuilderAgentName, func(accountId string) (core.NBAgent, error) {
 		return newWorkflowBuilderAgent(accountId), nil
 	}, "Builds automations for the Automation Server", "Provide a description of the automation you want to build.", "Returns the automation definition in JSON format.")
-
-	// Register the custom workflow summarizer tool
-	core.RegisterNBAgentFactoryAndTool(WorkflowBuilderSummarizerToolName, func(accountId string) (core.NBAgent, error) {
-		return WorkflowBuilderSummarizerAgent{}, nil
-	}, "Extracts the final successful automation JSON from AutomationBuilder's response", "AutomationBuilder full response with all attempts", "Clean JSON automation only")
 }
 
 const WorkflowBuilderAgentName = "automation_builder"
@@ -133,6 +126,10 @@ func (a *WorkflowBuilderAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeCustom
 }
 
+func (a *WorkflowBuilderAgent) GetModelCategory() core.ModelTier {
+	return core.ModelTierReasoning
+}
+
 func (a *WorkflowBuilderAgent) PostProcessResponse(ctx *security.RequestContext, request core.NBAgentRequest, resp core.NBAgentResponse) core.NBAgentResponse {
 	if len(resp.Response) > 0 {
 		content := resp.Response[0]
@@ -175,7 +172,7 @@ func getWorkflowSchema() string {
   "name": "string (required)",
   "definition": { ... },  // AutomationDefinition (required)
   "tags": {},             // map[string]any (optional)
-  "status": "ACTIVE"      // AutomationStatus (optional): "ACTIVE", "INACTIVE", "PAUSED", "DRAFT"
+  "status": "ACTIVE"      // AutomationStatus (optional): "ACTIVE", "INACTIVE", "PAUSED" (no DRAFT). New automations default to PAUSED.
 }
 
 ## DEFINITION STRUCTURE (inside "definition"):
@@ -300,18 +297,40 @@ func (a *WorkflowBuilderAgent) handleEntry(ctx *security.RequestContext, request
 	// regenerated or silently-modified automation — or crashed the fix-diagnosis loop. Classify
 	// the turn first: pure questions are ANSWERED, never built or modified. This runs only at the
 	// non-mid-stage entry; mid-stage turns are stage responses handled by their cases in Execute.
+	// The WorkflowAgent delegates as an agent-as-tool and already knows whether this is a create or a
+	// fix (and which workflow). It transmits that decision structurally via a JSON command
+	// ({"mode":"create"|"fix","workflow_id":"...","query":"..."}) so the builder routes on explicit
+	// fields rather than re-deriving mode by scanning prose. Unwrap it up front: `directiveMode` /
+	// `directiveWorkflowId` drive deterministic routing below, and request.Query is replaced with the
+	// inner instruction text so every downstream LLM call (read-only classifier, intent, plan) sees
+	// clean text instead of the JSON envelope.
+	directiveMode, directiveWorkflowId, commandText := parseDelegationCommand(request.Query)
+	request.Query = commandText
+
 	if a.isReadOnlyTurn(ctx, request) {
 		return a.handleReadOnly(ctx, request)
 	}
 
-	// Check QueryConfig first (direct invocation with explicit workflow_id)
+	// Deterministic routing — explicit signals only, no text inference. An account UUID embedded in a
+	// create payload can never be read as a workflow id here (we only consult explicit fields).
+	//  1. UI-canvas / direct API path stamps QueryConfig.WorkflowId.
+	//  2. Chat delegation stamps mode + workflow_id in the JSON command.
 	if request.QueryConfig.WorkflowId != "" {
 		return a.handleFixEntry(ctx, request, request.QueryConfig.WorkflowId)
 	}
+	if directiveMode == "fix" && directiveWorkflowId != "" {
+		ctx.GetLogger().Info("workflow_builder: routing to fix via delegation directive", "workflow_id", directiveWorkflowId)
+		return a.handleFixEntry(ctx, request, directiveWorkflowId)
+	}
+	if directiveMode == "create" {
+		// Explicit create — never fall through to text inference.
+		return a.handleIntentAndPlan(ctx, request)
+	}
 
-	// Fallback: extract workflow ID from query text (agent-as-tool delegation from WorkflowAgent)
-	if workflowId := extractWorkflowIdFromQuery(request.Query); workflowId != "" {
-		ctx.GetLogger().Info("workflow_builder: detected workflow ID in query text", "workflow_id", workflowId)
+	// Backstop for legacy/unstructured delegations that carry no directive: infer the workflow id from
+	// text, excluding account UUIDs that legitimately appear in create payloads (avoids fix-mode misroute).
+	if workflowId := extractWorkflowIdFromQuery(request.Query, a.knownAccountIds(ctx)); workflowId != "" {
+		ctx.GetLogger().Info("workflow_builder: detected workflow ID in query text (no directive)", "workflow_id", workflowId)
 		return a.handleFixEntry(ctx, request, workflowId)
 	}
 
@@ -351,7 +370,7 @@ Respond with ONLY one word: READ_ONLY or ACTION.`
 		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
 		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
 	}
-	completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false)
+	completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
 	if err != nil {
 		ctx.GetLogger().Warn("workflow_builder: read-only intent classification failed, treating as action", "error", err)
 		return false
@@ -378,7 +397,7 @@ func isReadOnlyClassification(answer string) bool {
 func (a *WorkflowBuilderAgent) handleReadOnly(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
 	workflowId := request.QueryConfig.WorkflowId
 	if workflowId == "" {
-		workflowId = extractWorkflowIdFromQuery(request.Query)
+		workflowId = extractWorkflowIdFromQuery(request.Query, a.knownAccountIds(ctx))
 	}
 
 	var definitionContext string
@@ -433,9 +452,39 @@ INSTRUCTIONS:
 - When you have the answer, emit a <final_answer> whose <content> is your prose answer in Markdown. Do NOT output a workflow JSON definition. Do NOT call finalize.`, userQuery, defSection)
 }
 
+// parseDelegationCommand interprets a builder delegation command. The WorkflowAgent is instructed to
+// delegate as a JSON object — {"mode":"create"|"fix","workflow_id":"<id>","query":"<instructions>"} —
+// so create-vs-fix routing is read from explicit fields instead of inferred from prose. Returns the
+// lower-cased mode, the workflow id (fix only), and the instruction text to use for downstream LLM
+// calls. A plain-string command (or JSON without these fields) yields empty mode/id and the original
+// text unchanged, so legacy/unstructured delegations fall through to the heuristic backstop.
+func parseDelegationCommand(query string) (mode, workflowId, text string) {
+	text = query
+	var d struct {
+		Mode       string `json:"mode"`
+		WorkflowId string `json:"workflow_id"`
+		Query      string `json:"query"`
+	}
+	if err := common.UnmarshalJson([]byte(query), &d); err == nil {
+		if strings.TrimSpace(d.Query) != "" {
+			text = d.Query
+		}
+		mode = strings.ToLower(strings.TrimSpace(d.Mode))
+		workflowId = strings.TrimSpace(d.WorkflowId)
+	}
+	return mode, workflowId, text
+}
+
 // extractWorkflowIdFromQuery looks for a UUID in the query text that likely represents a workflow ID.
 // The WorkflowAgent is instructed to include the workflow ID when delegating fix requests.
-func extractWorkflowIdFromQuery(query string) string {
+//
+// excludeIds holds account UUIDs (the k8s account plus every configured cloud account) that
+// legitimately appear in *create* delegations — e.g. `params.account_id` on k8s.cli / cloud.*.cli
+// tasks. Those must never be treated as a workflow ID: doing so misroutes a create request into fix
+// mode, which then issues GET workflows/{account_id} → 404 ("workflow not found"). The first non-
+// excluded UUID is returned, so a genuine fix delegation ("Fix automation <wf-id> in account <acct-id>")
+// still resolves to the workflow ID even when an account UUID precedes it in the text.
+func extractWorkflowIdFromQuery(query string, excludeIds map[string]bool) string {
 	lowerQuery := strings.ToLower(query)
 	// Only extract if the query looks like a fix/debug request (not a new workflow creation)
 	fixKeywords := []string{"fix", "debug", "error", "failed", "failing", "broken", "issue", "wrong", "update", "modify", "change", "repair"}
@@ -450,8 +499,41 @@ func extractWorkflowIdFromQuery(query string) string {
 		return ""
 	}
 
-	match := uuidRegex.FindString(query)
-	return match
+	for _, match := range uuidRegex.FindAllString(query, -1) {
+		if !excludeIds[strings.ToLower(match)] {
+			return match
+		}
+	}
+	return ""
+}
+
+// knownAccountIds returns the set of account UUIDs (lower-cased) that legitimately appear in build
+// payloads: this k8s account plus every configured cloud-account (aws/gcp/azure/k8s). These are
+// excluded from workflow-ID extraction so a create delegation embedding an account_id is not
+// mistaken for a fix request. Degrades gracefully — if configs can't be listed, only the primary
+// account ID is excluded (still covers the most common misroute).
+func (a *WorkflowBuilderAgent) knownAccountIds(ctx *security.RequestContext) map[string]bool {
+	ids := map[string]bool{}
+	// Fail closed: an empty account id would make ListAllToolConfigs unscoped, and a nil ctx has no
+	// logger. Either way there is nothing to exclude — return the empty set.
+	if a.accountId == "" || ctx == nil {
+		return ids
+	}
+	ids[strings.ToLower(a.accountId)] = true
+	configs, err := toolcore.ListAllToolConfigs(ctx, a.accountId)
+	if err != nil {
+		ctx.GetLogger().Warn("workflow_builder: knownAccountIds: ListAllToolConfigs failed, excluding only the primary account id", "error", err)
+		return ids
+	}
+	for _, cfg := range configs {
+		if !cloudAccountConfigTypes[strings.ToLower(cfg.Schema.ConfigType)] {
+			continue
+		}
+		if id := cloudAccountId(cfg); id != "" {
+			ids[strings.ToLower(id)] = true
+		}
+	}
+	return ids
 }
 
 // handleIntentAndPlan extracts intent, optionally asks clarifying questions, generates a plan, and asks for user approval.
@@ -684,7 +766,7 @@ func (a *WorkflowBuilderAgent) generateClarifyingQuestions(ctx *security.Request
 		ctx.GetMeter(),
 	)
 
-	completion, err := core.GenerateAndTrackLLMContent(clarifyCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false)
+	completion, err := core.GenerateAndTrackLLMContent(clarifyCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
 	if err != nil {
 		return nil, fmt.Errorf("clarification LLM call failed: %w", err)
 	}
@@ -1230,46 +1312,50 @@ func (a *WorkflowBuilderAgent) checkMissingConfigs(ctx *security.RequestContext,
 		return a.finalizeWithAutoSave(ctx, request, workflowJSON, nil), nil
 	}
 
-	created, failed := a.autoCreateEmptyConfigs(ctx, missing)
-	if len(failed) > 0 {
-		ctx.GetLogger().Warn("workflow_builder: some configs failed to auto-create", "failed", failed)
+	// Genuinely missing {{ Configs.x }} references. We deliberately do NOT invent placeholder
+	// configs: doing so let automations pass the literal "<TODO: set value>" as an integration id /
+	// channel / account id at run time, and left orphan config rows behind on abandoned builds
+	// (#31490). Instead mark the automation INACTIVE — the work is preserved server-side but it
+	// cannot run until the user supplies real values — and tell them exactly which configs to create.
+	// INACTIVE (not PAUSED, the create default) is set explicitly so the fix-mode PUT path also
+	// downgrades an already-ACTIVE workflow whose edit introduced an unresolved config.
+	inactiveJSON := workflowJSON
+	if ij, derr := setWorkflowStatus(workflowJSON, string(workflowStatusInactive)); derr == nil {
+		inactiveJSON = ij
+	} else {
+		ctx.GetLogger().Warn("workflow_builder: could not set INACTIVE status for missing-config save", "error", derr)
 	}
-	return a.finalizeWithAutoSave(ctx, request, workflowJSON, created), nil
+	return a.finalizeWithAutoSave(ctx, request, inactiveJSON, missing), nil
 }
 
-// autoCreatedConfigPlaceholder is the value stored when we auto-create a config
-// for a missing reference. The workflow server rejects empty values, so we use
-// a clearly-flagged placeholder that the user can grep for and replace.
-const autoCreatedConfigPlaceholder = "<TODO: set value>"
+// workflowStatusInactive mirrors the runbook model.WorkflowStatusInactive value. The valid workflow
+// statuses are ACTIVE, INACTIVE and PAUSED (there is no DRAFT — the builder prompt schema is wrong);
+// brand-new workflows default to PAUSED at the DAO.
+const workflowStatusInactive = "INACTIVE"
 
-// autoCreateEmptyConfigs POSTs a placeholder-valued config for each missing key.
-// The workflow server rejects empty values, so we cannot truly create "empty"
-// configs — instead we create one with autoCreatedConfigPlaceholder so the
-// workflow saves cleanly and the user is prompted to fill in the real value.
-// Returns the keys that were created successfully and the keys that failed.
-// Failures are logged here; callers decide whether to propagate.
-func (a *WorkflowBuilderAgent) autoCreateEmptyConfigs(ctx *security.RequestContext, keys []string) (created, failed []string) {
-	tenantId := ctx.GetSecurityContext().GetTenantId()
-	userId := ctx.GetSecurityContext().GetUserId()
-	for _, key := range keys {
-		body := map[string]string{"key": key, "value": autoCreatedConfigPlaceholder, "type": "config"}
-		if _, err := tools.DoRunbookRequest("POST", "configs", body, a.accountId, tenantId, userId); err != nil {
-			ctx.GetLogger().Error("workflow_builder: auto-create config failed", "key", key, "error", err)
-			failed = append(failed, key)
-			continue
-		}
-		created = append(created, key)
+// setWorkflowStatus returns the workflow JSON with its top-level status set to the given value.
+// The runbook server honours a non-empty top-level status on save.
+func setWorkflowStatus(workflowJSON, status string) (string, error) {
+	var wf map[string]interface{}
+	if err := json.Unmarshal([]byte(workflowJSON), &wf); err != nil {
+		return "", fmt.Errorf("setWorkflowStatus: %w", err)
 	}
-	return created, failed
+	wf["status"] = status
+	out, err := json.MarshalIndent(wf, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("setWorkflowStatus: %w", err)
+	}
+	return string(out), nil
 }
 
 // finalizeWithAutoSave returns the terminal response with the workflow JSON and
 // attempts to auto-save the workflow via the workflow server API.
-// autoCreatedConfigs lists keys we just created as empty placeholders for missing
-// {{ Configs.x }} references; the user is told to fill in values for them.
+// missingConfigs lists {{ Configs.x }} keys that have no value yet; when non-empty the workflow has
+// been marked INACTIVE by the caller and the user is told which configs to create before
+// activating.
 // For WorkflowBuilder source (editor UI): returns raw JSON since the UI consumes it directly.
 // For other sources (ask-nudgebee chat): returns a markdown summary with a link to the saved workflow.
-func (a *WorkflowBuilderAgent) finalizeWithAutoSave(ctx *security.RequestContext, request core.NBAgentRequest, workflowJSON string, autoCreatedConfigs []string) core.NBAgentResponse {
+func (a *WorkflowBuilderAgent) finalizeWithAutoSave(ctx *security.RequestContext, request core.NBAgentRequest, workflowJSON string, missingConfigs []string) core.NBAgentResponse {
 	// WorkflowBuilder source in create mode: return raw JSON (UI consumes it directly).
 	// In fix mode, auto-save so the fix persists server-side — the UI may not re-save.
 	if request.ConversationSource == core.ConversationSourceWorkflowBuilder && a.state.Mode != "fix" {
@@ -1316,9 +1402,9 @@ func (a *WorkflowBuilderAgent) finalizeWithAutoSave(ctx *security.RequestContext
 		summary += fmt.Sprintf("\n\n*Auto-save failed — %s*", truncateSaveError(saveErr))
 	}
 
-	if len(autoCreatedConfigs) > 0 {
-		summary += fmt.Sprintf("\n\n*Created %d placeholder config(s) so the automation could save: `%s`. Each was set to `%s` — replace via Configs before running the automation.*",
-			len(autoCreatedConfigs), strings.Join(autoCreatedConfigs, "`, `"), autoCreatedConfigPlaceholder)
+	if len(missingConfigs) > 0 {
+		summary += fmt.Sprintf("\n\n*Saved as **INACTIVE** because %d config value(s) are not set yet: `%s`. Create them under Configs (use a `secret`-typed config for API keys/tokens), then set the automation to **ACTIVE** to run it.*",
+			len(missingConfigs), strings.Join(missingConfigs, "`, `"))
 	}
 
 	resp.Response = []string{summary}
@@ -1485,9 +1571,102 @@ func (a *WorkflowBuilderAgent) autoSaveWorkflow(ctx *security.RequestContext, wo
 
 	resp, err := tools.DoRunbookRequest("POST", "workflows", definition, a.accountId, tenantId, userId)
 	if err != nil {
+		// The builder is invoked statelessly per agent-as-tool call, so a re-delegation of the same
+		// build (e.g. the WorkflowAgent retrying) re-POSTs and collides on the per-tenant/account name
+		// uniqueness constraint. If THIS conversation already created that workflow
+		// (created_from_session_id matches), converge by updating it instead of failing — an
+		// idempotent save. We never overwrite a workflow we can't prove this session created, so a
+		// name owned by a different/human-authored workflow is left untouched (data-loss guard).
+		if isNameConflictError(err) && sessionId != "" {
+			if existingId := a.findOwnWorkflowByName(ctx, workflowDefinitionName(definition), sessionId); existingId != "" {
+				putResp, putErr := tools.DoRunbookRequest("PUT", fmt.Sprintf("workflows/%s", existingId), definition, a.accountId, tenantId, userId)
+				if putErr == nil {
+					ctx.GetLogger().Info("workflow_builder: create collided with this session's prior save, converged via update", "workflow_id", existingId)
+					return extractWorkflowId(putResp, existingId), nil
+				}
+				ctx.GetLogger().Warn("workflow_builder: idempotent update after create-conflict failed", "workflow_id", existingId, "error", putErr)
+			}
+			return "", fmt.Errorf("workflow_builder: an automation named %q already exists for this account; rename it or open the existing one to edit", workflowDefinitionName(definition))
+		}
 		return "", fmt.Errorf("workflow_builder: auto-create failed: %w", err)
 	}
 	return extractWorkflowId(resp, ""), nil
+}
+
+// isNameConflictError reports whether a DoRunbookRequest error is the runbook server's
+// per-tenant/account name-uniqueness rejection (HTTP 400/409 with an "already exists" body).
+func isNameConflictError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "already exists")
+}
+
+// workflowDefinitionName extracts the top-level "name" from an EnsureDefinitionObject payload
+// ({"name": ..., "definition": {...}}). Returns "" when absent.
+func workflowDefinitionName(definition interface{}) string {
+	if defMap, ok := definition.(map[string]interface{}); ok {
+		if name, ok := defMap["name"].(string); ok {
+			return name
+		}
+	}
+	return ""
+}
+
+// findOwnWorkflowByName resolves the ID of a workflow with the exact given name that was created
+// from sessionId — i.e. one this conversation owns. Returns "" if name/session is empty, the lookup
+// fails, no exact-name match exists, or no match proves same-session ownership (the conservative
+// data-loss guard: we only converge onto a workflow we can show this session created).
+func (a *WorkflowBuilderAgent) findOwnWorkflowByName(ctx *security.RequestContext, name, sessionId string) string {
+	if name == "" || sessionId == "" || ctx == nil || ctx.GetSecurityContext() == nil {
+		return ""
+	}
+	// Fail closed in a multi-tenant store: a blank tenant or account would issue an unscoped lookup.
+	tenantId := ctx.GetSecurityContext().GetTenantId()
+	if tenantId == "" || a.accountId == "" {
+		return ""
+	}
+	resp, err := tools.DoRunbookRequest("GET", fmt.Sprintf("workflows?name=%s", url.QueryEscape(name)), nil, a.accountId, tenantId, ctx.GetSecurityContext().GetUserId())
+	if err != nil {
+		ctx.GetLogger().Warn("workflow_builder: findOwnWorkflowByName: list failed", "name", name, "error", err)
+		return ""
+	}
+	var parsed struct {
+		Workflows []map[string]interface{} `json:"workflows"`
+	}
+	if jsonErr := json.Unmarshal(resp, &parsed); jsonErr != nil {
+		ctx.GetLogger().Warn("workflow_builder: findOwnWorkflowByName: parse failed", "error", jsonErr)
+		return ""
+	}
+	for _, wf := range parsed.Workflows {
+		// The server `name` filter is a partial match — require an exact name match.
+		if wfName, _ := wf["name"].(string); wfName != name {
+			continue
+		}
+		// Ownership: created_from_session_id may live at the top level or inside the definition,
+		// depending on how the server persists it. Only converge when it equals this session.
+		if workflowSessionId(wf) != sessionId {
+			continue
+		}
+		if id, ok := wf["id"].(string); ok && id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+// workflowSessionId reads created_from_session_id from a workflow object, tolerating it being
+// stored either at the top level or nested under "definition".
+func workflowSessionId(wf map[string]interface{}) string {
+	if sid, ok := wf["created_from_session_id"].(string); ok && sid != "" {
+		return sid
+	}
+	if def, ok := wf["definition"].(map[string]interface{}); ok {
+		if sid, ok := def["created_from_session_id"].(string); ok && sid != "" {
+			return sid
+		}
+	}
+	return ""
 }
 
 // extractWorkflowId tries to extract the workflow ID from the server response.
@@ -1560,7 +1739,7 @@ Return ONLY the JSON object.`, taskTypeNames, envContext)
 		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
 	}
 
-	completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false)
+	completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
 	if err != nil {
 		return "", err
 	}
@@ -1995,7 +2174,7 @@ NOTE: In all user-facing text, refer to these as "automations" (not "workflows")
 		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
 	}
 
-	completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false)
+	completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
 	if err != nil {
 		return "", err
 	}
@@ -2061,7 +2240,7 @@ RULES:
 		llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf("Original request: %s\n\nPlease update the plan based on my feedback: %s", request.Query, feedback)),
 	}
 
-	completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false)
+	completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
 	if err != nil {
 		return "", err
 	}
@@ -2734,6 +2913,11 @@ func (a *WorkflowBuilderAgent) toolValidate(ctx *security.RequestContext) string
 			"circular dependency",
 			"parameters validation failed",
 			"non-existent task",
+			// Widened: runtime/engine errors that are unambiguously real and must never soft-pass.
+			"template execution panic",
+			"workflow stalled",
+			"matrix",
+			"failed to process",
 		}
 		for _, pattern := range structuralErrorPatterns {
 			if strings.Contains(errMsg, pattern) {
@@ -2741,15 +2925,65 @@ func (a *WorkflowBuilderAgent) toolValidate(ctx *security.RequestContext) string
 			}
 		}
 
-		// Template rendering errors for runtime values (Configs, Inputs, Tasks outputs)
-		// are expected during static validation — these resolve at execution time.
+		// Template rendering errors are fail-closed. Only defer the narrow case where the
+		// expression genuinely references a runtime value (task output / config / input) that
+		// cannot be evaluated statically. A template error that carries a syntax/filter marker
+		// (bad filter, unsupported JMESPath projection, malformed expression) is a REAL bug and
+		// must fail even though it shares the "unable to execute template" prefix — otherwise a
+		// typo'd template soft-passes and only breaks at execution time.
+		// NOTE: fully disambiguating ambiguous template errors needs an execution-grounded
+		// dry-run (#31496); until then we err toward failing closed.
 		if strings.Contains(errMsg, "unable to execute template") {
+			if isRealTemplateSyntaxError(errMsg) || !referencesRuntimeValue(errMsg) {
+				return fmt.Sprintf("Validation FAILED: %s\n\nThis template expression could not be evaluated and does not clearly reference a runtime value, so it is treated as a real error. Fix the template (check filters, expression syntax, and that any Tasks/Configs/Inputs reference is correct), then call validate again.", errMsg)
+			}
 			return "Validation OK (with template warnings). Some template expressions cannot be evaluated during validation because they reference runtime values (task outputs, configs, inputs). They will resolve correctly at execution time. The automation structure is valid. Proceed to finalize."
 		}
 		return fmt.Sprintf("Validation FAILED: %s", errMsg)
 	}
 
 	return "Validation OK. The automation is valid."
+}
+
+// isRealTemplateSyntaxError reports whether an "unable to execute template" error carries a marker
+// of a genuine syntax/filter mistake (bad filter, unsupported JMESPath/JSONPath projection,
+// malformed expression) rather than a value that is merely unknown until execution time. Such
+// errors must fail validation — soft-passing them ships a template that only breaks at run time.
+func isRealTemplateSyntaxError(errMsg string) bool {
+	lower := strings.ToLower(errMsg)
+	markers := []string{
+		"invalid expression",
+		"unexpected",
+		"unable to parse",
+		"syntax error",
+		"no filter named",
+		"unknown filter",
+		"filter not found",
+		"invalid filter",
+		"tojson", // common mistake: `tojson` instead of the supported `to_json`
+		"[*]",    // JMESPath/JSONPath projections are not valid Jinja2 and fail validation
+		"[?",
+		"near \"",
+	}
+	for _, m := range markers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// referencesRuntimeValue reports whether a template error clearly involves a value only known at
+// execution time (task output / config / input). Those legitimately cannot render during static
+// validation, so they are safe to defer to execution.
+func referencesRuntimeValue(errMsg string) bool {
+	markers := []string{"Tasks[", "Tasks.", "Configs.", "Inputs.", ".output", "runtime"}
+	for _, m := range markers {
+		if strings.Contains(errMsg, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // toolFinalize returns the complete workflow JSON.
@@ -2891,6 +3125,36 @@ func (a *WorkflowBuilderAgent) executeWorkflowTool(ctx *security.RequestContext,
 	}
 }
 
+// persistBuildToolCall records a single build-tool invocation to llm_conversation_tool_calls so a
+// build is debuggable from the database. The bespoke runToolLoop calls the build tools as plain
+// methods (not framework NBTools), so it bypasses the planner's automatic tool-call persistence and
+// previously left zero rows across every build (#31492). Best-effort: a persistence failure or an
+// unavailable DAO must never break the build itself.
+func (a *WorkflowBuilderAgent) persistBuildToolCall(ctx *security.RequestContext, request core.NBAgentRequest, toolName, toolInput, thought, observation string) {
+	// Skip when any identifier the row requires is missing: conversation_id, message_id and
+	// agent_id are uuid columns that reject empty strings, and a row without them is unattributable
+	// anyway. Persistence is best-effort observability and must never block the build.
+	if request.ConversationId == "" || request.MessageId == "" || request.AgentId == "" || request.AccountId == "" {
+		return
+	}
+	dao := core.GetConversationDao()
+	if dao == nil {
+		return
+	}
+	status := toolcore.NBToolResponseStatusSuccess
+	if strings.HasPrefix(observation, "Error") || strings.Contains(observation, "Validation FAILED") || strings.HasPrefix(observation, "Unknown tool") {
+		status = toolcore.NBToolResponseStatusError
+	}
+	// Fresh tool_id per call so each iteration is its own row (the upsert key includes tool_id).
+	if err := dao.SaveConversationToolCall(
+		request.ConversationId, request.AccountId, request.UserId, request.MessageId, request.AgentId,
+		uuid.New().String(), toolName, toolInput, thought, "", observation,
+		status, toolcore.NBToolTypeTool, nil, nil, nil,
+	); err != nil {
+		ctx.GetLogger().Warn("workflow_builder: failed to persist build tool call", "tool", toolName, "error", err)
+	}
+}
+
 // runToolLoop runs an agentic tool-calling loop where the LLM reasons step-by-step
 // and calls workflow manipulation tools. This follows the same XML format as the ReAct planner.
 func (a *WorkflowBuilderAgent) runToolLoop(ctx *security.RequestContext, request core.NBAgentRequest, systemPrompt string, userMessage string) (string, error) {
@@ -3002,7 +3266,9 @@ RULES:
 
 		// Execute the tool
 		ctx.GetLogger().Info("workflow_builder: tool call", "tool", toolName, "iteration", i+1)
+		thought := common.XmlExtractTagContent(content, "thought")
 		observation := a.executeWorkflowTool(ctx, toolName, toolInput, cachedTaskTypes)
+		a.persistBuildToolCall(ctx, request, toolName, toolInput, thought, observation)
 
 		// Trim content to just the tool call XML before appending to message history.
 		// This prevents context bloat from any extra content the LLM may have generated.
@@ -3329,89 +3595,4 @@ USER FEEDBACK / CLARIFICATION:
 %s%s`, originalQuery, feedback, prevSection)
 
 	return buildFixDiagnosisPrompt(augmentedQuery, errorContext, targetExecutionId)
-}
-
-// WorkflowBuilderSummarizerAgent - Extracts final JSON from multi-attempt responses
-type WorkflowBuilderSummarizerAgent struct{}
-
-func (p WorkflowBuilderSummarizerAgent) GetName() string {
-	return WorkflowBuilderSummarizerToolName
-}
-
-func (a WorkflowBuilderSummarizerAgent) GetNameAliases() []string {
-	return []string{"AutomationSummarizer", "WorkflowSummarizer", "workflow_builder_summarizer"}
-}
-
-func (p WorkflowBuilderSummarizerAgent) GetDescription() string {
-	return "Specialized summarizer for AutomationBuilder that extracts only the final successful Nudgebee automation JSON"
-}
-
-func (l WorkflowBuilderSummarizerAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
-	return core.NBAgentPrompt{}
-}
-
-func (p WorkflowBuilderSummarizerAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
-	return []toolcore.NBTool{}
-}
-
-func (l WorkflowBuilderSummarizerAgent) GetPlannerType() core.AgentPlannerType {
-	return core.AgentPlannerTypeCustom
-}
-
-func (l WorkflowBuilderSummarizerAgent) Execute(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
-	queryContext := request.QueryContext
-
-	var args struct {
-		Query   string `json:"query"`
-		Context string `json:"context"`
-	}
-	if err := common.UnmarshalJson([]byte(request.Query), &args); err != nil {
-		args.Query = request.Query
-	}
-	command := strings.TrimSpace(args.Query)
-	if args.Context != "" {
-		queryContext = args.Context + "\n\n" + queryContext
-	}
-
-	systemPrompt := `You are the WorkflowBuilder output extractor for Nudgebee Runbook Server.
-
-CONTEXT: The WorkflowBuilder agent generates Nudgebee workflows and validates them.
-
-YOUR TASK: Extract ONLY the FINAL SUCCESSFUL NUDGEBEE workflow JSON.
-
-HOW TO IDENTIFY THE CORRECT NUDGEBEE WORKFLOW:
-1. Look for JSON code blocks (` + "```json ... ```" + `) in the response
-2. It MUST be Nudgebee format with:
-   - Top level: { "name": ..., "definition": { ... } }
-   - Inside definition: "version", "triggers", "tasks"
-   - Each task has: "id", "type", "params"
-3. It must be the LAST valid Nudgebee workflow in the response
-
-OUTPUT RULES:
-1. Return ONLY the final Nudgebee workflow JSON in a markdown code block
-2. Use proper JSON formatting with 2-space indentation
-3. The output MUST start with ` + "```json" + ` and end with ` + "```" + `
-
-EXAMPLE CORRECT OUTPUT:
-` + "```json\n{\n  \"name\": \"my-workflow\",\n  \"definition\": {\n    \"version\": \"v1\",\n    \"triggers\": [{\"type\": \"manual\"}],\n    \"tasks\": [...]\n  }\n}\n```"
-
-	// Merge queryContext and command into a single human message to avoid consecutive
-	// human messages, which cause Google AI CountTokens API to reject the request.
-	messageContent := []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
-		llms.TextParts(llms.ChatMessageTypeHuman, queryContext+"\n\n"+command),
-	}
-
-	completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false)
-	if err != nil {
-		ctx.GetLogger().Error("workflow_builder_summarizer: unable to generate content", "error", err)
-		return core.NBAgentResponse{Response: nil}, err
-	}
-
-	content := strings.TrimSpace(completion.Choices[0].Content)
-	if len(content) == 0 {
-		return core.NBAgentResponse{Response: []string{request.Query}}, nil
-	}
-
-	return core.NBAgentResponse{Response: []string{content}}, nil
 }

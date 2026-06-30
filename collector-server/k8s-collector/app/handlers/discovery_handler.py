@@ -83,6 +83,8 @@ nodes_on_conflict = (
     "node_zone = EXCLUDED.node_zone, "
     "node_creation_time = EXCLUDED.node_creation_time, "
     "is_active = EXCLUDED.is_active, "
+    "conditions = EXCLUDED.conditions, "
+    "taints = EXCLUDED.taints, "
     "cost = EXCLUDED.cost "
     f"WHERE {_version_where('k8s_nodes')}"
 )

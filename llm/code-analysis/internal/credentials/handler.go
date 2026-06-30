@@ -1,30 +1,20 @@
 package credentials
 
 import (
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 )
 
-type CredentialHandler struct {
-	encryptionKey []byte
-}
+type CredentialHandler struct{}
 
-func NewCredentialHandler(encryptionKey string) *CredentialHandler {
-	// Use first 32 bytes of key for AES-256
-	key := make([]byte, 32)
-	copy(key, []byte(encryptionKey))
-	return &CredentialHandler{encryptionKey: key}
+func NewCredentialHandler() *CredentialHandler {
+	return &CredentialHandler{}
 }
 
 type GitCredentials struct {
-	Type string `json:"type" binding:"required,oneof=token ssh_key basic encrypted env_ref"`
+	Type string `json:"type" binding:"required,oneof=token ssh_key basic env_ref none"`
 
 	// For type: "token" (GitHub PAT, GitLab token, etc.)
 	Token string `json:"token,omitempty"`
@@ -36,9 +26,6 @@ type GitCredentials struct {
 	// For type: "basic" (username/password)
 	Username string `json:"username,omitempty"`
 	Password string `json:"password,omitempty"`
-
-	// For type: "encrypted" (AES encrypted credentials)
-	EncryptedData string `json:"encrypted_data,omitempty"`
 
 	// For type: "env_ref" (environment variable reference)
 	EnvRef string `json:"env_ref,omitempty"`
@@ -80,9 +67,6 @@ func (ch *CredentialHandler) ResolveCredentials(creds GitCredentials) (*Resolved
 			Password: creds.Password,
 		}, nil
 
-	case "encrypted":
-		return ch.decryptCredentials(creds.EncryptedData)
-
 	case "env_ref":
 		return ch.resolveFromEnv(creds.EnvRef)
 
@@ -95,43 +79,6 @@ func (ch *CredentialHandler) ResolveCredentials(creds GitCredentials) (*Resolved
 	default:
 		return nil, fmt.Errorf("unsupported credential type: %s", creds.Type)
 	}
-}
-
-func (ch *CredentialHandler) decryptCredentials(encryptedData string) (*ResolvedCredentials, error) {
-	// Decode base64
-	data, err := base64.StdEncoding.DecodeString(encryptedData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode encrypted data: %w", err)
-	}
-
-	// Decrypt using AES-GCM
-	block, err := aes.NewCipher(ch.encryptionKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create cipher: %w", err)
-	}
-
-	aesgcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create GCM: %w", err)
-	}
-
-	if len(data) < aesgcm.NonceSize() {
-		return nil, errors.New("encrypted data too short")
-	}
-
-	nonce, ciphertext := data[:aesgcm.NonceSize()], data[aesgcm.NonceSize():]
-	plaintext, err := aesgcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt: %w", err)
-	}
-
-	// Unmarshal JSON
-	var creds ResolvedCredentials
-	if err := json.Unmarshal(plaintext, &creds); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal credentials: %w", err)
-	}
-
-	return &creds, nil
 }
 
 func (ch *CredentialHandler) resolveFromEnv(envRef string) (*ResolvedCredentials, error) {
@@ -159,36 +106,4 @@ func (ch *CredentialHandler) decodeIfBase64(data string) (string, error) {
 		return string(decoded), nil
 	}
 	return data, nil
-}
-
-// EncryptCredentials encrypts credentials for secure storage/transmission
-func (ch *CredentialHandler) EncryptCredentials(creds ResolvedCredentials) (string, error) {
-	// Marshal to JSON
-	jsonData, err := json.Marshal(creds)
-	if err != nil {
-		return "", err
-	}
-
-	// Create cipher
-	block, err := aes.NewCipher(ch.encryptionKey)
-	if err != nil {
-		return "", err
-	}
-
-	aesgcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", fmt.Errorf("failed to create GCM: %w", err)
-	}
-
-	// Create nonce
-	nonce := make([]byte, aesgcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", err
-	}
-
-	// Encrypt
-	ciphertext := aesgcm.Seal(nonce, nonce, jsonData, nil)
-
-	// Encode to base64
-	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }

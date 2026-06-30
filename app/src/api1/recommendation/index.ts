@@ -326,6 +326,8 @@ async function getK8sRecommendationMockData({
   _accountId,
   category,
   ruleName,
+  limit = 10,
+  offset = 0,
 }: {
   _accountId?: string;
   category?: string;
@@ -339,46 +341,55 @@ async function getK8sRecommendationMockData({
   limit?: number;
   offset?: number;
 }) {
+  const sliceRecommendations = (data: any) => {
+    const all = data?.recommendation ?? [];
+    const totalCount = data?.recommendation_aggregate?.aggregate?.count ?? all.length;
+    return {
+      ...data,
+      recommendation: all.slice(Number(offset), Number(offset) + Number(limit)),
+      recommendation_aggregate: { aggregate: { count: totalCount } },
+    };
+  };
   const recommendationDemo = await getMockData('recommendations');
   if (category === 'InfraUpgrade' && ruleName === 'k8s_api_deprecated') {
     return {
-      data: recommendationDemo.k8s_api_deleted.data,
+      data: sliceRecommendations(recommendationDemo.k8s_api_deleted.data),
     };
   } else if (category === 'InfraUpgrade' && ruleName === 'helm_chart_upgrade') {
     return {
-      data: recommendationDemo.HelmUpgrade.data,
+      data: sliceRecommendations(recommendationDemo.HelmUpgrade.data),
     };
   } else if (category === 'RightSizing' && ruleName === 'pod_right_sizing') {
     return {
-      data: recommendationDemo.RightSizing.list_k8_recommendation.data,
+      data: sliceRecommendations(recommendationDemo.RightSizing.list_k8_recommendation.data),
     };
   } else if (category === 'RightSizing' && ruleName === 'unused_pvc') {
     return {
-      data: recommendationDemo.UnusedVolume.list_k8_recommendation.data,
+      data: sliceRecommendations(recommendationDemo.UnusedVolume.list_k8_recommendation.data),
     };
   } else if (category === 'Configuration' && ruleName === 'certificate_expiry') {
     return {
-      data: recommendationDemo.CertificateExpiry.data,
+      data: sliceRecommendations(recommendationDemo.CertificateExpiry.data),
     };
   } else if (category === 'Configuration') {
     return {
-      data: recommendationDemo.BestPractices.list_k8_recommendation.data,
+      data: sliceRecommendations(recommendationDemo.BestPractices.list_k8_recommendation.data),
     };
   } else if (category === 'RightSizing' && ruleName === 'abandoned_resource') {
     return {
-      data: recommendationDemo.AbandonedApplications.list_k8_recommendation.data,
+      data: sliceRecommendations(recommendationDemo.AbandonedApplications.list_k8_recommendation.data),
     };
   } else if (category === 'RightSizing' && ruleName === 'pv_rightsize') {
     return {
-      data: recommendationDemo.PVRightSizing.list_k8_recommendation.data,
+      data: sliceRecommendations(recommendationDemo.PVRightSizing.list_k8_recommendation.data),
     };
   } else if (category === 'RightSizing' && ruleName === 'replica_right_sizing') {
     return {
-      data: recommendationDemo.ReplicaRightSizing.list_k8_recommendation.data,
+      data: sliceRecommendations(recommendationDemo.ReplicaRightSizing.list_k8_recommendation.data),
     };
   } else if (category === 'K8sSpotRecommendation') {
     return {
-      data: recommendationDemo.SpotRecommendation.list_k8_recommendation.data,
+      data: sliceRecommendations(recommendationDemo.SpotRecommendation.list_k8_recommendation.data),
     };
   } else if (category === 'Security' && ruleName === 'k8s-cis-1.23') {
     return {
@@ -428,6 +439,13 @@ async function getK8sRecommendationSummaryMockData({
     return {
       data: recommendationDemo.UnusedVolume.k8s_recommendation_summary.data,
     };
+  } else if (category === 'Configuration' && ruleName === 'certificate_expiry') {
+    const certCount = recommendationDemo.CertificateExpiry.data?.recommendation?.length ?? 0;
+    return {
+      data: {
+        recommendation_aggregate: { aggregate: { count: certCount, sum: { estimated_savings: 0 } } },
+      },
+    };
   } else if (category === 'Configuration') {
     return {
       data: recommendationDemo.BestPractices.k8s_recommendation_summary.data,
@@ -453,6 +471,13 @@ async function getK8sRecommendationSummaryMockData({
 
 const apiRecommendations = {
   async getAutoOptimize(query: any) {
+    if (query?.accountId === 'demo') {
+      const demoData: any = await getMockData('k8s-auto-optimize');
+      const allDemoAutoPilots: any[] = demoData?.auto_pilot ?? [];
+      const categories = query.category ? (Array.isArray(query.category) ? query.category : [query.category]) : null;
+      const filtered = categories ? allDemoAutoPilots.filter((ap: any) => categories.includes(ap.category)) : allDemoAutoPilots;
+      return { data: { auto_pilot: filtered } };
+    }
     try {
       const gqlQuery: any = {};
       if (query.accountId) {
@@ -1453,6 +1478,8 @@ const apiRecommendations = {
           event_cloud_account_id
           event_priority
           event_category
+          conversation_session_id
+          conversation_title
         }
       }
       event_resolution_aggregate: event_resolution_groupings_v2(where: $whereAgg) {
@@ -1981,6 +2008,7 @@ const apiRecommendations = {
       recommendation_resolution: recommendation_resolution_v2(where: $where, limit: $limit, offset: $offset, order_by: [{column: "updated_at", order: desc}]) {
         rows {
           id
+          recommendation_id
           status
           status_message
           resolver_type
@@ -2046,6 +2074,7 @@ const apiRecommendations = {
           recommendation_resolution: rows.map((r: any) => ({
             ...r,
             data: typeof r.data === 'string' ? safeJSONParse(r.data) : r.data,
+            recommendation_id: r.recommendation_id,
             recommendation: {
               recommendation: r.rec_recommendation,
               rule_name: r.rec_rule_name,

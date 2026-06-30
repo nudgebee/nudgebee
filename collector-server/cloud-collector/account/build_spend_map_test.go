@@ -16,7 +16,7 @@ import (
 func TestBuildSpendMap_GCPNullResourceName(t *testing.T) {
 	account := providers.Account{
 		CloudProvider: "GCP",
-		AccountNumber: "nudgebee-dev",
+		AccountNumber: "test-cluster-dev",
 	}
 	day := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
 
@@ -26,7 +26,7 @@ func TestBuildSpendMap_GCPNullResourceName(t *testing.T) {
 		{
 			ProductCode:        "Artifact Registry",
 			ResourceType:       "artifact-registry",
-			ResourceId:         "nudgebee-dev",
+			ResourceId:         "test-cluster-dev",
 			ResourceRegionCode: "us-central1",
 			CostCategory:       providers.UsageReportItemTypeUsage,
 			Cost:               100.0,
@@ -38,7 +38,7 @@ func TestBuildSpendMap_GCPNullResourceName(t *testing.T) {
 		{
 			ProductCode:        "BigQuery",
 			ResourceType:       "bigquery",
-			ResourceId:         "nudgebee-dev",
+			ResourceId:         "test-cluster-dev",
 			ResourceRegionCode: "us-central1",
 			CostCategory:       providers.UsageReportItemTypeUsage,
 			Cost:               0.78,
@@ -50,7 +50,7 @@ func TestBuildSpendMap_GCPNullResourceName(t *testing.T) {
 		{
 			ProductCode:        "VM Manager",
 			ResourceType:       "vm-manager",
-			ResourceId:         "nudgebee-dev",
+			ResourceId:         "test-cluster-dev",
 			ResourceRegionCode: "us-central1",
 			CostCategory:       providers.UsageReportItemTypeUsage,
 			Cost:               168.0,
@@ -65,9 +65,9 @@ func TestBuildSpendMap_GCPNullResourceName(t *testing.T) {
 
 	// Mock: each service has a unique cloud_resource_id UUID
 	extIdMap := map[string]string{
-		"arn:gcp:artifact-registry:us-central1:nudgebee-dev:artifact-registry:nudgebee-dev": "uuid-artifact-registry",
-		"arn:gcp:bigquery:us-central1:nudgebee-dev:bigquery:nudgebee-dev":                   "uuid-bigquery",
-		"arn:gcp:vm-manager:us-central1:nudgebee-dev:vm-manager:nudgebee-dev":               "uuid-vm-manager",
+		"arn:gcp:artifact-registry:us-central1:test-cluster-dev:artifact-registry:test-cluster-dev": "uuid-artifact-registry",
+		"arn:gcp:bigquery:us-central1:test-cluster-dev:bigquery:test-cluster-dev":                   "uuid-bigquery",
+		"arn:gcp:vm-manager:us-central1:test-cluster-dev:vm-manager:test-cluster-dev":               "uuid-vm-manager",
 	}
 
 	spendMap, err := buildSpendMap(account, usageReport, extIdMap, "tenant-1", "account-1")
@@ -100,7 +100,7 @@ func TestBuildSpendMap_GCPNullResourceName(t *testing.T) {
 func TestBuildSpendMap_CreditsSeparatePerService(t *testing.T) {
 	account := providers.Account{
 		CloudProvider: "GCP",
-		AccountNumber: "nudgebee-dev",
+		AccountNumber: "test-cluster-dev",
 	}
 	day := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
 
@@ -116,7 +116,7 @@ func TestBuildSpendMap_CreditsSeparatePerService(t *testing.T) {
 			CostCurrency:       "INR",
 			StartDate:          day,
 			EndDate:            day.Add(24*time.Hour - time.Nanosecond),
-			ResourceTags:       map[string][]string{"nb_credit_source_resource": {"nudgebee-dev"}},
+			ResourceTags:       map[string][]string{"nb_credit_source_resource": {"test-cluster-dev"}},
 		},
 		{
 			ProductCode:        "Compute Engine",
@@ -129,7 +129,7 @@ func TestBuildSpendMap_CreditsSeparatePerService(t *testing.T) {
 			CostCurrency:       "INR",
 			StartDate:          day,
 			EndDate:            day.Add(24*time.Hour - time.Nanosecond),
-			ResourceTags:       map[string][]string{"nb_credit_source_resource": {"nudgebee-dev/some-vm"}},
+			ResourceTags:       map[string][]string{"nb_credit_source_resource": {"test-cluster-dev/some-vm"}},
 		},
 	}
 
@@ -155,7 +155,7 @@ func TestBuildSpendMap_CreditsSeparatePerService(t *testing.T) {
 func TestBuildSpendMap_SameServiceSameDayAggregates(t *testing.T) {
 	account := providers.Account{
 		CloudProvider: "GCP",
-		AccountNumber: "nudgebee-dev",
+		AccountNumber: "test-cluster-dev",
 	}
 	day := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
 
@@ -164,7 +164,7 @@ func TestBuildSpendMap_SameServiceSameDayAggregates(t *testing.T) {
 		{
 			ProductCode:        "Cloud SQL",
 			ResourceType:       "cloud-sql",
-			ResourceId:         "nudgebee-dev",
+			ResourceId:         "test-cluster-dev",
 			ResourceRegionCode: "us-central1",
 			CostCategory:       providers.UsageReportItemTypeUsage,
 			Cost:               50.0,
@@ -176,7 +176,7 @@ func TestBuildSpendMap_SameServiceSameDayAggregates(t *testing.T) {
 		{
 			ProductCode:        "Cloud SQL",
 			ResourceType:       "cloud-sql",
-			ResourceId:         "nudgebee-dev",
+			ResourceId:         "test-cluster-dev",
 			ResourceRegionCode: "us-central1",
 			CostCategory:       providers.UsageReportItemTypeTax,
 			Cost:               5.0,
@@ -189,7 +189,7 @@ func TestBuildSpendMap_SameServiceSameDayAggregates(t *testing.T) {
 
 	usageReport := providers.GetUsageReportResponse{Items: items}
 	extIdMap := map[string]string{
-		"arn:gcp:cloud-sql:us-central1:nudgebee-dev:cloud-sql:nudgebee-dev": "uuid-cloud-sql",
+		"arn:gcp:cloud-sql:us-central1:test-cluster-dev:cloud-sql:test-cluster-dev": "uuid-cloud-sql",
 	}
 
 	spendMap, err := buildSpendMap(account, usageReport, extIdMap, "tenant-1", "account-1")
@@ -260,7 +260,7 @@ func TestBuildSpendMap_AWSUniqueResourceIds(t *testing.T) {
 func TestBuildSpendMap_DifferentRegionsSameService(t *testing.T) {
 	account := providers.Account{
 		CloudProvider: "GCP",
-		AccountNumber: "nudgebee-dev",
+		AccountNumber: "test-cluster-dev",
 	}
 	day := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
 
@@ -268,7 +268,7 @@ func TestBuildSpendMap_DifferentRegionsSameService(t *testing.T) {
 		{
 			ProductCode:        "Artifact Registry",
 			ResourceType:       "artifact-registry",
-			ResourceId:         "nudgebee-dev",
+			ResourceId:         "test-cluster-dev",
 			ResourceRegionCode: "asia-south1",
 			CostCategory:       providers.UsageReportItemTypeUsage,
 			Cost:               50.0,
@@ -280,7 +280,7 @@ func TestBuildSpendMap_DifferentRegionsSameService(t *testing.T) {
 		{
 			ProductCode:        "Artifact Registry",
 			ResourceType:       "artifact-registry",
-			ResourceId:         "nudgebee-dev",
+			ResourceId:         "test-cluster-dev",
 			ResourceRegionCode: "us-central1",
 			CostCategory:       providers.UsageReportItemTypeUsage,
 			Cost:               30.0,
@@ -293,8 +293,8 @@ func TestBuildSpendMap_DifferentRegionsSameService(t *testing.T) {
 
 	usageReport := providers.GetUsageReportResponse{Items: items}
 	extIdMap := map[string]string{
-		"arn:gcp:artifact-registry:asia-south1:nudgebee-dev:artifact-registry:nudgebee-dev": "uuid-ar-asia",
-		"arn:gcp:artifact-registry:us-central1:nudgebee-dev:artifact-registry:nudgebee-dev": "uuid-ar-us",
+		"arn:gcp:artifact-registry:asia-south1:test-cluster-dev:artifact-registry:test-cluster-dev": "uuid-ar-asia",
+		"arn:gcp:artifact-registry:us-central1:test-cluster-dev:artifact-registry:test-cluster-dev": "uuid-ar-us",
 	}
 
 	spendMap, err := buildSpendMap(account, usageReport, extIdMap, "tenant-1", "account-1")
@@ -309,7 +309,7 @@ func TestBuildSpendMap_DifferentRegionsSameService(t *testing.T) {
 func TestBuildSpendMap_EmptyExternalResourceId(t *testing.T) {
 	account := providers.Account{
 		CloudProvider: "GCP",
-		AccountNumber: "nudgebee-dev",
+		AccountNumber: "test-cluster-dev",
 	}
 	day := time.Date(2026, 4, 15, 0, 0, 0, 0, time.UTC)
 
@@ -317,7 +317,7 @@ func TestBuildSpendMap_EmptyExternalResourceId(t *testing.T) {
 		{
 			ProductCode:        "Cloud Functions",
 			ResourceType:       "cloud-functions",
-			ResourceId:         "nudgebee-dev",
+			ResourceId:         "test-cluster-dev",
 			ResourceRegionCode: "us-central1",
 			CostCategory:       providers.UsageReportItemTypeUsage,
 			Cost:               10.0,
@@ -329,7 +329,7 @@ func TestBuildSpendMap_EmptyExternalResourceId(t *testing.T) {
 		{
 			ProductCode:        "Cloud Run",
 			ResourceType:       "cloud-run",
-			ResourceId:         "nudgebee-dev",
+			ResourceId:         "test-cluster-dev",
 			ResourceRegionCode: "us-central1",
 			CostCategory:       providers.UsageReportItemTypeUsage,
 			Cost:               20.0,

@@ -1,22 +1,8 @@
 import re
 
 import bcrypt
-from Cryptodome.Cipher import AES
 
-from config import Configs
-
-AES_KEY = Configs.NUDGEBEE_ENCRYPTION_KEY
 MEMORY_PATTERN = re.compile(r"^(\d+(?:\.\d+)?)\s*([KMGT]i?B?|B)$", re.IGNORECASE)
-
-
-def decrypt(encrypted_msg):
-    if not encrypted_msg:
-        return ""
-    key = bytes.fromhex(AES_KEY)
-    data = bytes.fromhex(encrypted_msg)
-    cipher = AES.new(key, AES.MODE_GCM, data[:12])  # nonce
-    dec = cipher.decrypt_and_verify(data[12:-16], data[-16:])  # ciphertext, tag
-    return dec.decode("UTF-8")
 
 
 def validate_key(key: str, hashed_key: str) -> bool:

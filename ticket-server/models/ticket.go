@@ -28,6 +28,15 @@ type Ticket struct {
 	CreatedAt        *time.Time  `json:"created_at,omitempty" db:"created_at"`
 	AdditionalFields interface{} `json:"additional_fields,omitempty" db:"-"`
 	Comment          string      `json:"comment,omitempty" db:"-"`
+	// Assignees, Labels, Milestone and UpdatedAt are normalized metadata
+	// populated only by per-platform Get from the live source record. They have
+	// no backing tickets column (db:"-") and are omitted when the connector does
+	// not supply them. Assignee/Reporter/ProjectKey above are also populated on
+	// Get but, unlike these, double as persisted columns on Create.
+	Assignees []string   `json:"assignees,omitempty" db:"-"`
+	Labels    []string   `json:"labels,omitempty" db:"-"`
+	Milestone string     `json:"milestone,omitempty" db:"-"`
+	UpdatedAt *time.Time `json:"updated_at,omitempty" db:"-"`
 	// Raw carries every field returned by the source platform on Get,
 	// including provider-specific fields not in the normalized Ticket struct
 	// (e.g. ServiceNow cmdb_ci, business_service, all u_* custom fields).

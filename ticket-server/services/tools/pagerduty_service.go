@@ -134,6 +134,27 @@ func (s *PagerDutyService) Get(ctx *gin.Context, config models.TicketConfigurati
 		}
 	}
 
+	// PagerDuty has no generic "updated" timestamp; the last status change is
+	// the closest signal of when the incident last moved.
+	var updatedAt *time.Time
+	if incident.LastStatusChangeAt != "" {
+		parsed, err := time.Parse(time.RFC3339, incident.LastStatusChangeAt)
+		if err == nil {
+			updatedAt = &parsed
+		}
+	}
+
+	assignees := make([]string, 0, len(incident.Assignments))
+	for _, a := range incident.Assignments {
+		if name := a.Assignee.Summary; name != "" {
+			assignees = append(assignees, name)
+		}
+	}
+	var assignee string
+	if len(assignees) > 0 {
+		assignee = assignees[0]
+	}
+
 	var urgency string
 	if incident.Urgency != "" {
 		urgency = incident.Urgency
@@ -145,9 +166,12 @@ func (s *PagerDutyService) Get(ctx *gin.Context, config models.TicketConfigurati
 		Description: incident.Description,
 		Status:      incident.Status,
 		Severity:    urgency,
+		Assignee:    assignee,
+		Assignees:   assignees,
 		Platform:    "pagerduty",
 		URL:         incident.HTMLURL,
 		CreatedAt:   createdAt,
+		UpdatedAt:   updatedAt,
 		Raw:         marshalToMap(incident),
 	}, nil
 }

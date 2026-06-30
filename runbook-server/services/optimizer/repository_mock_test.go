@@ -102,3 +102,13 @@ func (m *MockOptimizerRepository) GetActiveResolutionsForRecommendations(ctx con
 	args := m.Called(ctx, recommendationIDs)
 	return args.Get(0).(map[uuid.UUID][]model.RecommendationResolution), args.Error(1)
 }
+
+func (m *MockOptimizerRepository) GetAutoOptimizeTasksByIDs(ctx context.Context, ids []uuid.UUID) ([]model.AutoOptimizeTask, error) {
+	args := m.Called(ctx, ids)
+	return args.Get(0).([]model.AutoOptimizeTask), args.Error(1)
+}
+
+func (m *MockOptimizerRepository) GetResolutionsForRecommendations(ctx context.Context, recommendationIDs []uuid.UUID) (map[uuid.UUID][]model.RecommendationResolution, error) {
+	args := m.Called(ctx, recommendationIDs)
+	return args.Get(0).(map[uuid.UUID][]model.RecommendationResolution), args.Error(1)
+}

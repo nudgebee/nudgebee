@@ -19,24 +19,15 @@ import (
 // Run with: go test -tags=integration -v -run TestGCPAlertPoliciesIntegration
 //
 // Prerequisites:
-// 1. Set environment variable: GCP_PROJECT_ID=your-project-id OR hardcode below
-// 2. Set environment variable: GCP_CREDENTIALS_JSON=path/to/service-account.json OR hardcode below
+// 1. Set environment variable: GCP_PROJECT_ID=your-project-id
+// 2. Set environment variable: GCP_CREDENTIALS_JSON=path/to/service-account.json
 // 3. Ensure the service account has roles/monitoring.viewer permission
 // 4. Create at least one alert policy in GCP Cloud Monitoring Console
 func TestGCPAlertPoliciesIntegration(t *testing.T) {
-	// Option 1: Use environment variables
 	projectID := os.Getenv("GCP_PROJECT_ID")
 	credsPath := os.Getenv("GCP_CREDENTIALS_JSON")
 
 	config.Config.NudgebeeEncryptionKey = "3030303030303030303030303030303030303030303030303030303030303030"
-
-	// Option 2: Hardcode for quick testing (comment out if using env vars)
-	if projectID == "" {
-		projectID = "nudgebee-dev" // Replace with your test project ID
-	}
-	if credsPath == "" {
-		credsPath = "/path/to/creds.json" // Replace with your creds path
-	}
 
 	if projectID == "" || credsPath == "" {
 		t.Skip("Skipping integration test: GCP_PROJECT_ID and GCP_CREDENTIALS_JSON required")
@@ -186,13 +177,6 @@ func TestGCPAlertPolicyAttachment(t *testing.T) {
 	projectID := os.Getenv("GCP_PROJECT_ID")
 	credsPath := os.Getenv("GCP_CREDENTIALS_JSON")
 
-	if projectID == "" {
-		projectID = "nudgebee-dev"
-	}
-	if credsPath == "" {
-		credsPath = "/path/to/creds.json"
-	}
-
 	if projectID == "" || credsPath == "" {
 		t.Skip("Skipping integration test: GCP_PROJECT_ID and GCP_CREDENTIALS_JSON required")
 	}
@@ -248,13 +232,6 @@ func TestGCPAlertPolicyAttachment(t *testing.T) {
 func TestGCPAlarmChecker(t *testing.T) {
 	projectID := os.Getenv("GCP_PROJECT_ID")
 	credsPath := os.Getenv("GCP_CREDENTIALS_JSON")
-
-	if projectID == "" {
-		projectID = "nudgebee-dev"
-	}
-	if credsPath == "" {
-		credsPath = "/path/to/creds.json"
-	}
 
 	if projectID == "" || credsPath == "" {
 		t.Skip("Skipping integration test: GCP_PROJECT_ID and GCP_CREDENTIALS_JSON required")

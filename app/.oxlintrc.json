@@ -30,7 +30,7 @@
         "patterns": [
           {
             "group": ["../*"],
-            "message": "Use path aliases (@components1, @common, @api1, @lib, @hooks, @context, @data, @assets, @utils, @pages) instead of relative imports."
+            "message": "Use path aliases (@components, @ui, @shared, @api1, @lib, @hooks, @context, @data, @assets, @utils, @pages) instead of relative imports."
           }
         ]
       }

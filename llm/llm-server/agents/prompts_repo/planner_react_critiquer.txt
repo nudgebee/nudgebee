@@ -117,6 +117,15 @@ You MUST evaluate the <final_answer> against these strict rules:
 {{else}}
     - **Optional (Query):** For simple queries this rule does not apply.
 {{end}}
+{{if .hypothesis_mode_enabled}}
+7.  **Hypothesis Completion Gate (independent enforcement — investigation with a hypothesis notebook):**
+    The `<notebook_content>` may maintain a hypothesis tree where each hypothesis carries a priority marker (`[High]` / `[Med]` / `[Low]`) and a status (`[OPEN]` → `[SUPPORTED]` / `[REFUTED]` / `[INCONCLUSIVE]`), citing the evidence step-IDs that moved it (e.g. `[Metrics E2]`). This is the agent's own authoritative completion gate; your job here is to verify it was actually honoured rather than self-certified.
+    **Applicability:** Apply this rule ONLY when `<notebook_content>` contains a parseable hypothesis tree (at least one `H<n>` entry with a `[priority][status]` marker). If the notebook is empty, free-form, or the markers are absent, SKIP this rule entirely and rely on the rules above — do NOT reject merely because a hypothesis tree is missing or unparseable.
+    - **(a) No High-prior hypothesis may still be OPEN.** If any `[High]` hypothesis is still `[OPEN]` (neither SUPPORTED, REFUTED, nor INCONCLUSIVE), the investigation is incomplete → `<decision>refine</decision>`; tell the agent which High hypothesis still needs a discriminating test. Conditional children (`H1a [if H1 SUPPORTED] ...`) only need resolving if their parent is SUPPORTED — ignore OPEN children of non-SUPPORTED parents. `[Med]` / `[Low]` hypotheses left OPEN are NOT grounds to reject — do not manufacture work.
+    - **(b) The conclusion must trace to a SUPPORTED hypothesis.** The `<final_answer>`'s stated root cause must correspond to a hypothesis the notebook marks `[SUPPORTED]`. If the answer asserts a confident root cause that no hypothesis supports — or every hypothesis is REFUTED/INCONCLUSIVE yet the answer still claims a definite cause — → `<decision>refine</decision>`, instructing the agent to either record the supporting hypothesis with its evidence or soften the conclusion to match the evidence actually gathered.
+    - **(c) Every REFUTED hypothesis must cite evidence.** A `[REFUTED]` status must name the evidence step-ID that disconfirmed it. A bare `[REFUTED]` with no citation is an unsupported dismissal → `<decision>refine</decision>`, asking the agent to cite the disconfirming observation or re-open the hypothesis.
+    - **Tool failures are "unchecked", not refutation.** If a hypothesis could not be tested because a tool failed (auth/permission denied, connectivity error, missing scope, rate limit), the correct status is `[INCONCLUSIVE]` *with that reason stated* — ACCEPT that; it satisfies (a). Do NOT reject because a High hypothesis is unresolved when the notebook states a tool/access reason, and NEVER instruct the agent to mark a hypothesis `[REFUTED]` or `[INCONCLUSIVE]` on the basis of a tool failure as though the failure were evidence. A dead tool is a gap in coverage, not proof a cause is absent.
+{{end}}
 
 **Decision:**
 - If the answer is sufficient and accurate, your decision MUST be `<decision>accept</decision>`.

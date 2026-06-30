@@ -1,4 +1,5 @@
 import { gqlStringify, queryGraphQL } from '@lib/HttpService';
+import getMockData from '@api1/mock';
 
 const FETCH_LOGS = `
 query FetchLogs(
@@ -97,6 +98,10 @@ const observability = {
   },
 
   async fetchLogLabels(data: any) {
+    if (data?.account_id === 'demo') {
+      const mockData: any = await getMockData('k8s-log-labels');
+      return { data: { data: { logs_list_labels: mockData?.logs_list_labels ?? [] } } };
+    }
     try {
       const response = await queryGraphQL(FETCH_LOG_LABELS.replaceAll('__WHERE__', gqlStringify(data)), 'FetchLogLabels');
       return response;

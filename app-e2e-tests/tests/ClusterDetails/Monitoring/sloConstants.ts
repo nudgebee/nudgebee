@@ -3,8 +3,10 @@ export interface SLOWorkload {
   workload: string;
 }
 
-const namespace = process.env.KUBECTL_NAMESPACE ?? "nudgebee";
-const NS_TEST = process.env.KUBECTL_NAMESPACE ?? "nudgebee-test";
+// Defaults are obviously-synthetic so the constants file alone reveals no
+// internal topology. Real e2e runs override via KUBECTL_NAMESPACE.
+const namespace = process.env.KUBECTL_NAMESPACE ?? "test-cluster";
+const NS_TEST = process.env.KUBECTL_NAMESPACE ?? "test-cluster-test";
 
 export const sloWorkloads: SLOWorkload[] = [
   { namespace: namespace, workload: "app-dev" },

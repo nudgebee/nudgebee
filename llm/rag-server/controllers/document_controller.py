@@ -384,9 +384,15 @@ async def delete_account_module_docs_api(request: DeleteAccountModuleDocsRequest
             return {"status": "ok"}
         else:
             raise HTTPException(status_code=500, detail="Failed to delete document")
-    except Exception as e:
-        logger.error(f"Error deleting document: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        # Explicit failure above already carries the right status + detail; let
+        # it propagate unchanged. Without this, the broad-except below would
+        # swallow it, log a noisy "unexpected" traceback, and replace the
+        # original detail with a generic message.
+        raise
+    except Exception:
+        logger.exception("Error deleting document")
+        raise HTTPException(status_code=500, detail="Failed to delete document")
 
 
 @router.delete("/delete_collections")
@@ -395,7 +401,10 @@ async def delete_collections():
     logger.info("Deleting collections")
     try:
         document_collection.delete_all_collections()
-    except Exception as e:
-        logger.error(f"Error deleting collections: {e}")
-        return {"status": "error", "error": str(e)}
+    except Exception:
+        # Generic client message keeps internals (paths, hostnames, etc.) out of
+        # the response. The full traceback is preserved in server logs via
+        # logger.exception for debugging.
+        logger.exception("Error deleting collections")
+        return {"status": "error", "error": "Failed to delete collections"}
     return {"status": "ok"}

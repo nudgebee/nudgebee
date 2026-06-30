@@ -234,6 +234,11 @@ func (s *ServiceNowService) Get(ctx *gin.Context, config models.TicketConfigurat
 	urgency := refValue(record["urgency"]) // raw value preferred for priority mapping
 	sysID := refValue(record["sys_id"])
 	createdOnStr := refValue(record["sys_created_on"])
+	updatedOnStr := refValue(record["sys_updated_on"])
+	// assigned_to / opened_by are reference fields; prefer their display_value
+	// (a person's name) over the bare sys_id.
+	assignedTo := refOrString(record["assigned_to"])
+	openedBy := refOrString(record["opened_by"])
 
 	var createdAt *time.Time
 	if createdOnStr != "" {
@@ -244,15 +249,32 @@ func (s *ServiceNowService) Get(ctx *gin.Context, config models.TicketConfigurat
 		}
 	}
 
+	var updatedAt *time.Time
+	if updatedOnStr != "" {
+		parsed, perr := time.Parse("2006-01-02 15:04:05", updatedOnStr)
+		if perr == nil {
+			updatedAt = &parsed
+		}
+	}
+
+	var assignees []string
+	if assignedTo != "" {
+		assignees = []string{assignedTo}
+	}
+
 	return &models.Ticket{
 		TicketID:    number,
 		Title:       shortDesc,
 		Description: description,
 		Status:      mapServiceNowState(state),
 		Severity:    getNudgebeePriority(urgency),
+		Assignee:    assignedTo,
+		Assignees:   assignees,
+		Reporter:    openedBy,
 		Platform:    "servicenow",
 		URL:         fmt.Sprintf("https://%s/incident.do?sys_id=%s", strings.TrimPrefix(config.URL, "https://"), sysID),
 		CreatedAt:   createdAt,
+		UpdatedAt:   updatedAt,
 		Raw:         record,
 	}, nil
 }

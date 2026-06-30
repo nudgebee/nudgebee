@@ -832,8 +832,13 @@ export async function getAccountByTenant(tenantId: string) {
   const response = await queryGraphQL(USER_ACCOUNT_IDS_BY_TENANT_QUERY, 'UserAccountIdsByTenant', {
     where: { tenant: { _eq: tenantId } },
   });
+  // queryGraphQL does not throw on GraphQL / gateway failures — it returns them in
+  // response.data.errors with response.data.data absent. Surface that so callers can
+  // tell a *failed* lookup apart from a tenant that genuinely has zero accounts.
+  const errored = Array.isArray(response?.data?.errors) && response.data.errors.length > 0;
   const rows = response?.data?.data?.users_list_account_ids_by_tenant?.rows || [];
   return {
+    errored,
     data: { cloud_accounts: rows },
   };
 }

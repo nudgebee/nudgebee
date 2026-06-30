@@ -88,7 +88,7 @@ func TestPodRowToNode(t *testing.T) {
 		Name:            "gke-metrics-agent-l88cs",
 		Namespace:       "kube-system",
 		Status:          "Running",
-		NodeName:        "gke-nudgebee-dev-runner-node-pool-v2-8f4d877c-fwsp",
+		NodeName:        "gke-test-cluster-dev-runner-node-pool-v2-8f4d877c-fwsp",
 		WorkloadType:    "DaemonSet",
 		WorkloadName:    "gke-metrics-agent",
 		CreationTime:    created,
@@ -129,7 +129,7 @@ func TestPodRowToNode(t *testing.T) {
 		"namespace": "kube-system",
 		"cluster":   "k8s-dev",
 		"phase":     "Running",
-		"node_name": "gke-nudgebee-dev-runner-node-pool-v2-8f4d877c-fwsp",
+		"node_name": "gke-test-cluster-dev-runner-node-pool-v2-8f4d877c-fwsp",
 		"pod_ip":    "10.244.1.42",
 		"host_ip":   "10.0.1.100",
 	}

@@ -85,9 +85,9 @@
         "Solution Hint": "Shows the 10 most recent traces with error status codes (>=400) for the 'services-server' workload across all namespaces."
     },
     {
-        "Question": "Get recent network traffic targeting 'relay-server' in 'nudgebee-test' namespace.",
-        "Answer": "SELECT * FROM traces_view WHERE destination_workload_name LIKE '%relay-server%' AND destination_workload_namespace = 'nudgebee-test' ORDER BY timestamp DESC LIMIT 50;",
-        "Solution Hint": "Shows recent traces (limited count) where 'relay-server' in 'nudgebee-test' was the destination workload."
+        "Question": "Get recent network traffic targeting 'relay-server' in 'test-cluster-test' namespace.",
+        "Answer": "SELECT * FROM traces_view WHERE destination_workload_name LIKE '%relay-server%' AND destination_workload_namespace = 'test-cluster-test' ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Shows recent traces (limited count) where 'relay-server' in 'test-cluster-test' was the destination workload."
     },
     {
         "Question": "Recent traces for 'auto-pilot' service taking more than 10 seconds.",
@@ -110,9 +110,9 @@
         "Solution Hint": "Shows recent traces (limited count) indicating failures (status >= 400) for 'services-server' in the 'nudgebee' namespace."
     },
     {
-        "Question": "Recent traces for 'relay-server' workload in 'nudgebee-test' namespace.",
-        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%relay-server%' AND workload_namespace = 'nudgebee-test' ORDER BY timestamp DESC LIMIT 50;",
-        "Solution Hint": "Retrieves the most recent traces (limited count) associated with the 'relay-server' workload in the 'nudgebee-test' namespace."
+        "Question": "Recent traces for 'relay-server' workload in 'test-cluster-test' namespace.",
+        "Answer": "SELECT * FROM traces_view WHERE workload_name LIKE '%relay-server%' AND workload_namespace = 'test-cluster-test' ORDER BY timestamp DESC LIMIT 50;",
+        "Solution Hint": "Retrieves the most recent traces (limited count) associated with the 'relay-server' workload in the 'test-cluster-test' namespace."
     },
     {
         "Question": "Recent traces of 'services-server' in 'nudgebee' namespace.",

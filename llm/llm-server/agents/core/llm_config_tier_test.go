@@ -38,9 +38,9 @@ type catTestCategorisedAgent struct {
 func (a catTestCategorisedAgent) GetModelCategory() ModelTier { return a.category }
 
 func TestAgentModelCategory(t *testing.T) {
-	// An agent that does not implement NBAgentCategoryProvider → no category.
-	assert.Equal(t, ModelTier(""), agentModelCategory(catTestAgent{}),
-		"agent without the optional interface → empty (normal flow)")
+	// An agent that does not implement NBAgentCategoryProvider → Retrieval default.
+	assert.Equal(t, ModelTierRetrieval, agentModelCategory(catTestAgent{}),
+		"agent without the optional interface → Retrieval (fleet default)")
 
 	// An agent that declares a category → that category.
 	for _, tier := range []ModelTier{ModelTierReasoning, ModelTierRetrieval, ModelTierSummary} {
@@ -48,14 +48,15 @@ func TestAgentModelCategory(t *testing.T) {
 			"declared category %s is returned", tier)
 	}
 
-	// A declared-empty category is also treated as no category.
+	// An agent may still declare the empty tier to opt into the global default
+	// (the escape hatch) instead of the Retrieval floor.
 	assert.Equal(t, ModelTier(""), agentModelCategory(catTestCategorisedAgent{category: ""}))
 }
 
-// applyAgentModelTier must RESET an inherited tier for a category-less agent,
-// so a tool sub-agent invoked under a Reasoning-tier parent (its context already
-// carries ModelTierReasoning) does not silently run on the pro model. A
-// categorised agent must still stamp its own tier.
+// applyAgentModelTier must override an inherited tier for a category-less agent
+// — stamping the Retrieval default — so a tool sub-agent invoked under a
+// Reasoning-tier parent (its context already carries ModelTierReasoning) does
+// not silently run on the pro model. A categorised agent stamps its own tier.
 func TestApplyAgentModelTier_ResetsInheritedTier(t *testing.T) {
 	// Simulate a sub-agent invoked with the parent investigation's context,
 	// which already carries the Reasoning tier.
@@ -66,10 +67,11 @@ func TestApplyAgentModelTier_ResetsInheritedTier(t *testing.T) {
 	assert.Equal(t, ModelTierReasoning, modelTierFromContext(parentCtx),
 		"precondition: parent context carries the Reasoning tier")
 
-	// A category-less tool agent must NOT inherit the parent's Reasoning tier.
+	// A category-less tool agent must NOT inherit the parent's Reasoning tier;
+	// it is stamped with the Retrieval default instead.
 	resetCtx := applyAgentModelTier(parentCtx, catTestAgent{})
-	assert.Equal(t, ModelTier(""), modelTierFromContext(resetCtx),
-		"category-less agent must reset the inherited tier → global-default resolution")
+	assert.Equal(t, ModelTierRetrieval, modelTierFromContext(resetCtx),
+		"category-less agent overrides the inherited tier → Retrieval default")
 
 	// A categorised agent stamps its own tier even over an inherited one.
 	for _, tier := range []ModelTier{ModelTierReasoning, ModelTierRetrieval, ModelTierSummary} {
@@ -89,16 +91,18 @@ func TestApplyAgentModelTier_ResetsInheritedTier(t *testing.T) {
 }
 
 // End-to-end through the real resolver: with the deployed tier config
-// (global default = flash, reasoning tier = pro), a category-less sub-agent
-// invoked under a Reasoning-tier parent must resolve the GLOBAL model (flash),
-// not the inherited pro model. This exercises the full ResolveLLMConfig layered
-// resolution — the same path that picks the model written to
-// llm_conversation_token_usage at runtime.
-func TestApplyAgentModelTier_E2E_CategoryLessResolvesGlobalNotPro(t *testing.T) {
-	// Mirror the deployed config that produced the bug.
+// (global = flash, reasoning = pro, retrieval = qwen), a category-less sub-agent
+// invoked under a Reasoning-tier parent must resolve the RETRIEVAL-tier model
+// (the fleet default), not the inherited pro model. This exercises the full
+// ResolveLLMConfig layered resolution — the same path that picks the model
+// written to llm_conversation_token_usage at runtime.
+func TestApplyAgentModelTier_E2E_CategoryLessResolvesRetrievalNotPro(t *testing.T) {
+	// Mirror the deployed config: global flash, reasoning pro, retrieval qwen.
 	pinGlobalModel(t, "googleai", "gemini-3-flash-preview")
 	setEnvKey(t, "llm_tier_model_reasoning", "gemini-3.1-pro-preview")
 	setEnvKey(t, "llm_tier_provider_reasoning", "googleai")
+	setEnvKey(t, "llm_tier_model_retrieval", "qwen-retrieval")
+	setEnvKey(t, "llm_tier_provider_retrieval", "googleai")
 
 	// A sub-agent is invoked with the parent investigation's context, which
 	// already carries the Reasoning tier (set when the parent agent declared it).
@@ -110,12 +114,13 @@ func TestApplyAgentModelTier_E2E_CategoryLessResolvesGlobalNotPro(t *testing.T) 
 	assert.Equal(t, "gemini-3.1-pro-preview", resInherited.Model,
 		"baseline: a category-less agent that inherits the parent Reasoning tier resolves the pro model")
 
-	// The fix: a category-less agent resets the tier → resolves the global default.
+	// The fix: a category-less agent is stamped the Retrieval default → resolves
+	// the retrieval-tier model, not the inherited pro model.
 	fixedCtx := applyAgentModelTier(parentCtx, catTestAgent{})
 	resFixed, err := ResolveLLMConfig(fixedCtx, "", "kubectl", "")
 	assert.NoError(t, err)
-	assert.Equal(t, "gemini-3-flash-preview", resFixed.Model,
-		"fix: a category-less sub-agent resolves the global default (flash), not the inherited pro model")
+	assert.Equal(t, "qwen-retrieval", resFixed.Model,
+		"fix: a category-less sub-agent resolves the Retrieval-tier model, not the inherited pro model")
 	assert.NotEqual(t, "gemini-3.1-pro-preview", resFixed.Model)
 
 	// A genuinely reasoning-tier agent still opts into pro — the fix does not

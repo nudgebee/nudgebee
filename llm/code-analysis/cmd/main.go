@@ -220,7 +220,7 @@ func main() {
 	// Agentic handler — always initialize gitClient and credHandler in server mode
 	// because /analyze receives repository URLs dynamically in each request
 	gitClient := git.NewGitClient(cfg.Analysis.WorkspaceDir, cfg.Git.CloneTimeout, cfg.Git.MaxRepoSize)
-	credHandler := credentials.NewCredentialHandler(cfg.Credentials.EncryptionKey)
+	credHandler := credentials.NewCredentialHandler()
 
 	agenticHandler, err := handlers.NewAgenticAnalyzeHandler(cfg, gitClient, credHandler)
 	if err != nil {
@@ -318,8 +318,8 @@ func main() {
 				"token",
 				"ssh_key",
 				"basic",
-				"encrypted",
 				"env_ref",
+				"none",
 			},
 			"endpoints": map[string]string{
 				"analyze": "POST /analyze - Perform agentic code analysis",
@@ -485,7 +485,7 @@ func runCLIAnalysis(cfg *config.Config, repoURL, logs, branch, token, prompt, ag
 	// Initialize GitClient and CredentialHandler only if a repository URL is provided
 	if repoURL != "" {
 		gitClient = git.NewGitClient(cfg.Analysis.WorkspaceDir, cfg.Git.CloneTimeout, cfg.Git.MaxRepoSize)
-		credHandler = credentials.NewCredentialHandler(cfg.Credentials.EncryptionKey)
+		credHandler = credentials.NewCredentialHandler()
 	}
 
 	agenticHandler, err := handlers.NewAgenticAnalyzeHandler(cfg, gitClient, credHandler)
@@ -612,7 +612,7 @@ func runFollowup(cfg *config.Config, repoURL, prURL, branch, token, gitProvider 
 		// Clone the repo and checkout the PR branch
 		gitClient := git.NewGitClient(cfg.Analysis.WorkspaceDir, cfg.Git.CloneTimeout, cfg.Git.MaxRepoSize)
 		gitClient.SetLogger(logger)
-		credHandler := credentials.NewCredentialHandler(cfg.Credentials.EncryptionKey)
+		credHandler := credentials.NewCredentialHandler()
 
 		creds := credentials.GitCredentials{
 			Type:  "token",

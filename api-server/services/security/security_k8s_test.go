@@ -124,12 +124,12 @@ func TestK8sListObjects(t *testing.T) {
 		}
 	}()
 
-	mock.ExpectQuery("select distinct name from k8s_namespaces where cloud_account_id .*").WithArgs(driver.Value("random")).WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("nudgebee-dev"))
+	mock.ExpectQuery("select distinct name from k8s_namespaces where cloud_account_id .*").WithArgs(driver.Value("random")).WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("test-cluster-dev"))
 	mock.ExpectClose()
 	resp, err := k8sListResourceNames(NewSecurityContextForSuperAdmin(), "random", K8sRbacSubjectTypeGroup, "system:masters", "namespaces", K8sRbacPermissionTypeGet)
 	assert.Nil(t, err)
 	assert.NotNil(t, resp)
-	assert.Contains(t, resp, "nudgebee-dev")
+	assert.Contains(t, resp, "test-cluster-dev")
 }
 
 func TestK8sListObjects2(t *testing.T) {
@@ -147,7 +147,7 @@ func TestK8sListObjects2(t *testing.T) {
 	// }
 	// defer db.Close()
 
-	// mock.ExpectQuery("select distinct name from k8s_namespaces where cloud_account_id .*").WithArgs(driver.Value("random")).WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("nudgebee-dev"))
+	// mock.ExpectQuery("select distinct name from k8s_namespaces where cloud_account_id .*").WithArgs(driver.Value("random")).WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("test-cluster-dev"))
 
 	resp, err := k8sListResourceNames(NewSecurityContextForSuperAdmin(), m["TEST_ACCOUNT"], K8sRbacSubjectTypeUser, m["TEST_K8S_CLUSTER"], "pods", K8sRbacPermissionTypeGet)
 	assert.Nil(t, err)

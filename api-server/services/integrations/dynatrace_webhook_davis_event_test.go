@@ -22,7 +22,7 @@ const sampleDavisEventPayload = `{
   "dt.source_entity": "PROCESS_GROUP_INSTANCE-31C716BF15627F14",
   "dt.davis.impact_level": "Infrastructure",
   "dt.smartscape.k8s_node": "K8S_NODE-B814D7390D072264",
-  "host.name": "gke-nudgebee-dev-c4-amd-spot-v2-02132c6e-r2gx",
+  "host.name": "gke-test-cluster-dev-c4-amd-spot-v2-02132c6e-r2gx",
   "dt.entity.gcp_zone.name": "us-central1-a",
   "event.kind": "DAVIS_EVENT",
   "event.severity": "5",
@@ -50,23 +50,23 @@ const sampleDavisEventPayload = `{
   "smartscape.related_entities": [
     {"id":"HOST-705B76152CFAEA13","type":"HOST"},
     {"name":"gke-k8s-2026-03-12","id":"K8S_CLUSTER-43E027450F650458","type":"K8S_CLUSTER"},
-    {"name":"gke-nudgebee-dev-c4-amd-spot-v2-02132c6e-r2gx","id":"K8S_NODE-B814D7390D072264","type":"K8S_NODE"},
+    {"name":"gke-test-cluster-dev-c4-amd-spot-v2-02132c6e-r2gx","id":"K8S_NODE-B814D7390D072264","type":"K8S_NODE"},
     {"id":"PROCESS-31C716BF15627F14","type":"PROCESS"}
   ],
   "dt.entity.gcp_zone": "GCP_ZONE-0ED3331217C5C6BC",
-  "gcp.resource.name": "//compute.googleapis.com/projects/nudgebee-dev/zones/us-central1-a/instances/gke-nudgebee-dev-c4-amd-spot-v2-02132c6e-r2gx",
+  "gcp.resource.name": "//compute.googleapis.com/projects/test-cluster-dev/zones/us-central1-a/instances/gke-test-cluster-dev-c4-amd-spot-v2-02132c6e-r2gx",
   "affected_entity_ids": ["PROCESS_GROUP_INSTANCE-31C716BF15627F14"],
   "dt.smartscape.process": "PROCESS-31C716BF15627F14",
   "dt.smartscape.host": "HOST-705B76152CFAEA13",
-  "gcp.project.id": "nudgebee-dev",
+  "gcp.project.id": "test-cluster-dev",
   "dt.entity.process_group_instance": "PROCESS_GROUP_INSTANCE-31C716BF15627F14",
   "smartscape.related_entity.ids": ["HOST-705B76152CFAEA13","K8S_CLUSTER-43E027450F650458","K8S_NODE-B814D7390D072264","PROCESS-31C716BF15627F14"],
   "OperatorVersion": "v1.8.1",
   "dt.entity.host": "HOST-705B76152CFAEA13",
-  "k8s.node.name": "gke-nudgebee-dev-c4-amd-spot-v2-02132c6e-r2gx",
+  "k8s.node.name": "gke-test-cluster-dev-c4-amd-spot-v2-02132c6e-r2gx",
   "maintenance.is_under_maintenance": false,
   "event.type": "PROCESS_RESTART",
-  "dt.entity.host.name": "gke-nudgebee-dev-c4-amd-spot-v2-02132c6e-r2gx.us-central1-a.c.nudgebee-dev.internal",
+  "dt.entity.host.name": "gke-test-cluster-dev-c4-amd-spot-v2-02132c6e-r2gx.us-central1-a.c.test-cluster-dev.internal",
   "dt.entity.kubernetes_cluster": "KUBERNETES_CLUSTER-EBD3D6AE1770773A",
   "event.id": "-8050061476469882796_1776146040754",
   "dt.openpipeline.source": "oneagent",
@@ -93,11 +93,11 @@ func TestDavisEventPayload_Unmarshal(t *testing.T) {
 
 	// Plain-string k8s fields.
 	assert.Equal(t, "gke-k8s-2026-03-12", p.K8sClusterName)
-	assert.Equal(t, "gke-nudgebee-dev-c4-amd-spot-v2-02132c6e-r2gx", p.K8sNodeName)
-	assert.Equal(t, "gke-nudgebee-dev-c4-amd-spot-v2-02132c6e-r2gx", p.HostName)
+	assert.Equal(t, "gke-test-cluster-dev-c4-amd-spot-v2-02132c6e-r2gx", p.K8sNodeName)
+	assert.Equal(t, "gke-test-cluster-dev-c4-amd-spot-v2-02132c6e-r2gx", p.HostName)
 
 	// GCP metadata.
-	assert.Equal(t, "nudgebee-dev", p.GCPProjectID)
+	assert.Equal(t, "test-cluster-dev", p.GCPProjectID)
 	assert.Equal(t, "us-central1", p.GCPRegion)
 	assert.Equal(t, "us-central1-a", p.GCPZone)
 
@@ -163,13 +163,13 @@ func TestMapDavisEventStatus(t *testing.T) {
 }
 
 func TestMapDavisEventSeverity(t *testing.T) {
-	assert.Equal(t, event.EventPriortiyMedium, mapDavisEventSeverity("INFO", "PROCESS_RESTART"))
-	assert.Equal(t, event.EventPriortiyHigh, mapDavisEventSeverity("INFO", "PROCESS_CRASH"))
-	assert.Equal(t, event.EventPriortiyLow, mapDavisEventSeverity("INFO", "CONFIG_CHANGE"))
-	assert.Equal(t, event.EventPriortiyHigh, mapDavisEventSeverity("ERROR", ""))
-	assert.Equal(t, event.EventPriortiyMedium, mapDavisEventSeverity("PERFORMANCE", ""))
-	assert.Equal(t, event.EventPriortiyLow, mapDavisEventSeverity("INFO", ""))
-	assert.Equal(t, event.EventPriortiyLow, mapDavisEventSeverity("", ""))
+	assert.Equal(t, event.EventPriorityMedium, mapDavisEventSeverity("INFO", "PROCESS_RESTART"))
+	assert.Equal(t, event.EventPriorityHigh, mapDavisEventSeverity("INFO", "PROCESS_CRASH"))
+	assert.Equal(t, event.EventPriorityLow, mapDavisEventSeverity("INFO", "CONFIG_CHANGE"))
+	assert.Equal(t, event.EventPriorityHigh, mapDavisEventSeverity("ERROR", ""))
+	assert.Equal(t, event.EventPriorityMedium, mapDavisEventSeverity("PERFORMANCE", ""))
+	assert.Equal(t, event.EventPriorityLow, mapDavisEventSeverity("INFO", ""))
+	assert.Equal(t, event.EventPriorityLow, mapDavisEventSeverity("", ""))
 }
 
 func TestExtractDavisEventEntityNames(t *testing.T) {
@@ -205,7 +205,7 @@ func TestBuildDavisEventLabels(t *testing.T) {
 	assert.Equal(t, "CLOSED", labels["event_status"])
 	assert.Equal(t, "gke-k8s-2026-03-12", labels["k8s_cluster_name"])
 	assert.Equal(t, "us-central1", labels["gcp_region"])
-	assert.Equal(t, "nudgebee-dev", labels["gcp_project_id"])
+	assert.Equal(t, "test-cluster-dev", labels["gcp_project_id"])
 	assert.Equal(t, "my-svc", labels["service"])
 	assert.Equal(t, "PROCESS_GROUP_INSTANCE-31C716BF15627F14", labels["affected_entity_ids"])
 }

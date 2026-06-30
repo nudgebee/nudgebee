@@ -42,6 +42,7 @@ var SearchAliases = map[string][]string{
 	"notifications.add_reaction": {"slack", "ms_teams", "ms teams", "teams", "gchat", "google chat", "reaction", "emoji", "react"},
 	"notifications.read_thread":  {"slack", "thread", "read thread", "replies", "conversation"},
 	"slack.join_channel":         {"slack", "join", "channel", "add bot"},
+	"google_chat.join_space":     {"gchat", "google chat", "google_chat", "join", "space", "add bot"},
 
 	// Observability
 	"observability.logs": {

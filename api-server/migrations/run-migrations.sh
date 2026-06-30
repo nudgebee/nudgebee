@@ -190,9 +190,65 @@ MSG
     echo "Bootstrap (state=$bootstrap_state): pre-migrated database detected."
     echo "Baseline source: $baseline_source"
     echo "Forcing tracker to version $BASELINE_VERSION..."
+    # Guard against phantom baselines. A baseline that has no backing file in
+    # ./migrations/app/ wedges every subsequent `migrate up` with:
+    #   "no migration found for version <V>: read down for version <V> ... file does not exist"
+    # because golang-migrate needs to read the current version's metadata before
+    # walking forward. Fail loudly here instead of leaving a dirty tracker.
+    if [ -z "$(find ./migrations/app -maxdepth 1 -name "${BASELINE_VERSION}_*.up.sql" -print -quit 2>/dev/null)" ]; then
+        echo "ERROR: baseline version $BASELINE_VERSION (source: $baseline_source) has no" >&2
+        echo "       matching file at ./migrations/app/${BASELINE_VERSION}_*.up.sql." >&2
+        echo "       Refusing to force the tracker to a non-existent migration." >&2
+        echo "       Resolution: pick a baseline whose file exists in this image." >&2
+        exit 1
+    fi
     migrate -path ./migrations/app -database "$MIGRATE_DB_URL" force "$BASELINE_VERSION"
 else
     echo "Bootstrap not needed (state=$bootstrap_state); proceeding with normal migrate up."
+fi
+
+# Steady-state guard: if the tracker already points at a version with no backing
+# file, `migrate up` will die with "no migration found for version <V>". This
+# happens when someone runs `migrate force <ts>` (or sets CUTOVER_BASELINE_OVERRIDE)
+# with a timestamp that has no corresponding ./migrations/app/<ts>_*.up.sql.
+# Catch it here so the operator gets an actionable message instead of a cryptic
+# "read down for version <V> ... file does not exist".
+#
+# Probe the tracker's existence with to_regclass() BEFORE querying it. A single
+# CASE that references nudgebee.schema_migrations inside a THEN arm fails to PLAN
+# when that table is absent — Postgres resolves every CASE branch at parse time,
+# so an EXISTS(...) runtime guard does NOT protect it. That table is absent on a
+# fresh install (it's created by the first `migrate up` below), which made the
+# Job abort here before any migration ran. to_regclass() takes a text argument
+# and returns NULL for a missing relation, so it never enters the parse tree.
+# Same stepwise pattern as the bootstrap detector above.
+tracker_present=$(psql "$APP_DATABASE_URL" -v ON_ERROR_STOP=1 -tAq -c "
+  SELECT to_regclass('nudgebee.schema_migrations') IS NOT NULL;
+" | tr -d '[:space:]')
+if [ "$tracker_present" = "t" ]; then
+    current_version=$(psql "$APP_DATABASE_URL" -v ON_ERROR_STOP=1 -tAq -c "
+      SELECT COALESCE((SELECT version::text FROM nudgebee.schema_migrations LIMIT 1), '');
+    " | tr -d '[:space:]')
+else
+    current_version=""
+fi
+if [ -n "$current_version" ] && [ -z "$(find ./migrations/app -maxdepth 1 -name "${current_version}_*.up.sql" -print -quit 2>/dev/null)" ]; then
+    cat <<MSG >&2
+
+ERROR: tracker points at a phantom version $current_version — no file matches
+       ./migrations/app/${current_version}_*.up.sql in this image.
+
+This usually means someone ran 'migrate force <ts>' (or set CUTOVER_BASELINE_OVERRIDE)
+with a timestamp that never existed as a migration file, or the file was deleted
+after being applied.
+
+Resolution: identify the highest real applied version (inspect schema, or check
+hdb_catalog.hdb_version.cli_state) and reset the tracker:
+
+  UPDATE nudgebee.schema_migrations SET version=<real_version>, dirty=false;
+
+MSG
+    exit 1
 fi
 
 migrate -path ./migrations/app -database "$MIGRATE_DB_URL" up
@@ -204,12 +260,42 @@ migrate -path ./migrations/app -database "$MIGRATE_DB_URL" up
 if [ "${MIGRATE_SKIP_PLAYBOOK:-0}" = "1" ]; then
     echo "Skipping Agent Playbook load (MIGRATE_SKIP_PLAYBOOK=1)"
 else
-    echo "Loading Agent Playbook..."
-    curl -X POST $SERVICE_API_SERVER_URL/rpc-cron -d '{
-            "comment": "Load Agent Playbook",
-            "name": "Load Agent Playbook",
-            "payload": {}
-        }' -v -H "X-ACTION-TOKEN: $ACTION_API_SERVER_TOKEN"
+    # This Job runs as a post-install/post-upgrade Helm hook, so it can start
+    # before the services-server pods are Ready. Without a wait, the POST below
+    # hits a TCP connect timeout and (under `set -e`) fails the whole Job,
+    # skipping the ClickHouse + RabbitMQ steps that follow. Poll /health for a
+    # bounded window first. If services-server never becomes ready we log and
+    # continue rather than fail: the playbook cron self-registers on first
+    # services-server boot, so this trigger is best-effort.
+    if [ -z "${SERVICE_API_SERVER_URL:-}" ]; then
+        echo "WARN: SERVICE_API_SERVER_URL is not set; skipping Agent Playbook trigger (cron self-registers on services-server boot)."
+    else
+        max_attempts="${MIGRATE_PLAYBOOK_WAIT_ATTEMPTS:-60}"
+        interval="${MIGRATE_PLAYBOOK_WAIT_INTERVAL:-5}"
+        attempt=0
+        playbook_ready=0
+        while [ "$attempt" -lt "$max_attempts" ]; do
+            if curl -sf -m 5 "$SERVICE_API_SERVER_URL/health" > /dev/null 2>&1; then
+                playbook_ready=1
+                break
+            fi
+            attempt=$((attempt + 1))
+            echo "Waiting for services-server health ($SERVICE_API_SERVER_URL/health), attempt $attempt/$max_attempts..."
+            sleep "$interval"
+        done
+
+        if [ "$playbook_ready" = "1" ]; then
+            echo "Loading Agent Playbook..."
+            curl -X POST "$SERVICE_API_SERVER_URL/rpc-cron" -d '{
+                    "comment": "Load Agent Playbook",
+                    "name": "Load Agent Playbook",
+                    "payload": {}
+                }' -v -H "X-ACTION-TOKEN: $ACTION_API_SERVER_TOKEN" \
+                || echo "WARN: Agent Playbook trigger failed; cron self-registers on services-server boot, continuing."
+        else
+            echo "WARN: services-server not healthy after $((max_attempts * interval))s; skipping Agent Playbook trigger (cron self-registers on services-server boot)."
+        fi
+    fi
 fi
 
 if [[ $CLICKHOUSE_ENABLED == "true" ]]; then

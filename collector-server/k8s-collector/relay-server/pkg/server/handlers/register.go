@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	"nudgebee/relay-server/pkg/audit"
 	"nudgebee/relay-server/pkg/config"
 	"nudgebee/relay-server/pkg/db"
 	"nudgebee/relay-server/pkg/mq"
@@ -44,6 +45,9 @@ func RegisterHandler(
 	rootmeter *metric.Meter,
 	rootLogger *slog.Logger,
 ) gin.HandlerFunc {
+	// Built once and shared across sessions. nil when audit isn't configured
+	// (SERVICE_API_SERVER_URL / ACTION_API_SERVER_TOKEN unset) — Emit is a no-op.
+	auditClient := audit.NewClient(cfg.Audit.APIServerURL, cfg.Audit.ActionToken)
 	return func(c *gin.Context) {
 		// —— setup context & logger ——
 		ctx, cancel := context.WithCancel(c.Request.Context())
@@ -156,11 +160,27 @@ func RegisterHandler(
 		}
 
 		// —— update relay connection status when agent connects successfully ——
-		if err := store.UpdateRelayConnectionStatus(ctx, accountID, agentType, true, sessionStart); err != nil {
-			logger.Error("failed to update relay connection status", "err", err, "account", accountID, "agent_type", agentType)
+		connTransitioned, connTenant, cerr := store.UpdateRelayConnectionStatus(ctx, accountID, agentType, true, sessionStart)
+		if cerr != nil {
+			logger.Error("failed to update relay connection status", "err", cerr, "account", accountID, "agent_type", agentType)
 			// Continue processing even if status update fails
 		} else {
 			logger.Info("updated relay connection status to true", "account", accountID, "agent_type", agentType)
+			if connTransitioned {
+				go auditClient.Emit(logger, audit.Event{
+					TenantId:      connTenant,
+					AccountId:     accountID,
+					EventTime:     time.Now().UTC(),
+					EventCategory: audit.CategoryK8sRelay,
+					EventType:     audit.TypeK8sRelayAgentConnected,
+					EventState:    map[string]any{"account_id": accountID, "agent_type": agentType, "status": "CONNECTED"},
+					EventActor:    audit.ActorK8sCollectorService,
+					EventTarget:   accountID,
+					EventAction:   audit.ActionUpdate,
+					EventStatus:   audit.StatusSuccess,
+					EventAttr:     map[string]any{"agent_type": agentType},
+				})
+			}
 		}
 
 		// —— ensure tenant topology ——
@@ -507,10 +527,26 @@ func RegisterHandler(
 		}
 
 		// —— mark agent as disconnected (only if no newer session has connected) ——
-		if derr := store.UpdateRelayConnectionStatus(context.Background(), accountID, agentType, false, sessionStart); derr != nil {
+		discTransitioned, discTenant, derr := store.UpdateRelayConnectionStatus(context.Background(), accountID, agentType, false, sessionStart)
+		if derr != nil {
 			logger.Error("failed to update relay disconnect status", "err", derr, "account", accountID, "agent_type", agentType)
 		} else {
 			logger.Info("updated relay connection status to false", "account", accountID, "agent_type", agentType)
+			if discTransitioned {
+				go auditClient.Emit(logger, audit.Event{
+					TenantId:      discTenant,
+					AccountId:     accountID,
+					EventTime:     time.Now().UTC(),
+					EventCategory: audit.CategoryK8sRelay,
+					EventType:     audit.TypeK8sRelayAgentDisconnected,
+					EventState:    map[string]any{"account_id": accountID, "agent_type": agentType, "status": "NOT_CONNECTED"},
+					EventActor:    audit.ActorK8sCollectorService,
+					EventTarget:   accountID,
+					EventAction:   audit.ActionUpdate,
+					EventStatus:   audit.StatusSuccess,
+					EventAttr:     map[string]any{"agent_type": agentType},
+				})
+			}
 		}
 	}
 }

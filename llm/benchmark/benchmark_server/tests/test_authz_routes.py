@@ -85,19 +85,25 @@ def test_tool_configs_403_for_non_member(dashboard_client, make_authz, make_user
     assert r.status_code == 403
 
 
-def test_tool_configs_403_for_account_not_in_allowed(dashboard_client, make_authz, make_user):
+def test_tool_configs_403_for_account_not_in_allowed(
+    dashboard_client, make_authz, make_user
+):
     """Member of tenant-A but the account isn't in their allowed list
     (tenant_admin sees all; regular user sees an RBAC-derived subset)."""
     client, set_overrides = dashboard_client
     set_overrides(
-        make_authz(tenants=[{"id": "tenant-A", "role": "user", "account_ids": ["acct-1"]}]),
+        make_authz(
+            tenants=[{"id": "tenant-A", "role": "user", "account_ids": ["acct-1"]}]
+        ),
         make_user(),
     )
     r = client.get("/dashboard/tool-configs?account_id=acct-other&tenant_id=tenant-A")
     assert r.status_code == 403
 
 
-def test_tool_configs_super_admin_must_specify_tenant(dashboard_client, make_authz, make_user):
+def test_tool_configs_super_admin_must_specify_tenant(
+    dashboard_client, make_authz, make_user
+):
     """Super_admin without an explicit tenant_id should get 400 (must
     pick a tenant), NOT silently fall through to a wrong tenant."""
     client, set_overrides = dashboard_client

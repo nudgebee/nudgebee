@@ -127,6 +127,12 @@ var SigningFields = map[string][]string{
 	"redis_command":   {"action", "datasource_id", "params"},
 	"mongo_query":     {"action", "datasource_id", "params"},
 	"mongo_aggregate": {"action", "datasource_id", "params"},
+
+	// Dedicated read-only MongoDB diagnostics (forager exposes one action each,
+	// parameter-less aside from the datasource).
+	"mongo_server_status": {"action", "datasource_id", "params"},
+	"mongo_repl_status":   {"action", "datasource_id", "params"},
+	"mongo_current_ops":   {"action", "datasource_id", "params"},
 }
 
 // DefaultSigningFields is used when the action is not in SigningFields.

@@ -109,6 +109,32 @@ const podOwnerLookupSQL = `
 	LIMIT 1
 `
 
+// workloadCloudResourceSQL resolves a k8s workload (Deployment/StatefulSet/
+// DaemonSet/Job/CronJob) to the cloud_resource_id assigned during k8s state
+// discovery. Kind is intentionally not matched: subject_type casing differs
+// across emitters (lowercase "deployment" vs k8s_workloads "Deployment") and
+// (account, namespace, name) is effectively unique within an account's
+// workloads. Prefers active, most-recently-seen rows for recreate cases.
+const workloadCloudResourceSQL = `
+	SELECT cloud_resource_id
+	FROM k8s_workloads
+	WHERE tenant_id = $1 AND cloud_account_id = $2 AND namespace = $3 AND name = $4
+	  AND cloud_resource_id IS NOT NULL
+	ORDER BY is_active DESC, last_seen DESC
+	LIMIT 1
+`
+
+// podCloudResourceSQL is the fallback for pod-subject events whose owning
+// workload could not be determined: link the pod's own cloud_resource_id.
+const podCloudResourceSQL = `
+	SELECT cloud_resource_id
+	FROM k8s_pods
+	WHERE tenant_id = $1 AND cloud_account_id = $2 AND namespace = $3 AND name = $4
+	  AND cloud_resource_id IS NOT NULL
+	ORDER BY is_active DESC, last_seen DESC
+	LIMIT 1
+`
+
 // lookupPodOwner resolves a pod → owning workload via the cached k8s state
 // snapshot (k8s_pods JOIN k8s_workloads). Returns ("", "") when the pod is
 // unknown — caller leaves SubjectOwner empty rather than guess. Errors are
@@ -176,6 +202,7 @@ func ListEventResolutions(context *security.RequestContext, rescommendationId st
 	if err != nil {
 		return []models.EventResolution{}, err
 	}
+	defer func() { _ = r.Close() }()
 
 	resolutions := []models.EventResolution{}
 	for r.Next() {
@@ -185,6 +212,9 @@ func ListEventResolutions(context *security.RequestContext, rescommendationId st
 			return []models.EventResolution{}, err
 		}
 		resolutions = append(resolutions, resolution)
+	}
+	if err := r.Err(); err != nil {
+		return []models.EventResolution{}, fmt.Errorf("error iterating event resolution rows: %w", err)
 	}
 	return resolutions, nil
 }
@@ -387,6 +417,11 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 
 	revert, okRevert := queryData["revert"].(bool)
 	raisePR, okRaisePR := queryData["raisePR"].(bool)
+	// AggregationKey is a nullable column and is dereferenced throughout the
+	// branches below; fail fast instead of panicking on a nil pointer.
+	if r.AggregationKey == nil {
+		return EventRecommendationApplyResponse{}, fmt.Errorf("recommendation: event has no aggregation key")
+	}
 	if *r.AggregationKey == "KubePersistentVolumeFillingUp" || *r.AggregationKey == "KubernetesVolumeOutOfDiskSpace" {
 		if queryData["size"] == "" || queryData["size"] == nil {
 			return EventRecommendationApplyResponse{}, fmt.Errorf("recommendation: to increase persistent volume size is required")
@@ -702,22 +737,36 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 				},
 			},
 		})
-		if _, ok := resp["data"]; !ok {
+		if err1 != nil {
 			return EventRecommendationApplyResponse{}, err1
 		}
+		dataMap, ok := resp["data"].(map[string]any)
+		if !ok {
+			return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: unexpected relay response shape (data is not an object)")
+		}
 		var result map[any]any
-		if v, ok := resp["data"].(map[string]any)["findings"]; ok {
-			findings := v.([]any)
-			if len(findings) > 0 {
-				if evidenceRaw, ok := findings[0].(map[string]any)["evidence"]; ok {
-					evidence := evidenceRaw.([]any)
-					if len(evidence) > 0 {
+		if v, ok := dataMap["findings"]; ok {
+			findings, isArr := v.([]any)
+			if isArr && len(findings) > 0 {
+				firstFinding, isMap := findings[0].(map[string]any)
+				if !isMap {
+					return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: first finding is not an object")
+				}
+				if evidenceRaw, ok := firstFinding["evidence"]; ok {
+					evidence, isArr := evidenceRaw.([]any)
+					if isArr && len(evidence) > 0 {
 						data := []map[string]any{}
-						evidenceDataRaw := evidence[0].(map[string]any)["data"]
-						evidenceDataRawBytes := []byte(evidenceDataRaw.(string))
-						err := common.UnmarshalJson(evidenceDataRawBytes, &data)
+						firstEvidence, isMap := evidence[0].(map[string]any)
+						if !isMap {
+							return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: first evidence is not an object")
+						}
+						evidenceDataStr, isStr := firstEvidence["data"].(string)
+						if !isStr {
+							return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: evidence data missing or not a string")
+						}
+						err := common.UnmarshalJson([]byte(evidenceDataStr), &data)
 						if err != nil {
-							return EventRecommendationApplyResponse{}, err1
+							return EventRecommendationApplyResponse{}, err
 						}
 						for _, d := range data {
 							if d["type"] == "yaml" {
@@ -737,8 +786,12 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 								}
 							}
 						}
+					} else {
+						return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: evidence is missing, not an array, or empty")
 					}
 				}
+			} else {
+				return EventRecommendationApplyResponse{}, fmt.Errorf("resolution: findings is missing, not an array, or empty")
 			}
 		}
 		updatedResult, err4 := updateContainerImage(result, imageChangeContainerName, imageNameWithTag)
@@ -1548,6 +1601,15 @@ func InvestigateEvent(sc *security.RequestContext, webhookEvent Event, id string
 		}
 	}
 
+	// Resolve cloud_resource_id for Kubernetes-sourced events from the cached
+	// k8s state snapshot. Cloud-provider events resolve theirs later from
+	// playbook evidence (linkCloudResourceId); K8s emitters never carry the
+	// UUID because it is assigned server-side at discovery time. Done before
+	// the existing-event check so both the duplicate-update and the insert
+	// branch persist the resolved id (and previously-NULL duplicates backfill
+	// as the event recurs).
+	linkK8sCloudResourceId(sc, dbms, tenantId, &webhookEvent)
+
 	var existingEventId string
 	var existingSubjectName sql.NullString
 	err = dbms.Db.QueryRowx("SELECT id, subject_name FROM events WHERE tenant = $1 AND cloud_account_id = $2 AND finding_id = $3", tenantId, accountId, webhookEvent.FindingId).Scan(&existingEventId, &existingSubjectName)
@@ -1764,6 +1826,27 @@ func extractEvidenceActionNames(evidences []any) map[string]bool {
 	return actions
 }
 
+// dedupeEvidencesByContent removes exact-duplicate evidence elements (same serialized
+// content), preserving order. Guards against an enricher emitting the same payload more
+// than once in a single run. Elements that can't be marshaled are kept as-is.
+func dedupeEvidencesByContent(evidences []any) []any {
+	seen := make(map[string]bool, len(evidences))
+	out := make([]any, 0, len(evidences))
+	for _, ev := range evidences {
+		key, err := common.MarshalJson(ev)
+		if err != nil {
+			out = append(out, ev)
+			continue
+		}
+		if seen[string(key)] {
+			continue
+		}
+		seen[string(key)] = true
+		out = append(out, ev)
+	}
+	return out
+}
+
 func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 
 	event, err := GetEvent(sc, eventId)
@@ -1857,6 +1940,13 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 
 	newEvidences := []any{}
 	for _, e := range newEvidenceResponse {
+		// An enricher that ran but produced neither a response nor an error has no
+		// evidence to show — skip it instead of persisting an empty placeholder that
+		// renders as a blank card (e.g. cloud_logs with zero matching rows shows up
+		// as an empty "Cloud Logs" card on the investigation view).
+		if e.Response == nil && e.Error == nil {
+			continue
+		}
 		structResponse := map[string]any{}
 		if e.Response == nil {
 			if e.Error != nil {
@@ -1909,10 +1999,37 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 		"newrelic_entity_details":      true,
 	}
 
+	// Action names regenerated by this playbook run. An existing copy of any of these
+	// (from a prior refresh) must NOT be retained, or each refresh stacks another
+	// duplicate — and a stale empty copy would survive even after the empty-skip above.
+	regeneratedActions := map[string]bool{}
+	for _, ev := range newEvidences {
+		if m, ok := ev.(map[string]any); ok {
+			if ai, ok := m["additional_info"].(map[string]any); ok {
+				if an, ok := ai["action_name"].(string); ok && an != "" {
+					regeneratedActions[an] = true
+				}
+				// Some enrichers render under a different action_name (e.g. cloud_metrics
+				// renders as prometheus_enricher) and carry the real one in actual_action_name;
+				// track both so a prior copy is replaced, not duplicated.
+				if aan, ok := ai["actual_action_name"].(string); ok && aan != "" {
+					regeneratedActions[aan] = true
+				}
+			}
+		}
+	}
+
 	retainedEvidences := []any{}
 	for _, evidence := range existingEvidences {
 		if additionalInfo, ok := evidence["additional_info"].(map[string]any); ok {
-			if actionName, ok := additionalInfo["action_name"].(string); ok && (actionName == "webhook_event" || sourceEvidenceActions[actionName]) {
+			actionName, _ := additionalInfo["action_name"].(string)
+			actualActionName, _ := additionalInfo["actual_action_name"].(string)
+			// Skip an action the playbook just regenerated — the fresh copy in
+			// newEvidences replaces it. Retaining it duplicates the card on every refresh.
+			if (actionName != "" && regeneratedActions[actionName]) || (actualActionName != "" && regeneratedActions[actualActionName]) {
+				continue
+			}
+			if actionName == "webhook_event" || sourceEvidenceActions[actionName] {
 				retainedEvidences = append(retainedEvidences, evidence)
 			} else if actionType, ok := additionalInfo["action_type"].(string); ok && (actionType == "event_detail") {
 				retainedEvidences = append(retainedEvidences, evidence)
@@ -1920,7 +2037,9 @@ func RefreshInvestigation(sc *security.RequestContext, eventId string) error {
 		}
 	}
 
-	finalEvidences := append(retainedEvidences, newEvidences...)
+	// Collapse exact-duplicate evidences (e.g. an enricher that emits the same payload
+	// twice in a single run) by content so the same card isn't shown multiple times.
+	finalEvidences := dedupeEvidencesByContent(append(retainedEvidences, newEvidences...))
 
 	evidencesJson, err := common.MarshalJson(finalEvidences)
 	if err != nil {
@@ -2021,6 +2140,90 @@ func mergeAggregatedAlertLabels(labels map[string]string, aggregationKey string,
 		}
 	}
 	return updated
+}
+
+// linkK8sCloudResourceId resolves cloud_resource_id for Kubernetes-sourced
+// events (kubernetes_api_server, prometheus, anomaly, slo, ...) from the cached
+// k8s state snapshot. Cloud-provider events get their resource id from playbook
+// evidence (linkCloudResourceId); K8s emitters never carry the UUID because it
+// is assigned server-side at discovery time, so without this lookup the event's
+// cloud_resource_id stays NULL.
+//
+// Resolution:
+//   - workload-subject events (deployment/statefulset/daemonset/job/...):
+//     match the workload by (tenant, account, namespace, subject_name).
+//   - pod-subject events: prefer the owning workload (SubjectOwner, enriched
+//     upstream in InvestigateEvent); fall back to the pod's own resource.
+//
+// Best-effort: a miss leaves cloud_resource_id NULL and never blocks ingestion.
+// k8s_workloads.cloud_resource_id and k8s_pods.cloud_resource_id are valid
+// cloud_resourses.id values, so the events FK is satisfied.
+func linkK8sCloudResourceId(sc *security.RequestContext, dbms *database.DatabaseManager, tenantId string, webhookEvent *Event) {
+	if webhookEvent.CloudResourceId != "" || webhookEvent.AccountId == "" || tenantId == "" {
+		return
+	}
+	// SubjectNamespace / SubjectName are empty on the struct for some emitters
+	// (prometheus-rule bridges, raw alertmanager) that carry them only in
+	// Labels. This runs before playbook execution, so Labels holds only
+	// original webhook labels — no originalLabelKeys guard needed. namespaceKeys
+	// / subjectKeys are the codebase's source of truth for these conventions.
+	ns := webhookEvent.SubjectNamespace
+	if ns == "" {
+		for _, k := range namespaceKeys {
+			if v := webhookEvent.Labels[k]; v != "" {
+				ns = v
+				break
+			}
+		}
+	}
+	if ns == "" {
+		return
+	}
+
+	subjectName := webhookEvent.SubjectName
+	if subjectName == "" {
+		for _, k := range subjectKeys {
+			if v := webhookEvent.Labels[k]; v != "" {
+				subjectName = v
+				break
+			}
+		}
+	}
+
+	// Determine the workload name to resolve against k8s_workloads.
+	var workloadName string
+	switch strings.ToLower(webhookEvent.SubjectType) {
+	case "", "pod":
+		// Pod (or unspecified subject) → resolve via its owning workload.
+		workloadName = webhookEvent.SubjectOwner
+	default:
+		// Subject is itself a workload.
+		workloadName = subjectName
+	}
+
+	if workloadName != "" {
+		var crid string
+		err := dbms.Db.QueryRowxContext(sc.GetContext(), workloadCloudResourceSQL, tenantId, webhookEvent.AccountId, ns, workloadName).Scan(&crid)
+		switch {
+		case err == nil && crid != "":
+			webhookEvent.CloudResourceId = crid
+			return
+		case err != nil && err != sql.ErrNoRows:
+			sc.GetLogger().Warn("link_k8s_cloud_resource: workload lookup failed", "error", err, "namespace", ns, "workload", workloadName)
+		}
+	}
+
+	// Pod fallback: link the pod's own resource when the owner is unknown.
+	if strings.EqualFold(webhookEvent.SubjectType, "pod") && subjectName != "" {
+		var crid string
+		err := dbms.Db.QueryRowxContext(sc.GetContext(), podCloudResourceSQL, tenantId, webhookEvent.AccountId, ns, subjectName).Scan(&crid)
+		switch {
+		case err == nil && crid != "":
+			webhookEvent.CloudResourceId = crid
+		case err != nil && err != sql.ErrNoRows:
+			sc.GetLogger().Warn("link_k8s_cloud_resource: pod lookup failed", "error", err, "namespace", ns, "pod", subjectName)
+		}
+	}
 }
 
 // linkCloudResourceId resolves the cloud_resource_id for an event by extracting
@@ -2279,13 +2482,17 @@ func RegisterEventProcessor(name string, processor func(ctx *security.RequestCon
 func PostProcessEvent(ctx *security.RequestContext, newEvent map[string]any) {
 
 	if newEvent["priority"] == nil {
-		newEvent["priority"] = EventPriortiyInfo
+		newEvent["priority"] = EventPriorityInfo
 	}
 
 	// use string as rest of the system is assuming this to be string
-	if priorityE, ok := newEvent["priority"].(EventPriortiy); ok {
+	if priorityE, ok := newEvent["priority"].(EventPriority); ok {
 		newEvent["priority"] = string(priorityE)
 	}
+
+	// Register this event's aggregation_key in event_rules so it is selectable as
+	// a workflow-trigger Event Type. Guarded + idempotent (no-op once registered).
+	registerNativeEventTypeRule(ctx, newEvent)
 
 	// Triage must run before other processors so its classification
 	// (nb_status etc.) is visible in newEvent to downstream gates such as
@@ -2350,7 +2557,7 @@ func UpdateEvent(ctx *security.RequestContext, request models.UpdateEventRequest
 		Description:      *r.Description,
 		Source:           *r.Source,
 		AggregationKey:   *r.AggregationKey,
-		Priority:         EventPriortiy(*r.Priority),
+		Priority:         EventPriority(*r.Priority),
 		SubjectType:      subjectType,
 		SubjectName:      subjectName,
 		SubjectNamespace: subjectNamespace,

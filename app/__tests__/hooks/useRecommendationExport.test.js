@@ -8,7 +8,7 @@ jest.mock('@api1/recommendation', () => ({
   },
 }));
 
-jest.mock('@components1/common/snackbarService', () => ({
+jest.mock('@shared/snackbarService', () => ({
   snackbar: { success: jest.fn(), error: jest.fn() },
 }));
 
@@ -17,7 +17,7 @@ jest.mock('src/utils/fileDownload', () => ({
 }));
 
 import recommendationApi from '@api1/recommendation';
-import { snackbar } from '@components1/common/snackbarService';
+import { snackbar } from '@shared/snackbarService';
 import { downloadBase64File } from 'src/utils/fileDownload';
 
 const mockExport = recommendationApi.exportRecommendations;

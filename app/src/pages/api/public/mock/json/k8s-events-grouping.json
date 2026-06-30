@@ -5,37 +5,58 @@
         {
           "max_created_at": "2024-04-04T06:22:51.752984",
           "event_count": 10,
-          "aggregation_key": "HighErrorCriticalLogs"
+          "aggregation_key": "HighErrorCriticalLogs",
+          "count_subject_name": 3,
+          "distinct_priority": ["HIGH"],
+          "distinct_status": ["FIRING", "CLOSED"]
         },
         {
           "max_created_at": "2024-04-04T06:07:48.647494",
           "event_count": 10,
-          "aggregation_key": "Kubernetes Warning Event"
+          "aggregation_key": "Kubernetes Warning Event",
+          "count_subject_name": 5,
+          "distinct_priority": ["DEBUG"],
+          "distinct_status": ["CLOSED"]
         },
         {
           "max_created_at": "2024-04-04T06:23:11.849225",
           "event_count": 10,
-          "aggregation_key": "PodMemoryReachingLimit"
+          "aggregation_key": "PodMemoryReachingLimit",
+          "count_subject_name": 4,
+          "distinct_priority": ["HIGH"],
+          "distinct_status": ["FIRING", "CLOSED"]
         },
         {
           "max_created_at": "2024-04-04T07:25:53.837102",
           "event_count": 10,
-          "aggregation_key": "KubeDeploymentReplicasMismatch"
+          "aggregation_key": "KubeDeploymentReplicasMismatch",
+          "count_subject_name": 2,
+          "distinct_priority": ["HIGH"],
+          "distinct_status": ["CLOSED"]
         },
         {
           "max_created_at": "2024-04-04T04:05:54.578337",
           "event_count": 10,
-          "aggregation_key": "KubePodCrashLooping"
+          "aggregation_key": "KubePodCrashLooping",
+          "count_subject_name": 3,
+          "distinct_priority": ["HIGH", "LOW"],
+          "distinct_status": ["FIRING", "CLOSED"]
         },
         {
           "max_created_at": "2024-04-04T06:15:18.980957",
           "event_count": 10,
-          "aggregation_key": "ApplicationAPIFailures"
+          "aggregation_key": "ApplicationAPIFailures",
+          "count_subject_name": 2,
+          "distinct_priority": ["HIGH"],
+          "distinct_status": ["FIRING"]
         },
         {
           "max_created_at": "2024-04-04T05:32:04.851644",
           "event_count": 10,
-          "aggregation_key": "image_pull_backoff_reporter"
+          "aggregation_key": "image_pull_backoff_reporter",
+          "count_subject_name": 4,
+          "distinct_priority": ["HIGH"],
+          "distinct_status": ["CLOSED"]
         }
       ],
       "event_groupings_aggregate": {
@@ -51,42 +72,63 @@
         {
           "max_created_at": "2024-03-28T18:31:50.004254",
           "event_count": 292,
-          "subject_name": "notifications-7b465bc6f7-s5zht"
+          "subject_name": "notifications-7b465bc6f7-s5zht",
+          "count_subject_name": 1,
+          "distinct_priority": ["HIGH"],
+          "distinct_status": ["FIRING", "CLOSED"]
         },
         {
           "max_created_at": "2024-03-28T11:11:01.107659",
           "event_count": 88,
-          "subject_name": "notifications-6bcd9698d6-fzv4f"
+          "subject_name": "notifications-6bcd9698d6-fzv4f",
+          "count_subject_name": 1,
+          "distinct_priority": ["HIGH"],
+          "distinct_status": ["CLOSED"]
         },
         {
           "max_created_at": "2024-03-28T11:09:51.462234",
           "event_count": 107,
-          "subject_name": "auto-pilot-worker-6c7f696dcd-2jsl4"
+          "subject_name": "auto-pilot-worker-6c7f696dcd-2jsl4",
+          "count_subject_name": 1,
+          "distinct_priority": ["HIGH"],
+          "distinct_status": ["FIRING", "CLOSED"]
         },
         {
           "max_created_at": "2024-03-28T10:46:55.539945",
           "event_count": 50,
-          "subject_name": "webapp-c59f5bf8c-p9n2h"
+          "subject_name": "webapp-c59f5bf8c-p9n2h",
+          "count_subject_name": 1,
+          "distinct_priority": ["HIGH", "LOW"],
+          "distinct_status": ["CLOSED"]
         },
         {
           "max_created_at": "2024-03-28T16:46:50.098252",
           "event_count": 92,
-          "subject_name": "auto-pilot-worker-7f85c49979-vlp9g"
+          "subject_name": "auto-pilot-worker-7f85c49979-vlp9g",
+          "count_subject_name": 1,
+          "distinct_priority": ["HIGH"],
+          "distinct_status": ["FIRING", "CLOSED"]
         },
         {
           "max_created_at": "2024-03-28T19:34:55.667901",
           "event_count": 92,
-          "subject_name": "notifications-785b9868d-g64n4"
+          "subject_name": "notifications-785b9868d-g64n4",
+          "count_subject_name": 1,
+          "distinct_priority": ["HIGH"],
+          "distinct_status": ["FIRING"]
         },
         {
           "max_created_at": "2024-03-28T10:12:23.730266",
           "event_count": 12,
-          "subject_name": "webapp-c59f5bf8c-8pbwm"
+          "subject_name": "webapp-c59f5bf8c-8pbwm",
+          "count_subject_name": 1,
+          "distinct_priority": ["LOW"],
+          "distinct_status": ["CLOSED"]
         }
       ],
       "event_groupings_aggregate": {
         "aggregate": {
-          "count": 10
+          "count": 7
         }
       }
     }

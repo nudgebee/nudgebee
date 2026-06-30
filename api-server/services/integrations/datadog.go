@@ -286,6 +286,10 @@ func (m Datadog) ValidateConfig(securityContext *security.SecurityContext, integ
 		}
 	}
 
+	if hasURLPath(site) {
+		return []error{fmt.Errorf("datadog site must be the base host only — remove the path (use %q, not %q)", NormalizeDatadogSite(site), strings.TrimSpace(site))}
+	}
+
 	if err := m.ValidateDatadogConfig(apiKey, appKey, site); err != nil {
 		errors = []error{fmt.Errorf("datadog config validation failed: %w", err)}
 	}

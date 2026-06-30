@@ -312,9 +312,12 @@ func githubWebhookHandler(tracer *trace.Tracer, meter *metric.Meter, logger *slo
 				defer cancel()
 				boundedSc := security.NewRequestContext(bgCtx, sc.GetSecurityContext(),
 					sc.GetLogger(), sc.GetTracer(), sc.GetMeter())
-				if err := account.MarkPRResolutionTerminal(boundedSc, resolutionID, tableName, merged); err != nil {
-					logger.Error("github webhook: MarkPRResolutionTerminal failed",
-						"resolution_id", resolutionID, "table", tableName, "error", err)
+				// Retire every resolution targeting this PR (a single PR can be tracked
+				// by rows in both resolution tables), not just the one returned by the
+				// ownership lookup above — otherwise a sibling row is left stuck "In Progress".
+				if _, err := account.MarkAllPRResolutionsTerminalByURL(boundedSc, prURL, merged); err != nil {
+					logger.Error("github webhook: MarkAllPRResolutionsTerminalByURL failed",
+						"pr_url", prURL, "error", err)
 				}
 			}()
 			c.JSON(200, map[string]any{"status": "terminal", "resolution_id": resolutionID})

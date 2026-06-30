@@ -4,7 +4,7 @@ import { useEffect } from 'react';
 import { Box, CircularProgress, Typography } from '@mui/material';
 import { hasWriteAccess } from '@lib/auth';
 
-const WorkflowBuilderNoteBook = dynamic(() => import('@components1/workflow/WorkflowBuilderNotebook'), {
+const WorkflowBuilderNoteBook = dynamic(() => import('@components/workflow/WorkflowBuilderNotebook'), {
   ssr: false,
   loading: () => (
     <Box

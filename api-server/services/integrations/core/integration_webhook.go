@@ -94,7 +94,7 @@ type EventIncomingWebhookInvestigation struct {
 	RuleId      string                     `json:"rule_id" validate:"required"`
 	Fingerprint string                     `json:"fingerprint" validate:"required"`
 	Status      eventtypes.EventStatus     `json:"status" validate:"required"`
-	Severity    eventtypes.EventPriortiy   `json:"severity" validate:"required"`
+	Severity    eventtypes.EventPriority   `json:"severity" validate:"required"`
 	SourceUrl   string                     `json:"source_url" validate:"required"`
 	Evidences   []eventtypes.EventEvidence `json:"evidences"`
 }
@@ -716,9 +716,9 @@ func convertWebhookEventToEvent(e EventIncomingWebhook, tenantId, accountId, sou
 		status = eventtypes.EventStatusFiring
 	}
 
-	priortiy := e.Investigation.Severity
-	if priortiy == "" {
-		priortiy = eventtypes.EventPriortiyLow
+	priority := e.Investigation.Severity
+	if priority == "" {
+		priority = eventtypes.EventPriorityLow
 	}
 
 	return eventtypes.Event{
@@ -732,7 +732,7 @@ func convertWebhookEventToEvent(e EventIncomingWebhook, tenantId, accountId, sou
 		Failure:          "",
 		FindingType:      "issue",
 		Category:         "issue",
-		Priority:         priortiy,
+		Priority:         priority,
 		SubjectType:      e.EventSubjectKind,
 		SubjectName:      e.EventSubjectName,
 		SubjectNamespace: e.EventSubjectNamespace,
@@ -1111,16 +1111,16 @@ func extractLabelValue(labels map[string]string, keySpec string, cache *labelExt
 }
 
 // normalizeSeverity maps a raw severity string to a known EventPriority constant.
-func normalizeSeverity(raw string) eventtypes.EventPriortiy {
+func normalizeSeverity(raw string) eventtypes.EventPriority {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "critical", "fatal", "emergency", "p1", "high", "error", "major", "p2":
-		return eventtypes.EventPriortiyHigh
+		return eventtypes.EventPriorityHigh
 	case "medium", "moderate", "warning", "warn", "p3":
-		return eventtypes.EventPriortiyMedium
+		return eventtypes.EventPriorityMedium
 	case "low", "info", "informational", "minor", "p4", "p5":
-		return eventtypes.EventPriortiyLow
+		return eventtypes.EventPriorityLow
 	default:
-		return eventtypes.EventPriortiyLow
+		return eventtypes.EventPriorityLow
 	}
 }
 

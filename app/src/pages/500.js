@@ -1,4 +1,4 @@
-import CustomButton from '@components1/common/NewCustomButton';
+import CustomButton from '@shared/NewCustomButton';
 import { colors } from 'src/utils/colors';
 import { ErrorIcon } from '@assets';
 import Image from 'next/image';

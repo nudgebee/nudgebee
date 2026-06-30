@@ -690,7 +690,7 @@
           }
         },
         {
-          "namespace": "nudgebee-test",
+          "namespace": "test-cluster-test",
           "name": "auto-pilot-worker",
           "kind": "Deployment",
           "is_active": true,
@@ -739,7 +739,7 @@
               "toleration": [],
               "annotations": {
                 "meta.helm.sh/release-name": "auto-pilot",
-                "meta.helm.sh/release-namespace": "nudgebee-test",
+                "meta.helm.sh/release-namespace": "test-cluster-test",
                 "workloads.nudgebee.com/git.hash": "e1884ef3199055c736cf02b9af85ef5cb3262194",
                 "workloads.nudgebee.com/git.repo": "https://github.com/nudgebee/nudgebee",
                 "deployment.kubernetes.io/revision": "20"
@@ -747,7 +747,7 @@
               "service_account": null
             },
             "status": null,
-            "namespace": "nudgebee-test",
+            "namespace": "test-cluster-test",
             "ready_pods": 1,
             "total_pods": 1,
             "restart_count": null,
@@ -756,7 +756,7 @@
           }
         },
         {
-          "namespace": "nudgebee-test",
+          "namespace": "test-cluster-test",
           "name": "auto-pilot-server",
           "kind": "Deployment",
           "is_active": true,
@@ -805,7 +805,7 @@
               "toleration": [],
               "annotations": {
                 "meta.helm.sh/release-name": "auto-pilot",
-                "meta.helm.sh/release-namespace": "nudgebee-test",
+                "meta.helm.sh/release-namespace": "test-cluster-test",
                 "workloads.nudgebee.com/git.hash": "e1884ef3199055c736cf02b9af85ef5cb3262194",
                 "workloads.nudgebee.com/git.repo": "https://github.com/nudgebee/nudgebee",
                 "deployment.kubernetes.io/revision": "20"
@@ -813,7 +813,7 @@
               "service_account": null
             },
             "status": null,
-            "namespace": "nudgebee-test",
+            "namespace": "test-cluster-test",
             "ready_pods": 1,
             "total_pods": 1,
             "restart_count": null,

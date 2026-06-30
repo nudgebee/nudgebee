@@ -65,8 +65,18 @@ func (m *MockOptimizerService) GenerateTasks(ctx context.Context, autoOptimizeID
 	return args.Get(0).([]model.AutoOptimizeTask), args.Error(1)
 }
 
-func (m *MockOptimizerService) CompleteAutoOptimize(ctx context.Context, autoOptimizeID uuid.UUID) error {
-	args := m.Called(ctx, autoOptimizeID)
+func (m *MockOptimizerService) CompleteAutoOptimize(ctx context.Context, autoOptimizeID uuid.UUID, taskIDs []uuid.UUID) error {
+	args := m.Called(ctx, autoOptimizeID, taskIDs)
+	return args.Error(0)
+}
+
+func (m *MockOptimizerService) CollectPRResults(ctx context.Context, autoOptimizeID uuid.UUID, taskIDs []uuid.UUID) (bool, bool, error) {
+	args := m.Called(ctx, autoOptimizeID, taskIDs)
+	return args.Bool(0), args.Bool(1), args.Error(2)
+}
+
+func (m *MockOptimizerService) NotifyPRsReady(ctx context.Context, autoOptimizeID uuid.UUID, taskIDs []uuid.UUID) error {
+	args := m.Called(ctx, autoOptimizeID, taskIDs)
 	return args.Error(0)
 }
 

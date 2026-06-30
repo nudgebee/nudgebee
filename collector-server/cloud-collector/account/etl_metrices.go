@@ -511,6 +511,14 @@ func StoreMetrices(ctx *security.RequestContext, accountId string, query StoreMe
 				if id, ok := resourceIdMap[m.ResourceId]; ok {
 					resourceId = &id
 				}
+				// Skip PI metrics whose resource isn't in our DB yet (mirrors CloudWatch guard above).
+				if resourceId == nil {
+					ctx.GetLogger().Debug("skipping PI metric for unknown resource",
+						"resourceId", m.ResourceId,
+						"metric", m.Name,
+						"service", service)
+					continue
+				}
 
 				// Add PI metric data points
 				for i, t := range m.Timestamps {

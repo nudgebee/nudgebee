@@ -11,14 +11,15 @@ from sqlalchemy.orm import Session
 
 from notifications_server import teams_app, slack_app, sync_engine
 from notifications_server.configs.settings import settings
-from notifications_server.exceptions.exceptions import Err
 from notifications_server.message_templates.base import render_success_page
 from notifications_server.repositories.oauth_repository import (
     find_installation_by_tenant_and_platform,
     update_state_tenant,
 )
-from notifications_server.services.google_chat.google_chat import GoogleChatService
 from notifications_server.services.ms_teams.ms_teams import MsTeamsService
+from notifications_server.services.discord.discord import DiscordService
+from notifications_server.clients.discord_client import DiscordClient
+from pydantic import BaseModel
 
 OAUTH_NOT_FOUND = "OAuth flow not configured"
 
@@ -63,52 +64,6 @@ async def ms_teams_oauth_redirect(request: Request, data: Dict[Any, Any]):
     service = MsTeamsService(sync_engine)
     service.save_teams_installation(teams_app.client_id, tenant_id, token_result, account, user_email)
     success_html = render_success_page("MS-Teams", settings.base_url)
-
-    return HTMLResponse(content=success_html)
-
-
-_google_oauth_code_verifiers: Dict[str, str] = {}
-
-
-@router.get("/install/google")
-async def google_chat_install():
-    service = GoogleChatService(sync_engine)
-    flow = service.get_google_flow()
-    flow.redirect_uri = settings.google_chat_redirect_uri
-    authorization_url, state = flow.authorization_url(
-        access_type="offline", prompt="consent", include_granted_scopes="true", state=str(uuid4())
-    )
-    if flow.code_verifier:
-        _google_oauth_code_verifiers[state] = flow.code_verifier
-    return {"url": authorization_url}
-
-
-@router.post("/callback/google")
-async def google_chat_oauth_redirect(request: Request, data: Dict[Any, Any]):
-    tenant_id = data.pop("tenant_id", None)
-    if tenant_id is None:
-        raise ValueError(400, Err.OS0010, ["tenant_id"])
-
-    user_email = request.headers.get("x-user-email", None)
-
-    LOG.info(f"Google Chat Installation request for tenant: {tenant_id}")
-    with Session(sync_engine) as session:
-        installations = find_installation_by_tenant_and_platform(session, tenant_id, "google_chat")
-    if len(installations) > 0:
-        LOG.info(f"Google Chat Installation exists for tenant: {tenant_id}")
-        raise HTTPException(status_code=400, detail=INSTALLATION_ALREADY_EXISTS)
-
-    state = request.query_params.get("state")
-    code_verifier = _google_oauth_code_verifiers.pop(state, None) if state else None
-
-    service = GoogleChatService(sync_engine)
-    flow = service.get_google_flow()
-    flow.redirect_uri = settings.google_chat_redirect_uri
-    full_uri = "https://" + request.url.hostname + request.url.path + "?" + request.url.query
-    flow.fetch_token(authorization_response=full_uri, code_verifier=code_verifier)
-    credentials = flow.credentials
-    service.save_google_chat_installation(tenant_id, credentials, user_email)
-    success_html = render_success_page("Google Chat", settings.base_url)
 
     return HTMLResponse(content=success_html)
 
@@ -188,3 +143,38 @@ async def slack_installation_handler(request: Request):
             return JSONResponse(content=response, headers={"set-cookie": set_cookie_value})
     else:
         raise HTTPException(status_code=404, detail=OAUTH_NOT_FOUND)
+
+
+class DiscordInstallRequest(BaseModel):
+    bot_token: str
+
+
+@router.post("/install/discord")
+async def discord_install(request: Request, body: DiscordInstallRequest):
+    tenant_id = request.headers.get("tenant-id")
+    user_email = request.headers.get("x-user-email")
+
+    if not tenant_id:
+        raise HTTPException(status_code=403, detail="Tenant id missing for installation")
+
+    # Reject duplicates
+    with Session(sync_engine) as session:
+        installations = find_installation_by_tenant_and_platform(session, tenant_id, "discord")
+    if len(installations) > 0:
+        raise HTTPException(status_code=400, detail="Installation already exists for tenant")
+
+    # Validate the bot token
+    result = DiscordClient.validate_token(body.bot_token)
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid Discord bot token: {result.get('error', 'Unknown error')}",
+        )
+
+    bot_info = result.get("bot", {})
+
+    service = DiscordService(sync_engine)
+    service.save_discord_installation(tenant_id, body.bot_token, bot_info, user_email)
+
+    LOG.info("Discord installation saved for tenant %s (bot: %s)", tenant_id, bot_info.get("username"))
+    return {"success": True, "bot_username": bot_info.get("username")}

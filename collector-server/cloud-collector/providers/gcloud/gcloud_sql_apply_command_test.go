@@ -12,7 +12,7 @@ import (
 // would have produced a different value.
 func TestResolveSQLInstanceName_PrefersArgs(t *testing.T) {
 	cmd := providers.ApplyCommandRequest{
-		ResourceId: "nudgebee-dev:other-instance",
+		ResourceId: "test-cluster-dev:other-instance",
 		Args:       map[string]any{"instance_name": "my-sql"},
 	}
 
@@ -33,16 +33,16 @@ func TestResolveSQLInstanceName_FallbackToResourceID(t *testing.T) {
 		{
 			name: "project-qualified resource id",
 			cmd: providers.ApplyCommandRequest{
-				ResourceId: "nudgebee-dev:utsav-nudgebee-2026",
+				ResourceId: "test-cluster-dev:utsav-nudgebee-2026",
 			},
 			expected: "utsav-nudgebee-2026",
 		},
 		{
 			name: "bare instance name without project prefix",
 			cmd: providers.ApplyCommandRequest{
-				ResourceId: "beehive-dev-pg",
+				ResourceId: "test-db-dev",
 			},
-			expected: "beehive-dev-pg",
+			expected: "test-db-dev",
 		},
 		{
 			name: "empty args map, project-qualified resource id",
@@ -55,18 +55,18 @@ func TestResolveSQLInstanceName_FallbackToResourceID(t *testing.T) {
 		{
 			name: "empty string instance_name falls through to ResourceId",
 			cmd: providers.ApplyCommandRequest{
-				ResourceId: "nudgebee-dev:beehive-test-pg",
+				ResourceId: "test-cluster-dev:test-db-test",
 				Args:       map[string]any{"instance_name": ""},
 			},
-			expected: "beehive-test-pg",
+			expected: "test-db-test",
 		},
 		{
 			name: "non-string instance_name falls through to ResourceId",
 			cmd: providers.ApplyCommandRequest{
-				ResourceId: "nudgebee-dev:beehive-test-pg",
+				ResourceId: "test-cluster-dev:test-db-test",
 				Args:       map[string]any{"instance_name": 123},
 			},
-			expected: "beehive-test-pg",
+			expected: "test-db-test",
 		},
 	}
 

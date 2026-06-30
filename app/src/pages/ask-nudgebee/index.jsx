@@ -1,4 +1,4 @@
-import KubernetesLLMResponseGenerator from '@components1/llm/KubernetesLLMResponseGeneratorV2';
+import KubernetesLLMResponseGenerator from '@components/llm/KubernetesLLMResponseGeneratorV2';
 import { useRouter } from 'next/router';
 import { useMemo, memo } from 'react';
 

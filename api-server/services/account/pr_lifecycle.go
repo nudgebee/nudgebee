@@ -25,9 +25,9 @@ func ProcessOpenPRResolution(ctx *security.RequestContext, resolutionID, tableNa
 	return adapter.ProcessOpenPRResolution(ctx, resolutionID, tableName)
 }
 
-// MarkPRResolutionTerminal retires a resolution when its PR is closed or merged,
-// so the cron and future webhooks stop dispatching followups for it. Delegates
-// to adapter.MarkPRResolutionTerminal.
-func MarkPRResolutionTerminal(ctx *security.RequestContext, resolutionID, tableName string, merged bool) error {
-	return adapter.MarkPRResolutionTerminal(ctx, resolutionID, tableName, merged)
+// MarkAllPRResolutionsTerminalByURL retires every open resolution (across both
+// resolution tables) whose PR just closed or merged, flipping pr_lifecycle_state
+// and the user-facing status. Delegates to adapter.MarkAllPRResolutionsTerminalByURL.
+func MarkAllPRResolutionsTerminalByURL(ctx *security.RequestContext, prURL string, merged bool) (int64, error) {
+	return adapter.MarkAllPRResolutionsTerminalByURL(ctx, prURL, merged)
 }

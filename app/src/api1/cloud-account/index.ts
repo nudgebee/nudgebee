@@ -37,6 +37,27 @@ query ListCloudResources ($limit:Int, $offset:Int)  {
 }
 `;
 
+export const CLOUD_EXECUTE_COMMAND = `
+mutation CloudExecuteCommand(
+  $account_id: String!
+  $commands: [String!]!
+  $recommendation_id: String
+) {
+  cloud_execute_command(
+    account_id: $account_id
+    commands: $commands
+    recommendation_id: $recommendation_id
+  ) {
+    results {
+      command
+      status
+      output
+      error
+    }
+  }
+}
+`;
+
 export const CLOUD_APPLY_COMMAND = `
 mutation CloudApplyCommand(
   $account_id: String!
@@ -1787,6 +1808,27 @@ mutation CloudMetrics($request: CloudMetricsRequestInput!) {
       return error;
     }
   },
+  executeCommand: async function (params: {
+    account_id: string;
+    commands: string[];
+    recommendation_id?: string;
+  }): Promise<{ data: { results: Array<{ command: string; status: string; output?: string; error?: string }> } | null; error: string | null }> {
+    if (params.account_id === 'demo') {
+      return { data: null, error: 'Demo account does not support command execution.' };
+    }
+    try {
+      const response = await queryGraphQL(CLOUD_EXECUTE_COMMAND, 'CloudExecuteCommand', params);
+      const data = response?.data?.data?.cloud_execute_command;
+      if (data) {
+        return { data, error: null };
+      }
+      return { data: null, error: extractGraphQLErrorMessage(response) };
+    } catch (error: any) {
+      console.error('failed to execute cloud command', error);
+      return { data: null, error: error?.message || 'Network error' };
+    }
+  },
+
   applyCommand: async function (params: {
     account_id: string;
     service_name: string;
@@ -1838,6 +1880,37 @@ mutation CloudMetrics($request: CloudMetricsRequestInput!) {
       };
     } catch (error) {
       console.error('failed to fetch resource action history-', error);
+      return { audits: [], count: 0 };
+    }
+  },
+
+  listCommandExecutionHistory: async function (
+    accountId: string,
+    recommendationId: string,
+    resolutionId?: string,
+    limit = 10,
+    offset = 0
+  ): Promise<{ audits: any[]; count: number }> {
+    try {
+      if (accountId === 'demo') {
+        return { audits: [], count: 0 };
+      }
+      const where: any = {
+        account_id: { _eq: accountId },
+        event_type: { _eq: 'CLI_EXECUTE' },
+        event_target: { _eq: recommendationId },
+      };
+      if (resolutionId) {
+        where.transaction_id = { _eq: resolutionId };
+      }
+      const queryStr = LIST_RESOURCE_ACTION_HISTORY.replaceAll('__WHERE__', gqlStringify(where));
+      const response = await queryGraphQL(queryStr, 'ListCommandExecutionHistory', { limit, offset });
+      return {
+        audits: response?.data?.data?.audits_v2?.rows || [],
+        count: response?.data?.data?.audit_groupings_v2?.rows?.[0]?.count || 0,
+      };
+    } catch (error) {
+      console.error('failed to fetch command execution history', error);
       return { audits: [], count: 0 };
     }
   },

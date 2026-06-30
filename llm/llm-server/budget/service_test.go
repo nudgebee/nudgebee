@@ -4,9 +4,14 @@ import (
 	"fmt"
 	"testing"
 
+	"nudgebee/llm/common"
 	"nudgebee/llm/config"
+	"nudgebee/llm/events"
 
+	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/jmoiron/sqlx"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // saveAndRestoreConfig saves the current config and returns a cleanup function
@@ -387,4 +392,66 @@ func TestGetSystemDefaults(t *testing.T) {
 	assert.Equal(t, 250.0, result.MaxCaps.DailyCostAccount)
 	assert.Equal(t, 5000, result.MaxCaps.MonthlyCount)
 	assert.Equal(t, 500, result.MaxCaps.DailyCount)
+}
+
+// TestModuleQueryFilters_EventChatPartition locks the usage filters to the same
+// partition the enforcement path uses (api/chains.go, api/conversation_sync.go):
+// event- sessions -> investigation, everything else -> user_investigation.
+// Regression for the bug where user_investigation had an empty filter and so
+// swept in event-analysis spend that investigation already counted.
+func TestModuleQueryFilters_EventChatPartition(t *testing.T) {
+	eventLike := "LIKE '" + events.SessionIdPrefixEvent + "%'"
+
+	// investigation matches event sessions (and must not be negated).
+	assert.Contains(t, moduleQueryFilters[ModuleInvestigation], eventLike)
+	assert.NotContains(t, moduleQueryFilters[ModuleInvestigation], "NOT "+eventLike)
+
+	// user_investigation is the complement: it must exclude event sessions, and
+	// keep session-less (NULL session_id) rows in the chat budget rather than
+	// dropping them via NOT LIKE's NULL semantics.
+	assert.Contains(t, moduleQueryFilters[ModuleUserInvestigation], "NOT "+eventLike)
+	assert.Contains(t, moduleQueryFilters[ModuleUserInvestigation], "c.session_id IS NULL")
+}
+
+// TestGetEntityConversationCount_ModulePartition verifies the filters flow into
+// the actual count query: user_investigation excludes event sessions while
+// investigation matches them. Driven by sqlmock, no live DB.
+// newMockMetastoreDM returns a sqlmock-backed Metastore DatabaseManager for the
+// budget usage-query tests, registering cleanup to close the mock connection.
+func newMockMetastoreDM(t *testing.T) (*common.DatabaseManager, sqlmock.Sqlmock) {
+	t.Helper()
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	return &common.DatabaseManager{Db: sqlx.NewDb(db, "postgresql")}, mock
+}
+
+func TestGetEntityConversationCount_ModulePartition(t *testing.T) {
+	t.Run("user_investigation excludes event sessions", func(t *testing.T) {
+		dm, mock := newMockMetastoreDM(t)
+		// Pre-fix the filter was empty, so this NOT LIKE clause was absent and the
+		// query went unmatched — making this assertion fail.
+		mock.ExpectQuery("c.session_id NOT LIKE '" + events.SessionIdPrefixEvent + "%'").
+			WithArgs("acc-1").
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(42))
+
+		count, err := getEntityConversationCount(dm, "account", "acc-1", ModuleUserInvestigation, "month")
+
+		require.NoError(t, err)
+		assert.Equal(t, 42, count)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("investigation matches event sessions", func(t *testing.T) {
+		dm, mock := newMockMetastoreDM(t)
+		mock.ExpectQuery("c.session_id LIKE '" + events.SessionIdPrefixEvent + "%'").
+			WithArgs("acc-1").
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(7))
+
+		count, err := getEntityConversationCount(dm, "account", "acc-1", ModuleInvestigation, "month")
+
+		require.NoError(t, err)
+		assert.Equal(t, 7, count)
+		assert.NoError(t, mock.ExpectationsWereMet())
+	})
 }

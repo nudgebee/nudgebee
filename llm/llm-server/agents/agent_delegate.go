@@ -47,13 +47,13 @@ func (t *delegateAgentTool) Name() string { return DelegateAgentToolName }
 func (t *delegateAgentTool) GetType() toolcore.NBToolType { return toolcore.NBToolTypeTool }
 
 func (t *delegateAgentTool) Description() string {
-	return `Spawn a dynamically-composed specialist sub-agent with a custom prompt and curated tool list.
-USE when no pre-registered agent (aws, gcp, kubectl, postgres, etc.) covers the sub-task and you need a specialist with a specific methodology over a specific tool subset.
-Prefer pre-registered agents when one fits — don't reinvent.
-DO NOT use as a final-answer preamble (e.g. prompt = "I have enough info, will now generate response").
-DO NOT use to format text or do single-LLM-call work — call the LLM tool directly.
-DO NOT set max_iterations < 2 — if you don't need iteration, you don't need delegation.
-Always specify "tools" for any non-trivial sub-task; omitting it gives the sub-agent LLM-only access.`
+	return `Spawn a scoped specialist sub-investigator with its own prompt, tool list, and iteration budget.
+Input: {"prompt": <brief>, "tools": [<tool names>], "max_iterations": <int>} — "tools" is required; omitting it leaves the sub-agent LLM-only, which is almost always misuse. max_iterations defaults to 5, minimum 2, maximum 15.
+USE when a specific sub-question needs 3+ tool calls to answer and would otherwise pollute your own scratchpad with serial discovery (e.g. "investigate DNS for service X", "check egress firewall for namespace Y").
+DO NOT use when 1-2 tool calls suffice — call the tool directly.
+DO NOT use to record findings — write to your own notebook with <update_notebook>.
+DO NOT use to format, summarize, or rewrite text — call the LLM tool directly.
+DO NOT use as a final-answer preamble.`
 }
 
 func (t *delegateAgentTool) InputSchema() toolcore.ToolSchema {
@@ -360,6 +360,10 @@ func (a *dynamicReActAgent) GetSystemPrompt(_ *security.RequestContext, _ core.N
 
 func (a *dynamicReActAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeReAct
+}
+
+func (a *dynamicReActAgent) GetModelCategory() core.ModelTier {
+	return core.ModelTierReasoning
 }
 
 // GetMaxIterations implements core.NBAgentIterationProvider to cap the sub-agent's

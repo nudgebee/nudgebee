@@ -5,7 +5,7 @@ import Head from 'next/head';
 import { useRouter } from 'next/router';
 import { useMemo } from 'react';
 
-import SafeIcon from '@components1/common/SafeIcon';
+import SafeIcon from '@shared/icons/SafeIcon';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
 import { AuthTemplateV2 as AuthTemplate } from '@components/auth/AuthTemplateV2';
 

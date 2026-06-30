@@ -621,5 +621,11 @@ func (t *VerticalRightsizeTask) OutputSchema() *types.Schema {
 }
 
 func getWorkflowBaseLink(taskCtx types.TaskContext) string {
+	// Isolated "Run Task" executions have no real workflow run, so the id and
+	// run id are empty. Return "" rather than a malformed /workflow/?... link;
+	// callers (e.g. pv_rightsize, common_actions) already treat "" as "no link".
+	if taskCtx.GetWorkflowID() == "" {
+		return ""
+	}
 	return fmt.Sprintf("%s/workflow/%s?accountId=%s&executionId=%s", config.Config.BaseUrl, taskCtx.GetWorkflowID(), taskCtx.GetAccountID(), taskCtx.GetWorkflowRunID())
 }

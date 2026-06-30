@@ -29,15 +29,14 @@ var kubectlStderrNoisePrefixes = []string{
 	"Unable to use a TTY",   // exec without TTY notice
 }
 
-// stripKubectlStderrNoise removes leading kubectl stderr notice lines from a
-// merged stdout/stderr blob. It only removes a *prefix* of consecutive noise lines
-// so that real output below them is preserved untouched. If the entire response
-// turns out to be noise (i.e. the actual stdout was empty), the result is the
-// empty string — which the LLM should interpret as "command produced no output",
-// the correct semantics for e.g. `grep ERROR` finding no matches.
-func stripKubectlStderrNoise(response string) string {
+// splitKubectlStderrNoise separates a leading prefix of kubectl stderr notice
+// lines from the real stdout in a merged stdout/stderr blob. The workspace
+// /execute handler points cmd.Stdout and cmd.Stderr at the same buffer, so
+// without splitting we'd either lose the notices (silent stderr) or mistake
+// them for the only output (breaks "empty grep result is the correct answer").
+func splitKubectlStderrNoise(response string) (stdout, stderr string) {
 	if response == "" {
-		return response
+		return "", ""
 	}
 	lines := strings.Split(response, "\n")
 	i := 0
@@ -56,9 +55,9 @@ func stripKubectlStderrNoise(response string) string {
 		i++
 	}
 	if i == 0 {
-		return response
+		return response, ""
 	}
-	return strings.Join(lines[i:], "\n")
+	return strings.Join(lines[i:], "\n"), strings.Join(lines[:i], "\n")
 }
 
 func init() {
@@ -101,13 +100,16 @@ var kubectlPodVerbs = map[string]bool{
 // kubectlResourceKind applies (slash-form `kind/name`, FQDN `kind.group`,
 // comma list `kind1,kind2`) are used to normalize incoming tokens before
 // matching this map.
+// Short names are the official kubectl aliases declared in each CRD's
+// spec.names.shortNames (External-Secrets-Operator and Secrets-Store CSI
+// driver). `ss` is SecretStore — not statefulsets, which use `sts`.
 var kubectlBlockedResourceKinds = map[string]bool{
 	"secret": true, "secrets": true,
 	"sealedsecret": true, "sealedsecrets": true,
-	"externalsecret": true, "externalsecrets": true,
-	"secretproviderclass": true, "secretproviderclasses": true,
-	"clustersecretstore": true, "clustersecretstores": true,
-	"secretstore": true, "secretstores": true,
+	"externalsecret": true, "externalsecrets": true, "es": true,
+	"secretproviderclass": true, "secretproviderclasses": true, "spc": true, "spcs": true,
+	"clustersecretstore": true, "clustersecretstores": true, "css": true,
+	"secretstore": true, "secretstores": true, "ss": true,
 }
 
 // kubectlBlockResourceVerbs are the subcommands we scan for a blocked
@@ -512,6 +514,18 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 			workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
 		})
 		if err != nil {
+			// Pipeline-tail no-match reclassification (issue #32240).
+			// The LLM regularly uses kubectl with `| grep` / `| awk` /
+			// `| jq` to filter output (`kubectl get pods | grep api-server`).
+			// When the filter finds nothing the pipeline exits 1, the
+			// workspace reports "exit status 1", and the LLM sees an
+			// opaque failure for what was a successful empty result. The
+			// helpers from tool_shell.go (PR #32007) already classify
+			// these correctly; we just need to wire them in.
+			if isNoMatchExit(err, command) {
+				nbRequestContext.Ctx.GetLogger().Info("k8s: reclassified pipeline-tail no-match as success", "command", command)
+				return successResponseNoMatches(nbRequestContext, response)
+			}
 			nbRequestContext.Ctx.GetLogger().Error("k8s: unable to execute shell script", "error", err.Error(), "command", command)
 			if response == "" {
 				response = err.Error()
@@ -522,19 +536,14 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 			}, err
 		}
 
-		// Strip kubectl stderr noise that the workspace pod merges into stdout.
-		// The workspace /execute handler points cmd.Stdout and cmd.Stderr at the same
-		// buffer, so kubectl notices like `Defaulted container "x" out of: ...` and
-		// `Warning: ...` (deprecation/version notices) end up labeled as stdout. The
-		// LLM then interprets this as "tool produced no real output" and gives up,
-		// which is wrong — especially for piped commands like
-		// `kubectl logs ... | grep ERROR | tail -10` where an empty grep result is the
-		// correct answer ("no errors found").
-		response = stripKubectlStderrNoise(response)
+		stdout, stderr := splitKubectlStderrNoise(response)
 
-		// Wrap in JSON to be consistent with non-workspace mode and allow agents to parse it
+		// Wrap stdout in JSON for consistency with non-workspace mode and to
+		// let agents parse it. Stderr is intentionally NOT packed into this
+		// envelope — it travels via Metadata.Stderr so it stays out of the
+		// observation text the UI renders (and isn't tool-specific anymore).
 		outputformat := map[string]string{
-			"stdout": response,
+			"stdout": stdout,
 		}
 		outputformatBytes, err := common.MarshalJson(outputformat)
 		if err != nil {
@@ -546,25 +555,38 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 		}
 		response = string(outputformatBytes)
 
-		return core.NBToolResponse{
+		resp := core.NBToolResponse{
 			Data:       response,
 			Type:       core.NBToolResponseTypeText,
 			Status:     core.NBToolResponseStatusSuccess,
 			References: []core.NBToolResponseReference{kubectlUIRef(nbRequestContext, command)},
-		}, nil
+		}
+		if stderr != "" {
+			resp.Metadata = &core.NBToolResponseMetadata{Stderr: stderr}
+		}
+		return resp, nil
 	}
 
 	response, err := ExecuteContainerJob(nbRequestContext, RelayJobKubectl, command, effectiveAccountId, map[string]any{}, false)
 	if err != nil {
 		nbRequestContext.Ctx.GetLogger().Error("k8s: unable to execute shell script", "error", err.Error(), "command", command)
-		responseData := ""
+		// ExecuteContainerJob returns (nil, err) on every failure path
+		// (relay.Execute error, getRelayCommandResponseData parser error,
+		// downstream unmarshal failure), so `response` is always nil here
+		// and the only thing that carries the actual signal — including
+		// the shim's "Error: Server returned NNN: ..." wrapper that the
+		// hint patterns are tuned for — is err.Error(). Use it as the
+		// raw input to wrapKubectlError. The `response` assertion below
+		// is defensive in case a future code path starts returning a
+		// non-nil response alongside an error.
+		rawError := err.Error()
 		if response != nil {
-			if responseData1, ok := response.(string); ok {
-				responseData = responseData1
+			if responseStr, ok := response.(string); ok && responseStr != "" {
+				rawError = responseStr
 			}
 		}
 		return core.NBToolResponse{
-			Data:   responseData,
+			Data:   wrapKubectlError(rawError, command),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}
@@ -578,6 +600,63 @@ func (m KubectlExecuteTool) Call(nbRequestContext core.NbToolContext, input core
 	}
 
 	return resp, nil
+}
+
+// wrapKubectlError mirrors tool_shell's wrapShellError for kubectl-side
+// failures. When the raw response matches a known opaque-failure pattern
+// (the shim's `Error: Server returned NNN: ...` wrapper that the LLM
+// otherwise sees as an unactionable "infrastructure broken" signal), we
+// emit a structured {"error_hint": ..., "original_error": ...} envelope
+// so the LLM gets something to act on. Raw stderr is preserved verbatim
+// under original_error. Pass-through unchanged when no pattern matches.
+//
+// Pattern coverage today (driven by the 14-day error distribution in
+// issue #32240):
+//   - "Server returned 500: ...status: 400 Bad Request..." — the kubectl
+//     command was syntactically valid as a Go string but the workspace
+//     pod rejected it. Hint points at common kubectl bad-command shapes.
+//   - "Server returned 500: ...findings field not found..." — defensive
+//     after-the-fact coverage. The parser fix in
+//     getRelayCommandResponseData removes the dominant source of this,
+//     but we keep the hint in case another code path produces it.
+func wrapKubectlError(rawError, command string) string {
+	if rawError == "" {
+		return rawError
+	}
+	hint := kubectlErrorHint(rawError)
+	if hint == "" {
+		return rawError
+	}
+	envelope := map[string]string{
+		"error_hint":     hint,
+		"original_error": rawError,
+	}
+	body, err := common.MarshalJson(envelope)
+	if err != nil {
+		// Marshal failure is exceptionally unlikely with two string fields;
+		// fall back to raw so the LLM still sees the underlying signal.
+		return rawError
+	}
+	return string(body)
+}
+
+// kubectlErrorHint maps a raw kubectl error string to an actionable hint
+// for the LLM. Returns "" when no pattern matches — the caller then
+// passes the raw error through unchanged.
+func kubectlErrorHint(rawError string) string {
+	lower := strings.ToLower(rawError)
+	switch {
+	case strings.Contains(lower, "status: 400 bad request"):
+		return "The workspace pod rejected this kubectl command as malformed (HTTP 400). Common causes: missing `-n <namespace>` flag, invalid resource type (e.g. `pos` instead of `pods`), bad `--field-selector` syntax, or an unknown subresource. Try `kubectl explain <resource>` to verify field names, `kubectl <verb> --dry-run=client -o yaml` to validate the command shape, and add `-v=6` for more detail on what the API server saw."
+	case strings.Contains(lower, "findings field not found"):
+		// Decoupled from any "server returned 500" wrapper so the hint
+		// fires whether the error reaches us via the shim ("Error:
+		// Server returned 500: {...findings field not found...}") or
+		// directly from a parser (errors.New("findings field not found
+		// or is nil from data")) — see PR #32243 Gemini review.
+		return "The relay-server returned a response shape the parser didn't recognize. This was the dominant failure mode pre-#32240; if you are seeing it post-fix the relay or workspace pod is returning an unexpected payload — retry once, then fall back to a `resource_search` to confirm the resource exists."
+	}
+	return ""
 }
 
 func (m KubectlExecuteTool) IdentifyConfig(ctx core.NbToolContext, input core.NBToolCallRequest, availableConfigs []core.ToolConfig) (core.ToolConfig, error) {

@@ -1,18 +1,18 @@
 import { Typography, Box, Stack } from '@mui/material';
-import { Chip } from '@components1/ds/Chip';
-import Datetime from '@common-new/format/Datetime';
-import Text from '@common-new/format/Text';
+import { Chip } from '@ui/Chip';
+import Datetime from '@shared/format/Datetime';
+import Text from '@shared/format/Text';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { useState, useEffect } from 'react';
 import apiAccount from '@api1/account';
-import { Button } from '@components1/ds/Button';
-import { ListingLayout } from '@components1/ds/ListingLayout';
-import { toast as snackbar } from '@components1/ds/Toast';
-import CustomTable2 from '@common-new/tables/CustomTable2';
-import { Label } from '@components1/ds/Label';
-import { Modal } from '@components1/ds/Modal';
+import { Button } from '@ui/Button';
+import { ListingLayout } from '@ui/ListingLayout';
+import { toast as snackbar } from '@ui/Toast';
+import CustomTable2 from '@shared/tables/CustomTable2';
+import { Label } from '@ui/Label';
+import { Modal } from '@ui/Modal';
 import { CopyIconBlue } from '@assets';
-import SafeIcon from '@components1/common/SafeIcon';
+import SafeIcon from '@shared/icons/SafeIcon';
 import { hasWriteAccess } from '@lib/auth';
 
 const STATUS_TONES = {

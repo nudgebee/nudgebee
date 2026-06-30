@@ -3,14 +3,14 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import { useState, useEffect, useRef } from 'react';
 import apiAccount from '@api1/account';
-import { Modal } from '@components1/common/modal';
-import { Input } from '@components1/ds/Input';
+import { Modal } from '@shared/modal';
+import { Input } from '@ui/Input';
 import { isK8sAccountNameValid } from 'src/utils/common';
-import { Button } from '@components1/ds/Button';
-import { snackbar } from '@components1/common/snackbarService';
+import { Button } from '@ui/Button';
+import { snackbar } from '@shared/snackbarService';
 import { colors } from 'src/utils/colors';
 import { CopyIconBlue } from '@assets';
-import SafeIcon from '@components1/common/SafeIcon';
+import SafeIcon from '@shared/icons/SafeIcon';
 
 const STATUS_COLORS = {
   active: '#4CAF50',

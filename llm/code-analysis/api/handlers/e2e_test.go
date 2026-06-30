@@ -34,12 +34,11 @@ func TestE2EPRList(t *testing.T) {
 	// Override specific test settings
 	cfg.Analysis.WorkspaceDir = t.TempDir()
 	cfg.Git.CloneTimeout = 5 * time.Minute
-	cfg.Git.MaxRepoSize = 536870912 // 512MB
-	cfg.Credentials.EncryptionKey = "test-key-for-e2e"
+	cfg.Git.MaxRepoSize = 536870912   // 512MB
 	cfg.Agent.ReActMaxIterations = 15 // Set max iterations for ReAct planner
 
 	gitClient := git.NewGitClient(cfg.Analysis.WorkspaceDir, cfg.Git.CloneTimeout, cfg.Git.MaxRepoSize)
-	credHandler := credentials.NewCredentialHandler(cfg.Credentials.EncryptionKey)
+	credHandler := credentials.NewCredentialHandler()
 
 	handler, err := NewAgenticAnalyzeHandler(cfg, gitClient, credHandler)
 	if err != nil {
@@ -127,12 +126,11 @@ func TestLogAnalysis(t *testing.T) {
 	cfg.Analysis.WorkspaceDir = os.TempDir()
 
 	cfg.Git.CloneTimeout = 5 * time.Minute
-	cfg.Git.MaxRepoSize = 536870912 // 512MB
-	cfg.Credentials.EncryptionKey = "test-key-for-e2e"
+	cfg.Git.MaxRepoSize = 536870912   // 512MB
 	cfg.Agent.ReActMaxIterations = 30 // Set max iterations for ReAct planner
 
 	gitClient := git.NewGitClient(cfg.Analysis.WorkspaceDir, cfg.Git.CloneTimeout, cfg.Git.MaxRepoSize)
-	credHandler := credentials.NewCredentialHandler(cfg.Credentials.EncryptionKey)
+	credHandler := credentials.NewCredentialHandler()
 
 	handler, err := NewAgenticAnalyzeHandler(cfg, gitClient, credHandler)
 	if err != nil {
@@ -185,11 +183,10 @@ func TestListCollectorServerPRs(t *testing.T) {
 	cfg.Analysis.WorkspaceDir = t.TempDir()
 	cfg.Git.CloneTimeout = 5 * time.Minute
 	cfg.Git.MaxRepoSize = 536870912
-	cfg.Credentials.EncryptionKey = "test-key-for-e2e"
 	cfg.Agent.ReActMaxIterations = 15
 
 	gitClient := git.NewGitClient(cfg.Analysis.WorkspaceDir, cfg.Git.CloneTimeout, cfg.Git.MaxRepoSize)
-	credHandler := credentials.NewCredentialHandler(cfg.Credentials.EncryptionKey)
+	credHandler := credentials.NewCredentialHandler()
 
 	handler, err := NewAgenticAnalyzeHandler(cfg, gitClient, credHandler)
 	if err != nil {
@@ -250,11 +247,10 @@ func TestUUIDPanicLogAnalysis(t *testing.T) {
 	cfg.Analysis.WorkspaceDir = t.TempDir()
 	cfg.Git.CloneTimeout = 5 * time.Minute
 	cfg.Git.MaxRepoSize = 536870912
-	cfg.Credentials.EncryptionKey = "test-key-for-e2e"
 	cfg.Agent.ReActMaxIterations = 15
 
 	gitClient := git.NewGitClient(cfg.Analysis.WorkspaceDir, cfg.Git.CloneTimeout, cfg.Git.MaxRepoSize)
-	credHandler := credentials.NewCredentialHandler(cfg.Credentials.EncryptionKey)
+	credHandler := credentials.NewCredentialHandler()
 
 	handler, err := NewAgenticAnalyzeHandler(cfg, gitClient, credHandler)
 	if err != nil {

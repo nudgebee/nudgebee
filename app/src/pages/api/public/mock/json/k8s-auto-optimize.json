@@ -1,0 +1,32 @@
+{
+  "auto_pilot": [
+    {
+      "id": "demo-ap-001",
+      "category": "continuous_rightsize",
+      "status": "Active",
+      "notification": { "type": "slack", "channel": "#alerts" },
+      "auto_optimize_resource_maps": [{ "resource_identifier": { "name": null, "namespace": "test-cluster-test" } }]
+    },
+    {
+      "id": "demo-ap-002",
+      "category": "vertical_rightsize",
+      "status": "Active",
+      "notification": { "type": "slack", "channel": "#alerts" },
+      "auto_optimize_resource_maps": [{ "resource_identifier": { "name": "karpenter", "namespace": "karpenter" } }]
+    },
+    {
+      "id": "demo-ap-003",
+      "category": "horizontal_rightsize",
+      "status": "Active",
+      "notification": { "type": "email", "channel": "team@example.com" },
+      "auto_optimize_resource_maps": [{ "resource_identifier": { "name": null, "namespace": "sonarqube" } }]
+    },
+    {
+      "id": "demo-ap-004",
+      "category": "pvc_rightsize",
+      "status": "Active",
+      "notification": { "type": "email", "channel": "team@example.com" },
+      "auto_optimize_resource_maps": [{ "resource_identifier": { "name": null, "namespace": "prometheus" } }]
+    }
+  ]
+}

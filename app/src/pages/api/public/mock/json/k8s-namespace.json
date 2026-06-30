@@ -20,13 +20,13 @@
           "creation_time": "2023-01-10T20:09:29"
         },
         {
-          "name": "nudgebee-test",
+          "name": "test-cluster-test",
           "workload_count": 24,
           "pod_count": 12,
           "creation_time": "2024-02-18T03:25:48"
         },
         {
-          "name": "nudgebee-test-agent-1",
+          "name": "test-cluster-test-agent-1",
           "workload_count": 7,
           "pod_count": 10,
           "creation_time": "2024-01-14T12:01:01"

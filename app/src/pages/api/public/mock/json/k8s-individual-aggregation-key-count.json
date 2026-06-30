@@ -4,11 +4,11 @@
       "event_groupings_v2": {
         "rows": [
           {
-            "count": 180,
+            "count": 10,
             "aggregation_key": "CPUThrottlingHigh"
           },
           {
-            "count": 56,
+            "count": 10,
             "aggregation_key": "image_pull_backoff_reporter"
           }
         ]

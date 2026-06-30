@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -34,8 +35,10 @@ import (
 //   - QueryTracesHeatmap returns an empty slice (requires trace IDs which are not queryable).
 //   - P95/P99 percentiles are unavailable from the metrics API; returned as 0.
 //   - _or and _not filter operators are not supported by the SolarWinds filter syntax.
-//   - HTTP-level context cancellation is not propagated into DoSolarWindsGET.
-//     Cancelling the parent request does not abort in-flight SolarWinds API calls.
+//
+// Request-context cancellation is propagated into the SolarWinds HTTP calls (via
+// DoSolarWindsGETWithContext), so cancelling the parent request aborts in-flight
+// SolarWinds API calls.
 type SolarWindsTraceSource struct{}
 
 // solarWindsTraceLabelMapping maps NudgeBee canonical trace field names to the SolarWinds
@@ -99,7 +102,7 @@ func (s *SolarWindsTraceSource) CountTraces(ctx *security.RequestContext, req Tr
 	from, to := swTraceTimeRange(req.StartTime, req.EndTime)
 
 	filter := buildSwTraceFilter(req.QueryRequest.Where)
-	groups, err := s.fetchMeasurements(apiToken, baseURL, from, to, "COUNT", filter)
+	groups, err := s.fetchMeasurements(ctx.GetContext(), apiToken, baseURL, from, to, "COUNT", filter)
 	if err != nil {
 		return common.OpenTelemetryTraceCount{}, fmt.Errorf("SolarWinds trace count query failed: %w", err)
 	}
@@ -126,7 +129,7 @@ func (s *SolarWindsTraceSource) GetLabelValues(ctx *security.RequestContext, req
 
 	baseURL := integrations.SolarWindsAPIBaseURL(dataCenter)
 	path := fmt.Sprintf("/v1/metrics/%s/attributes/%s", swTraceMetric, url.PathEscape(labelName))
-	body, statusCode, err := integrations.DoSolarWindsGET(apiToken, baseURL, path, map[string]string{})
+	body, statusCode, err := integrations.DoSolarWindsGETWithContext(ctx.GetContext(), apiToken, baseURL, path, map[string]string{})
 	if err != nil {
 		return common.OpenTelemetryTraceLabelValues{}, fmt.Errorf("SolarWinds trace label values request failed: %w", err)
 	}
@@ -178,16 +181,32 @@ func (s *SolarWindsTraceSource) QueryGroupedTraces(ctx *security.RequestContext,
 	maxCh := make(chan fetchResult, 1)
 
 	filter := buildSwTraceFilter(req.QueryRequest.Where)
+	reqCtx := ctx.GetContext()
 	go func() {
-		g, err := s.fetchMeasurements(apiToken, baseURL, from, to, "AVG", filter)
+		defer func() {
+			if r := recover(); r != nil {
+				avgCh <- fetchResult{err: fmt.Errorf("panic in SolarWinds AVG fetch: %v", r)}
+			}
+		}()
+		g, err := s.fetchMeasurements(reqCtx, apiToken, baseURL, from, to, "AVG", filter)
 		avgCh <- fetchResult{g, err}
 	}()
 	go func() {
-		g, err := s.fetchMeasurements(apiToken, baseURL, from, to, "COUNT", filter)
+		defer func() {
+			if r := recover(); r != nil {
+				cntCh <- fetchResult{err: fmt.Errorf("panic in SolarWinds COUNT fetch: %v", r)}
+			}
+		}()
+		g, err := s.fetchMeasurements(reqCtx, apiToken, baseURL, from, to, "COUNT", filter)
 		cntCh <- fetchResult{g, err}
 	}()
 	go func() {
-		g, err := s.fetchMeasurements(apiToken, baseURL, from, to, "MAX", filter)
+		defer func() {
+			if r := recover(); r != nil {
+				maxCh <- fetchResult{err: fmt.Errorf("panic in SolarWinds MAX fetch: %v", r)}
+			}
+		}()
+		g, err := s.fetchMeasurements(reqCtx, apiToken, baseURL, from, to, "MAX", filter)
 		maxCh <- fetchResult{g, err}
 	}()
 
@@ -220,7 +239,7 @@ func (s *SolarWindsTraceSource) QueryGroupedTracesCount(ctx *security.RequestCon
 	from, to := swTraceTimeRange(req.StartTime, req.EndTime)
 
 	filter := buildSwTraceFilter(req.QueryRequest.Where)
-	groups, err := s.fetchMeasurements(apiToken, baseURL, from, to, "COUNT", filter)
+	groups, err := s.fetchMeasurements(ctx.GetContext(), apiToken, baseURL, from, to, "COUNT", filter)
 	if err != nil {
 		return common.OpenTelemetryTraceGroupCount{}, fmt.Errorf("SolarWinds trace group count query failed: %w", err)
 	}
@@ -317,7 +336,7 @@ func (g *swTraceGroupData) maxValue() float64 {
 //
 // filter is a SolarWinds filter expression (e.g. "service.name: [anomaly]") built from
 // the request's Where clause. Pass an empty string for no filtering.
-func (s *SolarWindsTraceSource) fetchMeasurements(apiToken, baseURL, from, to, aggregateBy, filter string) ([]swTraceGroupData, error) {
+func (s *SolarWindsTraceSource) fetchMeasurements(ctx context.Context, apiToken, baseURL, from, to, aggregateBy, filter string) ([]swTraceGroupData, error) {
 	params := map[string]string{
 		"groupBy":     "service.name,sw.transaction,otel.status_code",
 		"aggregateBy": aggregateBy,
@@ -337,7 +356,12 @@ func (s *SolarWindsTraceSource) fetchMeasurements(apiToken, baseURL, from, to, a
 
 	var allGroupings []swMeasurementGrouping
 	for page := 0; page < swMaxPages; page++ {
-		body, statusCode, err := integrations.DoSolarWindsGET(apiToken, baseURL, path, params)
+		// Bail out before each page if the caller has already cancelled, to avoid
+		// issuing further HTTP requests for an aborted request.
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("SolarWinds measurements pagination cancelled: %w", err)
+		}
+		body, statusCode, err := integrations.DoSolarWindsGETWithContext(ctx, apiToken, baseURL, path, params)
 		if err != nil {
 			return nil, fmt.Errorf("request to SolarWinds measurements API failed: %w", err)
 		}

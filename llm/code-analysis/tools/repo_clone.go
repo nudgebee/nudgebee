@@ -19,6 +19,13 @@ type RepoCloneTool struct {
 	workspaceDir  string
 	gitClient     *git.GitClient
 	cloneAttempts map[string]int // URL -> attempt count, prevents infinite clone retries
+	// defaultBranch is the branch the clone should check out when the caller (the
+	// LLM) omits an explicit `branch`. It is seeded by the agent from the request's
+	// target/base branch (RepoContext.Branch) so the working tree — and therefore
+	// any fix branch cut from it — starts on the same branch the PR targets. Without
+	// this the clone falls back to the remote default branch (e.g. main), and a PR
+	// opened against `test` would diff the entire main↔test delta.
+	defaultBranch string
 }
 
 type RepoCloneInput struct {
@@ -36,6 +43,18 @@ func NewRepoCloneTool(workspaceDir string, gitClient *git.GitClient) *RepoCloneT
 		gitClient:     gitClient,
 		cloneAttempts: make(map[string]int),
 	}
+}
+
+// SetDefaultBranch seeds the branch used when an invocation omits `branch`.
+// Callers should pass the request's target/base branch (and skip SHA-shaped
+// values, which are not valid checkout targets here).
+func (t *RepoCloneTool) SetDefaultBranch(branch string) {
+	t.defaultBranch = branch
+}
+
+// DefaultBranch returns the branch used when an invocation omits `branch`.
+func (t *RepoCloneTool) DefaultBranch() string {
+	return t.defaultBranch
 }
 
 func (t *RepoCloneTool) Name() string {
@@ -61,8 +80,8 @@ func (t *RepoCloneTool) InputSchema() core.ToolSchema {
 				"properties": map[string]any{
 					"type": map[string]any{
 						"type":        "string",
-						"description": "Type of credentials (token, ssh_key, basic, encrypted, env_ref)",
-						"enum":        []string{"token", "ssh_key", "basic", "encrypted", "env_ref"},
+						"description": "Type of credentials (token, ssh_key, basic, env_ref, none)",
+						"enum":        []string{"token", "ssh_key", "basic", "env_ref", "none"},
 					},
 					"value": map[string]any{
 						"type":        "string",
@@ -103,6 +122,13 @@ func (t *RepoCloneTool) Execute(ctx context.Context, input map[string]any) core.
 			fmt.Sprintf("Invalid input parameters: %v", err),
 			"Failed to parse tool input parameters",
 		)
+	}
+
+	// When the caller omits an explicit branch, fall back to the request's
+	// target/base branch so the clone checks out the same branch the PR will
+	// target — not the remote default branch.
+	if params.Branch == "" && t.defaultBranch != "" {
+		params.Branch = t.defaultBranch
 	}
 
 	// Handle local repository path

@@ -142,8 +142,21 @@ func GcpBulkOnboard(context *security.RequestContext, query GcpBulkOnboardReques
 		return GcpBulkOnboardResponse{}, fmt.Errorf("failed to parse GCP credentials JSON: %w", err)
 	}
 
-	// Validate credentials once via collector using the SA's home project
-	validationResult := validateGCPCredentialsInternal(context.GetContext(), query.CredentialsJSON, gcpCredentials.ProjectID, "", "", "")
+	// Trim billing fields up front so they are consistent everywhere downstream:
+	// the non-empty guards below, the validation call, and the stored billing_data
+	// (whitespace in dataset/table would otherwise break the spends sync's
+	// `project.dataset.table` query).
+	query.BillingProjectID = strings.TrimSpace(query.BillingProjectID)
+	query.BillingDatasetID = strings.TrimSpace(query.BillingDatasetID)
+	query.BillingTableID = strings.TrimSpace(query.BillingTableID)
+
+	// Validate credentials once via collector using the SA's home project. Pass
+	// the billing fields through so the collector also verifies the SA can query
+	// the BigQuery billing export — billing access is shared across every project
+	// in the batch and is the sole arbiter of an account's connected status, so a
+	// billing-permission gap must block the whole onboard rather than silently
+	// create accounts that sit permanently NOT_CONNECTED.
+	validationResult := validateGCPCredentialsInternal(context.GetContext(), query.CredentialsJSON, gcpCredentials.ProjectID, query.BillingProjectID, query.BillingDatasetID, query.BillingTableID)
 	if !validationResult.Success {
 		return GcpBulkOnboardResponse{}, fmt.Errorf("invalid GCP credentials: %s", validationResult.ErrorMessage)
 	}
@@ -2387,30 +2400,25 @@ func RegenerateAgentKeys(ctx *security.RequestContext, accountId string, agentTy
 		return AgentRegenerateKeyResponse{}, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	audit.LogChange(ctx, audit.ChangeInput{
-		EventCategory: audit.EventCategoryAccount,
-		EventType:     audit.EventTypeAccountUpdate,
-		EventAction:   audit.EventActionUpdate,
-		TargetID:      accountId,
-		AccountID:     accountId,
-		TableName:     "cloud_accounts",
-		NewData:       map[string]any{"id": accountId, "agent_access_key": *agent.AccessKey},
-	})
-
-	if err := audit.PublishAuditEvent(ctx, audit.Audit{
+	// Single audit row under the K8s Agent category so token (re)generation
+	// surfaces on the Audit page's "K8s Agent" tab. Emitted here (not in the
+	// API handler) so it reflects the real success path and isn't double-written
+	// alongside a separate ACCOUNTS change-log row.
+	if auditErr := audit.CreateAudit(ctx, &audit.AuditRequest{Audits: []audit.Audit{{
 		AccountId:     accountId,
 		TenantId:      ctx.GetSecurityContext().GetTenantId(),
 		UserId:        ctx.GetSecurityContext().GetUserId(),
-		EventTime:     time.Now(),
-		EventCategory: audit.EventCategoryAccount,
+		EventTime:     time.Now().UTC(),
+		EventCategory: audit.EventCategoryK8sAgent,
 		EventType:     audit.EventTypeUpdateAgentToken,
-		EventState:    map[string]string{"account_id": accountId, "agent_type": agentType},
+		EventState:    map[string]any{"account_id": accountId, "agent_type": agentType},
 		EventActor:    audit.EventActorApiService,
-		EventTarget:   "agent",
+		EventTarget:   accountId,
 		EventAction:   audit.EventActionUpdate,
 		EventStatus:   audit.EventStatusSuccess,
-	}); err != nil {
-		ctx.GetLogger().Error("failed to publish audit event", "error", err)
+		EventAttr:     map[string]any{"agent_type": agentType},
+	}}}); auditErr != nil {
+		ctx.GetLogger().Error("failed to create agent token audit", "error", auditErr)
 	}
 
 	return AgentRegenerateKeyResponse{

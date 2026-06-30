@@ -69,7 +69,7 @@ func (s *WorkflowDao) CreateWorkflowWithInitialVersion(ctx context.Context, tena
 	}
 	tagBytes, err := json.Marshal(wf.Tags)
 	if err != nil {
-		log.Printf("failed to marshal tags: %v", err)
+		return "", nil, fmt.Errorf("failed to marshal tags: %w", err)
 	}
 
 	var createdFromSessionID sql.NullString
@@ -843,7 +843,7 @@ func (s *WorkflowDao) Update(ctx context.Context, tenantID, accountID, id string
 
 	tagBytes, err := json.Marshal(wf.Tags)
 	if err != nil {
-		log.Printf("failed to marshal tags: %v", err)
+		return fmt.Errorf("failed to marshal tags: %w", err)
 	}
 
 	tx, err := s.db.BeginTxx(ctx, nil)
@@ -893,7 +893,7 @@ func (s *WorkflowDao) UpdateInternal(ctx context.Context, tenantID, accountID, i
 
 	tagBytes, err := json.Marshal(wf.Tags)
 	if err != nil {
-		log.Printf("failed to marshal tags: %v", err)
+		return fmt.Errorf("failed to marshal tags: %w", err)
 	}
 
 	tx, err := s.db.BeginTxx(ctx, nil)
@@ -1132,6 +1132,16 @@ func (s *WorkflowDao) ListByIntegrationName(ctx context.Context, tenantID, integ
 	// The api-server forwarder always sends the integration row's name on the
 	// URL path, so matching only on params.integration_name silently drops
 	// every legacy subscriber (fan-out returns 200 with fired=0).
+	//
+	// The third branch reconstructs the legacy prefixed name from the row's own
+	// id + the bare params name ("wf-<id>-<params.integration_name>"). This is
+	// the exact shape normalizeWebhookTriggers stores in internal.name for a
+	// legacy row, so it still matches a prefixed URL even when internal.name has
+	// been clobbered back to the bare form — which happens whenever the workflow
+	// is saved from the builder, because the canvas rebuild (extractTriggersFromNodes)
+	// drops the internal-only block and the backend re-derives the bare name.
+	// Without this, editing/publishing a legacy webhook automation permanently
+	// breaks fan-out until the integration binding is repaired by hand.
 	query := `
 		SELECT id::text, account_id::text, name, definition, tags, status, last_execution_status, last_execution_time, created_by, updated_by, created_at, updated_at
 		FROM workflows
@@ -1141,7 +1151,8 @@ func (s *WorkflowDao) ListByIntegrationName(ctx context.Context, tenantID, integ
 			SELECT 1 FROM jsonb_array_elements(definition->'triggers') AS trigger
 			WHERE trigger->>'type' = 'webhook'
 			  AND (trigger->'params'->>'integration_name' = $3
-			       OR trigger->'internal'->>'name' = $3)
+			       OR trigger->'internal'->>'name' = $3
+			       OR ('wf-' || workflows.id::text || '-' || (trigger->'params'->>'integration_name')) = $3)
 		  )
 	`
 	rows, err := s.db.QueryContext(ctx, query, tenantID, model.WorkflowStatusActive, integrationName)
@@ -1440,6 +1451,41 @@ func (s *WorkflowDao) SetLiveVersion(ctx context.Context, tenantID, accountID, w
 	`, versionID, versionStatus, actor, workflowID, tenantID, accountID)
 	if err != nil {
 		return fmt.Errorf("failed to set live version: %w", err)
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// DeleteWorkflowVersion hard-deletes a single workflow_versions row. The
+// EXISTS guard is the single source of truth for both authorization and
+// safety: the row is deleted ONLY when its parent workflow belongs to the
+// caller's tenant+account AND the version is neither the live nor the
+// draft-base pointer. Scoping the DELETE to the tenant-owned workflow closes
+// a cross-tenant IDOR — a caller from another tenant passing a foreign
+// (workflowID, versionID) finds no matching workflow row, so the guard fails
+// and nothing is deleted. The live/draft check inside the same statement also
+// keeps the protection correct under a concurrent make-live / checkout without
+// a serializable transaction. Returns sql.ErrNoRows when the row doesn't
+// exist, isn't owned by this tenant/account, or is currently protected.
+func (s *WorkflowDao) DeleteWorkflowVersion(ctx context.Context, tenantID, accountID, workflowID, versionID string) error {
+	if tenantID == "" || accountID == "" {
+		return fmt.Errorf("tenantID and accountID must not be empty")
+	}
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM workflow_versions
+		WHERE id = $1 AND workflow_id = $2
+		  AND EXISTS (
+		    SELECT 1 FROM workflows w
+		    WHERE w.id = $2 AND w.tenant_id = $3 AND w.account_id = $4
+		      AND (w.live_version_id IS NULL OR w.live_version_id <> $1)
+		      AND (w.draft_version_id IS NULL OR w.draft_version_id <> $1)
+		  )
+	`, versionID, workflowID, tenantID, accountID)
+	if err != nil {
+		return fmt.Errorf("failed to delete workflow version: %w", err)
 	}
 	rows, _ := res.RowsAffected()
 	if rows == 0 {

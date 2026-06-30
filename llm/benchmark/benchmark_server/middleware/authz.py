@@ -193,7 +193,11 @@ def _fetch_authz_from_db(user_id: str) -> Authz:
             tenant_rows = []
             try:
                 tenant_rows = conn.execute(
-                    text("SELECT tenant::text " "FROM tenant_users " 'WHERE "user" = :uid'),
+                    text(
+                        "SELECT tenant::text "
+                        "FROM tenant_users "
+                        'WHERE "user" = :uid'
+                    ),
                     {"uid": user_id},
                 ).fetchall()
             except Exception as e:
@@ -270,7 +274,9 @@ def _fetch_authz_from_db(user_id: str) -> Authz:
                         ).fetchall()
                     account_ids = [str(r[0]) for r in rows if r[0]]
                 except Exception as e:
-                    logger.warning("authz: account fetch failed for tenant %s: %s", tid, e)
+                    logger.warning(
+                        "authz: account fetch failed for tenant %s: %s", tid, e
+                    )
 
                 tenants.append(
                     TenantAccess(

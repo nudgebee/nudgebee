@@ -17,8 +17,9 @@ import (
 
 // allowedRelayActions is the set of relay actions the proxy is permitted to forward.
 var allowedRelayActions = map[string]bool{
-	"request": true,
-	"grafana": true,
+	"request":             true,
+	"grafana":             true,
+	"jaeger_query_traces": true,
 }
 
 // validActionPattern ensures the action contains only safe alphanumeric/underscore/hyphen characters.
@@ -109,6 +110,7 @@ var readActions = map[string]bool{
 	"datadog_metrics":              true,
 	"datadog_monitor":              true,
 	"datadog_traces":               true,
+	"jaeger_query_traces":          true,
 	"newrelic_entity_details":      true,
 	"newrelic_incident_details":    true,
 	"newrelic_incidents":           true,

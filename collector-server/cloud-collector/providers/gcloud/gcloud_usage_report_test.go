@@ -450,7 +450,7 @@ func TestGetGcloudUsageReports(t *testing.T) {
 				AccountNumber: "431c4781-937c-4f02-bb90-c47bc0201c79",
 				Data: stringPtr(`{
 					"billing_data": {
-						"billing_project_id": "nudgebee-dev",
+						"billing_project_id": "test-cluster-dev",
 						"dataset_name": "billing_export",
 						"table_name": "gcp_billing_export_resource_v1_01766B_B907EB_02180F"
 					}
@@ -498,13 +498,9 @@ func TestGetGcloudUsageReports(t *testing.T) {
 			name: "live integration test with real credentials",
 			account: providers.Account{
 				AccountNumber: "431c4781-937c-4f02-bb90-c47bc0201c79",
-				Data: stringPtr(`{
-					"billing_data": {
-						"billing_project_id": "nudgebee-dev",
-						"dataset_name": "billing_export",
-						"table_name": "gcp_billing_export_v1_01766B_B907EB_02180F"
-					}
-				}`),
+				// Data is overridden from env vars in t.Run below (see the
+				// "live integration" branch). This placeholder is never read.
+				Data: stringPtr(`{"billing_data":{"billing_project_id":"__OVERRIDDEN_BY_ENV__"}}`),
 			},
 			setupMock: func(account providers.Account) {
 				// This is a live test, so we use the real implementation.
@@ -524,9 +520,20 @@ func TestGetGcloudUsageReports(t *testing.T) {
 				newBigQueryClient = originalNewClientFunc
 			}()
 
-			// Skip live integration tests unless explicitly enabled
-			if tt.name == "live integration test with real credentials" && os.Getenv("RUN_GCP_INTEGRATION_TESTS") != "true" {
-				t.Skip("Skipping live integration test. Set RUN_GCP_INTEGRATION_TESTS=true to run.")
+			// Skip live integration tests unless explicitly enabled, and
+			// inject the real billing project from env (so the leak-sensitive
+			// project ID never lives in source).
+			if tt.name == "live integration test with real credentials" {
+				if os.Getenv("RUN_GCP_INTEGRATION_TESTS") != "true" {
+					t.Skip("Skipping live integration test. Set RUN_GCP_INTEGRATION_TESTS=true to run.")
+				}
+				projectID := os.Getenv("TEST_GCP_BILLING_PROJECT_ID")
+				dataset := os.Getenv("TEST_GCP_BILLING_DATASET")
+				table := os.Getenv("TEST_GCP_BILLING_TABLE")
+				if projectID == "" || dataset == "" || table == "" {
+					t.Skip("Skipping live integration test - TEST_GCP_BILLING_PROJECT_ID, TEST_GCP_BILLING_DATASET, TEST_GCP_BILLING_TABLE must be set")
+				}
+				tt.account.Data = stringPtr(fmt.Sprintf(`{"billing_data":{"billing_project_id":%q,"dataset_name":%q,"table_name":%q}}`, projectID, dataset, table))
 			}
 
 			// Setup the mock for this specific test case
@@ -881,19 +888,22 @@ func TestGetGcloudUsageReport_CurrentMonth(t *testing.T) {
 	}
 }
 
-// Helper function to get test account for billing tests
+// Helper function to get test account for billing tests. Used only by live
+// integration tests (gated by RUN_GCP_INTEGRATION_TESTS); reads real billing
+// config from env so the internal project ID never lives in source.
 func getTestAccountForBilling(t *testing.T) providers.Account {
-	accountData := `{
-		"billing_data": {
-			"billing_project_id": "nudgebee-dev",
-			"dataset_name": "billing_export",
-			"table_name": "gcp_billing_export_resource_v1_01766B_B907EB_02180F"
-		}
-	}`
+	projectID := os.Getenv("TEST_GCP_BILLING_PROJECT_ID")
+	dataset := os.Getenv("TEST_GCP_BILLING_DATASET")
+	table := os.Getenv("TEST_GCP_BILLING_TABLE")
+	accountName := os.Getenv("TEST_GCP_ACCOUNT_NAME")
+	if projectID == "" || dataset == "" || table == "" || accountName == "" {
+		t.Skip("Skipping live integration test - TEST_GCP_BILLING_PROJECT_ID, TEST_GCP_BILLING_DATASET, TEST_GCP_BILLING_TABLE, TEST_GCP_ACCOUNT_NAME must be set")
+	}
+	accountData := fmt.Sprintf(`{"billing_data":{"billing_project_id":%q,"dataset_name":%q,"table_name":%q}}`, projectID, dataset, table)
 
 	return providers.Account{
 		AccountNumber: "431c4781-937c-4f02-bb90-c47bc0201c79",
-		AccountName:   "nudgebee-dev",
+		AccountName:   accountName,
 		Data:          &accountData,
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
 	"time"
+
+	"github.com/jmoiron/sqlx"
 )
 
 func CreateConversationAiFeedback(context *security.RequestContext, feedbackRequest ConversationFeedbackRequest) (map[string]bool, error) {
@@ -21,21 +23,46 @@ func CreateConversationAiFeedback(context *security.RequestContext, feedbackRequ
 	if err != nil {
 		return data, err
 	}
-	query := `INSERT INTO llm_conversation_feedback (session_id, 
-		module, 
-		question, 
-		llm_response, 
-		user_corrected_response, 
-		useful, 
-		additional_notes, 
-		conversation_id, 
-		tenant_id, 
-		cloud_account_id, 
-		user_id) 
+
+	tenantId := context.GetSecurityContext().GetTenantId()
+	userId := context.GetSecurityContext().GetUserId()
+
+	// Feedback is singular per (response, user): a user's thumbs-up/down on a
+	// given response (session_id) for a module replaces any prior feedback
+	// rather than appending. The table started out append-only (plain INSERT),
+	// which let a single response accumulate conflicting rows (e.g. a Yes and a
+	// No). The conversation widget reads only the latest row while the admin
+	// feedback tab lists all of them, so the two surfaces disagreed and the
+	// icon could show the opposite of the recorded feedback (issue #32906).
+	// Deleting prior rows for the key before inserting also collapses any
+	// pre-existing duplicates the moment the user re-submits.
+	deleteQuery := `DELETE FROM llm_conversation_feedback
+		WHERE session_id = $1 AND module = $2 AND user_id = $3 AND cloud_account_id = $4 AND tenant_id = $5`
+	insertQuery := `INSERT INTO llm_conversation_feedback (session_id,
+		module,
+		question,
+		llm_response,
+		user_corrected_response,
+		useful,
+		additional_notes,
+		conversation_id,
+		tenant_id,
+		cloud_account_id,
+		user_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`
-	_, err = dbms.Db.Exec(query, feedbackRequest.SessionId, feedbackRequest.Module, feedbackRequest.Question,
-		feedbackRequest.LlmResponse, feedbackRequest.UserCorrectedResponse, feedbackRequest.Useful, feedbackRequest.AdditionalNotes,
-		feedbackRequest.ConversationId, context.GetSecurityContext().GetTenantId(), feedbackRequest.CloudAccountId, context.GetSecurityContext().GetUserId())
+
+	_, err = dbms.DoInTransaction(func(tx *sqlx.Tx) (any, error) {
+		if _, err := tx.Exec(deleteQuery, feedbackRequest.SessionId, feedbackRequest.Module, userId,
+			feedbackRequest.CloudAccountId, tenantId); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(insertQuery, feedbackRequest.SessionId, feedbackRequest.Module, feedbackRequest.Question,
+			feedbackRequest.LlmResponse, feedbackRequest.UserCorrectedResponse, feedbackRequest.Useful, feedbackRequest.AdditionalNotes,
+			feedbackRequest.ConversationId, tenantId, feedbackRequest.CloudAccountId, userId); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	})
 	if err != nil {
 		return data, err
 	}

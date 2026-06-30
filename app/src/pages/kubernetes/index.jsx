@@ -1,14 +1,14 @@
 import React, { useEffect, useMemo } from 'react';
-import AnchorComponent from '@common-new/AnchorComponent';
-import ErrorBoundary from '@components1/common/ErrorBoundary';
+import AnchorComponent from '@shared/navigation/AnchorComponent';
+import ErrorBoundary from '@shared/ErrorBoundary';
 import { Box } from '@mui/material';
-import KubernetesClusterOverview from '@components1/k8s/landing/KubernetesClusterOverview';
-import KubernetesMonitoring from '@components1/k8s/landing/KubernetesMonitoringView';
-import KubernetesApplicationGrouping from '@components1/k8s/landing/k8sGrouping/KubernetesApplicationGrouping';
+import KubernetesClusterOverview from '@components/k8s/landing/KubernetesClusterOverview';
+import KubernetesMonitoring from '@components/k8s/landing/KubernetesMonitoringView';
+import KubernetesApplicationGrouping from '@components/k8s/landing/k8sGrouping/KubernetesApplicationGrouping';
 import { useData } from '@context/DataContext';
 import { useRouter } from 'next/router';
 import homeApi from '@api1/home';
-import { transformClusters } from '@components1/common/UpdateDataContext';
+import { transformClusters } from '@shared/layout/UpdateDataContext';
 import { KubernetesClusterIcon, ApplicationsIcon } from '@assets';
 
 const Kubernetes = () => {

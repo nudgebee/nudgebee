@@ -380,3 +380,22 @@
     timeout_seconds: 180
     tolerance_seconds: 21600
   comment: Backstop for missed GitHub webhooks; primary trigger is /api/webhooks/github
+- name: OpenCost Spend Sync
+  webhook: '{{SERVICE_API_SERVER_URL}}/rpc-cron'
+  # Pulls per-cluster node/pod cost allocations from the centrally-deployed
+  # OpenCost (X-Scope-OrgID = cloud account id) and stores them via the
+  # collector's /v1/opencost/data. Server-side replacement for the legacy
+  # in-cluster runner publish() loop. The collector window floors to midnight
+  # and process_spend upserts on (tenant,account,resource,date), so re-running
+  # the same day is idempotent and just refreshes the current day's cost.
+  schedule: '0 */6 * * *' # every 6 hours
+  payload: {}
+  headers:
+    - name: X-ACTION-TOKEN
+      value_from_env: ACTION_API_SERVER_TOKEN
+  retry_conf:
+    num_retries: 0
+    retry_interval_seconds: 30
+    timeout_seconds: 600
+    tolerance_seconds: 21600
+  comment: Sync K8s spend from central OpenCost into spends + cloud_resource_metrics

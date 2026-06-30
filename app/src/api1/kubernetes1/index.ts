@@ -2,7 +2,7 @@ import { gqlStringify, queryGraphQL } from '@lib/HttpService';
 import getMockData from '@api1/mock';
 import cache from '@lib/cache';
 import observability from '@api1/observability';
-import { safeJSONParse } from 'src/utils/common';
+import { safeJSONParse, EXCLUDED_TRIAGE_AGGREGATION_KEYS } from 'src/utils/common';
 
 export const GET_EVENT_RULES = `
 query GetEventRules($limit: Int, $offset: Int) {
@@ -864,6 +864,17 @@ const apiKubernetes1 = {
     return response;
   },
   async getEventAggregate(data: any, columns: string[]) {
+    if (data.account_id === 'demo') {
+      return {
+        data: {
+          data: {
+            event_groupings_v2: {
+              rows: [{ event_count: 42, count_application_issues: 8 }],
+            },
+          },
+        },
+      };
+    }
     const query: any = {};
     query.account_id = { _eq: data.account_id };
 
@@ -1718,6 +1729,10 @@ const apiKubernetes1 = {
     }
   },
   logGroup: async function (data: any) {
+    if (data?.account_id === 'demo') {
+      const mockData = await getMockData('k8s-log-groups');
+      return { data: { data: mockData } };
+    }
     const LOG_GROUP_REQUEST = `
     query LogGroup {
       log_group(request: __WHERE__) {
@@ -1880,6 +1895,12 @@ const apiKubernetes1 = {
     }
   },
   eventComparsion: async function (data: any) {
+    // Single round-trip powering the Troubleshoot summary cards. `current`/`previous`
+    // are whole-window aggregates (no group_by) so event_count, count_new_issues and
+    // count_priority_high come for free. The *_attention blocks count DISTINCT
+    // fingerprints with an OPEN/ACTION_REQUIRED event — matching what the Triage Inbox
+    // shows when filtered to those statuses (the distinct-over-fingerprint trick mirrors
+    // the aggregate block in kubernetes/index.ts getK8sEventGroupings).
     const EVENT_COMPARISON = `
     query EventComparison {
       current: event_groupings_v2(
@@ -1887,11 +1908,31 @@ const apiKubernetes1 = {
       ) {
         rows {
           event_count
+          count_new_issues
+          count_priority_high
         }
       }
-    
+
       previous: event_groupings_v2(
         where: __WHERE1__
+      ) {
+        rows {
+          event_count
+          count_new_issues
+          count_priority_high
+        }
+      }
+
+      current_attention: event_groupings_v2(
+        where: __WHERE_ATTN__, group_by: [], column_transformations: [{name: "event_count", expr: "distinct", args: ["fingerprint"]}], columns: ["event_count"]
+      ) {
+        rows {
+          event_count
+        }
+      }
+
+      previous_attention: event_groupings_v2(
+        where: __WHERE1_ATTN__, group_by: [], column_transformations: [{name: "event_count", expr: "distinct", args: ["fingerprint"]}], columns: ["event_count"]
       ) {
         rows {
           event_count
@@ -1899,13 +1940,26 @@ const apiKubernetes1 = {
       }
     }
     `;
-    const request: any = {};
-    request['_and'] = [{ created_at: { _gte: data.startDate } }, { created_at: { _lte: data.endDate } }];
-    const request1: any = {};
-    request1['_and'] = [{ created_at: { _gte: data.previousStartDate } }, { created_at: { _lte: data.previousEndDate } }];
+    const currentRange = [{ created_at: { _gte: data.startDate } }, { created_at: { _lte: data.endDate } }];
+    const previousRange = [{ created_at: { _gte: data.previousStartDate } }, { created_at: { _lte: data.previousEndDate } }];
+    // Dashboard display filter — keep low-signal config-change records out of every
+    // summary KPI. Backend triaging is unaffected. See EXCLUDED_TRIAGE_AGGREGATION_KEYS.
+    const excludeKeys = { aggregation_key: { _not_in: EXCLUDED_TRIAGE_AGGREGATION_KEYS } };
+    // Scope to the selected account(s) so the cards match the account-scoped
+    // Events list. Omit when nothing is selected (all accounts). Mirrors the
+    // shape buildEventFilterParams uses for the list.
+    const accountIds = Array.isArray(data.accountId) ? data.accountId.filter(Boolean) : data.accountId ? [data.accountId] : [];
+    const accountFilter = accountIds.length > 0 ? { account_id: { _in: accountIds } } : {};
+    const request: any = { _and: currentRange, ...accountFilter, ...excludeKeys };
+    const request1: any = { _and: previousRange, ...accountFilter, ...excludeKeys };
+    const requestAttn: any = { _and: currentRange, ...accountFilter, nb_status: { _in: ['OPEN', 'ACTION_REQUIRED'] }, ...excludeKeys };
+    const request1Attn: any = { _and: previousRange, ...accountFilter, nb_status: { _in: ['OPEN', 'ACTION_REQUIRED'] }, ...excludeKeys };
     try {
       return await queryGraphQL(
-        EVENT_COMPARISON.replace('__WHERE__', gqlStringify(request)).replace('__WHERE1__', gqlStringify(request1)),
+        EVENT_COMPARISON.replace('__WHERE__', gqlStringify(request))
+          .replace('__WHERE1__', gqlStringify(request1))
+          .replace('__WHERE_ATTN__', gqlStringify(requestAttn))
+          .replace('__WHERE1_ATTN__', gqlStringify(request1Attn)),
         'EventComparison',
         {}
       );

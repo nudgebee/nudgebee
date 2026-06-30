@@ -6,6 +6,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	toolcore "nudgebee/llm/tools/core"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -33,7 +34,7 @@ type DefaultToolsOptOut interface {
 // `disabled_tools` historically does NOT block default injection (a documented quirk preserved here).
 // `allowed_tools` is a stricter, opt-in scope set by callers (e.g. runbook investigation tasks)
 // and therefore overrides default injection too.
-func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt string, tools []toolcore.NBTool, capabilities map[string]any) []toolcore.NBTool {
+func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt string, tools []toolcore.NBTool, capabilities toolcore.AgentCapabilities) []toolcore.NBTool {
 	// 1. Initial filtering based on capabilities (e.g. disabled_tools, allowed_tools)
 	tools = FilterTools(tools, capabilities)
 
@@ -76,7 +77,7 @@ func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt st
 	}
 
 	// 4. If callers passed an explicit allow-list, enforce it on the injected defaults too.
-	if hasAllowedToolsCapability(capabilities) {
+	if capabilities.HasAllowedTools() {
 		tools = FilterTools(tools, capabilities)
 		if len(tools) == 0 {
 			// A pinned allow-list that produced zero tools is almost certainly a misconfiguration —
@@ -84,7 +85,7 @@ func FilterAndInjectDefaultTools(accountId string, agent NBAgent, agentPrompt st
 			// by the router. Surface a clear breadcrumb so support can diagnose without a traceback.
 			slog.Warn("tools: allowed_tools allow-list produced an empty tool set",
 				"account_id", accountId,
-				"allowed_tools", readToolNameList(capabilities, "allowed_tools"))
+				"allowed_tools", capabilities.AllowedTools)
 		}
 	}
 
@@ -119,13 +120,13 @@ func HasDelegateAgentTool(tools []toolcore.NBTool) bool {
 //
 // Both lists are matched case-insensitively against the tool's name and any of its aliases
 // (`GetNameAliases`). When both lists are present, deny wins on conflict.
-func FilterTools(tools []toolcore.NBTool, capabilities map[string]any) []toolcore.NBTool {
-	if capabilities == nil {
+func FilterTools(tools []toolcore.NBTool, capabilities toolcore.AgentCapabilities) []toolcore.NBTool {
+	if capabilities.IsEmpty() {
 		return tools
 	}
 
-	disabledTools := readToolNameList(capabilities, "disabled_tools")
-	allowedTools := readToolNameList(capabilities, "allowed_tools")
+	disabledTools := toolcore.NormalizeList(capabilities.DisabledTools)
+	allowedTools := toolcore.NormalizeList(capabilities.AllowedTools)
 
 	if len(disabledTools) == 0 && len(allowedTools) == 0 {
 		return tools
@@ -140,45 +141,6 @@ func FilterTools(tools []toolcore.NBTool, capabilities map[string]any) []toolcor
 		}
 		return true
 	})
-}
-
-// hasAllowedToolsCapability reports whether the caller passed a non-empty `allowed_tools` allow-list.
-func hasAllowedToolsCapability(capabilities map[string]any) bool {
-	if capabilities == nil {
-		return false
-	}
-	return len(readToolNameList(capabilities, "allowed_tools")) > 0
-}
-
-// readToolNameList extracts a string slice from `capabilities[key]`, accepting either
-// `[]string` (Go-native) or `[]any` (JSON-deserialized) representations. Whitespace
-// is trimmed and empty entries are dropped so callers don't have to repeat that work.
-func readToolNameList(capabilities map[string]any, key string) []string {
-	raw, ok := capabilities[key]
-	if !ok {
-		return nil
-	}
-	switch v := raw.(type) {
-	case []string:
-		out := make([]string, 0, len(v))
-		for _, s := range v {
-			if s = strings.TrimSpace(s); s != "" {
-				out = append(out, s)
-			}
-		}
-		return out
-	case []any:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			if s, ok := item.(string); ok {
-				if s = strings.TrimSpace(s); s != "" {
-					out = append(out, s)
-				}
-			}
-		}
-		return out
-	}
-	return nil
 }
 
 // matchesToolName reports whether the tool's name (or any alias) matches one of the given names,
@@ -207,61 +169,96 @@ func matchesToolName(t toolcore.NBTool, names []string) bool {
 	return false
 }
 
-// GetWorkspaceInstructions returns standard instructions for agents running in the workspace environment
-func GetWorkspaceInstructions() []string {
-	return []string{
-		"**Full Shell Environment:** You are running in a full shell environment (Alpine Linux).",
-		"**Base Directory:** Your working directory is `/app`.",
-		"**User:** You are running as non-root user `appuser`.",
-		"**Available Tools:** You have access to standard Linux utilities including `grep`, `awk`, `sed`, `curl`, `jq`, `find`, `xargs`, `tar`, `unzip`.",
-		"**Capabilities:** You can use pipes (`|`), redirection (`>`, `>>`, `<`), command substitution (`$()`), and environment variables.",
-		"**Isolation:** This is an isolated workspace environment for this specific task.",
-		"**Cleanup:** Temporary files created in `/tmp` are generally safe but clean up large files if created.",
-	}
-}
+// Investigation-classification regexes. All matching is word-boundary based
+// (not substring) so "health" no longer matches "healthy", "fail" no longer
+// matches "failover", etc. Compiled once at package load.
+var (
+	// strongInvestigationRe — unambiguous troubleshooting intent, or a state
+	// that is inherently anomalous (never neutral retrieval). Fires on its own.
+	strongInvestigationRe = regexp.MustCompile(`(?i)\b(investigate|investigating|troubleshoot|troubleshooting|debug|debugging|diagnose|diagnosing|root cause|not working|isn'?t working|stopped working|won'?t start|what'?s wrong|what is wrong|going wrong|oom|oomkilled|oomkill|crashloop|crashloopbackoff|crashlooping|broken)\b`)
 
+	// whyInvestigationRe — a causal "why ..." question. The call site filters out
+	// a bare "why" / "why?" so only "why <something>" counts as an investigation.
+	whyInvestigationRe = regexp.MustCompile(`(?i)\bwhy\b`)
+
+	// weakSignalRe — failure-ish nouns that are frequently plain retrieval
+	// ("error budget", "restart policy", "5xx dashboard"). These only signal an
+	// investigation when paired with a problem indicator (noun-demotion).
+	weakSignalRe = regexp.MustCompile(`(?i)(\b(error|errors|exception|exceptions|fail|fails|failed|failing|failure|failures|restart|restarts|restarting|crash|crashes|crashing|bug|bugs|issue|issues|problem|problems|slow|slowness|sluggish|latency|timeout|timeouts|unhealthy|pending|stuck|degraded|hang|hanging|outage|throttled|throttling|down)\b|\b5xx\b|\b5[0-9]{2}\b)`)
+
+	// problemIndicatorRe — causal/anomaly context that promotes a weak signal
+	// to an investigation.
+	problemIndicatorRe = regexp.MustCompile(`(?i)(\bwhy\b|\bcaus|\bbecause\b|\bsuddenly\b|\bstarted\b|\bstopped\b|\bkeeps?\b|\bconstantly\b|\brepeatedly\b|\bintermittent|\b(don'?t|can'?t|won'?t|isn'?t|wasn'?t|aren'?t|weren'?t|hasn'?t|haven'?t|hadn'?t|doesn'?t|didn'?t|shouldn'?t|wouldn'?t|couldn'?t|mustn'?t|needn'?t|ain'?t)\b|\bnot\b|\bunable\b|\bthrow|\bgetting\b|\bseeing\b|\bhitting\b|\bexperienc|\bspik|\bsurge\b|\btoo many\b|\bhigh\b|\bincreas|\bimpact|\baffected\b|\balert|\bfiring\b)`)
+
+	// definitionalPrefixRe — "what is …", "how do I …", "explain …": Query-type
+	// (definition / how-to), unless the question is causal (see causalContextRe).
+	definitionalPrefixRe = regexp.MustCompile(`(?i)^(how do (i|you|we)|how to|how can (i|we)|how should (i|we)|what is|what are|what'?s|whats|explain|define|tell me about)\b`)
+
+	// causalContextRe — markers that turn a definitional-looking question into a
+	// real investigation ("what is causing X to fail", "explain why it crashed").
+	causalContextRe = regexp.MustCompile(`(?i)(\bwhy\b|\bcaus|\bwrong\b|\bfailing\b|\bfails\b|\bbroken\b|\bcrash|\bslow|\bnot working\b)`)
+
+	// retrievalPrefixRe — plain read-only/discovery verbs → Query.
+	retrievalPrefixRe = regexp.MustCompile(`(?i)^(get|list|show|display|fetch|count|how many|describe|whoami|version)\b`)
+)
+
+// IsInvestigationRequestTask reports whether a query is a troubleshooting /
+// root-cause request (vs a plain retrieval, how-to, or definitional query).
+// It biases toward precision over recall: ambiguous failure-ish nouns are only
+// treated as investigation when paired with a problem indicator, so requests
+// like "show me health checks" or "what's the restart policy" are no longer
+// misclassified as investigations (which would trigger the heavier 5-Whys +
+// critique path). A genuine investigation that slips through as a "query" still
+// gets full tool access — it just isn't forced through the deep-RCA format.
 func IsInvestigationRequestTask(input string) bool {
 	lowerInput := strings.ToLower(strings.TrimSpace(input))
 
-	// Remove common conversational prefixes to focus on the core intent
-	prefixesToRemove := []string{"can you ", "can i ", "please ", "i want to ", "help me ", "could you ", "could i ", "how do i ", "show me "}
+	// Strip leading politeness fillers so the prefix checks below see the real
+	// verb. Retrieval ("show me") and how-to ("how do i") prefixes are
+	// intentionally NOT stripped — they carry intent and are handled below.
+	prefixesToRemove := []string{
+		"can you ", "can i ", "could you ", "could i ", "would you ",
+		"please ", "kindly ", "i want to ", "i need to ", "i'd like to ",
+		"id like to ", "help me ",
+	}
 	changed := true
 	for changed {
 		changed = false
 		for _, p := range prefixesToRemove {
 			if strings.HasPrefix(lowerInput, p) {
-				lowerInput = strings.TrimPrefix(lowerInput, p)
-				lowerInput = strings.TrimSpace(lowerInput)
+				lowerInput = strings.TrimSpace(strings.TrimPrefix(lowerInput, p))
 				changed = true
 			}
 		}
 	}
 
-	// 1. Immediate skips for common simple commands (Read-only/Discovery)
-	simplePrefixes := []string{"get ", "list ", "show ", "whoami", "version", "describe "}
-	for _, prefix := range simplePrefixes {
-		if strings.HasPrefix(lowerInput, prefix) {
-			return false
-		}
+	// Definitional / how-to questions are Query-type unless they are causal.
+	if definitionalPrefixRe.MatchString(lowerInput) && !causalContextRe.MatchString(lowerInput) {
+		return false
 	}
 
-	// 2. Investigation Keywords (Original list)
-	investigationKeywords := []string{
-		"investigate", "troubleshoot", "debug", "root cause", "why", "issue", "problem",
-		"analyze", "diagnose", "explain", "find out", "look into", "determine cause", "identify cause",
-		"health", "restart", "oom", "error", "exception", "failed", "fail", "bug", "fix",
+	// Unambiguous troubleshooting intent or inherently-anomalous state.
+	if strongInvestigationRe.MatchString(lowerInput) {
+		return true
 	}
 
-	for _, keyword := range investigationKeywords {
-		if strings.Contains(lowerInput, keyword) {
-			// For very common/short keywords, we add a slight length threshold
-			// to ensure it's a descriptive task and not a simple command.
-			if (keyword == "why" || keyword == "issue" || keyword == "problem" || keyword == "explain") && len(lowerInput) <= 15 {
-				continue
-			}
-			return true
-		}
+	// A causal "why ..." is an investigation, but a bare "why" / "why?" on its
+	// own is not (there is nothing to investigate yet). Checked before the
+	// retrieval skip so "show me why X crashed" still counts.
+	if whyInvestigationRe.MatchString(lowerInput) && strings.TrimRight(lowerInput, " ?!.") != "why" {
+		return true
 	}
+
+	// Plain retrieval / discovery verbs → Query.
+	if retrievalPrefixRe.MatchString(lowerInput) {
+		return false
+	}
+
+	// Ambiguous failure-ish nouns only count alongside a problem indicator.
+	if weakSignalRe.MatchString(lowerInput) && problemIndicatorRe.MatchString(lowerInput) {
+		return true
+	}
+
 	return false
 }
 
@@ -374,4 +371,14 @@ func reActPromptToolDescriptions(tools []toolcore.NBTool) string {
 		fmt.Fprintf(&sb, "Description: %s", tool.Description())
 	}
 	return sb.String()
+}
+
+// RenderToolDescriptions exposes reActPromptToolDescriptions for use
+// outside the agents/core package. The internal name is kept stable so
+// the 8 in-package call sites do not churn. The rendered string is what
+// every planner's `{{.tool_descriptions}}` template var receives, so
+// this is the bytewise integration point between Tool.Description() and
+// the system prompt the LLM actually sees.
+func RenderToolDescriptions(tools []toolcore.NBTool) string {
+	return reActPromptToolDescriptions(tools)
 }

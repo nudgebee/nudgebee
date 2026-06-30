@@ -168,6 +168,7 @@ func SaveCompressionVisibility(
 		toolcore.NBToolTypeTool,
 		nil,
 		nil,
+		nil,
 	)
 	if err != nil {
 		ctx.GetLogger().Warn("scratchpad: failed to save compression visibility", "error", err)

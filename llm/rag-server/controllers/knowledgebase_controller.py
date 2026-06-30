@@ -3,7 +3,7 @@ import logging
 import os
 import tempfile
 import threading
-from typing import Optional
+from typing import Optional, Protocol
 
 import aiofiles
 import aiofiles.os
@@ -20,6 +20,7 @@ from rag.core.documents import collection as document_collection
 from rag.core.documents.processing import process_documents
 from rag.core.embeddings.generator import get_embeddings
 from rag.core.llm.rag import get_matching_documents
+from rag.core.types import Document
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -54,7 +55,12 @@ class KBRetriggerIntegrationRequest(BaseModel):
     triggered_by: str = "system"
 
 
-def _create_kb_document_loader(file_path: str, data_format: str):
+class DocumentLoader(Protocol):
+    def load(self) -> list[Document]:
+        raise NotImplementedError
+
+
+def _create_kb_document_loader(file_path: str, data_format: str) -> DocumentLoader:
     """
     Create appropriate document loader based on data format.
     """
@@ -78,14 +84,12 @@ class KBLineByLineLoader:
     Each non-empty line becomes a separate document for semantic search.
     """
 
-    def __init__(self, base_loader, data_format: str):
+    def __init__(self, base_loader: DocumentLoader, data_format: str) -> None:
         self.base_loader = base_loader
         self.data_format = data_format
 
-    def load(self):
+    def load(self) -> list[Document]:
         """Load documents and split by lines for text format."""
-        from rag.core.types import Document
-
         documents = self.base_loader.load()
 
         # For text format, split each line into a separate document

@@ -41,8 +41,8 @@ func TestSWBuildMultiValueFilter(t *testing.T) {
 			// The exact node names from the API request, as sent by the UI.
 			name:     "real GKE node names pipe-separated with prometheus wildcards",
 			attr:     "k8s.node.name",
-			input:    "gke-nudgebee-dev-runner-node-pool-v2-8f4d877c-lt65.*|gke-nudgebee-dev-runner-node-pool-v2-8f4d877c-5nvc.*",
-			expected: "k8s.node.name: [gke-nudgebee-dev-runner-node-pool-v2-8f4d877c-lt65,gke-nudgebee-dev-runner-node-pool-v2-8f4d877c-5nvc]",
+			input:    "gke-test-cluster-dev-runner-node-pool-v2-8f4d877c-lt65.*|gke-test-cluster-dev-runner-node-pool-v2-8f4d877c-5nvc.*",
+			expected: "k8s.node.name: [gke-test-cluster-dev-runner-node-pool-v2-8f4d877c-lt65,gke-test-cluster-dev-runner-node-pool-v2-8f4d877c-5nvc]",
 		},
 		{
 			// Mid-string "*" (not a trailing ".*") falls back to space-joined "attr:val*" format
@@ -132,9 +132,9 @@ func TestBuildSolarWindsFilter(t *testing.T) {
 	t.Run("node name with prometheus trailing wildcard stripped to exact value", func(t *testing.T) {
 		meta := RequestMetadata{
 			Kind:     "node",
-			NodeName: "gke-nudgebee-dev-c4-amd-spot-v2-02132c6e-spkf.*",
+			NodeName: "gke-test-cluster-dev-c4-amd-spot-v2-02132c6e-spkf.*",
 		}
 		got := buildSolarWindsFilter(meta)
-		assert.Equal(t, "k8s.node.name: [gke-nudgebee-dev-c4-amd-spot-v2-02132c6e-spkf]", got)
+		assert.Equal(t, "k8s.node.name: [gke-test-cluster-dev-c4-amd-spot-v2-02132c6e-spkf]", got)
 	})
 }

@@ -257,16 +257,16 @@ func podMostRecentOOMKilledContainer(pod map[string]any) (map[string]any, map[st
 		if !ok {
 			continue
 		}
-		last := getMapField(cm, "last_state", "lastState")
-		if last == nil {
-			continue
-		}
-		term := getMapField(last, "terminated")
+		// Prefer the current state.terminated — a restartPolicy:Never pod or
+		// a Job that OOMs once records the kill there with an empty lastState
+		// — then fall back to lastState.terminated for a pod that restarted
+		// after OOM. (Matches the agent-side detector's state-over-lastState
+		// order; checking only lastState missed Never-restart OOMs.)
+		term := oomTerminatedState(getMapField(cm, "state"))
 		if term == nil {
-			continue
+			term = oomTerminatedState(getMapField(cm, "last_state", "lastState"))
 		}
-		reason, _ := term["reason"].(string)
-		if reason != "OOMKilled" {
+		if term == nil {
 			continue
 		}
 		name, _ := cm["name"].(string)
@@ -284,6 +284,22 @@ func podMostRecentOOMKilledContainer(pod map[string]any) (map[string]any, map[st
 		return map[string]any{"name": name}, term
 	}
 	return nil, nil
+}
+
+// oomTerminatedState returns the terminated-state map when the given
+// container state (state or lastState) is an OOMKilled termination, else nil.
+func oomTerminatedState(stateField map[string]any) map[string]any {
+	if stateField == nil {
+		return nil
+	}
+	term := getMapField(stateField, "terminated")
+	if term == nil {
+		return nil
+	}
+	if reason, _ := term["reason"].(string); reason != "OOMKilled" {
+		return nil
+	}
+	return term
 }
 
 func containerMemoryReqLimit(container map[string]any) (string, string) {

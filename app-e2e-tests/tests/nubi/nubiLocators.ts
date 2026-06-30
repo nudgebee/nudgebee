@@ -36,6 +36,23 @@ export class NubiLocators {
   readonly SubmitButton: Locator;
   readonly searchToolInput: Locator;
   readonly ContainerImage: Locator;
+  readonly ContainerCommand: Locator;
+  readonly ContainerArguments: Locator;
+  readonly editToolBtn: Locator;
+  readonly updateToolBtn: Locator;
+  readonly updateToolSuccessMessage: Locator;
+  readonly toolStatusSelect: Locator;
+  readonly toolStatusDisabledOption: Locator;
+  readonly toolDisabledSuccessMessage: Locator;
+
+  // Agent CRUD action locators
+  readonly agentMoreActionsBtn: Locator;
+  readonly editAgentMenuItem: Locator;
+  readonly deleteAgentMenuItem: Locator;
+  readonly updateAgentBtn: Locator;
+  readonly confirmDeleteAgentBtn: Locator;
+  readonly updateAgentSuccessMessage: Locator;
+  readonly deleteAgentSuccessMessage: Locator;
 
   // Success and Failure Messages Locators
   readonly successMessage: Locator;
@@ -53,10 +70,10 @@ export class NubiLocators {
       "Ask me about troubleshooting, error logs, resource usage, or optimizations.");
     this.submitBtn = page.locator('#set-config-btn')
     // Create Custom Agent Locators
-    this.settingsBtn = page.getByRole('button', { name: 'settings', exact: true });
+    this.settingsBtn = page.getByRole('button', { name: 'Settings', exact: true });
     this.createCustomAgentBtn = page.getByRole("button", { name: "Create Custom Agent" });
     this.customAgentTab = page.getByRole("tab", { name: /agents/i });
-    this.searchAgentInput = page.getByRole('searchbox', { name: 'Search Agent' })
+    this.searchAgentInput = page.getByPlaceholder('Search Agent')
     this.agentNameInput = page.getByRole("textbox", { name: "Agent Name" });
     this.agentDescriptionInput = page.getByRole("textbox", { name: 'Describe what this agent does' });
     this.ageentIdentityButton = page.getByRole("button", { name: 'Agent Identity' });            //1
@@ -72,20 +89,37 @@ export class NubiLocators {
     this.submitCreateAgentBtn = page.getByRole("button", { name: "Create Agent" });
 
     // create custom tool locators
-    this.ToolButton = page.locator('#settings-tab-tools');
+    this.ToolButton = page.getByRole('tab', { name: 'Tools' });
     this.CreateToolButton = page.locator('#create-tool');
-    this.ToolName = page.getByRole('textbox', { name: 'Enter tool name' });
-    this.ToolDescription = page.getByRole('textbox', { name: 'Describe what this tool does' });
+    this.ToolName = page.getByPlaceholder('Enter tool name');
+    this.ToolDescription = page.getByPlaceholder('Describe what this tool does');
     this.ToolTypeRunbook = page.getByRole('radio', { name: 'Runbook Action' })
     this.ToolTypeMCP = page.getByRole('radio', { name: 'MCP HTTP' })
     this.ToolTypeContainer = page.getByRole('radio', { name: 'Container' })
     this.RunbookAction = page.locator('#auto-complete-runbook-action');
     this.RunbookAction1 = page.getByRole('option', { name: 'Create Ticket' });
     this.SubmitButton = page.getByRole("button", { name: "Submit" });
-    this.searchToolInput = page.getByRole('searchbox', { name: 'Search Tool' });
+    this.searchToolInput = page.getByPlaceholder('Search Tool');
     this.HTTPurl = page.getByRole('textbox', { name: 'Enter MCP server URL' });
-    this.ContainerImage = page.getByRole('textbox', { name: 'e.g., alpine:latest or myrepo/myimage:tag' });
+    this.ContainerImage = page.getByPlaceholder('e.g., alpine:latest or myrepo/myimage:tag');
+    this.ContainerCommand = page.getByPlaceholder('e.g., /bin/sh or printenv (overrides image ENTRYPOINT)');
+    this.ContainerArguments = page.getByPlaceholder('e.g., -c "echo hello" or --verbose');
+    this.editToolBtn = page.getByRole('button', { name: 'Edit tool' });
+    this.updateToolBtn = page.getByRole('button', { name: 'Update' });
+    this.updateToolSuccessMessage = page.getByText('Tool updated successfully');
+    this.toolStatusSelect = page.getByLabel('Status');
+    this.toolStatusDisabledOption = page.getByText('Disabled', { exact: true });
+    this.toolDisabledSuccessMessage = page.getByText('Tool updated successfully');
 
+
+    // Agent CRUD action locators
+    this.agentMoreActionsBtn = page.getByRole('button', { name: 'More actions' });
+    this.editAgentMenuItem = page.getByRole('menuitem', { name: 'Edit Agent' });
+    this.deleteAgentMenuItem = page.getByRole('menuitem', { name: 'Delete Agent' });
+    this.updateAgentBtn = page.getByRole('button', { name: 'Update Agent' });
+    this.confirmDeleteAgentBtn = page.getByRole('button', { name: 'Delete' });
+    this.updateAgentSuccessMessage = page.getByText('Agent updated successfully');
+    this.deleteAgentSuccessMessage = page.getByText(/deleted successfully/);
 
     // Success and Failure Messages
     this.successMessage = page.getByText('Agent created successfully');

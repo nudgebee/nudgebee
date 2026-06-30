@@ -66,14 +66,45 @@ func (s *GitLabService) Get(ctx *gin.Context, config models.TicketConfigurations
 		createdAt = issue.CreatedAt
 	}
 
+	assignees := make([]string, 0, len(issue.Assignees))
+	for _, a := range issue.Assignees {
+		if a != nil && a.Username != "" {
+			assignees = append(assignees, a.Username)
+		}
+	}
+
+	// GitLab's scalar Assignee field is deprecated in favor of Assignees;
+	// surface the first assignee as the convenience scalar field.
+	var assignee string
+	if len(assignees) > 0 {
+		assignee = assignees[0]
+	}
+
+	var reporter string
+	if issue.Author != nil {
+		reporter = issue.Author.Username
+	}
+
+	var milestone string
+	if issue.Milestone != nil {
+		milestone = issue.Milestone.Title
+	}
+
 	return &models.Ticket{
 		TicketID:    fmt.Sprintf("%d", issue.IID),
 		Title:       issue.Title,
 		Description: issue.Description,
 		Status:      issue.State,
+		Assignee:    assignee,
+		Assignees:   assignees,
+		Reporter:    reporter,
+		Labels:      []string(issue.Labels),
+		Milestone:   milestone,
 		Platform:    "gitlab",
+		ProjectKey:  projectKey,
 		URL:         issue.WebURL,
 		CreatedAt:   createdAt,
+		UpdatedAt:   issue.UpdatedAt,
 		Raw:         marshalToMap(issue),
 	}, nil
 }

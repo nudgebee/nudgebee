@@ -177,7 +177,8 @@ func (m Elasticsearch) ValidateConfig(sc *security.SecurityContext, config []cor
 		configMap[c.Name] = c.Value
 	}
 
-	esURL := normalizeElasticsearchURL(configMap["url"])
+	rawURL := strings.TrimSpace(configMap["url"])
+	esURL := normalizeElasticsearchURL(rawURL)
 
 	authType := strings.TrimSpace(configMap["auth_type"])
 	if authType == "" {
@@ -189,6 +190,8 @@ func (m Elasticsearch) ValidateConfig(sc *security.SecurityContext, config []cor
 		errs = append(errs, fmt.Errorf("url is required"))
 	} else if !strings.HasPrefix(esURL, "http://") && !strings.HasPrefix(esURL, "https://") {
 		errs = append(errs, fmt.Errorf("url must start with http:// or https:// (got %q)", esURL))
+	} else if hasURLPath(rawURL) {
+		errs = append(errs, fmt.Errorf("url must be the base URL only — remove the path after the host (use %q, not %q)", esURL, rawURL))
 	}
 
 	switch authType {

@@ -1,0 +1,34 @@
+{
+  "logs_list_labels": [
+    {
+      "label": "namespace",
+      "attributes": ["test-cluster-test", "clickhouse", "clickhouse-test", "prometheus", "karpenter", "sonarqube", "default"]
+    },
+    {
+      "label": "pod",
+      "attributes": [
+        "webapp-c59f5bf8c-p9n2h",
+        "notifications-785b9868d-g64n4",
+        "auto-pilot-worker-6c7f696dcd-2jsl4",
+        "k8s-collector-5885cd5cb6-8vpsn",
+        "karpenter-955b497ff-vk54f"
+      ]
+    },
+    {
+      "label": "container",
+      "attributes": ["webapp", "notifications", "auto-pilot-worker", "k8s-collector", "karpenter"]
+    },
+    {
+      "label": "level",
+      "attributes": ["info", "error", "warn", "debug"]
+    },
+    {
+      "label": "app",
+      "attributes": ["webapp", "notifications", "k8s-collector", "karpenter", "auto-pilot"]
+    },
+    {
+      "label": "node",
+      "attributes": ["ip-172-31-82-142.ec2.internal", "ip-172-31-88-182.ec2.internal", "ip-172-31-83-182.ec2.internal"]
+    }
+  ]
+}

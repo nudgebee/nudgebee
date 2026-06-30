@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import ListingLayout from '@components1/ds/ListingLayout';
-import FilterDropdown from '@components1/ds/FilterDropdown';
-import { Label } from '@components1/ds/Label';
+import ListingLayout from '@ui/ListingLayout';
+import FilterDropdown from '@ui/FilterDropdown';
+import { Label } from '@ui/Label';
 import apiAskNudgebee from '@api1/ask-nudgebee';
 import apiUsers from '@api1/user';
-import CustomTable from '@common-new/tables/CustomTable2';
-import { Link } from '@components1/ds/Link';
+import CustomTable from '@shared/tables/CustomTable2';
+import { Link } from '@ui/Link';
 import { useRouter } from 'next/router';
 import { DEFAULT_TITLE } from '@hooks/useTenantBranding';
 

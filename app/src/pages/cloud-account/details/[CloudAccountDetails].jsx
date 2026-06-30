@@ -1,26 +1,26 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import AnchorComponent from '@common-new/AnchorComponent';
-import ErrorBoundary from '@components1/common/ErrorBoundary';
+import AnchorComponent from '@shared/navigation/AnchorComponent';
+import ErrorBoundary from '@shared/ErrorBoundary';
 import { Box, Alert } from '@mui/material';
-import { ToggleGroup } from '@components1/ds/ToggleGroup';
-import CloudOptimizeRecommendationsTable from '@components1/cloudaccount/CloudOptimizeRecommendationsTable';
-import CloudAccountSummary from '@components1/cloudaccount/CloudAccountSummary';
-import CloudAccountServices from '@components1/cloudaccount/CloudAccountServices';
-import CloudAccountEvents from '@components1/cloudaccount/CloudAccountEvents';
-import CloudAccountMetrices from '@components1/cloudaccount/CloudAccountMetrices';
-import { CloudLogsViewer } from '@components1/cloudaccount/cloud-logs';
-import { CloudMetricsViewer } from '@components1/cloudaccount/cloud-metrics';
-import CloudAccountSecurity from '@components1/cloudaccount/CloudAccountSecurity';
-import CloudAccountTools from '@components1/cloudaccount/CloudAccountTools';
-import CloudAccountAlertManager from '@components1/cloudaccount/CloudAccountAlertManager';
-import TriageRulesManager from '@components1/triage/TriageRulesManager';
-import ThresholdSuggestionsManager from '@components1/triage/ThresholdSuggestionsManager';
-import { Ec2Instances, Ec2Summary } from '@components1/cloudaccount/ec2';
-import { CFSummaryDetails, CFInstances, CFResources } from '@components1/cloudaccount/cloudfoundry';
-import { RdsInstances, RdsSummary } from '@components1/cloudaccount/rds';
-import { S3Instances, S3Summary } from '@components1/cloudaccount/s3';
-import Loader from '@components1/common/Loader';
-import ListingRecommendationResolution from '@components1/recommendations/ListingRecommendationResolution';
+import { ToggleGroup } from '@ui/ToggleGroup';
+import CloudOptimizeRecommendationsTable from '@components/cloudaccount/CloudOptimizeRecommendationsTable';
+import CloudAccountSummary from '@components/cloudaccount/CloudAccountSummary';
+import CloudAccountServices from '@components/cloudaccount/CloudAccountServices';
+import CloudAccountEvents from '@components/cloudaccount/CloudAccountEvents';
+import CloudAccountMetrices from '@components/cloudaccount/CloudAccountMetrices';
+import { CloudLogsViewer } from '@components/cloudaccount/cloud-logs';
+import { CloudMetricsViewer } from '@components/cloudaccount/cloud-metrics';
+import CloudAccountSecurity from '@components/cloudaccount/CloudAccountSecurity';
+import CloudAccountTools from '@components/cloudaccount/CloudAccountTools';
+import CloudAccountAlertManager from '@components/cloudaccount/CloudAccountAlertManager';
+import TriageRulesManager from '@components/triage/TriageRulesManager';
+import ThresholdSuggestionsManager from '@components/triage/ThresholdSuggestionsManager';
+import { Ec2Instances, Ec2Summary } from '@components/cloudaccount/ec2';
+import { CFSummaryDetails, CFInstances, CFResources } from '@components/cloudaccount/cloudfoundry';
+import { RdsInstances, RdsSummary } from '@components/cloudaccount/rds';
+import { S3Instances, S3Summary } from '@components/cloudaccount/s3';
+import Loader from '@shared/Loader';
+import ListingRecommendationResolution from '@components/recommendations/ListingRecommendationResolution';
 
 import {
   OptimizeIconBlue,
@@ -53,7 +53,7 @@ import {
 } from '@assets';
 import apiCloudAccount from '@api1/cloud-account';
 import { useRouter } from 'next/router';
-import { ECSInstances, ECSSummary } from '@components1/cloudaccount/ecs';
+import { ECSInstances, ECSSummary } from '@components/cloudaccount/ecs';
 import { useData } from '@context/DataContext';
 import { ds } from '@utils/colors';
 

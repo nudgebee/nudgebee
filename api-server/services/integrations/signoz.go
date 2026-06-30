@@ -32,7 +32,8 @@ func (m Signoz) ValidateConfig(ctx *security.SecurityContext, values []core.Inte
 		configMap[c.Name] = c.Value
 	}
 
-	url := normalizeSignozURL(configMap["signoz_url"])
+	rawURL := strings.TrimSpace(configMap["signoz_url"])
+	url := normalizeSignozURL(rawURL)
 	username := strings.TrimSpace(configMap["signoz_username"])
 	password := configMap["signoz_password"]
 	mode := strings.TrimSpace(configMap["signoz_mode"])
@@ -45,6 +46,8 @@ func (m Signoz) ValidateConfig(ctx *security.SecurityContext, values []core.Inte
 		errs = append(errs, fmt.Errorf("signoz_url is required"))
 	} else if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 		errs = append(errs, fmt.Errorf("signoz_url must start with http:// or https:// (got %q)", url))
+	} else if hasURLPath(rawURL) {
+		errs = append(errs, fmt.Errorf("signoz_url must be the base URL only — remove the path after the host (use %q, not %q)", url, rawURL))
 	}
 	if username == "" {
 		errs = append(errs, fmt.Errorf("signoz_username is required"))

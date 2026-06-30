@@ -78,7 +78,9 @@ def load_private_key_tolerant(pem_bytes: bytes) -> RSAPrivateKey:
             "but CRT params are valid, so signing still works.",
             primary_err,
         )
-        key = load_pem_private_key(pem_bytes, password=None, unsafe_skip_rsa_key_validation=True)
+        key = load_pem_private_key(
+            pem_bytes, password=None, unsafe_skip_rsa_key_validation=True
+        )
     except UnsupportedAlgorithm as e:
         # PKCS#8 with an unsupported algorithm OID (e.g., a future
         # post-quantum scheme). Not recoverable here.

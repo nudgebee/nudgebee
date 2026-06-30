@@ -48,9 +48,9 @@ func TestParseApplyCommandResponse(t *testing.T) {
 			statusCode: 500,
 			body: `{"data":null,"errors":[{"message":"Failed to apply command: failed to start instance: ` +
 				`googleapi: Error 403: Required 'compute.instances.start' permission for ` +
-				`'projects/nudgebee-dev/zones/us-central1-c/instances/for-testing'"}]}`,
+				`'projects/test-cluster-dev/zones/us-central1-c/instances/for-testing'"}]}`,
 			wantSuccess: false,
-			wantMessage: "Failed to apply command: failed to start instance: googleapi: Error 403: Required 'compute.instances.start' permission for 'projects/nudgebee-dev/zones/us-central1-c/instances/for-testing'",
+			wantMessage: "Failed to apply command: failed to start instance: googleapi: Error 403: Required 'compute.instances.start' permission for 'projects/test-cluster-dev/zones/us-central1-c/instances/for-testing'",
 		},
 		{
 			name:       "500 with cloud-collector Azure AuthorizationFailed envelope",

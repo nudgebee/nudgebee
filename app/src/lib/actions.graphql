@@ -788,6 +788,35 @@ type TriggerCloudSyncResponse {
 }
 
 type Mutation {
+  cloud_sync_service(
+    account_id: String!
+    service_name: String!
+    regions: [String!]
+  ): CloudServiceSyncResponse
+  cloud_execute_command(
+    account_id: String!
+    commands: [String!]!
+    recommendation_id: String
+  ): ExecuteCloudCommandResponse
+}
+
+type CloudServiceSyncResponse {
+  success: Boolean!
+  message: String
+}
+
+type CommandResult {
+  command: String
+  status: String
+  output: String
+  error: String
+}
+
+type ExecuteCloudCommandResponse {
+  results: [CommandResult]
+}
+
+type Mutation {
   cloud_apply_command(
     account_id: String!
     service_name: String!
@@ -5041,6 +5070,7 @@ input AIConfigClientToolSchemaInput {
 
 input AIConfigCapabilitiesInput {
   disabled_tools: [String]
+  allowed_tools: [String]
 }
 
 input AISubmitClientToolCallRequest {

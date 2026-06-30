@@ -15,7 +15,7 @@ export class NotificationLocators extends CommonLocators {
   readonly troubleshootTab!: Locator;
   readonly cloudTab!: Locator;
 
-  readonly enableNotificationSwitch = "#enable-notification-switch";
+  readonly enableNotificationSwitch = "#enable-notification";
 
   readonly slackBadge!: Locator;
   readonly msTeamsBadge!: Locator;
@@ -38,7 +38,8 @@ export class NotificationLocators extends CommonLocators {
     this.notificationRuleBtn = page.locator("#notification-rule")
       .or(page.getByRole("button", { name: /Create Rule/i }));
 
-    this.clusterSelector = page.locator("#notification-account-selector")
+    this.clusterSelector = page.locator("#account-2")
+      .or(page.locator("#account-1"))
       .or(page.locator('[role="dialog"]').locator('button').filter({ hasText: /^Account/ }).first());
 
     this.notificationNameInput = page.locator("#notificationName")
@@ -77,23 +78,23 @@ export class NotificationLocators extends CommonLocators {
     this.emailBadge = page.locator("#email-badge")
       .or(page.getByRole("button", { name: /^email$/i }));
 
-    this.slackChannelSelector = page.locator("#notification-slack-channel")
+    this.slackChannelSelector = page.locator("#slack-channel")
       .or(page.locator('[role="dialog"]').locator('button').filter({ hasText: /^Channel/ }).first());
 
-    this.msTeamsGroupSelector = page.locator("#notification-msteams-group")
+    this.msTeamsGroupSelector = page.locator("#msteam-groups")
       .or(page.locator('[role="dialog"]').locator('button').filter({ hasText: /^Team/ }).first());
 
-    this.msTeamsChannelSelector = page.locator("#notification-msteams-channel")
+    this.msTeamsChannelSelector = page.locator("#msteam-channel")
       .or(page.locator('[role="dialog"]').locator('button').filter({ hasText: /^Channel/ }).first());
 
-    this.gChatChannelSelector = page.locator("#notification-gchat-space")
+    this.gChatChannelSelector = page.locator("#gchat-channel")
       .or(page.locator('[role="dialog"]').locator('button').filter({ hasText: /^Space/ }).first());
 
     this.emailInput = page.locator('#email-input')
       .or(page.getByRole("textbox", { name: /email/i }));
 
-    this.excludeUsersSelector = page.locator("#notification-exclude-users")
-      .or(page.locator('[role="dialog"]').locator('button').filter({ hasText: /^Exclude Users/ }).first());
+    this.excludeUsersSelector = page.locator("#exclude-users")
+      .or(page.getByRole("button", { name: /Exclude Users/ }));
   }
 
   getDuplicateError(): Locator {

@@ -190,8 +190,9 @@ func (s *optimizerService) GenerateTasks(ctx context.Context, autoOptimizeID uui
 		if err := s.dao.SaveAutoOptimizeTasks(ctx, tasks); err != nil {
 			return nil, fmt.Errorf("failed to save tasks: %w", err)
 		}
-
-		s.sendNotifications(ctx, ao, tasks)
+		// No notification here: scheduling a run is not a change. The
+		// change-gated summary is sent from CompleteAutoOptimize once the
+		// run's tasks have executed (see sendCompletionSummary).
 	} else {
 		slog.Info("No tasks generated", "auto_optimize_id", ao.ID)
 		ao.ExecutionStatus = string(model.AutopilotExecutionStatusIdle)
@@ -209,11 +210,13 @@ func isControllerType(kind string) bool {
 	return k == "deployment" || k == "statefulset" || k == "replicaset" || k == "daemonset" || k == "rollout"
 }
 
-func (s *optimizerService) sendNotifications(ctx context.Context, ao *model.AutoOptimize, tasks []model.AutoOptimizeTask) {
-	if len(tasks) == 0 {
-		return
-	}
-
+// sendToConfiguredChannels sends to every messaging platform the AutoOptimize is
+// configured to notify (the per-AO channel the user picked in the notification
+// form). buildBody is called per platform so the body can use platform-specific
+// link syntax (Slack/Google Chat use <url|label>, MS Teams uses [label](url));
+// an empty body skips that platform. Best-effort: per-platform failures are
+// logged, not returned. Reused by the completion summary and PR-ready follow-up.
+func (s *optimizerService) sendToConfiguredChannels(ao *model.AutoOptimize, buildBody func(platform string) string) {
 	sc := security.NewRequestContextForTenantAdmin(ao.TenantID.String())
 
 	for platform, config := range ao.Notification {
@@ -234,13 +237,10 @@ func (s *optimizerService) sendNotifications(ctx context.Context, ao *model.Auto
 			continue
 		}
 
-		var name string
-		if ao.Name != nil {
-			name = *ao.Name
-		} else {
-			name = "Auto Optimize"
+		body := buildBody(platform)
+		if body == "" {
+			continue
 		}
-		body := fmt.Sprintf("Scheduled %d tasks for %s", len(tasks), name)
 
 		req := notification.SendImNotificationRequest{
 			Platform:  platform,

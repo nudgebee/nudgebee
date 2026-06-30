@@ -146,11 +146,16 @@ func queryOpenPRResolutions(dbms *database.DatabaseManager) ([]prResolutionRow, 
 		results = append(results, row)
 	}
 
+	// recommendation_resolution has no tenant column of its own; resolve it via
+	// the parent recommendation. AutoOptimize PR metadata does not carry
+	// tenant_id, so without this join the followup would fail with
+	// "missing_tenant" and abandon every recommendation-driven PR.
 	recQuery := fmt.Sprintf(`
 		SELECT rr.id, rr.type_reference_id, rr.data,
 		       rr.pr_iteration_count, rr.pr_lifecycle_state,
-		       '' AS tenant
+		       COALESCE(r.tenant_id::text, '') AS tenant
 		FROM recommendation_resolution rr
+		LEFT JOIN recommendation r ON rr.recommendation_id = r.id
 		WHERE rr.type = 'PullRequest'
 		  AND rr.status = 'InProgress'
 		  AND rr.pr_lifecycle_state IN ('created', 'needs_followup')
@@ -198,10 +203,13 @@ func FindOpenPRResolutionByURL(prURL string) (resolutionID, tableName string, er
 		return "", "", fmt.Errorf("failed to get database connection: %w", err)
 	}
 
-	// Prefer event_resolution so we don't hit recommendation_resolution for
-	// PRs created off events (which would be a stale match if both tables
-	// happened to carry the same URL). The two tables never share a PR URL
-	// in practice, but the order makes the intent explicit.
+	// A PR URL CAN appear in both tables (an event-driven apply and an
+	// AutoOptimize recommendation apply can converge on the same PR), so this
+	// returns only the first open match — enough to gate "do we own this PR"
+	// and to dispatch a followup. Terminal retirement must instead hit every
+	// matching row, so PR close/merge goes through MarkAllPRResolutionsTerminalByURL,
+	// not this single-row lookup. event_resolution is checked first only to make
+	// the lookup order deterministic.
 	eventQuery := `
 		SELECT id FROM event_resolution
 		WHERE type = 'PullRequest'
@@ -280,8 +288,9 @@ func fetchResolutionRow(dbms *database.DatabaseManager, resolutionID, tableName 
 		query = `
 			SELECT rr.id, rr.type_reference_id, rr.data,
 			       rr.pr_iteration_count, rr.pr_lifecycle_state,
-			       '' AS tenant
+			       COALESCE(r.tenant_id::text, '') AS tenant
 			FROM recommendation_resolution rr
+			LEFT JOIN recommendation r ON rr.recommendation_id = r.id
 			WHERE rr.id = $1
 		`
 	}
@@ -292,39 +301,70 @@ func fetchResolutionRow(dbms *database.DatabaseManager, resolutionID, tableName 
 	return row, nil
 }
 
-// MarkPRResolutionTerminal retires a resolution when its PR is closed or merged,
-// so the cron and future webhooks stop dispatching followups against a PR that
-// can no longer receive them. Only open/active rows are transitioned — terminal
-// or unresolvable rows are left untouched, and the WHERE clause means a close
-// event landing mid-run leaves the in-flight finalize free to no-op (it
-// preserves terminal states; see applyFollowupOutcome).
-func MarkPRResolutionTerminal(ctx *security.RequestContext, resolutionID, tableName string, merged bool) error {
-	if tableName != "event_resolution" && tableName != "recommendation_resolution" {
-		return fmt.Errorf("invalid table name: %s", tableName)
+// prTerminalFields returns the (pr_lifecycle_state, status, status_message)
+// triple a PR-terminal event maps to. A merge means the fix landed → Success;
+// a close without merge means the PR was abandoned → Failed. Both also flip the
+// user-facing `status` column (not just pr_lifecycle_state) so the resolution
+// list stops showing "In Progress" once the PR reaches a terminal state.
+func prTerminalFields(merged bool) (state, status, msg string) {
+	if merged {
+		return "merged", string(RecommendationResolutionStatusSuccess), "PR merged — followup complete"
+	}
+	return "closed", string(RecommendationResolutionStatusFailed), "PR closed without merge — no further followup"
+}
+
+// MarkAllPRResolutionsTerminalByURL retires every open resolution whose PR has
+// just closed or merged, across BOTH event_resolution and recommendation_resolution.
+// A single PR can be tracked by rows in both tables (e.g. an event-driven apply
+// and an AutoOptimize recommendation apply that converge on the same PR), and a
+// merge/close terminates all of them — so we match on pr_url rather than a single
+// row id. Returns the number of rows transitioned.
+//
+// Only open/active rows are transitioned; the `pr_lifecycle_state IN (...)` guard
+// leaves terminal/unresolvable rows untouched, so a close event landing mid-run
+// lets the in-flight finalize free to no-op (it preserves terminal states; see
+// applyFollowupOutcome). Besides pr_lifecycle_state, the user-facing `status`
+// column is set (Success on merge, Failed on close) so the UI reflects the
+// terminal outcome.
+func MarkAllPRResolutionsTerminalByURL(ctx *security.RequestContext, prURL string, merged bool) (int64, error) {
+	if prURL == "" {
+		return 0, nil
 	}
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
-		return fmt.Errorf("failed to get database connection: %w", err)
+		return 0, fmt.Errorf("failed to get database connection: %w", err)
 	}
+	return markPRResolutionsTerminalByURL(ctx, dbms, prResolutionTables, prURL, merged)
+}
 
-	state, msg := "closed", "PR closed without merge — no further followup"
-	if merged {
-		state, msg = "merged", "PR merged — followup complete"
-	}
+// prResolutionTables are the two tables that can carry an agent-PR resolution row.
+var prResolutionTables = []string{"event_resolution", "recommendation_resolution"}
 
-	dbCtx, cancel := context.WithTimeout(context.Background(), prDBOpTimeout)
-	defer cancel()
-	_, err = dbms.Db.ExecContext(dbCtx,
-		fmt.Sprintf(`UPDATE %s SET pr_lifecycle_state = $1, status_message = $2,
-			pr_followup_pending = false, last_pr_check_at = $3
-			WHERE id = $4 AND pr_lifecycle_state IN ('created', 'needs_followup', 'addressing')`, tableName),
-		state, msg, time.Now(), resolutionID)
-	if err != nil {
-		return fmt.Errorf("failed to mark resolution terminal: %w", err)
+// markPRResolutionsTerminalByURL is the table-parameterized core of
+// MarkAllPRResolutionsTerminalByURL, split out so the SQL can be exercised
+// against throwaway tables in tests (the real tables carry FKs/fixtures).
+func markPRResolutionsTerminalByURL(ctx *security.RequestContext, dbms *database.DatabaseManager, tables []string, prURL string, merged bool) (int64, error) {
+	state, status, msg := prTerminalFields(merged)
+
+	var total int64
+	for _, tableName := range tables {
+		dbCtx, cancel := context.WithTimeout(context.Background(), prDBOpTimeout)
+		res, execErr := dbms.Db.ExecContext(dbCtx,
+			fmt.Sprintf(`UPDATE %s SET pr_lifecycle_state = $1, status = $2, status_message = $3,
+				pr_followup_pending = false, last_pr_check_at = $4
+				WHERE data->>'pr_url' = $5 AND pr_lifecycle_state IN ('created', 'needs_followup', 'addressing')`, tableName),
+			state, status, msg, time.Now(), prURL)
+		cancel()
+		if execErr != nil {
+			return total, fmt.Errorf("failed to mark %s rows terminal: %w", tableName, execErr)
+		}
+		if n, raErr := res.RowsAffected(); raErr == nil {
+			total += n
+		}
 	}
-	ctx.GetLogger().Info("pr_lifecycle: marked resolution terminal",
-		"id", resolutionID, "table", tableName, "merged", merged, "state", state)
-	return nil
+	ctx.GetLogger().Info("pr_lifecycle: marked PR resolutions terminal",
+		"pr_url", prURL, "merged", merged, "state", state, "status", status, "rows", total)
+	return total, nil
 }
 
 // claimOrMarkResolution performs the atomic claim-or-mark and returns the row's

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import Router from 'next/router';
-import { snackbar } from '@components1/common/snackbarService';
+import { snackbar } from '@shared/snackbarService';
 import { getNubiIconUrl, getBrandTitle } from '@hooks/useTenantBranding';
 
 const NOTIFY_PREF_KEY = 'nb_notify_on_complete';

@@ -36,7 +36,7 @@ import { getLicenseDetails, SERVICES_SERVER_UNREACHABLE_MSG, type LicenseTier } 
 import { enrichAuthToken, enrichSession, onReturningOAuthSignIn, onUnknownOAuthSignIn, resolveLicensedTenantUser } from '@lib/authHooks';
 
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
-import _ from 'lodash';
+import uniq from 'lodash/uniq';
 import type { NextApiRequest, NextApiResponse } from 'next';
 
 export interface NudgebeeUser extends AdapterUser {
@@ -173,27 +173,34 @@ export async function adapterUser(user: any): Promise<NudgebeeUser> {
     );
   }
 
-  roles = _.uniq(roles);
-  accountIds = _.uniq(accountIds);
-  readonlyAccountIds = _.uniq(readonlyAccountIds);
-  namespacedAccountIds = _.uniq(namespacedAccountIds);
-  namespacedReadOnlyAccountIds = _.uniq(namespacedReadOnlyAccountIds);
+  roles = uniq(roles);
+  accountIds = uniq(accountIds);
+  readonlyAccountIds = uniq(readonlyAccountIds);
+  namespacedAccountIds = uniq(namespacedAccountIds);
+  namespacedReadOnlyAccountIds = uniq(namespacedReadOnlyAccountIds);
 
   if (accountIds.length > 0 || readonlyAccountIds.length > 0) {
-    // get accountIds from given tenant
+    // Narrow role-granted account ids to those that belong to the selected tenant.
     const resp = await getAccountByTenant(tenant.id);
-    if (resp.data) {
-      const tenantAccounts = resp.data?.cloud_accounts?.map((a: any) => a.id);
+    const tenantAccounts: string[] = resp.data?.cloud_accounts?.map((a: any) => a.id) ?? [];
+    if (tenantAccounts.length > 0) {
       accountIds = accountIds.filter((a) => tenantAccounts.includes(a));
       readonlyAccountIds = readonlyAccountIds.filter((a) => tenantAccounts.includes(a));
       namespacedAccountIds = namespacedAccountIds.filter((a) => tenantAccounts.includes(a));
       namespacedReadOnlyAccountIds = namespacedReadOnlyAccountIds.filter((a) => tenantAccounts.includes(a));
     } else {
-      console.log('unable to get accounts for tenant', tenant.id, resp);
-      accountIds = [];
-      readonlyAccountIds = [];
-      namespacedAccountIds = [];
-      namespacedReadOnlyAccountIds = [];
+      // No tenant accounts resolved. This session scope is ADVISORY — the backend
+      // re-authorizes every request — so we deliberately keep the user's explicit role
+      // grants rather than fail closed: silently stripping them locked account-scoped
+      // admins out of features the backend still authorizes (#32887), and throwing here
+      // would escalate a transient lookup blip into a full login outage for every
+      // account-scoped user. Log loudly, distinguishing a failed lookup from an empty one.
+      console.warn(
+        resp.errored
+          ? 'tenant-account lookup failed; preserving role-granted account access for tenant'
+          : 'no tenant accounts resolved; preserving role-granted account access for tenant',
+        tenant.id
+      );
     }
   }
 
@@ -1198,11 +1205,11 @@ async function jwtUpdateTokenOnUpdateTrigger(token: any, session: any, trigger: 
             roles.push(role.role);
           }
         }
-        token.roles = _.uniq(roles);
-        token.accountIds = _.uniq(accountIds);
-        token.readOnlyAccountIds = _.uniq(readOnlyAccountIds);
-        token.namespacedAccountIds = _.uniq(namespacedAccountIds);
-        token.namespacedReadOnlyAccountIds = _.uniq(namespacedReadOnlyAccountIds);
+        token.roles = uniq(roles);
+        token.accountIds = uniq(accountIds);
+        token.readOnlyAccountIds = uniq(readOnlyAccountIds);
+        token.namespacedAccountIds = uniq(namespacedAccountIds);
+        token.namespacedReadOnlyAccountIds = uniq(namespacedReadOnlyAccountIds);
         token.k8sNamespaces = k8sNamespaces;
       } else if (token.isSuperAdmin || token.isSuperAdminReadonly) {
         // Super admin with no direct access to this tenant → readonly

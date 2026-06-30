@@ -398,6 +398,11 @@ func (p *PinotSaasSource) QueryLabelValues(ctx *security.RequestContext, req Fet
 	return parsePinotLabelValuesBytes(bodyBytes)
 }
 
+// QueryLogGroup is DISABLED — see the "Log groups (DISABLED)" note in pinot.go.
+// Without this method PinotSaasSource no longer satisfies LogGroupSource, so the
+// UI does not show Pinot-backed log groups. Kept (commented out) so it can be
+// re-enabled together with the shared helpers in pinot.go.
+/*
 // QueryLogGroup implements LogGroupSource for the direct-mode Pinot integration.
 // Push aggregation down to Pinot via GROUP BY — see PinotSource.QueryLogGroup for rationale.
 func (p *PinotSaasSource) QueryLogGroup(ctx *security.RequestContext, req FetchLogGroupRequest) (LogGroupOutput, error) {
@@ -450,6 +455,7 @@ func (p *PinotSaasSource) QueryLogGroup(ctx *security.RequestContext, req FetchL
 	}
 	return parsePinotLogGroupBytes(bodyBytes, cols, tsMode, req.EndTime)
 }
+*/
 
 // samplePinotTimestampValueDirect fetches one non-null timestamp value via direct
 // HTTP, used to auto-detect a STRING-typed column's Go time layout.

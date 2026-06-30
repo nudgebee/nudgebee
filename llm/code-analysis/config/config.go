@@ -64,8 +64,7 @@ type GitLabConfig struct {
 }
 
 type CredentialsConfig struct {
-	EncryptionKey string   `mapstructure:"encryption_key"`
-	AllowedTypes  []string `mapstructure:"allowed_types"`
+	AllowedTypes []string `mapstructure:"allowed_types"`
 }
 
 type NudgeBeeConfig struct {
@@ -136,8 +135,7 @@ func LoadConfig() (*Config, error) {
 
 	viper.SetDefault("nudgebee.base_url", "https://app.nudgebee.com")
 
-	viper.SetDefault("credentials.encryption_key", "default-key-change-in-production")
-	viper.SetDefault("credentials.allowed_types", []string{"token", "ssh_key", "basic", "encrypted", "env_ref"})
+	viper.SetDefault("credentials.allowed_types", []string{"token", "ssh_key", "basic", "env_ref", "none"})
 
 	// LLM specific configs (consistent with llm-server env var naming)
 	viper.SetDefault("llm_provider", "googleai")
@@ -202,9 +200,6 @@ func LoadConfig() (*Config, error) {
 	_ = viper.BindEnv("llm_provider_region", "LLM_PROVIDER_REGION")
 	_ = viper.BindEnv("llm_provider_max_retries", "LLM_PROVIDER_MAX_RETRIES")
 	_ = viper.BindEnv("llm_provider_embedding_model", "LLM_PROVIDER_EMBEDDING_MODEL")
-
-	// Bind credentials encryption key
-	_ = viper.BindEnv("credentials.encryption_key", "NUDGEBEE_ENCRYPTION_KEY")
 
 	var config Config
 	if err := viper.Unmarshal(&config); err != nil {

@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
-import AnchorComponent from '@common-new/AnchorComponent';
-import ErrorBoundary from '@components1/common/ErrorBoundary';
-import OptimizeNewPage from '@components1/optimise-new/OptimizeNewPage';
-import SummaryView from '@components1/optimise-new/summary/SummaryView';
+import AnchorComponent from '@shared/navigation/AnchorComponent';
+import ErrorBoundary from '@shared/ErrorBoundary';
+import OptimizeNewPage from '@components/optimise-new/OptimizeNewPage';
+import SummaryView from '@components/optimise-new/summary/SummaryView';
 import { useRouter } from 'next/router';
 import { OptimizeSummaryIcon, RecommendationIcon } from '@assets';
 

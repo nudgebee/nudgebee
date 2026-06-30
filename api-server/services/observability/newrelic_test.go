@@ -1187,7 +1187,7 @@ func TestConvertNRGroupedTracesToTraceGroupingValues_NullStatusCode(t *testing.T
 	// Test facet array with null status code (spans without http.response.status_code)
 	input := []map[string]any{
 		{
-			"facet":       []any{"k8s-collector", "nudgebee-test", "DNS Query", nil},
+			"facet":       []any{"k8s-collector", "test-cluster-test", "DNS Query", nil},
 			"count":       float64(11731),
 			"error_count": float64(0),
 		},
@@ -1199,7 +1199,7 @@ func TestConvertNRGroupedTracesToTraceGroupingValues_NullStatusCode(t *testing.T
 	group := result[0]
 
 	assert.Equal(t, "k8s-collector", group.WorkloadName)
-	assert.Equal(t, "nudgebee-test", group.WorkloadNamespace)
+	assert.Equal(t, "test-cluster-test", group.WorkloadNamespace)
 	assert.Equal(t, "DNS Query", group.SpanName)
 	assert.Empty(t, group.HTTPStatusCode) // null results in empty string
 }
@@ -4293,7 +4293,7 @@ func TestBuildNRQLNodeNameFilter_PipeSeparatedExactNames(t *testing.T) {
 }
 
 func TestBuildNRQLNodeNameFilter_PipeSeparatedRegexPatterns(t *testing.T) {
-	nodeName := "gke-nudgebee-dev-pool-arm-spot-enable-92eca669-zbdm.*|gke-nudgebee-dev-pool-arm-spot-enable-92eca669-ew71.*"
+	nodeName := "gke-test-cluster-dev-pool-arm-spot-enable-92eca669-zbdm.*|gke-test-cluster-dev-pool-arm-spot-enable-92eca669-ew71.*"
 	result := buildNRQLNodeNameFilter(nodeName)
 	assert.Equal(t, "nodeName RLIKE '"+nodeName+"'", result)
 }
@@ -4307,16 +4307,16 @@ func TestBuildNRQLNodeNameFilter_SingleQuoteEscaping(t *testing.T) {
 func TestBuildNRQLNodeNameFilter_LongPatternExceeds256Chars(t *testing.T) {
 	// 10 long GKE node names joined with | exceed NewRelic's 256-char RLIKE limit;
 	// the result must be split into multiple RLIKE OR conditions wrapped in parentheses.
-	nodeName := "gke-nudgebee-dev-pool-arm-spot-enable-92eca669-zbdm.*" +
-		"|gke-nudgebee-dev-pool-arm-spot-enable-92eca669-ew71.*" +
-		"|gke-nudgebee-dev-pool-arm-spot-enable-92eca669-jgdk.*" +
-		"|gke-nudgebee-dev-pool-arm-spot-enable-92eca669-v6s5.*" +
-		"|gke-nudgebee-dev-pool-arm-spot-enable-92eca669-2f8f.*" +
-		"|gke-nudgebee-dev-pool-arm-spot-enable-92eca669-g004.*" +
-		"|gke-nudgebee-dev-pool-arm-spot-enable-92eca669-79on.*" +
-		"|gke-nudgebee-dev-pool-arm-spot-enable-92eca669-re9d.*" +
-		"|gke-nudgebee-dev-pool-arm-spot-enable-92eca669-fghg.*" +
-		"|gke-nudgebee-dev-pool-arm-spot-enable-92eca669-6llh.*"
+	nodeName := "gke-test-cluster-dev-pool-arm-spot-enable-92eca669-zbdm.*" +
+		"|gke-test-cluster-dev-pool-arm-spot-enable-92eca669-ew71.*" +
+		"|gke-test-cluster-dev-pool-arm-spot-enable-92eca669-jgdk.*" +
+		"|gke-test-cluster-dev-pool-arm-spot-enable-92eca669-v6s5.*" +
+		"|gke-test-cluster-dev-pool-arm-spot-enable-92eca669-2f8f.*" +
+		"|gke-test-cluster-dev-pool-arm-spot-enable-92eca669-g004.*" +
+		"|gke-test-cluster-dev-pool-arm-spot-enable-92eca669-79on.*" +
+		"|gke-test-cluster-dev-pool-arm-spot-enable-92eca669-re9d.*" +
+		"|gke-test-cluster-dev-pool-arm-spot-enable-92eca669-fghg.*" +
+		"|gke-test-cluster-dev-pool-arm-spot-enable-92eca669-6llh.*"
 	result := buildNRQLNodeNameFilter(nodeName)
 	// Result must be wrapped in parentheses (multiple OR conditions)
 	assert.True(t, len(result) > 0, "result should not be empty")

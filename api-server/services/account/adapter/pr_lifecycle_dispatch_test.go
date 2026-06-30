@@ -114,3 +114,78 @@ func TestPRLifecycleDispatchSQL_DB(t *testing.T) {
 		assert.False(t, pend, "pending must be cleared")
 	})
 }
+
+// TestMarkPRResolutionsTerminalByURL_DB verifies the terminal-by-URL UPDATE against
+// real Postgres: it must retire EVERY open row matching the PR url across all the
+// given tables (a PR can be tracked in both event_resolution and recommendation_resolution),
+// flip the user-facing `status` (Success on merge / Failed on close), and leave
+// already-terminal rows and rows for other PRs untouched. Uses two throwaway tables
+// mirroring the columns the SQL touches, so it needs no FK fixtures.
+//
+// DB-gated: skips when no database is reachable (CI without a metastore).
+func TestMarkPRResolutionsTerminalByURL_DB(t *testing.T) {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		t.Skipf("skipping: database not accessible: %v", err)
+	}
+
+	tables := []string{"zz_pr_terminal_test_a", "zz_pr_terminal_test_b"}
+	mustExec := func(q string, args ...any) {
+		_, e := dbms.Db.Exec(q, args...)
+		require.NoError(t, e)
+	}
+	for _, tbl := range tables {
+		mustExec(fmt.Sprintf(`DROP TABLE IF EXISTS %s`, tbl))
+		mustExec(fmt.Sprintf(`CREATE TABLE %s (
+			id text PRIMARY KEY,
+			status text NOT NULL,
+			pr_lifecycle_state text NOT NULL,
+			pr_followup_pending boolean NOT NULL DEFAULT false,
+			status_message text,
+			last_pr_check_at timestamptz,
+			data jsonb NOT NULL
+		)`, tbl))
+		tblName := tbl
+		t.Cleanup(func() { _, _ = dbms.Db.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS %s`, tblName)) })
+	}
+
+	const prURL = "https://github.com/acme/infra/pull/42"
+	seed := func(tbl, id, status, state, url string) {
+		mustExec(fmt.Sprintf(`INSERT INTO %s (id, status, pr_lifecycle_state, data)
+			VALUES ($1,$2,$3,$4)`, tbl), id, status, state,
+			fmt.Sprintf(`{"pr_url":%q}`, url))
+	}
+	get := func(tbl, id string) (status, state string) {
+		require.NoError(t, dbms.Db.QueryRow(
+			fmt.Sprintf(`SELECT status, pr_lifecycle_state FROM %s WHERE id=$1`, tbl), id).
+			Scan(&status, &state))
+		return
+	}
+
+	// One open row per table for the merged PR, plus an already-closed row and a
+	// row for a different PR — neither should be touched.
+	seed(tables[0], "a_open", "InProgress", "needs_followup", prURL)
+	seed(tables[1], "b_open", "InProgress", "created", prURL)
+	seed(tables[0], "a_done", "Success", "merged", prURL) // already terminal
+	seed(tables[1], "b_other", "InProgress", "created", "https://x/y/pull/1")
+
+	ctx := security.NewRequestContextForSuperAdmin(nil, nil, nil)
+	n, err := markPRResolutionsTerminalByURL(ctx, dbms, tables, prURL, true)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), n, "exactly the two open rows for this PR are retired")
+
+	st, ls := get(tables[0], "a_open")
+	assert.Equal(t, "Success", st)
+	assert.Equal(t, "merged", ls)
+	st, ls = get(tables[1], "b_open")
+	assert.Equal(t, "Success", st)
+	assert.Equal(t, "merged", ls)
+
+	// untouched: already-terminal row keeps its state; other-PR row stays open.
+	st, ls = get(tables[0], "a_done")
+	assert.Equal(t, "Success", st)
+	assert.Equal(t, "merged", ls)
+	st, ls = get(tables[1], "b_other")
+	assert.Equal(t, "InProgress", st, "row for a different PR must not change")
+	assert.Equal(t, "created", ls)
+}

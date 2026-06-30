@@ -1,4 +1,4 @@
-import CustomTable from '@common-new/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable2';
 
 export function buildDescriptionMarkdown(details: Record<string, any> | undefined): string {
   if (!details) {
@@ -83,6 +83,13 @@ function buildAzureAdvisorMitigation(recommendation: Record<string, any>): strin
   return parts.length > 0 ? [parts.join('\n\n')] : null;
 }
 
+const TEMPLATE_ALIASES: Record<string, string[]> = {
+  INSTANCE_ID: ['recommendation.instance_id', 'recommendation.cpu.resource_id', 'resource_name'],
+  INSTANCE_TYPE: ['recommendation.recommended_instance_type', 'recommendation.recommendedInstances.0.instanceType'],
+  ALTERNATE_INSTANCE_TYPE: ['recommendation.alternate_instances.0.instanceType'],
+  REPOSITORY_NAME: ['repository_name', 'recommendation.repository_name'],
+};
+
 export function interpolateMitigations(mitigations: string[] | undefined, recommendation: Record<string, any> | undefined): string[] | undefined {
   if (!mitigations || !recommendation) {
     return mitigations;
@@ -98,31 +105,42 @@ export function interpolateMitigations(mitigations: string[] | undefined, recomm
     }
   }
 
+  const resolvePath = (path: string): string | undefined => {
+    if (path === 'region') {
+      const parts = recommendation.account_object_id?.split(':');
+      const v = parts?.[3];
+      return v || undefined;
+    }
+    if (path === 'resource_group') {
+      // Try extracting from resource_id first (may be an Azure resource path),
+      // then fall back to account_object_id which contains the full Azure resource path
+      const rid = recommendation.resource_id || '';
+      const rgMatch = rid.match(/resourceGroups\/([^/]+)/i);
+      if (rgMatch?.[1]) return rgMatch[1];
+      const aoid = recommendation.account_object_id || '';
+      const aoMatch = aoid.match(/resourcegroups\/([^/]+)/i);
+      return aoMatch?.[1] || undefined;
+    }
+
+    const segments = path.split('.');
+    let value: any = recommendation;
+    for (const seg of segments) {
+      if (value == null) break;
+      value = value[seg];
+    }
+    return value != null && value !== '' ? String(value) : undefined;
+  };
+
   return mitigations.map((m) =>
-    m.replace(/\{\{(\w+(?:\.\w+)*)\}\}/g, (match, path) => {
-      if (path === 'region') {
-        const parts = recommendation.account_object_id?.split(':');
-        return parts?.[3] || match;
+    m.replace(/\{\{([\w.]+(?:\s*\|\|\s*[\w.]+)*)\}\}/g, (match, expr) => {
+      // Support "a || b" fallback syntax in templates: try each path left-to-right, return the first that resolves.
+      // If the entire expr is a known alias, expand it to its fallback path list.
+      const paths = TEMPLATE_ALIASES[expr.trim()] ?? expr.split(/\s*\|\|\s*/);
+      for (const path of paths) {
+        const resolved = resolvePath(path.trim());
+        if (resolved !== undefined) return resolved;
       }
-      if (path === 'resource_group') {
-        // Try extracting from resource_id first (may be an Azure resource path),
-        // then fall back to account_object_id which contains the full Azure resource path
-        const rid = recommendation.resource_id || '';
-        const rgMatch = rid.match(/resourceGroups\/([^/]+)/i);
-        if (rgMatch?.[1]) return rgMatch[1];
-        const aoid = recommendation.account_object_id || '';
-        const aoMatch = aoid.match(/resourcegroups\/([^/]+)/i);
-        return aoMatch?.[1] || match;
-      }
-      const segments = path.split('.');
-      let value: any = recommendation;
-      for (const seg of segments) {
-        if (value == null) {
-          break;
-        }
-        value = value[seg];
-      }
-      return value != null && value !== '' ? String(value) : match;
+      return match;
     })
   );
 }
@@ -137,7 +155,10 @@ export const recommendationDetails = {
                 It is recommended to have tags like Name, Environment, Owner and Role to have better track of resources.`,
       ],
       mitigations: [
-        'Run describe-instances command (OSX/Linux/UNIX) using the ID of the Amazon EC2 instance that you want to configure as the identifier parameter to apply the specified tagging schema (i.e. Name, Role, Environment, and Owner) to the selected EC2 instance (the command does not produce an output): ```aws ec2 create-tags --resources {{recommendation.instance_id}} --tags Key=Name,Value=Prod-Web-Server Key=Role,Value=Web-Tier Key=Environment,Value=Production Key=Owner,Value=DevOps-Team```',
+        `Run describe-instances command (OSX/Linux/UNIX) using the ID of the Amazon EC2 instance that you want to configure as the identifier parameter to apply the specified tagging schema (i.e. Name, Role, Environment, and Owner) to the selected EC2 instance (the command does not produce an output):
+\`\`\`
+aws ec2 create-tags --resources {{INSTANCE_ID}} --tags Key=Name,Value=Prod-Web-Server Key=Role,Value=Web-Tier Key=Environment,Value=Production Key=Owner,Value=DevOps-Team
+\`\`\``,
       ],
       compliances: ['APRA', 'MAS', 'NIST4'],
       references: ['https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/Using_Tags.html'],
@@ -158,7 +179,7 @@ export const recommendationDetails = {
 \`\`\`
 aws ec2 modify-instance-attribute
 --region {{region}}
---instance-id {{recommendation.instance_id}}
+--instance-id {{INSTANCE_ID}}
 --disable-api-termination
 \`\`\`
 `,
@@ -227,7 +248,7 @@ aws ec2 modify-instance-attribute
       mitigations: [
         `AWS CLI command to set image tag mutability to IMMUTABLE:
 \`\`\`
-aws ecr put-image-tag-mutability --repository-name name --image-tag-mutability IMMUTABLE --region us-east-2
+aws ecr put-image-tag-mutability --repository-name {{REPOSITORY_NAME}} --image-tag-mutability IMMUTABLE --region {{region}}
 \`\`\`
 `,
         `**Terraform configuration file (.tf):**
@@ -742,7 +763,7 @@ Create a Dead Letter Queue (DLQ) in Amazon SQS:
         `
         AWS CLI command to enable Storage AutoScaling for RDS instance:
         \`\`\`
-        aws rds modify-db-instance --region {{region}} --db-instance-identifier {{recommendation.instance_id}} --max-allocated-storage 150 --apply-immediately
+        aws rds modify-db-instance --region {{region}} --db-instance-identifier {{INSTANCE_ID}} --max-allocated-storage 150 --apply-immediately
         \`\`\`
         `,
       ],
@@ -801,7 +822,7 @@ Create a Dead Letter Queue (DLQ) in Amazon SQS:
         \`\`\`
         aws rds modify-db-instance
         --region {{region}}
-        --db-instance-identifier {{recommendation.instance_id}}
+        --db-instance-identifier {{INSTANCE_ID}}
         --auto-minor-version-upgrade
         --apply-immediately
         \`\`\`
@@ -862,7 +883,7 @@ Create a Dead Letter Queue (DLQ) in Amazon SQS:
 \`\`\`
         aws rds modify-db-instance
         --region {{region}}
-        --db-instance-identifier {{recommendation.instance_id}}
+        --db-instance-identifier {{INSTANCE_ID}}
         --enable-performance-insights
         --performance-insights-retention-period 7
         --performance-insights-kms-key-id arn:aws:kms:us-east-1:123456789012:key/abcdabcd-1234-1234-1234-abcdabcdabcd
@@ -921,7 +942,7 @@ Create a Dead Letter Queue (DLQ) in Amazon SQS:
 \`\`\`
         aws rds modify-db-instance
         --region {{region}}
-        --db-instance-identifier {{recommendation.instance_id}}
+        --db-instance-identifier {{INSTANCE_ID}}
         --backup-retention-period 7
         --apply-immediately
 \`\`\`
@@ -1461,7 +1482,7 @@ aws guardduty update-detector --detector-id <id> --enable
       mitigations: [
         `
 \`\`\`
-aws ec2 modify-instance-attribute --instance-id i-xxx --disable-api-termination
+aws ec2 modify-instance-attribute --instance-id {{INSTANCE_ID}} --disable-api-termination
 \`\`\`
 `,
       ],
@@ -1475,7 +1496,7 @@ aws ec2 modify-instance-attribute --instance-id i-xxx --disable-api-termination
       mitigations: [
         `
 \`\`\`
-aws ec2 modify-instance-attribute --instance-id i-xxx --instance-initiated-shutdown-behavior stop
+aws ec2 modify-instance-attribute --instance-id {{INSTANCE_ID}} --instance-initiated-shutdown-behavior stop
 \`\`\`
 `,
       ],
@@ -1489,7 +1510,7 @@ aws ec2 modify-instance-attribute --instance-id i-xxx --instance-initiated-shutd
       mitigations: [
         `
 \`\`\`
-aws ec2 monitor-instances --instance-ids i-xxx
+aws ec2 monitor-instances --instance-ids {{INSTANCE_ID}}
 \`\`\`
 `,
       ],
@@ -1646,7 +1667,11 @@ aws cloudformation update-termination-protection --enable-termination-protection
       serviceName: 'AWSCloudFormation',
       recommendations: ['Set a stack policy to protect critical resources from unintentional updates.'],
       mitigations: [
-        'Set a stack policy: `aws cloudformation set-stack-policy --stack-name {{resource_name}} --stack-policy-body file://policy.json`',
+        `Set a stack policy: 
+\`\`\`
+aws cloudformation set-stack-policy --stack-name {{resource_name}} --stack-policy-body file://policy.json
+\`\`\`
+`,
       ],
       references: ['https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/protect-stack-resources.html'],
     },
@@ -1823,7 +1848,11 @@ aws logs put-retention-policy --log-group-name {{recommendation.log_group_name}}
       serviceName: 'AmazonECS',
       recommendations: ['Enable Container Insights for better visibility into ECS performance.'],
       mitigations: [
-        'Update the cluster setting: `aws ecs update-cluster-settings --cluster {{recommendation.cluster_name}} --settings name=containerInsights,value=enabled`',
+        `Update the cluster setting:
+\`\`\`
+        aws ecs update-cluster-settings --cluster {{recommendation.cluster_name}} --settings name=containerInsights,value=enabled
+\`\`\`
+`,
       ],
       references: ['https://docs.aws.amazon.com/AmazonECS/latest/developerguide/cloudwatch-container-insights.html'],
     },
@@ -2111,7 +2140,7 @@ aws configservice start-configuration-recorder --configuration-recorder-name def
         `
 **Run a patch operation:**
 \`\`\`
-aws ssm send-command --document-name AWS-RunPatchBaseline --targets Key=instanceids,Values=i-xxx
+aws ssm send-command --document-name AWS-RunPatchBaseline --targets Key=instanceids,Values={{INSTANCE_ID}}
 \`\`\`
 `,
       ],
@@ -2134,7 +2163,7 @@ aws ssm send-command --document-name AWS-RunPatchBaseline --targets Key=instance
         `
 **Update via SSM:**
 \`\`\`
-aws ssm send-command --document-name AWS-UpdateSSMAgent --targets Key=instanceids,Values=i-xxx
+aws ssm send-command --document-name AWS-UpdateSSMAgent --targets Key=instanceids,Values={{INSTANCE_ID}}
 \`\`\`
 `,
       ],
@@ -2817,14 +2846,14 @@ az resource tag --tags key=value --ids RESOURCE_ID
         `Update the ECR Public repository to enable image tag immutability:
 \`\`\`
 aws ecr-public put-repository-catalog-data \\
-  --repository-name {{repository_name}} \\
+  --repository-name {{REPOSITORY_NAME}} \\
   --region us-east-1
 \`\`\`
 
 Alternatively, recreate the repository with immutable tags enabled:
 \`\`\`
 aws ecr-public create-repository \\
-  --repository-name {{repository_name}} \\
+  --repository-name {{REPOSITORY_NAME}} \\
   --catalog-data '{}' \\
   --tags Key=Environment,Value=Production
 \`\`\``,
@@ -4044,17 +4073,17 @@ az vmss update \\
 
         - Run stop-instances command (OSX/Linux/UNIX) to stop the Amazon EC2 instance that you want to reconfigure:
 \`\`\`
-        aws ec2 stop-instances --region {{region}} --instance-ids {{recommendation.instance_id}}
+        aws ec2 stop-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
 \`\`\`
 
         - Run modify-instance-attribute command (OSX/Linux/UNIX) to change the instance type of the stopped Amazon EC2 instance to the latest generation:
 \`\`\`
-        aws ec2 modify-instance-attribute --region {{region}} --instance-id {{recommendation.instance_id}} --instance-type '{"Value": "{{recommendation.recommended_instance_type}}"}'
+        aws ec2 modify-instance-attribute --region {{region}} --instance-id {{INSTANCE_ID}} --instance-type '{"Value":"{{INSTANCE_TYPE}}"}'
 \`\`\`
 
         - Run start-instances command (OSX/Linux/UNIX) to start the Amazon EC2 instance with the new instance type:
 \`\`\`
-        aws ec2 start-instances --region {{region}} --instance-ids {{recommendation.instance_id}}
+        aws ec2 start-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
 \`\`\`
 `,
       ],
@@ -4203,7 +4232,7 @@ az vmss update \\
 \`\`\`
         aws rds modify-db-instance
             --region {{region}}
-            --db-instance-identifier {{recommendation.instance_id}}
+            --db-instance-identifier {{INSTANCE_ID}}
             --no-publicly-accessible
             --apply-immediately
 \`\`\`
@@ -4245,8 +4274,8 @@ az vmss update \\
 \`\`\`
         aws rds create-db-snapshot
         --region {{region}}
-        --db-snapshot-identifier {{recommendation.instance_id}}-snapshot
-        --db-instance-identifier {{recommendation.instance_id}}
+        --db-snapshot-identifier {{INSTANCE_ID}}-snapshot
+        --db-instance-identifier {{INSTANCE_ID}}
 \`\`\`
 `,
       ],
@@ -4284,7 +4313,7 @@ az vmss update \\
 \`\`\`
         aws rds modify-db-instance
             --region {{region}}
-            --db-instance-identifier {{recommendation.instance_id}}
+            --db-instance-identifier {{INSTANCE_ID}}
             --db-subnet-group-name cc-private-db-subnet-group
             --apply-immediately
 \`\`\`
@@ -4315,7 +4344,7 @@ az vmss update \\
 \`\`\`
             aws rds copy-db-snapshot
             --region {{region}}
-            --source-db-snapshot-identifier {{recommendation.instance_id}}-snapshot
+            --source-db-snapshot-identifier {{INSTANCE_ID}}-snapshot
             --target-db-snapshot-identifier cc-encrypted-project5-mysql-database-feb-2021
             --kms-key-id arn:aws:kms:<aws-region>:<aws-account-id>:alias/aws/rds
 \`\`\`
@@ -4456,7 +4485,7 @@ aws redshift modify-cluster --cluster-identifier {{recommendation.cluster_id}} -
       mitigations: [
         `
 \`\`\`
-aws ec2 modify-instance-metadata-options --instance-id i-xxx --http-tokens required
+aws ec2 modify-instance-metadata-options --instance-id {{INSTANCE_ID}} --http-tokens required
 \`\`\`
 `,
       ],
@@ -6379,7 +6408,7 @@ az vmss create \\
       mitigations: [
         `**AWS CLI command to upgrade RDS instance generation:**
 \`\`\`
-        aws rds modify-db-instance --region {{region}} --db-instance-identifier {{recommendation.instance_id}} --db-instance-class db.t3.medium --apply-immediately
+        aws rds modify-db-instance --region {{region}} --db-instance-identifier {{INSTANCE_ID}} --db-instance-class db.t3.medium --apply-immediately
 \`\`\`
 `,
       ],
@@ -6669,7 +6698,7 @@ gcloud compute instances start {{instance_name}} \\
       mitigations: [
         `**AWS CLI command to upgrade RDS instance generation:**
 \`\`\`
-        aws rds modify-db-instance --region {{region}} --db-instance-identifier {{recommendation.instance_id}} --db-instance-class db.t3.medium --apply-immediately
+        aws rds modify-db-instance --region {{region}} --db-instance-identifier {{INSTANCE_ID}} --db-instance-class db.t3.medium --apply-immediately
 \`\`\`
 `,
       ],
@@ -6689,7 +6718,7 @@ gcloud compute instances start {{instance_name}} \\
       mitigations: [
         `**AWS CLI command to upgrade RDS instance generation:**
 \`\`\`
-  aws rds modify-db-instance --region {{region}} --db-instance-identifier {{recommendation.instance_id}} --db-instance-class db.t3.medium --apply-immediately
+  aws rds modify-db-instance --region {{region}} --db-instance-identifier {{INSTANCE_ID}} --db-instance-class db.t3.medium --apply-immediately
 \`\`\`
 `,
       ],
@@ -6709,7 +6738,7 @@ gcloud compute instances start {{instance_name}} \\
       mitigations: [
         `**AWS CLI command to upgrade RDS instance generation:**
 \`\`\`
-        aws rds modify-db-instance --region {{region}} --db-instance-identifier {{recommendation.instance_id}} --db-instance-class db.t3.medium --apply-immediately
+        aws rds modify-db-instance --region {{region}} --db-instance-identifier {{INSTANCE_ID}} --db-instance-class db.t3.medium --apply-immediately
 \`\`\`
         `,
       ],
@@ -6762,7 +6791,7 @@ gcloud compute instances start {{instance_name}} \\
       mitigations: [
         `**AWS CLI command to scale up RDS instance storage space:**
 \`\`\`
-    aws rds modify-db-instance --region {{region}} --db-instance-identifier {{recommendation.instance_id}} --allocated-storage 100 --apply-immediately
+    aws rds modify-db-instance --region {{region}} --db-instance-identifier {{INSTANCE_ID}} --allocated-storage 100 --apply-immediately
 \`\`\`
         `,
       ],
@@ -6792,7 +6821,7 @@ ReadIOPS and WriteIOPS - the average number of disk I/O (Input/Output) operation
       mitigations: [
         `Delete the identified idle Amazon RDS database instances to reduce your monthly AWS costs. Before you delete an RDS instance, ensure that you have backed up the database to avoid losing any important data. To delete an RDS instance, use the AWS Management Console, AWS CLI or AWS SDKs.
 \`\`\`
-aws rds delete-db-instance --region {{region}} --db-instance-identifier {{recommendation.instance_id}} --no-skip-final-snapshot --final-db-snapshot-identifier {{recommendation.instance_id}}-final-snapshot
+aws rds delete-db-instance --region {{region}} --db-instance-identifier {{INSTANCE_ID}} --no-skip-final-snapshot --final-db-snapshot-identifier {{INSTANCE_ID}}-final-snapshot
 \`\`\`
  `,
       ],
@@ -6814,12 +6843,12 @@ aws rds delete-db-instance --region {{region}} --db-instance-identifier {{recomm
         `**AWS CLI command to stop or terminate idle EC2 instance:**
         - Stop Instance
 \`\`\`
-        aws ec2 stop-instances --region {{region}} --instance-ids {{recommendation.instance_id}}
+        aws ec2 stop-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
 \`\`\`
 
         - Terminate Instance
 \`\`\`
-        aws ec2 terminate-instances --region {{region}} --instance-ids {{recommendation.instance_id}}
+        aws ec2 terminate-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
 \`\`\`
         
         `,
@@ -6837,23 +6866,21 @@ aws rds delete-db-instance --region {{region}} --db-instance-identifier {{recomm
         `,
       ],
       mitigations: [
-        `**AWS CLI command to upgrade EC2 instance generation:**
+        `**AWS CLI command to switch to an alternate EC2 instance type:**
 
         - Stop instance
 \`\`\`
-          aws ec2 stop-instances --instance-ids "$INSTANCE_ID"
+aws ec2 stop-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
 \`\`\`
 
         - Modify Instance Type
-
 \`\`\`
-          aws ec2 modify-instance-attribute --instance-id "$INSTANCE_ID" --instance-type {"Value":"$REQUESTED_TYPE"}
+aws ec2 modify-instance-attribute --region {{region}} --instance-id {{INSTANCE_ID}} --instance-type '{"Value": "{{ALTERNATE_INSTANCE_TYPE}}"}'
 \`\`\`
 
         - Start Instance
-
 \`\`\`
-          aws ec2 start-instances --instance-ids "$INSTANCE_ID"
+aws ec2 start-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
 \`\`\`
 
 `,
@@ -6883,9 +6910,21 @@ aws rds delete-db-instance --region {{region}} --db-instance-identifier {{recomm
         `Downsizing underutilized Amazon EC2 instances to meet the capacity needs at the lowest cost represents an efficient strategy to reduce your AWS cloud costs. For example, resizing a c4.xlarge-type instance provisioned in the US-East (N. Virginia) region to a c4.large-type instance due to CPU and memory underuse, you can roughly save $72 per month.`,
       ],
       mitigations: [
-        `**AWS CLI command to upgrade E2 instance generation:**
+        `**AWS CLI command to downsize the underutilized EC2 instance:**
+
+        - Stop instance
 \`\`\`
-          aws ec2 modify-instance-attribute --region {{region}} --instance-id {{recommendation.instance_id}} --instance-type {"Value": "{{recommendation.recommended_instance_type}}"} 
+aws ec2 stop-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
+\`\`\`
+
+        - Modify Instance Type
+\`\`\`
+aws ec2 modify-instance-attribute --region {{region}} --instance-id {{INSTANCE_ID}} --instance-type '{"Value":"{{INSTANCE_TYPE}}"}'
+\`\`\`
+
+        - Start Instance
+\`\`\`
+aws ec2 start-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
 \`\`\`
 `,
       ],
@@ -6901,9 +6940,21 @@ aws rds delete-db-instance --region {{region}} --db-instance-identifier {{recomm
         `Overutilized Amazon EC2 instances could indicate that the applications running on these machines do not have enough hardware resources to perform optimally. Upgrading (upsizing) overutilized Amazon EC2 instances to meet your load needs will improve directly the health and success of your applications, resulting in a more stable environment and a faster response time.`,
       ],
       mitigations: [
-        `**AWS CLI command to upgrade Ec2 instance generation:**
-\`\`\` 
-  aws rds modify-db-instance --region {{region}} --db-instance-identifier {{recommendation.instance_id}} --db-instance-class db.t3.medium --apply-immediately
+        `**AWS CLI command to upsize the overutilized EC2 instance:**
+
+        - Stop instance
+\`\`\`
+aws ec2 stop-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
+\`\`\`
+
+        - Modify Instance Type
+\`\`\`
+aws ec2 modify-instance-attribute --region {{region}} --instance-id {{INSTANCE_ID}} --instance-type '{"Value":"{{INSTANCE_TYPE}}"}'
+\`\`\`
+
+        - Start Instance
+\`\`\`
+aws ec2 start-instances --region {{region}} --instance-ids {{INSTANCE_ID}}
 \`\`\`
         `,
       ],
@@ -7430,9 +7481,9 @@ aws cloudwatch get-metric-statistics \\
       mitigations: [
         `Stop the instance, change its type, and restart:
 \`\`\`
-aws ec2 stop-instances --instance-ids {{recommendation.instance_id}}
-aws ec2 modify-instance-attribute --instance-id {{recommendation.instance_id}} --instance-type '{"Value":"{{recommendation.recommended_instance_type}}"}'
-aws ec2 start-instances --instance-ids {{recommendation.instance_id}}
+aws ec2 stop-instances --instance-ids {{INSTANCE_ID}}
+aws ec2 modify-instance-attribute --instance-id {{INSTANCE_ID}} --instance-type '{"Value":"{{INSTANCE_TYPE}}"}'
+aws ec2 start-instances --instance-ids {{INSTANCE_ID}}
 \`\`\`
 `,
       ],

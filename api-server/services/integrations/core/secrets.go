@@ -14,11 +14,12 @@ import (
 // (where the schema declares IsEncrypted=true), and must be preserved on
 // omit-to-keep semantics during save.
 //
-// The prefix shape covers BOTH the bare global key AND every per-tier /
-// per-agent override variant — e.g. llm_provider_api_key,
-// llm_provider_api_key_summary_agent, llm_provider_api_key_<agent>,
-// llm_provider_access_key_<agent>, etc. Matches the resolver's read paths
-// in llm-server (see llm/llm-server/agents/core/llm_config.go).
+// The prefix shape covers the bare global key, every per-agent override
+// (llm_provider_api_key_<agent>, etc. — all share the llm_provider_* prefix),
+// AND every per-tier override (llm_tier_api_key_<tier>, etc. — these use the
+// distinct llm_tier_* prefix, so they must be listed separately). Matches the
+// resolver's read paths in llm-server (see llm/llm-server/agents/core/
+// llm_config.go: llmTierApiKeyFormat et al.).
 //
 // Lives in package core (not the integrations parent package) because it is
 // referenced from CreateIntegrationConfig's save path, and core cannot
@@ -29,6 +30,10 @@ var llmSecretFieldPrefixes = []string{
 	"llm_provider_access_key",
 	"llm_provider_secret_key",
 	"llm_provider_session_token",
+	"llm_tier_api_key",
+	"llm_tier_access_key",
+	"llm_tier_secret_key",
+	"llm_tier_session_token",
 }
 
 // IsLLMSecretFieldName reports whether the given integration_config_values

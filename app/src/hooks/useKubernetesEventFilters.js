@@ -2,10 +2,21 @@ import { useState, useEffect, useMemo, useCallback } from 'react';
 import k8sApi from '@api1/kubernetes';
 import apiHome from '@api1/home';
 import { useData } from '@context/DataContext';
+import { NB_STATUS_OPTIONS } from '@api1/triage';
 import { snakeToTitleCase, titleCaseForAggregationKey } from 'src/utils/common';
 
 // Helper to transform values into label/value objects
 const toLabelValuePairs = (values, labelTransform = (v) => v) => values.map((v) => ({ label: labelTransform(v), value: v }));
+
+// Map raw nb_status values returned by the DB to curated label/value options.
+// Intersecting with NB_STATUS_OPTIONS (a) keeps the canonical display labels,
+// (b) preserves a stable logical order regardless of DB count ordering, and
+// (c) drops deprecated/unknown statuses (e.g. ACKNOWLEDGED, INVESTIGATING) that
+// were intentionally removed from the UI but may still exist on old events.
+const toNbStatusOptions = (values) => {
+  const present = new Set(values);
+  return NB_STATUS_OPTIONS.filter((opt) => present.has(opt.value)).map((opt) => ({ label: opt.label, value: opt.value }));
+};
 
 /**
  * @param {Object} params
@@ -39,6 +50,7 @@ const useKubernetesEventFilters = ({
   const [subjectTypeFilter, setSubjectTypeFilter] = useState([]);
   const [aggregationKeyFilter, setAggregationKeyFilter] = useState([]);
   const [sourceFilter, setSourceFilter] = useState([]);
+  const [nbStatusFilter, setNbStatusFilter] = useState([]);
 
   const [isOptionsLoading, setIsOptionsLoading] = useState({
     namespace: false,
@@ -46,6 +58,7 @@ const useKubernetesEventFilters = ({
     subjectType: false,
     aggregationKey: false,
     source: false,
+    nbStatus: false,
   });
 
   // Helper to stabilize array dependencies for useEffect
@@ -60,6 +73,7 @@ const useKubernetesEventFilters = ({
       subject_type: (values) => setSubjectTypeFilter(toLabelValuePairs(values)),
       aggregation_key: (values) => setAggregationKeyFilter(toLabelValuePairs(values, titleCaseForAggregationKey)),
       source: (values) => setSourceFilter(toLabelValuePairs(values, snakeToTitleCase)),
+      nb_status: (values) => setNbStatusFilter(toNbStatusOptions(values)),
     };
 
     for (const filter of filters) {
@@ -160,6 +174,9 @@ const useKubernetesEventFilters = ({
     if (!disabledFilters.includes('source')) {
       filterTypes.push('source');
     }
+    if (!disabledFilters.includes('nbStatus')) {
+      filterTypes.push('nb_status');
+    }
 
     if (filterTypes.length === 0) {
       return;
@@ -173,6 +190,7 @@ const useKubernetesEventFilters = ({
       subjectType: filterTypes.includes('subject_type'),
       aggregationKey: filterTypes.includes('aggregation_key'),
       source: filterTypes.includes('source'),
+      nbStatus: filterTypes.includes('nb_status'),
     }));
 
     const accountIds = Array.isArray(selectedAccountId) ? selectedAccountId : selectedAccountId ? [selectedAccountId] : [];
@@ -203,6 +221,7 @@ const useKubernetesEventFilters = ({
           subjectType: false,
           aggregationKey: false,
           source: false,
+          nbStatus: false,
         }));
       });
   }, [selectedAccountId, enableFilters, disabledFiltersStr, shouldFetchData, resourceIdsStr, startTime, endTime, processFilterResponse]);
@@ -215,6 +234,7 @@ const useKubernetesEventFilters = ({
     subjectTypeFilter,
     aggregationKeyFilter,
     sourceFilter,
+    nbStatusFilter,
     isOptionsLoading,
   };
 };

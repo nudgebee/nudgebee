@@ -10,6 +10,7 @@ import (
 	"nudgebee/runbook/internal/model"
 	"nudgebee/runbook/internal/storage"
 	"nudgebee/runbook/internal/tasks/k8s"
+	"nudgebee/runbook/internal/workflow"
 	"nudgebee/runbook/services/security"
 
 	"github.com/google/uuid"
@@ -45,12 +46,46 @@ func (a *Activities) GenerateTasksActivity(ctx context.Context, autoOptimizeID s
 	return ids, nil
 }
 
-func (a *Activities) CompleteAutoOptimizeActivity(ctx context.Context, autoOptimizeID string) error {
+func (a *Activities) CompleteAutoOptimizeActivity(ctx context.Context, autoOptimizeID string, taskIDs []string) error {
 	aoID, err := uuid.Parse(autoOptimizeID)
 	if err != nil {
 		return err
 	}
-	return a.Service.CompleteAutoOptimize(ctx, aoID)
+	return a.Service.CompleteAutoOptimize(ctx, aoID, parseTaskIDs(taskIDs))
+}
+
+// CollectPRResultsActivity reports whether the run produced GitOps PR tasks and
+// whether their asynchronously-created PRs have all settled (URL populated or
+// creation failed). Drives the workflow's PR-ready poll loop.
+func (a *Activities) CollectPRResultsActivity(ctx context.Context, autoOptimizeID string, taskIDs []string) (workflow.CollectPRResultsResult, error) {
+	aoID, err := uuid.Parse(autoOptimizeID)
+	if err != nil {
+		return workflow.CollectPRResultsResult{}, err
+	}
+	hasPRTasks, allSettled, err := a.Service.CollectPRResults(ctx, aoID, parseTaskIDs(taskIDs))
+	return workflow.CollectPRResultsResult{HasPRTasks: hasPRTasks, AllSettled: allSettled}, err
+}
+
+// NotifyPRsReadyActivity sends the aggregated "PRs ready" follow-up message
+// carrying the real PR URLs (and any PR-creation failures) for the run.
+func (a *Activities) NotifyPRsReadyActivity(ctx context.Context, autoOptimizeID string, taskIDs []string) error {
+	aoID, err := uuid.Parse(autoOptimizeID)
+	if err != nil {
+		return err
+	}
+	return a.Service.NotifyPRsReady(ctx, aoID, parseTaskIDs(taskIDs))
+}
+
+// parseTaskIDs converts the workflow's string task IDs to UUIDs, skipping any
+// that fail to parse (defensive; IDs originate from GenerateTasksActivity).
+func parseTaskIDs(taskIDs []string) []uuid.UUID {
+	ids := make([]uuid.UUID, 0, len(taskIDs))
+	for _, s := range taskIDs {
+		if id, err := uuid.Parse(s); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 func (a *Activities) ExecuteTaskActivity(ctx context.Context, taskID string) error {

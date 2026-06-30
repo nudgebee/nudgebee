@@ -989,6 +989,20 @@ func analyzeEventRCAUsingAgentsAndUpdateDb(ctx *security.RequestContext, request
 		UserId:     request.UserId,
 		Regenerate: request.Regenerate,
 	}
+
+	// Same gate as analyzeEventUsingAgentsAndUpdateDb: skip RCA compute and the
+	// event load for accounts with event debug analysis disabled, marking any
+	// non-terminal rows COMPLETED so the recovery loop stops re-driving the event.
+	if disabled, ffErr := common.IsFeatureEnabledForAccount("EVENT_DEBUG_ANALYSIS_DISABLED", ctx.GetSecurityContext().GetTenantId(), request.AccountId); ffErr == nil && disabled {
+		ctx.GetLogger().Info("analyzer: event debug analysis disabled for account, skipping RCA compute before event load", "event_id", request.EventId, "account_id", request.AccountId)
+		if fingerprint, aggKey, idErr := getEventIdentity(dbManager, eventRequest); idErr == nil {
+			markAllAnalysisSkipped(ctx, eventAnalysisRepo, fingerprint, request.AccountId, aggKey, "skipped - debug analysis disabled for account")
+		} else {
+			ctx.GetLogger().Warn("analyzer: unable to resolve event identity to mark RCA skipped", "event_id", request.EventId, "error", idErr)
+		}
+		return EventAnalysisResponse{Status: string(events.AnalysisStatusCompleted)}, nil
+	}
+
 	eventData, err := getEventData(ctx, eventRequest)
 
 	if err != nil {
@@ -1272,6 +1286,23 @@ func analyzeEventUsingAgentsAndUpdateDb(ctx *security.RequestContext, request Ev
 		return EventAnalysisResponse{}, err
 	}
 	eventAnalysisRepo := events.NewEventAnalysisRepository(dbManager)
+
+	// Gate before getEventData (which `select *`s the event, materialising its
+	// potentially multi-MB evidences column) and before any agent runs. For
+	// accounts with event debug analysis disabled, skip all compute and mark any
+	// non-terminal analysis rows COMPLETED so syncStuckEventAnalyses stops
+	// re-driving the event — this is what breaks the OOM crash loop on oversized
+	// events. Already-completed analyses are preserved and still served by the
+	// read path (getOrCreateEventAnalysisStatus).
+	if disabled, ffErr := common.IsFeatureEnabledForAccount("EVENT_DEBUG_ANALYSIS_DISABLED", ctx.GetSecurityContext().GetTenantId(), request.AccountId); ffErr == nil && disabled {
+		ctx.GetLogger().Info("analyzer: event debug analysis disabled for account, skipping compute before event load", "event_id", request.EventId, "account_id", request.AccountId)
+		if fingerprint, aggKey, idErr := getEventIdentity(dbManager, request); idErr == nil {
+			markAllAnalysisSkipped(ctx, eventAnalysisRepo, fingerprint, request.AccountId, aggKey, "skipped - debug analysis disabled for account")
+		} else {
+			ctx.GetLogger().Warn("analyzer: unable to resolve event identity to mark skipped", "event_id", request.EventId, "error", idErr)
+		}
+		return EventAnalysisResponse{Status: string(events.AnalysisStatusCompleted)}, nil
+	}
 
 	eventData, err := getEventData(ctx, request)
 	if err != nil {
@@ -2224,6 +2255,67 @@ func markAllAnalysisFailed(ctx *security.RequestContext, repo *events.EventAnaly
 		}
 		if updateErr := repo.UpdateEventAnalysisStatus(ctx, fingerprint, accountId, aggKey, string(events.AnalysisStatusFailed), "analysis failed - "+errMsg, aType); updateErr != nil {
 			ctx.GetLogger().Warn("failed to update analysis status on error", "error", updateErr, "analysis_type", aType)
+		}
+	}
+}
+
+// getEventIdentity fetches only the fingerprint and aggregation_key for an event.
+// It deliberately avoids getEventData's `select *`, which materialises the
+// (potentially multi-MB) evidences column and is what OOMs the process. Used by
+// the debug-analysis-disabled gate, which needs the identity to mark analysis
+// rows terminal but must not load the event payload.
+func getEventIdentity(dbManager *common.DatabaseManager, request EventAnalysisRequest) (string, string, error) {
+	if dbManager == nil || dbManager.Db == nil {
+		return "", "", fmt.Errorf("database manager is not initialized")
+	}
+	// uuid.Parse also rejects empty strings, guarding against full-table scans / cross-tenant reads.
+	if _, err := uuid.Parse(request.EventId); err != nil {
+		return "", "", fmt.Errorf("invalid event_id format")
+	}
+	if _, err := uuid.Parse(request.AccountId); err != nil {
+		return "", "", fmt.Errorf("invalid account_id format")
+	}
+	var row struct {
+		Fingerprint    string `db:"fingerprint"`
+		AggregationKey string `db:"aggregation_key"`
+	}
+	if err := dbManager.Db.Get(&row, `SELECT fingerprint, aggregation_key FROM events WHERE id = $1 AND cloud_account_id = $2`, request.EventId, request.AccountId); err != nil {
+		return "", "", err
+	}
+	// Match the rest of the analyzer (e.g. analyzeEventRCAUsingAgentsAndUpdateDb): an empty
+	// fingerprint falls back to the event_id, since stuck rows are keyed that way.
+	fingerprint := row.Fingerprint
+	if fingerprint == "" {
+		fingerprint = request.EventId
+	}
+	return fingerprint, row.AggregationKey, nil
+}
+
+// markAllAnalysisSkipped marks every non-terminal analysis row for an event as
+// COMPLETED with a skip reason, leaving already-COMPLETED results untouched.
+// Used when event debug analysis is disabled for an account so the recovery loop
+// (syncStuckEventAnalyses) stops re-driving the event. Mirrors markAllAnalysisFailed
+// but uses a COMPLETED (skipped) terminal state instead of FAILED.
+func markAllAnalysisSkipped(ctx *security.RequestContext, repo *events.EventAnalysisRepository, fingerprint, accountId, aggKey, reason string) {
+	if repo == nil || accountId == "" || fingerprint == "" {
+		return
+	}
+	for _, aType := range []events.EventAnalysisType{
+		events.AnalysisTypeSummary,
+		events.AnalysisTypeInvestigation,
+		events.AnalysisTypeLog,
+		events.AnalysisTypeDetailedResponse,
+		events.AnalysisTypeRCA,
+	} {
+		existing, err := repo.GetEventAnalysis(ctx, fingerprint, aggKey, accountId, aType)
+		if err != nil || existing == nil {
+			continue
+		}
+		if existing.Status == string(events.AnalysisStatusCompleted) {
+			continue
+		}
+		if updateErr := repo.UpdateEventAnalysisStatus(ctx, fingerprint, accountId, aggKey, string(events.AnalysisStatusCompleted), reason, aType); updateErr != nil {
+			ctx.GetLogger().Warn("failed to mark analysis skipped", "error", updateErr, "analysis_type", aType)
 		}
 	}
 }

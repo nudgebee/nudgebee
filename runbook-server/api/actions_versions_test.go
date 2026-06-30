@@ -296,6 +296,52 @@ func (s *ActionsVersionsHandlerTestSuite) TestUpdateVersionMetadataAction() {
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
+func (s *ActionsVersionsHandlerTestSuite) TestDeleteVersionAction() {
+	gin.SetMode(gin.TestMode)
+	t := s.T()
+
+	s.workflowService.On("DeleteWorkflowVersion", mock.Anything, "test-account", "wf-1", 2).Return(nil)
+
+	w, req := s.makeActionRequest("workflows_delete_version", map[string]any{
+		"account_id":     "test-account",
+		"id":             "wf-1",
+		"version_number": float64(2),
+	})
+	s.server.router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func (s *ActionsVersionsHandlerTestSuite) TestDeleteVersionActionNotFound() {
+	gin.SetMode(gin.TestMode)
+	t := s.T()
+
+	s.workflowService.On("DeleteWorkflowVersion", mock.Anything, "test-account", "wf-1", 9).Return(sql.ErrNoRows)
+
+	w, req := s.makeActionRequest("workflows_delete_version", map[string]any{
+		"account_id":     "test-account",
+		"id":             "wf-1",
+		"version_number": float64(9),
+	})
+	s.server.router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func (s *ActionsVersionsHandlerTestSuite) TestDeleteVersionActionRejectedWhenLive() {
+	gin.SetMode(gin.TestMode)
+	t := s.T()
+
+	s.workflowService.On("DeleteWorkflowVersion", mock.Anything, "test-account", "wf-1", 3).
+		Return(common.ErrorBadRequest("cannot delete the live version; make another version live first"))
+
+	w, req := s.makeActionRequest("workflows_delete_version", map[string]any{
+		"account_id":     "test-account",
+		"id":             "wf-1",
+		"version_number": float64(3),
+	})
+	s.server.router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
 func TestActionsVersionsHandlerTestSuite(t *testing.T) {
 	suite.Run(t, new(ActionsVersionsHandlerTestSuite))
 }

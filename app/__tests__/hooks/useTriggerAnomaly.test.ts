@@ -8,12 +8,12 @@ jest.mock('@api1/kubernetes1', () => ({
   },
 }));
 
-jest.mock('@components1/common/snackbarService', () => ({
+jest.mock('@shared/snackbarService', () => ({
   snackbar: { success: jest.fn(), error: jest.fn() },
 }));
 
 import apiKubernetes1 from '@api1/kubernetes1';
-import { snackbar } from '@components1/common/snackbarService';
+import { snackbar } from '@shared/snackbarService';
 
 const mockTrigger = apiKubernetes1.triggerAnomalyExecute as jest.Mock;
 

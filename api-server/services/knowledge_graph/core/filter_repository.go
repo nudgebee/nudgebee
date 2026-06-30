@@ -637,6 +637,26 @@ type UpsertResult struct {
 	RemovedFlowSources []string
 }
 
+// toggleableFlowSources is the set of flow sources a tenant can turn on/off from the
+// KG Coverage UI. It mirrors FLOW_SOURCES in
+// app/src/components/knowledge-graph/KGCoverageTab.jsx and deliberately excludes the
+// always-on sources (see alwaysOnFlowSources in service.go, e.g. "manual"), which
+// can't be toggled and must never be soft-deleted by a save. Used to expand an empty
+// (= "all") flow_sources filter into its concrete members when computing what a save
+// removed. Keep in sync with the UI list and the registered flow sources in
+// knowledge_graph/flow_sources/.
+var toggleableFlowSources = []string{"datadog-apm", "ebpf", "newrelic-apm", "traces"}
+
+// expandIfEmpty returns universe when sel is empty, otherwise sel. An empty
+// account_ids / flow_sources list means "all" everywhere the filter is consumed, so
+// this collapses that sentinel into the concrete set before a set-difference.
+func expandIfEmpty(sel, universe []string) []string {
+	if len(sel) == 0 {
+		return universe
+	}
+	return sel
+}
+
 // UpsertDefaultFilterForTenant updates (or creates) the tenant's default knowledge
 // graph filter row and cascade-soft-deletes any nodes/edges belonging to removed
 // account_ids or removed flow_sources.
@@ -671,8 +691,25 @@ func (r *FilterRepository) UpsertDefaultFilterForTenant(
 	var removedAccounts, removedFlowSources []string
 
 	if existing != nil {
-		removedAccounts = stringSliceDiff(existing.AccountIDs, accountIDs)
-		removedFlowSources = stringSliceDiff(existing.FlowSources, flowSources)
+		// An empty account_ids / flow_sources list means "all" (that's how the
+		// build path resolves it), so a plain set-difference is wrong here: the
+		// nightly cron pre-creates the default row with empty arrays, so for almost
+		// every tenant `existing` is empty(=all). Diffing []→[subset] would compute
+		// "nothing removed" and the deselected items would never be deactivated.
+		// Expand both sides to their concrete universe before diffing so a removal
+		// from the default "all" state correctly cascade-soft-deletes.
+		allAccountIDs, accErr := r.getActiveAccountIDsForTenant(tenantID)
+		if accErr != nil {
+			return nil, fmt.Errorf("failed to load active accounts for filter diff: %w", accErr)
+		}
+		removedAccounts = stringSliceDiff(
+			expandIfEmpty(existing.AccountIDs, allAccountIDs),
+			expandIfEmpty(accountIDs, allAccountIDs),
+		)
+		removedFlowSources = stringSliceDiff(
+			expandIfEmpty(existing.FlowSources, toggleableFlowSources),
+			expandIfEmpty(flowSources, toggleableFlowSources),
+		)
 
 		existing.AccountIDs = accountIDs
 		existing.FlowSources = flowSources
@@ -779,6 +816,38 @@ func (r *FilterRepository) softDeleteRemovedFlowSources(tenantID string, removed
 		"flow_sources", removedFlowSources,
 		"edges", rows)
 	return nil
+}
+
+// getActiveAccountIDsForTenant returns the ids of every active cloud account for the
+// tenant — the concrete universe an empty (= "all") account_ids filter expands to.
+// Sourced from the same cloud_accounts table the Coverage UI lists from, so a
+// computed "removed" set can never contain an account outside that universe.
+func (r *FilterRepository) getActiveAccountIDsForTenant(tenantID string) ([]string, error) {
+	if tenantID == "" {
+		return nil, fmt.Errorf("getActiveAccountIDsForTenant: tenantID cannot be empty")
+	}
+	rows, err := r.dbManager.Query(
+		`SELECT id::text FROM cloud_accounts WHERE tenant = $1 AND status = 'active'`,
+		tenantID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query active accounts for tenant %s: %w", tenantID, err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			r.logger.Warn("failed to close rows", "error", closeErr)
+		}
+	}()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if scanErr := rows.Scan(&id); scanErr != nil {
+			return nil, fmt.Errorf("failed to scan account id: %w", scanErr)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // stringSliceDiff returns elements of `from` that are not present in `to`.

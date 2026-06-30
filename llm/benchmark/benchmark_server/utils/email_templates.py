@@ -8,7 +8,6 @@ Branding matches NudgeBee product emails (DM Serif Display + DM Sans, #facf39 pr
 from datetime import datetime
 from typing import Optional
 
-
 # -- Brand constants (aligned with app/src/utils/colors.ts) --
 _BRAND_NAME = "NudgeBee"
 _PRIMARY_COLOR = "#2563EB"  # colors.primary

@@ -164,6 +164,9 @@ type WorkflowVersion struct {
 // (ExecuteWorkflow), retry, scheduled runs, and call-workflow — stamps the same
 // keys so GetDetailedWorkflowExecution and retry resolve the run to its version.
 func WorkflowVersionMemo(v *WorkflowVersion) map[string]any {
+	if v == nil {
+		return nil
+	}
 	name := ""
 	if v.Name != nil {
 		name = *v.Name

@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import ErrorBoundary from '@common/ErrorBoundary';
-import TicketListTable from '@components1/tickets/TicketListTable';
-import TicketListInfograph from '@components1/tickets/TicketListInfograph';
+import ErrorBoundary from '@shared/ErrorBoundary';
+import TicketListTable from '@components/tickets/TicketListTable';
+import TicketListInfograph from '@components/tickets/TicketListInfograph';
 import { Box } from '@mui/material';
 import { getUserSession } from '@lib/auth';
-import AnchorComponent from '@common-new/AnchorComponent';
+import AnchorComponent from '@shared/navigation/AnchorComponent';
 import { useRouter } from 'next/router';
 import { TicketBlueIcon, UserIconOutline } from '@assets';
 

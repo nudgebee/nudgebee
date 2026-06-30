@@ -80,6 +80,8 @@ func (a WorkflowAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 		"3. **CRITICAL:** When `automation_builder` returns a result (a plan or a JSON definition), you MUST stop immediately. If it's a JSON definition, return ONLY the raw JSON as your `Final Answer`. Do NOT call `workflow_update`, `workflow_create`, or any other tool with that result. The automation is automatically saved.",
 		"4. If you have already delegated to `automation_builder` in this conversation, continue using it for all related requests until a final definition is produced.",
 		"5. When delegating to `automation_builder`, describe WHAT the user wants in plain language. Do NOT specify task types, implementation approaches, or technical details — the builder determines those from its own task registry and the account's configured integrations.",
+		"   - **Pass the delegation as a JSON object:** `{\"mode\": \"create\", \"query\": \"<plain-language description>\"}`. The `mode` field tells the builder this is a NEW automation, so it routes to the build flow without guessing. Refer to accounts and integrations by name; do not put account or automation IDs in `query`.",
+		"   - Delegate ONCE per request, then stop (see rule 3). Re-delegating the same build creates duplicate save attempts that collide on the automation name.",
 		"",
 		"**Listing:**",
 		"Use `workflow_list`. You can filter by name or limit results.",
@@ -102,8 +104,7 @@ func (a WorkflowAgent) GetSystemPrompt(ctx *security.RequestContext, query core.
 		"- NEVER call `workflow_executions` + `workflow_execution_get` + `workflow_get` more than ONCE per message.",
 		"- Delegate to `automation_builder` ONCE with all context, then proceed to present changes.",
 		"",
-		"4. To fix: delegate to `automation_builder` with the automation ID, error details, and current definition.",
-		"   Example: 'Fix automation <id>. Error: task get-pods failed with <error>. Current definition: ...'",
+		"4. To fix: delegate to `automation_builder` as a JSON object: `{\"mode\": \"fix\", \"workflow_id\": \"<automation id>\", \"query\": \"<error details and what to change>\"}`. The `workflow_id` field routes the builder to the existing automation — never rely on embedding the ID inside free text.",
 		"5. **Before applying changes, you MUST present the proposed changes to the user and ask for confirmation.**",
 		"   - Summarize what changed (e.g., 'Changed JSONata expression in task X from A to B')",
 		"   - Ask the user: 'Would you like me to apply these changes to the automation?'",
@@ -208,4 +209,8 @@ func (a WorkflowAgent) GetSupportedTools(ctx *security.RequestContext) []toolcor
 
 func (a WorkflowAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeReAct
+}
+
+func (a WorkflowAgent) GetModelCategory() core.ModelTier {
+	return core.ModelTierReasoning
 }

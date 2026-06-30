@@ -344,7 +344,7 @@
           {
             "window": 3600,
             "workload_name": "hello-world",
-            "workload_namespace": "nudgebee-test",
+            "workload_namespace": "test-cluster-test",
             "goal": 0.99,
             "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
             "enabled": true,
@@ -383,7 +383,7 @@
           {
             "window": 3600,
             "workload_name": "hello-world",
-            "workload_namespace": "nudgebee-test",
+            "workload_namespace": "test-cluster-test",
             "goal": 0.99,
             "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
             "enabled": true,
@@ -435,7 +435,7 @@
           {
             "window": 3600,
             "workload_name": "llm-server",
-            "workload_namespace": "nudgebee-test",
+            "workload_namespace": "test-cluster-test",
             "goal": 0.99,
             "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
             "enabled": true,
@@ -448,7 +448,7 @@
           {
             "window": 3600,
             "workload_name": "llm-server",
-            "workload_namespace": "nudgebee-test",
+            "workload_namespace": "test-cluster-test",
             "goal": 0.99,
             "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
             "enabled": true,
@@ -487,7 +487,7 @@
           {
             "window": 3600,
             "workload_name": "ml-k8s-server",
-            "workload_namespace": "nudgebee-test",
+            "workload_namespace": "test-cluster-test",
             "goal": 0.99,
             "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
             "enabled": true,
@@ -500,7 +500,7 @@
           {
             "window": 3600,
             "workload_name": "ml-k8s-server",
-            "workload_namespace": "nudgebee-test",
+            "workload_namespace": "test-cluster-test",
             "goal": 0.99,
             "cloud_account_id": "0053b816-4b45-4dcd-a612-19545110f8aa",
             "enabled": true,

@@ -442,18 +442,18 @@ func (m AzureMonitorWebhook) ProcessEventWebook(sc *security.RequestContext, set
 	}
 
 	// Map Azure severity to event priority
-	var eventPriority event.EventPriortiy
+	var eventPriority event.EventPriority
 	switch strings.ToLower(severity) {
 	case "sev0":
-		eventPriority = event.EventPriortiyHigh
+		eventPriority = event.EventPriorityHigh
 	case "sev1":
-		eventPriority = event.EventPriortiyHigh
+		eventPriority = event.EventPriorityHigh
 	case "sev2":
-		eventPriority = event.EventPriortiyMedium
+		eventPriority = event.EventPriorityMedium
 	case "sev3", "sev4":
-		eventPriority = event.EventPriortiyLow
+		eventPriority = event.EventPriorityLow
 	default:
-		eventPriority = event.EventPriortiyLow
+		eventPriority = event.EventPriorityLow
 	}
 
 	// Determine event status based on monitor condition

@@ -40,6 +40,7 @@ import (
 func main() {
 	logger := newLogger()
 	slog.SetDefault(logger)
+	config.LogSecurityWarnings()
 
 	tp, mp, err := initOtel()
 	if err != nil {
@@ -198,6 +199,8 @@ func main() {
 		optimizerWorker.RegisterActivityWithOptions(optimizerActivities.GenerateTasksActivity, activity.RegisterOptions{Name: workflow.GenerateTasksActivityName})
 		optimizerWorker.RegisterActivityWithOptions(optimizerActivities.ExecuteTaskActivity, activity.RegisterOptions{Name: workflow.ExecuteTaskActivityName})
 		optimizerWorker.RegisterActivityWithOptions(optimizerActivities.CompleteAutoOptimizeActivity, activity.RegisterOptions{Name: workflow.CompleteAutoOptimizeActivityName})
+		optimizerWorker.RegisterActivityWithOptions(optimizerActivities.CollectPRResultsActivity, activity.RegisterOptions{Name: workflow.CollectPRResultsActivityName})
+		optimizerWorker.RegisterActivityWithOptions(optimizerActivities.NotifyPRsReadyActivity, activity.RegisterOptions{Name: workflow.NotifyPRsReadyActivityName})
 
 		go func() {
 			if err := optimizerWorker.Run(worker.InterruptCh()); err != nil {
@@ -218,8 +221,15 @@ func main() {
 
 	sysManager := system.NewSystemJobManager(temporalClient, slog.Default())
 	if err := sysManager.EnsureSchedules(context.Background(), cronTriggers); err != nil {
-		slog.Error("failed to ensure system schedules, terminating", "error", err)
-		os.Exit(1)
+		// One retry to ride out a transient Temporal frontend stall on a single
+		// UpdateSchedule RPC (the SDK's default per-call timeout is ~10s, so a
+		// single slow call here would otherwise crash-loop the pod).
+		slog.Warn("failed to ensure system schedules, retrying once", "error", err)
+		time.Sleep(5 * time.Second)
+		if err := sysManager.EnsureSchedules(context.Background(), cronTriggers); err != nil {
+			slog.Error("failed to ensure system schedules, terminating", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	// Ensure Search Attributes

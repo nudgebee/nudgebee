@@ -1,15 +1,16 @@
 import { Typography } from '@mui/material';
 import { useRouter } from 'next/router';
-import ServiceNowAccountModal from '@common/ServiceNowAccountModal';
-import ZenDutyAccountModal from '@common/ZenDutyAccountModal';
+import ServiceNowAccountModal from '@shared/ServiceNowAccountModal';
+import ZenDutyAccountModal from '@shared/ZenDutyAccountModal';
 import ListIntegrations from './ListIntegrations';
 import MessagingIntegrationTile from './MessagingIntegrationTile';
+import GoogleChatSpacesPanel from './GoogleChatSpacesPanel';
 import TicketingIntegrationTile from './TicketingIntegrationTile';
-import JiraAccountModal from '@components1/common/JiraAccountModal';
+import JiraAccountModal from '@shared/JiraAccountModal';
 import K8sIntegrationTile from './K8sIntegrationTile';
-import GithubAccountModal from '@components1/common/GithubAccountModal';
-import GitlabAccountModal from '@components1/common/GitlabAccountModal';
-import PagerDutyAccountModal from '@components1/common/PagerDutyAccountModal';
+import GithubAccountModal from '@shared/GithubAccountModal';
+import GitlabAccountModal from '@shared/GitlabAccountModal';
+import PagerDutyAccountModal from '@shared/PagerDutyAccountModal';
 import CloudAccountTile from './CloudAccountTile';
 import AddAwsAccountModal from './AddAwsAccountModal';
 import AddAwsOrgModal from './AddAwsOrgModal';
@@ -38,12 +39,14 @@ export default function AddAccountForm() {
               />
             );
           case 'google_chat':
+            return <GoogleChatSpacesPanel />;
+          case 'discord':
             return (
               <MessagingIntegrationTile
-                provider='google_chat'
-                displayName='Google Chat'
-                installUrl='/api/integrations/google/install'
-                headers={['Installed At', 'Channels', { name: '', width: '20%' }, { name: '', width: '1%' }]}
+                provider='discord'
+                displayName='Discord'
+                installUrl={null}
+                headers={['Installed At', 'Channels', { name: ' ', width: '20%' }, { name: '  ', width: '1%' }]}
                 hasTeamName={false}
               />
             );

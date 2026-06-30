@@ -66,6 +66,15 @@ func NewAPIProxyHandler(
 			return
 		}
 
+		// Guard against SSRF: the target URL is caller-controlled and forwarded
+		// to the agent, so reject loopback/link-local/metadata (and, when
+		// configured, private-range) targets and non-http(s) schemes.
+		if err := utils.ValidateProxyTargetURL(apiBaseURL, cfg.Security.BlockPrivateProxyTargets); err != nil {
+			logger.Error("rejected API proxy target URL", "api_base_url", apiBaseURL, "err", err)
+			c.JSON(http.StatusForbidden, utils.BuildError(403, "target URL not allowed: "+err.Error()))
+			return
+		}
+
 		// 3) Serialize the incoming HTTP request for generic API proxy
 		// Strip the "/api/proxy" prefix from the URL for the forwarded request
 		httpReq, err := utils.SerializeAPIProxyRequest(c.Request)

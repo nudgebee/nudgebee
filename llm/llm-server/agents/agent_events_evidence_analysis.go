@@ -1257,3 +1257,7 @@ func (m EvidenceInsightsTool) Call(nbRequestContext toolcore.NbToolContext, inpu
 		Type: toolcore.NBToolResponseTypeText,
 	}, nil
 }
+
+func (l AgentEventAnalysis) GetModelCategory() core.ModelTier {
+	return core.ModelTierSummary
+}

@@ -33,7 +33,7 @@ slack-bolt = "1.28.0"
 slack-sdk = "3.42.0"
 sqlalchemy = "^2.0.48"
 aio_pika = "9.6.2"
-uvicorn = ">=0.34.2,<0.49.0"
+uvicorn = ">=0.34.2,<0.50.0"
 psycopg2-binary = "^2.9.11"
 asyncpg = "^0.31.0"
 requests = "2.34.2"
@@ -53,6 +53,11 @@ botbuilder-core = "^4.17.1"
 aiohttp = "^3.14.0"
 python-dateutil = "^2.9.0.post0"
 nh3 = "^0.3.4"
+# Direct dep: security/secrets.py uses AES-256-GCM (AESGCM) to encrypt integration
+# secrets at rest, byte-compatible with api-server. Pinned explicitly (it is otherwise
+# only a transitive dep via msal/pyjwt) so the crypto boundary can't break under a
+# resolution change.
+cryptography = "48.0.0"
 
 [build-system]
 requires = ["poetry-core"]

@@ -11,6 +11,7 @@ type options struct {
 	model   string
 	url     string
 	adapter string
+	apiType string
 }
 
 type Option func(*options)
@@ -42,5 +43,14 @@ func WithAdapter(adapter string) Option {
 func WithURL(url string) Option {
 	return func(opts *options) {
 		opts.url = url
+	}
+}
+
+// WithAPIType selects the wire protocol. "openai" → POST {url}/v1/chat/completions
+// with OpenAI chat payload (HF Dedicated Endpoints on vLLM, TGI 3.x, Ollama, vLLM,
+// SGLang). Empty/anything else → legacy HF text-generation (TGI 2.x at root).
+func WithAPIType(apiType string) Option {
+	return func(opts *options) {
+		opts.apiType = apiType
 	}
 }

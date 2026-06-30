@@ -256,7 +256,7 @@ func (t *ApprovalTask) InputSchema() *types.Schema {
 				Type:        "string",
 				Description: "The channel to send the approval request to.",
 				Options:     []string{"instant_message", "email"},
-				Required:    false,
+				Required:    true,
 				Order:       2,
 			},
 			"im_provider": {

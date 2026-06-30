@@ -112,3 +112,17 @@ func TestClassifyFollowupOutcome(t *testing.T) {
 		})
 	}
 }
+
+// TestPRTerminalFields pins the PR-terminal → resolution-state mapping. The bug
+// this guards: a merged PR left the user-facing `status` at "InProgress" because
+// the terminal path only touched pr_lifecycle_state. A merge means the fix landed
+// (Success); a close without merge means it was abandoned (Failed).
+func TestPRTerminalFields(t *testing.T) {
+	state, status, _ := prTerminalFields(true)
+	assert.Equal(t, "merged", state)
+	assert.Equal(t, string(RecommendationResolutionStatusSuccess), status)
+
+	state, status, _ = prTerminalFields(false)
+	assert.Equal(t, "closed", state)
+	assert.Equal(t, string(RecommendationResolutionStatusFailed), status)
+}

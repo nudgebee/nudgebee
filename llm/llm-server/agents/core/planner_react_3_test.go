@@ -3,12 +3,148 @@ package core
 import (
 	"testing"
 
+	"nudgebee/llm/agents/prompts_repo"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/tmc/langchaingo/llms"
+	"github.com/tmc/langchaingo/prompts"
 )
+
+// renderReact3Base renders the embedded react_3 base system prompt with the
+// given notebook / hypothesis gates. It exercises the same template the planner
+// uses, so it also guards against conditional-block imbalance or a referenced
+// template variable that was never declared (both would fail Format).
+func renderReact3Base(t *testing.T, notebookEnabled, hypothesisModeEnabled bool) string {
+	t.Helper()
+	base := prompts_repo.GetPrompt(prompts_repo.PromptPlannerReactBase3)
+	assert.NotEmpty(t, base, "embedded react_3 base prompt must load")
+
+	vars := []string{
+		"tool_names", "tool_descriptions", "workspace_enabled", "shell_tool_enabled",
+		"delegate_agent_enabled", "notebook_enabled", "hypothesis_mode_enabled",
+		"conversation_context_enabled", "context_management_rules", "time_handling_rules",
+		"data_protection_rules", "code_analysis_rules", "security_rules",
+	}
+	tmpl := prompts.NewPromptTemplate(base, vars)
+	out, err := tmpl.Format(map[string]any{
+		"tool_names":                   "kubectl, logs, metrics",
+		"tool_descriptions":            "kubectl: ...",
+		"workspace_enabled":            true,
+		"shell_tool_enabled":           false,
+		"delegate_agent_enabled":       false,
+		"notebook_enabled":             notebookEnabled,
+		"hypothesis_mode_enabled":      hypothesisModeEnabled,
+		"conversation_context_enabled": false,
+		"context_management_rules":     "",
+		"time_handling_rules":          "",
+		"data_protection_rules":        "",
+		"code_analysis_rules":          "",
+		"security_rules":               "",
+	})
+	assert.NoError(t, err, "react_3 base prompt must render without template errors")
+	return out
+}
+
+// TestReAct3HypothesisModeFence verifies the hypothesis-driven investigation
+// discipline is fenced to the top-level orchestrator: it appears only when
+// hypothesis_mode_enabled is set, while the lightweight notebook still renders
+// for sub-agents (notebook on, hypothesis off), and nothing renders when the
+// notebook is disabled entirely.
+func TestReAct3HypothesisModeFence(t *testing.T) {
+	const notebookHeader = "NOTEBOOK — YOUR WORKING MEMORY"
+	const hypothesisHeader = "HYPOTHESIS-DRIVEN INVESTIGATION"
+	const hypothesisGate = "Completion gate (hypothesis-based"
+
+	t.Run("top-level investigation: notebook + hypothesis machinery", func(t *testing.T) {
+		out := renderReact3Base(t, true, true)
+		assert.Contains(t, out, notebookHeader)
+		assert.Contains(t, out, hypothesisHeader)
+		assert.Contains(t, out, hypothesisGate)
+		assert.Contains(t, out, "## Hypothesis Tree")
+	})
+
+	t.Run("sub-agent: lightweight notebook only, no hypothesis machinery", func(t *testing.T) {
+		out := renderReact3Base(t, true, false)
+		assert.Contains(t, out, notebookHeader)
+		assert.NotContains(t, out, hypothesisHeader)
+		assert.NotContains(t, out, hypothesisGate)
+	})
+
+	t.Run("notebook disabled: neither section", func(t *testing.T) {
+		out := renderReact3Base(t, false, false)
+		assert.NotContains(t, out, notebookHeader)
+		assert.NotContains(t, out, hypothesisHeader)
+	})
+
+	t.Run("hypothesis on but notebook off never happens, and renders no notebook", func(t *testing.T) {
+		// Defensive: the planner only sets hypothesis_mode_enabled when notebook
+		// is also enabled, but the template must not leak the hypothesis block
+		// outside the notebook block even if the flags are inconsistent.
+		out := renderReact3Base(t, false, true)
+		assert.NotContains(t, out, notebookHeader)
+		assert.NotContains(t, out, hypothesisHeader)
+	})
+}
+
+// renderReactCritiquer renders the embedded react critiquer prompt with the
+// given question_type / hypothesis gate, using the same variable set runCritique
+// declares. It guards against conditional-block imbalance and undeclared
+// template variables (both would fail Format), and lets the fence test assert
+// the hypothesis completion gate is scoped to hypothesis_mode_enabled.
+func renderReactCritiquer(t *testing.T, questionType string, hypothesisModeEnabled bool) string {
+	t.Helper()
+	base := prompts_repo.GetPrompt(prompts_repo.PromptPlannerReactCritiquer)
+	assert.NotEmpty(t, base, "embedded react critiquer prompt must load")
+
+	vars := []string{
+		"input", "scratchpad", "final_answer", "question_type", "tool_names",
+		"tool_descriptions", "shell_tool_enabled", "tools_invoked", "hypothesis_mode_enabled",
+		"notebook", "today",
+	}
+	tmpl := prompts.NewPromptTemplate(base, vars)
+	out, err := tmpl.Format(map[string]any{
+		"input":                   "why is the api slow?",
+		"scratchpad":              "E1: kubectl get pods -> Running",
+		"final_answer":            "Root cause: ...",
+		"today":                   "Mon, 01 Jan 2024 00:00:00 UTC",
+		"notebook":                "## Hypothesis Tree\n- H1 [High][OPEN] saturation",
+		"question_type":           questionType,
+		"tool_names":              "kubectl, logs, metrics",
+		"tool_descriptions":       "kubectl: ...",
+		"shell_tool_enabled":      false,
+		"tools_invoked":           "kubectl",
+		"hypothesis_mode_enabled": hypothesisModeEnabled,
+	})
+	assert.NoError(t, err, "react critiquer prompt must render without template errors")
+	return out
+}
+
+// TestReAct3CritiquerHypothesisGateFence verifies the independent hypothesis
+// completion-gate checks render in the critiquer prompt only when
+// hypothesis_mode_enabled is set, and never leak into plain query/investigation
+// critiques that carry no hypothesis tree.
+func TestReAct3CritiquerHypothesisGateFence(t *testing.T) {
+	const gateHeader = "Hypothesis Completion Gate"
+	const toolFailureCarveOut = "Tool failures are \"unchecked\", not refutation"
+
+	t.Run("hypothesis mode on: completion gate present", func(t *testing.T) {
+		out := renderReactCritiquer(t, "investigation", true)
+		assert.Contains(t, out, gateHeader)
+		assert.Contains(t, out, toolFailureCarveOut)
+	})
+
+	t.Run("investigation without hypothesis mode: no completion gate", func(t *testing.T) {
+		out := renderReactCritiquer(t, "investigation", false)
+		assert.NotContains(t, out, gateHeader)
+	})
+
+	t.Run("plain query: no completion gate", func(t *testing.T) {
+		out := renderReactCritiquer(t, "query", false)
+		assert.NotContains(t, out, gateHeader)
+	})
+}
 
 // notebookOptOutAgent is a minimal NBAgent that opts out of the notebook
 // section via NBAgentNotebookSectionProvider. Used to verify that runtime

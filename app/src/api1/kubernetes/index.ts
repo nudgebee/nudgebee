@@ -797,6 +797,9 @@ function buildEventFilterParams(query: any) {
       filterParams['aggregation_key'] = { _eq: query['aggregation_key'] };
     }
   }
+  if (Array.isArray(query?.aggregation_key_nin) && query['aggregation_key_nin'].length) {
+    filterParams['aggregation_key'] = { ...(filterParams['aggregation_key'] || {}), _not_in: query['aggregation_key_nin'] };
+  }
   if (query['fingerprint'] && Array.isArray(query['fingerprint'])) {
     filterParams['fingerprint'] = { _in: query['fingerprint'] };
   } else if (query['fingerprint']) {
@@ -866,6 +869,85 @@ function buildEventFilterParams(query: any) {
   }
 
   return filterParams;
+}
+
+function filterDemoPods(pods: any[], query: any): any[] {
+  return pods.filter((pod: any) => {
+    const ns = query.namespaceName || query.namespace_name || query.namespace;
+    if (ns && pod.namespace !== ns) return false;
+    const wl = query.workloadName || query.workload_name;
+    if (wl && pod.workload_name !== wl) return false;
+    const wt = query.workloadType || query.workload_type;
+    if (wt && pod.workload_type !== wt) return false;
+    if (query.status && pod.status !== query.status) return false;
+    const isActive = query.isActive === true || query.isActive === 'true';
+    const isInactive = query.isActive === false || query.isActive === 'false';
+    if (isActive && !pod.is_active) return false;
+    if (isInactive && pod.is_active) return false;
+    const name = query.podName || query.pod_name || query.name;
+    if (name && !pod.name?.toLowerCase().includes(name.toLowerCase())) return false;
+    return true;
+  });
+}
+
+function filterDemoWorkloads(workloads: any[], query: any): any[] {
+  return workloads.filter((wl: any) => {
+    const ns = query.namespaceName || query.namespace_name || query.namespace;
+    if (ns && wl.namespace !== ns) return false;
+    const name = query.workloadName || query.workload_name;
+    if (name && !wl.name?.toLowerCase().includes(name.toLowerCase())) return false;
+    const kind = query.workloadType || query.workload_type || query.kind;
+    if (kind && wl.kind !== kind) return false;
+    return true;
+  });
+}
+
+function filterDemoNamespaces(namespaces: any[], query: any): any[] {
+  if (!query?.name) return namespaces;
+  return namespaces.filter((ns: any) => ns.name?.toLowerCase().includes(query.name.toLowerCase()));
+}
+
+function filterDemoNodes(nodes: any[], nodeName: string): any[] {
+  if (!nodeName) return nodes;
+  return nodes.filter((node: any) => node.name?.toLowerCase().includes(nodeName.toLowerCase()));
+}
+
+function toSeverityTier(p: string): string {
+  const v = (p ?? '').toString().toUpperCase();
+  if (v === 'HIGH') return 'HIGH';
+  if (v === 'MEDIUM') return 'MEDIUM';
+  if (v === 'LOW') return 'LOW';
+  return 'INFO'; // DEBUG, INFO, and unknowns all render as the same "I" icon
+}
+
+function filterDemoEvents(events: any[], query: any): any[] {
+  return events.filter((event: any) => {
+    if (query?.priority) {
+      const priorities = Array.isArray(query.priority) ? query.priority : [query.priority];
+      const eventTier = toSeverityTier(event.priority);
+      if (!priorities.some((p: string) => toSeverityTier(p) === eventTier)) return false;
+    }
+    if (query?.status) {
+      const statuses = Array.isArray(query.status) ? query.status : [query.status];
+      if (!statuses.includes(event.status)) return false;
+    }
+    if (query?.nb_status) {
+      const nbStatuses = Array.isArray(query.nb_status) ? query.nb_status : [query.nb_status];
+      if (!nbStatuses.includes(event.nb_status)) return false;
+    }
+    if (query?.subject_namespace && query.subject_namespace !== '__ALL__') {
+      const namespaces = Array.isArray(query.subject_namespace) ? query.subject_namespace : [query.subject_namespace];
+      if (!namespaces.includes(event.subject_namespace)) return false;
+    }
+    if (query?.source) {
+      const sources = Array.isArray(query.source) ? query.source : [query.source];
+      if (!sources.includes(event.source)) return false;
+    }
+    if (query?.finding_type) {
+      if (event.finding_type !== query.finding_type) return false;
+    }
+    return true;
+  });
 }
 
 const apiKubernetes = {
@@ -1362,77 +1444,89 @@ const apiKubernetes = {
   ) {
     if (query?.account_id == 'demo') {
       const eventDemoData: any = await getMockData('k8s-events');
+      const sliceEvents = (data: any) => {
+        const filtered = filterDemoEvents(data.events || [], query);
+        return {
+          ...data,
+          events: filtered.slice(Number(offset), Number(offset) + Number(limit)),
+          events_aggregate: { aggregate: { count: filtered.length } },
+        };
+      };
       if (query?.subject_type == 'pod' && query?.aggregation_key == 'pod_oom_killer_enricher') {
         return {
-          data: eventDemoData.PodErrors.pod_oom_killer_enricher.list_k8_issues_data.data,
+          data: sliceEvents(eventDemoData.PodErrors.pod_oom_killer_enricher.list_k8_issues_data.data),
         };
       } else if (query?.aggregation_key == 'image_pull_backoff_reporter') {
         return {
-          data: eventDemoData.PodErrors.image_pull_backoff_reporter.list_k8_issues_data.data,
+          data: sliceEvents(eventDemoData.PodErrors.image_pull_backoff_reporter.list_k8_issues_data.data),
         };
       } else if (query?.aggregation_key == 'KubePodCrashLooping') {
         return {
-          data: eventDemoData.PodErrors.KubePodCrashLooping.list_k8_issues_data.data,
+          data: sliceEvents(eventDemoData.PodErrors.KubePodCrashLooping.list_k8_issues_data.data),
         };
       } else if (query?.aggregation_key == 'PodMemoryReachingLimit') {
         return {
-          data: eventDemoData.PodErrors.PodMemoryReachingLimit.list_k8_issues_data.data,
+          data: sliceEvents(eventDemoData.PodErrors.PodMemoryReachingLimit.list_k8_issues_data.data),
         };
       } else if (query?.aggregation_key == 'Kubernetes Warning Event') {
         return {
-          data: eventDemoData.PodErrors.KubernetesWarningEvent.list_k8_issues_data.data,
+          data: sliceEvents(eventDemoData.PodErrors.KubernetesWarningEvent.list_k8_issues_data.data),
         };
       } else if (query?.aggregation_key == 'KubeDeploymentReplicasMismatch') {
         return {
-          data: eventDemoData.PodErrors.KubeDeploymentReplicasMismatch.list_k8_issues_data.data,
+          data: sliceEvents(eventDemoData.PodErrors.KubeDeploymentReplicasMismatch.list_k8_issues_data.data),
         };
       } else if (query?.subject_name == 'notifications-7b465bc6f7-s5zht') {
         return {
-          data: eventDemoData.ApplicationLevelErrors['notifications-7b465bc6f7-s5zht'].data,
+          data: sliceEvents(eventDemoData.ApplicationLevelErrors['notifications-7b465bc6f7-s5zht'].data),
         };
       } else if (query?.subject_name == 'notifications-6bcd9698d6-fzv4f') {
         return {
-          data: eventDemoData.ApplicationLevelErrors['notifications-6bcd9698d6-fzv4f'].data,
+          data: sliceEvents(eventDemoData.ApplicationLevelErrors['notifications-6bcd9698d6-fzv4f'].data),
         };
       } else if (query?.subject_name == 'auto-pilot-worker-6c7f696dcd-2jsl4') {
         return {
-          data: eventDemoData.ApplicationLevelErrors['auto-pilot-worker-6c7f696dcd-2jsl4'].data,
+          data: sliceEvents(eventDemoData.ApplicationLevelErrors['auto-pilot-worker-6c7f696dcd-2jsl4'].data),
         };
       } else if (query?.subject_name == 'webapp-c59f5bf8c-p9n2h') {
         return {
-          data: eventDemoData.ApplicationLevelErrors['webapp-c59f5bf8c-p9n2h'].data,
+          data: sliceEvents(eventDemoData.ApplicationLevelErrors['webapp-c59f5bf8c-p9n2h'].data),
         };
       } else if (query?.subject_name == 'auto-pilot-worker-7f85c49979-vlp9g') {
         return {
-          data: eventDemoData.ApplicationLevelErrors['auto-pilot-worker-7f85c49979-vlp9g'].data,
+          data: sliceEvents(eventDemoData.ApplicationLevelErrors['auto-pilot-worker-7f85c49979-vlp9g'].data),
         };
       } else if (query?.subject_name == 'notifications-785b9868d-g64n4') {
         return {
-          data: eventDemoData.ApplicationLevelErrors['notifications-785b9868d-g64n4'].data,
+          data: sliceEvents(eventDemoData.ApplicationLevelErrors['notifications-785b9868d-g64n4'].data),
         };
       } else if (query?.subject_name == 'webapp-c59f5bf8c-8pbwm') {
         return {
-          data: eventDemoData.ApplicationLevelErrors['webapp-c59f5bf8c-8pbwm'].data,
+          data: sliceEvents(eventDemoData.ApplicationLevelErrors['webapp-c59f5bf8c-8pbwm'].data),
+        };
+      } else if (query?.subject_type == 'pod') {
+        return {
+          data: sliceEvents(eventDemoData.PodErrors.AllPodEvents.list_k8_issues_data.data),
         };
       } else if (query?.subject_type == 'node') {
         return {
-          data: eventDemoData.NodeErrors.list_k8_issues_data.data,
+          data: sliceEvents(eventDemoData.NodeErrors.list_k8_issues_data.data),
         };
       } else if (query?.aggregation_key?.includes('ApplicationAPIFailures')) {
         return {
-          data: eventDemoData.ApplicationErrors.ApiErrors.data,
+          data: sliceEvents(eventDemoData.ApplicationErrors.ApiErrors.data),
         };
       } else if (query?.aggregation_key?.includes('HighErrorCriticalLogs')) {
         return {
-          data: eventDemoData.ApplicationErrors.LogErrors.data,
+          data: sliceEvents(eventDemoData.ApplicationErrors.LogErrors.data),
         };
       } else if (Array.isArray(query?.aggregation_key)) {
         return {
-          data: eventDemoData.ApplicationErrors.AllErrors.list_k8_issues_data.data,
+          data: sliceEvents(eventDemoData.ApplicationErrors.AllErrors.list_k8_issues_data.data),
         };
       }
       return {
-        data: eventDemoData.AllEvents.list_k8_issues_data.data,
+        data: sliceEvents(eventDemoData.AllEvents.list_k8_issues_data.data),
       };
     }
 
@@ -1566,6 +1660,51 @@ const apiKubernetes = {
     }
   },
   async getK8sEventsCount(query: any = {}) {
+    if (query?.account_id == 'demo') {
+      const eventDemoData: any = await getMockData('k8s-events');
+      let selectedData: any;
+      if (query?.subject_type == 'pod' && query?.aggregation_key == 'pod_oom_killer_enricher') {
+        selectedData = eventDemoData.PodErrors.pod_oom_killer_enricher.list_k8_issues_data.data;
+      } else if (query?.aggregation_key == 'image_pull_backoff_reporter') {
+        selectedData = eventDemoData.PodErrors.image_pull_backoff_reporter.list_k8_issues_data.data;
+      } else if (query?.aggregation_key == 'KubePodCrashLooping') {
+        selectedData = eventDemoData.PodErrors.KubePodCrashLooping.list_k8_issues_data.data;
+      } else if (query?.aggregation_key == 'PodMemoryReachingLimit') {
+        selectedData = eventDemoData.PodErrors.PodMemoryReachingLimit.list_k8_issues_data.data;
+      } else if (query?.aggregation_key == 'Kubernetes Warning Event') {
+        selectedData = eventDemoData.PodErrors.KubernetesWarningEvent.list_k8_issues_data.data;
+      } else if (query?.aggregation_key == 'KubeDeploymentReplicasMismatch') {
+        selectedData = eventDemoData.PodErrors.KubeDeploymentReplicasMismatch.list_k8_issues_data.data;
+      } else if (query?.subject_name == 'notifications-7b465bc6f7-s5zht') {
+        selectedData = eventDemoData.ApplicationLevelErrors['notifications-7b465bc6f7-s5zht'].data;
+      } else if (query?.subject_name == 'notifications-6bcd9698d6-fzv4f') {
+        selectedData = eventDemoData.ApplicationLevelErrors['notifications-6bcd9698d6-fzv4f'].data;
+      } else if (query?.subject_name == 'auto-pilot-worker-6c7f696dcd-2jsl4') {
+        selectedData = eventDemoData.ApplicationLevelErrors['auto-pilot-worker-6c7f696dcd-2jsl4'].data;
+      } else if (query?.subject_name == 'webapp-c59f5bf8c-p9n2h') {
+        selectedData = eventDemoData.ApplicationLevelErrors['webapp-c59f5bf8c-p9n2h'].data;
+      } else if (query?.subject_name == 'auto-pilot-worker-7f85c49979-vlp9g') {
+        selectedData = eventDemoData.ApplicationLevelErrors['auto-pilot-worker-7f85c49979-vlp9g'].data;
+      } else if (query?.subject_name == 'notifications-785b9868d-g64n4') {
+        selectedData = eventDemoData.ApplicationLevelErrors['notifications-785b9868d-g64n4'].data;
+      } else if (query?.subject_name == 'webapp-c59f5bf8c-8pbwm') {
+        selectedData = eventDemoData.ApplicationLevelErrors['webapp-c59f5bf8c-8pbwm'].data;
+      } else if (query?.subject_type == 'pod') {
+        selectedData = eventDemoData.PodErrors.AllPodEvents.list_k8_issues_data.data;
+      } else if (query?.subject_type == 'node') {
+        selectedData = eventDemoData.NodeErrors.list_k8_issues_data.data;
+      } else if (query?.aggregation_key?.includes('ApplicationAPIFailures')) {
+        selectedData = eventDemoData.ApplicationErrors.ApiErrors.data;
+      } else if (query?.aggregation_key?.includes('HighErrorCriticalLogs')) {
+        selectedData = eventDemoData.ApplicationErrors.LogErrors.data;
+      } else if (Array.isArray(query?.aggregation_key)) {
+        selectedData = eventDemoData.ApplicationErrors.AllErrors.list_k8_issues_data.data;
+      } else {
+        selectedData = eventDemoData.AllEvents.list_k8_issues_data.data;
+      }
+      const filtered = filterDemoEvents(selectedData?.events || [], query);
+      return { count: filtered.length };
+    }
     try {
       const filterParams = buildEventFilterParams(query);
 
@@ -1685,6 +1824,7 @@ query list_k8_issues_count {
       subject_owner?: string | string[];
       finding_type?: string;
       aggregation_key?: string | Array<string>;
+      aggregation_key_nin?: string[];
       priority?: string;
       priority_nin?: string[];
       status?: string;
@@ -1708,44 +1848,73 @@ query list_k8_issues_count {
     if (query?.account_id == 'demo') {
       const eventDemoData: any = await getMockData('k8s-events');
       const eventsgrouping: any = await getMockData('k8s-events-grouping');
+      const sliceGroupings = (data: any) => {
+        let allGroupings = data.event_groupings || [];
+        if (query?.status) {
+          const statuses = Array.isArray(query.status) ? query.status : [query.status];
+          allGroupings = allGroupings.filter((g: any) => {
+            const derivedStatus = g.distinct_status?.includes('FIRING') ? 'FIRING' : 'CLOSED';
+            return statuses.includes(derivedStatus);
+          });
+        }
+        if (query?.priority) {
+          const priorities = Array.isArray(query.priority) ? query.priority : [query.priority];
+          allGroupings = allGroupings.filter((g: any) => {
+            const dp = g.distinct_priority;
+            let derivedPriority: string;
+            if (!dp) derivedPriority = 'INFO';
+            else if (dp.indexOf('HIGH') >= 0) derivedPriority = 'HIGH';
+            else if (dp.indexOf('MEDIUM') >= 0) derivedPriority = 'MEDIUM';
+            else if (dp.indexOf('LOW') >= 0) derivedPriority = 'LOW';
+            else if (dp.indexOf('DEBUG') >= 0) derivedPriority = 'DEBUG';
+            else derivedPriority = 'INFO';
+            return priorities.includes(derivedPriority);
+          });
+        }
+        return {
+          ...data,
+          event_groupings: allGroupings.slice(Number(offset), Number(offset) + Number(limit)),
+          event_groupings_aggregate: { aggregate: { count: allGroupings.length } },
+        };
+      };
 
       if (groupBy.includes('subject_name')) {
-        return { data: eventsgrouping.subject_name.data };
+        return { data: sliceGroupings(eventsgrouping.subject_name.data) };
       }
       if (groupBy.includes('aggregation_key')) {
-        return { data: eventsgrouping.aggregation_key.data };
+        return { data: sliceGroupings(eventsgrouping.aggregation_key.data) };
       }
       if (query?.subject_type == 'pod' && query?.aggregation_key == 'pod_oom_killer_enricher') {
         return {
-          data: eventDemoData.PodErrors.pod_oom_killer_enricher.k8s_event_groupings.data,
+          data: sliceGroupings(eventDemoData.PodErrors.pod_oom_killer_enricher.k8s_event_groupings.data),
         };
       } else if (query?.subject_type == 'pod' && query?.aggregation_key == 'image_pull_backoff_reporter') {
         return {
-          data: eventDemoData.PodErrors.image_pull_backoff_reporter.k8s_event_groupings.data,
+          data: sliceGroupings(eventDemoData.PodErrors.image_pull_backoff_reporter.k8s_event_groupings.data),
         };
       } else if (query?.subject_type == 'pod' && query?.aggregation_key == 'KubePodCrashLooping') {
         return {
-          data: eventDemoData.PodErrors.KubePodCrashLooping.k8s_event_groupings.data,
+          data: sliceGroupings(eventDemoData.PodErrors.KubePodCrashLooping.k8s_event_groupings.data),
         };
       } else if (query?.subject_type == 'deployment' && query?.aggregation_key == 'KubeDeploymentReplicasMismatch') {
         return {
-          data: eventDemoData.PodErrors.KubeDeploymentReplicasMismatch.k8s_event_groupings.data,
+          data: sliceGroupings(eventDemoData.PodErrors.KubeDeploymentReplicasMismatch.k8s_event_groupings.data),
         };
       } else if (query?.subject_type == 'pod') {
         return {
-          data: eventDemoData.PodErrors.AllPodEvents.k8s_event_groupings.data,
+          data: sliceGroupings(eventDemoData.PodErrors.AllPodEvents.k8s_event_groupings.data),
         };
       } else if (query?.subject_type == 'node') {
         return {
-          data: eventDemoData.NodeErrors.k8s_event_groupings.data,
+          data: sliceGroupings(eventDemoData.NodeErrors.k8s_event_groupings.data),
         };
       } else if (query?.aggregation_key == 'HighErrorCriticalLogs') {
         return {
-          data: eventDemoData.ApplicationErrors.AllErrors.k8s_event_groupings.data,
+          data: sliceGroupings(eventDemoData.ApplicationErrors.AllErrors.k8s_event_groupings.data),
         };
       }
       return {
-        data: eventDemoData.AllEvents.k8s_event_groupings.data,
+        data: sliceGroupings(eventDemoData.AllEvents.k8s_event_groupings.data),
       };
     }
     try {
@@ -1782,6 +1951,9 @@ query list_k8_issues_count {
         filterParams['aggregation_key'] = { _in: query['aggregation_key'] };
       } else if (query?.['aggregation_key'] && typeof query['aggregation_key'] === 'string') {
         filterParams['aggregation_key'] = { _eq: query['aggregation_key'] };
+      }
+      if (Array.isArray(query?.['aggregation_key_nin']) && query['aggregation_key_nin'].length) {
+        filterParams['aggregation_key'] = { ...(filterParams['aggregation_key'] || {}), _not_in: query['aggregation_key_nin'] };
       }
       if (query?.['priority']) {
         filterParams['priority'] = { _eq: query['priority'] };
@@ -1913,8 +2085,13 @@ query k8s_event_groupings($limit:Int,$offset:Int){
   async getK8sNamespaces(limit = 50, offset = 0, query: { accountId?: string; name?: string } = {}) {
     if (query?.accountId === 'demo') {
       const namespaceDemo: any = await getMockData('k8s-namespaces');
+      const allNamespaces = namespaceDemo.k8s_namespace_list.data.k8s_namespaces || [];
+      const filtered = filterDemoNamespaces(allNamespaces, query);
       return {
-        data: namespaceDemo.k8s_namespace_list.data,
+        data: {
+          k8s_namespaces: filtered.slice(Number(offset), Number(offset) + Number(limit)),
+          k8s_namespaces_aggregate: { aggregate: { count: filtered.length } },
+        },
       };
     }
 
@@ -1978,8 +2155,13 @@ query k8s_event_groupings($limit:Int,$offset:Int){
   ) {
     if (query?.cloud_account_id === 'demo' || query?.account_Id === 'demo' || query?.accountId === 'demo') {
       const podsDemo: any = await getMockData('k8s-pods');
+      const allPods = podsDemo.k8s_pod_list.data.k8s_pods || [];
+      const filtered = filterDemoPods(allPods, query);
       return {
-        data: podsDemo.k8s_pod_list.data,
+        data: {
+          k8s_pods: filtered.slice(Number(offset), Number(offset) + Number(limit)),
+          k8s_pods_aggregate: { aggregate: { count: filtered.length } },
+        },
       };
     }
 
@@ -2083,8 +2265,13 @@ query k8s_event_groupings($limit:Int,$offset:Int){
   async getK8sWorkload(limit = 10, offset = 0, query: any = {}, orderBy = { name: '', order: '' }, withCount = true) {
     if (query?.cloud_account_id === 'demo' || query?.account_id === 'demo' || query?.accountId === 'demo') {
       const appsDemo: any = await getMockData('k8s-applications');
+      const allWorkloads = appsDemo.k8s_workloads_list.data.k8s_workloads || [];
+      const filtered = filterDemoWorkloads(allWorkloads, query);
       return {
-        data: appsDemo.k8s_workloads_list.data,
+        data: {
+          k8s_workloads: filtered.slice(Number(offset), Number(offset) + Number(limit)),
+          k8s_workloads_aggregate: { aggregate: { count: filtered.length } },
+        },
       };
     }
 
@@ -2207,8 +2394,13 @@ query k8s_event_groupings($limit:Int,$offset:Int){
   }) {
     if (accountId === 'demo') {
       const nodesDemo: any = await getMockData('k8s-nodes');
+      const allNodes = nodesDemo.node_list.data.k8s_nodes || [];
+      const filtered = filterDemoNodes(allNodes, nodeName);
       return {
-        data: nodesDemo.node_list.data,
+        data: {
+          k8s_nodes: filtered.slice(Number(offset), Number(offset) + Number(limit)),
+          k8s_nodes_aggregate: { aggregate: { count: filtered.length } },
+        },
       };
     }
     try {
@@ -3993,6 +4185,29 @@ query k8s_event_groupings($limit:Int,$offset:Int){
         return { data: relayDemo['k8s_services']?.data, errors: null };
       } else if (actionName === 'get_resource' && actionParams?.resource_type === 'persistentvolumeclaims') {
         return { data: relayDemo['k8s_persistentvolumeclaims']?.data, errors: null };
+      } else if (actionName === 'get_resource' && actionParams?.resource_type === 'persistentvolumes') {
+        return { data: relayDemo['k8s_persistentvolumes']?.data, errors: null };
+      } else if (actionName === 'get_resource' && actionParams?.resource_type === 'nodepools') {
+        return { data: relayDemo['k8s_nodepools']?.data, errors: null };
+      } else if (
+        actionName === 'get_resource' &&
+        (actionParams?.resource_type === 'ec2nodeclasses' || actionParams?.resource_type === 'aksnodeclasses')
+      ) {
+        return { data: relayDemo['k8s_ec2nodeclasses']?.data, errors: null };
+      } else if (actionName === 'logs_enricher') {
+        return { data: relayDemo['logs_enricher']?.data, errors: null };
+      } else if (actionName === 'get_resource_yaml') {
+        return { data: relayDemo['get_resource_yaml']?.data, errors: null };
+      } else if (
+        actionName === 'query_loki_labels' ||
+        actionName === 'query_esindex_field' ||
+        actionName === 'query_es_indices' ||
+        actionName === 'query_grafana_loki_label_values' ||
+        actionName === 'query_es'
+      ) {
+        return { data: relayDemo['query_autocomplete']?.data, errors: null };
+      } else {
+        return { data: null, errors: null };
       }
     }
     const response = await queryGraphQL(RELAY_FORWARD_REQUEST, 'RelayForwardRequest', {

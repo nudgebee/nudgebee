@@ -15,7 +15,7 @@ import {
   FormControlLabel,
   Chip,
 } from '@mui/material';
-import { Input } from '@components1/ds/Input';
+import { Input } from '@ui/Input';
 import {
   Visibility,
   VisibilityOff,
@@ -30,11 +30,11 @@ import {
 } from '@mui/icons-material';
 import { useState } from 'react';
 import apiAccount from '@api1/account';
-import { Modal } from '@components1/common/modal';
+import { Modal } from '@shared/modal';
 import { isK8sAccountNameValid, parseHttpResponseBodyMessage } from 'src/utils/common';
-import { Button } from '@components1/ds/Button';
-import { snackbar } from '@components1/common/snackbarService';
-import MarkDowns from '@components1/common/MarkDowns';
+import { Button } from '@ui/Button';
+import { snackbar } from '@shared/snackbarService';
+import MarkDowns from '@shared/viewers/MarkDowns';
 
 const StepConnectorStyled = styled(StepConnector)(() => ({
   [`&.${stepConnectorClasses.alternativeLabel}`]: {

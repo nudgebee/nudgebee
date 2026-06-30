@@ -1,8 +1,8 @@
 import { isRenderedInIframe } from 'src/utils/common';
 import { colors } from 'src/utils/colors';
-import CustomButton from '@components1/common/NewCustomButton';
+import CustomButton from '@shared/NewCustomButton';
 import { error404Image } from '@assets';
-import SafeIcon from '@components1/common/SafeIcon';
+import SafeIcon from '@shared/icons/SafeIcon';
 import { useRouter } from 'next/router';
 
 export default function Custom404() {

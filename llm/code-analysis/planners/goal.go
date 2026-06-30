@@ -62,6 +62,24 @@ cause downstream consumers to render a misleading "fix proposed" banner.
 `),
 			TerminationCriterion: "You're done when you can write a 1–3 sentence plain-prose answer to the query, with each claim backed by at least one citation pointing to a real file/line/snippet.",
 		}
+	case "followup":
+		return &Goal{
+			Query: query,
+			Mode:  mode,
+			Contract: strings.TrimSpace(`
+FOLLOWUP MODE — submit_analysis contract:
+  - execution_status: required — "success" (you committed AND pushed a change,
+    or posted verified replies), "no_op" (nothing actionable; no change needed),
+    or "failed" (you attempted work and could not complete it).
+  - execution_summary: required — what you changed and committed, in plain prose.
+  - files_modified: repo-relative paths you changed (empty list if none).
+  - comment_responses: for each review comment you addressed —
+    {comment_id, action: fixed|acknowledged|wont_fix, should_reply, reply}.
+You APPLY changes — you do not merely propose them. Make the edit, then commit
+and push it. Do not call submit_analysis with edits still uncommitted.
+`),
+			TerminationCriterion: "You are DONE only when every actionable change has been committed AND pushed (git add → git commit → git push, following the safety rules in the system prompt), or you have conclusively determined no code change is needed. Writing a report, only investigating, or leaving edits uncommitted does NOT satisfy the goal — uncommitted work is discarded when the workspace is torn down.",
+		}
 	case "fix":
 		return &Goal{
 			Query: query,

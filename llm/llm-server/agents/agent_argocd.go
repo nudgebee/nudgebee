@@ -115,9 +115,6 @@ func (l ArgoCDAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NB
 		"   - **Investigation**: Detailed root cause analysis second",
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		instructions = append(instructions, core.GetWorkspaceInstructions()...)
-	}
 	constraints := []string{
 		"You are an intelligent GitOps incident responder focused on application health investigation and developer assistance",
 		"ALWAYS provide actionable fix commands, not just analysis",

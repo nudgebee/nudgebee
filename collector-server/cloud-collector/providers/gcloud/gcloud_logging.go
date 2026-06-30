@@ -21,14 +21,29 @@ const (
 func queryGcloudLogs(ctx providers.CloudProviderContext, account providers.Account, query providers.QueryLogsRequest) (providers.QueryLogsResponse, error) {
 	logger := ctx.GetLogger()
 
+	// The /v1/cloud/query_logs entry point builds a bare request context without GCP
+	// audit info. Enrich it so permission errors on the log-query path are recorded to
+	// the permission-audit collector (and surfaced as account onboarding errors).
+	ctx = &gcpAuditContextWrapper{
+		CloudProviderContext: ctx,
+		enrichedCtx: WithGCPAuditInfo(ctx.GetContext(), &GCPAuditInfo{
+			TenantID:       extractGcloudTenantID(ctx),
+			CloudAccountID: account.ID,
+			AccountNumber:  account.AccountNumber,
+			ServiceName:    "Cloud Logging",
+		}),
+	}
+
 	session, err := getGcloudSessionFromAccount(ctx, account)
 	if err != nil {
+		RecordGCPPermissionError(ctx, err)
 		logger.Error("failed to get gcloud session for QueryLogs", "error", err, "accountNumber", account.AccountNumber)
 		return providers.QueryLogsResponse{}, fmt.Errorf("failed to get gcloud session: %w", err)
 	}
 
 	client, err := logadmin.NewClient(ctx.GetContext(), session.ProjectId, session.Opts...)
 	if err != nil {
+		RecordGCPPermissionError(ctx, err)
 		logger.Error("failed to create logadmin client", "error", err, "projectId", session.ProjectId)
 		return providers.QueryLogsResponse{}, fmt.Errorf("failed to create logging client: %w", err)
 	}
@@ -62,6 +77,32 @@ func queryGcloudLogs(ctx providers.CloudProviderContext, account providers.Accou
 		}
 	}
 
+	// Generic gap-fill: when nothing above scoped the query (SLO alerts, unmapped
+	// resource types — the evidence-starved cases), resolve the scope from the
+	// monitored resource via GCP's own APIs (services.get / metrics.get) rather than
+	// per-service code. Additive: existing service / log-metric / log-group paths win.
+	// A "fields …"-prefixed QueryString is the AWS-CloudWatch default the api-server
+	// fills in for empty queries; buildLogFilter ignores it for GCP, so it must not
+	// count as a real scope here either (else the resolver never runs and we'd return
+	// every log in the project).
+	hasRealQueryString := query.QueryString != "" && !strings.HasPrefix(query.QueryString, "fields ")
+	if resourceFilter == "" && !hasRealQueryString && query.LogGroupName == "" && query.ResourceType != "" {
+		scope, serr := resolveGcloudScope(ctx, account, GCPScopeInput{
+			Project:        session.ProjectId,
+			ResourceType:   query.ResourceType,
+			ResourceLabels: query.ResourceLabels,
+			MetricType:     query.MetricType,
+			AlertType:      query.AlertType,
+		})
+		if serr != nil {
+			logger.Warn("generic scope resolution failed", "error", serr, "resourceType", query.ResourceType)
+		} else {
+			resourceFilter = scope.LogFilter
+			logger.Info("resolved generic log scope", "source", scope.Source,
+				"resourceType", scope.ResourceType, "filter", scope.LogFilter)
+		}
+	}
+
 	filter := buildLogFilter(query, resourceFilter)
 	if filter == "" {
 		logger.Warn("empty log filter, returning no results", "service", query.ServiceName, "resource", query.ResourceId)
@@ -90,11 +131,16 @@ func queryGcloudLogs(ctx providers.CloudProviderContext, account providers.Accou
 			break
 		}
 		if err != nil {
+			RecordGCPPermissionError(ctx, err)
 			logger.Error("error reading log entry", "error", err)
 			break
 		}
 		messages = append(messages, logEntryToMessage(entry))
 	}
+
+	// Result count makes a systemically-empty account (wrong scope, no matching logs)
+	// visible in collector logs rather than silently returning nothing.
+	logger.Info("GCP log query complete", "projectId", session.ProjectId, "filter", filter, "results", len(messages))
 
 	return providers.QueryLogsResponse{
 		Status:  "Complete",
@@ -175,6 +221,83 @@ func logEntryToMessage(entry *logging.Entry) providers.LogMessage {
 		if entry.Resource.Type != "" {
 			msg.Labels = append(msg.Labels, providers.LogLabel{Label: "resource.type", Value: entry.Resource.Type})
 		}
+	}
+
+	// Capture the full structured entry as attributes (OTel-style keys). This enumerates
+	// LogEntry's fixed field set rather than a per-scenario subset, so request details
+	// (status / IP / URL / method / UA), operation, trace and source-location survive for
+	// ANY GCP log type — no per-alert hardcoding. Optional: nil/zero fields are skipped.
+	attrs := map[string]any{}
+	if entry.InsertID != "" {
+		attrs["log.record.uid"] = entry.InsertID
+	}
+	if entry.Trace != "" {
+		attrs["trace.id"] = entry.Trace
+	}
+	if entry.SpanID != "" {
+		attrs["span.id"] = entry.SpanID
+	}
+	if entry.TraceSampled {
+		attrs["trace.sampled"] = true
+	}
+	if hr := entry.HTTPRequest; hr != nil {
+		if hr.Status != 0 {
+			attrs["http.response.status_code"] = hr.Status
+		}
+		if hr.RemoteIP != "" {
+			attrs["client.address"] = hr.RemoteIP
+		}
+		if hr.LocalIP != "" {
+			attrs["server.address"] = hr.LocalIP
+		}
+		if hr.RequestSize != 0 {
+			attrs["http.request.body.size"] = hr.RequestSize
+		}
+		if hr.ResponseSize != 0 {
+			attrs["http.response.body.size"] = hr.ResponseSize
+		}
+		if hr.Latency != 0 {
+			attrs["http.server.request.duration_ms"] = hr.Latency.Milliseconds()
+		}
+		if r := hr.Request; r != nil {
+			if r.Method != "" {
+				attrs["http.request.method"] = r.Method
+			}
+			if r.URL != nil {
+				attrs["url.full"] = r.URL.String()
+			}
+			if ua := r.UserAgent(); ua != "" {
+				attrs["user_agent.original"] = ua
+			}
+		}
+	}
+	if op := entry.Operation; op != nil {
+		if op.GetId() != "" {
+			attrs["gcp.log.operation.id"] = op.GetId()
+		}
+		if op.GetProducer() != "" {
+			attrs["gcp.log.operation.producer"] = op.GetProducer()
+		}
+		if op.GetFirst() {
+			attrs["gcp.log.operation.first"] = true
+		}
+		if op.GetLast() {
+			attrs["gcp.log.operation.last"] = true
+		}
+	}
+	if sl := entry.SourceLocation; sl != nil {
+		if sl.GetFile() != "" {
+			attrs["code.filepath"] = sl.GetFile()
+		}
+		if sl.GetLine() != 0 {
+			attrs["code.lineno"] = sl.GetLine()
+		}
+		if sl.GetFunction() != "" {
+			attrs["code.function"] = sl.GetFunction()
+		}
+	}
+	if len(attrs) > 0 {
+		msg.Attributes = attrs
 	}
 
 	return msg

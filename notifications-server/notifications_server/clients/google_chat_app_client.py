@@ -125,3 +125,34 @@ class GoogleChatAppClient:
             "reason": "rate_limit_exceeded",
             "error": last_error_message or "Max retries exceeded",
         }
+
+    @classmethod
+    def leave_space(cls, space):
+        """Remove the Chat app's own membership from a space (the bot leaves).
+
+        Uses the `members/app` alias, which Google Chat resolves to the calling
+        app's own membership when authenticated as the service account. Best
+        effort: failures are logged and returned, never raised.
+        """
+        space_id = _normalize_space(space)
+        try:
+            service = cls._get_service()
+            service.spaces().members().delete(name=f"{space_id}/members/app").execute()
+            return {"success": True, "channel_id": space_id}
+        except HttpError as e:
+            status_code, error_status, error_message = parse_http_error(e)
+            LOG.error(
+                "Google Chat (app auth) leave-space error for %s: %s (status=%s)",
+                space_id,
+                error_message,
+                status_code,
+            )
+            return {
+                "success": False,
+                "channel_id": space_id,
+                "reason": error_status or "api_error",
+                "error": error_message,
+            }
+        except Exception as e:
+            LOG.exception("Unexpected error leaving Google Chat space %s", space_id)
+            return {"success": False, "channel_id": space_id, "reason": "unexpected_error", "error": str(e)}

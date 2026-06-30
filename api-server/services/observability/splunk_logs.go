@@ -5,12 +5,34 @@ import (
 	"nudgebee/services/integrations"
 	"nudgebee/services/query"
 	"nudgebee/services/security"
+	"sort"
 	"strings"
 	"time"
 )
 
 // SplunkLogSource implements LogSource for Splunk Observability Cloud Log Observer.
-type SplunkLogSource struct{}
+//
+// GetConfigs / LogSearch are optional seams over the integrations package: when
+// nil (the production default), the real integrations calls are used. Tests set
+// them per-instance, avoiding global state so cases can run in parallel.
+type SplunkLogSource struct {
+	GetConfigs func(*security.RequestContext, string) (integrations.SplunkO11yConnConfig, error)
+	LogSearch  func(integrations.SplunkO11yConnConfig, string, int64, int64, int) ([]integrations.O11yLogEntry, error)
+}
+
+func (s *SplunkLogSource) getConfigs(ctx *security.RequestContext, accountId string) (integrations.SplunkO11yConnConfig, error) {
+	if s.GetConfigs != nil {
+		return s.GetConfigs(ctx, accountId)
+	}
+	return integrations.GetSplunkO11yConfigs(ctx, accountId)
+}
+
+func (s *SplunkLogSource) logSearch(cfg integrations.SplunkO11yConnConfig, query string, startMs, endMs int64, limit int) ([]integrations.O11yLogEntry, error) {
+	if s.LogSearch != nil {
+		return s.LogSearch(cfg, query, startMs, endMs, limit)
+	}
+	return integrations.ExecuteO11yLogSearch(cfg, query, startMs, endMs, limit)
+}
 
 // splunkO11yLogLabelMapping maps standard Nudgebee field names to Splunk O11y / OTel field names.
 var splunkO11yLogLabelMapping = map[string]string{
@@ -32,7 +54,7 @@ var splunkO11yLogLabelMapping = map[string]string{
 
 // QueryLogs fetches logs from Splunk O11y Log Observer.
 func (s *SplunkLogSource) QueryLogs(ctx *security.RequestContext, req FetchLogRequest) ([]OutputLog, error) {
-	cfg, err := integrations.GetSplunkO11yConfigs(ctx, req.AccountId)
+	cfg, err := s.getConfigs(ctx, req.AccountId)
 	if err != nil {
 		ctx.GetLogger().Error("SplunkLogSource.QueryLogs: failed to get configs", "error", err)
 		return nil, fmt.Errorf("failed to get Splunk O11y configs: %w", err)
@@ -51,7 +73,7 @@ func (s *SplunkLogSource) QueryLogs(ctx *security.RequestContext, req FetchLogRe
 		limit = 1000
 	}
 
-	entries, err := integrations.ExecuteO11yLogSearch(cfg, logQuery, startMs, endMs, limit)
+	entries, err := s.logSearch(cfg, logQuery, startMs, endMs, limit)
 	if err != nil {
 		ctx.GetLogger().Error("SplunkLogSource.QueryLogs: log search failed", "query", logQuery, "error", err)
 		return nil, fmt.Errorf("failed to execute Log Observer query: %w", err)
@@ -60,31 +82,90 @@ func (s *SplunkLogSource) QueryLogs(ctx *security.RequestContext, req FetchLogRe
 	return s.convertEntriesToOutputLogs(entries), nil
 }
 
+// splunkO11yFallbackLogLabelNames is the well-known OTel/Splunk O11y field set
+// returned when dynamic discovery yields nothing or errors, so the label list
+// never regresses to empty.
+var splunkO11yFallbackLogLabelNames = []string{
+	"host.name",
+	"kubernetes.container.name",
+	"kubernetes.namespace.name",
+	"kubernetes.node.name",
+	"kubernetes.pod.name",
+	"message",
+	"service.name",
+	"severity",
+	"span_id",
+	"timestamp",
+	"trace_id",
+}
+
+func splunkO11yFallbackLogLabels() []OutputLogLabel {
+	labels := make([]OutputLogLabel, 0, len(splunkO11yFallbackLogLabelNames))
+	for _, f := range splunkO11yFallbackLogLabelNames {
+		labels = append(labels, OutputLogLabel{Label: f, Attributes: map[string]any{}})
+	}
+	return labels
+}
+
 // QueryLabels returns available log label names from Splunk O11y.
-// Returns the well-known OTel/Splunk O11y field names used in log attributes.
+//
+// Fields are discovered dynamically by sampling recent logs and collecting the
+// distinct attribute keys, so custom OTel attributes a user indexes in Log
+// Observer (e.g. service.version, http.status_code) show up in autocomplete —
+// consistent with the Elasticsearch/Loki/Dynatrace sources. Discovered fields
+// are always merged with the well-known static set, so standard fields never
+// disappear on a sparse sample, and the list falls back to just the static set
+// whenever config lookup or the sample query fails.
 func (s *SplunkLogSource) QueryLabels(ctx *security.RequestContext, req FetchLogLabelRequest) ([]OutputLogLabel, error) {
-	// Use the label mapping keys plus common additional O11y fields as the known label set.
-	// A full dynamic implementation would call a catalog API; for now return the standard set.
-	knownFields := []string{
-		"message", "severity", "timestamp",
-		"kubernetes.namespace.name", "kubernetes.pod.name", "kubernetes.container.name",
-		"kubernetes.node.name", "host.name", "service.name",
-		"trace_id", "span_id",
+	cfg, err := s.getConfigs(ctx, req.AccountId)
+	if err != nil {
+		ctx.GetLogger().Warn("SplunkLogSource.QueryLabels: config lookup failed, using static fallback", "error", err)
+		return splunkO11yFallbackLogLabels(), nil
 	}
 
-	labels := make([]OutputLogLabel, 0, len(knownFields))
-	for _, f := range knownFields {
-		labels = append(labels, OutputLogLabel{
-			Label:      f,
-			Attributes: map[string]any{},
-		})
+	startMs, endMs := normalizeTimeRangeMs(req.StartTime, req.EndTime)
+	entries, err := s.logSearch(cfg, "", startMs, endMs, 500)
+	if err != nil {
+		ctx.GetLogger().Warn("SplunkLogSource.QueryLabels: sample query failed, using static fallback", "error", err)
+		return splunkO11yFallbackLogLabels(), nil
 	}
-	return labels, nil
+
+	return dedupeO11yFieldLabels(entries), nil
+}
+
+// dedupeO11yFieldLabels returns the union of the distinct attribute keys across
+// the sampled log entries and the well-known fallback fields, sorted for stable
+// output. Merging the fallback set guarantees standard fields stay in the list
+// even when the sample is sparse, while still surfacing custom attributes.
+func dedupeO11yFieldLabels(entries []integrations.O11yLogEntry) []OutputLogLabel {
+	seen := make(map[string]bool)
+	names := make([]string, 0)
+	add := func(k string) {
+		if k != "" && !seen[k] {
+			seen[k] = true
+			names = append(names, k)
+		}
+	}
+	for _, e := range entries {
+		for k := range e.Attributes {
+			add(k)
+		}
+	}
+	for _, f := range splunkO11yFallbackLogLabelNames {
+		add(f)
+	}
+	sort.Strings(names)
+
+	labels := make([]OutputLogLabel, 0, len(names))
+	for _, n := range names {
+		labels = append(labels, OutputLogLabel{Label: n, Attributes: map[string]any{}})
+	}
+	return labels
 }
 
 // QueryLabelValues returns distinct values for a specific log field.
 func (s *SplunkLogSource) QueryLabelValues(ctx *security.RequestContext, req FetchLogLabelValuesRequest) ([]OutputLogLabelValue, error) {
-	cfg, err := integrations.GetSplunkO11yConfigs(ctx, req.AccountId)
+	cfg, err := s.getConfigs(ctx, req.AccountId)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get Splunk O11y configs: %w", err)
 	}
@@ -99,7 +180,7 @@ func (s *SplunkLogSource) QueryLabelValues(ctx *security.RequestContext, req Fet
 
 	// Query a small set of recent logs and extract distinct values for the field.
 	startMs, endMs := normalizeTimeRangeMs(req.StartTime, req.EndTime)
-	entries, err := integrations.ExecuteO11yLogSearch(cfg, "", startMs, endMs, 500)
+	entries, err := s.logSearch(cfg, "", startMs, endMs, 500)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch Splunk O11y log label values: %w", err)
 	}

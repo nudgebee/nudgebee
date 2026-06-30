@@ -360,6 +360,8 @@ func getMetricsSource(provider, integrationSource string) (MetricSource, error) 
 		return &ChronosphereMetricSource{}, nil
 	case provider == "aws_cloudwatch" && integrationSource == "user":
 		return &cloudMetrics{}, nil
+	case provider == "azure_app_insights" && integrationSource == "user":
+		return &AzureAppInsightsMetricSource{}, nil
 	case provider == "newrelic" && integrationSource == "user":
 		return &NewRelicMetricSource{}, nil
 	case provider == "splunk_observability_platform" && integrationSource == "user":
@@ -698,6 +700,9 @@ var allProviderCaps = map[string]providerStaticCaps{
 }
 
 func getProviderCapabilities(provider, integrationSource, providerType string) ProviderCapabilities {
+	if provider == "" {
+		return ProviderCapabilities{}
+	}
 	var caps ProviderCapabilities
 
 	// Apply static per-provider capabilities.
@@ -1644,6 +1649,14 @@ func buildDatadogWorkloadQueries(meta RequestMetadata, metrics []string) map[str
 func buildPrometheusNodeQueries(meta RequestMetadata, metrics []string) map[string]string {
 	queries := make(map[string]string)
 
+	// Escape the node identity fields before they are interpolated into PromQL,
+	// mirroring the safeMeta sanitisation in buildPrometheusWorkloadQueries. These
+	// originate from request input, so an unescaped quote could otherwise break out
+	// of the query string. meta is a value copy, so reassigning it is local.
+	meta.InternalIP = escapePromQLString(meta.InternalIP)
+	meta.NodeName = escapePromQLString(meta.NodeName)
+	meta.NodeIP = escapePromQLString(meta.NodeIP)
+
 	for _, metricKey := range metrics {
 		switch metricKey {
 		case "cpu_usage":
@@ -1663,7 +1676,10 @@ func buildPrometheusNodeQueries(meta RequestMetadata, metrics []string) map[stri
 		case "disk_used":
 			queries[metricKey] = fmt.Sprintf(`(sum(node_filesystem_size_bytes{mountpoint="/", instance=~"%s.*"}) - sum(node_filesystem_free_bytes{mountpoint="/", instance=~"%s.*"})) or (sum(kubelet_volume_stats_capacity_bytes{instance=~"%s.*"}) - sum(kubelet_volume_stats_available_bytes{instance=~"%s.*"})) or (sum(kubelet_volume_stats_capacity_bytes{instance=~"%s.*"}) - sum(kubelet_volume_stats_available_bytes{instance=~"%s.*"}))`, meta.InternalIP, meta.InternalIP, meta.NodeName, meta.NodeName, meta.NodeIP, meta.NodeIP)
 		case "cpu_usage_line":
-			queries[metricKey] = fmt.Sprintf(`sum by (instance) (rate(node_cpu_seconds_total{mode!="idle", instance=~"%s|%s"}[5m])) or (sum by (node) (rate(node_cpu_seconds_total{mode!="idle", node=~"%s"}[5m]))) or (sum by (node) (rate(node_resources_cpu_usage_seconds_total{mode!="idle", node=~"%s"}[5m])))`, meta.InternalIP, meta.NodeName, meta.NodeName, meta.NodeName)
+			// node-agent labels node_resources_cpu_usage_seconds_total with `instance` (= node name),
+			// not `node`; the last fallback must match on instance or it returns empty when
+			// node-exporter (node_cpu_seconds_total) is absent and CPU renders as 0%.
+			queries[metricKey] = fmt.Sprintf(`sum by (instance) (rate(node_cpu_seconds_total{mode!="idle", instance=~"%s|%s"}[5m])) or (sum by (node) (rate(node_cpu_seconds_total{mode!="idle", node=~"%s"}[5m]))) or (sum by (instance) (rate(node_resources_cpu_usage_seconds_total{mode!="idle", instance=~"%s"}[5m])))`, meta.InternalIP, meta.NodeName, meta.NodeName, meta.NodeName)
 		case "memory_usage_line":
 			queries[metricKey] = fmt.Sprintf(`(avg(node_memory_MemTotal_bytes{instance=~"%s|%s"} - node_memory_MemAvailable_bytes{instance=~"%s|%s"}) by (instance)) or (avg(node_resources_memory_total_bytes{instance=~"%s"} - node_resources_memory_available_bytes{instance=~"%s"}) by (instance)) or (avg(node_memory_MemTotal_bytes{node=~"%s"} - node_memory_MemAvailable_bytes{node=~"%s"}) by (node)) or (avg(node_resources_memory_total_bytes{node=~"%s"} - node_resources_memory_available_bytes{node=~"%s"}) by (node))`, meta.InternalIP, meta.NodeName, meta.InternalIP, meta.NodeName, meta.NodeName, meta.NodeName, meta.NodeName, meta.NodeName, meta.NodeName, meta.NodeName)
 		case "pvc_usage":

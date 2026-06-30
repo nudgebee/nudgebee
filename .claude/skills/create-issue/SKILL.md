@@ -234,7 +234,7 @@ Create this issue? (yes/no)
 
 ## Step 6: Create the Issue
 
-Use GitHub CLI to create the issue:
+Use GitHub CLI to create the issue. Always assign the creator (`@me`):
 
 ```bash
 gh issue create \
@@ -243,24 +243,64 @@ gh issue create \
 {body}
 EOF
 )" \
+  --assignee "@me" \
   --label "{labels}"  # Only if labels exist
 ```
 
-## Step 7: Add to Project with Current Iteration
+## Step 7: Add to Project, set Iteration + Story Point
 
-After creating the issue, automatically add it to the project board and set iteration to "current":
+After creating the issue, add it to the org-level `nudgebee` project (#1) and set the **current iteration** and **Story Point**.
+
+> The project is **org-level** (`nudgebee` org, project #1) and shared across all repos including `nudgebee-enterprise`, so these commands are the same regardless of which repo the issue lives in. Pass the issue's actual repo in the `--url`.
+
+**Story Point** — before running the commands, ask the user to pick a value (`1`, `2`, `3`, `5`, `8`, `13`). If they skip, omit the Story Point edit.
 
 ```bash
+ISSUE_REPO="nudgebee/nudgebee-enterprise"   # or nudgebee/nudgebee, whichever the issue is in
 ISSUE_NUMBER={extracted_issue_number}
+STORY_POINT="{user_choice_or_empty}"        # one of 1/2/3/5/8/13, or empty to skip
 
-gh project item-add 1 --owner nudgebee --url "https://github.com/nudgebee/nudgebee/issues/${ISSUE_NUMBER}"
+PROJECT_ID="PVT_kwDOCG7t1c4ATt4G"
+ITER_FIELD_ID="PVTIF_lADOCG7t1c4ATt4GzgMmEFQ"
+SP_FIELD_ID="PVTSSF_lADOCG7t1c4ATt4GzgPeoDE"
 
-ITEM_ID=$(gh project item-list 1 --owner nudgebee --format json --limit 1000 | jq -r ".items[] | select(.content.number == ${ISSUE_NUMBER}) | .id")
+# Add to project
+gh project item-add 1 --owner nudgebee --url "https://github.com/${ISSUE_REPO}/issues/${ISSUE_NUMBER}"
 
-gh project item-edit --project-id PVT_kwDOCG7t1c4ATt4G --id "${ITEM_ID}" --field-id PVTIF_lADOCG7t1c4ATt4GzgMmEFQ --iteration-id "@current"
+ITEM_ID=$(gh project item-list 1 --owner nudgebee --format json --limit 1000 \
+  | jq -r ".items[] | select(.content.number == ${ISSUE_NUMBER}) | .id")
+
+# Resolve the CURRENT iteration id (gh does NOT support an "@current" token —
+# it requires a literal iteration node id). Pick the latest iteration whose
+# startDate is on or before today.
+CURRENT_ITER=$(gh api graphql -f query='
+query {
+  organization(login: "nudgebee") {
+    projectV2(number: 1) {
+      field(name: "Iteration") {
+        ... on ProjectV2IterationField {
+          configuration { iterations { id startDate } }
+        }
+      }
+    }
+  }
+}' | jq -r --arg today "$(date +%Y-%m-%d)" \
+      '[.data.organization.projectV2.field.configuration.iterations[]
+        | select(.startDate <= $today)] | sort_by(.startDate) | last | .id')
+
+gh project item-edit --project-id "$PROJECT_ID" --id "$ITEM_ID" \
+  --field-id "$ITER_FIELD_ID" --iteration-id "$CURRENT_ITER"
+
+# Story Point (single-select) — only if the user chose one
+if [ -n "$STORY_POINT" ]; then
+  SP_OPTION_ID=$(gh project field-list 1 --owner nudgebee --format json \
+    | jq -r ".fields[] | select(.name==\"Story Point\") | .options[] | select(.name==\"${STORY_POINT}\") | .id")
+  gh project item-edit --project-id "$PROJECT_ID" --id "$ITEM_ID" \
+    --field-id "$SP_FIELD_ID" --single-select-option-id "$SP_OPTION_ID"
+fi
 ```
 
-**Note**: If the project commands fail (e.g., project not found or permissions), the issue is still created successfully. The iteration assignment is best-effort.
+**Note**: If the project commands fail (e.g., project not found or permissions), the issue is still created successfully. The iteration/story-point assignment is best-effort. Assignee is set on the issue itself in Step 6 (`--assignee "@me"`), not as a project field — the project's Assignees column mirrors the issue's assignees automatically.
 
 ## Step 8: Output Result
 
@@ -269,7 +309,9 @@ Issue created: {url}
 Title: {title}
 Type: {type}
 Number: #{number}
-Iteration: Current (if project assignment succeeded)
+Assignee: @me
+Iteration: {current_iteration_title} (if project assignment succeeded)
+Story Point: {value or "unset"}
 ```
 
 ---

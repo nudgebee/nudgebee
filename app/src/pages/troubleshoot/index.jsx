@@ -1,16 +1,16 @@
-import KnowledgeGraphServiceMapWrapper from '@components1/KnowledgeGraph';
-import AnchorComponent from '@common-new/AnchorComponent';
-import ErrorBoundary from '@components1/common/ErrorBoundary';
-import KubernetesEventsTable from '@components1/events/KubernetesEvents';
-import KubernetesGroupedEventsTable from '@components1/k8s/details/groupedevents/KubernetesGroupedEventsTable';
-import TroubleshootSummary from '@components1/troubleshoot/TroubleshootSummary';
+import KnowledgeGraphServiceMapWrapper from '@components/KnowledgeGraph';
+import AnchorComponent from '@shared/navigation/AnchorComponent';
+import ErrorBoundary from '@shared/ErrorBoundary';
+import KubernetesEventsTable from '@components/events/KubernetesEvents';
+import KubernetesGroupedEventsTable from '@components/k8s/details/groupedevents/KubernetesGroupedEventsTable';
+import TroubleshootSummary from '@components/troubleshoot/TroubleshootSummary';
 import { Box } from '@mui/material';
 import { useState, useEffect } from 'react';
-import ToggleButtons from '@components1/workflow/NewToggleButtons';
-import AutoInvestigated from '@components1/troubleshoot/AutoInvestigated';
-import ManualInvestigated from '@components1/troubleshoot/ManualInvestigated';
-import EventResolutions from '@components1/troubleshoot/EventResolutions';
-import CustomTabs from '@common-new/CustomTabs';
+import ToggleButtons from '@components/workflow/NewToggleButtons';
+import AutoInvestigated from '@components/troubleshoot/AutoInvestigated';
+import ManualInvestigated from '@components/troubleshoot/ManualInvestigated';
+import EventResolutions from '@components/troubleshoot/EventResolutions';
+import CustomTabs from '@shared/CustomTabs';
 import {
   AllEventsIcon,
   GroupedEventsIcon,
@@ -22,8 +22,8 @@ import {
   RecommendationResolutionIcon,
   ServiceMapsIcon,
 } from '@assets';
-import TriageRulesManager from '@components1/triage/TriageRulesManager';
-import ThresholdSuggestionsManager from '@components1/triage/ThresholdSuggestionsManager';
+import TriageRulesManager from '@components/triage/TriageRulesManager';
+import ThresholdSuggestionsManager from '@components/triage/ThresholdSuggestionsManager';
 import { useRouter } from 'next/router';
 import { hasFeatureAccess } from '@lib/auth';
 
@@ -36,6 +36,7 @@ const renderEventContent = (activeToggle) => {
     case 'triage-rules':
       return <TriageRulesManager />;
     case 'event_type':
+    case 'app':
     case 'fingerprint':
       return <KubernetesGroupedEventsTable isTroubleshootPage={true} groupEventType={activeToggle} />;
     default:
@@ -49,7 +50,22 @@ const TroubleshootPage = () => {
   const [activeTab, setActiveTab] = useState('events');
   const [investigationTab, setInvestigationTab] = useState('auto');
   const [showKnowledgeGraphTab, setShowKnowledgeGraphTab] = useState(true);
+  // Bumped on each summary-widget click so the Events tab remounts and re-reads
+  // the URL filters even when it is already the active tab. Kept separate from
+  // the grouped tabs' own router writes so their internal filtering never forces
+  // a remount.
+  const [widgetNonce, setWidgetNonce] = useState(0);
   const router = useRouter();
+
+  // Drill-down from a summary widget: open the flat Events list filtered by the
+  // widget's metric. The Events table (KubernetesEvents) reads eventPriority /
+  // status / nbStatus / issueType from router.query on mount.
+  const applyWidgetFilter = (query) => {
+    setActiveTab('events');
+    setActiveToggleGroupedEvents('all');
+    setWidgetNonce((n) => n + 1);
+    router.push({ pathname: '/troubleshoot', query, hash: 'all' }, undefined, { shallow: true });
+  };
 
   // Check feature flag to conditionally show/hide Knowledge Graph tab
   useEffect(() => {
@@ -98,6 +114,7 @@ const TroubleshootPage = () => {
     { value: 'fingerprint', text: 'Triage Inbox', fragment: 'fingerprint', icon: PodErrorsIcon },
     { value: 'all', text: 'Events', fragment: 'all', icon: AllEventsIcon },
     { value: 'event_type', text: 'Events group by type', fragment: 'event-type', icon: GroupedEventsIcon },
+    { value: 'app', text: 'Events group by app', fragment: 'event-app', icon: GroupedEventsIcon },
     { value: 'triage-rules', text: 'Triage Rules', fragment: 'triage-rules', icon: AlertManagerIcon },
     { value: 'threshold-suggestions', text: 'Alert Tuning', fragment: 'threshold-suggestions', icon: AlertManagerIcon },
     { value: 'event-resolutions', text: 'Event Resolutions', fragment: 'event-resolutions', icon: RecommendationResolutionIcon },
@@ -188,8 +205,8 @@ const TroubleshootPage = () => {
 
           {activeTab === 'events' && (
             <>
-              <Box sx={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                <TroubleshootSummary />
+              <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', alignItems: 'center' }}>
+                <TroubleshootSummary onWidgetFilter={applyWidgetFilter} />
               </Box>
               <Box sx={{ marginBottom: '8px' }}>
                 <CustomTabs
@@ -204,7 +221,7 @@ const TroubleshootPage = () => {
                   ariaLabel='Event grouping options'
                 />
               </Box>
-              <ErrorBoundary key={activeToggleGroupedEvents}>{renderEventContent(activeToggleGroupedEvents)}</ErrorBoundary>
+              <ErrorBoundary key={`${activeToggleGroupedEvents}-${widgetNonce}`}>{renderEventContent(activeToggleGroupedEvents)}</ErrorBoundary>
             </>
           )}
 

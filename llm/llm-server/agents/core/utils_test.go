@@ -37,12 +37,61 @@ func TestIsInvestigationRequestTask(t *testing.T) {
 		input    string
 		expected bool
 	}{
+		// --- existing behavior (must stay green) ---
 		{"investigate why the pod is failing", true},
 		{"troubleshoot oom issue", true},
-		{"is there any oom error?", true},
+		{"is there any oom error?", true}, // oom is inherently anomalous
 		{"do we have oom?", true},
 		{"list pods", false},
 		{"who are you", false},
+
+		// --- strong investigation intent / anomalous states ---
+		{"diagnose high memory usage on checkout-svc", true},
+		{"debug the failing deployment", true},
+		{"pods are in crashloopbackoff", true},
+		{"the checkout page is broken", true},
+		{"why is checkout-svc slow in prod", true},
+		{"can you investigate the database connection drops", true},
+
+		// --- weak nouns promoted by a problem indicator ---
+		{"my pods keep restarting", true},
+		{"checkout-svc is throwing 500 errors", true},
+		{"latency is suddenly high on the api", true},
+		{"requests are intermittently failing", true},
+		// a real negative contraction promotes a weak noun (not a trailing -nt word)
+		{"the deployment isn't restarting", true},
+		// 5xx beyond 50x must still register as a weak signal (was \b50[0-9]\b)
+		{"gateway returning 522 errors repeatedly", true},
+
+		// --- false positives the old substring matcher got wrong ---
+		{"show me health checks", false},
+		// 'deployment' must not match the negative-contraction indicator via its trailing 'nt'
+		{"deployment error logs", false},
+		{"what's the restart policy on my deployment", false},
+		{"is the error budget exhausted", false},
+		{"count failed jobs", false},
+		{"explain the architecture of checkout-svc", false},
+		{"what is a kubernetes daemonset", false},
+		{"how do i configure prometheus scraping", false},
+		{"get error logs for checkout-svc", false},
+		{"show me the slow query log", false},
+
+		// --- definitional-but-causal stays an investigation ---
+		{"what is causing checkout-svc to crash", true},
+		{"explain why the pod crashed", true},
+
+		// --- causal phrasing survives a retrieval-looking prefix ---
+		{"show me why the pods restarted", true},
+
+		// --- bare 'why' is not an investigation; 'why <anything>' is ---
+		{"why?", false},
+		{"why", false},
+		{"why pod", true},
+		{"why node", true},
+		{"why db", true},
+		{"why api", true},
+		{"why app", true},
+		{"why svc", true},
 	}
 
 	for _, tt := range tests {

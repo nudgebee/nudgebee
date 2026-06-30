@@ -2603,3 +2603,7 @@ func (l CodeAgent2) executeFollowup(ctx *security.RequestContext, query core.NBA
 		// status == "running" → keep polling
 	}
 }
+
+func (l CodeAgent2) GetModelCategory() core.ModelTier {
+	return core.ModelTierReasoning
+}

@@ -14,16 +14,16 @@ import {
   CircularProgress,
   Link,
 } from '@mui/material';
-import { Input } from '@components1/ds/Input';
+import { Input } from '@ui/Input';
 import { ContentCopy, Check, HelpOutline, ExpandMore, ExpandLess, CheckCircleOutline, ErrorOutline } from '@mui/icons-material';
 import { useState, useEffect, useCallback } from 'react';
 import PropTypes from 'prop-types';
 import apiAccount from '@api1/account';
 import apiIntegrations from '@api1/integrations';
-import { Modal } from '@components1/common/modal';
-import { Button } from '@components1/ds/Button';
-import { snackbar } from '@components1/common/snackbarService';
-import MarkDowns from '@components1/common/MarkDowns';
+import { Modal } from '@shared/modal';
+import { Button } from '@ui/Button';
+import { snackbar } from '@shared/snackbarService';
+import MarkDowns from '@shared/viewers/MarkDowns';
 import { colors } from 'src/utils/colors';
 import { safeJSONParse } from 'src/utils/common';
 

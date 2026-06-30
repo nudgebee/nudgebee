@@ -13,8 +13,20 @@ import (
 	"time"
 )
 
+// pinotColumnAutogenFunc names the autogen handler that returns the live
+// column list for the configured Pinot table. Used as the AutoGenerateFunc
+// on every column-name field in Pinot.ConfigSchema so the frontend renders
+// them as free-text autocompletes.
+const pinotColumnAutogenFunc = "listPinotColumns"
+
+// pinotColumnAutogenDeps lists every form field whose value influences the
+// column list. The frontend watches these and refetches suggestions when
+// any of them changes.
+var pinotColumnAutogenDeps = []string{"pinot_url", "pinot_table", "auth_type", "username", "password", "bearer_token"}
+
 func init() {
 	core.RegisterIntegrationWithSource("pinot", "user", Pinot{})
+	core.RegisterAutoGenHandler(pinotColumnAutogenFunc, listPinotColumns)
 }
 
 const IntegrationPinot = "pinot"
@@ -90,34 +102,46 @@ func (p Pinot) ConfigSchema() core.IntegrationSchema {
 				Priority:    70,
 			},
 			"pinot_timestamp_col": {
-				Type:        core.ToolSchemaTypeString,
-				Description: "Column storing the log timestamp (numeric epoch or formatted string)",
-				Priority:    65,
+				Type:             core.ToolSchemaTypeString,
+				Description:      "Column storing the log timestamp (numeric epoch or formatted string)",
+				Priority:         65,
+				AutoGenerateFunc: pinotColumnAutogenFunc,
+				DependsOn:        pinotColumnAutogenDeps,
 			},
 			"pinot_message_col": {
-				Type:        core.ToolSchemaTypeString,
-				Description: "Column storing the log message body",
-				Priority:    64,
+				Type:             core.ToolSchemaTypeString,
+				Description:      "Column storing the log message body",
+				Priority:         64,
+				AutoGenerateFunc: pinotColumnAutogenFunc,
+				DependsOn:        pinotColumnAutogenDeps,
 			},
 			"pinot_severity_col": {
-				Type:        core.ToolSchemaTypeString,
-				Description: "Column storing the log severity/level (optional)",
-				Priority:    50,
+				Type:             core.ToolSchemaTypeString,
+				Description:      "Column storing the log severity/level (optional)",
+				Priority:         50,
+				AutoGenerateFunc: pinotColumnAutogenFunc,
+				DependsOn:        pinotColumnAutogenDeps,
 			},
 			"pinot_namespace_col": {
-				Type:        core.ToolSchemaTypeString,
-				Description: "Column for Kubernetes namespace (default: namespace) — used for log grouping",
-				Priority:    40,
+				Type:             core.ToolSchemaTypeString,
+				Description:      "Column for Kubernetes namespace (default: namespace) — used for log grouping",
+				Priority:         40,
+				AutoGenerateFunc: pinotColumnAutogenFunc,
+				DependsOn:        pinotColumnAutogenDeps,
 			},
 			"pinot_pod_col": {
-				Type:        core.ToolSchemaTypeString,
-				Description: "Column for pod name (default: pod) — used for log grouping",
-				Priority:    39,
+				Type:             core.ToolSchemaTypeString,
+				Description:      "Column for pod name (default: pod) — used for log grouping",
+				Priority:         39,
+				AutoGenerateFunc: pinotColumnAutogenFunc,
+				DependsOn:        pinotColumnAutogenDeps,
 			},
 			"pinot_container_col": {
-				Type:        core.ToolSchemaTypeString,
-				Description: "Column for container name (default: container) — used for log grouping",
-				Priority:    38,
+				Type:             core.ToolSchemaTypeString,
+				Description:      "Column for container name (default: container) — used for log grouping",
+				Priority:         38,
+				AutoGenerateFunc: pinotColumnAutogenFunc,
+				DependsOn:        pinotColumnAutogenDeps,
 			},
 			core.DefaultLogProvider: {
 				Type:             core.ToolSchemaTypeBoolean,
@@ -345,6 +369,87 @@ func (p Pinot) ValidateConfig(sc *security.SecurityContext, config []core.Integr
 	}
 
 	return errs
+}
+
+// listPinotColumns is the AutoGenHandler that powers the column-name
+// autocomplete on the Pinot integration form. It fetches the table schema from
+// the Pinot controller using the partial form values the user has typed and
+// returns the column list (dimension, metric, and dateTime fields) as
+// suggestions. The handler is best-effort: on any failure it returns an empty
+// list (with a user-visible message where helpful); the form stays usable as
+// plain text (freeSolo).
+func listPinotColumns(_ *security.RequestContext, formValues map[string]any) (core.AutoGenResult, error) {
+	pinotURL := strings.TrimRight(stringFromForm(formValues, "pinot_url"), "/")
+	table := stringFromForm(formValues, "pinot_table")
+	if pinotURL == "" || table == "" {
+		return core.AutoGenResult{Message: "Fill pinot_url and pinot_table to load column suggestions."}, nil
+	}
+
+	authType := strings.ToLower(stringFromForm(formValues, "auth_type"))
+	username := stringFromForm(formValues, "username")
+	password := stringFromForm(formValues, "password")
+	bearerToken := stringFromForm(formValues, "bearer_token")
+
+	// Edit-existing flow: encrypted fields aren't echoed back into the form
+	// state. We can't authenticate without them, so bail with a clear message.
+	switch authType {
+	case "basic":
+		if password == "" {
+			return core.AutoGenResult{Message: "Re-enter password to load column suggestions."}, nil
+		}
+	case "bearer_token":
+		if bearerToken == "" {
+			return core.AutoGenResult{Message: "Re-enter bearer token to load column suggestions."}, nil
+		}
+	}
+
+	// Build auth header (mirrors ValidateConfig).
+	var authHeader string
+	switch authType {
+	case "basic":
+		authHeader = "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+password))
+	case "bearer_token":
+		authHeader = "Bearer " + bearerToken
+	}
+	headers := map[string]string{"Accept": "application/json"}
+	if authHeader != "" {
+		headers["Authorization"] = authHeader
+	}
+
+	resp, err := common.HttpGet(
+		fmt.Sprintf("%s/schemas/%s", pinotURL, table),
+		common.HttpWithHeaders(headers),
+		common.HttpWithInsecureSkipVerify(),
+	)
+	if err != nil {
+		return core.AutoGenResult{}, fmt.Errorf("fetch schema: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return core.AutoGenResult{}, fmt.Errorf("fetch schema for table %q returned HTTP %d", table, resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return core.AutoGenResult{}, fmt.Errorf("read schema: %w", err)
+	}
+	var schema pinotValidateSchema
+	if err := json.Unmarshal(body, &schema); err != nil {
+		return core.AutoGenResult{}, fmt.Errorf("parse schema: %w", err)
+	}
+
+	opts := make([]core.AutoGenOption, 0,
+		len(schema.DimensionFieldSpecs)+len(schema.MetricFieldSpecs)+len(schema.DateTimeFieldSpecs))
+	for _, f := range schema.DimensionFieldSpecs {
+		opts = append(opts, core.AutoGenOption{Label: f.Name, Value: f.Name})
+	}
+	for _, f := range schema.MetricFieldSpecs {
+		opts = append(opts, core.AutoGenOption{Label: f.Name, Value: f.Name})
+	}
+	for _, f := range schema.DateTimeFieldSpecs {
+		opts = append(opts, core.AutoGenOption{Label: f.Name + " (datetime)", Value: f.Name})
+	}
+	return core.AutoGenResult{Options: opts}, nil
 }
 
 // pinotValidateKnownLayouts lists Go time layouts attempted against a sample

@@ -1545,6 +1545,19 @@ actions:
       - role: tenant_admin
       - role: account_admin
     comment: Execute inline actions on cloud resources (start/stop/restart/reboot/pause/resume/scale/redeploy/run_command)
+  - name: cloud_execute_command
+    definition:
+      kind: synchronous
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/cloud'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+      timeout: 300
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
+    comment: Execute a CLI command on a cloud account and return the output
   - name: events_update_classification
     definition:
       kind: synchronous
@@ -4389,6 +4402,17 @@ actions:
     permissions:
       - role: tenant_admin
       - role: account_admin
+  - name: workflows_delete_version
+    definition:
+      kind: synchronous
+      handler: '{{WORKFLOW_SERVER_URL}}/rpc'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: WORKFLOW_SERVER_TOKEN
+    permissions:
+      - role: tenant_admin
+      - role: account_admin
   - name: k8s_nodes_v2
     definition:
       kind: "synchronous"
@@ -5389,6 +5413,8 @@ custom_types:
     - name: UserAuthByUsernameResponse
     - name: UserAuthByUsernameRowResponse
     - name: TriggerCloudSyncResponse
+    - name: ExecuteCloudCommandResponse
+    - name: CommandResult
     - name: CloudApplyCommandResponse
     - name: WorkflowTemplateType
     - name: TemplateVariableType

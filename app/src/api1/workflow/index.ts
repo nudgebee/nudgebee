@@ -352,6 +352,15 @@ mutation MakeWorkflowVersionLive($accountId: String!, $workflowId: String!, $ver
 }
 `;
 
+export const DELETE_WORKFLOW_VERSION = `
+mutation DeleteWorkflowVersion($accountId: String!, $workflowId: String!, $versionNumber: Int!) {
+  workflows_delete_version(request: {account_id: $accountId, id: $workflowId, version_number: $versionNumber}) {
+    deleted
+    version_number
+  }
+}
+`;
+
 export const UPDATE_WORKFLOW_VERSION_METADATA = `
 mutation UpdateWorkflowVersionMetadata($accountId: String!, $workflowId: String!, $versionNumber: Int!, $name: String, $description: String) {
   workflows_update_version_metadata(request: {account_id: $accountId, id: $workflowId, version_number: $versionNumber, name: $name, description: $description}) {
@@ -1364,6 +1373,22 @@ const apiWorkflow = {
       };
     } catch (error) {
       console.error('Failed to make workflow version live:', error);
+      return { data: null, errors: [error] };
+    }
+  },
+  async deleteWorkflowVersion(accountId: string, workflowId: string, versionNumber: number) {
+    try {
+      const response = await queryGraphQL(DELETE_WORKFLOW_VERSION, 'DeleteWorkflowVersion', {
+        accountId,
+        workflowId,
+        versionNumber,
+      });
+      return {
+        data: response?.data?.data,
+        errors: response?.data?.errors,
+      };
+    } catch (error) {
+      console.error('Failed to delete workflow version:', error);
       return { data: null, errors: [error] };
     }
   },

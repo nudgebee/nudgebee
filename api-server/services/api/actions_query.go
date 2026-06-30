@@ -23,7 +23,14 @@ func generateColumnFromAstField(f *ast.Field) query.QueryColumn {
 	if len(f.Arguments) > 0 {
 		for _, arg := range f.Arguments {
 			expr = arg.Name.Value
-			args = append(args, arg.Value.GetValue().(string))
+			// Argument values are usually string literals, but a non-string
+			// literal (bool/list/object) makes GetValue() return a non-string
+			// and an unchecked assertion would panic. Stringify defensively.
+			if s, ok := arg.Value.GetValue().(string); ok {
+				args = append(args, s)
+			} else {
+				args = append(args, fmt.Sprintf("%v", arg.Value.GetValue()))
+			}
 		}
 	}
 	return query.QueryColumn{Name: f.Name.Value, Expr: expr, Args: args}
@@ -49,16 +56,50 @@ func parseSelectColumns(actionPayload *ActionRequest) ([]query.QueryColumn, erro
 	//get the selection set
 	actionNameToParser := actionPayload.Action.Name
 	// for now only check first definition
-	selectionSet := parsedQuery.Definitions[0].(*ast.OperationDefinition).SelectionSet.Selections
+	if len(parsedQuery.Definitions) == 0 {
+		return cols, fmt.Errorf("graphql query has no definitions")
+	}
+	opDef, ok := parsedQuery.Definitions[0].(*ast.OperationDefinition)
+	if !ok {
+		return cols, fmt.Errorf("first graphql definition is not an operation")
+	}
+	if opDef.SelectionSet == nil || len(opDef.SelectionSet.Selections) == 0 {
+		return cols, fmt.Errorf("graphql operation has no selections")
+	}
+	selectionSet := opDef.SelectionSet.Selections
 	//get the selection set fields
-	selectionSetIndex := 0
+	selectionSetIndex := -1
 	for i, selection := range selectionSet {
-		if selection.((*ast.Field)).Name.Value == actionNameToParser {
+		field, ok := selection.(*ast.Field)
+		if !ok {
+			// skip non-field selections (inline fragments, fragment spreads)
+			continue
+		}
+		if field.Name.Value == actionNameToParser {
 			selectionSetIndex = i
 			break
 		}
 	}
-	fields := selectionSet[selectionSetIndex].(*ast.Field).SelectionSet.Selections
+	// When the action name isn't found, fall back to the first selection only for
+	// single-selection queries (callers that don't set Action.Name). With multiple
+	// selections a missing match is ambiguous, so error rather than silently
+	// projecting the wrong field's columns.
+	if selectionSetIndex == -1 {
+		if len(selectionSet) == 1 {
+			selectionSetIndex = 0
+		} else {
+			return cols, fmt.Errorf("action %q not found in graphql query selections", actionNameToParser)
+		}
+	}
+	rootField, ok := selectionSet[selectionSetIndex].(*ast.Field)
+	if !ok {
+		return cols, fmt.Errorf("graphql selection is not a field")
+	}
+	if rootField.SelectionSet == nil {
+		// no sub-selections to project
+		return cols, nil
+	}
+	fields := rootField.SelectionSet.Selections
 
 	for _, field := range fields {
 		if f, ok := field.(*ast.Field); ok {

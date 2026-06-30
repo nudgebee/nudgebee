@@ -3,18 +3,18 @@ import { useRouter } from 'next/router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ds } from 'src/utils/colors';
 import apiKubernetes from '@api1/kubernetes';
-import CollapsableCard from '@common-new/widgets/CollapsableCard';
-import Datetime from '@common-new/format/Datetime';
+import CollapsableCard from '@shared/widgets/CollapsableCard';
+import Datetime from '@shared/format/Datetime';
 import TroubleShootIcon from '@assets/home/node-errors-icon.svg';
-import InvestigateDropdown from '@components1/k8s/investigate/InvestigateDropdown';
+import InvestigateDropdown from '@components/k8s/investigate/InvestigateDropdown';
 import { exitCodeMapping, safeJSONParse, snakeToTitleCase } from 'src/utils/common';
-import TicketCreatePopupForm from '@components1/tickets/TicketCreatePopupForm';
+import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import TicketIcon from '@assets/TicketIcon';
-import Text from '@common-new/format/Text';
-import { Modal } from '@components1/ds/Modal';
-import WorkflowTemplatesModal from '@components1/workflow/components/WorkflowTemplatesModal';
-import AiGenerateWorkflowModal from '@components1/workflow/components/AiGenerateWorkflowModal';
-import RunAutomationMenu from '@components1/workflow/components/RunAutomationMenu';
+import Text from '@shared/format/Text';
+import { Modal } from '@ui/Modal';
+import WorkflowTemplatesModal from '@components/workflow/components/WorkflowTemplatesModal';
+import AiGenerateWorkflowModal from '@components/workflow/components/AiGenerateWorkflowModal';
+import RunAutomationMenu from '@components/workflow/components/RunAutomationMenu';
 import apiWorkflow from '@api1/workflow';
 import {
   BarsBlueOutlineIcon,
@@ -28,99 +28,99 @@ import {
 } from '@assets';
 import { getNubiIconUrl, useTenantBranding, DEFAULT_TITLE } from '@hooks/useTenantBranding';
 import CubeIcon from '@assets/kubernetes/cube-icon.svg';
-import { Label } from '@components1/ds/Label';
-import NBStatusBadge from '@common-new/widgets/NBStatusBadge';
+import { Label } from '@ui/Label';
+import NBStatusBadge from '@shared/widgets/NBStatusBadge';
 import apiRecommendations from '@api1/recommendation';
 import apiTriage from '@api1/triage';
 import { hasWriteAccess, hasFeatureAccess } from '@lib/auth';
-import InvestigateResolution from '@components1/k8s/investigate/InvestigateResolution';
-import CustomBorderCard from '@components1/ds/CustomBorderCard';
+import InvestigateResolution from '@components/k8s/investigate/InvestigateResolution';
+import CustomBorderCard from '@ui/CustomBorderCard';
 import ArrowForwardRoundedIcon from '@mui/icons-material/ArrowForwardRounded';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import ThreeDotsMenu from '@common-new/ThreeDotsMenu';
+import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
 import PropTypes from 'prop-types';
-import { Divider } from '@components1/ds/Divider';
-import { Link } from '@components1/ds/Link';
+import { Divider } from '@ui/Divider';
+import { Link } from '@ui/Link';
 // K8s card imports
-import MemoryAllocationCard from '@components1/k8s/investigate/cards/MemoryAllocationCard';
-import NoisyNeighbourCard from '@components1/k8s/investigate/cards/NoisyNeighbourCard';
-import LastDeploymentCard from '@components1/k8s/investigate/cards/LastDeploymentCard';
-import LogsCard from '@components1/k8s/investigate/cards/LogsCard';
-import AskAiCard from '@components1/k8s/investigate/cards/AskAiCard';
-import TracesCard from '@components1/k8s/investigate/cards/TracesCard';
-import ServiceMapCard from '@components1/k8s/investigate/cards/ServiceMapCard';
-import SVGImageCard from '@components1/k8s/investigate/cards/SVGImageCard';
-import PrometheusCPUUsageCard from '@components1/k8s/investigate/cards/PrometheusCPUUsageCard';
-import ApiFailureCard from '@components1/k8s/investigate/cards/ApiFailureCard';
-import PersistentVolumeUsageCard from '@components1/k8s/investigate/cards/PersistentVolumeUsageCard';
-import NodeVolumeUsageCard from '@components1/k8s/investigate/cards/NodeVolumeUsageCard';
-import SchedulingReport from '@components1/k8s/investigate/cards/SchedulingReport';
-import NodeAllocatableResources from '@components1/k8s/investigate/cards/NodeAllocatableResources';
-import ClusterMemoryRequestsSummary from '@components1/k8s/investigate/cards/ClusterMemoryRequestsSummary';
-import ApplicationMetricsCard from '@components1/k8s/investigate/cards/ApplicationMetricsCard';
-import DatabaseQueryResponse from '@components1/k8s/investigate/cards/DatabaseQueryResponse';
-import CorrespondingEvents from '@components1/k8s/investigate/cards/CorrespondingEvents';
-import { Skeleton } from '@components1/ds/Skeleton';
-import ConversationLoader from '@common-new/ConversationLoader';
-import CustomAction from '@components1/k8s/investigate/cards/CustomAction';
-import RCACard from '@components1/k8s/investigate/cards/RCACard';
-import { snackbar } from '@components1/common/snackbarService';
-import AnomalyCard from '@components1/k8s/investigate/cards/AnomalyCard';
-import PrometheusCard from '@components1/k8s/investigate/cards/PrometheusCard';
-import SLOConfigReport from '@components1/k8s/investigate/cards/SLOConfigReport';
+import MemoryAllocationCard from '@components/k8s/investigate/cards/MemoryAllocationCard';
+import NoisyNeighbourCard from '@components/k8s/investigate/cards/NoisyNeighbourCard';
+import LastDeploymentCard from '@components/k8s/investigate/cards/LastDeploymentCard';
+import LogsCard from '@components/k8s/investigate/cards/LogsCard';
+import AskAiCard from '@components/k8s/investigate/cards/AskAiCard';
+import TracesCard from '@components/k8s/investigate/cards/TracesCard';
+import ServiceMapCard from '@components/k8s/investigate/cards/ServiceMapCard';
+import SVGImageCard from '@components/k8s/investigate/cards/SVGImageCard';
+import PrometheusCPUUsageCard from '@components/k8s/investigate/cards/PrometheusCPUUsageCard';
+import ApiFailureCard from '@components/k8s/investigate/cards/ApiFailureCard';
+import PersistentVolumeUsageCard from '@components/k8s/investigate/cards/PersistentVolumeUsageCard';
+import NodeVolumeUsageCard from '@components/k8s/investigate/cards/NodeVolumeUsageCard';
+import SchedulingReport from '@components/k8s/investigate/cards/SchedulingReport';
+import NodeAllocatableResources from '@components/k8s/investigate/cards/NodeAllocatableResources';
+import ClusterMemoryRequestsSummary from '@components/k8s/investigate/cards/ClusterMemoryRequestsSummary';
+import ApplicationMetricsCard from '@components/k8s/investigate/cards/ApplicationMetricsCard';
+import DatabaseQueryResponse from '@components/k8s/investigate/cards/DatabaseQueryResponse';
+import CorrespondingEvents from '@components/k8s/investigate/cards/CorrespondingEvents';
+import { Skeleton } from '@ui/Skeleton';
+import ConversationLoader from '@shared/ConversationLoader';
+import CustomAction from '@components/k8s/investigate/cards/CustomAction';
+import RCACard from '@components/k8s/investigate/cards/RCACard';
+import { snackbar } from '@shared/snackbarService';
+import AnomalyCard from '@components/k8s/investigate/cards/AnomalyCard';
+import PrometheusCard from '@components/k8s/investigate/cards/PrometheusCard';
+import SLOConfigReport from '@components/k8s/investigate/cards/SLOConfigReport';
 import apiIntegrations from '@api1/integrations';
-import PVCDetails from '@components1/k8s/investigate/cards/PVCDetails';
-import { Button } from '@components1/ds/Button';
-import TextEnricherDynamicCard from '@components1/k8s/investigate/cards/TextEnricherDynamicCard';
-import ShowingTableCard from '@components1/k8s/investigate/cards/ShowingTableCard';
-import LLMResponseCard from '@components1/k8s/investigate/cards/LLMResponseCard';
-import WebhookEventDescription from '@components1/k8s/investigate/cards/WebhookEventDescription';
-import KnowledgeGraphCard from '@components1/k8s/investigate/cards/KnowledgeGraphCard';
-import DatadogError from '@components1/k8s/investigate/cards/datadog/DatadogError';
-import FeedbackVote from '@components1/ds/FeedbackVote';
+import PVCDetails from '@components/k8s/investigate/cards/PVCDetails';
+import { Button } from '@ui/Button';
+import TextEnricherDynamicCard from '@components/k8s/investigate/cards/TextEnricherDynamicCard';
+import ShowingTableCard from '@components/k8s/investigate/cards/ShowingTableCard';
+import LLMResponseCard from '@components/k8s/investigate/cards/LLMResponseCard';
+import WebhookEventDescription from '@components/k8s/investigate/cards/WebhookEventDescription';
+import KnowledgeGraphCard from '@components/k8s/investigate/cards/KnowledgeGraphCard';
+import DatadogError from '@components/k8s/investigate/cards/datadog/DatadogError';
+import FeedbackVote from '@ui/FeedbackVote';
 import apiAskNudgebee from '@api1/ask-nudgebee';
-import SignozDatadogLogCard from '@components1/k8s/investigate/cards/SignozDatadogLogCard';
+import SignozDatadogLogCard from '@components/k8s/investigate/cards/SignozDatadogLogCard';
 import apiKubernetes1 from '@api1/kubernetes1';
 import { SUBJECT_STATUS, SUBJECT_TYPE, AGGREGATION_KEY, RESOLVABLE_ALERT_KEYS, RCA_STATUS } from '@data/investigateConstants';
-import { List } from '@components1/ds/List';
-import ExecutePrometheus from '@components1/k8s/investigate/cards/ExecutePrometheus';
-import GithubReview from '@components1/k8s/investigate/cards/GithubReview';
-import GithubPRHistoryCard from '@components1/k8s/investigate/cards/GithubPRHistoryCard';
-import QueryMetricsCard from '@components1/k8s/investigate/cards/QueryMetricsCard';
-import ShowingObjectCard from '@components1/k8s/investigate/cards/ShowingObjectCard';
+import { List } from '@ui/List';
+import ExecutePrometheus from '@components/k8s/investigate/cards/ExecutePrometheus';
+import GithubReview from '@components/k8s/investigate/cards/GithubReview';
+import GithubPRHistoryCard from '@components/k8s/investigate/cards/GithubPRHistoryCard';
+import QueryMetricsCard from '@components/k8s/investigate/cards/QueryMetricsCard';
+import ShowingObjectCard from '@components/k8s/investigate/cards/ShowingObjectCard';
 import { useData } from '@context/DataContext';
 import homeApi from '@api1/home';
-import { transformClusters } from '@components1/common/UpdateDataContext';
+import { transformClusters } from '@shared/layout/UpdateDataContext';
 import { useRcaPolling } from '@hooks/useRcaPolling';
 import { useCardGeneration } from '@hooks/useCardGeneration';
 import { IoBookOutline } from 'react-icons/io5';
-import KnowledgeBase from '@components1/k8s/investigate/KnowledgeBase';
+import KnowledgeBase from '@components/k8s/investigate/KnowledgeBase';
 import { LuChartLine } from 'react-icons/lu';
-import { LineChart } from '@components1/common';
+import { LineChart } from '@shared';
 import { getDateString } from '@lib/datetime';
-import TimelineCard from '@components1/k8s/investigate/cards/TimelineCard';
-import UpdateEvent from '@components1/events/UpdateEvent';
-import EventClassifyModal from '@components1/events/EventClassifyModal';
+import TimelineCard from '@components/k8s/investigate/cards/TimelineCard';
+import UpdateEvent from '@components/events/UpdateEvent';
+import EventClassifyModal from '@components/events/EventClassifyModal';
 import { LiaEditSolid } from 'react-icons/lia';
 import { MdOutlineCategory } from 'react-icons/md';
-import DatadogMonitorSearch from '@components1/k8s/investigate/cards/DatadogMonitorSearch';
-import SafeIcon from '@components1/common/SafeIcon';
+import DatadogMonitorSearch from '@components/k8s/investigate/cards/DatadogMonitorSearch';
+import SafeIcon from '@shared/icons/SafeIcon';
 // Cloud-specific card imports
-import CloudTrailEventCard from '@components1/cloudaccount/investigate/cards/CloudTrailEventCard';
-import EventBridgeEventCard from '@components1/cloudaccount/investigate/cards/EventBridgeEventCard';
-import SpendTrendChartCard from '@components1/k8s/investigate/cards/SpendTrendChartCard';
-import SpendBreakdownChartCard from '@components1/k8s/investigate/cards/SpendBreakdownChartCard';
-import KnowledgeBaseCard from '@components1/k8s/investigate/cards/KnowledgeBaseCard';
-import CloudWatchAlarmEventCard from '@components1/cloudaccount/investigate/cards/CloudWatchAlarmEventCard';
-import CloudWatchLogCard from '@components1/cloudaccount/investigate/cards/CloudWatchLogCard';
-import CloudWatchMetricsCard from '@components1/cloudaccount/investigate/cards/CloudWatchMetricsCard';
-import PerformanceInsightsCard from '@components1/cloudaccount/investigate/cards/PerformanceInsightsCard';
-import ResourceCard from '@components1/cloudaccount/investigate/cards/ResourceCard';
-import CloudLog from '@components1/cloudaccount/investigate/cards/CloudLog';
-import CloudSsh from '@components1/cloudaccount/investigate/cards/CloudSsh';
-import CloudCli from '@components1/cloudaccount/investigate/cards/CloudCli';
-import CloudFoundryEvidenceCard, { CF_ACTION_TYPES } from '@components1/cloudaccount/investigate/cards/CloudFoundryEvidenceCard';
-import ThresholdSuggestionCard from '@components1/cloudaccount/investigate/cards/ThresholdSuggestionCard';
+import CloudTrailEventCard from '@components/cloudaccount/investigate/cards/CloudTrailEventCard';
+import EventBridgeEventCard from '@components/cloudaccount/investigate/cards/EventBridgeEventCard';
+import SpendTrendChartCard from '@components/k8s/investigate/cards/SpendTrendChartCard';
+import SpendBreakdownChartCard from '@components/k8s/investigate/cards/SpendBreakdownChartCard';
+import KnowledgeBaseCard from '@components/k8s/investigate/cards/KnowledgeBaseCard';
+import CloudWatchAlarmEventCard from '@components/cloudaccount/investigate/cards/CloudWatchAlarmEventCard';
+import CloudWatchLogCard from '@components/cloudaccount/investigate/cards/CloudWatchLogCard';
+import CloudWatchMetricsCard from '@components/cloudaccount/investigate/cards/CloudWatchMetricsCard';
+import PerformanceInsightsCard from '@components/cloudaccount/investigate/cards/PerformanceInsightsCard';
+import ResourceCard from '@components/cloudaccount/investigate/cards/ResourceCard';
+import CloudLog from '@components/cloudaccount/investigate/cards/CloudLog';
+import CloudSsh from '@components/cloudaccount/investigate/cards/CloudSsh';
+import CloudCli from '@components/cloudaccount/investigate/cards/CloudCli';
+import CloudFoundryEvidenceCard, { CF_ACTION_TYPES } from '@components/cloudaccount/investigate/cards/CloudFoundryEvidenceCard';
+import ThresholdSuggestionCard from '@components/cloudaccount/investigate/cards/ThresholdSuggestionCard';
 
 const k8sAvailableCards = [
   SLOConfigReport,
@@ -383,7 +383,6 @@ const Investigate = () => {
   const [isClassifyModalOpen, setIsClassifyModalOpen] = useState(false);
   const [recurrenceInfo, setRecurrenceInfo] = useState(null);
   const [eventResolutions, setEventResolutions] = useState([]);
-  const [triggeredExecutions, setTriggeredExecutions] = useState([]);
   const [knowledgeBase, setKnowledgeBase] = useState([]);
   const [kbLoading, setKbLoading] = useState(false);
   const [showTemplatesModal, setShowTemplatesModal] = useState(false);
@@ -904,17 +903,15 @@ const Investigate = () => {
           if (response.length == 1) {
             setSentFeedback({
               submitted: true,
-              isPositive: response[0].useful ?? null,
+              isPositive: response[0].useful === true,
               message: response[0].additional_notes ?? '',
             });
+          } else {
+            // No feedback for this response — clear any stale highlight a reused
+            // component instance may still be holding (issue #32906).
+            setSentFeedback({});
           }
         });
-
-      if (eventAccountId) {
-        apiWorkflow.listExecutionsForEvent(eventAccountId, row.id).then((resp) => {
-          if (!cancelled && isMountedRef.current) setTriggeredExecutions(resp?.data?.executions || []);
-        });
-      }
 
       if (row?.fingerprint) {
         getTicketData();
@@ -1125,8 +1122,14 @@ const Investigate = () => {
             const card = new ResourceCard(d, i);
             if (await card.canRenderContent()) pushCard(card);
           }
-          if (actionType == 'cloud_logs') {
+          if (actionType == 'cloud_logs' || actionType == 'cloud_gcp_audit_log') {
             const card = new CloudLog(d, i);
+            if (await card.canRenderContent()) pushCard(card);
+          }
+          if (actionType == 'cloud_deployment_diff') {
+            // Cloud Run before/after deploy diff — reuses the K8s LastDeploymentCard
+            // (renders on evidence.type === 'diff' with data:{old,new} + start_at).
+            const card = new LastDeploymentCard(d, row, i);
             if (await card.canRenderContent()) pushCard(card);
           }
           if (actionType == 'ssh') {
@@ -1407,7 +1410,6 @@ const Investigate = () => {
     setCollapsedObj([]);
     setGenerateRcaVisible(false);
     setEventResolutions([]);
-    setTriggeredExecutions([]);
   };
 
   const getResolutionForCard = (cardId) => {
@@ -2486,7 +2488,7 @@ const Investigate = () => {
                             return (
                               <RunAutomationMenu
                                 accountId={automationAccountId}
-                                triggeredExecutions={triggeredExecutions}
+                                eventId={row.id}
                                 canRun={hasWriteAccess(automationAccountId)}
                                 onCreateAutomation={() => setShowTemplatesModal(true)}
                               />

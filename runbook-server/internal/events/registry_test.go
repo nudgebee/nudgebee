@@ -285,3 +285,28 @@ func TestEventRegistry_Wildcard(t *testing.T) {
 		})
 	}
 }
+
+// TestEventRegistry_DateVars verifies the built-in date/time vars are injected into
+// the trigger-filter context so filters can do date-based logic. (The tz/strftime
+// filters themselves are registered by the workflow package at runtime and are not
+// exercised here; this only asserts the variables are present.)
+func TestEventRegistry_DateVars(t *testing.T) {
+	mockStore := new(MockTriggerStore)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	registry := NewEventRegistry(mockStore, logger)
+
+	rules := []model.WorkflowEventTriggerRule{
+		{WorkflowID: "wf-has-ts", EventType: "generic.event", Filter: `{{ timestamp_iso != "" and event.env == "prod" }}`, AccountID: "acc-1"},
+		{WorkflowID: "wf-no-ts", EventType: "generic.event", Filter: `{{ timestamp_iso == "" }}`, AccountID: "acc-1"},
+	}
+	mockStore.On("FindEventTriggers", mock.Anything).Return(rules, nil)
+	_ = registry.Refresh(context.Background())
+
+	matches := registry.Match("generic.event", "acc-1", map[string]any{"env": "prod"})
+	var gotIDs []string
+	for _, m := range matches {
+		gotIDs = append(gotIDs, m.WorkflowID)
+	}
+	// timestamp_iso is populated, so only the non-empty branch matches.
+	assert.ElementsMatch(t, []string{"wf-has-ts"}, gotIDs)
+}

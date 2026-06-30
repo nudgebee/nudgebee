@@ -684,3 +684,7 @@ type TruncateContext struct {
 	maxTokens     int
 	truncateIndex int
 }
+
+func (l LogAnalysisAgent) GetModelCategory() core.ModelTier {
+	return core.ModelTierSummary
+}

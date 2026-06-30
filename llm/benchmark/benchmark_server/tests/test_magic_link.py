@@ -15,7 +15,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
 # ---------- token consume semantics ----------
 
 

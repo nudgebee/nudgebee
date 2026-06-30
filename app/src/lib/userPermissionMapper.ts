@@ -97,20 +97,27 @@ export async function extractUserPermissions(user: any) {
   namespacedReadOnlyAccountIds = [...new Set(namespacedReadOnlyAccountIds)];
 
   if (accountIds.length > 0 || readonlyAccountIds.length > 0) {
-    // Get accountIds from given tenant
+    // Narrow role-granted account ids to those that belong to the selected tenant.
     const resp = await getAccountByTenant(tenant.id);
-    if (resp.data) {
-      const tenantAccounts = resp.data?.cloud_accounts?.map((a: any) => a.id);
+    const tenantAccounts: string[] = resp.data?.cloud_accounts?.map((a: any) => a.id) ?? [];
+    if (tenantAccounts.length > 0) {
       accountIds = accountIds.filter((a) => tenantAccounts.includes(a));
       readonlyAccountIds = readonlyAccountIds.filter((a) => tenantAccounts.includes(a));
       namespacedAccountIds = namespacedAccountIds.filter((a) => tenantAccounts.includes(a));
       namespacedReadOnlyAccountIds = namespacedReadOnlyAccountIds.filter((a) => tenantAccounts.includes(a));
     } else {
-      console.log('unable to get accounts for tenant', tenant.id, resp);
-      accountIds = [];
-      readonlyAccountIds = [];
-      namespacedAccountIds = [];
-      namespacedReadOnlyAccountIds = [];
+      // No tenant accounts resolved. This session scope is ADVISORY — the backend
+      // re-authorizes every request — so we deliberately keep the user's explicit role
+      // grants rather than fail closed: silently stripping them locked account-scoped
+      // admins out of features the backend still authorizes (#32887), and throwing here
+      // would escalate a transient lookup blip into a full login outage for every
+      // account-scoped user. Log loudly, distinguishing a failed lookup from an empty one.
+      console.warn(
+        resp.errored
+          ? 'tenant-account lookup failed; preserving role-granted account access for tenant'
+          : 'no tenant accounts resolved; preserving role-granted account access for tenant',
+        tenant.id
+      );
     }
   }
 

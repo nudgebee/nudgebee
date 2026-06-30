@@ -440,6 +440,9 @@ export const DEFAULT_CSS_TOKENS: Record<string, string> = {
   '--ds-pink-600': '#a4225f',
   '--ds-pink-700': '#69143b',
 
+  // Slate (cool-neutral muted icon tone; Tailwind slate-600)
+  '--ds-slate-600': '#475569',
+
   // Brand navy (Sidebar Dark, anchored at #1B2D4A)
   '--ds-brand-100': '#EEF1F6',
   '--ds-brand-150': '#e2e7efdb',

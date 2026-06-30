@@ -26,4 +26,6 @@ type OptimizerRepository interface {
 	UpdateRecommendationStatus(ctx context.Context, id uuid.UUID, status string) error
 	GetActiveTasksForRecommendations(ctx context.Context, recommendationIDs []uuid.UUID) (map[uuid.UUID]model.AutoOptimizeTask, error)
 	GetActiveResolutionsForRecommendations(ctx context.Context, recommendationIDs []uuid.UUID) (map[uuid.UUID][]model.RecommendationResolution, error)
+	GetAutoOptimizeTasksByIDs(ctx context.Context, ids []uuid.UUID) ([]model.AutoOptimizeTask, error)
+	GetResolutionsForRecommendations(ctx context.Context, recommendationIDs []uuid.UUID) (map[uuid.UUID][]model.RecommendationResolution, error)
 }

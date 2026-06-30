@@ -224,6 +224,7 @@ type RecommendationResolution struct {
 	CreatedAt        time.Time                    `json:"created_at"`
 	UpdatedAt        time.Time                    `json:"updated_at"`
 	StatusMessage    *string                      `json:"status_message,omitempty"`
+	PRLifecycleState *string                      `json:"pr_lifecycle_state,omitempty"` // e.g. "created" once the GitOps PR exists
 }
 
 type Agent struct {

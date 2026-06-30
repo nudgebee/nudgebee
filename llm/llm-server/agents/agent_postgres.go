@@ -61,10 +61,6 @@ func (l PostgresDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query 
 		"**4. Interpret & Summarize:** Analyze the returned data. If no rows are returned, explain why.",
 	}
 
-	if config.Config.LlmServerShellToolEnabled {
-		instructions = append(instructions, core.GetWorkspaceInstructions()...)
-	}
-
 	constraints := []string{
 		"You MUST use the `postgres_query_execute` tool for all database interactions and MUST NOT answer questions without first querying the database using this tool.",
 		"When a user explicitly asks for 'all' data or uses similar broad terms, do NOT add restrictive `WHERE` clauses or filters unless specifically requested.",
