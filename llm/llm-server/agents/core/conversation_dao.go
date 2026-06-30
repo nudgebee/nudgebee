@@ -133,6 +133,7 @@ type ConversationMessage struct {
 	UserID          uuid.UUID          `json:"user_id" db:"user_id"`
 	MessageType     string             `json:"message_type" db:"message_type"`
 	UpdatedAt       *time.Time         `json:"updated_at" db:"updated_at"`
+	RespondedAt     *time.Time         `json:"responded_at,omitempty" db:"responded_at"`
 	Status          ConversationStatus `json:"status" db:"status"`
 	WorkerName      *string            `json:"worker_name" db:"worker_name"`
 	AgentName       *string            `json:"agent_name" db:"agent_name"`
@@ -1372,8 +1373,15 @@ func (chat *ConversationDao) SaveConversationMessage(id, conversationId, account
 }
 
 func (chat *ConversationDao) UpdateConversationMessage(id, response string, status ConversationStatus) error {
-	query := `UPDATE llm_conversation_messages SET response = $2, updated_at = now(), status = $3, worker_name = $4 WHERE id = $1`
-	_, err := chat.dbManager.Db.Exec(query, id, response, string(status), config.Config.ServerName)
+	// Stamp responded_at — the turn's foreground answer-completion time — the first time it
+	// reaches a terminal state. Uses the DB clock (now()), consistent with updated_at and
+	// immune to app/DB clock drift. A non-terminal write clears it, so a retried/recovered
+	// message (reset to IN_PROGRESS) re-stamps fresh instead of keeping a stale value;
+	// COALESCE keeps it write-once within a single terminal run. Post-response background
+	// jobs (memory/summary/suggestions) go through other DAOs and never touch it.
+	isTerminal := IsTerminalConversationStatus(status)
+	query := `UPDATE llm_conversation_messages SET response = $2, updated_at = now(), status = $3, worker_name = $4, responded_at = CASE WHEN $5::boolean THEN COALESCE(responded_at, now()) ELSE NULL END WHERE id = $1`
+	_, err := chat.dbManager.Db.Exec(query, id, response, string(status), config.Config.ServerName, isTerminal)
 	if err != nil {
 		return fmt.Errorf("history: failed to update message: %w", err)
 	}
@@ -1611,7 +1619,9 @@ func (chat *ConversationDao) CleanupConversationMessage(id, accountId string) er
 		return fmt.Errorf("history: failed to remove agent call: %w", err)
 	}
 
-	messageQuery := `UPDATE llm_conversation_messages SET response = $2, updated_at = now(), status = $3, worker_name = $4 WHERE id = $1`
+	// Clear responded_at too: this resets the message for a retry/re-run, so the prior run's
+	// answer-completion time must not linger and shadow the new run's.
+	messageQuery := `UPDATE llm_conversation_messages SET response = $2, updated_at = now(), status = $3, worker_name = $4, responded_at = NULL WHERE id = $1`
 	_, err = chat.dbManager.Db.Exec(messageQuery, id, "", string(ConversationStatusInProgress), config.Config.ServerName)
 	if err != nil {
 		return fmt.Errorf("history: failed to update message: %w", err)
@@ -1620,7 +1630,7 @@ func (chat *ConversationDao) CleanupConversationMessage(id, accountId string) er
 }
 
 func (chat *ConversationDao) GetConversationMessage(id, accountId, conversationId string) (ConversationMessage, error) {
-	query := `select id, conversation_id, message, created_at, response, role, account_id, user_id, message_type, updated_at, status, worker_name, agent_name, message_config, message_context, suggestions, llm_provider, llm_model from llm_conversation_messages WHERE id = $1 and conversation_id = $2 and account_id = $3`
+	query := `select id, conversation_id, message, created_at, response, role, account_id, user_id, message_type, updated_at, responded_at, status, worker_name, agent_name, message_config, message_context, suggestions, llm_provider, llm_model from llm_conversation_messages WHERE id = $1 and conversation_id = $2 and account_id = $3`
 	row := chat.dbManager.Db.QueryRowx(query, id, conversationId, accountId)
 	if row == nil || row.Err() != nil {
 		return ConversationMessage{}, fmt.Errorf("history: failed to get message: %w", row.Err())
@@ -1634,8 +1644,8 @@ func (chat *ConversationDao) GetConversationMessage(id, accountId, conversationI
 }
 
 func (chat *ConversationDao) ListConversationMessages(status ConversationStatus, workerName string, conversationId string, deadWorker bool) ([]ConversationMessage, error) {
-	query := `select id, conversation_id, message, created_at, response, role, account_id, 
-				user_id, message_type, updated_at, status, worker_name, agent_name,
+	query := `select id, conversation_id, message, created_at, response, role, account_id,
+				user_id, message_type, updated_at, responded_at, status, worker_name, agent_name,
 				message_config, message_context, suggestions, llm_provider, llm_model
 			  from llm_conversation_messages WHERE true
 			`
@@ -1678,6 +1688,9 @@ func (chat *ConversationDao) ListConversationMessages(status ConversationStatus,
 			return []ConversationMessage{}, fmt.Errorf("history: failed to scan message: %w", err)
 		}
 		messages = append(messages, message)
+	}
+	if err := rows.Err(); err != nil {
+		return []ConversationMessage{}, fmt.Errorf("history: rows iteration error listing messages: %w", err)
 	}
 	return messages, nil
 }

@@ -181,7 +181,8 @@ const MessageItem = ({
     headerActionsNode = (
       <ResponseMetaRail
         createdAt={message.created_at}
-        updatedAt={message.updated_at}
+        // answer-completion time, not row last-modified (background jobs bump updated_at); falls back for old msgs
+        updatedAt={message.responded_at || message.updated_at}
         taskCount={responseMeta.taskCount}
         contextCount={responseMeta.contextCount}
         memoryCount={responseMeta.memoryCount}
