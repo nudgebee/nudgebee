@@ -6,6 +6,52 @@ import React, { useCallback } from 'react';
 import { Box, Typography } from '@mui/material';
 import { ds } from '@utils/colors';
 import CodeAnalysisRenderer, { isCodeAnalysisShape } from './code-analysis/CodeAnalysisRenderer';
+import AgentChart from './AgentChart';
+
+// Matches an agent-emitted ```nb-chart fenced block and captures its JSON body.
+// The agent embeds these to render an inline chart alongside its tables.
+const NB_CHART_BLOCK = /```nb-chart\s*\n([\s\S]*?)```/g;
+
+/**
+ * Render markdown that may contain ```nb-chart blocks. The text is split on the
+ * fences and rendered as an ordered sequence of markdown chunks and charts, so a
+ * chart appears exactly where the agent placed it (typically right after a table).
+ * A malformed or invalid chart spec is dropped silently — the surrounding
+ * markdown still renders — so a bad chart never breaks the answer.
+ */
+const renderMarkdownWithCharts = (text, markDownProps, onLinkClick) => {
+  if (!text || !text.includes('```nb-chart')) {
+    return <MarkDowns data={text.replace(/~/g, '\\~')} sx={markDownProps} onLinkClick={onLinkClick} />;
+  }
+
+  const parts = [];
+  let lastIndex = 0;
+  let match;
+  let i = 0;
+  NB_CHART_BLOCK.lastIndex = 0;
+  while ((match = NB_CHART_BLOCK.exec(text)) !== null) {
+    const before = text.slice(lastIndex, match.index);
+    if (before.trim()) {
+      parts.push(<MarkDowns key={`md-${i}`} data={before.replace(/~/g, '\\~')} sx={markDownProps} onLinkClick={onLinkClick} />);
+    }
+    let spec = null;
+    try {
+      spec = JSON.parse(match[1].trim());
+    } catch {
+      spec = null;
+    }
+    if (spec) {
+      parts.push(<AgentChart key={`chart-${i}`} spec={spec} />);
+    }
+    lastIndex = match.index + match[0].length;
+    i += 1;
+  }
+  const after = text.slice(lastIndex);
+  if (after.trim()) {
+    parts.push(<MarkDowns key={`md-${i}`} data={after.replace(/~/g, '\\~')} sx={markDownProps} onLinkClick={onLinkClick} />);
+  }
+  return <>{parts}</>;
+};
 
 /**
  * Check if parsed JSON is a workflow definition
@@ -271,16 +317,10 @@ const LLMAnswerRenderer = ({ toolCall, messages = [], onNavigateToTask, groupInd
         </pre>
       );
     } catch {
-      return (
-        <MarkDowns
-          data={cleanedText.replace(/~/g, '\\~')}
-          sx={{ maxHeight: '100%', width: '100%', overflowX: 'auto', p: 0 }}
-          onLinkClick={onLinkClickProp}
-        />
-      );
+      return renderMarkdownWithCharts(cleanedText, { maxHeight: '100%', width: '100%', overflowX: 'auto', p: 0 }, onLinkClickProp);
     }
 
-    return <MarkDowns data={cleanedText.replace(/~/g, '\\~')} sx={{ width: '100%', overflowX: 'auto', p: 0 }} onLinkClick={onLinkClickProp} />;
+    return renderMarkdownWithCharts(cleanedText, { width: '100%', overflowX: 'auto', p: 0 }, onLinkClickProp);
   };
 
   return <>{renderContent()}</>;

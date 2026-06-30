@@ -1,12 +1,16 @@
 package agents
 
 import (
+	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"text/template"
+	"time"
 
 	"nudgebee/llm/agents/core"
 	"nudgebee/llm/agents/prompts_repo"
+	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	"nudgebee/llm/tools"
@@ -15,7 +19,15 @@ import (
 
 const FinOpsAgentName = "finops"
 
+// finOpsAccountContextCacheNS caches the rendered <account_context> block per
+// account. Spend and recommendation figures change on billing-ingest / scan
+// cycles (hours), so a 5-minute TTL keeps the prompt fresh without re-querying
+// on every conversation turn.
+const finOpsAccountContextCacheNS = "llm_finops_account_ctx"
+
 func init() {
+	common.CacheCreateNamespace(finOpsAccountContextCacheNS, common.CacheNamespaceWithExpiration(5*time.Minute))
+
 	toolDescription := `Answers questions about cloud cost, spend, savings, budgets, optimization opportunities, ` +
 		`rightsizing financial impact, idle/unattached resources, cost anomalies, and commitment coverage. ` +
 		`Provides evidence-backed cost analysis with dollar figures and actionable next steps.`
@@ -68,6 +80,7 @@ func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 		"data_protection_rules": prompts_repo.GetPrompt(prompts_repo.PromptSharedDataProtectionRules),
 		"code_analysis_rules":   prompts_repo.GetPrompt(prompts_repo.PromptSharedCodeAnalysisRules),
 		"time_handling_rules":   prompts_repo.GetPrompt(prompts_repo.PromptSharedTimeHandlingRules),
+		"account_context":       a.fetchFinOpsAccountContext(ctx),
 	}
 	if t, err := template.New("finops").Option("missingkey=zero").Parse(promptText); err == nil {
 		var buf strings.Builder
@@ -107,40 +120,24 @@ func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 		"Cost anomaly query: SELECT name, namespace, anomaly_type, reference_value, evaluated_at FROM anomaly WHERE anomaly_type IN ('CloudSpendService', 'CloudSpendAccount') AND evaluated_at >= '[[Time:-30d]]' ORDER BY evaluated_at DESC LIMIT 20",
 	}
 
-	outputFormat := `Choose the format based on the type of user request. Lead with the headline, not the methodology.
+	outputFormat := `Lead with the headline, not the methodology. A Markdown TABLE is the primary carrier of every multi-data-point answer; prose is supplementary.
 
-**FOR SPEND OVERVIEW** ("what are we spending", "show me costs"):
-Lead: "Your cloud spend is $X/month, [up/down] Y% from last month."
-Then: table of top services/accounts with trend indicators:
-| Service | Current | Previous | Change |
-Mark: (stable) for <5%, NEW for absent in prior period, GONE for terminated.
-Close with: available savings from recommendations + suggested drill-down areas.
+1. **Table first.** Any answer with more than one data point opens with a Markdown table. Reason about which columns fit the question — do not pattern-match to a fixed template.
+2. **Every row is actionable.** Each row ends in a risk label (Low/Medium/High + reason), a concrete next step (verb + object, e.g. "Resize to 40Gi"), or a status signal (NEW/GONE/STABLE/ANOMALY).
+3. **Column shapes by answer type (adapt as needed):**
+   - Spend breakdown: Resource/Service | Current ($) | Previous ($) | Change (%) | Signal | Savings Available ($)
+   - Optimization/rightsizing: Resource | Namespace | Provisioned (current) | Used (p95) | Utilization % | Recommended Target | Est. Saving ($/mo) | Risk | Action
+   - Spike/anomaly: Service | Spike Amount ($) | % Change | Start Date | Root-Cause Signal | Recommended Action
+   - Forecast: Metric | Value | vs Last Month | Signal
+   - Resource drill-down: Attribute | Current | Recommended | Reason
+4. **Always show the absolute, not just the delta.** For any sizing/capacity finding show the current allocated amount (provisioned), observed usage (with percentile), utilization %, and a concrete recommended target — e.g. "150Gi provisioned, 34Gi used (23%), resize to 50Gi"; never just "116Gi unused" or a bare "downsize". Gather absolute provisioned AND used, not only their difference.
+5. **One short paragraph after the table** — headline finding + top 1-2 next steps. No bullet lists restating rows.
+6. **Surface data quality.** Null or clearly-wrong values render as "—"/"⚠" with a footnote; never present corrupt data as fact, never silently drop it.
+7. **Cite inline.** Append the source tool in the cell or header: [spend_summary], [recommendations], [anomaly_execute], [prometheus_execute], [kubectl_execute].
+8. **Make rows clickable.** For optimization/rightsizing/recommendation tables, the Action cell is a Markdown link [<label>](<url>): <label> is a DYNAMIC, intent-aware next step for that row (e.g. "Resize to 10Gi ▸", "Delete unused PVC ▸" — derive it, don't use a fixed string); <url> is the optimize deep-link base from your account context with <Category> and <resource_name> filled in for that row. One click takes the user into the optimise workflow filtered to that resource. Omit the link for purely informational rows.
+9. **Chart when it helps.** When a visual makes the finding land faster, embed ONE ` + "```nb-chart" + ` fenced JSON block right after the table, choosing type and data DYNAMICALLY: bar (compare a measure across resources, e.g. provisioned vs used), doughnut/pie (share of a total, e.g. spend by service), line/area (trend over time). Spec: {"type":"bar","title":"...","labels":[...],"series":[{"key":"Provisioned","data":[...]},{"key":"Used","data":[...]}],"format":"gi|usd|percent|number"} — doughnut/pie use "values":[...] instead of series. Keep it ≤12 labels / ≤4 series and reuse the table's own numbers (never raw time-series). Skip the chart for single-row, clarification, or pure-text answers.
 
-**FOR BILL SPIKE / ANOMALY INVESTIGATION** ("why did costs go up", "explain this spike"):
-Lead: "Your bill increased by $X (Y%) — driven primarily by [service/resource]."
-Then: What Changed section — focus on NEW resources, big movers (>30% increase), anomalies.
-- **Signal:** Specific service/account spike with $ amount [source tool]
-- **Root Cause:** What caused it (new resources, scaling, pricing change, abandoned resources)
-- **Evidence:** Data that confirmed this [source tool]
-- **Impact:** $/month additional spend
-- **Recommendation:** Specific action to reduce cost
-
-**FOR OPTIMIZATION** ("how can I save money", "what should I optimize"):
-Lead: "You have $X/month in potential savings across N recommendations."
-Then: Top 5 ranked by $ impact, each with:
-- What to change and estimated monthly savings
-- Risk level: Low / Medium / High with reason (HPA present? bursty traffic? shared resource?)
-- Evidence from metrics [source tool]
-Close with: total savings if all implemented + recommended order (quick wins first).
-
-**FOR RESOURCE DRILL-DOWN** ("tell me about this instance", "is this right-sized"):
-- Resource identification and current configuration
-- Utilization: p50 and p95 CPU/memory over 14 days [prometheus_execute]
-- HPA / autoscaling status [kubectl_execute]
-- Recommended change with savings estimate
-- Risk: Low/Medium/High with explanation
-
-CRITICAL: Cite the source tool for every data point: [spend_summary], [recommendations], [anomaly_execute], [prometheus_execute], etc.`
+Mark rows (stable) for <5% change, NEW for absent-in-prior-period, GONE for terminated. Every cost answer includes a dollar figure (state explicitly if unavailable).`
 
 	return core.NBAgentPrompt{
 		Role:         "a FinOps cost optimization supervisor that orchestrates cloud cost analysis across AWS, GCP, Azure, and Kubernetes, and surfaces actionable savings opportunities",
@@ -160,6 +157,157 @@ CRITICAL: Cite the source tool for every data point: [spend_summary], [recommend
 			AnswerKey:   "Answer",
 		},
 	}
+}
+
+// topServiceRow is a single (service, 30-day spend) pair for the account context.
+type topServiceRow struct {
+	ServiceName string  `db:"service_name"`
+	Amount      float64 `db:"amount"`
+}
+
+// fetchFinOpsAccountContext builds the live <account_context> block injected into
+// the system prompt. It gives the LLM the account's cloud footprint and spend
+// baseline up front so it can skip orientation tool calls and lead answers with
+// the right figures. The rendered block is cached per account (5-min TTL).
+//
+// It degrades gracefully: the cloud-footprint section (from the already-cached
+// AccountConfigSummary) is always present, while the spend / recommendation
+// sections are omitted silently if their queries fail — a partial context is
+// more useful to the agent than none.
+func (a *FinOpsAgent) fetchFinOpsAccountContext(ctx *security.RequestContext) string {
+	cacheKey := "finops_ctx:" + a.accountId
+	if cached, found := common.CacheGet(finOpsAccountContextCacheNS, cacheKey); found {
+		return string(cached)
+	}
+
+	var b strings.Builder
+	b.WriteString("<account_context>\n")
+
+	// Cloud footprint — sourced from the already-cached AccountConfigSummary, so
+	// this part is effectively free and never fails independently of the cache.
+	summary, err := toolcore.GetAccountConfigSummary(ctx, a.accountId)
+	if err != nil {
+		slog.Warn("finops: failed to get account config summary for context", "error", err, "account_id", a.accountId)
+	} else {
+		if providers := sortedKeys(summary.CloudProviders); len(providers) > 0 {
+			b.WriteString("Cloud providers: " + strings.Join(providers, ", ") + "\n")
+		}
+		if integrations := sortedKeys(summary.IntegrationTypes); len(integrations) > 0 {
+			b.WriteString("Integrations: " + strings.Join(integrations, ", ") + "\n")
+		}
+		if summary.HasAgent {
+			b.WriteString("K8s agent: connected\n")
+		} else {
+			b.WriteString("K8s agent: not connected (kubectl/prometheus tools unavailable)\n")
+		}
+	}
+
+	// Spend baseline + recommendation summary — best-effort. Any failure leaves
+	// the cloud-footprint section intact and is logged, not surfaced.
+	a.appendSpendContext(&b)
+
+	// Optimize-page deep-link base. Surfaced so the agent can render per-row
+	// "Action" links that jump the user straight to the optimise recommendations
+	// table, pre-filtered to a specific resource. The optimise page reads the
+	// account/category/search query params and the #recommendations anchor.
+	baseURL := strings.TrimRight(config.Config.BaseUrl, "/")
+	if baseURL == "" {
+		baseURL = "http://localhost:3000"
+	}
+	fmt.Fprintf(&b, "Optimize page deep-link base: %s/optimise?account=%s&category=<Category>&search=<resource_name>#recommendations\n", baseURL, a.accountId)
+
+	b.WriteString("As of: " + time.Now().UTC().Format("2006-01-02") + "\n")
+	b.WriteString("</account_context>")
+
+	rendered := b.String()
+	if err := common.CacheSet(finOpsAccountContextCacheNS, cacheKey, []byte(rendered), common.CacheSetWithExpiration(5*time.Minute)); err != nil {
+		slog.Warn("finops: failed to cache account context", "error", err, "account_id", a.accountId)
+	}
+	return rendered
+}
+
+// appendSpendContext writes the 30-day spend, top services, and open
+// recommendation lines. Each query is independent and best-effort: a failure
+// logs and skips only its own line.
+func (a *FinOpsAgent) appendSpendContext(b *strings.Builder) {
+	tenantId, err := security.GetTenantIdFromAccountId(a.accountId)
+	if err != nil || tenantId == "" {
+		slog.Warn("finops: cannot resolve tenant for account context", "error", err, "account_id", a.accountId)
+		return
+	}
+	dbManager, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		slog.Warn("finops: db manager unavailable for account context", "error", err)
+		return
+	}
+
+	now := time.Now().UTC()
+	windowEnd := now.Truncate(24 * time.Hour)
+	windowStart := windowEnd.AddDate(0, 0, -30)
+
+	// 30-day spend.
+	var spend float64
+	if err := dbManager.Db.Get(&spend,
+		`SELECT COALESCE(SUM(amount), 0) FROM spends
+		 WHERE tenant = $1 AND cloud_account = $2 AND date >= $3 AND date < $4`,
+		tenantId, a.accountId, windowStart, windowEnd); err != nil {
+		slog.Warn("finops: 30-day spend query failed for account context", "error", err, "account_id", a.accountId)
+	} else {
+		fmt.Fprintf(b, "30-day spend: $%.2f\n", spend)
+	}
+
+	// Top 3 services by 30-day spend.
+	topServices := []topServiceRow{}
+	if err := dbManager.Db.Select(&topServices,
+		`SELECT cr.service_name AS service_name, ROUND(SUM(s.amount)::numeric, 2)::float AS amount
+		 FROM spends s
+		 JOIN cloud_resourses cr ON cr.id = s.cloud_resource_id
+		 WHERE s.tenant = $1 AND s.cloud_account = $2 AND s.date >= $3 AND s.date < $4
+		   AND cr.service_name IS NOT NULL AND s.amount > 0
+		 GROUP BY cr.service_name
+		 ORDER BY SUM(s.amount) DESC
+		 LIMIT 3`,
+		tenantId, a.accountId, windowStart, windowEnd); err != nil {
+		slog.Warn("finops: top services query failed for account context", "error", err, "account_id", a.accountId)
+	} else if len(topServices) > 0 {
+		parts := make([]string, 0, len(topServices))
+		for _, s := range topServices {
+			parts = append(parts, fmt.Sprintf("%s ($%.2f)", s.ServiceName, s.Amount))
+		}
+		b.WriteString("Top services: " + strings.Join(parts, ", ") + "\n")
+	}
+
+	// Open recommendation count + quantified savings.
+	var rec struct {
+		Count        int     `db:"cnt"`
+		Quantified   int     `db:"quantified"`
+		TotalSavings float64 `db:"total_savings"`
+	}
+	if err := dbManager.Db.Get(&rec,
+		`SELECT COUNT(*) AS cnt,
+		        COUNT(*) FILTER (WHERE estimated_savings > 0) AS quantified,
+		        COALESCE(SUM(estimated_savings) FILTER (WHERE estimated_savings > 0), 0) AS total_savings
+		 FROM recommendation
+		 WHERE cloud_account_id = $1 AND status = 'Open'`,
+		a.accountId); err != nil {
+		slog.Warn("finops: open recommendation query failed for account context", "error", err, "account_id", a.accountId)
+	} else if rec.Count > 0 {
+		fmt.Fprintf(b, "Open recommendations: %d (savings quantified for %d, total $%.2f/month)\n",
+			rec.Count, rec.Quantified, rec.TotalSavings)
+	}
+}
+
+// sortedKeys returns the true-valued keys of a string-keyed bool set, sorted for
+// deterministic prompt output (so the account-scoped prompt cache stays stable).
+func sortedKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k, v := range m {
+		if v {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (a *FinOpsAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
