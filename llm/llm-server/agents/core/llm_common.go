@@ -942,6 +942,10 @@ func tryWithModel(rc *retryContext) (*llms.ContentResponse, error) {
 	// overrides on the LLM call path. See attachTenantIDForEgressFilter
 	// for the missing-tenant / parse-failure / missing-SC fallback rules.
 	ctx = attachTenantIDForEgressFilter(ctx, rc.ctx.GetSecurityContext())
+	// Attach the running agent's name so egressfilter surfaces it on the
+	// FilterEvent for dashboard queries (and to drive a future per-agent
+	// suppression policy phase). Empty agentName is a no-op.
+	ctx = egressfilter.WithAgentName(ctx, rc.agentName)
 
 	// Apply cache for current model (if enabled)
 	// This ensures cache is always correct for the current model, including fallback models

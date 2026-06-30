@@ -62,12 +62,26 @@ type FilterEvent struct {
 	// downstream consumers (UI, dashboards) don't have to recompute.
 	HitCount int      `json:"hit_count"`
 	RuleIDs  []string `json:"rule_ids"`
+
+	// HitSources is the distinct sorted set of Source values across Hits
+	// (e.g. ["tool_result", "user"]). Lets dashboards filter "show me only
+	// user-source hits" without walking every Hit. Empty when no hit was
+	// tagged with a source — older clients producing untagged hits, or
+	// hits that fell on a separator byte.
+	HitSources []Source `json:"hit_sources,omitempty"`
+
+	// AgentName carries the name of the running agent (e.g. "k8s_debug")
+	// when the upstream wire-up has attached it to ctx via WithAgentName.
+	// Empty when unknown. Enables agent-scoped dashboard queries and is
+	// the structural prerequisite for a future per-agent suppression
+	// policy phase.
+	AgentName string `json:"agent_name,omitempty"`
 }
 
 // newFilterEvent constructs a FilterEvent from a Scan Result + per-call
 // header. Centralizes the derive-the-aggregates logic so the wrapper and
 // any future caller emit identically shaped events.
-func newFilterEvent(auditID string, mode Mode, payloadBytes int, r Result) FilterEvent {
+func newFilterEvent(auditID string, mode Mode, payloadBytes int, r Result, agentName string) FilterEvent {
 	return FilterEvent{
 		AuditID:      auditID,
 		Mode:         mode,
@@ -75,6 +89,8 @@ func newFilterEvent(auditID string, mode Mode, payloadBytes int, r Result) Filte
 		Hits:         r.Hits,
 		HitCount:     len(r.Hits),
 		RuleIDs:      r.RuleIDs(),
+		HitSources:   distinctSources(r.Hits),
+		AgentName:    agentName,
 	}
 }
 

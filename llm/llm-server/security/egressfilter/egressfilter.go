@@ -75,6 +75,14 @@ type Hit struct {
 	// without seeing *what*.
 	Start int `json:"start"`
 	End   int `json:"end"`
+
+	// Source identifies which kind of message part produced this hit —
+	// user input, system prompt, tool result, etc. Filled by the wrapper
+	// after Scan via tagHitsBySource; lets dashboards and (future) policy
+	// distinguish high-signal user-typed secrets from expected-noise
+	// tool-result hits. Empty when the offset couldn't be mapped to a
+	// region (rare; treated as "unknown" by consumers). See source.go.
+	Source Source `json:"source,omitempty"`
 }
 
 // Redaction describes the action taken on a single hit when the wrapper is

@@ -40,12 +40,12 @@ type wrappedModel struct {
 }
 
 // GenerateContent is the primary entrypoint. We serialize the message slice
-// into a single string (a flat concatenation is sufficient for detection — we
-// don't need structural fidelity, only content), scan it, and either block or
-// pass through.
+// into a single string plus a parallel slice of source regions (so each Hit
+// can be tagged with the kind of part it came from), scan it, and either
+// block or pass through.
 func (w *wrappedModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
-	payload := serializeMessages(messages)
-	if err := w.scanAndDecide(ctx, payload); err != nil {
+	payload, regions := serializeMessagesWithSources(messages)
+	if err := w.scanAndDecide(ctx, payload, regions); err != nil {
 		return nil, err
 	}
 	return w.inner.GenerateContent(ctx, messages, options...)
@@ -59,7 +59,7 @@ func (w *wrappedModel) Call(ctx context.Context, prompt string, options ...llms.
 	return llms.GenerateFromSinglePrompt(ctx, w, prompt, options...)
 }
 
-func (w *wrappedModel) scanAndDecide(ctx context.Context, payload string) error {
+func (w *wrappedModel) scanAndDecide(ctx context.Context, payload string, regions []sourceRegion) error {
 	start := time.Now()
 
 	// Resolve per-tenant overrides (nil → env defaults apply).
@@ -71,6 +71,10 @@ func (w *wrappedModel) scanAndDecide(ctx context.Context, payload string) error 
 	}
 
 	result := Scan(payload)
+	// Tag hits with their source kind so dashboards and (future) policy
+	// can distinguish user-typed secrets from agents reading configs. Done
+	// before tenant overrides so the Source survives onto FilterEvent hits.
+	result.Hits = tagHitsBySource(result.Hits, regions)
 	result = applyTenantOverrides(result, payload, tcfg)
 	latency := time.Since(start).Seconds()
 
@@ -88,9 +92,12 @@ func (w *wrappedModel) scanAndDecide(ctx context.Context, payload string) error 
 
 	ruleIDs := result.RuleIDs()
 	auditID := newAuditID()
+	agentName, _ := AgentNameFromContext(ctx)
 	// Build the structured event once; the reporter (if any) and the
-	// returned typed Error share these fields.
-	event := newFilterEvent(auditID, effectiveMode, len(payload), result)
+	// returned typed Error share these fields. Agent name is surfaced on
+	// the event for downstream dashboard queries (and the future per-agent
+	// policy phase).
+	event := newFilterEvent(auditID, effectiveMode, len(payload), result, agentName)
 
 	// Mode is operator config; Action is what we actually do. The gate
 	// indirection lets a deployment plug in its own post-detection policy
@@ -134,62 +141,100 @@ func (w *wrappedModel) scanAndDecide(ctx context.Context, payload string) error 
 }
 
 // serializeMessages flattens a langchaingo message slice into the smallest text
-// blob that preserves all human-readable content. Detection only needs to see
-// the concatenated text; structural boundaries are irrelevant. Raw binary
-// content (e.g. llms.BinaryContent) is skipped because secret regexes can't
-// match it and feeding raw bytes through would only waste cycles.
+// blob that preserves all human-readable content. Thin wrapper kept for
+// back-compat with tests that don't care about source regions.
+func serializeMessages(messages []llms.MessageContent) string {
+	s, _ := serializeMessagesWithSources(messages)
+	return s
+}
+
+// serializeMessagesWithSources flattens a langchaingo message slice into the
+// scan payload AND a parallel slice of source regions so each Hit can be
+// tagged with the kind of part it came from. Detection only needs to see
+// the concatenated text; structural boundaries are irrelevant for the
+// regex pass. Raw binary content (e.g. llms.BinaryContent) is skipped
+// because secret regexes can't match it and feeding raw bytes through
+// would only waste cycles.
 //
 // llms.ImageURLContent IS scanned (its URL field): pre-signed S3 URLs and
-// Azure Blob SAS tokens routinely carry credential material in query params,
-// and we don't want secrets to slip through just because they ride on an
-// image part.
+// Azure Blob SAS tokens routinely carry credential material in query
+// params, and we don't want secrets to slip through just because they ride
+// on an image part.
 //
 // Both value and pointer forms of each part type are handled — langchaingo
-// callers (and our own llms/* providers) inconsistently use either. Missing a
-// pointer form would let secrets in tool calls slip past the egressfilter.
-func serializeMessages(messages []llms.MessageContent) string {
+// callers (and our own llms/* providers) inconsistently use either. Missing
+// a pointer form would let secrets in tool calls slip past the egressfilter.
+//
+// Region boundaries: each region covers [partStart, partEndIncludingNewline)
+// so the regions tile the entire payload, and a hit whose Start lands on
+// the terminating \n of a part is still attributed to that part.
+func serializeMessagesWithSources(messages []llms.MessageContent) (string, []sourceRegion) {
 	var b strings.Builder
+	var regions []sourceRegion
+
+	addRegion := func(text string, src Source) {
+		if text == "" {
+			return
+		}
+		start := b.Len()
+		b.WriteString(text)
+		b.WriteByte('\n')
+		regions = append(regions, sourceRegion{start: start, end: b.Len(), source: src})
+	}
+
 	for _, m := range messages {
+		textSource := sourceForRole(m.Role)
 		for _, p := range m.Parts {
 			switch part := p.(type) {
 			case llms.TextContent:
-				b.WriteString(part.Text)
-				b.WriteByte('\n')
+				addRegion(part.Text, textSource)
 			case *llms.TextContent:
 				if part != nil {
-					b.WriteString(part.Text)
-					b.WriteByte('\n')
+					addRegion(part.Text, textSource)
 				}
 			case llms.ToolCall:
 				if part.FunctionCall != nil {
-					b.WriteString(part.FunctionCall.Arguments)
-					b.WriteByte('\n')
+					addRegion(part.FunctionCall.Arguments, SourceToolCallArgs)
 				}
 			case *llms.ToolCall:
 				if part != nil && part.FunctionCall != nil {
-					b.WriteString(part.FunctionCall.Arguments)
-					b.WriteByte('\n')
+					addRegion(part.FunctionCall.Arguments, SourceToolCallArgs)
 				}
 			case llms.ToolCallResponse:
-				b.WriteString(part.Content)
-				b.WriteByte('\n')
+				addRegion(part.Content, SourceToolResult)
 			case *llms.ToolCallResponse:
 				if part != nil {
-					b.WriteString(part.Content)
-					b.WriteByte('\n')
+					addRegion(part.Content, SourceToolResult)
 				}
 			case llms.ImageURLContent:
-				b.WriteString(part.URL)
-				b.WriteByte('\n')
+				addRegion(part.URL, SourceImageURL)
 			case *llms.ImageURLContent:
 				if part != nil {
-					b.WriteString(part.URL)
-					b.WriteByte('\n')
+					addRegion(part.URL, SourceImageURL)
 				}
 			}
 		}
 	}
-	return b.String()
+	return b.String(), regions
+}
+
+// sourceForRole maps a langchaingo chat-message role to the Source we
+// assign to its TextContent parts. Tool/Image/ToolCall parts are tagged by
+// their own type regardless of role.
+func sourceForRole(role llms.ChatMessageType) Source {
+	switch role {
+	case llms.ChatMessageTypeSystem:
+		return SourceSystem
+	case llms.ChatMessageTypeHuman:
+		return SourceUser
+	case llms.ChatMessageTypeAI:
+		return SourceAssistant
+	case llms.ChatMessageTypeTool:
+		return SourceToolResult
+	default:
+		// Unknown role: default to user — conservative, surfaces in dashboards.
+		return SourceUser
+	}
 }
 
 // newAuditID returns a short request-scoped identifier suitable for surfacing
