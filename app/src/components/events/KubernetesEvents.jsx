@@ -100,6 +100,10 @@ const DEFAULT_TABLE_COLUMNS = [
     align: 'left',
     truncate: 'clamp-2',
     defaultVisible: true,
+    // Always-on: without the Application column rows lose the context that
+    // makes the other columns interpretable, so it can't be deselected — same
+    // treatment as Severity / Alert Status / Action.
+    mandatory: true,
     info: 'The resource or workload this event belongs to.',
   },
   {
@@ -108,6 +112,9 @@ const DEFAULT_TABLE_COLUMNS = [
     align: 'left',
     truncate: 'clamp-2',
     defaultVisible: true,
+    // Always-on for the same reason as Application — the event message is core
+    // to understanding each row, so it stays locked in the column selector.
+    mandatory: true,
     info: 'The alert message as received from the source system.',
   },
   { name: 'Event Type', width: '11%', align: 'left', defaultVisible: false },
