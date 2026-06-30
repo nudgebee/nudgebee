@@ -412,6 +412,7 @@ helm repo update`;
                 Check these prerequisites before starting the installation.
               </Typography>
               <Box
+                id='k8s-prerequisites'
                 sx={{
                   p: 1.5,
                   backgroundColor: 'var(--ds-background-200)',

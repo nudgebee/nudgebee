@@ -77,6 +77,7 @@ import { useData } from '@context/DataContext';
 import { toast as snackbar } from '@ui/Toast';
 import { Input } from '@ui/Input';
 import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
+import ConnectClusterHelp from '@components/onboarding/ConnectClusterHelp';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { getUserSession } from '@lib/auth';
 import { FiArrowRight } from 'react-icons/fi';
@@ -2094,14 +2095,17 @@ const Home = () => {
                             You are currently on our Demo Account (which only has partial data) Let&apos;s get you started with your cluster/account
                           </Typography>
                         </Box>
-                        <Button
-                          tone='primary'
-                          size='sm'
-                          trailingAccent={<ArrowForwardIcon />}
-                          onClick={() => router.push(`/user-management#integrations`)}
-                        >
-                          Add K8s Account
-                        </Button>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
+                          <ConnectClusterHelp />
+                          <Button
+                            tone='primary'
+                            size='sm'
+                            trailingAccent={<ArrowForwardIcon />}
+                            onClick={() => router.push(`/user-management#integrations`)}
+                          >
+                            Add K8s Account
+                          </Button>
+                        </Box>
                       </Box>
                     </DSCard>
 

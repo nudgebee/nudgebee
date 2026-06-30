@@ -845,6 +845,7 @@ const Header1 = ({ showBorder = false }) => {
                 )}
                 {anchorActiveTab.showActiveCluster && (
                   <Box
+                    id='global-cluster-filter'
                     sx={{
                       // Height aligned with ds/Button size='md' (32px) so the cluster
                       // picker sits flush next to the "detail view" button. Border,
@@ -934,7 +935,13 @@ const Header1 = ({ showBorder = false }) => {
                       }
                       target='_blank'
                     >
-                      <DsButton tone='secondary' size='md' icon={<SafeIcon src={ExternalLinkIcon} alt='redirect' />} iconPlacement='start'>
+                      <DsButton
+                        id='cluster-detail-view'
+                        tone='secondary'
+                        size='md'
+                        icon={<SafeIcon src={ExternalLinkIcon} alt='redirect' />}
+                        iconPlacement='start'
+                      >
                         detail view
                       </DsButton>
                     </Link>

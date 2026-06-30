@@ -122,6 +122,11 @@ const BRANDING_ASSETS = {
   k8sBee: { configKey: 'k8sBeeUrl', defaultFile: 'k8s-bee.svg' },
   newUserBee: { configKey: 'newUserBeeUrl', defaultFile: 'troubleshoot_empty_state.png' },
   securityBee: { configKey: 'securityBeeUrl', defaultFile: 'security_empty_state.png' },
+  // Optional onboarding GIF for the "connect a cluster" help popup. No default
+  // ships (the popup falls back to the live interactive walkthrough, which is
+  // brand-correct everywhere) — a white-label tenant sets connectClusterGifUrl
+  // in their theme.json to show their own recording instead.
+  connectClusterGif: { configKey: 'connectClusterGifUrl', defaultFile: 'connect-cluster.gif' },
 };
 
 export const getBrandingAsset = (key) => {

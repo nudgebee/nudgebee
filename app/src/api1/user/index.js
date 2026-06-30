@@ -4,8 +4,14 @@ import cache from '@lib/cache';
 
 export const PREFERENCE_LAST_ACCOUNT_ID = 'last_account';
 export const PREFERENCE_TABLE_PAGE_SIZE = 'table_page_size';
+// Map of clusterValue -> true for K8s-agent banners the user has dismissed.
+// Replaces the old per-cluster `latest-<clusterValue>-K8sAgentSnackbar` keys so
+// we keep a single consolidated entry under `nudgebee.userPreferences`.
+export const PREFERENCE_K8S_AGENT_SNACKBAR = 'k8s_agent_snackbar';
+// Set once the first-login app-overview tour has been shown (per browser).
+export const PREFERENCE_APP_TOUR_SEEN = 'app_tour_seen';
 
-const availablePreferences = [PREFERENCE_LAST_ACCOUNT_ID, PREFERENCE_TABLE_PAGE_SIZE];
+const availablePreferences = [PREFERENCE_LAST_ACCOUNT_ID, PREFERENCE_TABLE_PAGE_SIZE, PREFERENCE_K8S_AGENT_SNACKBAR, PREFERENCE_APP_TOUR_SEEN];
 
 export const GET_CLOUD_ACCOUNTS = `
 query GetCloudAccounts {

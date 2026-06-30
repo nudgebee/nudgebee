@@ -13,8 +13,11 @@ import { ThemeProvider } from '@mui/material/styles';
 import { AppErrorBoundary } from '@shared/ErrorBoundary';
 import { DataProvider } from '@context/DataContext';
 import { Toast as SnackbarComponent } from '@ui/Toast';
+import { TourProvider } from '@components/common/tour';
 import 'swiper/css/bundle';
 import '../styles/CustomSwiperCarousel.css';
+import 'driver.js/dist/driver.css';
+import '../styles/tour.css';
 import { useThemeProvider } from '@hooks/useThemeProvider';
 
 // Use of the <SessionProvider> is mandatory to allow components that call
@@ -39,10 +42,12 @@ export default function App({ Component, pageProps }: AppProps<{ session: Sessio
               <Component {...pageProps} />
             ) : (
               <DataProvider>
-                <PageLayout>
-                  <Component {...pageProps} />
-                  <SnackbarComponent />
-                </PageLayout>
+                <TourProvider>
+                  <PageLayout>
+                    <Component {...pageProps} />
+                    <SnackbarComponent />
+                  </PageLayout>
+                </TourProvider>
               </DataProvider>
             )}
           </GlobalFilterContextProvider>
