@@ -65,7 +65,7 @@ Delivery Channels (Email/ Webhook/Push)
 ### Common Issues
 
 ### 1. Missing Event Emission
-if notifications are not trigerred verify that alert service emits ALERT TRIGERRED event
+If notifications are not triggered, verify that the alert service emits the ALERT_TRIGGERED event.
 
 ### 2. Event Subscription Misconfiguration
 Ensure that notification service is properly subscribed to event bus
