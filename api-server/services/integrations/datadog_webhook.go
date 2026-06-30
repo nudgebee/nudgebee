@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -848,6 +849,48 @@ func parseDatadogK8sSubject(facets []string) datadogK8sSubject {
 	return s
 }
 
+// datadogWorkload is a workload row resolved from the k8s_workloads inventory.
+type datadogWorkload struct {
+	Name            string `db:"name"`
+	Namespace       string `db:"namespace"`
+	Kind            string `db:"kind"`
+	CloudResourceId string `db:"cloud_resource_id"`
+	CloudAccountId  string `db:"cloud_account_id"`
+}
+
+// lookupWorkloadByDatadogService resolves a Datadog `service` tag value to a
+// workload via its tags.datadoghq.com/service label, searching every candidate
+// cloud account. Jobs/CronJobs are excluded (they aren't in the workload
+// inventory). Returns ok=false on no match; a no-rows result is not logged as an
+// error since "this alert isn't about a known workload" is an expected outcome.
+func lookupWorkloadByDatadogService(sc *security.RequestContext, dbms *database.DatabaseManager, tenantId string, candidateAccountIds []string, service string) (datadogWorkload, bool) {
+	lookupService := service
+	if parts := strings.SplitN(service, ",", 2); len(parts) > 1 {
+		lookupService = strings.TrimSpace(parts[0])
+	}
+	if lookupService == "" {
+		return datadogWorkload{}, false
+	}
+	var w datadogWorkload
+	err := dbms.Db.Get(&w, `
+		SELECT name, namespace, kind, cloud_resource_id, cloud_account_id::text
+		FROM k8s_workloads
+		WHERE tenant_id = $1
+		  AND cloud_account_id = ANY($2)
+		  AND is_active = true
+		  AND kind NOT IN ('Job', 'CronJob')
+		  AND labels->>'tags.datadoghq.com/service'::text = $3
+		LIMIT 1
+	`, tenantId, pq.Array(candidateAccountIds), lookupService)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			sc.GetLogger().Error("datadog service-tag workload lookup failed", "error", err, "service", lookupService)
+		}
+		return datadogWorkload{}, false
+	}
+	return w, true
+}
+
 // parseLogAlertQuery extracts the inner search query from a log alert monitor query
 // e.g. logs("service:sqlserver \"Login failed\"").index("*").rollup("count").by("host").last("5m") > 0
 // returns: service:sqlserver "Login failed"
@@ -1131,12 +1174,17 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	var subjectNamespace string
 	var subjectKind string
 	var deploymentName string
+	// deferredSubject/Kind hold a pod- or node-level subject (one with no owning
+	// controller). It is applied only after the deterministic service-tag →
+	// workload lookup below, so an ephemeral pod never pre-empts the resolvable
+	// workload that Datadog's `service` tag points at.
+	var deferredSubject, deferredKind string
 
 	// applyK8sSubject merges a parsed Datadog k8s subject into the running subject
 	// vars. First non-empty wins so an earlier, more authoritative source (the
 	// monitor's group-by) isn't clobbered by a later one (the log URL), which
-	// instead fills any gaps. Pod/container are kept as labels, never as the
-	// subject, so the resolvable controller stays the subject.
+	// instead fills any gaps. Only a resolvable controller becomes the subject
+	// here; pod/node are deferred and pod/container are kept as labels.
 	applyK8sSubject := func(s datadogK8sSubject) {
 		if subjectNamespace == "" && s.Namespace != "" {
 			subjectNamespace = s.Namespace
@@ -1144,9 +1192,14 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		if deploymentName == "" && s.Owner != "" {
 			deploymentName = s.Owner
 		}
-		if subjectName == "" && s.Name != "" {
-			subjectName = s.Name
-			subjectKind = s.Kind
+		if subjectName == "" && s.Owner != "" {
+			// A resolvable controller (Deployment/StatefulSet/… or ownerref).
+			subjectName = s.Owner
+			subjectKind = s.OwnerKind
+		} else if deferredSubject == "" && s.Owner == "" && s.Name != "" {
+			// Pod or node — defer until the service-tag lookup has had a chance.
+			deferredSubject = s.Name
+			deferredKind = s.Kind
 		}
 		if s.Pod != "" && labels["pod_name"] == "" {
 			labels["pod_name"] = s.Pod
@@ -1800,6 +1853,70 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	accountId = core.ApplyAccountMapping(accountId, labels, accountMapping)
 
 	cloudResourceId := ""
+
+	// Deterministic service-tag → workload match. Datadog tags every workload
+	// with tags.datadoghq.com/service, and the alert already carries that value
+	// in labels["service"]. Resolve it directly — this is the deterministic
+	// equivalent of the LLM step below, which (per production data) just echoes
+	// the same service tag back. Runs before the pod/node fallback so the
+	// resolvable workload wins over an ephemeral pod, and before the LLM so this
+	// path never needs an LLM call. Not gated on the LLM feature flag.
+	if subjectName == "" {
+		if svc := strings.TrimSpace(labels["service"]); svc != "" {
+			if dbms, err := database.GetDatabaseManager(database.Metastore); err != nil {
+				sc.GetLogger().Error("failed to get database manager for service-tag match", "error", err)
+			} else {
+				candidateAccountIds, lookupErr := core.GetLinkedCloudAccountIds(sc, accountId, IntegrationDatadogWebhook)
+				if lookupErr != nil {
+					sc.GetLogger().Warn("failed to expand linked cloud accounts for service-tag match, falling back to single account",
+						"error", lookupErr, "account_id", accountId)
+				}
+				if len(candidateAccountIds) == 0 {
+					candidateAccountIds = []string{accountId}
+				}
+				if workload, ok := lookupWorkloadByDatadogService(sc, dbms, sc.GetSecurityContext().GetTenantId(), candidateAccountIds, svc); ok {
+					subjectName = workload.Name
+					subjectNamespace = workload.Namespace
+					subjectKind = strings.ToLower(workload.Kind)
+					cloudResourceId = workload.CloudResourceId
+					labels["kind"] = workload.Kind
+					labels["cloud_resource_id"] = workload.CloudResourceId
+					labels["nb_subject_match"] = "datadog_service_tag"
+					common.MetricsSubjectResolution(sc.GetContext(), IntegrationDatadogWebhook, "live", "matched_service_tag", sc.GetSecurityContext().GetTenantId())
+					// Re-anchor accountId on the matched workload's cloud account so
+					// downstream enrichment targets the correct account.
+					if workload.CloudAccountId != "" && workload.CloudAccountId != accountId {
+						sc.GetLogger().Info("rebinding webhook accountId to service-matched workload's cloud account",
+							"original_account_id", accountId, "matched_account_id", workload.CloudAccountId, "service", svc)
+						accountId = workload.CloudAccountId
+					}
+				}
+			}
+		}
+	}
+
+	// Raw service-tag fallback: if the service tag mapped to no workload, still
+	// use its value as the subject. The `service` tag names the entity the alert
+	// is about — e.g. an AWS Lambda function or other non-k8s Datadog service /
+	// log source that has no workload in the inventory — which is a better,
+	// deterministic subject than an LLM guess that just echoes this same tag back.
+	// Runs before the pod/node fallback so the named service wins over an
+	// ephemeral pod, and before the LLM so it never needs an LLM call.
+	if subjectName == "" {
+		if svc := strings.TrimSpace(labels["service"]); svc != "" {
+			subjectName = svc
+			labels["nb_subject_match"] = "datadog_service_name"
+			common.MetricsSubjectResolution(sc.GetContext(), IntegrationDatadogWebhook, "live", "matched_service_name", sc.GetSecurityContext().GetTenantId())
+		}
+	}
+
+	// Apply the deferred pod/node subject only when neither a controller tag nor
+	// the service-tag lookup produced a subject.
+	if subjectName == "" && deferredSubject != "" {
+		subjectName = deferredSubject
+		subjectKind = deferredKind
+	}
+
 	if subjectName == "" && tenant.IsFeatureEnabled(sc, sc.GetSecurityContext().GetTenantId(), tenant.FEATURE_WEBHOOK_LLM_RESOLUTION) {
 		databaseManager, err := database.GetDatabaseManager(database.Metastore)
 		if err != nil {
@@ -1842,43 +1959,9 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 				if serviceName != "" {
 					labels["service"] = serviceName
 
-					// If LLM returned multiple comma-separated services, use the first one for workload lookup
-					lookupService := serviceName
-					if parts := strings.SplitN(serviceName, ",", 2); len(parts) > 1 {
-						lookupService = strings.TrimSpace(parts[0])
-					}
-
-					// Fetch workload details including kind and cloud_resource_id.
-					// Search across every linked cloud account so we don't return a
-					// workload from the wrong account just because it shares a name.
-					var workload struct {
-						Name            string `db:"name"`
-						Namespace       string `db:"namespace"`
-						Kind            string `db:"kind"`
-						CloudResourceId string `db:"cloud_resource_id"`
-						CloudAccountId  string `db:"cloud_account_id"`
-					}
-					query := `
-						SELECT name, namespace, kind, cloud_resource_id, cloud_account_id::text
-						FROM k8s_workloads
-						WHERE tenant_id = $1
-						  AND cloud_account_id = ANY($2)
-						  AND is_active = true
-						  AND kind NOT IN ('Job', 'CronJob')
-						  AND labels->>'tags.datadoghq.com/service'::text = $3
-						LIMIT 1
-					`
-					err := databaseManager.Db.Get(&workload, query,
-						sc.GetSecurityContext().GetTenantId(),
-						pq.Array(candidateAccountIds),
-						lookupService,
-					)
-					if err != nil {
-						sc.GetLogger().Error("failed to get workload info from database",
-							"error", err,
-							"service_name", lookupService,
-						)
-					} else {
+					// Resolve the LLM-extracted service to a workload via the same
+					// service-tag lookup the deterministic path uses above.
+					if workload, ok := lookupWorkloadByDatadogService(sc, databaseManager, sc.GetSecurityContext().GetTenantId(), candidateAccountIds, serviceName); ok {
 						subjectName = workload.Name
 						subjectNamespace = workload.Namespace
 						subjectKind = strings.ToLower(workload.Kind)
@@ -1892,7 +1975,7 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 							sc.GetLogger().Info("rebinding webhook accountId to matched workload's cloud account",
 								"original_account_id", accountId,
 								"matched_account_id", workload.CloudAccountId,
-								"service_name", lookupService,
+								"service_name", serviceName,
 							)
 							accountId = workload.CloudAccountId
 						}
