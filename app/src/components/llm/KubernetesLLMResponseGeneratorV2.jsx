@@ -197,7 +197,8 @@ const KubernetesLLMResponseGenerator = ({
     setSelectedConversation,
   } = useConversationManager();
   const { allAgents, enabledAgents, loadingAgents, allFunctions, refreshAgents } = useAgentConfiguration(accountId);
-  const { tokenUsageData, messageTokenData, fetchTokenUsage, resetTokenMetrics, getAgentTokenDataForMessage } = useTokenUsage(accountId);
+  const { tokenUsageData, messageTokenData, fetchTokenUsage, resetTokenMetrics, getAgentTokenDataForMessage, getReasoningForTool } =
+    useTokenUsage(accountId);
   const { suggestions: conversationSuggestions, fetchSuggestions, clearSuggestions } = useConversationSuggestions(accountId);
   const {
     allowStop,
@@ -894,6 +895,18 @@ const KubernetesLLMResponseGenerator = ({
     }
   }, [isTokenDataFetched, isFetchingTokenData, selectedSessionId, fetchTokenUsage]);
 
+  // For a conversation that isn't actively running, prefetch token usage (incl.
+  // reasoning) up front so the reasoning rows are ready the instant a tool is opened —
+  // no lazy hover/drawer-open wait. Gate on "not busy" (any settled state, not just an
+  // enumerated terminal list) and a loaded status, so we don't fetch mid-run or before
+  // the conversation has loaded. Runs once (same guard as the hover fetch).
+  useEffect(() => {
+    const isLoaded = conversationStatus && conversationStatus !== 'NOT_FOUND';
+    if (!isSystemBusy && isLoaded && selectedSessionId && !isTokenDataFetched && !isFetchingTokenData) {
+      handleTokenUsageHover();
+    }
+  }, [isSystemBusy, conversationStatus, selectedSessionId, isTokenDataFetched, isFetchingTokenData, handleTokenUsageHover]);
+
   const clusterDropdownContent = (
     <ClusterDropDown
       showStatusIndicator={true}
@@ -1571,6 +1584,7 @@ const KubernetesLLMResponseGenerator = ({
                 sessionId: selectedSessionId || selectedConversationId,
                 conversationId: conversationIdAtDb,
                 getAgentTokenDataForMessage,
+                getReasoningForTool,
                 messageTokenData,
                 handleTokenUsageHover,
                 isFetchingTokenData,

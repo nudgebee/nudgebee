@@ -41,6 +41,22 @@ type ConversationMetrics struct {
 	ApiTimeSeconds              *float64         `json:"api_time_seconds,omitempty"`
 	ApiTimePercentage           *float64         `json:"api_time_percentage,omitempty"`
 	ToolTimePercentage          *float64         `json:"tool_time_percentage,omitempty"`
+	// ReasoningByToolCall maps a tool_call_id to the reasoning (LLM thinking) its
+	// owning agent spent across the conversation, so the UI can show, in a tool's
+	// details, how long that tool's agent reasoned. Keyed by tool_call_id because
+	// UI tool-call tasks carry only that id (no agent_id/message_id).
+	ReasoningByToolCall map[string]ToolReasoning `json:"reasoning_by_tool_call,omitempty"`
+}
+
+// ToolReasoning is an agent's reasoning total, attributed to each of its tool calls.
+// Sourced from llm_conversation_token_usage (no new storage). The same agent total
+// is repeated for each of that agent's tool calls — it is an agent-level figure
+// shown per tool, not a per-tool-call split (token_usage has no tool_call_id).
+type ToolReasoning struct {
+	AgentName        string  `json:"agent_name"`
+	ReasoningSeconds float64 `json:"reasoning_seconds"`
+	ThinkingTokens   int     `json:"thinking_tokens"`
+	Calls            int     `json:"calls"`
 }
 
 type ModelUsageStat struct {
@@ -158,6 +174,47 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 		totalCacheHitRate = &rate
 	}
 
+	// Time-split each agent's reasoning (LLM thinking) calls onto the specific tool
+	// call they produced: in a ReAct loop the agent reasons, then calls a tool, so a
+	// reasoning call is attributed to the first of that agent's tool calls that starts
+	// at/after it. This makes a tool's details show only the reasoning that led to that
+	// call (slices sum to the agent total) instead of repeating the agent total on each.
+	reasoningByToolCall := make(map[string]ToolReasoning)
+	if toolAgents, taErr := GetConversationDao().GetConversationToolCallAgents(request.ConversationId); taErr == nil {
+		// Tool calls grouped by agent, each list already chronological (query ORDER BY).
+		toolsByAgent := make(map[string][]ToolCallAgent)
+		for _, ta := range toolAgents {
+			toolsByAgent[ta.AgentID] = append(toolsByAgent[ta.AgentID], ta)
+		}
+		// detailedRecords are chronological too; a per-agent cursor walks that agent's
+		// tool calls forward as we process its reasoning calls in time order.
+		cursor := make(map[string]int)
+		for _, r := range detailedRecords {
+			if !r.AgentID.Valid {
+				continue
+			}
+			tools := toolsByAgent[r.AgentID.String]
+			i := cursor[r.AgentID.String]
+			for i < len(tools) && tools[i].CreatedAt.Before(r.CreatedAt) {
+				i++
+			}
+			cursor[r.AgentID.String] = i
+			if i >= len(tools) {
+				// Reasoning after the agent's last tool call — final answer synthesis,
+				// not attributable to a tool. Skip.
+				continue
+			}
+			tc := reasoningByToolCall[tools[i].ToolCallID]
+			tc.AgentName = r.AgentName
+			if r.LatencySeconds.Valid {
+				tc.ReasoningSeconds += r.LatencySeconds.Float64
+			}
+			tc.ThinkingTokens += r.ThinkingTokens
+			tc.Calls++
+			reasoningByToolCall[tools[i].ToolCallID] = tc
+		}
+	}
+
 	// Build messages array
 	messages := []MessageMetrics{}
 	for messageId, agentsList := range messageMap {
@@ -271,6 +328,7 @@ func HandleConversationUsageMetricsApi(ctx *security.RequestContext, request Con
 		ApiTimeSeconds:              apiTimePtr,
 		ApiTimePercentage:           apiTimePercentagePtr,
 		ToolTimePercentage:          toolTimePercentagePtr,
+		ReasoningByToolCall:         reasoningByToolCall,
 	}
 
 	return ConversationUsageMetricsResponse{Conversation: conversation}, nil

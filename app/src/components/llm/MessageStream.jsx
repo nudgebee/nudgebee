@@ -224,25 +224,37 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
 
   // Per-task "Tool Details" drawer — used by inline task rows during active runs (no Tasks
   // drawer is open in that case, so we open the primary drawer with the ToolDetails view).
-  const handleOpenToolDetails = useCallback((toolCallMessage) => {
-    setDrawer({ open: true, kind: 'tool-details', title: 'Tool Details', data: { task: toolCallMessage } });
-    setSecondary({ open: false, task: null });
-  }, []);
+  const handleOpenToolDetails = useCallback(
+    (toolCallMessage) => {
+      // Load token usage (incl. per-tool reasoning) so the reasoning entry has data.
+      itemProps?.handleTokenUsageHover?.();
+      setDrawer({ open: true, kind: 'tool-details', title: 'Tool Details', data: { task: toolCallMessage } });
+      setSecondary({ open: false, task: null });
+    },
+    [itemProps?.handleTokenUsageHover]
+  );
 
-  const openTasksDrawer = useCallback(({ tasks, expandedTaskKey }) => {
-    setDrawer({ open: true, kind: 'tasks', title: `Tasks · ${tasks.length}`, data: { tasks } });
-    if (expandedTaskKey != null) {
-      const target = tasks.find((t) => {
-        const candidates = [t.id, t.tool_id, t.originalIndex];
-        return candidates.some((c) => c != null && String(c) === String(expandedTaskKey));
-      });
-      if (target) {
-        setSecondary({ open: true, task: target });
-        return;
+  const openTasksDrawer = useCallback(
+    ({ tasks, expandedTaskKey }) => {
+      // Token-usage (incl. reasoning steps) is otherwise fetched only on hover of the
+      // usage widget. Trigger it on drawer open so reasoning rows have data; it's
+      // guarded to fetch once.
+      itemProps?.handleTokenUsageHover?.();
+      setDrawer({ open: true, kind: 'tasks', title: `Tasks · ${tasks.length}`, data: { tasks } });
+      if (expandedTaskKey != null) {
+        const target = tasks.find((t) => {
+          const candidates = [t.id, t.tool_id, t.originalIndex];
+          return candidates.some((c) => c != null && String(c) === String(expandedTaskKey));
+        });
+        if (target) {
+          setSecondary({ open: true, task: target });
+          return;
+        }
       }
-    }
-    setSecondary({ open: false, task: null });
-  }, []);
+      setSecondary({ open: false, task: null });
+    },
+    [itemProps?.handleTokenUsageHover]
+  );
 
   const openContextsDrawer = useCallback((references) => {
     setDrawer({ open: true, kind: 'contexts', title: `Additional Contexts · ${references.length}`, data: { references } });
@@ -487,7 +499,14 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
         defaultWidth='45%'
         variant='modern'
       >
-        {secondary.task && <ToolDetails toolCall={secondary.task} accountId={itemProps.accountId} conversationId={itemProps.conversationId} />}
+        {secondary.task && (
+          <ToolDetails
+            toolCall={secondary.task}
+            accountId={itemProps.accountId}
+            conversationId={itemProps.conversationId}
+            getReasoningForTool={itemProps?.getReasoningForTool}
+          />
+        )}
       </SecondaryDrawer>
     </Box>
   );
@@ -541,7 +560,14 @@ const renderDrawerContent = ({ drawer, secondary, itemProps, onOpenToolDetails }
     case 'memories':
       return <MemoriesDrawerContent memories={drawer.data.memories} />;
     case 'tool-details':
-      return <ToolDetails toolCall={drawer.data.task} accountId={itemProps.accountId} conversationId={itemProps.conversationId} />;
+      return (
+        <ToolDetails
+          toolCall={drawer.data.task}
+          accountId={itemProps.accountId}
+          conversationId={itemProps.conversationId}
+          getReasoningForTool={itemProps?.getReasoningForTool}
+        />
+      );
     default:
       return null;
   }

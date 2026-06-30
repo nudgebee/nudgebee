@@ -18,6 +18,7 @@ import LLMAnswerRenderer from './LLMAnswerRenderer';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import ReferencesPopover from './ReferencesModal';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
+import AutoAwesomeOutlinedIcon from '@mui/icons-material/AutoAwesomeOutlined';
 import Chart from '@ui/Chart';
 import Text from '@shared/format/Text';
 import CustomTable from '@shared/tables/CustomTable';
@@ -832,7 +833,7 @@ ParametersBox.propTypes = {
 /**
  * Renders a single tool call's thought and response.
  */
-const ToolCallSection = ({ tc, index, accountId }) => {
+const ToolCallSection = ({ tc, index, accountId, reasoning }) => {
   const thought = (tc.thought || '').split('\n\nAction:')[0];
   const responseText = tc.response;
   const tcName = tc.tool_name || `Tool Call ${index + 1}`;
@@ -858,7 +859,8 @@ const ToolCallSection = ({ tc, index, accountId }) => {
           {index + 1}. {cleanToolName(tcName)}
         </Typography>
         <StatusBadge status={tcStatus} />
-        <Duration createdAt={tc.created_at} updatedAt={tc.updated_at} />
+        <ReasoningBadge reasoning={reasoning} />
+        <Duration createdAt={tc.created_at} updatedAt={tc.updated_at} metadata={tc.metadata} />
       </Box>
 
       {/* Thought */}
@@ -900,9 +902,61 @@ ToolCallSection.propTypes = {
   tc: PropTypes.object.isRequired,
   index: PropTypes.number.isRequired,
   accountId: PropTypes.string,
+  reasoning: PropTypes.object,
 };
 
-const ToolDetails = ({ toolCall, accountId, conversationId }) => {
+// Formats a reasoning duration in seconds as "Xm Ys" / "Ys".
+const formatReasoningDuration = (secs) => {
+  const s = Math.round(secs || 0);
+  if (s < 60) {
+    return `${s}s`;
+  }
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return r ? `${m}m ${r}s` : `${m}m`;
+};
+
+// Compact per-tool reasoning badge — sparkle + the thinking time that produced this tool
+// call (red when ≥30s). The tooltip carries agent/call/token detail so the row stays terse.
+const ReasoningBadge = ({ reasoning }) => {
+  if (!reasoning || !(reasoning.reasoning_seconds > 0 || reasoning.calls > 0)) {
+    return null;
+  }
+  const slow = reasoning.reasoning_seconds >= 30;
+  const color = slow ? 'var(--ds-red-600, #dc2626)' : 'var(--ds-gray-500)';
+  const tip = [
+    reasoning.agent_name ? `Agent: ${reasoning.agent_name}` : null,
+    reasoning.thinking_tokens > 0 ? `Tokens: ${reasoning.thinking_tokens.toLocaleString()}` : null,
+    reasoning.calls > 0 ? `LLM Calls: ${reasoning.calls}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  return (
+    <Tooltip title={`Reasoning — ${tip}`}>
+      <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[1], flexShrink: 0 }}>
+        <AutoAwesomeOutlinedIcon sx={{ fontSize: 13, color }} />
+        <Typography
+          sx={{
+            fontSize: 'var(--ds-text-caption)',
+            color,
+            fontFamily: ds.font.sans,
+            fontWeight: slow ? 'var(--ds-font-weight-medium)' : 'var(--ds-font-weight-regular)',
+            lineHeight: 1,
+            fontVariantNumeric: 'tabular-nums',
+          }}
+        >
+          {formatReasoningDuration(reasoning.reasoning_seconds)}
+        </Typography>
+      </Box>
+    </Tooltip>
+  );
+};
+
+ReasoningBadge.propTypes = {
+  reasoning: PropTypes.object,
+};
+
+const ToolDetails = ({ toolCall, accountId, conversationId, getReasoningForTool }) => {
   const [referencesAnchorEl, setReferencesAnchorEl] = useState(null);
 
   const parsedReferences = React.useMemo(() => {
@@ -940,6 +994,23 @@ const ToolDetails = ({ toolCall, accountId, conversationId }) => {
   const toolCalls = toolCall.toolCalls || [];
   const hasMultipleToolCalls = toolCalls.length > 1;
 
+  // Per-tool reasoning lookup: match a tool-call-like object's candidate ids against the
+  // time-split reasoning map so each tool shows the thinking that produced it.
+  const reasoningFor = (obj) => {
+    if (!obj || !getReasoningForTool) {
+      return null;
+    }
+    for (const id of [obj.id, obj.tool_id]) {
+      const r = id && getReasoningForTool(id);
+      if (r) {
+        return r;
+      }
+    }
+    return null;
+  };
+  // Single-tool view shows its reasoning on the header; the grouped view badges each sub-call.
+  const headerReasoning = hasMultipleToolCalls ? null : reasoningFor(toolCalls[0]) || reasoningFor(toolCall);
+
   // Fallback: single tool call view (agent-level thought + response).
   // Source the thought from `log`/`thought` only — never `text`, which for a
   // per-tool-call task holds the parameters (the "Query" box renders those).
@@ -949,7 +1020,8 @@ const ToolDetails = ({ toolCall, accountId, conversationId }) => {
 
   return (
     <Box sx={{ overflow: 'hidden', width: '100%' }}>
-      {/* Agent Header */}
+      {/* Agent Header — single-tool view carries its own reasoning badge (the grouped view
+          badges each sub-call below instead, so reasoning reads per tool, not per agent). */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space.mul(0, 5), mb: ds.space[4], flexWrap: 'wrap' }}>
         <SafeIcon src={icon} alt={toolName} width={24} height={24} />
         <Typography
@@ -1005,6 +1077,7 @@ const ToolDetails = ({ toolCall, accountId, conversationId }) => {
           </Box>
         )}
         <StatusBadge status={status} />
+        <ReasoningBadge reasoning={headerReasoning} />
         <Duration createdAt={toolCall.created_at} updatedAt={toolCall.updated_at} />
       </Box>
 
@@ -1018,7 +1091,7 @@ const ToolDetails = ({ toolCall, accountId, conversationId }) => {
       {hasMultipleToolCalls ? (
         toolCalls.map((tc, idx) => (
           <React.Fragment key={tc.tool_id || idx}>
-            <ToolCallSection tc={tc} index={idx} accountId={accountId} />
+            <ToolCallSection tc={tc} index={idx} accountId={accountId} reasoning={reasoningFor(tc)} />
             {idx < toolCalls.length - 1 && <Divider sx={{ my: ds.space[3] }} />}
           </React.Fragment>
         ))
@@ -1078,6 +1151,7 @@ ToolDetails.propTypes = {
   toolCall: PropTypes.object,
   accountId: PropTypes.string,
   conversationId: PropTypes.string,
+  getReasoningForTool: PropTypes.func,
 };
 
 export default ToolDetails;

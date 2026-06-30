@@ -267,6 +267,7 @@ type IConversationDao interface {
 	GetConversationCost(provider string, model string, nonCachedInputTokens, cachedInputTokens, cacheCreationTokens, outputTokens, thinkingTokens int) (float64, error)
 	GetConversationCosts(models []string) (map[string]modelPricing, error)
 	GetConversationTokenUsageDetailed(conversationId, accountId string) ([]TokenUsageDetailedRecord, error)
+	GetConversationToolCallAgents(conversationId string) ([]ToolCallAgent, error)
 	GetConversationLifecycleStorageCost(conversationId string, tenantId string) (float64, error)
 	GetConversationToolCallsStats(conversationId, accountId string) (ToolCallsStats, error)
 	GetConversationTimeBreakdown(conversationId, accountId string) (TimeBreakdown, error)
@@ -2558,6 +2559,7 @@ type TokenUsageDetailedRecord struct {
 	ThinkingTokens      int
 	RequestStatus       string
 	LatencySeconds      sql.NullFloat64
+	CreatedAt           time.Time
 }
 
 // GetConversationTokenUsageDetailed returns all individual token usage records for detailed analysis
@@ -2576,7 +2578,8 @@ func (chat *ConversationDao) GetConversationTokenUsageDetailed(conversationId, a
 			COALESCE(t.cache_creation_tokens, 0) as CacheCreationTokens,
 			COALESCE(t.thinking_tokens, 0) as ThinkingTokens,
 			t.request_status as RequestStatus,
-			t.latency_seconds as LatencySeconds
+			t.latency_seconds as LatencySeconds,
+			t.created_at as CreatedAt
 		FROM llm_conversation_token_usage t
 		INNER JOIN llm_conversations c ON c.id = t.conversation_id
 		WHERE c.session_id = $1 AND c.account_id = $2::uuid
@@ -2608,6 +2611,54 @@ func (chat *ConversationDao) GetConversationTokenUsageDetailed(conversationId, a
 		return nil, err
 	}
 	return records, nil
+}
+
+// ToolCallAgent links a tool call to the agent that issued it and when it ran, so
+// each agent's reasoning calls can be time-split onto the specific tool call they
+// produced. No db tags — sqlx's default mapper lowercases field names to match the
+// lowercased column aliases, matching the other detailed-record queries in this file.
+type ToolCallAgent struct {
+	ToolCallID string
+	AgentID    string
+	CreatedAt  time.Time
+}
+
+// GetConversationToolCallAgents returns the tool_call_id, agent_id and created_at for
+// each tool call in a conversation (looked up by session_id, matching the other
+// usage-metric queries), ordered chronologically for time-based reasoning attribution.
+func (chat *ConversationDao) GetConversationToolCallAgents(conversationId string) ([]ToolCallAgent, error) {
+	query := `
+		SELECT tc.id::text as ToolCallID, tc.agent_id::text as AgentID, tc.created_at as CreatedAt
+		FROM llm_conversation_tool_calls tc
+		INNER JOIN llm_conversations c ON c.id = tc.conversation_id
+		WHERE c.session_id = $1 AND tc.agent_id IS NOT NULL
+		ORDER BY tc.created_at ASC;`
+
+	rows, err := chat.dbManager.Db.Queryx(query, conversationId)
+	if err != nil {
+		slog.Error("executing tool call agents query", "error", err)
+		return nil, err
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Error("Failed to close rows", "error", err)
+		}
+	}()
+
+	pairs := []ToolCallAgent{}
+	for rows.Next() {
+		var pair ToolCallAgent
+		if err := rows.StructScan(&pair); err != nil {
+			slog.Error("Scan error", "error", err)
+			return nil, err
+		}
+		pairs = append(pairs, pair)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Error("tool call agents rows iteration error", "error", err)
+		return nil, err
+	}
+	return pairs, nil
 }
 
 // ToolCallsStats represents tool call statistics for a conversation
