@@ -55,7 +55,7 @@ Delivery Channels (Email/ Webhook/Push)
 ### Event Flow Description
 
 1. An alert is created or updated in the Alert service
-2. The system emits an ALERT_TRIGERRED event
+2. The system emits an ALERT_TRIGGERED event
 3. The Event Bus routes the event to subscribed services.
 4. The Notification Service listens for this event
 5. Notifications are dispatched through configured channels.
