@@ -3,13 +3,13 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { ds } from '@utils/colors';
 
 const NUDGEBEE_WORDS = [
-  'Bee with you in a moment…',
-  'Bee right back with this…',
-  'Hmm, let me think on this…',
-  'Just connecting a few dots…',
-  'Let me consult my hive notes…',
-  'Buzzing around for the answer…',
-  'Flying off to grab the answer…',
+  'Bee with you in a moment',
+  'Bee right back with this',
+  'Hmm, let me think on this',
+  'Just connecting a few dots',
+  'Let me consult my hive notes',
+  'Buzzing around for the answer',
+  'Flying off to grab the answer',
   'Nubing',
   'Buzzifying',
   'Hive-syncing',
@@ -73,24 +73,24 @@ const NUDGEBEE_WORDS = [
 ];
 
 const CATEGORY_MESSAGES = {
-  small_talk: ['Bee with you in a moment…', 'Bee right back with this…', 'Hmm, let me think on this…', 'On it…', 'One sec…'],
+  small_talk: ['Bee with you in a moment', 'Bee right back with this', 'Hmm, let me think on this', 'On it', 'One sec'],
   kubernetes: [
-    'Scanning your cluster…',
-    'Checking your pods…',
-    'Reading the workload state…',
-    'Talking to the cluster…',
-    'Inspecting your namespaces…',
-    'Pulling node metrics…',
+    'Scanning your cluster',
+    'Checking your pods',
+    'Reading the workload state',
+    'Talking to the cluster',
+    'Inspecting your namespaces',
+    'Pulling node metrics',
   ],
   cloud: [
-    'Pulling your cloud data…',
-    'Checking your cloud spend…',
-    'Scanning your cloud resources…',
-    'Reading your account details…',
-    'Fetching resource inventory…',
+    'Pulling your cloud data',
+    'Checking your cloud spend',
+    'Scanning your cloud resources',
+    'Reading your account details',
+    'Fetching resource inventory',
   ],
-  logs: ['Digging through the logs…', 'Tracing that error…', 'Scanning recent events…', 'Following the trail…', 'Combing through the stack…'],
-  workflow: ['Loading the runbook…', 'Checking the automation…', 'Spinning up the workflow…', 'Queuing that up…', 'Prepping the pipeline…'],
+  logs: ['Digging through the logs', 'Tracing that error', 'Scanning recent events', 'Following the trail', 'Combing through the stack'],
+  workflow: ['Loading the runbook', 'Checking the automation', 'Spinning up the workflow', 'Queuing that up', 'Prepping the pipeline'],
 };
 
 function classifyQuery(query) {

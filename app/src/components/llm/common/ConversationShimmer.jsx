@@ -51,7 +51,7 @@ const ConversationShimmer = () => {
         </Box>
       </Box>
       {/* Task shimmer cards */}
-      {[1, 2, 3, 4].map((index) => (
+      {[1, 2].map((index) => (
         <Box key={index} sx={{ display: 'flex', gap: 'var(--ds-space-3)', mb: 'var(--ds-space-5)' }}>
           <Box
             sx={{

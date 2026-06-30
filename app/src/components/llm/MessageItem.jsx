@@ -284,7 +284,7 @@ const MessageItem = ({
         gap: ds.space[3],
         mb: isQuestion && ds.space.mul(1, 5),
         mt: isQuestion && ds.space.mul(1, 15),
-        pb: isLastTaskOfLastGroup ? ds.space.mul(0, 25) : 0,
+        pb: isLastTaskOfLastGroup ? ds.space[4] : 0,
       }}
     >
       {/* Timeline Column */}

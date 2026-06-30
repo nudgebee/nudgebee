@@ -135,11 +135,6 @@ const KubernetesLLMResponseGenerator = ({
     }
   }, [sessionId, conversationId]);
 
-  // Check if we are in a chat screen context based on existence of EITHER ID
-  const isChatScreen = useMemo(
-    () => Boolean(router.query.session_id || router.query.conversation_id),
-    [router.query.session_id, router.query.conversation_id]
-  );
   const { selectedCluster, setSelectedCluster } = useData();
 
   const [uiState, uiDispatch] = useReducer(componentReducer, null, () => ({
@@ -233,6 +228,11 @@ const KubernetesLLMResponseGenerator = ({
   const isConversationInProgress = useMemo(
     () => conversationStatus === 'IN_PROGRESS' || !!currentlyProcessingQuestion,
     [conversationStatus, currentlyProcessingQuestion]
+  );
+
+  const isChatScreen = useMemo(
+    () => Boolean(router.query.session_id || router.query.conversation_id || currentlyProcessingQuestion),
+    [router.query.session_id, router.query.conversation_id, currentlyProcessingQuestion]
   );
 
   // Backend holds the parent conversationMessage in WAITING between a followup answer
@@ -352,7 +352,7 @@ const KubernetesLLMResponseGenerator = ({
         onSuccess: (llmSessionId) => {
           if (!popup) {
             // Standardize on session_id for new chats, clear conversation_id to avoid ambiguity
-            applyFiltersOnRouter(router, { session_id: llmSessionId, conversation_id: null });
+            applyFiltersOnRouter(router, { session_id: llmSessionId, conversation_id: null }, { shallow: true });
           }
           setSelectedSessionId(llmSessionId);
           setSelectedConversationId(''); // Reset conversationId as we have a fresh session
@@ -423,8 +423,7 @@ const KubernetesLLMResponseGenerator = ({
         // Pass both IDs to fetchConversation
         fetchConversation(selectedSessionId, selectedConversationId, 'selected', false);
       }
-    } else {
-      // New Chat Setup
+    } else if (!currentlyProcessingQuestion) {
       setMessages([]);
       if (textareaRef.current) {
         textareaRef.current.focus();
@@ -552,6 +551,34 @@ const KubernetesLLMResponseGenerator = ({
     }
   }, [queryPrefix, messages.length]);
 
+  // Open an existing conversation already at the bottom: when its history finishes loading,
+  // jump to the latest message instantly (behavior: 'auto'), once per session — so there's no
+  // visible top-to-bottom scroll after the shimmer. Skipped for a brand-new first query (keep
+  // the view on the user's question); the session is still marked handled so it won't snap to
+  // the bottom when that run later completes.
+  const autoScrolledSessionRef = useRef(null);
+  useEffect(() => {
+    if (messages.length === 0) {
+      return;
+    }
+    const currentSessionKey = selectedSessionId || selectedConversationId || '';
+    if (!currentSessionKey || autoScrolledSessionRef.current === currentSessionKey) {
+      return;
+    }
+    autoScrolledSessionRef.current = currentSessionKey;
+    if (currentlyProcessingQuestion) {
+      return;
+    }
+    requestAnimationFrame(() => {
+      const el = scrollContainerRef.current;
+      if (el && el.scrollHeight > el.clientHeight + 4) {
+        el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
+      } else if (typeof window !== 'undefined') {
+        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
+      }
+    });
+  }, [messages.length, selectedSessionId, selectedConversationId, currentlyProcessingQuestion]);
+
   useEffect(() => {
     if (messages.length > 0) {
       const timeoutId = setTimeout(() => {
@@ -564,29 +591,6 @@ const KubernetesLLMResponseGenerator = ({
       };
     }
   }, [messages]);
-
-  // Auto-scroll to bottom on chat open: when a session/conversation loads its messages for
-  // the first time, jump straight to the latest message — including in-progress conversations
-  // where the last message is a task (which the response-only effect above doesn't cover).
-  const autoScrolledSessionRef = useRef(null);
-  useEffect(() => {
-    if (messages.length === 0) {
-      return;
-    }
-    const currentSessionKey = selectedSessionId || selectedConversationId || '';
-    if (!currentSessionKey || autoScrolledSessionRef.current === currentSessionKey) {
-      return;
-    }
-    autoScrolledSessionRef.current = currentSessionKey;
-    requestAnimationFrame(() => {
-      const el = scrollContainerRef.current;
-      if (el && el.scrollHeight > el.clientHeight + 4) {
-        el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
-      } else if (typeof window !== 'undefined') {
-        window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' });
-      }
-    });
-  }, [messages.length, selectedSessionId, selectedConversationId]);
 
   useEffect(() => {
     const runAutoCheck = async () => {
@@ -1311,8 +1315,8 @@ const KubernetesLLMResponseGenerator = ({
                 display: 'flex',
                 position: 'relative',
                 flexDirection: 'column',
-                justifyContent: selectedSessionId == '' && selectedConversationId == '' && !popup && 'center',
-                ...(popup && selectedSessionId == '' && selectedConversationId == '' && { flex: 1 }),
+                justifyContent: selectedSessionId == '' && selectedConversationId == '' && !currentlyProcessingQuestion && !popup && 'center',
+                ...(popup && selectedSessionId == '' && selectedConversationId == '' && !currentlyProcessingQuestion && { flex: 1 }),
               }}
             >
               <Box
@@ -1320,15 +1324,16 @@ const KubernetesLLMResponseGenerator = ({
                 flexDirection={'column'}
                 position={'relative'}
                 sx={{
-                  mt: selectedSessionId == '' && selectedConversationId == '' && !popup ? ds.space.mul(1, 25) : 0,
+                  mt: selectedSessionId == '' && selectedConversationId == '' && !currentlyProcessingQuestion && !popup ? ds.space.mul(1, 25) : 0,
                   ...(popup &&
                     selectedSessionId == '' &&
-                    selectedConversationId == '' && {
+                    selectedConversationId == '' &&
+                    !currentlyProcessingQuestion && {
                       flex: 1,
                       pb: ds.space.mul(1, 5),
                     }),
                   '@media (max-width: 1280px)': {
-                    mt: selectedSessionId == '' && selectedConversationId == '' && !popup ? ds.space.mul(1, 15) : 0,
+                    mt: selectedSessionId == '' && selectedConversationId == '' && !currentlyProcessingQuestion && !popup ? ds.space.mul(1, 15) : 0,
                   },
                 }}
               >
@@ -1500,13 +1505,10 @@ const KubernetesLLMResponseGenerator = ({
                 )}
               </Box>
             </Box>
-            {/* Show shimmer when loading existing conversation OR first query on main page (not popup) */}
-            {((isConversationLoading && (selectedSessionId || selectedConversationId)) || (isConversationInProgress && messages.length === 0)) &&
-              !popup && <ConversationShimmer />}
+            {isConversationLoading && (selectedSessionId || selectedConversationId) && messages.length === 0 && !popup && <ConversationShimmer />}
 
-            {/* Show ConversationLoader for first query in popup/workflow builder only */}
-            {isConversationInProgress && messages.length === 0 && popup && (
-              <Box sx={{ mt: ds.space.mul(0, 5), width: '100%', minWidth: ds.space.mul(1, 100) }}>
+            {isConversationInProgress && messages.length === 0 && !(isConversationLoading && (selectedSessionId || selectedConversationId)) && (
+              <Box sx={{ mt: ds.space.mul(0, 5), width: '100%', minWidth: popup ? ds.space.mul(1, 100) : 0 }}>
                 <ConversationLoader query={currentlyProcessingQuestion} />
               </Box>
             )}
@@ -1665,7 +1667,7 @@ const KubernetesLLMResponseGenerator = ({
               if (!isSystemBusy || messages.length === 0 || showFollowupSheet) {
                 return null;
               }
-              if (!(selectedSessionId !== '' || selectedConversationId !== '')) {
+              if (!(selectedSessionId !== '' || selectedConversationId !== '' || !!currentlyProcessingQuestion)) {
                 return null;
               }
               return (
