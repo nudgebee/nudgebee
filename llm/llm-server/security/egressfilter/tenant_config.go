@@ -92,10 +92,23 @@ func SetTenantConfigLoader(loader TenantConfigLoader) {
 // changes propagate via API-driven cache invalidation, not TTL expiry.
 var tenantConfigTTL = 5 * time.Minute
 
+// tenantConfigErrorTTL is how long we suppress retries after the loader
+// returns an error. Without this, a DB outage causes every LLM call for
+// every tenant to block on the same upstream failure, exhausting the
+// connection pool and amplifying the outage. 10s is short enough to
+// recover quickly, long enough to dampen retry storms.
+var tenantConfigErrorTTL = 10 * time.Second
+
 // SetTenantConfigTTL overrides the default cache TTL. Test-only convenience
 // for exercising expiry paths without sleeping for minutes.
 func SetTenantConfigTTL(d time.Duration) {
 	tenantConfigTTL = d
+}
+
+// SetTenantConfigErrorTTL overrides the negative-cache-on-error TTL.
+// Test-only.
+func SetTenantConfigErrorTTL(d time.Duration) {
+	tenantConfigErrorTTL = d
 }
 
 type tenantCacheEntry struct {
@@ -140,6 +153,22 @@ func Resolve(ctx context.Context) *TenantConfig {
 	if err != nil {
 		slog.Warn("egressfilter: tenant config loader error; falling through to env defaults",
 			"tenant_id", tenantID.String(), "error", err)
+		// Negative-cache the error for a short TTL so a DB outage doesn't
+		// cause every LLM call for every tenant to block on the same
+		// upstream failure. BUT only when the error is upstream-shaped
+		// (DB unavailable, etc.) — if the cause was this specific request's
+		// ctx cancellation or timeout, that's transient and request-local;
+		// caching it would temporarily disable this tenant's config for
+		// every other healthy concurrent request. ctx.Err() == nil tells us
+		// the error came from the loader, not our deadline.
+		if ctx.Err() == nil {
+			tenantCacheMu.Lock()
+			tenantCacheEntries[tenantID] = &tenantCacheEntry{
+				cfg:       nil,
+				expiresAt: time.Now().Add(tenantConfigErrorTTL),
+			}
+			tenantCacheMu.Unlock()
+		}
 		return nil
 	}
 
@@ -169,6 +198,46 @@ func invalidateAllTenantConfigsForTest() {
 	tenantCacheMu.Lock()
 	tenantCacheEntries = map[uuid.UUID]*tenantCacheEntry{}
 	tenantCacheMu.Unlock()
+}
+
+// StartTenantConfigCacheCleanup runs a periodic cleanup goroutine that
+// removes expired entries from the tenant-config cache. Without this, the
+// map grows unbounded with one entry per tenant ever resolved — small but
+// not zero, and a multi-tenant deployment with transient tenants would
+// leak memory over weeks. The cleanup is bounded by tenant count (cheap
+// even at thousands of entries).
+//
+// Cancelled by ctx; safe to call once at process startup. Cleanup
+// interval is fixed at 1 minute — frequent enough to keep the map small,
+// rare enough that the lock contention is negligible.
+func StartTenantConfigCacheCleanup(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				tenantConfigCacheReapExpired()
+			}
+		}
+	}()
+}
+
+// tenantConfigCacheReapExpired walks the cache and deletes entries whose
+// expiresAt is in the past. Acquires the write lock once for the full
+// scan, which is fine since the cache is bounded by tenant count — at
+// 10k tenants the walk takes ~1ms with the lock held.
+func tenantConfigCacheReapExpired() {
+	now := time.Now()
+	tenantCacheMu.Lock()
+	defer tenantCacheMu.Unlock()
+	for id, e := range tenantCacheEntries {
+		if now.After(e.expiresAt) {
+			delete(tenantCacheEntries, id)
+		}
+	}
 }
 
 // applyTenantOverrides filters Scan hits using a per-tenant TenantConfig:

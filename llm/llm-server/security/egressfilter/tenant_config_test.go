@@ -87,6 +87,95 @@ func TestResolve_DBErrorFailsOpen(t *testing.T) {
 	assert.Nil(t, Resolve(ctx), "DB error must fail-open to nil (caller uses env defaults)")
 }
 
+// TestResolve_DBErrorNegativeCached pins the contract that an upstream
+// loader error is cached for the short error-TTL so a DB outage doesn't
+// cause every LLM call to re-hit the failing DB. Without this, the cache
+// layer would amplify the outage instead of dampening it.
+func TestResolve_DBErrorNegativeCached(t *testing.T) {
+	var calls int64
+	installFakeLoaderForTest(t, func(_ context.Context, _ uuid.UUID) (*TenantConfig, error) {
+		atomic.AddInt64(&calls, 1)
+		return nil, errors.New("simulated DB outage")
+	})
+
+	ctx := WithTenantID(context.Background(), uuid.New())
+	assert.Nil(t, Resolve(ctx)) // load #1 — errors
+	assert.Nil(t, Resolve(ctx)) // expected cache hit — must NOT re-query
+	assert.Nil(t, Resolve(ctx))
+	assert.Equal(t, int64(1), atomic.LoadInt64(&calls),
+		"loader must be called once; subsequent calls must hit the negative cache")
+}
+
+// TestResolve_CtxCancelErrorNotCached pins the contract that request-
+// scoped ctx cancellation / timeout errors are NOT negative-cached.
+// Otherwise a single timed-out request would temporarily disable per-
+// tenant config for every other healthy concurrent request for the same
+// tenant. Regression for the second Gemini review on PR #33303.
+func TestResolve_CtxCancelErrorNotCached(t *testing.T) {
+	var calls int64
+	installFakeLoaderForTest(t, func(ctx context.Context, _ uuid.UUID) (*TenantConfig, error) {
+		atomic.AddInt64(&calls, 1)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return &TenantConfig{Enabled: true}, nil
+	})
+
+	tenantID := uuid.New()
+
+	// First request: cancelled ctx → loader errors.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	assert.Nil(t, Resolve(WithTenantID(cancelled, tenantID)))
+	assert.Equal(t, int64(1), atomic.LoadInt64(&calls))
+
+	// Second request, same tenant, healthy ctx: must re-query the loader
+	// (the negative cache was suppressed for the cancelled case).
+	cfg := Resolve(WithTenantID(context.Background(), tenantID))
+	assert.NotNil(t, cfg, "healthy ctx must successfully load after a cancelled-ctx error")
+	assert.Equal(t, int64(2), atomic.LoadInt64(&calls),
+		"cancelled-ctx error must NOT have been cached")
+}
+
+// TestTenantConfigCacheReapExpired locks the cleanup behaviour: entries
+// whose expiresAt is in the past must be deleted; valid entries must
+// remain. Without this, the cache grows unbounded by one entry per
+// tenant ever resolved.
+func TestTenantConfigCacheReapExpired(t *testing.T) {
+	invalidateAllTenantConfigsForTest()
+	t.Cleanup(invalidateAllTenantConfigsForTest)
+
+	fresh := uuid.New()
+	stale1 := uuid.New()
+	stale2 := uuid.New()
+
+	tenantCacheMu.Lock()
+	tenantCacheEntries[fresh] = &tenantCacheEntry{
+		cfg:       &TenantConfig{TenantID: fresh},
+		expiresAt: time.Now().Add(1 * time.Minute),
+	}
+	tenantCacheEntries[stale1] = &tenantCacheEntry{
+		cfg:       nil,
+		expiresAt: time.Now().Add(-1 * time.Second),
+	}
+	tenantCacheEntries[stale2] = &tenantCacheEntry{
+		cfg:       &TenantConfig{TenantID: stale2},
+		expiresAt: time.Now().Add(-1 * time.Hour),
+	}
+	tenantCacheMu.Unlock()
+
+	tenantConfigCacheReapExpired()
+
+	tenantCacheMu.RLock()
+	defer tenantCacheMu.RUnlock()
+	_, freshExists := tenantCacheEntries[fresh]
+	_, stale1Exists := tenantCacheEntries[stale1]
+	_, stale2Exists := tenantCacheEntries[stale2]
+	assert.True(t, freshExists, "fresh entry must be retained")
+	assert.False(t, stale1Exists, "expired entry (stale1) must be deleted")
+	assert.False(t, stale2Exists, "expired entry (stale2) must be deleted")
+}
+
 func TestResolve_TTLExpiryRefetches(t *testing.T) {
 	prevTTL := tenantConfigTTL
 	SetTenantConfigTTL(50 * time.Millisecond)

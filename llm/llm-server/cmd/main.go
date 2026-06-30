@@ -202,6 +202,11 @@ func main() {
 
 	// Start background integration KB sync
 	syncCtx, syncCancel := context.WithCancel(context.Background())
+	// Periodic cleanup of the in-memory egressfilter tenant-config cache.
+	// Without this, the map grows by one entry per tenant ever resolved
+	// and never shrinks. The cleanup walks the map once a minute and
+	// drops expired entries.
+	egressfilter.StartTenantConfigCacheCleanup(syncCtx)
 	go toolscore.StartIntegrationKBSync(syncCtx)
 	slog.Info("main: started integration KB sync background thread")
 

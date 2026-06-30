@@ -61,7 +61,7 @@ func getTenantConfig(c *gin.Context) {
 	if !ok {
 		return
 	}
-	cfg, err := daoGetTenantConfig(tenantID)
+	cfg, err := daoGetTenantConfig(c.Request.Context(), tenantID)
 	if err != nil {
 		slog.Error("egressfilter admin: get failed", "tenant_id", tenantID, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -75,7 +75,7 @@ func getTenantConfig(c *gin.Context) {
 }
 
 func listTenantConfigs(c *gin.Context) {
-	cfgs, err := daoListTenantConfigs(100)
+	cfgs, err := daoListTenantConfigs(c.Request.Context(), 100)
 	if err != nil {
 		slog.Error("egressfilter admin: list failed", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -131,7 +131,7 @@ func upsertTenantConfig(c *gin.Context) {
 		return
 	}
 
-	if err := daoUpsertTenantConfig(cfg); err != nil {
+	if err := daoUpsertTenantConfig(c.Request.Context(), cfg); err != nil {
 		slog.Error("egressfilter admin: upsert failed", "tenant_id", tenantID, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -164,7 +164,7 @@ func patchTenantConfig(c *gin.Context) {
 	}
 
 	// Read-modify-write. Read the current row (nil → start from defaults).
-	cfg, err := daoGetTenantConfig(tenantID)
+	cfg, err := daoGetTenantConfig(c.Request.Context(), tenantID)
 	if err != nil {
 		slog.Error("egressfilter admin: patch read failed", "tenant_id", tenantID, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -197,7 +197,7 @@ func patchTenantConfig(c *gin.Context) {
 		return
 	}
 
-	if err := daoUpsertTenantConfig(cfg); err != nil {
+	if err := daoUpsertTenantConfig(c.Request.Context(), cfg); err != nil {
 		slog.Error("egressfilter admin: patch write failed", "tenant_id", tenantID, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -211,7 +211,7 @@ func deleteTenantConfig(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := daoDeleteTenantConfig(tenantID); err != nil {
+	if err := daoDeleteTenantConfig(c.Request.Context(), tenantID); err != nil {
 		slog.Error("egressfilter admin: delete failed", "tenant_id", tenantID, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -31,47 +32,43 @@ func setupEgressfilterRouter(t *testing.T) *gin.Engine {
 // and restores them on cleanup. Pass nil for any function the test
 // shouldn't exercise; the stub will t.Fatal if it's invoked unexpectedly.
 func stubDAO(t *testing.T,
-	get func(uuid.UUID) (*egressfilter.TenantConfig, error),
-	upsert func(*egressfilter.TenantConfig) error,
-	del func(uuid.UUID) error,
-	list func(int) ([]egressfilter.TenantConfig, error),
+	get func(context.Context, uuid.UUID) (*egressfilter.TenantConfig, error),
+	upsert func(context.Context, *egressfilter.TenantConfig) error,
+	del func(context.Context, uuid.UUID) error,
+	list func(context.Context, int) ([]egressfilter.TenantConfig, error),
 ) {
 	t.Helper()
 	prevGet, prevUpsert, prevDel, prevList :=
 		daoGetTenantConfig, daoUpsertTenantConfig, daoDeleteTenantConfig, daoListTenantConfigs
 
-	wrap := func(name string, fn any) any {
-		if fn != nil {
-			return fn
+	if get == nil {
+		get = func(_ context.Context, _ uuid.UUID) (*egressfilter.TenantConfig, error) {
+			t.Fatalf("unexpected daoGetTenantConfig call")
+			return nil, nil
 		}
-		switch name {
-		case "get":
-			return func(_ uuid.UUID) (*egressfilter.TenantConfig, error) {
-				t.Fatalf("unexpected daoGetTenantConfig call")
-				return nil, nil
-			}
-		case "upsert":
-			return func(_ *egressfilter.TenantConfig) error {
-				t.Fatalf("unexpected daoUpsertTenantConfig call")
-				return nil
-			}
-		case "delete":
-			return func(_ uuid.UUID) error {
-				t.Fatalf("unexpected daoDeleteTenantConfig call")
-				return nil
-			}
-		case "list":
-			return func(_ int) ([]egressfilter.TenantConfig, error) {
-				t.Fatalf("unexpected daoListTenantConfigs call")
-				return nil, nil
-			}
-		}
-		return fn
 	}
-	daoGetTenantConfig = wrap("get", get).(func(uuid.UUID) (*egressfilter.TenantConfig, error))
-	daoUpsertTenantConfig = wrap("upsert", upsert).(func(*egressfilter.TenantConfig) error)
-	daoDeleteTenantConfig = wrap("delete", del).(func(uuid.UUID) error)
-	daoListTenantConfigs = wrap("list", list).(func(int) ([]egressfilter.TenantConfig, error))
+	if upsert == nil {
+		upsert = func(_ context.Context, _ *egressfilter.TenantConfig) error {
+			t.Fatalf("unexpected daoUpsertTenantConfig call")
+			return nil
+		}
+	}
+	if del == nil {
+		del = func(_ context.Context, _ uuid.UUID) error {
+			t.Fatalf("unexpected daoDeleteTenantConfig call")
+			return nil
+		}
+	}
+	if list == nil {
+		list = func(_ context.Context, _ int) ([]egressfilter.TenantConfig, error) {
+			t.Fatalf("unexpected daoListTenantConfigs call")
+			return nil, nil
+		}
+	}
+	daoGetTenantConfig = get
+	daoUpsertTenantConfig = upsert
+	daoDeleteTenantConfig = del
+	daoListTenantConfigs = list
 
 	t.Cleanup(func() {
 		daoGetTenantConfig = prevGet
@@ -140,7 +137,7 @@ func TestUpsertTenantConfig_BudgetExceeded(t *testing.T) {
 
 func TestGetTenantConfig_404WhenNoRow(t *testing.T) {
 	stubDAO(t,
-		func(_ uuid.UUID) (*egressfilter.TenantConfig, error) { return nil, nil },
+		func(_ context.Context, _ uuid.UUID) (*egressfilter.TenantConfig, error) { return nil, nil },
 		nil, nil, nil)
 	r := setupEgressfilterRouter(t)
 	tid := uuid.New()
@@ -159,7 +156,7 @@ func TestGetTenantConfig_ReturnsConfig(t *testing.T) {
 		DisabledRules: []string{"github-pat"},
 	}
 	stubDAO(t,
-		func(got uuid.UUID) (*egressfilter.TenantConfig, error) {
+		func(_ context.Context, got uuid.UUID) (*egressfilter.TenantConfig, error) {
 			assert.Equal(t, tid, got)
 			return cfg, nil
 		},
@@ -179,7 +176,7 @@ func TestUpsertTenantConfig_Success(t *testing.T) {
 	var captured *egressfilter.TenantConfig
 	stubDAO(t,
 		nil,
-		func(c *egressfilter.TenantConfig) error {
+		func(_ context.Context, c *egressfilter.TenantConfig) error {
 			captured = c
 			return nil
 		},
@@ -211,8 +208,8 @@ func TestPatchTenantConfig_AddRemoveSemantics(t *testing.T) {
 	}
 	var captured *egressfilter.TenantConfig
 	stubDAO(t,
-		func(_ uuid.UUID) (*egressfilter.TenantConfig, error) { return existing, nil },
-		func(c *egressfilter.TenantConfig) error { captured = c; return nil },
+		func(_ context.Context, _ uuid.UUID) (*egressfilter.TenantConfig, error) { return existing, nil },
+		func(_ context.Context, c *egressfilter.TenantConfig) error { captured = c; return nil },
 		nil, nil)
 	r := setupEgressfilterRouter(t)
 	w := doRequest(t, r, "PATCH",
@@ -231,7 +228,7 @@ func TestDeleteTenantConfig_Success(t *testing.T) {
 	called := false
 	stubDAO(t,
 		nil, nil,
-		func(got uuid.UUID) error {
+		func(_ context.Context, got uuid.UUID) error {
 			called = true
 			assert.Equal(t, tid, got)
 			return nil

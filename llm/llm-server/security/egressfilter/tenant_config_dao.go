@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -31,8 +32,9 @@ const tenantConfigSelectColumns = `tenant_id, mode, enabled, allowlist, custom_r
 // env defaults; only those an admin has explicitly configured have a row.
 //
 // Returns (nil, err) on DB error so the cache layer can fail-open to env
-// defaults (Resolve logs and returns nil).
-func GetTenantConfigByID(tenantID uuid.UUID) (*TenantConfig, error) {
+// defaults (Resolve logs and returns nil). Context cancellation propagates
+// to the DB query — request timeouts won't leak DB connections.
+func GetTenantConfigByID(ctx context.Context, tenantID uuid.UUID) (*TenantConfig, error) {
 	if tenantID == uuid.Nil {
 		return nil, fmt.Errorf("egressfilter.GetTenantConfigByID: tenantID is required")
 	}
@@ -55,7 +57,7 @@ func GetTenantConfigByID(tenantID uuid.UUID) (*TenantConfig, error) {
 		updatedAt     time.Time
 		tenantIDOut   uuid.UUID
 	)
-	row := db.Db.QueryRow(query, tenantID)
+	row := db.Db.QueryRowContext(ctx, query, tenantID)
 	err = row.Scan(&tenantIDOut, &mode, &enabled, &allowlistJSON, &customRules, &disabledJSON, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -85,7 +87,10 @@ func GetTenantConfigByID(tenantID uuid.UUID) (*TenantConfig, error) {
 // Caller is responsible for validating cfg before calling (regex compile
 // checks for CustomRules, mode whitelist, length budgets) — DAO does only
 // the DB-shape checks (non-nil tenant id, JSON-encodable arrays).
-func UpsertTenantConfig(cfg *TenantConfig) error {
+//
+// Context cancellation propagates to the DB exec — request timeouts won't
+// leak DB connections.
+func UpsertTenantConfig(ctx context.Context, cfg *TenantConfig) error {
 	if cfg == nil {
 		return fmt.Errorf("egressfilter.UpsertTenantConfig: cfg is nil")
 	}
@@ -128,7 +133,7 @@ func UpsertTenantConfig(cfg *TenantConfig) error {
 			disabled_rules = EXCLUDED.disabled_rules,
 			updated_at     = NOW()
 	`
-	if _, err := db.Db.Exec(query,
+	if _, err := db.Db.ExecContext(ctx, query,
 		cfg.TenantID, string(cfg.Mode), cfg.Enabled,
 		allowlistJSON, customRules, disabledJSON,
 	); err != nil {
@@ -138,8 +143,9 @@ func UpsertTenantConfig(cfg *TenantConfig) error {
 }
 
 // DeleteTenantConfig removes a tenant's override row. The next Resolve
-// returns nil → env defaults take over for that tenant.
-func DeleteTenantConfig(tenantID uuid.UUID) error {
+// returns nil → env defaults take over for that tenant. Context
+// cancellation propagates to the DB exec.
+func DeleteTenantConfig(ctx context.Context, tenantID uuid.UUID) error {
 	if tenantID == uuid.Nil {
 		return fmt.Errorf("egressfilter.DeleteTenantConfig: tenantID is required")
 	}
@@ -147,7 +153,7 @@ func DeleteTenantConfig(tenantID uuid.UUID) error {
 	if err != nil {
 		return fmt.Errorf("egressfilter.DeleteTenantConfig: db: %w", err)
 	}
-	if _, err := db.Db.Exec(
+	if _, err := db.Db.ExecContext(ctx,
 		`DELETE FROM public.llm_egressfilter_tenant_config WHERE tenant_id = $1`,
 		tenantID,
 	); err != nil {
@@ -157,8 +163,9 @@ func DeleteTenantConfig(tenantID uuid.UUID) error {
 }
 
 // ListTenantConfigs returns up to `limit` rows ordered by updated_at desc.
-// For ops/admin debugging only — not on the LLM call path.
-func ListTenantConfigs(limit int) ([]TenantConfig, error) {
+// For ops/admin debugging only — not on the LLM call path. Context
+// cancellation propagates to the DB query.
+func ListTenantConfigs(ctx context.Context, limit int) ([]TenantConfig, error) {
 	if limit <= 0 {
 		limit = 100
 	}
@@ -172,7 +179,7 @@ func ListTenantConfigs(limit int) ([]TenantConfig, error) {
 		ORDER BY updated_at DESC
 		LIMIT $1
 	`
-	rows, err := db.Db.Query(query, limit)
+	rows, err := db.Db.QueryContext(ctx, query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("egressfilter.ListTenantConfigs: query: %w", err)
 	}
@@ -199,8 +206,18 @@ func ListTenantConfigs(limit int) ([]TenantConfig, error) {
 			CustomRules: customRules,
 			UpdatedAt:   updatedAt,
 		}
-		_ = json.Unmarshal(allowlistJSON, &cfg.Allowlist)
-		_ = json.Unmarshal(disabledJSON, &cfg.DisabledRules)
+		// Log unmarshal failures so corrupted JSONB rows are visible during
+		// ops triage. Continue with empty defaults — caller is debugging,
+		// not running the LLM path, so degraded output is preferable to a
+		// hard error that hides the rest of the list.
+		if err := json.Unmarshal(allowlistJSON, &cfg.Allowlist); err != nil {
+			slog.Error("egressfilter.ListTenantConfigs: failed to unmarshal allowlist",
+				"tenant_id", tID, "error", err)
+		}
+		if err := json.Unmarshal(disabledJSON, &cfg.DisabledRules); err != nil {
+			slog.Error("egressfilter.ListTenantConfigs: failed to unmarshal disabled_rules",
+				"tenant_id", tID, "error", err)
+		}
 		out = append(out, cfg)
 	}
 	return out, rows.Err()
@@ -210,8 +227,8 @@ func ListTenantConfigs(limit int) ([]TenantConfig, error) {
 // Idempotent: safe to call from a single startup site. Without this call,
 // Resolve returns nil for every tenant (env defaults everywhere).
 func InitTenantConfigLoader() {
-	SetTenantConfigLoader(func(_ context.Context, tenantID uuid.UUID) (*TenantConfig, error) {
-		return GetTenantConfigByID(tenantID)
+	SetTenantConfigLoader(func(ctx context.Context, tenantID uuid.UUID) (*TenantConfig, error) {
+		return GetTenantConfigByID(ctx, tenantID)
 	})
 }
 
