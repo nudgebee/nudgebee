@@ -277,6 +277,7 @@ func querySpendByCloudAccount(dbManager *common.DatabaseManager, tenantId string
 		LEFT JOIN (
 			SELECT recommendation.cloud_account_id, SUM(recommendation.estimated_savings) AS estimated_savings
 			FROM recommendation
+			WHERE recommendation.status = 'Open' AND recommendation.tenant_id = $1
 			GROUP BY recommendation.cloud_account_id
 		) r ON ca.id = r.cloud_account_id%s
 		ORDER BY s.amount DESC
@@ -335,6 +336,7 @@ func querySpendByService(dbManager *common.DatabaseManager, tenantId string, acc
 		LEFT JOIN (
 			SELECT recommendation.resource_id, SUM(recommendation.estimated_savings) AS estimated_savings
 			FROM recommendation
+			WHERE recommendation.status = 'Open' AND recommendation.tenant_id = $1
 			GROUP BY recommendation.resource_id
 		) r ON dedup.id = r.resource_id
 		INNER JOIN (
