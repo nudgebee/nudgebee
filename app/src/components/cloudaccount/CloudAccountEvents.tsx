@@ -426,21 +426,18 @@ const CloudAccountEvents = (props: {
 
     rowData.push({
       component: (
-        <Tooltip variant='default' title={getTriageStatusTooltip(item?.nb_status || 'OPEN', item?.snoozed_until)} placement='top'>
-          <Box>
-            <NBStatusBadge
-              eventId={item.id}
-              currentStatus={item?.nb_status || 'OPEN'}
-              snoozedUntil={item?.snoozed_until}
-              onStatusChange={() => listCloudAccountEvents()}
-              onCreateTicket={() => {
-                setTicketData(item);
-                setIsTicketCreateFormOpen(true);
-              }}
-              disableTooltip
-            />
-          </Box>
-        </Tooltip>
+        <NBStatusBadge
+          eventId={item.id}
+          currentStatus={item?.nb_status || 'OPEN'}
+          snoozedUntil={item?.snoozed_until}
+          onStatusChange={() => listCloudAccountEvents()}
+          onCreateTicket={() => {
+            setTicketData(item);
+            setIsTicketCreateFormOpen(true);
+          }}
+          disableSnoozeTooltip
+          tooltipTitle={getTriageStatusTooltip(item?.nb_status || 'OPEN', item?.snoozed_until)}
+        />
       ),
       data: item?.nb_status,
     });

@@ -18,7 +18,10 @@ interface NBStatusBadgeProps {
   onStatusChange?: (newStatus: string) => void;
   onCreateTicket?: () => void;
   disabled?: boolean;
-  disableTooltip?: boolean;
+  /** When true, suppresses the internal "Until <date>" tooltip shown on SNOOZED status. */
+  disableSnoozeTooltip?: boolean;
+  /** When provided, wraps the badge in a tooltip that auto-dismisses when the dropdown opens. */
+  tooltipTitle?: React.ReactNode;
 }
 
 // Status display configuration
@@ -85,9 +88,11 @@ const NBStatusBadge: React.FC<NBStatusBadgeProps> = ({
   onStatusChange,
   onCreateTicket,
   disabled = false,
-  disableTooltip = false,
+  disableSnoozeTooltip = false,
+  tooltipTitle,
 }) => {
   const [loading, setLoading] = useState(false);
+  const [statusTooltipOpen, setStatusTooltipOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [snoozeDialogOpen, setSnoozeDialogOpen] = useState(false);
   const [ticketPromptOpen, setTicketPromptOpen] = useState(false);
@@ -214,7 +219,7 @@ const NBStatusBadge: React.FC<NBStatusBadgeProps> = ({
         '&:hover': disabled || loading ? {} : { opacity: 0.8 },
       }}
     >
-      <Tooltip title={snoozeTooltip} arrow disableHoverListener={disableTooltip || !snoozeTooltip}>
+      <Tooltip title={snoozeTooltip} arrow disableHoverListener={disableSnoozeTooltip || !snoozeTooltip}>
         <Box component='span' sx={{ display: 'inline-flex' }}>
           {badgeContent}
         </Box>
@@ -222,12 +227,37 @@ const NBStatusBadge: React.FC<NBStatusBadgeProps> = ({
     </Box>
   );
 
+  const badge =
+    showArrow && !loading ? (
+      <DropdownMenu trigger={triggerBox} items={menuItems} side='bottom' align='start' minWidth={ds.space.mul(0, 70)} />
+    ) : (
+      triggerBox
+    );
+
   return (
     <>
-      {showArrow && !loading ? (
-        <DropdownMenu trigger={triggerBox} items={menuItems} side='bottom' align='start' minWidth={ds.space.mul(0, 70)} />
+      {tooltipTitle ? (
+        <Tooltip
+          variant='default'
+          title={tooltipTitle}
+          placement='top'
+          open={statusTooltipOpen}
+          disableHoverListener
+          disableFocusListener
+          disableTouchListener
+        >
+          <Box
+            data-testid='nb-status-tooltip-wrapper'
+            sx={{ display: 'inline-flex' }}
+            onMouseEnter={() => setStatusTooltipOpen(true)}
+            onMouseLeave={() => setStatusTooltipOpen(false)}
+            onMouseDown={() => setStatusTooltipOpen(false)}
+          >
+            {badge}
+          </Box>
+        </Tooltip>
       ) : (
-        triggerBox
+        badge
       )}
 
       {/* Snooze Duration Dialog */}

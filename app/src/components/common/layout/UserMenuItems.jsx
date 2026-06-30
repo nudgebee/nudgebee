@@ -29,7 +29,7 @@ const VersionMenuItem = () => {
       }}
       disabled={true}
     >
-      <Tooltip title={isOverflowing ? version : ''}>
+      <Tooltip title={isOverflowing ? version : ''} disableInteractive>
         <Typography
           ref={textRef}
           sx={{

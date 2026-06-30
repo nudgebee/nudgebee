@@ -209,18 +209,15 @@ const transformTableData = (
         },
         {
           component: (
-            <Tooltip variant='default' title={getTriageStatusTooltip(item.latest_nb_status)} placement='top'>
-              <Box>
-                <NBStatusBadge
-                  eventId={item.latest_event_id}
-                  currentStatus={item.latest_nb_status}
-                  onStatusChange={onStatusChange}
-                  onCreateTicket={() => onCreateTicket?.(item)}
-                  disabled={!canWrite}
-                  disableTooltip
-                />
-              </Box>
-            </Tooltip>
+            <NBStatusBadge
+              eventId={item.latest_event_id}
+              currentStatus={item.latest_nb_status}
+              onStatusChange={onStatusChange}
+              onCreateTicket={() => onCreateTicket?.(item)}
+              disabled={!canWrite}
+              disableSnoozeTooltip
+              tooltipTitle={getTriageStatusTooltip(item.latest_nb_status)}
+            />
           ),
         },
         {
