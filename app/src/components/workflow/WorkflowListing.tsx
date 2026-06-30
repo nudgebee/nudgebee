@@ -14,6 +14,7 @@ import CustomSearch from '@shared/CustomSearch';
 import FilterDropdown from '@ui/FilterDropdown';
 import { useRouter } from 'next/router';
 import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
+import { useData } from '@context/DataContext';
 import { Modal } from '@ui/Modal';
 import { toast as snackbar } from '@ui/Toast';
 import { hasWriteAccess, hasFeatureAccess, getUserSession } from '@lib/auth';
@@ -228,6 +229,11 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
   const [selectedWorkflow, setSelectedWorkflow] = useState<any>({ id: '', name: '' });
   const [triggerLoading, setTriggerLoading] = useState<boolean>(false);
   const router = useRouter();
+  // Global cluster list (same one the header ClusterDropdown populates).
+  // `null` = still loading; `[]` = resolved with no clusters (e.g. upstream
+  // unreachable or zero accounts). Used to settle the table out of its initial
+  // loading skeleton when no accountId will ever arrive (see effect below).
+  const { allCluster } = useData();
   const [selectedStatus, setSelectedStatus] = useState<string>((router?.query?.status as string) || 'All');
   const [selectedLastExecutionStatus, setSelectedLastExecutionStatus] = useState<string>((router?.query?.last_execution_status as string) || 'All');
   const [selectedTriggerType, setSelectedTriggerType] = useState<string>((router?.query?.type as string) || '');
@@ -1427,6 +1433,23 @@ const WorkflowListing: React.FC<WorkflowListingProps> = ({ accountId }) => {
     listWorkflows(1, rowsPerPage, '');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId, selectedStatus, selectedLastExecutionStatus, selectedTriggerType, committedSearchName, committedSelectedTags, selectedCreatedBy]);
+
+  // Settle the initial loading skeleton when there is no account to query and
+  // the cluster list has resolved EMPTY (upstream unreachable or zero clusters).
+  // In that state listWorkflows() early-returns on `!accountId` without ever
+  // clearing the `loading=true` it mounts with, so the table would otherwise
+  // show a skeleton forever. Gating on `allCluster.length === 0` (not just
+  // `!accountId`) avoids flashing the empty state on a healthy first load, where
+  // accountId is briefly undefined before the header dropdown pushes it to the
+  // URL — there `allCluster` is non-empty, so this stays a no-op and the main
+  // fetch effect takes over.
+  useEffect(() => {
+    if (!accountId && Array.isArray(allCluster) && allCluster.length === 0) {
+      setData([]);
+      setTotalRows(0);
+      setLoading(false);
+    }
+  }, [accountId, allCluster]);
 
   // Background listing refresh: while the tab is visible, silently re-fetch the
   // current page every 10s so running executions and newly started runs surface
