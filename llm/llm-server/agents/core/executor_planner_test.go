@@ -1390,3 +1390,79 @@ func TestValidateToolInput_NoRequiredFields(t *testing.T) {
 	resp := validateToolInput(tool, toolcore.NBToolCallRequest{})
 	assert.Nil(t, resp, "tool with no required fields must always pass")
 }
+
+// newAccumulateStepsExecutor builds a minimal plannerExecutor suitable for
+// exercising accumulateSteps in isolation (no DB / tool execution needed).
+func newAccumulateStepsExecutor() *plannerExecutor {
+	ctx := security.NewRequestContextForTenantAccountAdmin(
+		"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+		"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+		[]string{"cccccccc-cccc-cccc-cccc-cccccccccccc"},
+	)
+	return &plannerExecutor{
+		ctx:      ctx,
+		agent:    &MockAgent{},
+		stepKeys: map[string]bool{},
+	}
+}
+
+func stepWith(toolID, tool string, status ToolStatus, observation string) NBAgentPlannerToolActionStep {
+	return NBAgentPlannerToolActionStep{
+		Action:      NBAgentPlannerToolAction{ToolID: toolID, Tool: tool, ToolInput: "gh issue create ..."},
+		Observation: observation,
+		Status:      status,
+	}
+}
+
+// TestAccumulateSteps_RetrySuccessReplacesPriorFailure is the regression test
+// for the "ticket created but reported as config failure" bug: an identical
+// retried command hashes to the same ToolID, so the successful retry must
+// replace the stranded failure rather than being dropped by the dedup.
+func TestAccumulateSteps_RetrySuccessReplacesPriorFailure(t *testing.T) {
+	const toolID = "github_execute-abc123"
+
+	t.Run("failed then identical success upgrades in place", func(t *testing.T) {
+		e := newAccumulateStepsExecutor()
+
+		// Iteration 1: the create attempt fails with the config error.
+		upgraded := e.accumulateSteps([]NBAgentPlannerToolActionStep{
+			stepWith(toolID, "github_execute", ToolStatusFailure, "Tool github_execute requires configuration but none was found"),
+		})
+		assert.False(t, upgraded)
+		require.Len(t, e.steps, 1)
+		assert.Equal(t, ToolStatusFailure, e.steps[0].Status)
+
+		// Iteration 2: the LLM retries the byte-identical command and it succeeds.
+		upgraded = e.accumulateSteps([]NBAgentPlannerToolActionStep{
+			stepWith(toolID, "github_execute", ToolStatusSuccess, "https://github.com/nudgebee/nudgebee-enterprise/issues/31141"),
+		})
+		assert.True(t, upgraded, "successful retry of a previously failed identical command must be recorded as progress")
+		require.Len(t, e.steps, 1, "the retry must replace the failed step, not append a duplicate")
+		assert.Equal(t, ToolStatusSuccess, e.steps[0].Status)
+		assert.Contains(t, e.steps[0].Observation, "issues/31141")
+	})
+
+	t.Run("stale failure never downgrades a recorded success", func(t *testing.T) {
+		e := newAccumulateStepsExecutor()
+		e.accumulateSteps([]NBAgentPlannerToolActionStep{
+			stepWith(toolID, "github_execute", ToolStatusSuccess, "https://github.com/nudgebee/nudgebee-enterprise/issues/31141"),
+		})
+		// A later identical-ID failure must be dropped, leaving success intact.
+		upgraded := e.accumulateSteps([]NBAgentPlannerToolActionStep{
+			stepWith(toolID, "github_execute", ToolStatusFailure, "transient error"),
+		})
+		assert.False(t, upgraded)
+		require.Len(t, e.steps, 1)
+		assert.Equal(t, ToolStatusSuccess, e.steps[0].Status, "a recorded success must not be downgraded by a later duplicate failure")
+	})
+
+	t.Run("new tool ids are appended", func(t *testing.T) {
+		e := newAccumulateStepsExecutor()
+		upgraded := e.accumulateSteps([]NBAgentPlannerToolActionStep{
+			stepWith("a", "github_execute", ToolStatusSuccess, "out-a"),
+			stepWith("b", "github_execute", ToolStatusSuccess, "out-b"),
+		})
+		assert.False(t, upgraded)
+		assert.Len(t, e.steps, 2)
+	})
+}

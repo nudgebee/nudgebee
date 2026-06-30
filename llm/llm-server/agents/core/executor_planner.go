@@ -302,6 +302,45 @@ func (e *plannerExecutor) GetCallbackHandler() callbacks.Handler {
 	return nil
 }
 
+// accumulateSteps folds the steps produced by one iteration into e.steps,
+// deduplicating by ToolID (a hash of tool+normalized input, so an identical
+// retried command reuses the same ID). New ToolIDs are appended.
+//
+// A step whose ToolID is already recorded is normally the LLM re-proposing
+// already-completed work and is dropped. The exception: when the prior step
+// for that ToolID FAILED (or returned no data) and the retry now SUCCEEDS, the
+// stale failure is replaced in place with the successful result. Without this,
+// a created resource (e.g. a GitHub issue created on the second attempt after a
+// transient config error) is stranded as a failure in e.steps and the
+// summarizer reports it as failed with "Recommended Next Steps" to re-run.
+//
+// Returns true when at least one prior failed step was upgraded to success, so
+// the caller can treat the iteration as progress rather than a duplicate-loop spin.
+func (e *plannerExecutor) accumulateSteps(steps []NBAgentPlannerToolActionStep) bool {
+	upgraded := false
+	for _, step := range steps {
+		if _, ok := e.stepKeys[step.Action.ToolID]; !ok {
+			e.stepKeys[step.Action.ToolID] = true
+			e.steps = append(e.steps, step)
+			continue
+		}
+		if step.Status != ToolStatusSuccess {
+			continue
+		}
+		for idx := range e.steps {
+			if e.steps[idx].Action.ToolID == step.Action.ToolID &&
+				(e.steps[idx].Status == ToolStatusFailure || e.steps[idx].Status == ToolStatusEmptyResult) {
+				e.ctx.GetLogger().Info("plannerexecutor: replacing prior failed step with successful retry of identical command",
+					"agent", e.agent.GetName(), "tool", step.Action.Tool, "toolId", step.Action.ToolID)
+				e.steps[idx] = step
+				upgraded = true
+				break
+			}
+		}
+	}
+	return upgraded
+}
+
 func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, _ ...chains.ChainCallOption) (map[string]any, error) {
 	defer func() {
 		hits, misses, entries := e.toolCallCache.Stats()
@@ -331,14 +370,7 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 		prevStepCount := len(e.steps)
 		steps, finish, err := e.doIteration(ctx, e.steps, nameToTool, inputs)
 		e.ctx.GetLogger().Info("plannerexecutor: iteration complete", "iteration", i, "duration", time.Since(iterStart).String(), "steps", len(steps), "hasFinish", finish != nil)
-		if len(steps) > 0 {
-			for _, step := range steps {
-				if _, ok := e.stepKeys[step.Action.ToolID]; !ok {
-					e.stepKeys[step.Action.ToolID] = true
-					e.steps = append(e.steps, step)
-				}
-			}
-		}
+		upgradedFailedStep := e.accumulateSteps(steps)
 
 		// Duplicate-action loop detection: if the LLM returns non-empty steps
 		// but none are new (all were reused from history via skip logic) and
@@ -347,7 +379,7 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 		// summarizeConversation. Observed with redis SLOWLOG GET: agent
 		// keeps proposing same command despite having the result — wastes
 		// 10 iterations × 10s otherwise (#28141).
-		if finish == nil && len(steps) > 0 && len(e.steps) == prevStepCount {
+		if finish == nil && len(steps) > 0 && len(e.steps) == prevStepCount && !upgradedFailedStep {
 			consecutiveDuplicateIters++
 			if consecutiveDuplicateIters >= 2 {
 				e.ctx.GetLogger().Warn("plannerexecutor: breaking after 2 consecutive duplicate-action iterations (LLM looping on completed work)", "agent", e.agent.GetName(), "iteration", i)
