@@ -37,6 +37,9 @@ import { getTableData4 } from '@components/k8s/investigate/cards/util';
 import apiAccount from '@api1/account';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { ds } from '@utils/colors';
+import { ToggleGroup } from '@ui/ToggleGroup';
+
+type TraceViewMode = 'spans' | 'traces';
 
 interface PassedTimestamp {
   startTimestamp: number;
@@ -275,6 +278,8 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
   const [sessionId, setSessionId] = useState<string>('');
   const [traceProvider, setTraceProvider] = useState('');
   const [services, setServices] = useState<string[]>([]);
+  // 'spans' (default) = one row per span; 'traces' = one row per trace (root span).
+  const [traceView, setTraceView] = useState<TraceViewMode>('spans');
 
   useEffect(() => {
     if (traceData.length > 0) {
@@ -506,6 +511,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
         traceSource: selectedTracesSource,
         traceId: traceId || traceIds,
         fromWorkload: fromWorkload,
+        byTrace: traceView === 'traces',
         cols: [
           'trace_id',
           'span_id',
@@ -654,6 +660,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
           traceId,
           selectedHttpSpan,
           sortObject,
+          traceView,
         ]
       : [
           currentPage,
@@ -672,6 +679,7 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
           resource,
           traceId,
           header,
+          traceView,
         ];
 
   useEffect(() => {
@@ -867,6 +875,25 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
                     color: 'var(--ds-gray-700)',
                     whiteSpace: 'nowrap',
                   }}
+                />
+              </Box>
+            )}
+            {!fixedTrace && traceData.length === 0 && traceProvider && (
+              <Box sx={{ marginLeft: 'var(--ds-space-3)' }}>
+                <ToggleGroup
+                  id='k8s-traces-view-toggle'
+                  selection='single'
+                  size='sm'
+                  ariaLabel='Trace listing view'
+                  value={traceView}
+                  onChange={(v) => {
+                    setTraceView(v as TraceViewMode);
+                    setCurrentPage(0);
+                  }}
+                  options={[
+                    { value: 'spans', label: 'By Spans', tooltip: 'One row per span' },
+                    { value: 'traces', label: 'By Traces', tooltip: 'One row per trace (root span); filters match the root span' },
+                  ]}
                 />
               </Box>
             )}

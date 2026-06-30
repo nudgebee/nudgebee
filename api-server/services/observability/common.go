@@ -2,8 +2,10 @@ package observability
 
 import (
 	"errors"
+	"nudgebee/services/common"
 	"nudgebee/services/query"
 	"nudgebee/services/security"
+	"sort"
 	"strings"
 	"time"
 
@@ -240,4 +242,100 @@ func filterNotClause(not *query.QueryWhereClause, ignoreSet map[string]bool) *qu
 		return nil
 	}
 	return &filtered
+}
+
+// rootCandidate pairs a span with the fields pickRootSpans needs, so each span's timestamp is
+// parsed exactly once (not O(N log N) times inside the sort comparator).
+type rootCandidate struct {
+	span    common.OpenTelemetryTrace
+	isRoot  bool
+	startMs int64
+}
+
+// pickRootSpans reduces a flat span list to one representative row per trace for the "By Traces"
+// view: the span with an empty ParentSpanID, or — when no root is present in the set — the
+// earliest span by Timestamp. The result is re-sorted to honor the request's primary OrderBy
+// (timestamp or duration_ns, asc/desc) so page ordering matches span mode. Used by every
+// non-ClickHouse provider (ClickHouse dedups in SQL instead).
+func pickRootSpans(spans []common.OpenTelemetryTrace, orderBy []query.QueryOrderBy) []common.OpenTelemetryTrace {
+	chosen := map[string]rootCandidate{}
+	seenOrder := make([]string, 0, len(spans))
+	for _, sp := range spans {
+		key := sp.TraceID
+		if key == "" {
+			// No trace id to group on — keep the span as its own row (keyed by span id).
+			key = "span:" + sp.SpanID
+		}
+		startMs, _ := ParseDateToMillis(sp.Timestamp)
+		cand := rootCandidate{span: sp, isRoot: sp.ParentSpanID == "", startMs: startMs}
+		existing, ok := chosen[key]
+		if !ok {
+			chosen[key] = cand
+			seenOrder = append(seenOrder, key)
+			continue
+		}
+		// Prefer a real root; on a tie prefer the earliest span as a pseudo-root.
+		if cand.isRoot != existing.isRoot {
+			if cand.isRoot {
+				chosen[key] = cand
+			}
+		} else if cand.startMs < existing.startMs {
+			chosen[key] = cand
+		}
+	}
+	candidates := make([]rootCandidate, 0, len(seenOrder))
+	for _, key := range seenOrder {
+		candidates = append(candidates, chosen[key])
+	}
+	sortRootCandidates(candidates, orderBy)
+	result := make([]common.OpenTelemetryTrace, 0, len(candidates))
+	for _, cand := range candidates {
+		result = append(result, cand.span)
+	}
+	return result
+}
+
+// sortRootCandidates orders root candidates by the request's primary sort column (timestamp or
+// duration_ns), reusing the timestamp parsed once in pickRootSpans. Defaults to timestamp desc
+// when no order is given, matching the span listing default.
+func sortRootCandidates(candidates []rootCandidate, orderBy []query.QueryOrderBy) {
+	col := "timestamp"
+	order := query.Desc
+	if len(orderBy) > 0 {
+		col = orderBy[0].Column
+		order = orderBy[0].Order
+	}
+	desc := order == query.Desc || order == query.DescNullsLast || order == query.DescNullsFirst
+	sort.SliceStable(candidates, func(i, j int) bool {
+		var vi, vj int64
+		switch col {
+		case "duration_ns":
+			vi, vj = candidates[i].span.DurationNs, candidates[j].span.DurationNs
+		default:
+			vi, vj = candidates[i].startMs, candidates[j].startMs
+		}
+		if desc {
+			return vi > vj
+		}
+		return vi < vj
+	})
+}
+
+// queryRootSpansViaSpans is the generic "By Traces" implementation for providers without native
+// trace-level grouping: it runs the provider's normal span query and reduces the result to one
+// root span per trace. The provider applies limit/offset at the span level, so a page may yield
+// fewer than `limit` distinct traces — acceptable for v1 (ClickHouse does exact trace paging).
+func queryRootSpansViaSpans(ctx *security.RequestContext, src TraceSource, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
+	spans, err := src.QueryTraces(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return pickRootSpans(spans, req.QueryRequest.OrderBy), nil
+}
+
+// countTracesByTraceEstimate is the generic "By Traces" count for providers that cannot cheaply
+// count distinct traces. Count = -1 signals the frontend to estimate pagination — the same
+// contract Jaeger's CountTraces already uses.
+func countTracesByTraceEstimate() (common.OpenTelemetryTraceCount, error) {
+	return common.OpenTelemetryTraceCount{Count: -1}, nil
 }

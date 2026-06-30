@@ -3793,6 +3793,36 @@ actions:
       - role: tenant_admin
       - role: account_admin_readonly
       - role: account_admin
+  - name: traces_by_trace_v3
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/traces'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: account_admin_readonly
+      - role: tenant_admin
+      - role: tenant_admin_readonly
+      - role: tenant_usage
+    comment: list one root span per trace for the "By Traces" view
+  - name: traces_by_trace_count_v3
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/traces'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: account_admin_readonly
+      - role: tenant_usage
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: count distinct traces for the "By Traces" view
   - name: traces_counts
     definition:
       kind: "synchronous"

@@ -1479,3 +1479,15 @@ func (s *ChronosphereMetricSource) GetQuery(_ *security.RequestContext, req Fetc
 	}
 	return "", nil
 }
+
+// QueryRootSpansByTrace returns one root span per trace for the "By Traces" view (see
+// queryRootSpansViaSpans): spans are fetched via QueryTraces and reduced to one root per trace.
+func (c *ChronosphereTraceSource) QueryRootSpansByTrace(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
+	return queryRootSpansViaSpans(ctx, c, req)
+}
+
+// CountTracesByTrace returns -1 (estimate) for the "By Traces" view; distinct-trace counting is
+// not available cheaply for this provider, so the frontend estimates pagination.
+func (c *ChronosphereTraceSource) CountTracesByTrace(_ *security.RequestContext, _ TracesV3Request) (common.OpenTelemetryTraceCount, error) {
+	return countTracesByTraceEstimate()
+}

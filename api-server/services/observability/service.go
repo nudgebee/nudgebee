@@ -59,6 +59,16 @@ type TraceSource interface {
 	GetLabelValues(ctx *security.RequestContext, fetchTraceRequest TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error)
 	QueryGroupedTraces(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) ([]TraceGroupingValues, error)
 	QueryGroupedTracesCount(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) (common.OpenTelemetryTraceGroupCount, error)
+	// QueryRootSpansByTrace backs the "By Traces" listing view: it returns one representative
+	// row per trace (the root span, or the earliest span when no root is present in the
+	// window). Filters apply to the chosen root span. Every TraceSource must implement it so
+	// the toggle works for all providers; non-ClickHouse providers reduce their span result
+	// to roots via the shared pickRootSpans helper.
+	QueryRootSpansByTrace(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) ([]common.OpenTelemetryTrace, error)
+	// CountTracesByTrace returns the number of distinct traces matching the filters for the
+	// "By Traces" view. Providers that cannot count distinct traces cheaply return Count = -1,
+	// which the frontend already treats as an estimate for pagination.
+	CountTracesByTrace(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) (common.OpenTelemetryTraceCount, error)
 	QueryTracesHeatmap(ctx *security.RequestContext, fetchHeatMapRequest TracesHeatMapRequest) ([]common.OpenTelemetryTraceHeatMap, error)
 	GetLabelMapping() map[string]string
 	GetSupportedOperators() []string
@@ -1102,6 +1112,58 @@ func GetTraces(context *security.RequestContext, fetchTracesRequest TracesV3Requ
 	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
 
 	return source.QueryTraces(context, fetchTracesRequest)
+}
+
+// GetRootSpansByTrace resolves the trace source and returns one root span per trace for the
+// "By Traces" listing view. It mirrors GetTraces (provider resolution + label mapping) but
+// dispatches to QueryRootSpansByTrace.
+func GetRootSpansByTrace(context *security.RequestContext, fetchTracesRequest TracesV3Request) ([]common.OpenTelemetryTrace, error) {
+	if fetchTracesRequest.AccountId == "" {
+		return nil, fmt.Errorf("account_id is required")
+	}
+
+	traceProvider, integrationSource, err := GetLogsMetricsTracesProvider(context, fetchTracesRequest.AccountId, fetchTracesRequest.ProviderType, "traces", fetchTracesRequest.ProviderSource)
+	if err != nil {
+		return nil, err
+	}
+
+	if traceProvider == "" {
+		return nil, fmt.Errorf("GetRootSpansByTrace trace provider (trace_provider) is required")
+	}
+	source, err := getTraceSource(traceProvider, integrationSource)
+	if err != nil {
+		return nil, err
+	}
+	filteringMap := source.GetLabelMapping()
+	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
+
+	return source.QueryRootSpansByTrace(context, fetchTracesRequest)
+}
+
+// CountTracesByTrace resolves the trace source and returns the distinct-trace count for the
+// "By Traces" listing view. It mirrors CountTraces but dispatches to CountTracesByTrace.
+func CountTracesByTrace(context *security.RequestContext, fetchTracesRequest TracesV3Request) (common.OpenTelemetryTraceCount, error) {
+	if fetchTracesRequest.AccountId == "" {
+		return common.OpenTelemetryTraceCount{}, fmt.Errorf("account_id is required")
+	}
+
+	traceProvider, integrationSource, err := GetLogsMetricsTracesProvider(context, fetchTracesRequest.AccountId, fetchTracesRequest.ProviderType, "traces", fetchTracesRequest.ProviderSource)
+	if err != nil {
+		return common.OpenTelemetryTraceCount{}, err
+	}
+
+	if traceProvider == "" {
+		return common.OpenTelemetryTraceCount{}, fmt.Errorf("CountTracesByTrace trace provider (trace_provider) is required")
+	}
+
+	source, err := getTraceSource(traceProvider, integrationSource)
+	if err != nil {
+		return common.OpenTelemetryTraceCount{}, err
+	}
+	filteringMap := source.GetLabelMapping()
+	fetchTracesRequest.QueryRequest.Where = convertWhereClauseWithMApping(fetchTracesRequest.QueryRequest.Where, filteringMap)
+
+	return source.CountTracesByTrace(context, fetchTracesRequest)
 }
 
 // GetTracesWithRawResult resolves the trace source and, when it is the otel ClickHouse source,

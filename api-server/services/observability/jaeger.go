@@ -1685,3 +1685,27 @@ func looksLikeK8sSuffix(s string, minLen, maxLen int) bool {
 	}
 	return true
 }
+
+// QueryRootSpansByTrace returns one root span per trace for the "By Traces" view (see
+// queryRootSpansViaSpans): spans are fetched via QueryTraces and reduced to one root per trace.
+func (j *JaegerTraceSource) QueryRootSpansByTrace(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
+	return queryRootSpansViaSpans(ctx, j, req)
+}
+
+// CountTracesByTrace returns -1 (estimate) for the "By Traces" view; distinct-trace counting is
+// not available cheaply for this provider, so the frontend estimates pagination.
+func (j *JaegerTraceSource) CountTracesByTrace(_ *security.RequestContext, _ TracesV3Request) (common.OpenTelemetryTraceCount, error) {
+	return countTracesByTraceEstimate()
+}
+
+// QueryRootSpansByTrace returns one root span per trace for the "By Traces" view (see
+// queryRootSpansViaSpans): spans are fetched via QueryTraces and reduced to one root per trace.
+func (j *JaegerSaasTraceSource) QueryRootSpansByTrace(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
+	return queryRootSpansViaSpans(ctx, j, req)
+}
+
+// CountTracesByTrace returns -1 (estimate) for the "By Traces" view; distinct-trace counting is
+// not available cheaply for this provider, so the frontend estimates pagination.
+func (j *JaegerSaasTraceSource) CountTracesByTrace(_ *security.RequestContext, _ TracesV3Request) (common.OpenTelemetryTraceCount, error) {
+	return countTracesByTraceEstimate()
+}

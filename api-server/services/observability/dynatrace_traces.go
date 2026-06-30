@@ -705,3 +705,15 @@ func (s *DynatraceTraceSource) getTimeRange(startTime, endTime int64) (string, s
 	return time.UnixMilli(startTime).UTC().Format(time.RFC3339),
 		time.UnixMilli(endTime).UTC().Format(time.RFC3339)
 }
+
+// QueryRootSpansByTrace returns one root span per trace for the "By Traces" view (see
+// queryRootSpansViaSpans): spans are fetched via QueryTraces and reduced to one root per trace.
+func (s *DynatraceTraceSource) QueryRootSpansByTrace(ctx *security.RequestContext, req TracesV3Request) ([]common.OpenTelemetryTrace, error) {
+	return queryRootSpansViaSpans(ctx, s, req)
+}
+
+// CountTracesByTrace returns -1 (estimate) for the "By Traces" view; distinct-trace counting is
+// not available cheaply for this provider, so the frontend estimates pagination.
+func (s *DynatraceTraceSource) CountTracesByTrace(_ *security.RequestContext, _ TracesV3Request) (common.OpenTelemetryTraceCount, error) {
+	return countTracesByTraceEstimate()
+}
