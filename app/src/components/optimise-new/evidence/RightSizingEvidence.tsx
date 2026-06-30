@@ -4,13 +4,10 @@ import { ds } from 'src/utils/colors';
 import { formatMemory } from '@lib/formatter';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import DragHandleIcon from '@mui/icons-material/DragHandle';
-import BoltIcon from '@mui/icons-material/Bolt';
-import BarChartIcon from '@mui/icons-material/BarChart';
-import TrendingUpIcon from '@mui/icons-material/TrendingUp';
-import TimelineIcon from '@mui/icons-material/Timeline';
 import Chart from '@ui/Chart';
+import { Card } from '@ui/Card';
 import k8sApi from '@api1/kubernetes';
-import { SavingsFooter, SectionTitle } from '@components/optimise-new/EvidencePanel';
+import { SavingsFooter } from '@components/optimise-new/EvidencePanel';
 import { safeParseJSON } from '@components/optimise-new/utils';
 import MetricQueryInfo, { K8S_METRIC_QUERY_LABELS } from '@shared/MetricQueryInfo';
 
@@ -233,8 +230,6 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
 
   return (
     <Box sx={{ p: ds.space.mul(0, 7) }}>
-      <SectionTitle title='Resource Right-Sizing' muiIcon={<BoltIcon sx={{ fontSize: ds.text.title }} />} />
-
       {/* CPU/Memory Trend Charts */}
       {trendLoading && (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: ds.space[4] }}>
@@ -258,19 +253,18 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
       )}
       {hasTrendData && (
         <>
-          <SectionTitle
-            title='CPU (cores) — 7 day trend'
-            muiIcon={<TimelineIcon sx={{ fontSize: ds.text.title }} />}
-            adornment={<MetricQueryInfo queries={cpuQueries} labelMap={K8S_METRIC_QUERY_LABELS} />}
-          />
-          <Box
-            sx={{
-              backgroundColor: ds.gray[100],
-              borderRadius: ds.radius.lg,
-              p: ds.space.mul(0, 5),
-              mb: ds.space[3],
-              border: `1px solid ${ds.gray[200]}`,
-            }}
+          <Card
+            variant='outlined'
+            elevation='flat'
+            size='sm'
+            header={
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: ds.space[2] }}>
+                <span>CPU (cores) — 7 day trend</span>
+                <MetricQueryInfo queries={cpuQueries} labelMap={K8S_METRIC_QUERY_LABELS} />
+              </Box>
+            }
+            sx={{ mb: ds.space[3] }}
+            data-testid='cpu-trend-card'
           >
             <Chart.Line
               data={[cpuUsage, ...(cpuReccLine ? [cpuReccLine] : []), cpuRequest, ...(cpuLimit.some((v: any) => v != null) ? [cpuLimit] : [])]}
@@ -290,20 +284,19 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
               minHeight={180}
               dynamicHeight={false}
             />
-          </Box>
-          <SectionTitle
-            title='Memory (MB) — 7 day trend'
-            muiIcon={<TimelineIcon sx={{ fontSize: ds.text.title }} />}
-            adornment={<MetricQueryInfo queries={memoryQueries} labelMap={K8S_METRIC_QUERY_LABELS} />}
-          />
-          <Box
-            sx={{
-              backgroundColor: ds.gray[100],
-              borderRadius: ds.radius.lg,
-              p: ds.space.mul(0, 5),
-              mb: ds.space[3],
-              border: `1px solid ${ds.gray[200]}`,
-            }}
+          </Card>
+          <Card
+            variant='outlined'
+            elevation='flat'
+            size='sm'
+            header={
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: ds.space[2] }}>
+                <span>Memory (MB) — 7 day trend</span>
+                <MetricQueryInfo queries={memoryQueries} labelMap={K8S_METRIC_QUERY_LABELS} />
+              </Box>
+            }
+            sx={{ mb: ds.space[3] }}
+            data-testid='memory-trend-card'
           >
             <Chart.Line
               data={[memUsage, ...(memReccLine ? [memReccLine] : []), memRequest, ...(memLimit.some((v: any) => v != null) ? [memLimit] : [])]}
@@ -323,70 +316,19 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
               minHeight={180}
               dynamicHeight={false}
             />
-          </Box>
+          </Card>
         </>
       )}
 
-      <TableContainer
-        sx={{
-          borderRadius: ds.radius.lg,
-          border: `1px solid ${ds.gray[200]}`,
-          mb: ds.space[3],
-          '& .MuiTableCell-root': { px: ds.space.mul(0, 5), py: ds.space[2], fontSize: ds.text.small, borderColor: ds.gray[100] },
-        }}
-      >
-        <Table size='small'>
-          <TableHead>
-            <TableRow sx={{ backgroundColor: ds.blue[100] }}>
-              <TableCell sx={{ fontWeight: ds.weight.semibold, color: ds.gray[700], fontSize: 'var(--ds-text-caption) !important' }}>
-                Container
-              </TableCell>
-              <TableCell sx={{ fontWeight: ds.weight.semibold, color: ds.gray[700], fontSize: 'var(--ds-text-caption) !important' }}>
-                CPU Request (Core)
-              </TableCell>
-              <TableCell sx={{ fontWeight: ds.weight.semibold, color: ds.gray[700], fontSize: 'var(--ds-text-caption) !important' }}>
-                Memory Request (MB)
-              </TableCell>
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {containers.map(({ containerName, cpu, memory }) => (
-              <TableRow key={containerName} sx={{ '&:last-child td': { borderBottom: 'none' } }}>
-                <TableCell>
-                  <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], fontWeight: ds.weight.medium, fontStyle: 'italic' }}>
-                    {containerName}
-                  </Typography>
-                </TableCell>
-                <TableCell>
-                  {cpu ? (
-                    <ValueArrow current={cpu.allocated?.request} recommended={cpu.recommended?.request} unit='cores' />
-                  ) : (
-                    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>—</Typography>
-                  )}
-                </TableCell>
-                <TableCell>
-                  {memory ? (
-                    <ValueArrow current={memory.allocated?.request} recommended={memory.recommended?.request} unit='MB' isMem />
-                  ) : (
-                    <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>—</Typography>
-                  )}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </TableContainer>
-
       {/* Limits table */}
       {containers.some(({ cpu, memory }) => cpu?.allocated?.limit || memory?.allocated?.limit) && (
-        <>
-          <SectionTitle title='Limits' muiIcon={<BarChartIcon sx={{ fontSize: ds.text.title }} />} />
+        <Card variant='outlined' elevation='flat' size='sm' header='Limits' sx={{ mb: ds.space[3] }} data-testid='limits-card'>
           <TableContainer
             sx={{
-              borderRadius: ds.radius.lg,
-              border: `1px solid ${ds.gray[200]}`,
-              mb: ds.space[3],
-              '& .MuiTableCell-root': { px: ds.space.mul(0, 5), py: ds.space[2], fontSize: ds.text.small, borderColor: ds.gray[100] },
+              '& .MuiTableCell-root': { py: ds.space[2], fontSize: ds.text.small, borderColor: ds.gray[100] },
+              '& .MuiTableCell-root:first-of-type': { pl: 0 },
+              '& .MuiTableCell-root:last-of-type': { pr: 0 },
+              '& .MuiTableCell-root:not(:first-of-type):not(:last-of-type)': { px: ds.space.mul(0, 5) },
             }}
           >
             <Table size='small'>
@@ -430,7 +372,7 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
               </TableBody>
             </Table>
           </TableContainer>
-        </>
+        </Card>
       )}
 
       {/* Percentile usage data */}
@@ -445,19 +387,16 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
         const hasUtilization = cpuP99 != null || memP99 != null;
         if (!hasUtilization) return null;
         return (
-          <Box key={`util-${containerName}`} sx={{ mb: ds.space.mul(0, 5) }}>
-            <SectionTitle title={`Utilization — ${containerName}`} muiIcon={<TrendingUpIcon sx={{ fontSize: ds.text.title }} />} />
-            <Box
-              sx={{
-                backgroundColor: ds.gray[100],
-                borderRadius: ds.radius.lg,
-                p: ds.space[3],
-                border: `1px solid ${ds.gray[200]}`,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: ds.space[3],
-              }}
-            >
+          <Card
+            key={`util-${containerName}`}
+            variant='outlined'
+            elevation='flat'
+            size='sm'
+            header={`Utilization — ${containerName}`}
+            sx={{ mb: ds.space[3] }}
+            data-testid={`utilization-card-${containerName}`}
+          >
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[3] }}>
               {cpuP99 != null && cpuAllocated != null && cpuAllocated > 0 && (
                 <UtilizationBar label='CPU' unit='cores' allocated={cpuAllocated} usage={cpuP99} recommended={cpuRecommended} color={ds.blue[500]} />
               )}
@@ -473,28 +412,18 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
                 />
               )}
             </Box>
-          </Box>
+          </Card>
         );
       })}
 
       {/* Detailed percentile data */}
       {containers.some(({ cpu, memory }) => cpu?.add_info || memory?.add_info) && (
-        <>
-          <SectionTitle title='Usage Percentiles' muiIcon={<TrendingUpIcon sx={{ fontSize: ds.text.title }} />} />
-          {containers.map(({ containerName, cpu, memory }) => {
+        <Card variant='outlined' elevation='flat' size='sm' header='Usage Percentiles' sx={{ mb: ds.space[3] }} data-testid='usage-percentiles-card'>
+          {containers.map(({ containerName, cpu, memory }, idx) => {
             const hasPercentiles = cpu?.add_info || memory?.add_info;
             if (!hasPercentiles) return null;
             return (
-              <Box
-                key={containerName}
-                sx={{
-                  backgroundColor: ds.gray[100],
-                  borderRadius: ds.radius.lg,
-                  p: ds.space.mul(0, 5),
-                  mb: ds.space[2],
-                  border: `1px solid ${ds.gray[200]}`,
-                }}
-              >
+              <Box key={containerName} sx={{ mt: idx > 0 ? ds.space[3] : 0 }}>
                 <Typography
                   sx={{ fontSize: ds.text.caption, fontWeight: ds.weight.semibold, color: ds.gray[500], mb: ds.space.mul(0, 3), fontStyle: 'italic' }}
                 >
@@ -523,7 +452,7 @@ const RightSizingEvidence = ({ recommendation, estimatedSavings, fullRecommendat
               </Box>
             );
           })}
-        </>
+        </Card>
       )}
 
       {estimatedSavings != null && estimatedSavings !== 0 && <SavingsFooter savings={estimatedSavings} />}

@@ -1,9 +1,13 @@
-import { Box, Typography, Tabs, Tab, Divider, Drawer } from '@mui/material';
+import { Box, Typography, Divider } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import LinkIcon from '@mui/icons-material/Link';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
+import QueryStatsOutlinedIcon from '@mui/icons-material/QueryStatsOutlined';
+import HistoryOutlinedIcon from '@mui/icons-material/HistoryOutlined';
 import { useState, useEffect } from 'react';
 import { usePagination } from '@hooks/usePagination';
 import CustomTable from '@shared/tables/CustomTable';
+import Tabs from '@shared/navigation/Tabs';
 import { ds } from 'src/utils/colors';
 import { Label, type LabelTone } from '@ui/Label';
 import { Button } from '@ui/Button';
@@ -11,6 +15,7 @@ import { type SeverityLevel } from './SeverityBadge';
 import EvidencePanel from './EvidencePanel';
 import DetailsPanel from './DetailsPanel';
 import ActionBar from './ActionBar';
+import CustomDrawer from '@shared/CustomDrawer';
 import Currency from '@shared/format/Currency';
 import recommendationApi from '@api1/recommendation';
 import { daysSinceLong, getResourceDisplayName } from './utils';
@@ -201,35 +206,20 @@ const RecommendationDetailPanel = ({
   const accountName = accounts[rec.account_id]?.name || '';
 
   return (
-    <Drawer
-      anchor='right'
-      open={open}
-      onClose={onClose}
-      data-testid='recommendation-detail-panel'
-      sx={{
-        '& .MuiDrawer-paper': {
-          width: { xs: '100%', md: '720px' },
-          boxShadow: `0px ${ds.space[1]} 20px -1px color-mix(in srgb, ${ds.gray[300]} 40%, transparent), ${ds.space.mul(1, -1)} 0px 20px ${
-            ds.gray.alpha[200]
-          }`,
-          borderLeft: `1px solid ${ds.gray[200]}`,
-        },
-      }}
-    >
-      <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <CustomDrawer open={open} onClose={onClose} bare nonModal variant='modern' width='720px' storageKey='nb.optimizeDrawer.width'>
+      <Box data-testid='recommendation-detail-panel' sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
         {/* Header */}
         <Box
           sx={{
-            p: `${ds.space[4]} 20px`,
-            borderBottom: `1px solid ${ds.gray[200]}`,
+            p: `${ds.space[4]} ${ds.space[5]} 0 ${ds.space[5]}`,
             display: 'flex',
             alignItems: 'flex-start',
             gap: ds.space[3],
           }}
         >
           <Box sx={{ flex: 1 }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space.mul(0, 3), flexWrap: 'wrap' }}>
-              <Label size='md' tone={SEVERITY_TONE[severity] ?? 'neutral'}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[2], flexWrap: 'wrap' }}>
+              <Label size='sm' tone={SEVERITY_TONE[severity] ?? 'neutral'}>
                 {severity}
               </Label>
               <Label size='sm' tone={status === 'Open' ? 'info' : 'neutral'}>
@@ -246,6 +236,7 @@ const RecommendationDetailPanel = ({
                 color: ds.gray[700],
                 wordBreak: 'break-word',
                 lineHeight: 1.3,
+                letterSpacing: '-0.01em',
               }}
             >
               {resourceName}
@@ -257,70 +248,72 @@ const RecommendationDetailPanel = ({
               {rec.created_at && daysSinceLong(rec.created_at) ? ` · detected ${daysSinceLong(rec.created_at)}` : ''}
             </Typography>
           </Box>
-          <Button tone='ghost' composition='icon-only' size='sm' icon={<CloseIcon />} aria-label='Close' onClick={onClose} id='detail-panel-close' />
+          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: ds.space[2], flexShrink: 0 }}>
+            <Button
+              tone='ghost'
+              composition='icon-only'
+              size='sm'
+              icon={<CloseIcon />}
+              aria-label='Close'
+              onClick={onClose}
+              id='detail-panel-close'
+            />
+            {savings !== 0 && (
+              <Box sx={{ textAlign: 'right' }}>
+                <Typography
+                  sx={{
+                    fontSize: ds.text.caption,
+                    color: ds.gray[500],
+                    fontWeight: ds.weight.medium,
+                    whiteSpace: 'nowrap',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.04em',
+                  }}
+                >
+                  Projected Savings
+                </Typography>
+                <Box sx={{ display: 'flex', alignItems: 'baseline', justifyContent: 'flex-end', gap: ds.space[1], mt: ds.space[0] }}>
+                  <Currency
+                    value={Math.abs(savings)}
+                    precison={2}
+                    withTooltip={false}
+                    sx={{
+                      fontSize: ds.text.title,
+                      fontWeight: ds.weight.semibold,
+                      color: savings > 0 ? ds.green[600] : ds.red[600],
+                    }}
+                  />
+                  <Box component='span' sx={{ fontSize: ds.text.caption, color: ds.gray[400], fontWeight: ds.weight.medium }}>
+                    /mo
+                  </Box>
+                </Box>
+              </Box>
+            )}
+          </Box>
         </Box>
 
-        {/* Savings banner */}
-        {savings !== 0 && (
-          <Box
-            sx={{
-              px: ds.space.mul(0, 10),
-              py: ds.space[2],
-              borderBottom: `1px solid ${ds.gray[200]}`,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-            }}
-          >
-            <Box>
-              <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontWeight: ds.weight.medium }}>Projected Monthly Savings</Typography>
-              <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], fontStyle: 'italic' }}>Based on observed usage data</Typography>
-            </Box>
-            <Currency
-              value={Math.abs(savings)}
-              precison={2}
-              withTooltip={false}
-              sx={{
-                fontSize: ds.text.title,
-                fontWeight: ds.weight.semibold,
-                color: savings > 0 ? ds.green[600] : ds.red[600],
-              }}
-            />
-          </Box>
-        )}
-
         {/* Tabs */}
-        <Box sx={{ borderBottom: `1px solid ${ds.gray[200]}` }}>
+        <Box sx={{ px: ds.space[5], pt: ds.space[2], borderBottom: `1px solid ${ds.gray[200]}` }}>
           <Tabs
             value={activeTab}
-            onChange={(_, newVal) => setActiveTab(newVal)}
-            sx={{
-              minHeight: '40px',
-              '& .MuiTab-root': {
-                textTransform: 'none',
-                fontSize: ds.text.body,
-                fontWeight: ds.weight.medium,
-                minHeight: '40px',
-                py: ds.space[2],
-              },
-              '& .Mui-selected': {
-                color: `${ds.blue[600]} !important`,
-                fontWeight: ds.weight.semibold,
-              },
-              '& .MuiTabs-indicator': {
-                backgroundColor: ds.blue[500],
-              },
+            onChange={(newVal: number) => setActiveTab(newVal)}
+            behavior='filter'
+            showSurface={false}
+            variant='primary'
+            ariaLabel='recommendation detail tabs'
+            options={{
+              tabOptions: [
+                { value: 0, text: 'Details', id: 'detail-tab-details', icon: <InfoOutlinedIcon sx={{ fontSize: 16 }} /> },
+                { value: 1, text: 'Evidence', id: 'detail-tab-evidence', icon: <QueryStatsOutlinedIcon sx={{ fontSize: 16 }} /> },
+                { value: 2, text: 'History', id: 'detail-tab-history', icon: <HistoryOutlinedIcon sx={{ fontSize: 16 }} /> },
+              ],
             }}
-          >
-            <Tab label='Details' data-testid='detail-tab-details' />
-            <Tab label='Evidence' data-testid='detail-tab-evidence' />
-            <Tab label='History' data-testid='detail-tab-history' />
-          </Tabs>
+          />
         </Box>
 
         {/* Tab content — all tabs are always mounted so data fetches start immediately */}
         <Box sx={{ flex: 1, overflow: 'auto', display: activeTab === 0 ? 'block' : 'none' }}>
-          <DetailsPanel fullRecommendation={rec} accounts={accounts} />
+          <DetailsPanel fullRecommendation={rec} accounts={accounts} onViewEvidence={() => setActiveTab(1)} />
         </Box>
 
         <Box sx={{ flex: 1, overflow: 'auto', display: activeTab === 1 ? 'block' : 'none' }}>
@@ -335,8 +328,8 @@ const RecommendationDetailPanel = ({
         </Box>
 
         <Box sx={{ flex: 1, overflow: 'auto', display: activeTab === 2 ? 'block' : 'none' }}>
-          <Box sx={{ p: `${ds.space[4]} 20px` }}>
-            <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[3] }}>Timeline</Typography>
+          <Box sx={{ p: ds.space[5] }}>
+            <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[3] }}>Timeline</Typography>
 
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: '0px' }}>
               {/* Created */}
@@ -428,7 +421,7 @@ const RecommendationDetailPanel = ({
 
         <ActionBar fullRecommendation={rec} onCreateTicket={onCreateTicket} onResolve={onResolve} onCopyCli={onCopyCli} onAskNubi={onAskNubi} />
       </Box>
-    </Drawer>
+    </CustomDrawer>
   );
 };
 

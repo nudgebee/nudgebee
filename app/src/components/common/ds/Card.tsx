@@ -122,7 +122,7 @@ const ACCENT_TONE_COLOR: Record<CardTone, string> = {
   neutral: 'var(--ds-gray-300)',
   info: 'var(--ds-blue-500)',
   success: 'var(--ds-green-500)',
-  warning: 'var(--ds-amber-500)',
+  warning: 'var(--ds-amber-400)',
   danger: 'var(--ds-red-500)',
 };
 
@@ -236,6 +236,9 @@ export const Card: React.FC<CardProps> = ({
       {header && (
         <Box
           sx={{
+            fontFamily: 'var(--ds-font-display)',
+            fontSize: 'var(--ds-text-body)',
+            fontWeight: 'var(--ds-font-weight-medium)',
             ...(children != null && {
               paddingBottom: 'var(--ds-space-3)',
               borderBottom: DIVIDER,
