@@ -6,12 +6,41 @@ import (
 	"nudgebee/runbook/internal/model"
 	"os"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
 
 	"github.com/nikolalohinski/gonja/v2"
 	"github.com/nikolalohinski/gonja/v2/exec"
 )
+
+// compiledTemplateCache memoises parsed Gonja templates keyed by their source
+// string. Parsing (gonja.FromString) is pure CPU and, on the render hot path,
+// runs inline in the Temporal workflow goroutine via renderGonja. Without
+// memoisation a workflow with many tasks — or a large matrix fan-out — re-parses
+// the same template strings on every render, and that accumulated inline CPU is
+// exactly what trips Temporal's deadlock detector (TMPRL1101). Workflow
+// definitions are static, so the set of distinct template strings is bounded.
+var compiledTemplateCache sync.Map // map[string]compiledTemplate
+
+type compiledTemplate struct {
+	tpl *exec.Template
+	err error
+}
+
+// compileGonjaTemplate returns a parsed Gonja template for tpl, memoising both
+// successful parses and parse errors. Parsed templates are immutable after
+// compilation, so the cached *exec.Template is safe to Execute concurrently
+// across workflow goroutines.
+func compileGonjaTemplate(tpl string) (*exec.Template, error) {
+	if cached, ok := compiledTemplateCache.Load(tpl); ok {
+		ct := cached.(compiledTemplate)
+		return ct.tpl, ct.err
+	}
+	t, err := gonja.FromString(tpl)
+	compiledTemplateCache.Store(tpl, compiledTemplate{tpl: t, err: err})
+	return t, err
+}
 
 // TemplateContext holds the data for templating.
 type TemplateContext struct {
@@ -99,8 +128,8 @@ func (c *TemplateContext) renderGo(tpl string) (string, error) {
 
 // renderGonja renders a template string using the Gonja (Jinja2) engine.
 func (c *TemplateContext) renderGonja(tpl string) (str string, err error) {
-	// Parse the template
-	t, err := gonja.FromString(tpl)
+	// Parse the template (memoised — see compiledTemplateCache).
+	t, err := compileGonjaTemplate(tpl)
 	if err != nil {
 		return "", err
 	}
@@ -255,7 +284,7 @@ func ProcessValue(value any, ctx *TemplateContext) (any, error) {
 // generateMatrixCombinations takes a matrix map (e.g., {"fruit": ["apple", "banana"], "color": ["red", "green"]})
 // and returns a slice of maps, where each inner map is a single combination
 // (e.g., [{"fruit": "apple", "color": "red"}, {"fruit": "apple", "color": "green"}, ...]).
-func generateMatrixCombinations(matrix map[string]any) ([]map[string]any, error) {
+func generateMatrixCombinations(matrix map[string]any, maxCombinations int) ([]map[string]any, error) {
 	if len(matrix) == 0 {
 		return []map[string]any{{}}, nil
 	}
@@ -271,6 +300,35 @@ func generateMatrixCombinations(matrix map[string]any) ([]map[string]any, error)
 			valueLists = append(valueLists, []any{val})
 		} else {
 			valueLists = append(valueLists, list)
+		}
+	}
+
+	// Guard against combinatorial blow-up. The full cartesian product is
+	// expanded and each combination's params are rendered inline in the Temporal
+	// workflow goroutine (see processTaskLoop), so an unbounded matrix can
+	// monopolise the goroutine long enough to trip the deadlock detector
+	// (TMPRL1101) and panic before any task is dispatched. Fail fast with an
+	// actionable error instead. maxCombinations <= 0 disables the guard.
+	if maxCombinations > 0 {
+		total := 1
+		for _, list := range valueLists {
+			n := len(list)
+			if n == 0 {
+				// An empty dimension yields zero combinations; the generator
+				// below handles it without expanding anything.
+				break
+			}
+			// Check before multiplying. total*n could otherwise overflow int
+			// and wrap past the cap (even negative), silently defeating the
+			// guard. total > maxCombinations/n is the overflow-safe equivalent
+			// of total*n > maxCombinations.
+			if total > maxCombinations/n {
+				return nil, fmt.Errorf(
+					"matrix expands to more than the allowed %d combinations; reduce the matrix size or raise runbook_server_matrix_max_combinations",
+					maxCombinations,
+				)
+			}
+			total *= n
 		}
 	}
 

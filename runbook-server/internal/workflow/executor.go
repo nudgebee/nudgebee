@@ -89,9 +89,17 @@ const (
 )
 
 func NewWorkflowExecutor(store model.WorkflowStore, configService *configSvc.Service, c client.Client, dc converter.DataConverter) (*WorkflowExecutor, error) {
-	w := worker.New(c, config.Config.RunbookServerTemporalQueue, worker.Options{
+	workerOpts := worker.Options{
 		DisableRegistrationAliasing: true,
-	})
+	}
+	// Give the workflow goroutine more headroom before Temporal's deadlock
+	// detector (TMPRL1101) fires. Inline template rendering and matrix expansion
+	// run on this goroutine; on large workflow definitions the default 1s can be
+	// exceeded by legitimate work, panicking the run before anything dispatches.
+	if config.Config.TemporalDeadlockDetectionTimeoutSeconds > 0 {
+		workerOpts.DeadlockDetectionTimeout = time.Duration(config.Config.TemporalDeadlockDetectionTimeoutSeconds) * time.Second
+	}
+	w := worker.New(c, config.Config.RunbookServerTemporalQueue, workerOpts)
 
 	// Register workflow-specific activities
 	workflowActivities := &WorkflowActivities{Store: store, ConfigService: configService}
@@ -1072,7 +1080,7 @@ func processTaskLoop(
 						resolvedMatrix[k] = processedVal
 					}
 
-					combinations, err := generateMatrixCombinations(resolvedMatrix)
+					combinations, err := generateMatrixCombinations(resolvedMatrix, config.Config.MatrixMaxCombinations)
 					if err != nil {
 						logger.Error("Failed to generate matrix combinations", "taskID", task.ID, "error", err)
 						return completedTasks, nil, fmt.Errorf("failed to generate matrix combinations for task %s: %w", task.ID, err)
