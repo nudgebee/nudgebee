@@ -78,7 +78,7 @@ The event name must match exactly between emitter and listener
 
 Debugging steps
 
-- Check logs for ALERT TRIGERRED event emission
+- Check logs for ALERT_TRIGGERED event emission
 - Verify notification service is running
 - Confirm event bus connectivity
 - Validate subscription registration in notification module
