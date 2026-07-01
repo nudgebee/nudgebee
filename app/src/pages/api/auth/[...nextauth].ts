@@ -1243,11 +1243,22 @@ function getSessionExpirationSeconds() {
 }
 
 function getSessionUpdateSeconds() {
-  let expiration = 1 * 60 * 60;
-  if (process.env.NEXTAUTH_SESSION_UPDATE_DAYS) {
-    expiration = parseInt(process.env.NEXTAUTH_SESSION_UPDATE_DAYS) * 24 * 60 * 60;
+  // updateAge is the sliding-window rotation threshold — NextAuth re-issues
+  // the JWT (fresh iat, exp = now + maxAge) whenever /api/auth/session sees
+  // a token older than this. MUST be strictly less than maxAge or rotation
+  // never fires before the cookie dies. The prior 1h/1h pairing (updateAge
+  // equal to the F03 maxAge=1h default) was the "logged out after 1h even
+  // while active" bug: no /api/auth/session hit ever satisfied `age >
+  // updateAge` before the cookie's own exp caught up. 15 min pairs with
+  // the 1h maxAge from getSessionExpirationSeconds() — useSession polls
+  // faster than that, so active users effectively never expire.
+  let expiration = 15 * 60;
+  if (process.env.NEXTAUTH_SESSION_UPDATE_MINUTES) {
+    expiration = parseInt(process.env.NEXTAUTH_SESSION_UPDATE_MINUTES) * 60;
   } else if (process.env.NEXTAUTH_SESSION_UPDATE_HOURS) {
     expiration = parseInt(process.env.NEXTAUTH_SESSION_UPDATE_HOURS) * 60 * 60;
+  } else if (process.env.NEXTAUTH_SESSION_UPDATE_DAYS) {
+    expiration = parseInt(process.env.NEXTAUTH_SESSION_UPDATE_DAYS) * 24 * 60 * 60;
   }
   return expiration;
 }
