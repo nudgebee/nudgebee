@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import dynamic from 'next/dynamic';
 import { headerMenuExtras } from '@lib/authHooks';
 import Box from '@mui/material/Box';
 import { Typography } from '@mui/material';
@@ -45,10 +46,17 @@ import ClusterDropdown from '@shared/navigation/ClusterDropDown';
 import { useSession } from 'next-auth/react';
 import { DropdownMenu } from '@ui/DropdownMenu';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
-import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
-import JiraAccountModal from '@components/integrations/modal/JiraAccountModal';
-import GithubAccountModal from '@components/integrations/modal/GithubAccountModal';
-import ServiceNowAccountModal from '@components/integrations/modal/ServiceNowAccountModal';
+// All four modals are click-gated inside the "Connect Account" dropdown, which
+// is only exposed on admin pages. But this Header is rendered by the global
+// PageLayout on every authenticated route, so importing the modals statically
+// pulled their full transitive tree (form libs, MUI, api1 modules) into the
+// shared layout chunk on every page — including /home, where none of it is
+// used. next/dynamic + the mount latches below keep that code out of the
+// initial bundle and fetch it on first open instead.
+const K8sAccountModal = dynamic(() => import('@components/integrations/modal/K8sAccountModal'), { ssr: false });
+const JiraAccountModal = dynamic(() => import('@components/integrations/modal/JiraAccountModal'), { ssr: false });
+const GithubAccountModal = dynamic(() => import('@components/integrations/modal/GithubAccountModal'), { ssr: false });
+const ServiceNowAccountModal = dynamic(() => import('@components/integrations/modal/ServiceNowAccountModal'), { ssr: false });
 import { Select } from '@ui/Select';
 import apiAppGrouping from '@api1/application-groupings';
 import BackButton from '@components/common/buttons/BackButton';
@@ -91,6 +99,30 @@ const Header1 = ({ showBorder = false }) => {
   const [showJiraAccountModal, setShowJiraAccountModal] = useState(false);
   const [showGitHubAccountModal, setShowGitHubAccountModal] = useState(false);
   const [showServiceNowAccountModal, setShowServiceNowAccountModal] = useState(false);
+  // Mount latches for the dynamically-imported modals above. A dynamic modal
+  // only fetches its chunk once it is actually rendered, so we latch on first
+  // open (chunk fetches then), then stay mounted so the `openModal` prop keeps
+  // driving the show/hide transition as before.
+  const [k8sModalMounted, setK8sModalMounted] = useState(false);
+  const [jiraModalMounted, setJiraModalMounted] = useState(false);
+  const [githubModalMounted, setGithubModalMounted] = useState(false);
+  const [serviceNowModalMounted, setServiceNowModalMounted] = useState(false);
+  const handleOpenK8sModal = useCallback(() => {
+    setK8sModalMounted(true);
+    setShowK8sAccountModal(true);
+  }, []);
+  const handleOpenJiraModal = useCallback(() => {
+    setJiraModalMounted(true);
+    setShowJiraAccountModal(true);
+  }, []);
+  const handleOpenGithubModal = useCallback(() => {
+    setGithubModalMounted(true);
+    setShowGitHubAccountModal(true);
+  }, []);
+  const handleOpenServiceNowModal = useCallback(() => {
+    setServiceNowModalMounted(true);
+    setShowServiceNowAccountModal(true);
+  }, []);
   const [activeGroup, setActiveGroup] = useState({ label: ' ', value: ' ' });
   const [allAppGroupNames, setAllAppGroupNames] = useState([{}]);
   const [groupId, setGroupId] = useState(router.query.groupId ?? '');
@@ -591,10 +623,12 @@ const Header1 = ({ showBorder = false }) => {
 
   return (
     <>
-      <K8sAccountModal openModal={showK8sAccountModal} handleClose={() => setShowK8sAccountModal(false)} />
-      <JiraAccountModal openModal={showJiraAccountModal} handleClose={() => setShowJiraAccountModal(false)} />
-      <GithubAccountModal openModal={showGitHubAccountModal} handleClose={() => setShowGitHubAccountModal(false)} />
-      <ServiceNowAccountModal openModal={showServiceNowAccountModal} handleClose={() => setShowServiceNowAccountModal(false)} />
+      {k8sModalMounted && <K8sAccountModal openModal={showK8sAccountModal} handleClose={() => setShowK8sAccountModal(false)} />}
+      {jiraModalMounted && <JiraAccountModal openModal={showJiraAccountModal} handleClose={() => setShowJiraAccountModal(false)} />}
+      {githubModalMounted && <GithubAccountModal openModal={showGitHubAccountModal} handleClose={() => setShowGitHubAccountModal(false)} />}
+      {serviceNowModalMounted && (
+        <ServiceNowAccountModal openModal={showServiceNowAccountModal} handleClose={() => setShowServiceNowAccountModal(false)} />
+      )}
       {snackbarOpen && (
         <Banner
           tone='warning'
@@ -756,22 +790,22 @@ const Header1 = ({ showBorder = false }) => {
                       {
                         label: 'Kubernetes',
                         icon: <OuK8sIcon width={18} height={18} />,
-                        onSelect: () => setShowK8sAccountModal(true),
+                        onSelect: handleOpenK8sModal,
                       },
                       {
                         label: 'Jira',
                         icon: <JiraIcon width={18} height={18} />,
-                        onSelect: () => setShowJiraAccountModal(true),
+                        onSelect: handleOpenJiraModal,
                       },
                       {
                         label: 'Github',
                         icon: <GithubIcon width={18} height={18} />,
-                        onSelect: () => setShowGitHubAccountModal(true),
+                        onSelect: handleOpenGithubModal,
                       },
                       {
                         label: 'ServiceNow',
                         icon: <SafeIcon src={ServiceNowIcon} alt='servicenow' width={18} height={18} />,
-                        onSelect: () => setShowServiceNowAccountModal(true),
+                        onSelect: handleOpenServiceNowModal,
                       },
                       {
                         label: 'Slack',
