@@ -849,6 +849,92 @@ func parseDatadogK8sSubject(facets []string) datadogK8sSubject {
 	return s
 }
 
+// cloudResourceDimensions maps Datadog metric-query scope keys (CloudWatch / Azure
+// Monitor / GCP dimension names) to a subject kind, in resolution priority. A
+// metric or anomaly monitor's query filter names the exact resource it alerts on
+// (e.g. aws.rds.write_latency{dbinstanceidentifier:my-db}); that identifier is a
+// far better subject than the generic `service:` category tag or an LLM guess.
+// Only specific, single-resource dimensions are listed — broad selectors such as
+// env/region/availability-zone are intentionally excluded so a fleet-wide monitor
+// doesn't resolve to a meaningless subject.
+var cloudResourceDimensions = []struct{ key, kind string }{
+	// AWS CloudWatch
+	{"dbinstanceidentifier", "rds_instance"},
+	{"dbclusteridentifier", "rds_cluster"},
+	{"functionname", "lambda_function"},
+	{"instance-id", "ec2_instance"},
+	{"instanceid", "ec2_instance"},
+	{"targetgroup", "elb_target_group"},
+	{"loadbalancer", "load_balancer"},
+	{"autoscalinggroupname", "auto_scaling_group"},
+	{"tablename", "dynamodb_table"},
+	{"cacheclusterid", "elasticache_cluster"},
+	{"queuename", "sqs_queue"},
+	{"topicname", "sns_topic"},
+	{"streamname", "kinesis_stream"},
+	{"bucketname", "s3_bucket"},
+	{"distributionid", "cloudfront_distribution"},
+	{"clustername", "cluster"},
+	// Azure Monitor
+	{"resource_name", "azure_resource"},
+	{"resourcename", "azure_resource"},
+	// GCP (project_id is least specific — a project-scoped quota alert has nothing finer)
+	{"database_id", "gcp_database"},
+	{"instance_id", "gcp_instance"},
+	{"subscription_id", "gcp_subscription"},
+	{"project_id", "gcp_project"},
+}
+
+// parseDatadogCloudSubject extracts a cloud-resource subject from Datadog metric
+// query / scope strings. Each input may be a full monitor query
+// ("avg:aws.rds.write_latency{dbinstanceidentifier:foo} > 1"), a comma-separated
+// scope ("project_id:foo,location:global"), or a group string. Tokens are split on
+// the punctuation Datadog uses in query expressions ({ } ( ) , whitespace) before
+// the key:value cut, so a scope dimension is found wherever it sits. Returns the
+// highest-priority resource found, its kind, and the matched dimension key.
+func parseDatadogCloudSubject(inputs []string) (name, kind, dimension string) {
+	vals := map[string]string{}
+	for _, in := range inputs {
+		for _, token := range strings.FieldsFunc(in, func(r rune) bool {
+			return r == ' ' || r == ',' || r == '{' || r == '}' || r == '(' || r == ')'
+		}) {
+			key, value, ok := strings.Cut(token, ":")
+			if !ok {
+				continue
+			}
+			key = strings.ToLower(strings.TrimSpace(key))
+			// Datadog quotes some scope values; strip them so the parsed name
+			// matches the unquoted resource id in the inventory.
+			value = strings.Trim(strings.TrimSpace(value), `"'`)
+			if key == "" || value == "" || value == "*" {
+				continue
+			}
+			if _, seen := vals[key]; !seen {
+				vals[key] = value
+			}
+		}
+	}
+	for _, d := range cloudResourceDimensions {
+		if v := vals[d.key]; v != "" {
+			return normalizeCloudResourceValue(d.key, v), d.kind, d.key
+		}
+	}
+	return "", "", ""
+}
+
+// normalizeCloudResourceValue trims Datadog's compound dimension encodings down to
+// the bare resource name the inventory holds. ELB/target-group dimensions arrive as
+// "targetgroup/<name>/<id>" or "app/<name>/<id>"; the middle segment is the name.
+func normalizeCloudResourceValue(key, value string) string {
+	switch key {
+	case "targetgroup", "loadbalancer":
+		if parts := strings.Split(value, "/"); len(parts) >= 2 {
+			return parts[1]
+		}
+	}
+	return value
+}
+
 // datadogWorkload is a workload row resolved from the k8s_workloads inventory.
 type datadogWorkload struct {
 	Name            string `db:"name"`
@@ -1892,6 +1978,37 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 					}
 				}
 			}
+		}
+	}
+
+	// Cloud-resource subject from the metric-query scope. A metric/anomaly monitor's
+	// query filter names the exact resource it alerts on — e.g.
+	// aws.rds.write_latency{dbinstanceidentifier:my-db},
+	// aws.lambda.invocations{functionname:my-fn}, or a GCP quota's project_id in the
+	// alert scope. That resource is a specific, deterministic subject. Runs after the
+	// service-tag → workload match (a validated k8s workload still wins) but before
+	// the raw service-tag fallback below so the named resource beats the generic
+	// `service:` category tag (e.g. service:rds), and before the LLM so it needs no
+	// LLM call. Sources are the raw webhook (alert_query/alert_scope) plus the
+	// API-enriched monitor query when present — the webhook alert_query already
+	// carries the scope, so this resolves without an extra Datadog call.
+	if subjectName == "" {
+		scopeInputs := []string{p.Alert.AlertQuery, p.Alert.AlertScope}
+		if len(eventPayload) > 0 {
+			if monitor, ok := eventPayload["monitor"].(map[string]any); ok {
+				if q, ok := monitor["query"].(string); ok && q != "" {
+					scopeInputs = append(scopeInputs, q)
+				}
+			}
+		}
+		if resource, kind, dim := parseDatadogCloudSubject(scopeInputs); resource != "" {
+			subjectName = resource
+			subjectKind = kind
+			labels["nb_subject_match"] = "datadog_query_scope"
+			labels["nb_cloud_resource_dimension"] = dim
+			common.MetricsSubjectResolution(sc.GetContext(), IntegrationDatadogWebhook, "live", "matched_query_scope", sc.GetSecurityContext().GetTenantId())
+			sc.GetLogger().Info("resolved datadog subject from query scope",
+				"subject", subjectName, "kind", subjectKind, "dimension", dim)
 		}
 	}
 

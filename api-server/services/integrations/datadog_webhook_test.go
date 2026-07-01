@@ -457,3 +457,97 @@ func TestParseDatadogK8sSubject(t *testing.T) {
 		})
 	}
 }
+
+func TestParseDatadogCloudSubject(t *testing.T) {
+	tests := []struct {
+		name          string
+		inputs        []string
+		wantName      string
+		wantKind      string
+		wantDimension string
+	}{
+		{
+			name:          "RDS metric monitor scope -> db instance",
+			inputs:        []string{"avg(last_5m):avg:aws.rds.write_latency{dbinstanceidentifier:vmstack-dev-db} > 0.05"},
+			wantName:      "vmstack-dev-db",
+			wantKind:      "rds_instance",
+			wantDimension: "dbinstanceidentifier",
+		},
+		{
+			name:          "Lambda anomaly monitor scope -> function name",
+			inputs:        []string{"avg(last_30m):anomalies(sum:aws.lambda.invocations{functionname:vmstack-dev-api-service}.as_rate(), 'basic', 2, direction='both', alert_window='last_30m', interval=300, count_default_zero='true') >= 1"},
+			wantName:      "vmstack-dev-api-service",
+			wantKind:      "lambda_function",
+			wantDimension: "functionname",
+		},
+		{
+			name:          "ALB target-group dimension normalized to bare name",
+			inputs:        []string{"avg(last_5m):avg:aws.applicationelb.healthy_host_count{targetgroup:targetgroup/vmstack-dev-web-tg/1d9a6f45866cc020} < 1"},
+			wantName:      "vmstack-dev-web-tg",
+			wantKind:      "elb_target_group",
+			wantDimension: "targetgroup",
+		},
+		{
+			name:          "load balancer app/name/id normalized to bare name",
+			inputs:        []string{"avg(last_5m):avg:aws.applicationelb.httpcode_elb_5xx{loadbalancer:app/my-alb/50dc6c495c0c9188} > 5"},
+			wantName:      "my-alb",
+			wantKind:      "load_balancer",
+			wantDimension: "loadbalancer",
+		},
+		{
+			name:          "GCP quota alert_scope comma string -> project id",
+			inputs:        []string{"limit_name:readrequestsperminuteperproject,location:global,project_id:dev-app1-hyos6,quota_metric:cloudkms.googleapis.com/read_requests"},
+			wantName:      "dev-app1-hyos6",
+			wantKind:      "gcp_project",
+			wantDimension: "project_id",
+		},
+		{
+			name:          "more specific GCP dimension preferred over project id",
+			inputs:        []string{"database_id:orders-db,project_id:dev-app1-hyos6"},
+			wantName:      "orders-db",
+			wantKind:      "gcp_database",
+			wantDimension: "database_id",
+		},
+		{
+			name:          "quoted scope value is stripped",
+			inputs:        []string{`avg:aws.rds.cpuutilization{dbinstanceidentifier:"prod-db"} > 90`},
+			wantName:      "prod-db",
+			wantKind:      "rds_instance",
+			wantDimension: "dbinstanceidentifier",
+		},
+		{
+			name:          "first non-empty input wins across sources",
+			inputs:        []string{"", "avg:aws.lambda.errors{functionname:checkout-fn} > 1"},
+			wantName:      "checkout-fn",
+			wantKind:      "lambda_function",
+			wantDimension: "functionname",
+		},
+		{
+			name:     "pure k8s query has no cloud dimension",
+			inputs:   []string{"avg:kubernetes.cpu.usage{kube_deployment:app-dev} > 0.8"},
+			wantName: "",
+			wantKind: "",
+		},
+		{
+			name:     "broad selectors (env/region) are not resources",
+			inputs:   []string{"avg:aws.ec2.cpuutilization{env:prod,region:us-east-1} > 80"},
+			wantName: "",
+			wantKind: "",
+		},
+		{
+			name:     "wildcard scope value ignored",
+			inputs:   []string{"avg:aws.lambda.invocations{functionname:*} > 1"},
+			wantName: "",
+			wantKind: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotName, gotKind, gotDim := parseDatadogCloudSubject(tt.inputs)
+			assert.Equal(t, tt.wantName, gotName, "Name")
+			assert.Equal(t, tt.wantKind, gotKind, "Kind")
+			assert.Equal(t, tt.wantDimension, gotDim, "Dimension")
+		})
+	}
+}
