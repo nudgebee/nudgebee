@@ -11,7 +11,7 @@ import CloudAccountEvents from '@components/cloudaccount/CloudAccountEvents';
 import { MENU_ITEMS, DataBlock, CustomText } from '@components/cloudaccount/common';
 import { usePagination } from '@hooks/usePagination';
 import TagsCell from '@components/cloudaccount/TagsCell';
-import type { ICustomTableRow } from '../ec2/Instances';
+import type { ICustomTableRow } from '../ec2/types';
 import { buildStateApiParams, getStateDropdownOptions } from '@components/cloudaccount/stateFilter';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';

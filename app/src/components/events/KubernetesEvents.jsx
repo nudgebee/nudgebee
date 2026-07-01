@@ -30,7 +30,9 @@ import IosShareOutlinedIcon from '@mui/icons-material/IosShareOutlined';
 import DownloadButton from '@shared/buttons/DownloadButton';
 
 // TODO(ds-migration): no v2 yet — track in V2_GAPS follow-up
-import KubernetesTable from '@components/k8s/common/KubernetesTable';
+// Dynamic import breaks the mutual dependency with KubernetesTable.
+import dynamic from 'next/dynamic';
+const KubernetesTable = dynamic(() => import('@components/k8s/common/KubernetesTable'));
 import ClusterNameWithRegion from '@components/k8s/common/ClusterNameWithRegion';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import Chart from '@ui/Chart';

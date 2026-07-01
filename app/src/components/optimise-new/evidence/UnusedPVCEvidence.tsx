@@ -1,7 +1,7 @@
 import { Box, Typography } from '@mui/material';
 import { ds } from 'src/utils/colors';
 import { Label } from '@ui/Label';
-import { SavingsFooter, SectionTitle, MetricRow } from '@components/optimise-new/EvidencePanel';
+import { SavingsFooter, SectionTitle, MetricRow } from './evidencePrimitives';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import InventoryIcon from '@mui/icons-material/Inventory';
 import { safeParseJSON } from '@components/optimise-new/utils';

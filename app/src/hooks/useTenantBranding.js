@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { getUserSession } from '@lib/auth';
+import { useSession } from 'next-auth/react';
 
 // Hardcoded fallback defaults — used during SSR and before the runtime config fetch resolves.
 // These are also exported so existing direct imports continue to work as safe fallbacks.
@@ -150,7 +150,7 @@ export const getBrandingAsset = (key) => {
  *   - isDefaultTenant: true if tenant is nudgebee/default
  */
 export const useTenantBranding = () => {
-  const session = getUserSession();
+  const { data: session } = useSession();
   const tenantName = session?.tenant?.tenant?.name || '';
   const tenantKey = useMemo(() => getTenantKey(tenantName), [tenantName]);
   const isDefaultTenant = !tenantKey || tenantKey === 'nudgebee';

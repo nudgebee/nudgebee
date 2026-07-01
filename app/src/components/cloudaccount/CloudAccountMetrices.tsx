@@ -13,7 +13,7 @@ import { getBrandingAsset } from '@hooks/useTenantBranding';
 import RecommendationJobDetails from '@components/k8s/common/RecommendationJobDetails';
 import { action } from 'src/utils/actionStyles';
 import { ds } from '@utils/colors';
-import type { ICustomTableRow } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/types';
 import { CustomText } from './common';
 import OptimizeSummary from './ec2/Summary';
 import { useMetricCloudFilter } from '@hooks/useCloudFilters';

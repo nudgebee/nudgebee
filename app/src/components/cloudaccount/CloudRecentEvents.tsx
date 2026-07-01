@@ -23,7 +23,7 @@ import Datetime from '@shared/format/Datetime';
 import apiCloudAccount from '@api1/cloud-account';
 import { toSeverityLevel } from '@utils/common';
 import { ds } from '@utils/colors';
-import type { ICustomTableRow } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/types';
 
 const TABLE_ID = 'cloud-recent-events';
 const HEADERS = ['Subject', 'Event', 'Severity', 'Created at'];

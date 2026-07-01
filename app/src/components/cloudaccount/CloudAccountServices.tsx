@@ -17,7 +17,7 @@ import HelpBeeModal from '@components/helpbee';
 import { ECSInstances } from './ecs';
 import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { action } from 'src/utils/actionStyles';
-import type { ICustomTableRow } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/types';
 import { MENU_ITEMS, DataBlock } from './common';
 import Text from '@shared/format/Text';
 import TotalCostChart from '@components/cloudaccount/CostChart';

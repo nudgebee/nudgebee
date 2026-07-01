@@ -17,7 +17,7 @@ import { ds } from 'src/utils/colors';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import HelpBeeModal from '@components/helpbee';
 import { getLast7Days } from '@lib/datetime';
-import type { ICustomTableRow } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/types';
 import ClusterNameWithRegion from '@components/k8s/common/ClusterNameWithRegion';
 import Text from '@shared/format/Text';
 import Datetime from '@shared/format/Datetime';

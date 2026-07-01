@@ -6,7 +6,8 @@ import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker
 import { Label } from '@ui/Label';
 import { Button as DsButton } from '@ui/Button';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import { KubernetesUtilizationCharts } from '@components/k8s/common/KubernetesTable2';
+import dynamic from 'next/dynamic';
+const KubernetesUtilizationCharts = dynamic(() => import('@components/k8s/common/KubernetesTable2').then((m) => m.KubernetesUtilizationCharts));
 import { useRouter } from 'next/router';
 import {
   type SortOrderObject,

@@ -13,7 +13,7 @@ import HelpBeeModal from '@components/helpbee';
 import { TicketsIcon } from '@assets';
 import { getBrandingAsset } from '@hooks/useTenantBranding';
 import SafeIcon from '@shared/icons/SafeIcon';
-import type { ICustomTableRow } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/types';
 import ClusterNameWithRegion from '@components/k8s/common/ClusterNameWithRegion';
 import Text from '@shared/format/Text';
 import { ds } from '@utils/colors';

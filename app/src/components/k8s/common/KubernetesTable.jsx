@@ -3,12 +3,14 @@ import CustomTable from '@shared/tables/CustomTable';
 import { Box, Typography, Grid } from '@mui/material';
 import { Card } from '@ui/Card';
 import WidgetCard from '@ui/WidgetCard';
-import KubernetesPodsTable from '@components/k8s/details/KubernetesPods';
+import dynamic from 'next/dynamic';
 import { useRouter } from 'next/router';
 import Chart from '@ui/Chart';
 import k8sApi from '@api1/kubernetes';
 import MarkDowns from '@shared/viewers/MarkDowns';
-import KubernetesEventsTable from '@components/events/KubernetesEvents';
+// Dynamic imports break circular deps: these detail components import KubernetesTable back.
+const KubernetesPodsTable = dynamic(() => import('@components/k8s/details/KubernetesPods'));
+const KubernetesEventsTable = dynamic(() => import('@components/events/KubernetesEvents'));
 import ListingLayout from '@ui/ListingLayout';
 import { Button as DsButton } from '@ui/Button';
 import zlib from 'zlib';
@@ -27,9 +29,9 @@ import {
   formatDateForPlusMinusDuration,
   toSeverityLevel,
 } from 'src/utils/common';
-import KubernetesServiceMap from '@components/k8s/details/KubernetesServiceMap';
+const KubernetesServiceMap = dynamic(() => import('@components/k8s/details/KubernetesServiceMap'));
 import { jsonrepair } from 'jsonrepair';
-import KubernetesDeploymentHistory from './KubernetesDeploymentHistory';
+const KubernetesDeploymentHistory = dynamic(() => import('./KubernetesDeploymentHistory'));
 import PropTypes from 'prop-types';
 import KubernetesSecurity from '@components/recommendations/KubernetesSecurity';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
@@ -47,7 +49,7 @@ import DownloadButton from '@shared/buttons/DownloadButton';
 import { DEFAULT_TITLE, getNubiIconUrl } from '@hooks/useTenantBranding';
 import Tooltip from '@ui/Tooltip';
 import ConversationPopup from '@components/llm/ConversationPopup';
-import KubernetesLogs from '@components/k8s/details/KubernetesLogs';
+const KubernetesLogs = dynamic(() => import('@components/k8s/details/KubernetesLogs'));
 import { FiArrowRight } from 'react-icons/fi';
 import NBStatusBadge from '@shared/widgets/NBStatusBadge';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';

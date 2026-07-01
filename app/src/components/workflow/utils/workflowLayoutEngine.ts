@@ -1,5 +1,5 @@
 import type { Node, Edge } from 'reactflow';
-import { getTaskDescription } from './index';
+import { getTaskDescription } from './taskDescription';
 import { validateTaskData } from '@components/workflow/hooks/useTaskValidation';
 import { parseConditionLabel, hasConditionalStyling } from './conditionParser';
 import { createTaskLabel } from '@components/workflow/constants/nodeCategories';

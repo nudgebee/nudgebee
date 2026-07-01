@@ -13,7 +13,7 @@ import apiCloudAccount from '@api1/cloud-account';
 import { useCurrencySymbol } from '@hooks/useCurrencySymbol';
 import apiResources from '@api1/resources';
 import apiHome from '@api1/home';
-import type { ICustomTableRow } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/types';
 import Text from '@shared/format/Text';
 import SeverityIcon from '@ui/SeverityIcon';
 import Datetime from '@shared/format/Datetime';

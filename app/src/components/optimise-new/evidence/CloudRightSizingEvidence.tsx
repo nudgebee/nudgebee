@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Box, Typography, CircularProgress } from '@mui/material';
 import { ds } from 'src/utils/colors';
 import { Label } from '@ui/Label';
-import { SavingsFooter, SectionTitle, MetricRow } from '@components/optimise-new/EvidencePanel';
+import { SavingsFooter, SectionTitle, MetricRow } from './evidencePrimitives';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import recommendationApi from '@api1/recommendation';
 import apiCloudAccount from '@api1/cloud-account';

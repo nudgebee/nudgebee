@@ -7,7 +7,7 @@ import { DataBlock, CustomText } from '../common';
 import { usePagination } from '@hooks/usePagination';
 import TagsCell from '../TagsCell';
 import CloudAccountEvents from '../CloudAccountEvents';
-import type { ICustomTableRow } from '../ec2/Instances';
+import type { ICustomTableRow } from '../ec2/types';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import CustomSearch from '@shared/CustomSearch';

@@ -6,7 +6,7 @@ import { usePagination } from '@hooks/usePagination';
 import { interpolateMitigations, buildDescriptionMarkdown } from '@api1/recommendation/data';
 import { useEffectiveRecommendation } from '@hooks/useEffectiveRecommendation';
 import apiRecommendations, { RECOMMENDATION_STATUS } from '@api1/recommendation';
-import type { ICustomTableRow } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/types';
 import ClusterNameWithRegion from '@components/k8s/common/ClusterNameWithRegion';
 import { Box, Typography } from '@mui/material';
 import WidgetCard from '@ui/WidgetCard';

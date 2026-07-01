@@ -8,9 +8,8 @@
  * triage decision (Q1) is signed off.
  */
 import React, { type ReactElement, useState } from 'react';
-import { Tooltip, styled, tooltipClasses, type TooltipProps, Box, Typography } from '@mui/material';
+import { Tooltip, styled, tooltipClasses, type TooltipProps, Box, Typography, ButtonBase } from '@mui/material';
 import { InfoOutlined } from '@mui/icons-material';
-import { Button } from './Button';
 import { ds } from '@utils/colors';
 
 /**
@@ -176,16 +175,29 @@ const TooltipContent: React.FC<{
           </Typography>
         )}
         <Box sx={{ marginTop: 'var(--ds-space-1)' }}>
-          <Button
-            tone='secondary'
-            size='xs'
+          <ButtonBase
             onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
               e.stopPropagation();
               window.open(linkUrl, '_blank', 'noopener,noreferrer');
             }}
+            sx={{
+              height: '24px',
+              px: 'var(--ds-space-2)',
+              fontSize: 'var(--ds-text-caption)',
+              fontFamily: 'var(--ds-font-display)',
+              fontWeight: 'var(--ds-font-weight-medium)',
+              lineHeight: 1,
+              color: 'var(--ds-brand-600)',
+              backgroundColor: 'var(--ds-background-100)',
+              border: '1px solid var(--ds-brand-200)',
+              borderRadius: 'var(--ds-radius-md)',
+              whiteSpace: 'nowrap',
+              '&:hover': { backgroundColor: 'var(--ds-brand-100)', borderColor: 'var(--ds-brand-300)' },
+              '&:active': { backgroundColor: 'var(--ds-brand-200)' },
+            }}
           >
             {linkText}
-          </Button>
+          </ButtonBase>
         </Box>
       </Box>
     );

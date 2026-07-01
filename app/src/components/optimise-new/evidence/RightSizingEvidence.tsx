@@ -7,7 +7,7 @@ import DragHandleIcon from '@mui/icons-material/DragHandle';
 import Chart from '@ui/Chart';
 import { Card } from '@ui/Card';
 import k8sApi from '@api1/kubernetes';
-import { SavingsFooter } from '@components/optimise-new/EvidencePanel';
+import { SavingsFooter } from './evidencePrimitives';
 import { safeParseJSON } from '@components/optimise-new/utils';
 import MetricQueryInfo, { K8S_METRIC_QUERY_LABELS } from '@shared/MetricQueryInfo';
 
