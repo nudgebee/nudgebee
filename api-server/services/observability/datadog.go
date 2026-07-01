@@ -1416,3 +1416,10 @@ func (s *DatadogTraceSource) QueryRootSpansByTrace(ctx *security.RequestContext,
 func (s *DatadogTraceSource) CountTracesByTrace(_ *security.RequestContext, _ TracesV3Request) (common.OpenTelemetryTraceCount, error) {
 	return countTracesByTraceEstimate()
 }
+
+// QueryLabels returns backend-discovered trace label keys. DatadogTraceSource has no generic
+// label-key discovery API, so it returns an empty list; FetchTraceLabels falls back to
+// the derived canonical + mapping label set. Implements TraceSource.QueryLabels.
+func (s *DatadogTraceSource) QueryLabels(_ *security.RequestContext, _ FetchTraceLabelRequest) ([]OutputTraceLabel, error) {
+	return []OutputTraceLabel{}, nil
+}

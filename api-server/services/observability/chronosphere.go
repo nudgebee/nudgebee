@@ -1491,3 +1491,10 @@ func (c *ChronosphereTraceSource) QueryRootSpansByTrace(ctx *security.RequestCon
 func (c *ChronosphereTraceSource) CountTracesByTrace(_ *security.RequestContext, _ TracesV3Request) (common.OpenTelemetryTraceCount, error) {
 	return countTracesByTraceEstimate()
 }
+
+// QueryLabels returns backend-discovered trace label keys. ChronosphereTraceSource has no generic
+// label-key discovery API, so it returns an empty list; FetchTraceLabels falls back to
+// the derived canonical + mapping label set. Implements TraceSource.QueryLabels.
+func (c *ChronosphereTraceSource) QueryLabels(_ *security.RequestContext, _ FetchTraceLabelRequest) ([]OutputTraceLabel, error) {
+	return []OutputTraceLabel{}, nil
+}

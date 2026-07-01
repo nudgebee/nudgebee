@@ -3946,6 +3946,21 @@ actions:
       - role: tenant_usage
       - role: tenant_admin_readonly
       - role: tenant_admin
+  - name: traces_list_labels
+    definition:
+      kind: "synchronous"
+      handler: '{{SERVICE_API_SERVER_URL}}/rpc/traces'
+      forward_client_headers: true
+      headers:
+        - name: X-ACTION-TOKEN
+          value_from_env: ACTION_API_SERVER_TOKEN
+    permissions:
+      - role: account_admin
+      - role: account_admin_readonly
+      - role: tenant_usage
+      - role: tenant_admin_readonly
+      - role: tenant_admin
+    comment: Fetch Trace Labels
   - name: traces_list
     definition:
       kind: "synchronous"

@@ -1018,3 +1018,10 @@ func (e *ElasticSaasTraceSource) QueryRootSpansByTrace(ctx *security.RequestCont
 func (e *ElasticSaasTraceSource) CountTracesByTrace(_ *security.RequestContext, _ TracesV3Request) (common.OpenTelemetryTraceCount, error) {
 	return countTracesByTraceEstimate()
 }
+
+// QueryLabels returns backend-discovered trace label keys. ElasticSaasTraceSource has no generic
+// label-key discovery API, so it returns an empty list; FetchTraceLabels falls back to
+// the derived canonical + mapping label set. Implements TraceSource.QueryLabels.
+func (e *ElasticSaasTraceSource) QueryLabels(_ *security.RequestContext, _ FetchTraceLabelRequest) ([]OutputTraceLabel, error) {
+	return []OutputTraceLabel{}, nil
+}

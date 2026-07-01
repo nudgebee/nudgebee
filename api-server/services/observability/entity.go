@@ -378,6 +378,33 @@ type TracesV3LabelValuesRequest struct {
 	QueryRequest   TracesQueryBuilderRequest `json:"query_request" mapstructure:"query_request"`
 }
 
+// FetchTraceLabelRequest is the input for the traces_list_labels action — it lists the
+// canonical trace label KEYS usable for the account's resolved trace provider. Mirrors
+// FetchLogLabelRequest.
+type FetchTraceLabelRequest struct {
+	AccountId      string `json:"account_id" mapstructure:"account_id" validate:"required"`
+	ProviderType   string `json:"provider_type" mapstructure:"provider_type"`
+	ProviderSource string `json:"provider_source"`
+	StartTime      int64  `json:"start_time" mapstructure:"start_time"`
+	EndTime        int64  `json:"end_time" mapstructure:"end_time"`
+}
+
+// OutputTraceLabel is a single trace label. Mirrors OutputLogLabel. Attributes
+// always defaults to an empty object (never null): canonical trace fields carry
+// {"type": "<value type>"} (e.g. "string", "integer"); account/tenant override keys
+// carry {} since their type is unknown.
+type OutputTraceLabel struct {
+	Label      string         `json:"label"`
+	Attributes map[string]any `json:"attributes"`
+}
+
+// TraceLabelsResponse is the traces_list_labels response. The label list is nested
+// under `labels` (rather than returned as a bare array) so the response can grow
+// additional top-level fields in future without a breaking change.
+type TraceLabelsResponse struct {
+	Labels []OutputTraceLabel `json:"labels"`
+}
+
 // OpenTelemetry trace structures
 type OpenTelemetryTrace struct {
 	Timestamp          string                 `json:"Timestamp"`

@@ -403,3 +403,10 @@ func (s *SplunkTraceSource) QueryRootSpansByTrace(ctx *security.RequestContext, 
 func (s *SplunkTraceSource) CountTracesByTrace(_ *security.RequestContext, _ TracesV3Request) (common.OpenTelemetryTraceCount, error) {
 	return countTracesByTraceEstimate()
 }
+
+// QueryLabels returns backend-discovered trace label keys. SplunkTraceSource has no generic
+// label-key discovery API, so it returns an empty list; FetchTraceLabels falls back to
+// the derived canonical + mapping label set. Implements TraceSource.QueryLabels.
+func (s *SplunkTraceSource) QueryLabels(_ *security.RequestContext, _ FetchTraceLabelRequest) ([]OutputTraceLabel, error) {
+	return []OutputTraceLabel{}, nil
+}

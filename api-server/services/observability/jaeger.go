@@ -1709,3 +1709,17 @@ func (j *JaegerSaasTraceSource) QueryRootSpansByTrace(ctx *security.RequestConte
 func (j *JaegerSaasTraceSource) CountTracesByTrace(_ *security.RequestContext, _ TracesV3Request) (common.OpenTelemetryTraceCount, error) {
 	return countTracesByTraceEstimate()
 }
+
+// QueryLabels returns backend-discovered trace label keys. JaegerTraceSource has no generic
+// label-key discovery API, so it returns an empty list; FetchTraceLabels falls back to
+// the derived canonical + mapping label set. Implements TraceSource.QueryLabels.
+func (j *JaegerTraceSource) QueryLabels(_ *security.RequestContext, _ FetchTraceLabelRequest) ([]OutputTraceLabel, error) {
+	return []OutputTraceLabel{}, nil
+}
+
+// QueryLabels returns backend-discovered trace label keys. JaegerSaasTraceSource has no generic
+// label-key discovery API, so it returns an empty list; FetchTraceLabels falls back to
+// the derived canonical + mapping label set. Implements TraceSource.QueryLabels.
+func (j *JaegerSaasTraceSource) QueryLabels(_ *security.RequestContext, _ FetchTraceLabelRequest) ([]OutputTraceLabel, error) {
+	return []OutputTraceLabel{}, nil
+}

@@ -57,6 +57,11 @@ type TraceSource interface {
 	GetQuery(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) (string, error)
 	CountTraces(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) (common.OpenTelemetryTraceCount, error)
 	GetLabelValues(ctx *security.RequestContext, fetchTraceRequest TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error)
+	// QueryLabels enumerates the label KEYS actually present in the backend (e.g. span/
+	// resource attribute names), analogous to LogSource.QueryLabels. Sources without a
+	// backend label-key discovery API return an empty slice; FetchTraceLabels then falls
+	// back to the derived canonical + mapping label set.
+	QueryLabels(ctx *security.RequestContext, request FetchTraceLabelRequest) ([]OutputTraceLabel, error)
 	QueryGroupedTraces(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) ([]TraceGroupingValues, error)
 	QueryGroupedTracesCount(ctx *security.RequestContext, fetchTraceRequest TracesV3Request) (common.OpenTelemetryTraceGroupCount, error)
 	// QueryRootSpansByTrace backs the "By Traces" listing view: it returns one representative
@@ -783,8 +788,14 @@ func getProviderCapabilities(ctx *security.RequestContext, accountId, provider, 
 		source, err := getTraceSource(provider, integrationSource)
 		if err == nil {
 			caps.SupportedOperators = source.GetSupportedOperators()
-			// Static map only — no trace-merge helper exists yet.
-			caps.LabelMappings = source.GetLabelMapping()
+			// Full canonical→provider merge (static ∪ tenant ∪ account ∪ dynamic).
+			// Skip the merge when accountId is empty: with no account the lookup
+			// can only return the static defaults, so there's nothing to merge.
+			if accountId != "" {
+				caps.LabelMappings = getMergedTraceLabelMapping(ctx, accountId, source)
+			} else {
+				caps.LabelMappings = source.GetLabelMapping()
+			}
 		} else {
 			slog.Warn("getProviderCapabilities: failed to get trace source", "provider", provider, "error", err)
 		}
@@ -994,10 +1005,108 @@ func GetTracesLabelValues(context *security.RequestContext, labelValuesRequest T
 	if err != nil {
 		return common.OpenTelemetryTraceLabelValues{}, err
 	}
-	filteringMap := source.GetLabelMapping()
+	filteringMap := getMergedTraceLabelMapping(context, labelValuesRequest.AccountId, source)
 	labelValuesRequest.QueryRequest.Where = convertWhereClauseWithMApping(labelValuesRequest.QueryRequest.Where, filteringMap)
 
 	return source.GetLabelValues(context, labelValuesRequest)
+}
+
+// canonicalTraceField is a provider-independent trace field with its value type.
+type canonicalTraceField struct {
+	name string
+	typ  string
+}
+
+// canonicalTraceFields is the provider-independent trace field vocabulary the
+// query builder / trace agents can always filter on, regardless of the resolved
+// backend. It is surfaced by FetchTraceLabels alongside any account/tenant
+// trace_labels overrides.
+var canonicalTraceFields = []canonicalTraceField{
+	{"service_name", "string"},
+	{"workload_name", "string"},
+	{"span_name", "string"},
+	{"trace_id", "string"},
+	{"duration_ns", "integer"},
+	{"http_status_code", "integer"},
+	{"status_code", "string"},
+	{"resource", "string"},
+	{"destination_workload_name", "string"},
+	{"destination_workload_namespace", "string"},
+}
+
+// FetchTraceLabels returns the trace labels usable for the account's resolved trace
+// provider: the always-available canonical trace field set (typed) unioned with the
+// merged label mapping keys (static ∪ tenant ∪ account ∪ dynamic) and, when the source
+// supports it (TraceLabelKeysSource, e.g. otel_clickhouse), the label keys actually
+// present in the backend for the time window. Deduped, canonical-first. Live discovery
+// failures degrade gracefully to the derived set.
+func FetchTraceLabels(context *security.RequestContext, request FetchTraceLabelRequest) (TraceLabelsResponse, error) {
+	if request.AccountId == "" {
+		return TraceLabelsResponse{}, fmt.Errorf("account_id is required")
+	}
+
+	traceProvider, integrationSource, err := GetLogsMetricsTracesProvider(context, request.AccountId, request.ProviderType, "traces", request.ProviderSource)
+	if err != nil {
+		return TraceLabelsResponse{}, err
+	}
+	if traceProvider == "" {
+		return TraceLabelsResponse{}, fmt.Errorf("FetchTraceLabels: trace provider (trace_provider) is required")
+	}
+	source, err := getTraceSource(traceProvider, integrationSource)
+	if err != nil {
+		return TraceLabelsResponse{}, err
+	}
+
+	// Live per-provider label-key discovery; sources without a discovery API return an
+	// empty slice. On error keep the derived set so the action never hard-fails on a
+	// backend hiccup.
+	discovered, keyErr := source.QueryLabels(context, request)
+	if keyErr != nil {
+		context.GetLogger().Warn("FetchTraceLabels: live label discovery failed, using derived labels", "provider", traceProvider, "error", keyErr)
+		discovered = nil
+	}
+
+	merged := getMergedTraceLabelMapping(context, request.AccountId, source)
+	return TraceLabelsResponse{Labels: buildTraceLabels(merged, discovered)}, nil
+}
+
+// buildTraceLabels returns the canonical trace field set unioned with the keys of the
+// merged label mapping and any backend-discovered labels, deduped and canonical-first.
+// Canonical fields carry their value type in attributes; mapping/discovered keys carry
+// an empty (non-null) attributes object. Pure helper (no I/O) so the union/dedup
+// behaviour is unit-testable.
+func buildTraceLabels(mergedMapping map[string]string, discovered []OutputTraceLabel) []OutputTraceLabel {
+	seen := make(map[string]struct{})
+	labels := make([]OutputTraceLabel, 0, len(canonicalTraceFields)+len(mergedMapping)+len(discovered))
+	appendLabel := func(key, typ string) {
+		if key == "" {
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		// Attributes always defaults to an empty object (never null); canonical
+		// fields carry their value type, mapping/discovered keys stay {}.
+		attrs := map[string]any{}
+		if typ != "" {
+			attrs["type"] = typ
+		}
+		labels = append(labels, OutputTraceLabel{Label: key, Attributes: attrs})
+	}
+
+	for _, field := range canonicalTraceFields {
+		appendLabel(field.name, field.typ)
+	}
+	// Mapping + discovered keys have no known type — attributes stay {}.
+	for key := range mergedMapping {
+		appendLabel(key, "")
+	}
+	for _, d := range discovered {
+		appendLabel(d.Label, "")
+	}
+
+	return labels
 }
 
 func GetGroupedTraces(context *security.RequestContext, TraceQuery TracesV3Request) ([]TraceGroupingValues, error) {

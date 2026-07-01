@@ -316,6 +316,57 @@ func (s *OtelClickhouseTraceSource) GetQuery(ctx *security.RequestContext, trace
 	return sqlQuery, nil
 }
 
+// QueryLabels enumerates the span/resource attribute keys actually present in the
+// account's traces within the time window, so traces_list_labels can advertise the real
+// backend vocabulary (not just the static canonical fields). Isolation is by relay
+// routing: executeClickhouseQuery targets the account's own warehouse (same trust model
+// as every other trace query here). Implements TraceSource.QueryLabels.
+func (s *OtelClickhouseTraceSource) QueryLabels(ctx *security.RequestContext, request FetchTraceLabelRequest) ([]OutputTraceLabel, error) {
+	if !s.CheckAccess(ctx, request.AccountId) {
+		return nil, errors.New("user does not have access")
+	}
+
+	// Default to the last hour when the caller supplies no window; bound the scan.
+	end := time.Now().UTC()
+	if request.EndTime != 0 {
+		end = time.UnixMilli(request.EndTime).UTC()
+	}
+	start := end.Add(-1 * time.Hour)
+	if request.StartTime != 0 {
+		start = time.UnixMilli(request.StartTime).UTC()
+	}
+	const chTimeLayout = "2006-01-02 15:04:05"
+	startStr := start.Format(chTimeLayout)
+	endStr := end.Format(chTimeLayout)
+
+	// mapKeys over SpanAttributes/ResourceAttributes can't be expressed via the shared
+	// query generator (closed expression set), so build the discovery SQL directly. The
+	// only interpolated values are server-derived timestamps (no user input).
+	sqlQuery := fmt.Sprintf(
+		"SELECT label FROM ("+
+			"SELECT DISTINCT arrayJoin(mapKeys(SpanAttributes)) AS label FROM otel_traces WHERE Timestamp >= '%s' AND Timestamp <= '%s' "+
+			"UNION DISTINCT "+
+			"SELECT DISTINCT arrayJoin(mapKeys(ResourceAttributes)) AS label FROM otel_traces WHERE Timestamp >= '%s' AND Timestamp <= '%s'"+
+			") WHERE label != '' LIMIT 5000",
+		startStr, endStr, startStr, endStr,
+	)
+
+	rows, err := s.executeClickhouseQuery(ctx.GetContext(), sqlQuery, request.AccountId)
+	if err != nil {
+		return nil, err
+	}
+	labels := make([]OutputTraceLabel, 0, len(rows))
+	for _, row := range rows {
+		if v, ok := row["label"]; ok && v != nil {
+			if str := fmt.Sprintf("%v", v); str != "" {
+				// Discovered keys have no known type — attributes stay {}.
+				labels = append(labels, OutputTraceLabel{Label: str, Attributes: map[string]any{}})
+			}
+		}
+	}
+	return labels, nil
+}
+
 func (s *OtelClickhouseTraceSource) GetLabelValues(ctx *security.RequestContext, fetchTraceRequest TracesV3LabelValuesRequest) (common.OpenTelemetryTraceLabelValues, error) {
 	hasAccess := s.CheckAccess(ctx, fetchTraceRequest.AccountId)
 	if !hasAccess {
