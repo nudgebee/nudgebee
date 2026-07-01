@@ -1609,6 +1609,8 @@ rules:
       event_filters:
         - template: '{{ eq (index .Event "detailType") "ECS Task State Change" }}'
           description: "ECS task state change from customer EventBridge"
+        - template: '{{ $s := index .Detail "lastStatus" }}{{ or (eq $s "PENDING") (eq $s "RUNNING") (eq $s "STOPPED") }}'
+          description: "Process PENDING (task visible early), RUNNING (complete metadata), and STOPPED (stop reason). Skips PROVISIONING, ACTIVATING, DEACTIVATING, STOPPING to avoid noise writes with incomplete data."
     event_template:
       title:
         template: "ECS Task {{ (index .Detail \"taskArn\") | str | splitList \"/\" | last }} → {{ (index .Detail \"lastStatus\") }}"
@@ -1617,8 +1619,9 @@ rules:
         template: "ECS task {{ (index .Detail \"taskArn\") }} changed to {{ (index .Detail \"lastStatus\") }}"
       status: "Closed"
       fingerprint:
-        # Task-level (taskArn). See note on ECS_Task_All_Events_EventBridge above.
-        template: "ecs-task:{{ (index .Detail \"taskArn\") }}"
+        # Per task+status so duplicate events for the same status within
+        # dedup_ttl_seconds are collapsed, but PENDING/RUNNING/STOPPED are independent.
+        template: "ecs-task:{{ (index .Detail \"taskArn\") }}:{{ (index .Detail \"lastStatus\") }}"
       resource_id:
         template: "{{ (index .Detail \"taskArn\") }}"
       resource_service_name:

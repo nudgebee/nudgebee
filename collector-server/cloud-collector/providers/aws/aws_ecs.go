@@ -439,6 +439,31 @@ func (a *amazonEcs) GetResourcesByIds(ctx providers.CloudProviderContext, accoun
 					taskMeta["ClusterArn"] = clusterName
 				}
 
+				// AWS does not populate task-level Cpu/Memory until the task is scheduled
+				// (typically after PENDING state). Enrich from the task definition so these
+				// fields are available immediately on first EventBridge event.
+				if (task.Cpu == nil || *task.Cpu == "") && task.TaskDefinitionArn != nil && *task.TaskDefinitionArn != "" {
+					if taskDef, err := getTaskDefinitionDetails(ctx.GetContext(), *task.TaskDefinitionArn, svc); err == nil && taskDef != nil {
+						if taskDef.Cpu != nil && *taskDef.Cpu != "" {
+							taskMeta["Cpu"] = *taskDef.Cpu
+						}
+						if taskDef.Memory != nil && *taskDef.Memory != "" {
+							taskMeta["Memory"] = *taskDef.Memory
+						}
+					}
+				}
+
+				// Tasks launched via capacity provider strategy have an empty LaunchType.
+				// Derive it from the capacity provider name so the UI can display it.
+				if string(task.LaunchType) == "" && task.CapacityProviderName != nil {
+					cp := *task.CapacityProviderName
+					if cp == "FARGATE" || cp == "FARGATE_SPOT" {
+						taskMeta["LaunchType"] = "FARGATE"
+					} else if cp != "" {
+						taskMeta["LaunchType"] = "EC2"
+					}
+				}
+
 				resources = append(resources, providers.Resource{
 					Id:          taskID,
 					ServiceName: ServiceNameECS,
