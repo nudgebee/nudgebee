@@ -3378,6 +3378,7 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 			"nb_alert_job",   // Chronosphere normalized job
 			"service_name",   // Generic service name
 			"service.name",   // OpenTelemetry-style service name
+			"service",        // Alertmanager/Prometheus bare `service` label (e.g. TargetDown)
 			"pod",            // Pod name from labels
 			"pod_name",       // Alternative pod name key
 			"container",      // Container name (Chronosphere events)
@@ -3392,12 +3393,17 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 			if strings.Contains(val, "kube-state-metrics") {
 				continue
 			}
-			// `job`/`nb_alert_job` carry the prometheus scrape target on every
-			// series (kubelet, node-exporter, …). Never let an exporter become
-			// the subject — that's how KubePersistentVolumeFillingUp resolved
-			// to subject=kubelet instead of the persistentvolumeclaim.
-			if (key == "job" || key == "nb_alert_job") && isPrometheusScrapeJob(val) {
-				continue
+			// `job`/`nb_alert_job` — and the service keys — can carry the prometheus
+			// scrape target on every series (kubelet, node-exporter, …). Never let a
+			// bare exporter become the subject: that's how KubePersistentVolumeFillingUp
+			// resolved to subject=kubelet instead of the persistentvolumeclaim.
+			// isPrometheusScrapeJob matches the exporter exactly, so a real Service
+			// name like "nudgebee-prometheus-kube-p-kubelet" still resolves normally.
+			switch key {
+			case "job", "nb_alert_job", "service", "service_name", "service.name":
+				if isPrometheusScrapeJob(val) {
+					continue
+				}
 			}
 			parsedPayload.EventSubjectName = val
 			break

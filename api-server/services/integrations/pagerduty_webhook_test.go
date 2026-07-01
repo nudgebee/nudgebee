@@ -335,6 +335,26 @@ func TestResolveSubjectFromLabels(t *testing.T) {
 			title:           "KubePersistentVolumeFillingUp",
 			expectedSubject: "",
 		},
+		{
+			// Alertmanager TargetDown: the bare `service` label resolves the
+			// subject deterministically instead of falling to the LLM. `job` here
+			// is the exporter and is correctly ignored in favour of `service`.
+			name:              "bare service label resolves subject",
+			initialSubject:    "",
+			labels:            map[string]string{"service": "nudgebee-prometheus-kube-p-kubelet", "namespace": "kube-system", "job": "kubelet"},
+			title:             "One or more targets are unreachable.",
+			expectedSubject:   "nudgebee-prometheus-kube-p-kubelet",
+			expectedNamespace: "kube-system",
+		},
+		{
+			// A bare exporter in the `service` label must NOT become the subject
+			// (the scrape-target guard now also covers the service keys).
+			name:            "bare exporter service is not a subject",
+			initialSubject:  "",
+			labels:          map[string]string{"service": "node-exporter"},
+			title:           "TargetDown",
+			expectedSubject: "",
+		},
 	}
 
 	for _, tt := range tests {
