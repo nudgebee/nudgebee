@@ -38,7 +38,7 @@ type ConversationTreeSummary struct {
 	StartedAt              time.Time `json:"started_at"`
 	EndedAt                time.Time `json:"ended_at"`
 	WallClockSeconds       float64   `json:"wall_clock_seconds"`
-	ModelLatencySeconds    float64   `json:"model_latency_seconds"`
+	TotalModelTimeSeconds  float64   `json:"total_model_time_seconds"`
 	TotalCostUsd           float64   `json:"total_cost_usd"`
 	TotalInputTokens       int64     `json:"total_input_tokens"`
 	TotalOutputTokens      int64     `json:"total_output_tokens"`
@@ -457,7 +457,7 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 		Status:                 sum.Status,
 		Title:                  sum.Title,
 		StartedAt:              sum.StartedAt,
-		ModelLatencySeconds:    totalLatency,
+		TotalModelTimeSeconds:  totalLatency,
 		TotalCostUsd:           totalCost,
 		TotalInputTokens:       totalIn,
 		TotalOutputTokens:      totalOut,
@@ -468,7 +468,17 @@ func (chat *ConversationDao) GetConversationTree(sessionID, accountID string) (C
 		ToolCallCount:          len(tree.ToolCalls),
 		ModelCallCount:         len(mcScans),
 	}
-	if sum.EndedAt.Valid {
+	// Derive end time from last model call completion, falling back to updated_at.
+	var lastCallEnd time.Time
+	for _, m := range mcScans {
+		if end := m.CreatedAt.Add(time.Duration(m.LatencySeconds * float64(time.Second))); end.After(lastCallEnd) {
+			lastCallEnd = end
+		}
+	}
+	if !lastCallEnd.IsZero() {
+		tree.Conversation.EndedAt = lastCallEnd
+		tree.Conversation.WallClockSeconds = lastCallEnd.Sub(sum.StartedAt).Seconds()
+	} else if sum.EndedAt.Valid {
 		tree.Conversation.EndedAt = sum.EndedAt.Time
 		tree.Conversation.WallClockSeconds = sum.EndedAt.Time.Sub(sum.StartedAt).Seconds()
 	}

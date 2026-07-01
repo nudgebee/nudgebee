@@ -441,7 +441,6 @@ export interface KpiTotals {
   avgCostPerRun: number;
   inputTokens: number;
   outputTokens: number;
-  avgLatencyMs: number;
   openAnomalies: number;
 }
 
@@ -449,7 +448,6 @@ export function kpiTotals(runs: Run[], anomalies: Anomaly[]): KpiTotals {
   const totalCost = runs.reduce((a, r) => a + r.totalCost, 0);
   const inputTokens = runs.reduce((a, r) => a + r.totalInputTokens, 0);
   const outputTokens = runs.reduce((a, r) => a + r.totalOutputTokens, 0);
-  const latency = runs.reduce((a, r) => a + r.totalModelLatencyMs, 0);
   const runIds = new Set(runs.map((r) => r.runId));
   return {
     totalCost,
@@ -457,7 +455,6 @@ export function kpiTotals(runs: Run[], anomalies: Anomaly[]): KpiTotals {
     avgCostPerRun: runs.length ? totalCost / runs.length : 0,
     inputTokens,
     outputTokens,
-    avgLatencyMs: runs.length ? latency / runs.length : 0,
     openAnomalies: anomalies.filter((a) => !a.runId || runIds.has(a.runId)).length,
   };
 }

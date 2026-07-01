@@ -87,7 +87,7 @@ export function rowToRun(row: ConversationCostRow): Run {
     totalInputTokens: row.input_tokens ?? 0,
     totalOutputTokens: row.output_tokens ?? 0,
     cachedInputTokens: row.cached_input_tokens ?? 0,
-    totalModelLatencyMs: (row.model_latency_seconds ?? 0) * S_TO_MS,
+    totalModelLatencyMs: (row.total_model_time_seconds ?? 0) * S_TO_MS,
     totalWaitTimeMs: 0,
     wallClockMs: (row.wall_clock_seconds ?? 0) * S_TO_MS,
     modelsUsed: row.models_used ?? [],
@@ -283,7 +283,7 @@ export function treeToRun(tree: ConversationTree): Run {
     totalCost: c.total_cost_usd ?? 0,
     totalInputTokens: c.total_input_tokens ?? 0,
     totalOutputTokens: c.total_output_tokens ?? 0,
-    totalModelLatencyMs: (c.model_latency_seconds ?? 0) * S_TO_MS,
+    totalModelLatencyMs: (c.total_model_time_seconds ?? 0) * S_TO_MS,
     totalWaitTimeMs: 0,
     wallClockMs: (c.wall_clock_seconds ?? 0) * S_TO_MS,
     modelsUsed,
@@ -402,8 +402,6 @@ export function totalsToKpi(t: UsageTotals | undefined): KpiTotals {
     avgCostPerRun: runs ? totalCost / runs : 0,
     inputTokens: t?.total_input_tokens ?? 0,
     outputTokens: t?.total_output_tokens ?? 0,
-    // No per-run latency average in totals; left at 0 (latency lives per-row/per-model).
-    avgLatencyMs: 0,
     openAnomalies: 0,
   };
 }
