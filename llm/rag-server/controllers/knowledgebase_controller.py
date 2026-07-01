@@ -62,13 +62,6 @@ class KBRetriggerIntegrationRequest(BaseModel):
     triggered_by: str = "system"
 
 
-class DocumentLoader(Protocol):
-    """Minimal loader contract used by KB document ingestion."""
-
-    def load(self) -> list[Document]:
-        """Return documents ready for KB processing."""
-
-
 def _create_kb_document_loader(file_path: str, data_format: str) -> DocumentLoader:
     """
     Create appropriate document loader based on data format.
