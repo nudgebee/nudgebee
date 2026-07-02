@@ -50,7 +50,16 @@ jobs:
           # The phrase a contributor comments to sign.
           custom-pr-sign-comment: I have read the CLA Document and I hereby sign the CLA
           custom-allsigned-prcomment: All contributors have signed the CLA. Thank you!
-          # Skip bots (they cannot sign).
-          allowlist: dependabot[bot],renovate[bot],*[bot]
+          # CLA-exempt contributors, matched against GitHub login (wildcards ok):
+          #   - Nudgebee team members: exempt because their employment
+          #     IP-assignment agreement already grants the company these rights,
+          #     so no CLA is needed. Add each team member's GitHub username here.
+          #   - Bots: `*[bot]` matches every GitHub App account (the `[bot]`
+          #     suffix is reserved, so this is safe). Covers dependabot, renovate,
+          #     github-actions, and any Claude/claude-code App account.
+          # NOTE: Claude Code normally commits as the human author with a
+          # `Co-Authored-By: Claude` trailer, so that contribution is gated on the
+          # human (exempt if they are a team member listed below).
+          allowlist: blue4209211,mayankpande88,RamanKharchee,*[bot]
           # Lock the PR conversation once merged so the signature record is stable.
           lock-pullrequest-aftermerge: true
