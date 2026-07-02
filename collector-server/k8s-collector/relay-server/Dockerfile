@@ -24,8 +24,9 @@ RUN apk add --no-cache ca-certificates \
     && adduser -D -g '' appuser
 WORKDIR /app
 COPY --from=build-stage /app/nudgebee-relay-server /app/nudgebee-relay-server
-RUN chmod +x /app/nudgebee-relay-server \
-    && chown appuser:appuser /app/nudgebee-relay-server
+# Binary stays root-owned, world-readable/executable — appuser can run but not
+# overwrite it (container immutability; avoids a chown layer-copy of the binary).
+RUN chmod +x /app/nudgebee-relay-server
 USER appuser
 EXPOSE 8080
 CMD ["./nudgebee-relay-server"]

@@ -30,8 +30,10 @@ WORKDIR /app
 COPY --from=build-stage /app/services /app/services
 COPY --from=build-stage /go/bin/pprof /usr/local/bin/pprof
 COPY --from=build-stage /app/knowledge_graph/core/default_relationships.json /app/knowledge_graph/core/default_relationships.json
-RUN chmod +x /app/services \
-    && chown -R appuser:appuser /app
+# Files stay root-owned, world-readable/executable — appuser runs the binary and
+# reads the JSON but cannot overwrite them (container immutability; also avoids a
+# chown -R layer-copy of the whole /app tree).
+RUN chmod +x /app/services
 USER appuser
 EXPOSE 8000
 CMD ["/app/services"]
