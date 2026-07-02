@@ -29,8 +29,9 @@ RUN apk add --no-cache ca-certificates \
     && adduser -D -g '' appuser
 WORKDIR /app
 COPY --from=build-stage /app/ticket-server /app/ticket-server
-RUN chmod +x /app/ticket-server \
-    && chown appuser:appuser /app/ticket-server
+# Binary stays root-owned, world-readable/executable — appuser can run but not
+# overwrite it (container immutability; avoids a chown layer-copy of the binary).
+RUN chmod +x /app/ticket-server
 USER appuser
 EXPOSE 8000
 CMD ["/app/ticket-server"]
