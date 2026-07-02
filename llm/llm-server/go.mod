@@ -2,6 +2,8 @@ module nudgebee/llm
 
 go 1.26.1
 
+toolchain go1.26.4
+
 require (
 	cloud.google.com/go/aiplatform v1.125.0
 	cloud.google.com/go/vertexai v0.19.0
