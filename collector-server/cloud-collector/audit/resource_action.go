@@ -108,6 +108,9 @@ func logResourceActionWithTarget(
 		eventAttr["error_message"] = errorMessage
 	}
 
+	// Redact any secret-named fields nested in command args before storage.
+	eventAttr = redactEventAttr(eventAttr)
+
 	// Convert eventAttr to JSON string for storage
 	eventAttrJSON, err := json.Marshal(eventAttr)
 	if err != nil {
@@ -212,6 +215,9 @@ func LogCliBatchCommand(
 	if resolutionId != "" {
 		eventAttr["resolution_id"] = resolutionId
 	}
+
+	// Redact any secret-named fields nested in the batch command results.
+	eventAttr = redactEventAttr(eventAttr)
 
 	eventAttrJSON, err := json.Marshal(eventAttr)
 	if err != nil {

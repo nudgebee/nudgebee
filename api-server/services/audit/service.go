@@ -27,6 +27,9 @@ func PublishAuditEvent(context *security.RequestContext, audit Audit) error {
 	if !config.Config.AuditPublishEnabled {
 		return nil
 	}
+	// Redact secrets before the payload leaves the service on the MQ. Callers
+	// that publish directly (bypassing CreateAudit) are covered here.
+	audit = redactAudit(audit)
 	routingKey := strings.ToLower(string(audit.EventType))
 	routingKey = strings.ReplaceAll(routingKey, "_", ".")
 	err := common.MqPublish(nbAuditsExchange, routingKey, audit, common.MqPublishWithExchangeType("topic"))
@@ -83,6 +86,11 @@ func CreateAudit(context *security.RequestContext, auditRequest *AuditRequest) e
 
 	errs := []error{}
 	for _, audit := range auditRequest.Audits {
+		// Redact secret-valued fields (access_secret, tokens, passwords, ...)
+		// before the row is persisted. This is the single choke point for the
+		// DB write path and also covers the internal PublishAuditEvent call
+		// below, so no cleartext secret is ever stored or emitted.
+		audit = redactAudit(audit)
 		jsonEventState, err := common.MarshalJson(audit.EventState)
 		if err != nil {
 			context.GetLogger().Error("audit: error marshalling event state", "error", err, "request", audit.EventState)

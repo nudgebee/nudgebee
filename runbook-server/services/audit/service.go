@@ -92,6 +92,10 @@ func CreateAudit(ctx *security.RequestContext, auditRequest *AuditRequest) error
 			continue
 		}
 
+		// Redact secret-valued fields before the row is persisted, so no
+		// cleartext credential from a workflow/runbook payload is stored.
+		a = redactAudit(a)
+
 		jsonEventState, err := common.MarshalJson(a.EventState)
 		if err != nil {
 			ctx.GetLogger().Error("audit: marshal event state", "error", err)
