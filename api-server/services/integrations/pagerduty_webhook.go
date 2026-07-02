@@ -13,7 +13,6 @@ import (
 	"nudgebee/services/event"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/internal/database"
-	"nudgebee/services/llm"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"regexp"
@@ -3618,153 +3617,27 @@ func matchWorkloadAndEnrich(sc *security.RequestContext, parsedPayload *core.Eve
 		"kind", workload.Kind)
 }
 
-// resolveSubjectUsingLLM passes the full alert context (title, description, all labels,
-// known workload names) to the LLM and asks it to extract structured resource labels.
-// This is the catch-all fallback when deterministic parsing cannot identify a resource.
+// resolveSubjectUsingLLM asks the webhook_subject_name_extractor agent to map the
+// alert to a running service, then validates the result against k8s_workloads with
+// PagerDuty's ILIKE-capable matcher. The agent owns the running-services and
+// historical context server-side, so only the alert is sent here.
 func resolveSubjectUsingLLM(sc *security.RequestContext, parsedPayload *core.EventIncomingWebhook, accountId string) {
-	dbms, err := database.GetDatabaseManager(database.Metastore)
-	if err != nil {
-		sc.GetLogger().Error("pagerdutywebhook: failed to get database manager for LLM matching", "error", err)
-		return
+	if parsedPayload.Investigation.Labels == nil {
+		parsedPayload.Investigation.Labels = map[string]string{}
 	}
-
 	tenantId := sc.GetSecurityContext().GetTenantId()
 
-	// Query distinct active workload names
-	var names []string
-	err = dbms.Db.Select(&names, `
-		SELECT DISTINCT name FROM k8s_workloads
-		WHERE tenant_id = $1 AND cloud_account_id = $2
-		  AND is_active = true AND kind NOT IN ('Job', 'CronJob')
-	`, tenantId, accountId)
-	if err != nil {
-		sc.GetLogger().Error("pagerdutywebhook: failed to query workload names for LLM", "error", err)
-		return
-	}
-	if len(names) == 0 {
-		return
-	}
-
-	// Build full context from all available data
-	labelsJSON, _ := json.Marshal(parsedPayload.Investigation.Labels)
-
-	// Load historical incident → service mappings for improved accuracy
-	historicalMappings, err := GetSubjectMappingsForPrompt(sc, tenantId, TenantAttrPagerDutyIncidentsKey, 1000)
-	if err != nil {
-		sc.GetLogger().Warn("pagerdutywebhook: failed to load historical mappings, continuing without them", "error", err)
-	}
-	historicalPatterns := FormatSubjectMappingsForPrompt(historicalMappings, 1000)
-
-	prompt := fmt.Sprintf(`@llm You are a resource label extractor for monitoring alerts. Analyze the complete alert data below and extract resource identification labels.
-
-## Alert Data
-**Title:** %s
-**Description:** %s
-**Source URL:** %s
-**Existing Labels:** %s
-
-## Historical patterns (title → service)
-%s
-
-## Known Running Services/Workloads
-%s
-
-## Task
-From the alert data above, extract the following labels. Look at ALL the data — title, description, labels, URLs, and historical patterns — to find clues about which resource this alert is about.
-
-Return ONLY a valid JSON object with these fields (use empty string "" if not found):
-{
-  "subject_name": "<k8s workload/service name from the Running Services list that this alert is about>",
-  "namespace": "<k8s namespace>",
-  "cluster": "<k8s cluster name>",
-  "pod_name": "<specific pod name if mentioned>",
-  "service_name": "<application/service name>",
-  "aws_service_name": "<AWS service like EC2, RDS, ELB if this is an AWS alert>",
-  "aws_resource_id": "<AWS resource identifier like instance-id, ARN>"
-}
-
-RULES:
-1. For subject_name: MUST be an exact match from the Running Services list, or empty string
-2. Look for service names in alert titles (e.g. "booking-service down" → subject_name="booking-service")
-3. Look for service names in pipe-delimited titles (e.g. "Critical | Prod | EKS | payment-service | high latency")
-4. Look for service names embedded in URLs (e.g. service.name=courier-worker in query params)
-5. Look for k8s resource references in labels (job, pod, deployment names)
-6. For AWS alerts: extract the resource type and identifier from dimensions/labels
-7. If the title closely matches a Historical pattern, use the same service mapping
-8. If you cannot confidently identify a resource, return empty strings — do NOT guess
-9. Return ONLY the JSON object, no explanation, no markdown fences`,
-		parsedPayload.EventTitle,
-		parsedPayload.EventDescription,
-		parsedPayload.Investigation.SourceUrl,
-		string(labelsJSON),
-		historicalPatterns,
-		strings.Join(names, ", "),
-	)
-
-	chatRequest := llm.ConversationApiRequest{
-		Query:     prompt,
-		AccountId: accountId,
-		UserId:    sc.GetSecurityContext().GetUserId(),
-		Async:     false,
-		Source:    "webhook_label_extraction",
-	}
-
-	response, err := llm.ChatCompletion(sc, chatRequest)
-	if err != nil {
-		sc.GetLogger().Error("pagerdutywebhook: LLM label extraction failed", "error", err)
-		return
-	}
-	if response == nil || len(response.Response) == 0 {
-		sc.GetLogger().Warn("pagerdutywebhook: LLM returned empty response")
-		return
-	}
-
-	// Parse JSON response from LLM
-	var extractedLabels map[string]string
-	responseText := response.Response[0]
-	// Strip markdown code fences if LLM wraps response
-	responseText = strings.TrimPrefix(responseText, "```json")
-	responseText = strings.TrimPrefix(responseText, "```")
-	responseText = strings.TrimSuffix(responseText, "```")
-	responseText = strings.TrimSpace(responseText)
-
-	if err := json.Unmarshal([]byte(responseText), &extractedLabels); err != nil {
-		sc.GetLogger().Error("pagerdutywebhook: failed to parse LLM response as JSON",
-			"error", err, "response", responseText)
-		return
-	}
-
-	sc.GetLogger().Info("pagerdutywebhook: LLM extracted labels", "labels", extractedLabels, "title", parsedPayload.EventTitle)
-
-	// Apply extracted labels
-	if subjectName := extractedLabels["subject_name"]; subjectName != "" {
-		parsedPayload.EventSubjectName = subjectName
-		parsedPayload.Investigation.Labels["nb_llm_match"] = subjectName
-		common.MetricsSubjectResolution(sc.GetContext(), IntegrationPagerdutyWebhook, "live", "matched", tenantId)
-	} else {
-		parsedPayload.Investigation.Labels["nb_llm_match"] = "not_found"
+	name := core.ResolveSubjectNameViaAgent(sc, accountId,
+		parsedPayload.EventTitle, parsedPayload.EventDescription,
+		parsedPayload.Investigation.SourceUrl, parsedPayload.Investigation.Labels)
+	if name == "" {
 		common.MetricsSubjectResolution(sc.GetContext(), IntegrationPagerdutyWebhook, "live", "not_found", tenantId)
+		return
 	}
+	common.MetricsSubjectResolution(sc.GetContext(), IntegrationPagerdutyWebhook, "live", "matched", tenantId)
 
-	if ns := extractedLabels["namespace"]; ns != "" && parsedPayload.EventSubjectNamespace == "" {
-		parsedPayload.EventSubjectNamespace = ns
-		parsedPayload.Investigation.Labels["namespace"] = ns
-	}
-
-	// Merge any other useful extracted labels
-	llmLabelKeys := []string{"cluster", "pod_name", "service_name", "aws_service_name", "aws_resource_id"}
-	for _, key := range llmLabelKeys {
-		if val := extractedLabels[key]; val != "" {
-			if parsedPayload.Investigation.Labels[key] == "" {
-				parsedPayload.Investigation.Labels[key] = val
-			}
-		}
-	}
-
-	// Validate and enrich the LLM result against k8s_workloads
-	if parsedPayload.EventSubjectName != "" {
-		matchWorkloadAndEnrich(sc, parsedPayload, accountId)
-	}
+	parsedPayload.EventSubjectName = name
+	matchWorkloadAndEnrich(sc, parsedPayload, accountId)
 }
 
 // pipeSegmentSkipList contains words that should be skipped when parsing pipe-delimited titles

@@ -158,6 +158,13 @@ var toolRemediationGenerate string
 //go:embed agent_finops.txt
 var agentFinops string
 
+// agentWebhookSubjectExtractor is the system prompt for the webhook subject-name
+// extractor: a single-shot classifier that maps an incoming alert to the running
+// workload/service it concerns.
+//
+//go:embed agent_webhook_subject_extractor.txt
+var agentWebhookSubjectExtractor string
+
 // scratchpadSummarizer is used by the scratchpad compression system to generate
 // concise LLM-backed summaries of older tool observations, preserving analytical
 // value (error patterns, metrics, causal relationships) that byte truncation destroys.
@@ -240,6 +247,10 @@ const PromptScratchpadContextSummarizer = "scratchpad_context_summarizer"
 
 // PromptAgentFinops is the system prompt for the FinOps cost optimization supervisor agent.
 const PromptAgentFinops = "agent_finops"
+
+// PromptAgentWebhookSubjectExtractor is the system prompt for the webhook
+// subject-name extractor agent.
+const PromptAgentWebhookSubjectExtractor = "agent_webhook_subject_extractor"
 
 // PromptScratchpadSummarizer generates concise summaries of tool observations for scratchpad compression.
 const PromptScratchpadSummarizer = "scratchpad_summarizer"
@@ -350,6 +361,8 @@ func GetPrompt(module string, args ...any) string {
 		data = scratchpadContextSummarizer
 	case PromptAgentFinops:
 		data = agentFinops
+	case PromptAgentWebhookSubjectExtractor:
+		data = agentWebhookSubjectExtractor
 	case PromptAgentKgUsage:
 		data = agentKgUsage
 	case PromptCostOptimization:

@@ -13,7 +13,6 @@ import (
 	"nudgebee/services/eventrule"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/internal/database"
-	"nudgebee/services/llm"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"regexp"
@@ -977,6 +976,39 @@ func lookupWorkloadByDatadogService(sc *security.RequestContext, dbms *database.
 	return w, true
 }
 
+// lookupWorkloadByName resolves a workload by its plain k8s name across the
+// candidate accounts. Used as a fallback when the datadog service-tag lookup
+// misses: the webhook_subject_name_extractor agent's options include bare workload
+// names (not only tags.datadoghq.com/service values), so it can legitimately return
+// a name with no matching service tag.
+func lookupWorkloadByName(sc *security.RequestContext, dbms *database.DatabaseManager, tenantId string, candidateAccountIds []string, name string) (datadogWorkload, bool) {
+	lookupName := name
+	if parts := strings.SplitN(name, ",", 2); len(parts) > 1 {
+		lookupName = strings.TrimSpace(parts[0])
+	}
+	if lookupName == "" {
+		return datadogWorkload{}, false
+	}
+	var w datadogWorkload
+	err := dbms.Db.Get(&w, `
+		SELECT name, namespace, kind, cloud_resource_id, cloud_account_id::text
+		FROM k8s_workloads
+		WHERE tenant_id = $1
+		  AND cloud_account_id = ANY($2)
+		  AND is_active = true
+		  AND kind NOT IN ('Job', 'CronJob')
+		  AND name = $3
+		LIMIT 1
+	`, tenantId, pq.Array(candidateAccountIds), lookupName)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			sc.GetLogger().Error("datadog plain-name workload lookup failed", "error", err, "name", lookupName)
+		}
+		return datadogWorkload{}, false
+	}
+	return w, true
+}
+
 // parseLogAlertQuery extracts the inner search query from a log alert monitor query
 // e.g. logs("service:sqlserver \"Login failed\"").index("*").rollup("count").by("host").last("5m") > 0
 // returns: service:sqlserver "Login failed"
@@ -1007,101 +1039,12 @@ func parseMetricFromMonitorQuery(monitorQuery string) (string, error) {
 	return metricAndThreshold, nil
 }
 
+// CallChatCompletionAPI resolves a service name for the given title via the
+// webhook_subject_name_extractor agent. It is retained for the historical-mapping
+// backfill (see webhook_subject_mappings.go); the applicationNames argument is
+// ignored — the agent sources the running services itself, server-side and cached.
 func CallChatCompletionAPI(sc *security.RequestContext, accountId, title, applicationNames string) string {
-	tenantId := sc.GetSecurityContext().GetTenantId()
-
-	// Load historical patterns from tenant_attrs (tenant-scoped, TTL-cached)
-	mappings, err := GetSubjectMappingsForPrompt(sc, tenantId, TenantAttrHistoricalIncidentsKey, 1000)
-	if err != nil {
-		sc.GetLogger().Warn("datadogwebhook: failed to load subject mappings, continuing without them", "error", err)
-	}
-
-	historicalPatterns := FormatSubjectMappingsForPrompt(mappings, 1000)
-
-	// Create a prompt for the chat completion API with historical patterns
-	prompt := `@llm You are a service name matcher for an incident management system. Return ONLY the matching service name(s), nothing else.
-
-Title: "%s"
-
-Historical patterns (title → service):
-%s
-
-Running services:
-%s
-
-MATCHING RULES (apply in order, stop at the first match):
-
-1. DIRECT KEYWORD MATCH: If the title contains a word that is part of a Running service name, match it.
-   - "Rating Down" → "rating-service"
-   - "Driver Tracking Down" → "driver-tracking-service"
-   - "shipment-search-api latency" → "shipment-search-api"
-
-2. KNOWN ABBREVIATIONS: Expand common abbreviations to match Running services.
-   - STS = shipment-tracking-service
-   - TTS = truckload-tracking-service
-   - TLC = truckload-connector-service
-   - SSS = shipment-search-service or shipment-search-api
-   - OII = ocean-insights-integration
-   - DFP = data-feed-pipeline
-   - FH = freighthub
-   - MSS = master-shipment-service
-
-3. PRODUCT/BRAND NAME MAPPING: Map product names to their underlying services.
-   - VOC (Visibility Operations Center) = portal-v2-ui, portal-v2-service, shipment-search-api
-   - Movement = shipment-list-gateway, portal-v2-ui
-   - CTT (Container Travel Time) = transit-time-service
-   - Analytics / Dashboard / Reporting / Looker = analytics-reporting-gateway
-   - Kong = kong
-   - YMS (Yard Management) = yms-api
-
-4. FUNCTIONAL DESCRIPTION MATCH: If the title describes a function rather than naming a service, identify which Running service owns that function.
-   - "shipment visibility" → shipment-search-api
-   - "login" / "authentication" / "401s" / "Okta" → user-service, session-service
-   - "LTL rating" / "LTL dispatch" → p44-connector-service
-   - "webhook push" / "push delayed" → push-processor
-   - "ETA" → look for *-eta-* services
-
-5. HISTORICAL PATTERN MATCH: If rules 1-4 don't match, find the most similar title in Historical patterns and use its service mapping.
-
-6. INFRASTRUCTURE VARIANTS: When a match is found for shared infrastructure (e.g., a gateway, proxy, or message broker), also return ALL variant services from the Running services list that share the same base name (e.g., if "kong" matches, also return "internal-kong" if it exists in Running services).
-
-7. INFRASTRUCTURE-ONLY TITLES: If the title only mentions infrastructure (e.g., "Kafka Down", "Redis Down", "Database issues") without naming or implying any specific application service, return "Not Found" — do not guess.
-
-MULTIPLE MATCHES: If the title refers to multiple services, return all matching FULL names separated by comma and space.
-
-FULL NAMES ONLY: Always return the exact full name as listed in Running services.
-
-IMPORTANT:
-- Do NOT force a match when there is no clear connection
-- Do NOT guess or return a random service name
-- If you cannot find a clear match, return exactly: "Not Found"
-
-Return ONLY the FULL service name(s) from Running services OR "Not Found". NO explanation. NO other text.
-
-Service name:`
-
-	// Construct the request payload
-	chatRequest := llm.ConversationApiRequest{
-		Query:     fmt.Sprintf(prompt, title, historicalPatterns, applicationNames),
-		AccountId: accountId,
-		UserId:    sc.GetSecurityContext().GetUserId(),
-		Async:     false,
-		Source:    "webhook_label_extraction",
-	}
-
-	response, err := llm.ChatCompletion(sc, chatRequest)
-	if err != nil {
-		sc.GetLogger().Error("datadogwebhook: failed to get chat completion request", "error", err)
-		return ""
-	}
-	if response == nil || len(response.Response) == 0 {
-		sc.GetLogger().Warn("datadogwebhook: chat completion returned empty response")
-		return ""
-	}
-	if response.Response[0] == "Not Found" {
-		return ""
-	}
-	return response.Response[0]
+	return core.ResolveSubjectNameViaAgent(sc, accountId, title, "", "", map[string]string{})
 }
 
 func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings []core.IntegrationConfigValue, accountId, webhookPayloadString string) ([]core.EventIncomingWebhook, error) {
@@ -2053,49 +1996,43 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 				candidateAccountIds = []string{accountId}
 			}
 
-			var names []string
-			err = databaseManager.Db.Select(&names, `
-				SELECT DISTINCT (labels->>'tags.datadoghq.com/service'::text)
-				FROM k8s_workloads
-				WHERE tenant_id = $1
-				  AND cloud_account_id = ANY($2)
-				  AND is_active = true
-				  AND kind NOT IN ('Job', 'CronJob')
-				  AND labels->>'tags.datadoghq.com/service'::text IS NOT NULL
-			`, sc.GetSecurityContext().GetTenantId(), pq.Array(candidateAccountIds))
-			if err != nil {
-				sc.GetLogger().Error("failed to get data from database for application names", "error", err)
-			} else if len(names) > 0 {
-				serviceName := CallChatCompletionAPI(sc, accountId, cleanTitle, strings.Join(names, ","))
-				sc.GetLogger().Info("LLM returned service name", "service_name", serviceName, "title", cleanTitle)
-				resolutionResult := "not_found"
-				if serviceName != "" {
-					resolutionResult = "matched"
+			// The webhook_subject_name_extractor agent owns the running-services and
+			// historical context (fetched + cached server-side), so we send only the
+			// alert and receive the matched service name.
+			serviceName := core.ResolveSubjectNameViaAgent(sc, accountId, cleanTitle, p.Body, "", labels)
+			sc.GetLogger().Info("LLM returned service name", "service_name", serviceName, "title", cleanTitle)
+			resolutionResult := "not_found"
+			if serviceName != "" {
+				resolutionResult = "matched"
+			}
+			common.MetricsSubjectResolution(sc.GetContext(), IntegrationDatadogWebhook, "live", resolutionResult, sc.GetSecurityContext().GetTenantId())
+			if serviceName != "" {
+				// labels["service"] and nb_llm_match are set by ResolveSubjectNameViaAgent.
+				// Resolve the extracted service to a workload via the datadog service-tag
+				// lookup the deterministic path uses above. The extractor's options
+				// include bare workload names (not only tags.datadoghq.com/service
+				// values), so fall back to a plain-name match when the tag lookup misses.
+				workload, ok := lookupWorkloadByDatadogService(sc, databaseManager, sc.GetSecurityContext().GetTenantId(), candidateAccountIds, serviceName)
+				if !ok {
+					workload, ok = lookupWorkloadByName(sc, databaseManager, sc.GetSecurityContext().GetTenantId(), candidateAccountIds, serviceName)
 				}
-				common.MetricsSubjectResolution(sc.GetContext(), IntegrationDatadogWebhook, "live", resolutionResult, sc.GetSecurityContext().GetTenantId())
-				if serviceName != "" {
-					labels["service"] = serviceName
-
-					// Resolve the LLM-extracted service to a workload via the same
-					// service-tag lookup the deterministic path uses above.
-					if workload, ok := lookupWorkloadByDatadogService(sc, databaseManager, sc.GetSecurityContext().GetTenantId(), candidateAccountIds, serviceName); ok {
-						subjectName = workload.Name
-						subjectNamespace = workload.Namespace
-						subjectKind = strings.ToLower(workload.Kind)
-						cloudResourceId = workload.CloudResourceId
-						labels["kind"] = workload.Kind
-						labels["cloud_resource_id"] = workload.CloudResourceId
-						// Re-anchor accountId on the matched workload's cloud account so
-						// downstream enrichment (event_incoming_webhooks insert, routing,
-						// EventIncomingWebhook.AccountId) targets the correct account.
-						if workload.CloudAccountId != "" && workload.CloudAccountId != accountId {
-							sc.GetLogger().Info("rebinding webhook accountId to matched workload's cloud account",
-								"original_account_id", accountId,
-								"matched_account_id", workload.CloudAccountId,
-								"service_name", serviceName,
-							)
-							accountId = workload.CloudAccountId
-						}
+				if ok {
+					subjectName = workload.Name
+					subjectNamespace = workload.Namespace
+					subjectKind = strings.ToLower(workload.Kind)
+					cloudResourceId = workload.CloudResourceId
+					labels["kind"] = workload.Kind
+					labels["cloud_resource_id"] = workload.CloudResourceId
+					// Re-anchor accountId on the matched workload's cloud account so
+					// downstream enrichment (event_incoming_webhooks insert, routing,
+					// EventIncomingWebhook.AccountId) targets the correct account.
+					if workload.CloudAccountId != "" && workload.CloudAccountId != accountId {
+						sc.GetLogger().Info("rebinding webhook accountId to matched workload's cloud account",
+							"original_account_id", accountId,
+							"matched_account_id", workload.CloudAccountId,
+							"service_name", serviceName,
+						)
+						accountId = workload.CloudAccountId
 					}
 				}
 			}

@@ -2,88 +2,12 @@ package core
 
 import (
 	"encoding/json"
-	"fmt"
-	"nudgebee/services/common"
 	"nudgebee/services/internal/database"
 	"nudgebee/services/llm"
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"strings"
-	"sync"
 )
-
-// HistoricalIncident represents a past incident title mapped to a service.
-// Stored in tenant_attrs under TenantAttrHistoricalIncidentsKey so the LLM
-// prompt can ground its service-name guesses in real prior incidents.
-type HistoricalIncident struct {
-	Title   string  `json:"title"`
-	Service *string `json:"service"`
-}
-
-// TenantAttrHistoricalIncidentsKey is the tenant_attrs row name that stores
-// the historical title→service mapping JSON.
-const TenantAttrHistoricalIncidentsKey = "DATADOG_INCIDENT_TITLE_SERVICE_MAPPING"
-
-// historicalIncidentsByTenant caches the parsed mapping per tenant. The key is
-// the tenantId; absence means "not loaded yet"; an empty slice means "loaded,
-// but the tenant has no patterns configured" (prevents repeated DB lookups).
-var historicalIncidentsByTenant sync.Map
-
-// historicalForTenant returns the cached patterns for the calling tenant,
-// loading from tenant_attrs (with proper tenant_id filtering) on the first
-// call per tenant. A miss in tenant_attrs is cached as an empty slice so we
-// don't hammer the DB on every webhook.
-func historicalForTenant(sc *security.RequestContext) []HistoricalIncident {
-	tenantId := sc.GetSecurityContext().GetTenantId()
-	if cached, ok := historicalIncidentsByTenant.Load(tenantId); ok {
-		return cached.([]HistoricalIncident)
-	}
-
-	attrs, err := tenant.GetTenantAttributesByName(sc, TenantAttrHistoricalIncidentsKey)
-	if err != nil || len(attrs) == 0 {
-		historicalIncidentsByTenant.Store(tenantId, []HistoricalIncident{})
-		return nil
-	}
-
-	var incidents []HistoricalIncident
-	if err := common.UnmarshalJson([]byte(attrs[0].Value), &incidents); err != nil {
-		sc.GetLogger().Warn("subject_resolution: failed to unmarshal historical incidents", "error", err)
-		historicalIncidentsByTenant.Store(tenantId, []HistoricalIncident{})
-		return nil
-	}
-
-	historicalIncidentsByTenant.Store(tenantId, incidents)
-	sc.GetLogger().Info("subject_resolution: loaded historical incidents", "tenant_id", tenantId, "count", len(incidents))
-	return incidents
-}
-
-// historicalIncidentsForPrompt formats up to `limit` historical incidents
-// for inclusion in the LLM prompt.
-func historicalIncidentsForPrompt(incidents []HistoricalIncident, limit int) string {
-	if limit <= 0 {
-		limit = 50
-	}
-	if len(incidents) == 0 {
-		return "(No historical data available)"
-	}
-
-	var sb strings.Builder
-	count := 0
-	for _, incident := range incidents {
-		if incident.Service == nil || *incident.Service == "" {
-			continue
-		}
-		fmt.Fprintf(&sb, "  - %q → %q\n", incident.Title, *incident.Service)
-		count++
-		if count >= limit {
-			break
-		}
-	}
-	if sb.Len() == 0 {
-		return "(No historical data available)"
-	}
-	return sb.String()
-}
 
 // MatchWorkloadAndEnrich validates EventSubjectName against the k8s_workloads
 // inventory for the given account and enriches the event with namespace, kind,
@@ -222,162 +146,82 @@ const skipWorkloadMatchLabel = "nb_skip_workload_match"
 // (e.g. dynatrace's impacted-entity list). The label is consumed during matching.
 const workloadCandidatesLabel = "nb_workload_candidates"
 
-// ResolveSubjectViaLLM asks the LLM to extract resource-identification labels
-// from the full alert context (title, description, URL, labels) and validates
-// the result against the k8s_workloads inventory.
+const (
+	// webhookSubjectAgentMention pins the dedicated single-shot classifier agent in
+	// llm-server, bypassing the LLM router.
+	webhookSubjectAgentMention = "@webhook_subject_name_extractor"
+	// webhookSubjectAgentSource tags the request origin for observability/budgeting.
+	webhookSubjectAgentSource = "webhook_subject_name_extractor"
+	// webhookSubjectAgentNotFound is the sentinel the agent returns when it declines.
+	webhookSubjectAgentNotFound = "Not Found"
+)
+
+// ResolveSubjectNameViaAgent asks the webhook_subject_name_extractor agent to map
+// an alert to a single running-service name. The agent owns the running-services
+// inventory and the historical title→service patterns (fetched and cached
+// server-side), so this sends only the alert itself — no inventory is embedded in
+// the request, which is what keeps webhook token cost bounded.
 //
-// The caller should only invoke this when EventSubjectName is empty — this
-// function does not short-circuit to preserve the same prompt-gen cost/benefit
-// tradeoff the caller chose.
-func ResolveSubjectViaLLM(sc *security.RequestContext, e *EventIncomingWebhook, accountId string) {
-	dbms, err := database.GetDatabaseManager(database.Metastore)
-	if err != nil {
-		sc.GetLogger().Error("subject_resolution: failed to get database manager for LLM matching", "error", err)
-		return
+// It returns the matched service name, or "" when the agent declines ("Not Found"),
+// and records the nb_llm_match label (and a default service label) on labels.
+func ResolveSubjectNameViaAgent(sc *security.RequestContext, accountId, title, description, sourceURL string, labels map[string]string) string {
+	if labels == nil {
+		labels = map[string]string{}
 	}
 
-	tenantId := sc.GetSecurityContext().GetTenantId()
-
-	// Pull both workload names and the datadog service tag values so the LLM
-	// can match either convention. Some envs use bare workload names; others
-	// (datadog deployments) tag workloads with tags.datadoghq.com/service.
-	var names []string
-	err = dbms.Db.Select(&names, `
-		SELECT DISTINCT name FROM k8s_workloads
-		WHERE tenant_id = $1 AND cloud_account_id = $2
-		  AND is_active = true AND kind NOT IN ('Job', 'CronJob')
-		  AND name IS NOT NULL
-		UNION
-		SELECT DISTINCT labels->>'tags.datadoghq.com/service' FROM k8s_workloads
-		WHERE tenant_id = $1 AND cloud_account_id = $2
-		  AND is_active = true AND kind NOT IN ('Job', 'CronJob')
-		  AND labels->>'tags.datadoghq.com/service' IS NOT NULL
-	`, tenantId, accountId)
-	if err != nil {
-		sc.GetLogger().Error("subject_resolution: failed to query workload names for LLM", "error", err)
-		return
-	}
-	if len(names) == 0 {
-		return
-	}
-
-	historicalPatterns := historicalIncidentsForPrompt(historicalForTenant(sc), 1000)
-
-	labelsJSON, _ := json.Marshal(e.Investigation.Labels)
-
-	prompt := fmt.Sprintf(`@llm You are a resource label extractor for monitoring alerts. Analyze the complete alert data below and extract resource identification labels.
-
-## Alert Data
-**Title:** %s
-**Description:** %s
-**Source URL:** %s
-**Existing Labels:** %s
-
-## Known Running Services/Workloads
-%s
-
-## Historical Title → Service Patterns
-%s
-
-## Task
-From the alert data above, extract the following labels. Look at ALL the data — title, description, labels, URLs — to find clues about which resource this alert is about.
-
-Return ONLY a valid JSON object with these fields (use empty string "" if not found):
-{
-  "subject_name": "<k8s workload/service name from the Running Services list that this alert is about>",
-  "namespace": "<k8s namespace>",
-  "cluster": "<k8s cluster name>",
-  "pod_name": "<specific pod name if mentioned>",
-  "service_name": "<application/service name>",
-  "aws_service_name": "<AWS service like EC2, RDS, ELB if this is an AWS alert>",
-  "aws_resource_id": "<AWS resource identifier like instance-id, ARN>"
-}
-
-RULES:
-1. For subject_name: MUST be an exact match from the Running Services list, or empty string
-2. Look for service names in alert titles (e.g. "booking-service down" → subject_name="booking-service")
-3. Look for service names in pipe-delimited titles (e.g. "Critical | Prod | EKS | payment-service | high latency")
-4. Look for service names embedded in URLs (e.g. service.name=courier-worker in query params)
-5. Look for k8s resource references in labels (job, pod, deployment names)
-6. For AWS alerts: extract the resource type and identifier from dimensions/labels
-7. Consult the Historical Title → Service Patterns when rules 1-5 don't yield a match
-8. If you cannot confidently identify a resource, return empty strings — do NOT guess
-9. Return ONLY the JSON object, no explanation, no markdown fences`,
-		e.EventTitle,
-		e.EventDescription,
-		e.Investigation.SourceUrl,
-		string(labelsJSON),
-		strings.Join(names, ", "),
-		historicalPatterns,
-	)
+	payload, _ := json.Marshal(map[string]any{
+		"title":       title,
+		"description": description,
+		"source_url":  sourceURL,
+		"labels":      labels,
+	})
 
 	chatRequest := llm.ConversationApiRequest{
-		Query:     prompt,
+		Query:     webhookSubjectAgentMention + "\n" + string(payload),
 		AccountId: accountId,
 		UserId:    sc.GetSecurityContext().GetUserId(),
 		Async:     false,
-		Source:    "webhook_label_extraction",
+		Source:    webhookSubjectAgentSource,
 	}
 
 	response, err := llm.ChatCompletion(sc, chatRequest)
 	if err != nil {
-		sc.GetLogger().Error("subject_resolution: LLM label extraction failed", "error", err)
-		return
+		sc.GetLogger().Error("subject_resolution: webhook_subject_name_extractor call failed", "error", err)
+		return ""
 	}
 	if response == nil || len(response.Response) == 0 {
-		sc.GetLogger().Warn("subject_resolution: LLM returned empty response")
-		return
+		sc.GetLogger().Warn("subject_resolution: webhook_subject_name_extractor returned empty response")
+		return ""
 	}
 
-	responseText := response.Response[0]
-	responseText = strings.TrimPrefix(responseText, "```json")
-	responseText = strings.TrimPrefix(responseText, "```")
-	responseText = strings.TrimSuffix(responseText, "```")
-	responseText = strings.TrimSpace(responseText)
-
-	var extracted map[string]string
-	if err := json.Unmarshal([]byte(responseText), &extracted); err != nil {
-		sc.GetLogger().Error("subject_resolution: failed to parse LLM response as JSON", "error", err, "response", responseText)
-		return
+	name := strings.TrimSpace(response.Response[0])
+	if name == "" || strings.EqualFold(name, webhookSubjectAgentNotFound) {
+		labels["nb_llm_match"] = "not_found"
+		return ""
 	}
+	labels["nb_llm_match"] = name
+	if labels["service"] == "" {
+		labels["service"] = name
+	}
+	return name
+}
 
+// ResolveSubjectViaLLM resolves an event's subject via the
+// webhook_subject_name_extractor agent and validates the result against the
+// k8s_workloads inventory. The caller should only invoke this when
+// EventSubjectName is empty.
+func ResolveSubjectViaLLM(sc *security.RequestContext, e *EventIncomingWebhook, accountId string) {
 	if e.Investigation.Labels == nil {
 		e.Investigation.Labels = map[string]string{}
 	}
 
-	if subj := extracted["subject_name"]; subj != "" {
-		// LLM may return multiple comma-separated services. Keep the full
-		// response on labels["service"] for downstream auto-actions, but use
-		// only the first part as the subject + workload-lookup candidate.
-		lookup := subj
-		if parts := strings.SplitN(subj, ",", 2); len(parts) > 1 {
-			lookup = strings.TrimSpace(parts[0])
-		}
-		e.EventSubjectName = lookup
-		e.Investigation.Labels["nb_llm_match"] = subj
-		if e.Investigation.Labels["service"] == "" {
-			e.Investigation.Labels["service"] = subj
-		}
-	} else {
-		e.Investigation.Labels["nb_llm_match"] = "not_found"
+	name := ResolveSubjectNameViaAgent(sc, accountId, e.EventTitle, e.EventDescription, e.Investigation.SourceUrl, e.Investigation.Labels)
+	if name == "" {
+		return
 	}
 
-	if ns := extracted["namespace"]; ns != "" && e.EventSubjectNamespace == "" {
-		e.EventSubjectNamespace = ns
-		e.Investigation.Labels["namespace"] = ns
-	}
-
-	for _, key := range []string{"cluster", "pod_name", "service_name", "aws_service_name", "aws_resource_id"} {
-		if val := extracted[key]; val != "" {
-			if e.Investigation.Labels[key] == "" {
-				e.Investigation.Labels[key] = val
-			}
-		}
-	}
-
-	if e.EventSubjectName != "" {
-		MatchWorkloadAndEnrich(sc, e, accountId)
-	}
+	e.EventSubjectName = name
+	MatchWorkloadAndEnrich(sc, e, accountId)
 }
 
 // enrichEventsWithSubjectResolution runs on every webhook event after account
@@ -401,6 +245,12 @@ func enrichEventsWithSubjectResolution(sc *security.RequestContext, events []Eve
 		}
 		if events[i].EventSubjectName != "" {
 			MatchWorkloadAndEnrich(sc, &events[i], accountId)
+			continue
+		}
+		// An integration-specific resolver (datadog/pagerduty/zenduty) already ran
+		// the extractor agent when it set nb_llm_match. Don't fire a second, redundant
+		// call here — the agent would just reproduce the prior not_found.
+		if _, alreadyTried := events[i].Investigation.Labels["nb_llm_match"]; alreadyTried {
 			continue
 		}
 		if llmEnabled {
