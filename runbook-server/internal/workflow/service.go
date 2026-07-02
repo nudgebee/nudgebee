@@ -212,13 +212,30 @@ func (s *Service) validateTaskTypes(ctx *security.RequestContext, accountID stri
 					}
 				}
 
-				// Specific validation for data.transform / data.filter: compile JSONata expressions
-				if task.Type == "data.transform" || task.Type == "data.filter" {
-					if expression, ok := task.Params["expression"].(string); ok && expression != "" {
-						// Skip template expressions — they resolve at execution time
-						if !strings.Contains(expression, "{{") {
-							if _, err := jsonata.Compile(expression); err != nil {
-								return common.ErrorBadRequest(fmt.Sprintf("task '%s' has invalid JSONata expression: %v", task.ID, err))
+				// Specific validation for data.transform / data.filter: compile JSONata.
+				// data.transform uses an "expression"; it also supports scriptType
+				// "javascript", whose expression is JS and not valid JSONata, so only
+				// compile-check the JSONata case. data.filter uses a "condition" that
+				// runs as "$[<condition>]", so validate it the same way it executes.
+				switch task.Type {
+				case "data.transform":
+					scriptType, _ := task.Params["scriptType"].(string)
+					if scriptType != "javascript" {
+						if expression, ok := task.Params["expression"].(string); ok && expression != "" {
+							// Skip template expressions, they resolve at execution time.
+							if !strings.Contains(expression, "{{") {
+								if _, err := jsonata.Compile(expression); err != nil {
+									return common.ErrorBadRequest(fmt.Sprintf("task '%s' has invalid JSONata expression: %v", task.ID, err))
+								}
+							}
+						}
+					}
+				case "data.filter":
+					if condition, ok := task.Params["condition"].(string); ok && condition != "" {
+						// Skip template expressions, they resolve at execution time.
+						if !strings.Contains(condition, "{{") {
+							if _, err := jsonata.Compile(fmt.Sprintf("$[%s]", condition)); err != nil {
+								return common.ErrorBadRequest(fmt.Sprintf("task '%s' has invalid JSONata condition: %v", task.ID, err))
 							}
 						}
 					}
