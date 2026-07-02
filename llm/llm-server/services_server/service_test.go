@@ -9,7 +9,18 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// requireLiveServices skips tests that need a live services-server / observability
+// backend and a populated tenant+account. They read TEST_TENANT / TEST_ACCOUNT and
+// would otherwise hit a refused DB connection (or nil-deref on an empty tenant).
+func requireLiveServices(t *testing.T) {
+	t.Helper()
+	if os.Getenv("TEST_ACCOUNT") == "" || os.Getenv("TEST_TENANT") == "" {
+		t.Skip("requires a live services-server backend; set TEST_TENANT and TEST_ACCOUNT to run")
+	}
+}
+
 func TestServiceDependencyGraph(t *testing.T) {
+	requireLiveServices(t)
 	response, error := GetServiceDependencyGraph(*security.NewRequestContextForSuperAdmin(), os.Getenv("TEST_ACCOUNT"), "nudgebee", "services-server")
 	if error != nil {
 		t.Error(error)
@@ -19,6 +30,7 @@ func TestServiceDependencyGraph(t *testing.T) {
 }
 
 func TestServiceQueryLogs(t *testing.T) {
+	requireLiveServices(t)
 	startTime := time.Now().UTC().Add(-1 * time.Hour)
 	endTime := time.Now().UTC()
 
@@ -40,6 +52,7 @@ func TestServiceQueryLogs(t *testing.T) {
 }
 
 func TestServiceQueryLogLabels(t *testing.T) {
+	requireLiveServices(t)
 	response, error := QueryLogLabels(*security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_USER"), []string{os.Getenv("TEST_ACCOUNT")}), os.Getenv("TEST_ACCOUNT"), ObservabilityProvider{
 		Provider:          "ES",
 		IntegrationSource: "agent",
@@ -52,12 +65,14 @@ func TestServiceQueryLogLabels(t *testing.T) {
 }
 
 func TestServiceQueryMetricsSeries(t *testing.T) {
+	requireLiveServices(t)
 	response, error := ListMetricsSeries(*security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_USER"), []string{os.Getenv("TEST_ACCOUNT")}), os.Getenv("TEST_ACCOUNT"), "prometheus", "memory")
 	assert.Nil(t, error)
 	assert.NotNil(t, response)
 }
 
 func TestServiceQueryMetricsSeriesLabels(t *testing.T) {
+	requireLiveServices(t)
 	response, error := ListMetricsSeriesLabels(*security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_USER"), []string{os.Getenv("TEST_ACCOUNT")}), os.Getenv("TEST_ACCOUNT"), "prometheus", "container_info")
 	if error != nil {
 		t.Error(error)
@@ -67,6 +82,7 @@ func TestServiceQueryMetricsSeriesLabels(t *testing.T) {
 }
 
 func TestGetObservabilityProvider(t *testing.T) {
+	requireLiveServices(t)
 	rc := *security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_USER"), []string{os.Getenv("TEST_ACCOUNT")})
 	data, err := GetObservabilityProvider(rc, os.Getenv("TEST_ACCOUNT"), "logs")
 	assert.NotEmpty(t, data)

@@ -38,8 +38,11 @@ func TestWAFGetRecommendations(t *testing.T) {
 				{
 					Id:          "webacl-1",
 					ServiceName: ServiceNameWAF,
-					Meta:        map[string]any{},
-					Type:        getAwsServiceResourceType(ServiceNameWAF, "webacl"),
+					// Web ACL is enriched (non-empty meta) but has no LoggingConfiguration key,
+					// which is the real "logging disabled" signal. GetRecommendations skips
+					// resources with empty meta, so a representative key is required.
+					Meta: map[string]any{"AssociatedResourceCount": 1},
+					Type: getAwsServiceResourceType(ServiceNameWAF, "webacl"),
 				},
 			},
 			expectedCount: 1,

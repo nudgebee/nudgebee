@@ -51,14 +51,17 @@ func notifyGoogleChatBinding(tenantId, spaceId, event string) {
 		"Content-Type":   "application/json",
 		"X-ACTION-TOKEN": config.Config.ServiceApiServerToken,
 	}
-	if _, err := common.HttpPost(
+	resp, err := common.HttpPost(
 		fmt.Sprintf("%s/api/integrations/google-chat/notify", config.Config.NotificationServiceUrl),
 		common.HttpWithTimeout(10*time.Second),
 		common.HttpWithHeaders(headers),
 		common.HttpWithJsonBody(map[string]any{"space_id": spaceId, "event": event, "tenant_id": tenantId}),
-	); err != nil {
+	)
+	if err != nil {
 		slog.Warn("integrations: google chat notice failed (best-effort)", "error", err, "space_id", spaceId, "event", event)
+		return
 	}
+	defer func() { _ = resp.Body.Close() }()
 }
 
 func handleIntegrationAction(actionPayload *ActionRequest, c *gin.Context, tracer *trace.Tracer, meter *metric.Meter, logger *slog.Logger) {

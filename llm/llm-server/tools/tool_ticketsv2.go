@@ -868,7 +868,7 @@ func ticketServerListTickets(ctx *security.RequestContext, tenantID string, req 
 	if err != nil {
 		return result, fmt.Errorf("ticket-server: list-tickets request failed: %w", err)
 	}
-	defer closeRespBody(resp.Body)
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -902,7 +902,7 @@ func ticketServerCreateTicket(ctx *security.RequestContext, tenantID string, req
 	if err != nil {
 		return result, fmt.Errorf("ticket-server: create-ticket request failed: %w", err)
 	}
-	defer closeRespBody(resp.Body)
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -952,7 +952,7 @@ func ticketServerGetTicket(ctx *security.RequestContext, tenantID, accountID, in
 	if err != nil {
 		return result, fmt.Errorf("ticket-server: get-ticket request failed: %w", err)
 	}
-	defer closeRespBody(resp.Body)
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -1004,7 +1004,7 @@ func ticketServerAddComment(ctx *security.RequestContext, tenantID, accountID, i
 	if err != nil {
 		return result, fmt.Errorf("ticket-server: add-comment request failed: %w", err)
 	}
-	defer closeRespBody(resp.Body)
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -1053,7 +1053,7 @@ func ticketServerGetComments(ctx *security.RequestContext, tenantID, accountID, 
 	if err != nil {
 		return result, fmt.Errorf("ticket-server: get-comments request failed: %w", err)
 	}
-	defer closeRespBody(resp.Body)
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -1098,7 +1098,7 @@ func ticketServerGetCreateMeta(ctx *security.RequestContext, tenantID, integrati
 	if err != nil {
 		return result, fmt.Errorf("ticket-server: create-meta request failed: %w", err)
 	}
-	defer closeRespBody(resp.Body)
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -1723,12 +1723,4 @@ func getRole(ctx *security.RequestContext) string {
 		return roles[0]
 	}
 	return "user"
-}
-
-func closeRespBody(body io.ReadCloser) {
-	if body != nil {
-		if err := body.Close(); err != nil {
-			slog.Info("ticket_master_v2: failed to close response body", "error", err)
-		}
-	}
 }

@@ -1,3 +1,10 @@
+//go:build integration
+
+// TestWorkspaceIntegration drives a real Kubernetes workspace pod and requires a
+// kubeconfig + reachable cluster, so it is gated behind the `integration` build
+// tag and excluded from the default `go test ./...` / CI run. Run it with:
+//
+//	go test -v -tags=integration ./workspace/... -run TestWorkspaceIntegration
 package workspace
 
 import (

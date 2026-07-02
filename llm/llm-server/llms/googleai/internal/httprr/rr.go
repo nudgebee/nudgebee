@@ -1108,6 +1108,7 @@ func getDefaultResponseScrubbers() []func(*bytes.Buffer) error {
 			if err != nil {
 				return nil // Ignore parse errors, just return the buffer as-is
 			}
+			defer func() { _ = resp.Body.Close() }()
 
 			// Remove Cf-Ray header (Cloudflare tracing)
 			resp.Header.Del("Cf-Ray")

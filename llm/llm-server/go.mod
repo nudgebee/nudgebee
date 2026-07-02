@@ -39,6 +39,7 @@ require (
 	github.com/nudgebee/logparser v0.0.0-20260218041043-99ea4437d928
 	github.com/pkg/errors v0.9.1
 	github.com/pkoukk/tiktoken-go v0.1.8
+	github.com/pkoukk/tiktoken-go-loader v0.0.2
 	github.com/playwright-community/playwright-go v0.5700.1
 	github.com/prometheus/prometheus v0.310.0
 	github.com/qhenkart/anthropic-tokenizer-go v0.0.0-20231011194518-5519949e0faf

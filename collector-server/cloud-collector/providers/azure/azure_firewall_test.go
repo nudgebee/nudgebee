@@ -355,7 +355,7 @@ func TestFirewallService_ApplyRecommendation(t *testing.T) {
 
 	err := svc.ApplyRecommendation(ctx, account, recommendation)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "access secret is not provided")
+	assert.Contains(t, err.Error(), "access key (client ID) is not provided")
 }
 
 func TestFirewallService_ApplyCommand(t *testing.T) {
@@ -376,7 +376,7 @@ func TestFirewallService_ApplyCommand(t *testing.T) {
 				Command:    "azure_firewall_enable_threat_intel",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided", // Credential check happens first
+			errorContains: "access key (client ID) is not provided", // Credential check happens first
 		},
 		{
 			name: "unknown command",
@@ -385,7 +385,7 @@ func TestFirewallService_ApplyCommand(t *testing.T) {
 				Command:    "unknown_command",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "valid command structure without Azure connection",
@@ -394,7 +394,7 @@ func TestFirewallService_ApplyCommand(t *testing.T) {
 				Command:    "azure_firewall_enable_threat_intel",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 	}
 
@@ -454,6 +454,6 @@ func TestFirewallService_GetLogGroupName(t *testing.T) {
 
 	logGroup, err := svc.GetLogGroupName(ctx, account, "eastus", resourceID)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "access secret is not provided")
+	assert.Contains(t, err.Error(), "access key (client ID) is not provided")
 	assert.Equal(t, "", logGroup)
 }

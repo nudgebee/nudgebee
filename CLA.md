@@ -14,8 +14,8 @@ its users; it does not change your rights to use your own Contributions
 for any other purpose.
 
 You accept and agree to the following terms and conditions for Your
-present and future Contributions submitted to Nudgebee. Except for the
-license granted herein to Nudgebee and recipients of software
+past, present, and future Contributions submitted to Nudgebee. Except
+for the license granted herein to Nudgebee and recipients of software
 distributed by Nudgebee, You reserve all right, title, and interest in
 and to Your Contributions.
 
@@ -139,11 +139,17 @@ record.
 
 ## How to sign
 
-You sign this Agreement electronically by commenting on the pull
-request when the CLA-assistant bot prompts you. The bot will record
-your GitHub identity, the commit SHA, and the date of acceptance in a
-public signature ledger. One signature covers all your future
-contributions to this repository.
+When you open a pull request, the CLA Assistant bot checks whether you
+have signed. If you have not, it posts a comment with the exact phrase
+to reply with. To sign, comment on the pull request:
+
+> I have read the CLA Document and I hereby sign the CLA
+
+The bot records your GitHub identity, the commit SHA, and the date of
+acceptance in a public signature ledger (the `cla-signatures` branch of
+this repository). One signature covers all your past, present, and
+future contributions to this repository. If you add new commits and the
+check needs re-running, comment `recheck`.
 
 If you would prefer to sign on paper or via a wet signature for
 corporate-policy reasons, email **legal@nudgebee.com**.

@@ -76,12 +76,7 @@ func (a *notificationChannelMessageAction) Execute(ctx PlaybookActionContext, ra
 		ctx.GetLogger().Error("failed to send message to notification channel", "error", err)
 		return nil, fmt.Errorf("failed to send message to notification channel: %w", err)
 	}
-	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-			ctx.GetLogger().Error("failed to close response body", "error", err)
-		}
-	}(resp.Body)
+	defer func() { _ = resp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {

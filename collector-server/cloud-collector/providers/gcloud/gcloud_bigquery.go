@@ -406,7 +406,6 @@ func (s *bigQueryService) GetRecommendations(ctx providers.CloudProviderContext,
 		// Tables that haven't been queried in the lookback period are considered unused
 		// IMPORTANT: Skip this check if we failed to fetch query activity data to avoid false positives
 		if resource.Type == "bigquery.googleapis.com/Table" && !skipUnusedTableDetection {
-			// TODO: Make lookback period configurable via environment variable or account settings
 			lookbackDays := bigQueryUnusedTableLookbackDays
 
 			// Check if table was queried recently
@@ -577,7 +576,6 @@ func (s *bigQueryService) getQueriedTablesFromJobs(ctx providers.CloudProviderCo
 		}
 	}()
 
-	// TODO: Make lookback period configurable via environment variable or account settings
 	lookbackDays := bigQueryUnusedTableLookbackDays
 
 	queriedTables := make(map[string]time.Time)

@@ -398,7 +398,8 @@ func TestEventEvidenceGeneration(t *testing.T) {
 				Type:        "azure_get_resource",
 				Description: "Retrieve resource details",
 				Params: map[string]any{
-					"resource_id": "/subscriptions/12345/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm1",
+					"service_name": "microsoft.compute/virtualmachines",
+					"resource_id":  "/subscriptions/12345/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm1",
 				},
 			},
 		},
@@ -460,7 +461,20 @@ func TestEventEvidenceGeneration(t *testing.T) {
 
 // TestEndToEndEventProcessing tests complete event processing flow
 func TestEndToEndEventProcessing(t *testing.T) {
-	mockProvider := &MockAzureProvider{}
+	mockProvider := &MockAzureProvider{
+		listResourcesResponse: providers.ListResourcesResponse{
+			Items: []providers.Resource{
+				{
+					Id:          "/subscriptions/12345/resourceGroups/test-rg/providers/Microsoft.Compute/virtualMachines/test-vm",
+					Name:        "test-vm",
+					ServiceName: "microsoft.compute/virtualmachines",
+					Type:        "virtualmachine",
+					Region:      "eastus",
+					Status:      providers.ResourceStatusActive,
+				},
+			},
+		},
+	}
 
 	// Define a rule for VM state changes
 	rule := AzureEventRule{
@@ -496,12 +510,12 @@ func TestEndToEndEventProcessing(t *testing.T) {
 		},
 		Actions: []AzureActionDefinition{
 			{
-				Name:        "update_resource_state",
-				Type:        "update_cloud_resource",
-				Description: "Update cloud_resourses table with new VM state",
+				Name:        "get_resource_state",
+				Type:        "azure_get_resource",
+				Description: "Retrieve VM resource details for the new state",
 				Params: map[string]any{
-					"resource_id": `{{ .Data.resourceUri }}`,
-					"new_status":  `{{ .Data.operationName | getOperationStatus }}`,
+					"resource_id":  `{{ .Data.resourceUri }}`,
+					"service_name": "microsoft.compute/virtualmachines",
 				},
 			},
 		},

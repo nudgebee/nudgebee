@@ -11,6 +11,9 @@ import (
 )
 
 func TestSagemakerLLM_GenerateContent(t *testing.T) {
+	if config.Config.LlmProviderApiEndpoint == "" {
+		t.Skip("requires a live SageMaker endpoint (LLM_PROVIDER_API_ENDPOINT) and AWS credentials")
+	}
 	modelKwargs := map[string]any{}
 
 	llm, err := New(config.Config.LlmProviderApiEndpoint, config.Config.LlmProviderRegion, modelKwargs)

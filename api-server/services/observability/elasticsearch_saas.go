@@ -420,6 +420,7 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 		if err != nil {
 			return nil, fmt.Errorf("failed to execute elasticsearch DSL query: %w", err)
 		}
+		defer func() { _ = resp.Body.Close() }()
 
 		bodyBytes, err := readResponse(resp, "elasticsearch DSL query")
 		if err != nil {
@@ -435,7 +436,7 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 			pplBody["fetch_size"] = 100
 		}
 
-		resp, err := esRequestJSON("POST", fmt.Sprintf("%s/_plugins/_ppl", cfg.Url), pplBody, cfg)
+		resp, err := esRequestJSON("POST", fmt.Sprintf("%s/_plugins/_ppl", cfg.Url), pplBody, cfg) //nolint:bodyclose
 		if err != nil {
 			return nil, fmt.Errorf("failed to execute elasticsearch PPL query: %w", err)
 		}
@@ -498,7 +499,7 @@ func (e *ElasticSaasSource) QueryLabels(ctx *security.RequestContext, fetchLogRe
 		return nil, err
 	}
 
-	resp, err := esRequest("GET", fmt.Sprintf("%s/_cat/indices?format=json", cfg.Url), "", cfg)
+	resp, err := esRequest("GET", fmt.Sprintf("%s/_cat/indices?format=json", cfg.Url), "", cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query elasticsearch indices: %w", err)
 	}
@@ -553,7 +554,7 @@ func (e *ElasticSaasSource) QueryLabelValues(ctx *security.RequestContext, fetch
 				},
 			},
 		}
-		resp, err := esRequestJSON("POST", searchURL, aggsQuery, cfg)
+		resp, err := esRequestJSON("POST", searchURL, aggsQuery, cfg) //nolint:bodyclose
 		if err != nil {
 			return nil, fmt.Errorf("failed to query elasticsearch field values: %w", err)
 		}
@@ -614,7 +615,7 @@ func (e *ElasticSaasSource) QueryIndexFields(ctx *security.RequestContext, fetch
 		return nil, fmt.Errorf("index is required for querying index fields")
 	}
 
-	resp, err := esRequest("GET", fmt.Sprintf("%s/%s/_mapping", cfg.Url, index), "", cfg)
+	resp, err := esRequest("GET", fmt.Sprintf("%s/%s/_mapping", cfg.Url, index), "", cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query elasticsearch mapping: %w", err)
 	}
@@ -776,7 +777,7 @@ func (e *ElasticSaasSource) QueryLogGroup(ctx *security.RequestContext, req Fetc
 	}
 
 	searchURL := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
-	resp, err := esRequestJSON("POST", searchURL, queryBody, cfg)
+	resp, err := esRequestJSON("POST", searchURL, queryBody, cfg) //nolint:bodyclose
 	if err != nil {
 		return LogGroupOutput{}, fmt.Errorf("es_saas.QueryLogGroup: request failed: %w", err)
 	}

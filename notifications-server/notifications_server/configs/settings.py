@@ -656,6 +656,11 @@ class Settings(BaseSettings):
     action_api_server_token: str = Field(
         "", validation_alias=AliasChoices("ACTION_API_SERVER_TOKEN", "action_api_server_token")
     )
+    # Optional token for incoming RPC-action calls; when set, verify_action_token
+    # enforces it. Empty disables verification.
+    notification_server_token: str = Field(
+        "", validation_alias=AliasChoices("NOTIFICATION_SERVER_TOKEN", "notification_server_token")
+    )
     llm_server_token: str = Field("", validation_alias=AliasChoices("LLM_SERVER_TOKEN", "llm_server_token"))
     llm_server_token_header: str = Field(
         "X-ACTION-TOKEN",

@@ -23,7 +23,7 @@ func stringToUUIDHookFunc() mapstructure.DecodeHookFunc {
 		}
 
 		isUUID := t == reflect.TypeOf(uuid.UUID{})
-		isUUIDPtr := t.Kind() == reflect.Ptr && t.Elem() == reflect.TypeOf(uuid.UUID{})
+		isUUIDPtr := t.Kind() == reflect.Pointer && t.Elem() == reflect.TypeOf(uuid.UUID{})
 
 		if !isUUID && !isUUIDPtr {
 			return data, nil
@@ -62,7 +62,7 @@ func stringToTimeHookFunc() mapstructure.DecodeHookFunc {
 		}
 
 		isTime := t == reflect.TypeOf(time.Time{})
-		isTimePtr := t.Kind() == reflect.Ptr && t.Elem() == reflect.TypeOf(time.Time{})
+		isTimePtr := t.Kind() == reflect.Pointer && t.Elem() == reflect.TypeOf(time.Time{})
 
 		if !isTime && !isTimePtr {
 			return data, nil
@@ -111,7 +111,7 @@ func DecodeMapToStruct(m map[string]any, s any) error {
 		return errors.New("DecodeMapToStruct: s is nil")
 	}
 
-	if reflect.TypeOf(s).Kind() != reflect.Ptr {
+	if reflect.TypeOf(s).Kind() != reflect.Pointer {
 		return errors.New("DecodeMapToStruct: s is not a pointer")
 	}
 

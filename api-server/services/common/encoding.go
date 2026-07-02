@@ -25,7 +25,7 @@ func stringToTimeHookFunc() mapstructure.DecodeHookFunc {
 		}
 
 		isTime := t == reflect.TypeOf(time.Time{})
-		isTimePtr := t.Kind() == reflect.Ptr && t.Elem() == reflect.TypeOf(time.Time{})
+		isTimePtr := t.Kind() == reflect.Pointer && t.Elem() == reflect.TypeOf(time.Time{})
 
 		if !isTime && !isTimePtr {
 			return data, nil
@@ -74,7 +74,7 @@ func UnmarshalMapToStruct(m map[string]any, s any) error {
 		return errors.New("DecodeMapToStruct: s is nil")
 	}
 
-	if reflect.TypeOf(s).Kind() != reflect.Ptr {
+	if reflect.TypeOf(s).Kind() != reflect.Pointer {
 		return errors.New("DecodeMapToStruct: s is not a pointer")
 	}
 
@@ -126,7 +126,7 @@ func MarshalStructToMap(obj any) (map[string]any, error) {
 		return nil, errors.New("MarshalStructToMap: obj is nil")
 	}
 	v := reflect.ValueOf(obj)
-	for v.Kind() == reflect.Ptr {
+	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return nil, errors.New("MarshalStructToMap: obj is nil")
 		}

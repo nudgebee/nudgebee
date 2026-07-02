@@ -34,8 +34,19 @@ func newToolContext(tool core.NBTool, eventId string) core.NbToolContext {
 		eventId, []llms.MessageContent{}, "", core.NBQueryConfig{}, "")
 }
 
+// requireEventFixtureDB skips event tests that read seeded event/evidence data
+// from a live Postgres. Without a DB the tool returns empty/errored results, so
+// the assertions fail (or index into empty slices and panic).
+func requireEventFixtureDB(t *testing.T) {
+	t.Helper()
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live DB seeded with the fixture event; set TEST_ACCOUNT to run")
+	}
+}
+
 // TestGetEventEvidence_AllEvidence fetches all evidence and verifies it parses as an event list.
 func TestGetEventEvidence_AllEvidence(t *testing.T) {
+	requireEventFixtureDB(t)
 	tool := GetEventEvidenceTool{}
 	ntc := newToolContext(tool, logRichEventId)
 
@@ -57,6 +68,7 @@ func TestGetEventEvidence_AllEvidence(t *testing.T) {
 
 // TestGetEventEvidence_Logs fetches raw logs evidence.
 func TestGetEventEvidence_Logs(t *testing.T) {
+	requireEventFixtureDB(t)
 	tool := GetEventEvidenceTool{}
 	ntc := newToolContext(tool, logRichEventId)
 
@@ -78,6 +90,7 @@ func TestGetEventEvidence_Logs(t *testing.T) {
 
 // TestGetEventEvidence_MetricsData fetches prometheus metrics_data evidence.
 func TestGetEventEvidence_MetricsData(t *testing.T) {
+	requireEventFixtureDB(t)
 	tool := GetEventEvidenceTool{}
 	ntc := newToolContext(tool, logRichEventId)
 
@@ -94,6 +107,7 @@ func TestGetEventEvidence_MetricsData(t *testing.T) {
 
 // TestGetEventEvidence_NonexistentEvent verifies error handling for valid UUID that doesn't exist.
 func TestGetEventEvidence_NonexistentEvent(t *testing.T) {
+	requireEventFixtureDB(t)
 	tool := GetEventEvidenceTool{}
 	fakeId := uuid.NewString()
 	ntc := newToolContext(tool, fakeId)
@@ -169,6 +183,7 @@ func TestGetEventEvidence_WhitespaceOnlyEventId(t *testing.T) {
 // TestGetEventEvidence_NonexistentEvidenceType verifies graceful handling when
 // requesting an evidence type the event doesn't have.
 func TestGetEventEvidence_NonexistentEvidenceType(t *testing.T) {
+	requireEventFixtureDB(t)
 	tool := GetEventEvidenceTool{}
 	ntc := newToolContext(tool, logRichEventId)
 
@@ -185,6 +200,7 @@ func TestGetEventEvidence_NonexistentEvidenceType(t *testing.T) {
 
 // TestGetEventEvidence_EventIdViaCommand verifies event_id can be passed via Command field.
 func TestGetEventEvidence_EventIdViaCommand(t *testing.T) {
+	requireEventFixtureDB(t)
 	tool := GetEventEvidenceTool{}
 	ntc := newToolContext(tool, logRichEventId)
 
@@ -198,6 +214,7 @@ func TestGetEventEvidence_EventIdViaCommand(t *testing.T) {
 
 // TestEventExecuteTool_SingleEvent tests EventsExecuteTool with the log-rich event.
 func TestEventExecuteTool_SingleEvent(t *testing.T) {
+	requireEventFixtureDB(t)
 	tool := EventsExecuteTool{}
 	sc := security.NewRequestContextForSuperAdmin()
 
@@ -228,6 +245,7 @@ func TestEventExecuteTool_SingleEvent(t *testing.T) {
 // TestEventExecuteTool_MultiEvent_Manifest tests that querying multiple events (>5)
 // produces evidence manifests instead of full evidence data.
 func TestEventExecuteTool_MultiEvent_Manifest(t *testing.T) {
+	requireEventFixtureDB(t)
 	tool := EventsExecuteTool{}
 	sc := security.NewRequestContextForSuperAdmin()
 
@@ -266,6 +284,7 @@ func TestEventExecuteTool_MultiEvent_Manifest(t *testing.T) {
 // TestGetEventEvidence_LogsSummary tests query_mode=summary for logs evidence.
 // Uses logparser.ExtractPatterns for pattern clustering and GuessLevel for level breakdown.
 func TestGetEventEvidence_LogsSummary(t *testing.T) {
+	requireEventFixtureDB(t)
 	tool := GetEventEvidenceTool{}
 	ntc := newToolContext(tool, logRichEventId)
 
@@ -325,6 +344,7 @@ func TestGetEventEvidence_LogsSummary(t *testing.T) {
 
 // TestGetEventEvidence_LogsFilter tests query_mode=filter for logs evidence.
 func TestGetEventEvidence_LogsFilter(t *testing.T) {
+	requireEventFixtureDB(t)
 	tool := GetEventEvidenceTool{}
 	ntc := newToolContext(tool, logRichEventId)
 
@@ -362,6 +382,7 @@ func TestGetEventEvidence_LogsFilter(t *testing.T) {
 
 // TestGetEventEvidence_LogsFilterPagination tests offset/limit pagination for filtered logs.
 func TestGetEventEvidence_LogsFilterPagination(t *testing.T) {
+	requireEventFixtureDB(t)
 	tool := GetEventEvidenceTool{}
 	ntc := newToolContext(tool, logRichEventId)
 
@@ -414,6 +435,7 @@ func TestGetEventEvidence_LogsFilterPagination(t *testing.T) {
 
 // TestGetEventEvidence_MetricsSummary tests query_mode=summary for prometheus metrics_data.
 func TestGetEventEvidence_MetricsSummary(t *testing.T) {
+	requireEventFixtureDB(t)
 	tool := GetEventEvidenceTool{}
 	ntc := newToolContext(tool, logRichEventId)
 

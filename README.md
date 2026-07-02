@@ -2,7 +2,7 @@
 
 Open-source SRE copilot — observability, FinOps, runbook automation, and incident response across Kubernetes and AWS / Azure / GCP.
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE)
+[![License: BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-blue.svg)](./LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)](https://go.dev/dl/)
 [![Node](https://img.shields.io/badge/Node-25+-339933?logo=node.js&logoColor=white)](https://nodejs.org/en/download)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
@@ -355,7 +355,7 @@ We welcome contributions! Before opening your first PR:
 2. Review the [Code of Conduct](./CODE_OF_CONDUCT.md).
 3. Browse [open issues](https://github.com/nudgebee/nudgebee/issues) — look for `good first issue` and `help wanted` labels if you're getting started.
 
-By contributing, you agree your contributions are licensed under the Apache License, Version 2.0. On your first PR, the [CLA Assistant](https://cla-assistant.io/) bot will post a one-click sign link — subsequent PRs need no further action.
+By contributing, you agree your contributions are licensed under the [Business Source License 1.1](./LICENSE) (and its Change License, Apache 2.0). On your first PR, the [CLA Assistant](https://cla-assistant.io/) bot will post a one-click sign link — subsequent PRs need no further action.
 
 ## Security
 
@@ -373,4 +373,9 @@ Nudgebee ships with **no telemetry or product analytics**. No data leaves your c
 
 ## License
 
-Apache License 2.0 — see [LICENSE](./LICENSE).
+Nudgebee is source-available under the [Business Source License 1.1](./LICENSE).
+You can self-host and run it in production for your own internal purposes for
+free; offering it to third parties as a hosted/managed service, or using it to
+deliver services to your customers, requires a commercial license. Each version
+converts to Apache 2.0 four years after release. See [LICENSING.md](./LICENSING.md)
+for a plain-language summary, or contact **licensing@nudgebee.com**.

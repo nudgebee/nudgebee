@@ -293,13 +293,7 @@ func fetchEKSReleaseNotes(ctx *security.RequestContext, targetVersion string) (s
 		if err != nil {
 			return "", fmt.Errorf("failed to fetch release notes page: %w", err)
 		}
-		defer func(Body io.ReadCloser) {
-			if Body != nil {
-				if cerr := Body.Close(); cerr != nil {
-					ctx.GetLogger().Error("error closing response body", "error", cerr)
-				}
-			}
-		}(resp.Body)
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
 			return "", fmt.Errorf("failed to fetch release notes: status %d", resp.StatusCode)

@@ -48,52 +48,60 @@ func (p *pgStore) QueryProxyDatasources(ctx context.Context, accountID string) (
 			continue
 		}
 
-		configRows, err := p.db.QueryxContext(ctx, `
-			SELECT name::text, value::text, is_encrypted
-			FROM integration_config_values
-			WHERE integration_id = $1
-		`, integrationID)
-		if err != nil {
-			continue
-		}
-
 		configMap := map[string]any{}
 		credentials := map[string]string{}
 		var proxyType, credentialSource, credentialRef string
 
-		for configRows.Next() {
-			var name, value string
-			var isEncrypted bool
-			if err := configRows.Scan(&name, &value, &isEncrypted); err != nil {
-				continue
+		if err := func() error {
+			configRows, err := p.db.QueryxContext(ctx, `
+				SELECT name::text, value::text, is_encrypted
+				FROM integration_config_values
+				WHERE integration_id = $1
+			`, integrationID)
+			if err != nil {
+				return err
 			}
+			defer func() { _ = configRows.Close() }()
 
-			if isEncrypted && value != "" {
-				decrypted, err := utils.Decrypt(p.encryptionKey, value)
-				if err != nil {
+			for configRows.Next() {
+				var name, value string
+				var isEncrypted bool
+				if err := configRows.Scan(&name, &value, &isEncrypted); err != nil {
 					continue
 				}
-				value = decrypted
-			}
 
-			switch name {
-			case "proxy_type":
-				proxyType = value
-			case "credential_source":
-				credentialSource = value
-			case "secret_ref":
-				credentialRef = value
-			case "username", "password", "bearer_token", "custom_header_name", "custom_header_value",
-				"private_key", "passphrase", "sasl_username", "sasl_password":
-				credentials[name] = value
-			case "account_id", "integration_config_name", "connection_mode", "k8s_secret",
-				"agent_type", "datasource_key":
-				// Skip meta fields
-			default:
-				configMap[name] = coerceConfigValue(name, value)
+				if isEncrypted && value != "" {
+					decrypted, err := utils.Decrypt(p.encryptionKey, value)
+					if err != nil {
+						continue
+					}
+					value = decrypted
+				}
+
+				switch name {
+				case "proxy_type":
+					proxyType = value
+				case "credential_source":
+					credentialSource = value
+				case "secret_ref":
+					credentialRef = value
+				case "username", "password", "bearer_token", "custom_header_name", "custom_header_value",
+					"private_key", "passphrase", "sasl_username", "sasl_password":
+					credentials[name] = value
+				case "account_id", "integration_config_name", "connection_mode", "k8s_secret",
+					"agent_type", "datasource_key":
+					// Skip meta fields
+				default:
+					configMap[name] = coerceConfigValue(name, value)
+				}
 			}
+			if err := configRows.Err(); err != nil {
+				return err
+			}
+			return nil
+		}(); err != nil {
+			continue
 		}
-		configRows.Close() // nolint:errcheck
 
 		if credentialSource == "" {
 			credentialSource = "cloud_push"

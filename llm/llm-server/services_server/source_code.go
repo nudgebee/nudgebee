@@ -69,39 +69,27 @@ func GetSourceCodeAnnotationsBatch(ctx *security.RequestContext, dbManager *comm
 	query = dbManager.Db.Rebind(query)
 
 	ctx.GetLogger().Debug("executing batch SQL query", "query", query, "arg_count", len(args))
-	rows, err := dbManager.Db.Queryx(query, args...)
-	if err != nil {
+	type wlRow struct {
+		Key  string `db:"key"`
+		Meta string `db:"meta"`
+	}
+	var wlRows []wlRow
+	if err := dbManager.Db.Select(&wlRows, query, args...); err != nil {
 		ctx.GetLogger().Error("failed to execute batch query", "error", err)
 		return nil, fmt.Errorf("failed to execute batch query: %w", err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			ctx.GetLogger().Error("source_code: failed to close rows", "error", err)
-		}
-	}()
-
 	results := make(map[WorkloadKey]map[string]string)
-
-	for rows.Next() {
-		var key string
-		var metaString string
-		if err := rows.Scan(&key, &metaString); err != nil {
-			ctx.GetLogger().Warn("failed to scan batch row", "error", err)
-			continue
-		}
-
-		parts := strings.Split(key, "/")
+	for _, row := range wlRows {
+		parts := strings.Split(row.Key, "/")
 		if len(parts) != 2 {
 			continue
 		}
 		wk := WorkloadKey{Namespace: parts[0], WorkloadName: parts[1]}
-
 		var meta map[string]any
-		if err := common.UnmarshalJson([]byte(metaString), &meta); err != nil {
+		if err := common.UnmarshalJson([]byte(row.Meta), &meta); err != nil {
 			ctx.GetLogger().Warn("unable to unmarshal meta json", "error", err)
 			continue
 		}
-
 		annotations := make(map[string]string)
 		if len(meta) > 0 && meta["config"] != nil {
 			if config, ok := meta["config"].(map[string]any); ok {
@@ -118,7 +106,6 @@ func GetSourceCodeAnnotationsBatch(ctx *security.RequestContext, dbManager *comm
 		}
 		results[wk] = annotations
 	}
-
 	return results, nil
 }
 
@@ -255,37 +242,23 @@ func GetSourceCodeAnnotations(ctx *security.RequestContext, dbManager *common.Da
 	}
 
 	ctx.GetLogger().Debug("executing SQL query", "query", query, "arg_count", len(args))
-	rows, err := dbManager.Db.Queryx(query, args...)
-	if err != nil {
+	var metaStrings []string
+	if err := dbManager.Db.Select(&metaStrings, query, args...); err != nil {
 		ctx.GetLogger().Error("failed to execute query", "error", err)
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			ctx.GetLogger().Error("source_code: failed to close rows", "error", err)
-		}
-	}()
-
+	rowFound := len(metaStrings) > 0
 	var meta map[string]any
-	rowFound := false
-	for rows.Next() {
-		rowFound = true
-		var metaString string
-		if err := rows.Scan(&metaString); err != nil {
-			ctx.GetLogger().Warn("failed to scan row", "error", err)
-			continue
-		}
+	for _, metaString := range metaStrings {
 		if metaString == "" {
 			ctx.GetLogger().Debug("empty meta string in row")
 			continue
 		}
-
-		err := common.UnmarshalJson([]byte(metaString), &meta)
-		if err != nil {
+		if err := common.UnmarshalJson([]byte(metaString), &meta); err != nil {
 			ctx.GetLogger().Warn("unable to unmarshal meta json", "error", err, "meta_string_length", len(metaString))
 			continue
 		}
-		break // Use first valid row
+		break
 	}
 
 	if !rowFound {
@@ -442,39 +415,27 @@ func fetchArgoCDIntegrationConfig(accountId string) (secretName, serverURL, auth
 		FROM integration_config_values
 		WHERE integration_id = $1
 	`
-	rows, err := dbManager.Db.Queryx(configQuery, integrationId)
-	if err != nil {
+	type configRow struct {
+		Name        string `db:"name"`
+		Value       string `db:"value"`
+		IsEncrypted bool   `db:"is_encrypted"`
+	}
+	var configRows []configRow
+	if err := dbManager.Db.Select(&configRows, configQuery, integrationId); err != nil {
 		return "", "", "", fmt.Errorf("failed to fetch integration config values: %w", err)
 	}
-	defer func() {
-		if closeErr := rows.Close(); closeErr != nil {
-			err = fmt.Errorf("failed to close rows: %w", closeErr)
-		}
-	}()
-
 	configs := make(map[string]string)
-	for rows.Next() {
-		var configName, value string
-		var isEncrypted bool
-		if err := rows.Scan(&configName, &value, &isEncrypted); err != nil {
-			return "", "", "", fmt.Errorf("failed to scan config value: %w", err)
-		}
-
-		// Decrypt if encrypted
-		if isEncrypted && value != "" {
+	for _, row := range configRows {
+		value := row.Value
+		if row.IsEncrypted && value != "" {
 			decrypted, err := common.Decrypt(value)
 			if err != nil {
-				return "", "", "", fmt.Errorf("failed to decrypt config value %s: %w", configName, err)
+				return "", "", "", fmt.Errorf("failed to decrypt config value %s: %w", row.Name, err)
 			}
-			configs[configName] = decrypted
+			configs[row.Name] = decrypted
 		} else {
-			configs[configName] = value
+			configs[row.Name] = value
 		}
-	}
-
-	// Check for errors from iterating over rows
-	if err := rows.Err(); err != nil {
-		return "", "", "", fmt.Errorf("error iterating config values: %w", err)
 	}
 
 	// Extract required config values

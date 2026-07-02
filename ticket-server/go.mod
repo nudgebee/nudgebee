@@ -2,6 +2,8 @@ module nudgebee/tickets-server
 
 go 1.26.1
 
+toolchain go1.26.4
+
 require (
 	github.com/PagerDuty/go-pagerduty v1.8.0
 	github.com/allegro/bigcache/v3 v3.1.0
@@ -124,7 +126,7 @@ require (
 	github.com/ugorji/go/codec v1.3.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0
 	golang.org/x/arch v0.25.0 // indirect
-	golang.org/x/crypto v0.51.0 // indirect
+	golang.org/x/crypto v0.52.0 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/text v0.37.0 // indirect

@@ -1,7 +1,8 @@
 package adapter
 
 import (
-	"log/slog"
+	"database/sql"
+	"errors"
 	"net/url"
 	"nudgebee/services/common"
 	"nudgebee/services/internal/annotations"
@@ -93,28 +94,19 @@ func GetGitRepoURLFromWorkload(ctx AccountAdapterContext, resource models.Resour
 	}
 
 	// Query k8s_workloads for the workload metadata
-	rows, err := dbms.Db.Queryx(
+	var meta string
+	if err = dbms.Db.QueryRowx(
 		"SELECT meta::varchar FROM k8s_workloads WHERE tenant_id = $1 AND cloud_account_id = $2 AND kind = $3 AND namespace = $4 AND name = $5 AND is_active = true",
 		ctx.GetSecurityContext().GetTenantId(),
 		cloudAccountId,
 		controllerKind,
 		controllerNamespace,
 		controllerName,
-	)
-	if err != nil {
+	).Scan(&meta); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", common.ErrorNotFound("error: workload not found")
+		}
 		return "", err
-	}
-	defer func() {
-		if err := rows.Close(); err != nil {
-			slog.Error("Error closing rows", "error", err)
-		}
-	}()
-
-	var meta string
-	for rows.Next() {
-		if err := rows.Scan(&meta); err != nil {
-			return "", err
-		}
 	}
 
 	if meta == "" {

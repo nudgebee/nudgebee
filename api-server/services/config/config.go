@@ -137,8 +137,9 @@ type appConfig struct {
 	WorkflowServerEndpoint string `mapstructure:"workflow_server_endpoint"`
 	WorkflowServerToken    string `mapstructure:"workflow_server_token"`
 
-	NotificationServiceUrl string `mapstructure:"notification_service_url"`
-	TicketServiceUrl       string `mapstructure:"ticket_service_url"`
+	NotificationServiceUrl   string `mapstructure:"notification_service_url"`
+	NotificationServiceToken string `mapstructure:"notification_server_token"`
+	TicketServiceUrl         string `mapstructure:"ticket_service_url"`
 
 	NBRetentionDaysCronEvents              int `mapstructure:"nb_retention_days_hasura_cron_events"`
 	NBRetentionDaysCloudAccountUsageReport int `mapstructure:"nb_retention_days_cloud_account_usage_report"`
@@ -333,6 +334,7 @@ func init() {
 	viper.SetDefault("workflow_server_token", "")
 
 	viper.SetDefault("notification_service_url", "http://notifications:8080")
+	viper.SetDefault("notification_server_token", "")
 	viper.SetDefault("ticket_service_url", "http://ticket-server:8080")
 
 	viper.SetDefault("otel_service_name", SERVICE_NAME)

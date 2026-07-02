@@ -85,8 +85,8 @@ func convertToUsageReportItem(header []string, row []string) (providers.UsageRep
 		}
 	}
 
-	// data fixes
-	// TODO cleanup between. resourceId, resourceType, arn etc
+	// Normalize cost-line fields: canonicalize known product codes and fill in
+	// resourceType/serviceCode defaults that the billing export leaves blank.
 	if item.ProductCode == "awskms" {
 		item.ProductCode = "AWSKMS"
 	}

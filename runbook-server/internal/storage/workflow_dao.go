@@ -354,7 +354,9 @@ func (s *WorkflowDao) List(ctx context.Context, tenantID, accountID string, requ
 
 		workflows = append(workflows, wf)
 	}
-
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("failed to iterate workflows: %w", err)
+	}
 	return workflows, totalCount, nil
 }
 
@@ -761,6 +763,9 @@ func (s *WorkflowDao) GetState(ctx context.Context, workflowID string) ([]model.
 		}
 
 		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate workflow state: %w", err)
 	}
 	return items, nil
 }

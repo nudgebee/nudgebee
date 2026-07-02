@@ -5,9 +5,22 @@ import (
 	"fmt"
 	"log/slog"
 	"nudgebee/collector/cloud/providers"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/configservice"
+)
+
+type configAvailabilityEntry struct {
+	available bool
+	expiresAt time.Time
+}
+
+var (
+	configAvailabilityCache   = map[string]configAvailabilityEntry{}
+	configAvailabilityCacheMu sync.Mutex
+	configAvailabilityTTL     = 15 * time.Minute
 )
 
 // AWSConfigSource queries AWS Config for configuration-based resource relationships
@@ -159,13 +172,41 @@ func (a *AWSConfigSource) Name() string {
 	return "aws-config"
 }
 
-// IsAvailable checks if AWS Config is enabled for the account
+// IsAvailable checks if AWS Config is enabled for the account in the config's
+// region by inspecting the configuration recorder status. The result is cached
+// per account+region for a short TTL to avoid repeated API calls. The source is
+// only reported unavailable when we can confirm there is no active recorder; on
+// any API error we default to available so GetRelationships still runs and
+// surfaces the underlying error rather than silently dropping the source.
 func (a *AWSConfigSource) IsAvailable(ctx context.Context, cfg aws.Config, account providers.Account) bool {
-	// TODO: Check if AWS Config is actually enabled
-	// For now, always return true and let GetRelationships handle errors gracefully
-	// In production, you could:
-	// 1. Call ConfigService.DescribeConfigurationRecorders()
-	// 2. Check if configuration recorder is active
-	// 3. Cache result to avoid repeated API calls
-	return true
+	cacheKey := account.AccountNumber + "/" + cfg.Region
+
+	configAvailabilityCacheMu.Lock()
+	if entry, ok := configAvailabilityCache[cacheKey]; ok && time.Now().Before(entry.expiresAt) {
+		configAvailabilityCacheMu.Unlock()
+		return entry.available
+	}
+	configAvailabilityCacheMu.Unlock()
+
+	available := true // default to available; only disable when confirmed no active recorder
+	svc := configservice.NewFromConfig(cfg)
+	out, err := svc.DescribeConfigurationRecorderStatus(ctx, &configservice.DescribeConfigurationRecorderStatusInput{})
+	if err != nil {
+		if a.logger != nil {
+			a.logger.Debug("aws-config: could not determine recorder status, assuming available", "error", err, "region", cfg.Region)
+		}
+	} else if out != nil {
+		available = false
+		for _, status := range out.ConfigurationRecordersStatus {
+			if status.Recording {
+				available = true
+				break
+			}
+		}
+	}
+
+	configAvailabilityCacheMu.Lock()
+	configAvailabilityCache[cacheKey] = configAvailabilityEntry{available: available, expiresAt: time.Now().Add(configAvailabilityTTL)}
+	configAvailabilityCacheMu.Unlock()
+	return available
 }

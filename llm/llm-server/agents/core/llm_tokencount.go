@@ -6,12 +6,22 @@ import (
 	"sync"
 
 	"github.com/pkoukk/tiktoken-go"                        // OpenAI/GPT + fallback
+	tiktoken_loader "github.com/pkoukk/tiktoken-go-loader" // embedded BPE vocab (offline)
 	anthropic "github.com/qhenkart/anthropic-tokenizer-go" // Claude
 )
 
 var anthropicTokenizer *anthropic.Tokenizer
 var modelEncodingMap = map[string]*tiktoken.Tiktoken{}
 var modelEncodingMutex = &sync.RWMutex{}
+
+func init() {
+	// Use the offline BPE loader so tiktoken resolves encodings (e.g.
+	// cl100k_base) from vocab embedded in the binary instead of downloading it
+	// from a remote blob store on first use. This removes a runtime network
+	// dependency on cold start and makes token counting deterministic in tests
+	// and air-gapped environments.
+	tiktoken.SetBpeLoader(tiktoken_loader.NewOfflineLoader())
+}
 
 // InitTokenizers initializes expensive tokenizers once at startup
 func InitTokenizers() error {
