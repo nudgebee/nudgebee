@@ -142,7 +142,7 @@ func (m GithubCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 			response = err.Error()
 		}
 		return core.NBToolResponse{
-			Data:   response,
+			Data:   wrapCliError(response, githubErrorHint(response)),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}
@@ -158,6 +158,25 @@ func (m GithubCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 		Type:   core.NBToolResponseTypeText,
 		Status: core.NBToolResponseStatusSuccess,
 	}, nil
+}
+
+// githubErrorHint returns an actionable recovery hint for the two gh CLI
+// failure classes the model most often thrashes on: invalid --json fields and
+// unknown flags. Both surface answers the model already has (gh prints the valid
+// field list / usage in the error), yet the model tends to switch to a different
+// command instead of reading it. The hint steers it to correct THIS command —
+// read the printed field list, use GraphQL timelineItems for PR↔issue linkage,
+// sort/aggregate via --jq. Returns "" for unrecognized errors so the raw gh
+// output is preserved unchanged (matching shellErrorHint's contract).
+func githubErrorHint(rawError string) string {
+	lower := strings.ToLower(rawError)
+	switch {
+	case strings.Contains(lower, "unknown json field"):
+		return "That --json field is not valid for this gh subcommand. Use only the names listed under \"Available fields:\" in the error above. In particular, `gh issue list` and `gh search issues` do NOT expose a `pullRequests` field — to find PRs linked to an issue, use `gh api graphql` and read the issue's timelineItems (CROSS_REFERENCED_EVENT / CONNECTED_EVENT) instead. Run `gh <subcommand> --help` to see the valid --json fields."
+	case strings.Contains(lower, "unknown flag"), strings.Contains(lower, "unknown shorthand flag"):
+		return "That flag is not valid for this gh subcommand (for example, `gh issue list` has no `--sort` or `--direction`). Run `gh <subcommand> --help` to see valid flags, and do sorting/counting/grouping with `--jq` (sort_by, group_by, length). Correct this command rather than switching to a different one."
+	}
+	return ""
 }
 
 func (m GithubCliTool) ConfigSchema(ctx *security.RequestContext) core.ToolConfigSchema {

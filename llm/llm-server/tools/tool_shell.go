@@ -376,21 +376,7 @@ func looksLikeJSONEnvelope(command string) bool {
 // preserved verbatim under `original_error` so the LLM still sees the
 // underlying signal.
 func wrapShellError(rawError, originalCommand string) string {
-	hint := shellErrorHint(rawError, originalCommand)
-	if hint == "" {
-		return rawError
-	}
-	wrapped := map[string]string{
-		"error_hint":     hint,
-		"original_error": rawError,
-	}
-	body, err := common.MarshalJson(wrapped)
-	if err != nil {
-		// Marshal can't realistically fail on a string-only map, but
-		// degrade gracefully rather than masking the underlying error.
-		return rawError
-	}
-	return string(body)
+	return wrapCliError(rawError, shellErrorHint(rawError, originalCommand))
 }
 
 func shellErrorHint(rawError, originalCommand string) string {

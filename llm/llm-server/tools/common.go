@@ -26,6 +26,31 @@ const (
 	postContextLineCount = 5
 )
 
+// wrapCliError packages a raw CLI error together with an actionable recovery
+// hint as a JSON {error_hint, original_error} envelope for the planner
+// observation. When hint is empty it returns rawError unchanged, so callers can
+// pass the result of a tool-specific hint function and only pay the envelope
+// when there is something useful to say. This is the shared skeleton behind the
+// per-tool hint functions (shellErrorHint, githubErrorHint, ...): each tool
+// supplies its own hint text — including its own help invocation, since help
+// syntax differs per CLI (`gh <sub> --help`, `kubectl <cmd> --help`, etc.).
+func wrapCliError(rawError, hint string) string {
+	if strings.TrimSpace(hint) == "" {
+		return rawError
+	}
+	wrapped := map[string]string{
+		"error_hint":     hint,
+		"original_error": rawError,
+	}
+	body, err := common.MarshalJson(wrapped)
+	if err != nil {
+		// Marshal can't realistically fail on a string-only map, but degrade
+		// gracefully rather than masking the underlying error.
+		return rawError
+	}
+	return string(body)
+}
+
 func convertCsvToJsonString(toolContext core.NbToolContext, csvData string, seprator rune) string {
 	reader := csv.NewReader(strings.NewReader(csvData))
 	reader.Comma = rune(seprator)
