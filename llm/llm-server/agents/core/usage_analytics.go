@@ -1193,12 +1193,13 @@ func (chat *ConversationDao) ListConversationCosts(filter UsageMetricsFilter, so
 			COALESCE(c.account_id::text, '')                 AS account_id,
 			c.created_at                                     AS created_at,
 			c.updated_at                                     AS updated_at,
-			COALESCE(EXTRACT(EPOCH FROM (
-				GREATEST(
-					MAX(t.created_at + COALESCE(t.latency_seconds, 0) * interval '1 second'),
-					c.updated_at
-				) - c.created_at
-			)), 0)                                           AS wall_clock_seconds,
+			COALESCE((
+				SELECT EXTRACT(EPOCH FROM (
+					MAX(COALESCE(m.responded_at, m.updated_at)) - MIN(m.created_at)
+				))
+				FROM llm_conversation_messages m
+				WHERE m.conversation_id = c.id
+			), 0)                                            AS wall_clock_seconds,
 			COALESCE(SUM(t.latency_seconds), 0)              AS total_model_time_seconds,
 			COALESCE(SUM(%s), 0)                             AS cost_usd,
 			COALESCE(SUM(t.input_tokens), 0)                 AS input_tokens,
