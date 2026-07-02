@@ -18,6 +18,13 @@ import apiTriage, {
   type DuplicateSuggestion,
 } from '@api1/triage';
 
+export interface ClassifyUpdate {
+  eventId: string;
+  newStatus?: string;
+  newPriority?: string;
+  snoozedUntil?: string;
+}
+
 interface EventClassifyModalProps {
   open: boolean;
   handleClose: () => void;
@@ -27,7 +34,7 @@ interface EventClassifyModalProps {
     fingerprint?: string;
     accountId: string;
   };
-  onSuccess?: () => void;
+  onSuccess?: (update: ClassifyUpdate) => void;
   defaultClassification?: string;
 }
 
@@ -160,7 +167,12 @@ const EventClassifyModal: React.FC<EventClassifyModalProps> = ({ open, handleClo
       if (result?.success) {
         snackbar.success('Event classified successfully');
         handleClose();
-        onSuccess?.();
+        onSuccess?.({
+          eventId: event.id,
+          newStatus: preview?.current_event?.new_status,
+          newPriority: correctedPriority || undefined,
+          snoozedUntil: applyScope === 'time_limited' && applyUntilDate ? applyUntilDate.toISOString() : undefined,
+        });
       } else {
         snackbar.error('Failed to classify event');
       }
@@ -172,7 +184,8 @@ const EventClassifyModal: React.FC<EventClassifyModalProps> = ({ open, handleClo
     }
   };
 
-  const isFormValid = classification && reasonCode && applyScope;
+  const isTimeLimitedValid = applyScope !== 'time_limited' || (!!applyUntilDate && applyUntilDate.getTime() > Date.now());
+  const isFormValid = classification && reasonCode && applyScope && isTimeLimitedValid;
 
   const renderDuplicateSelection = () => {
     if (duplicatesLoading) {
@@ -334,13 +347,19 @@ const EventClassifyModal: React.FC<EventClassifyModalProps> = ({ open, handleClo
                 <CustomDateTimePicker
                   id='expires-at'
                   label='Expires At'
+                  required
                   value={applyUntilDate ? dayjs(applyUntilDate) : null}
-                  onChange={(newValue: import('dayjs').Dayjs | null) => setApplyUntilDate(newValue ? newValue.toDate() : null)}
-                  minDate={undefined}
-                  width={ds.space.mul(0, 140)}
+                  onChange={(newValue: import('dayjs').Dayjs | null) => {
+                    if (!newValue) {
+                      setApplyUntilDate(null);
+                      return;
+                    }
+                    const now = dayjs();
+                    setApplyUntilDate((newValue.isBefore(now) ? now : newValue).toDate());
+                  }}
                   minDateTime={dayjs()}
-                  maxDateTime={undefined}
-                  componentsProps={undefined}
+                  maxDateTime={dayjs().add(720, 'hours')}
+                  width={ds.space.mul(0, 140)}
                 />
               </Box>
             )}

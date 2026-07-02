@@ -30,7 +30,7 @@ import { hasReadAccess, hasWriteAccess } from '@lib/auth';
 import { TicketsIcon, dashboardIcon1 as ClassifyIcon, infoIcon } from '@assets';
 import ticketsApi from '@api1/tickets';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
-import EventClassifyModal from '@components/events/EventClassifyModal';
+import EventClassifyModal, { type ClassifyUpdate } from '@components/events/EventClassifyModal';
 import { toast as snackbar } from '@ui/Toast';
 import ScoreDisplay from '@shared/widgets/ScoreDisplay';
 import WorkflowIcon from '@assets/WorkflowIcon';
@@ -643,10 +643,22 @@ const CloudAccountEvents = (props: {
             setSelectedEvent(null);
           }}
           event={selectedEvent}
-          onSuccess={() => {
+          onSuccess={(update: ClassifyUpdate) => {
             setIsClassifyModalOpen(false);
             setSelectedEvent(null);
-            listCloudAccountEvents();
+            rawEventsRef.current = rawEventsRef.current.map((e: any) =>
+              e.id === update.eventId
+                ? {
+                    ...e,
+                    ...(update.newStatus != null ? { nb_status: update.newStatus } : {}),
+                    ...(update.newPriority != null ? { computed_priority: update.newPriority } : {}),
+                    ...(update.snoozedUntil != null ? { snoozed_until: update.snoozedUntil } : {}),
+                  }
+                : e
+            );
+            if (buildRowDataRef.current) {
+              setEvents(buildRowDataRef.current(rawEventsRef.current, ticketReferenceMapRef.current));
+            }
           }}
         />
       )}

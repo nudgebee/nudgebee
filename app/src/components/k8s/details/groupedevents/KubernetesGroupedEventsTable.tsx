@@ -43,7 +43,7 @@ import {
 import { Box, Typography } from '@mui/material';
 import useKubernetesEventFilters from '@hooks/useKubernetesEventFilters';
 import { useEventCloudFilter } from '@hooks/useCloudFilters';
-import EventClassifyModal from '@components/events/EventClassifyModal';
+import EventClassifyModal, { type ClassifyUpdate } from '@components/events/EventClassifyModal';
 import { CLASSIFICATION_OPTIONS, getTriageStatusTooltip } from '@api1/triage';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
 import { action } from 'src/utils/actionStyles';
@@ -546,11 +546,23 @@ const KubernetesGroupedEventsTable: React.FC<KubernetesGroupedEventsTableProps> 
     setDefaultClassification('');
   }, []);
 
-  const handleClassifySuccess = useCallback(() => {
-    handleClassifyClose();
-    // Trigger refetch by resetting page
-    setCurrentPage(1);
-  }, [handleClassifyClose]);
+  const handleClassifySuccess = useCallback(
+    (update: ClassifyUpdate) => {
+      handleClassifyClose();
+      setRawEventGroupings((prev) =>
+        prev.map((row) => {
+          if (row.latest_event_id !== update.eventId) return row;
+          return {
+            ...row,
+            ...(update.newStatus != null ? { latest_nb_status: update.newStatus } : {}),
+            ...(update.newPriority != null ? { latest_computed_priority: update.newPriority } : {}),
+            ...(update.snoozedUntil != null ? { latest_snoozed_until: update.snoozedUntil } : {}),
+          };
+        })
+      );
+    },
+    [handleClassifyClose]
+  );
 
   const closeTicketCreateForm = useCallback(() => {
     setIsTicketCreateFormOpen(false);

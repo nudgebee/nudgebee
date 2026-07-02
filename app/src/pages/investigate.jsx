@@ -1864,7 +1864,14 @@ const Investigate = () => {
             fingerprint: row?.fingerprint,
             accountId: router.query.accountId || row?.cloud_account_id,
           }}
-          onSuccess={() => loadData(row.id)}
+          onSuccess={(update) => {
+            setRow((prev) => ({
+              ...prev,
+              ...(update.newStatus != null ? { nb_status: update.newStatus } : {}),
+              ...(update.newPriority != null ? { computed_priority: update.newPriority } : {}),
+              ...(update.snoozedUntil != null ? { snoozed_until: update.snoozedUntil } : {}),
+            }));
+          }}
         />
       )}
       {showTemplatesModal && (

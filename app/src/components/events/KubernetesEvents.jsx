@@ -1317,10 +1317,22 @@ const KubernetesEventsTable = ({
             fingerprint: selectedEvent?.fingerprint,
             accountId: selectedEvent?.account_id || selectedAccountId[0],
           }}
-          onSuccess={() => {
+          onSuccess={(update) => {
             setIsClassifyModalOpen(false);
             setSelectedEvent({});
-            listEvents();
+            rawEventsRef.current = rawEventsRef.current.map((e) =>
+              e.id === update.eventId
+                ? {
+                    ...e,
+                    ...(update.newStatus != null ? { nb_status: update.newStatus } : {}),
+                    ...(update.newPriority != null ? { computed_priority: update.newPriority } : {}),
+                    ...(update.snoozedUntil != null ? { snoozed_until: update.snoozedUntil } : {}),
+                  }
+                : e
+            );
+            if (buildRowDataRef.current) {
+              setData(buildRowDataRef.current(rawEventsRef.current, ticketReferenceMapRef.current));
+            }
           }}
         />
       )}

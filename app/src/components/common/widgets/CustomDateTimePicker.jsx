@@ -12,6 +12,28 @@ const Heights = {
   lg: ds.space.mul(0, 20),
 };
 
+/**
+ * @param {{
+ *   id?: string,
+ *   label?: string,
+ *   value?: import('dayjs').Dayjs | null,
+ *   onChange?: (value: import('dayjs').Dayjs | null) => void,
+ *   views?: string[],
+ *   format?: string,
+ *   error?: string,
+ *   helperText?: string,
+ *   onBlur?: () => void,
+ *   required?: boolean,
+ *   disabled?: boolean,
+ *   minDate?: import('dayjs').Dayjs,
+ *   minDateTime?: import('dayjs').Dayjs,
+ *   maxDateTime?: import('dayjs').Dayjs,
+ *   componentsProps?: any,
+ *   size?: 'xs' | 'sm' | 'md' | 'lg',
+ *   width?: string | number,
+ *   preventDirectInput?: boolean,
+ * }} props
+ */
 const CustomDateTimePicker = ({
   id,
   label,
@@ -24,10 +46,10 @@ const CustomDateTimePicker = ({
   onBlur = undefined,
   required = false,
   disabled = false,
-  minDate,
-  minDateTime,
-  maxDateTime,
-  componentsProps,
+  minDate = undefined,
+  minDateTime = undefined,
+  maxDateTime = undefined,
+  componentsProps = undefined,
   size = 'md',
   width = '100%',
   /** Blocks keyboard/paste/drop so the user must interact via the calendar popup. */
