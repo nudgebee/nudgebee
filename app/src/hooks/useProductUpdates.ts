@@ -1,17 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { listProductUpdates, ProductUpdate } from '@api1/product-updates';
-
-const LAST_SEEN_KEY = 'nb.productUpdates.lastSeenAt';
+import apiUser, { PREFERENCE_PRODUCT_UPDATES_LAST_SEEN } from '@api1/user';
 
 const readLastSeen = (): string | null => {
   if (typeof window === 'undefined') {
     return null;
   }
-  try {
-    return window.localStorage.getItem(LAST_SEEN_KEY);
-  } catch {
-    return null;
-  }
+  const value = apiUser.getUserPreferences()?.[PREFERENCE_PRODUCT_UPDATES_LAST_SEEN];
+  return typeof value === 'string' ? value : null;
 };
 
 export interface UseProductUpdatesResult {
@@ -28,9 +24,10 @@ export interface UseProductUpdatesResult {
 
 /**
  * Loads the platform-wide product updates and derives an unread count against a
- * client-side "last seen" high-water-mark (localStorage). Per-user read state is
- * intentionally not persisted server-side — a single timestamp covers the
- * changelog UX (see the feature's architecture decision).
+ * client-side "last seen" high-water-mark, stored in the consolidated
+ * `nudgebee.userPreferences` localStorage entry (via apiUser). Per-user read
+ * state is intentionally not persisted server-side — a single timestamp covers
+ * the changelog UX (see the feature's architecture decision).
  */
 export function useProductUpdates(): UseProductUpdatesResult {
   const [updates, setUpdates] = useState<ProductUpdate[]>([]);
@@ -64,40 +61,22 @@ export function useProductUpdates(): UseProductUpdatesResult {
   // Updates arrive newest-first from the backend.
   const newestPublishedAt = updates[0]?.published_at ?? null;
 
-  // First-ever load (no stored marker): baseline the high-water-mark to the
-  // newest update so a freshly onboarded tenant/user starts at 0 unread — only
-  // updates published AFTER this first visit will badge. Standard changelog
-  // behaviour (Beamer/Headway): the back-catalog stays readable in the drawer,
-  // it just isn't flagged "unread". Without this, a new tenant would see every
-  // historical update as unread on day one.
-  useEffect(() => {
-    if (lastSeenAt === null && newestPublishedAt) {
-      try {
-        window.localStorage.setItem(LAST_SEEN_KEY, newestPublishedAt);
-      } catch {
-        /* no-op: baseline simply won't persist */
-      }
-      setLastSeenAt(newestPublishedAt);
-    }
-  }, [lastSeenAt, newestPublishedAt]);
-
-  // Until the first-load baseline is established (lastSeenAt === null), report
-  // no unread rather than treating the entire history as new.
-  const unreadCount = useMemo(() => {
-    if (!lastSeenAt) {
-      return 0;
-    }
-    // `highlight: false` entries (historical back-catalog) are shown but never
-    // counted toward the unread badge.
-    return updates.filter((u) => u.highlight !== false && u.published_at > lastSeenAt).length;
-  }, [updates, lastSeenAt]);
+  // Unread = highlightable entries the user hasn't seen yet. The `highlight`
+  // flag is the author's control: `highlight: false` entries (historical
+  // back-catalog) are shown in the drawer but never badge. A user with no stored
+  // high-water-mark (first visit) sees every highlightable entry as unread, so
+  // the badge count is exactly what content authors mark `highlight: true`.
+  const unreadCount = useMemo(
+    () => updates.filter((u) => u.highlight !== false && (!lastSeenAt || u.published_at > lastSeenAt)).length,
+    [updates, lastSeenAt]
+  );
 
   const markAllSeen = useCallback(() => {
     if (!newestPublishedAt) {
       return;
     }
     try {
-      window.localStorage.setItem(LAST_SEEN_KEY, newestPublishedAt);
+      apiUser.storeUserPreferences(PREFERENCE_PRODUCT_UPDATES_LAST_SEEN, newestPublishedAt);
     } catch {
       /* no-op: badge simply won't persist as cleared */
     }
