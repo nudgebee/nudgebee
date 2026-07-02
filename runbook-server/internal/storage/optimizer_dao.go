@@ -343,6 +343,9 @@ func (d *OptimizerDao) GetFiltersForAutoOptimize(ctx context.Context, autoOptimi
 		}
 		filters = append(filters, ri)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return filters, nil
 }
 
@@ -369,6 +372,9 @@ func (d *OptimizerDao) GetFiltersForAutoOptimizes(ctx context.Context, ids []uui
 			continue
 		}
 		res[id] = append(res[id], ri)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return res, nil
 }
@@ -412,6 +418,9 @@ func (d *OptimizerDao) GetResourceFilters(ctx context.Context, accountID, tenant
 		} else {
 			inFilters = append(inFilters, ri.String())
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
 	}
 	return likeFilters, inFilters, nil
 }
@@ -480,7 +489,9 @@ func (d *OptimizerDao) GetAutoOptimizeIdsByFilter(ctx context.Context, accountID
 		}
 		ids = append(ids, id)
 	}
-
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return ids, nil
 }
 
@@ -569,6 +580,9 @@ func (d *OptimizerDao) GetRecommendations(ctx context.Context, accountID, tenant
 			return nil, err
 		}
 		recIDs = append(recIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return recIDs, nil
 }
@@ -955,6 +969,9 @@ func (d *OptimizerDao) GetWorkloadFiltersForNamespace(ctx context.Context, accou
 			continue
 		}
 		filters = append(filters, ri)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return filters, nil
 }

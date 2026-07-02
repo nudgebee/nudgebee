@@ -401,8 +401,11 @@ func TestAmazonFargateServiceRegistration(t *testing.T) {
 	assert.True(t, ok)
 	assert.NotNil(t, service)
 
-	// Verify it's the correct type
-	_, isFargate := service.(*amazonFargate)
+	// All registered services are wrapped in the auditedAwsService permission
+	// decorator (see main.go), so unwrap it before checking the underlying type.
+	audited, isAudited := service.(*auditedAwsService)
+	assert.True(t, isAudited)
+	_, isFargate := audited.inner.(*amazonFargate)
 	assert.True(t, isFargate)
 }
 

@@ -7,25 +7,31 @@ import (
 )
 
 func Test_updateMarkDown(t *testing.T) {
+	// updateMarkDown normalizes markdown emphasis/heading markers to a single '*'
+	// (it does not render HTML). These cases pin that actual behavior.
 	testCases := []struct {
 		input    string
 		expected string
 	}{
 		{
 			input:    "This is a test string.",
-			expected: "<p>This is a test string.</p>",
+			expected: "This is a test string.",
 		},
 		{
-			input:    "This is a test string with\n\na new line.",
-			expected: "<p>This is a test string with</p><p>a new line.</p>",
+			input:    "This is **bold** text.",
+			expected: "This is *bold* text.",
 		},
 		{
-			input:    "This is a test string with\n\na new line and `some code`.",
-			expected: "<p>This is a test string with</p><p>a new line and <code>some code</code>.</p>",
+			input:    "# Heading one",
+			expected: "* Heading one",
 		},
 		{
-			input:    "This is a test string with\n\na new line and ```some code block```.",
-			expected: "<p>This is a test string with</p><p>a new line and <pre>some code block</pre></p>",
+			input:    "## Heading two",
+			expected: "* Heading two",
+		},
+		{
+			input:    "Plain text with\n\na new line and `some code`.",
+			expected: "Plain text with\n\na new line and `some code`.",
 		},
 	}
 

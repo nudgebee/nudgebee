@@ -17,6 +17,9 @@ func TestGetSourceCodeRepo_ArgoCD_SampleApp(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live services-server + ArgoCD; set TEST_ACCOUNT to run")
+	}
 
 	// Create request context
 	// TODO: Replace with actual account ID from your system
@@ -178,6 +181,9 @@ func TestExtractArgoCDAppName(t *testing.T) {
 func TestGetSourceCodeFromArgoCD_Integration(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
+	}
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live ArgoCD integration; set TEST_ACCOUNT to run")
 	}
 
 	// TODO: Replace with actual account ID

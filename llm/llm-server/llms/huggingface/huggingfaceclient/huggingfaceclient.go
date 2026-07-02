@@ -103,12 +103,29 @@ func (c *Client) RunInference(ctx context.Context, request *InferenceRequest) (*
 		if hfErr == nil {
 			break
 		}
+		// Terminal client errors (4xx) are not transient — retrying them just
+		// burns the entire retry budget before failing. Surface them immediately.
+		var statusErr *StatusCodeError
+		if errors.As(hfErr, &statusErr) && !statusErr.Retryable() {
+			return nil, hfErr
+		}
+		// Stop if the caller's context was cancelled or its deadline passed.
+		// We check the parent ctx (not hfErr) so a per-call individualTimeout —
+		// which does not cancel the parent — still retries as intended.
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("HuggingFace inference aborted: %w", ctx.Err())
+		}
 		slog.Warn("Service unavailable, retrying...", "elapsed", time.Since(startTime), "error", hfErr)
 		if time.Since(startTime) > maxRetryDuration {
 			slog.Error("HuggingFace inference failed after max attempts", "error", hfErr)
 			return nil, fmt.Errorf("HuggingFace inference failed after max attempts: %w", hfErr)
 		}
-		time.Sleep(backoff)
+		// Interruptible backoff: bail immediately if the caller gives up while we wait.
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("HuggingFace inference aborted: %w", ctx.Err())
+		case <-time.After(backoff):
+		}
 		backoff *= 2
 	}
 

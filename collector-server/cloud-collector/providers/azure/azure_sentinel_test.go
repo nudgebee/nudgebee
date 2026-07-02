@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"nudgebee/collector/cloud/providers"
+	"os"
 	"testing"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 
 func TestSentinelService_Name(t *testing.T) {
 	svc := &sentinelService{}
-	assert.Equal(t, "microsoft.securityinsights/alertrules", svc.Name())
+	assert.Equal(t, "microsoft.securityinsights", svc.Name())
 }
 
 func TestSentinelService_GetRecommendations(t *testing.T) {
@@ -37,9 +38,10 @@ func TestSentinelService_GetRecommendations(t *testing.T) {
 					Region:      "eastus",
 					ServiceName: "microsoft.securityinsights/alertrules",
 					Meta: map[string]interface{}{
-						"enabled":         true,
-						"automationRules": []string{"auto-1"},
-						"dataConnectors":  []string{"connector-1"},
+						"enabled":            true,
+						"automationRules":    []string{"auto-1"},
+						"dataConnectors":     []string{"connector-1"},
+						"threatIntelligence": []string{"ti-1"},
 					},
 				},
 			},
@@ -56,7 +58,10 @@ func TestSentinelService_GetRecommendations(t *testing.T) {
 					Region:      "eastus",
 					ServiceName: "microsoft.securityinsights/alertrules",
 					Meta: map[string]interface{}{
-						"enabled": false,
+						"enabled":            false,
+						"automationRules":    []string{"auto-1"},
+						"dataConnectors":     []string{"connector-1"},
+						"threatIntelligence": []string{"ti-1"},
 					},
 				},
 			},
@@ -73,8 +78,11 @@ func TestSentinelService_GetRecommendations(t *testing.T) {
 					Region:      "eastus",
 					ServiceName: "microsoft.securityinsights/alertrules",
 					Meta: map[string]interface{}{
-						"status":         "Active",
-						"createdTimeUtc": time.Now().Add(-45 * 24 * time.Hour).Format(time.RFC3339),
+						"status":             "Active",
+						"createdTimeUtc":     time.Now().Add(-45 * 24 * time.Hour).Format(time.RFC3339),
+						"automationRules":    []string{"auto-1"},
+						"dataConnectors":     []string{"connector-1"},
+						"threatIntelligence": []string{"ti-1"},
 					},
 				},
 			},
@@ -105,6 +113,9 @@ func TestSentinelService_GetRecommendations(t *testing.T) {
 }
 
 func TestSentinelService_ApplyRecommendation(t *testing.T) {
+	if os.Getenv("AZURE_CLIENT_ID") == "" {
+		t.Skip("Skipping integration test that requires Azure credentials")
+	}
 	svc := &sentinelService{}
 	ctx := providers.NewCloudProviderContext(context.Background())
 	account := providers.Account{}
@@ -118,6 +129,9 @@ func TestSentinelService_ApplyRecommendation(t *testing.T) {
 }
 
 func TestSentinelService_ApplyCommand(t *testing.T) {
+	if os.Getenv("AZURE_CLIENT_ID") == "" {
+		t.Skip("Skipping integration test that requires Azure credentials")
+	}
 	svc := &sentinelService{}
 	ctx := providers.NewCloudProviderContext(context.Background())
 	account := providers.Account{}
@@ -140,7 +154,7 @@ func TestSentinelService_QueryMetrices(t *testing.T) {
 
 	resp, err := svc.QueryMetrices(ctx, account, filter)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
+	assert.Contains(t, err.Error(), "StartDate and EndDate must be provided")
 	assert.Equal(t, providers.QueryMetricsResponse{}, resp)
 }
 
@@ -157,7 +171,7 @@ func TestSentinelService_GetServiceMap(t *testing.T) {
 	serviceMap, err := svc.GetServiceMap(ctx, account, resource)
 	require.NoError(t, err)
 	assert.Equal(t, resource.Id, serviceMap.Id.Name)
-	assert.Equal(t, "microsoft.securityinsights/alertrules", serviceMap.Id.Kind)
+	assert.Equal(t, "microsoft.securityinsights", serviceMap.Id.Kind)
 	assert.Equal(t, "eastus", serviceMap.Id.Namespace)
 	assert.Equal(t, "Unknown", serviceMap.Status)
 	assert.Empty(t, serviceMap.Upstreams)

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -138,11 +137,7 @@ func GetGithubAppInstallationToken(ctx context.Context, apiUrl string, installat
 	if err != nil {
 		return "", fmt.Errorf("failed to make request to GitHub API: %w", err)
 	}
-	defer func(Body io.ReadCloser) {
-		if closeErr := Body.Close(); closeErr != nil {
-			slog.Error("failed to close response body", "error", closeErr)
-		}
-	}(resp.Body)
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)

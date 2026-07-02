@@ -51,6 +51,11 @@ func BackfillConfluenceTokenEncryption(ctx context.Context, logger *slog.Logger)
 		return result, err
 	}
 
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			logger.Warn("confluence token backfill: failed to close rows", "error", closeErr)
+		}
+	}()
 	var collected []tokenRow
 	for rows.Next() {
 		var r tokenRow
@@ -59,9 +64,6 @@ func BackfillConfluenceTokenEncryption(ctx context.Context, logger *slog.Logger)
 			continue
 		}
 		collected = append(collected, r)
-	}
-	if closeErr := rows.Close(); closeErr != nil {
-		logger.Warn("confluence token backfill: failed to close rows", "error", closeErr)
 	}
 	if rowsErr := rows.Err(); rowsErr != nil {
 		return result, rowsErr

@@ -24,6 +24,9 @@ func TestBuildArn(t *testing.T) {
 }
 
 func TestGetAgentStatus(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	dbms, err := common.GetDatabaseManager(common.Metastore)
 	assert.Nil(t, err)

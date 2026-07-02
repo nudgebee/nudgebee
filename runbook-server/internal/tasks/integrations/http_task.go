@@ -37,7 +37,7 @@ func (t *HttpTask) GetDisplayName() string {
 // If it's a pointer, it dereferences it. If nil, returns invalid value.
 func dereferenceValue(v any) reflect.Value {
 	val := reflect.ValueOf(v)
-	if val.Kind() == reflect.Ptr {
+	if val.Kind() == reflect.Pointer {
 		if val.IsNil() {
 			return reflect.Value{}
 		}

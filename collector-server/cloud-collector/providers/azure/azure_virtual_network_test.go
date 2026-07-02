@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"nudgebee/collector/cloud/providers"
+	"os"
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork"
@@ -207,10 +208,12 @@ func TestVirtualNetworkService_GetRecommendations(t *testing.T) {
 					Type:        "Microsoft.Network/virtualNetworks",
 					Region:      "eastus",
 					ServiceName: "Microsoft.Network/virtualNetworks",
+					Tags:        map[string][]string{"env": {"production"}},
 					Meta: map[string]interface{}{
 						"properties": map[string]interface{}{
 							"enableDdosProtection": true,
 							"enableVmProtection":   true,
+							"subnets":              vnetSubnetsWithServiceEndpoints(),
 						},
 					},
 				},
@@ -228,10 +231,12 @@ func TestVirtualNetworkService_GetRecommendations(t *testing.T) {
 					Type:        "Microsoft.Network/virtualNetworks",
 					Region:      "eastus",
 					ServiceName: "Microsoft.Network/virtualNetworks",
+					Tags:        map[string][]string{"env": {"production"}},
 					Meta: map[string]interface{}{
 						"properties": map[string]interface{}{
 							"enableDdosProtection": false,
 							"enableVmProtection":   true,
+							"subnets":              vnetSubnetsWithServiceEndpoints(),
 						},
 					},
 				},
@@ -249,10 +254,12 @@ func TestVirtualNetworkService_GetRecommendations(t *testing.T) {
 					Type:        "Microsoft.Network/virtualNetworks",
 					Region:      "eastus",
 					ServiceName: "Microsoft.Network/virtualNetworks",
+					Tags:        map[string][]string{"env": {"production"}},
 					Meta: map[string]interface{}{
 						"properties": map[string]interface{}{
 							"enableDdosProtection": true,
 							"enableVmProtection":   false,
+							"subnets":              vnetSubnetsWithServiceEndpoints(),
 						},
 					},
 				},
@@ -270,10 +277,12 @@ func TestVirtualNetworkService_GetRecommendations(t *testing.T) {
 					Type:        "Microsoft.Network/virtualNetworks",
 					Region:      "eastus",
 					ServiceName: "Microsoft.Network/virtualNetworks",
+					Tags:        map[string][]string{"env": {"production"}},
 					Meta: map[string]interface{}{
 						"properties": map[string]interface{}{
 							"enableDdosProtection": false,
 							"enableVmProtection":   false,
+							"subnets":              vnetSubnetsWithServiceEndpoints(),
 						},
 					},
 				},
@@ -305,9 +314,11 @@ func TestVirtualNetworkService_GetRecommendations(t *testing.T) {
 					Type:        "Microsoft.Network/virtualNetworks",
 					Region:      "eastus",
 					ServiceName: "Microsoft.Network/virtualNetworks",
+					Tags:        map[string][]string{"env": {"production"}},
 					Meta: map[string]interface{}{
 						"properties": map[string]interface{}{
 							"enableVmProtection": true,
+							"subnets":            vnetSubnetsWithServiceEndpoints(),
 						},
 					},
 				},
@@ -325,9 +336,11 @@ func TestVirtualNetworkService_GetRecommendations(t *testing.T) {
 					Type:        "Microsoft.Network/virtualNetworks",
 					Region:      "eastus",
 					ServiceName: "Microsoft.Network/virtualNetworks",
+					Tags:        map[string][]string{"env": {"production"}},
 					Meta: map[string]interface{}{
 						"properties": map[string]interface{}{
 							"enableDdosProtection": true,
+							"subnets":              vnetSubnetsWithServiceEndpoints(),
 						},
 					},
 				},
@@ -350,7 +363,7 @@ func TestVirtualNetworkService_GetRecommendations(t *testing.T) {
 					if rec.RuleName == "azure_vnet_ddos_protection_disabled" {
 						found = true
 						assert.Equal(t, providers.RecommendationCategorySecurity, rec.CategoryName)
-						assert.Equal(t, providers.RecommendationSeverityMedium, rec.Severity)
+						assert.Equal(t, providers.RecommendationSeverityHigh, rec.Severity)
 						assert.Equal(t, providers.RecommendationActionModify, rec.Action)
 						break
 					}
@@ -364,7 +377,7 @@ func TestVirtualNetworkService_GetRecommendations(t *testing.T) {
 					if rec.RuleName == "azure_vnet_vm_protection_disabled" {
 						found = true
 						assert.Equal(t, providers.RecommendationCategorySecurity, rec.CategoryName)
-						assert.Equal(t, providers.RecommendationSeverityLow, rec.Severity)
+						assert.Equal(t, providers.RecommendationSeverityMedium, rec.Severity)
 						assert.Equal(t, providers.RecommendationActionModify, rec.Action)
 						break
 					}
@@ -376,6 +389,9 @@ func TestVirtualNetworkService_GetRecommendations(t *testing.T) {
 }
 
 func TestVirtualNetworkService_ApplyRecommendation(t *testing.T) {
+	if os.Getenv("AZURE_CLIENT_ID") == "" {
+		t.Skip("Skipping integration test that requires Azure credentials")
+	}
 	svc := &virtualNetworkService{}
 	ctx := providers.NewCloudProviderContext(context.Background())
 	account := providers.Account{}
@@ -390,6 +406,9 @@ func TestVirtualNetworkService_ApplyRecommendation(t *testing.T) {
 }
 
 func TestVirtualNetworkService_ApplyCommand(t *testing.T) {
+	if os.Getenv("AZURE_CLIENT_ID") == "" {
+		t.Skip("Skipping integration test that requires Azure credentials")
+	}
 	svc := &virtualNetworkService{}
 	ctx := providers.NewCloudProviderContext(context.Background())
 	account := providers.Account{}
@@ -413,8 +432,28 @@ func TestVirtualNetworkService_QueryMetrices(t *testing.T) {
 
 	resp, err := svc.QueryMetrices(ctx, account, filter)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
+	assert.Contains(t, err.Error(), "StartDate and EndDate must be provided")
 	assert.Equal(t, providers.QueryMetricsResponse{}, resp)
+}
+
+// vnetSubnetsWithServiceEndpoints returns a subnets slice (as it appears in
+// resource Meta) containing one subnet with a configured service endpoint, so
+// GetRecommendations does not emit azure_vnet_service_endpoints_not_configured
+// for fixtures that are testing other rules in isolation.
+func vnetSubnetsWithServiceEndpoints() []interface{} {
+	return []interface{}{
+		map[string]interface{}{
+			"name": "default",
+			"properties": map[string]interface{}{
+				"serviceEndpoints": []interface{}{
+					map[string]interface{}{"service": "Microsoft.Storage"},
+				},
+				"networkSecurityGroup": map[string]interface{}{
+					"id": "/subscriptions/sub-123/resourceGroups/rg/providers/Microsoft.Network/networkSecurityGroups/nsg-1",
+				},
+			},
+		},
+	}
 }
 
 func TestVirtualNetworkService_GetServiceMap(t *testing.T) {

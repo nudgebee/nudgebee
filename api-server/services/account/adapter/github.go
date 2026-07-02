@@ -828,15 +828,16 @@ func getGitCredentials(ctx AccountAdapterContext, ticketProvider string) (string
 		WHERE integration_id = $1
 	`
 	rows, err := dbms.Db.Queryx(configQuery, integrationID)
+	defer func() {
+		if rows != nil {
+			if cerr := rows.Close(); cerr != nil {
+				slog.Error("Error closing rows", "error", cerr)
+			}
+		}
+	}()
 	if err != nil {
 		return "", "", "", "", err
 	}
-	defer func() {
-		err := rows.Close()
-		if err != nil {
-			slog.Error("Error closing rows", "error", err)
-		}
-	}()
 
 	configs := make(map[string]string)
 	for rows.Next() {
@@ -1082,14 +1083,16 @@ func fetchArgoCDIntegrationForGithub(ctx AccountAdapterContext, accountID string
 		WHERE integration_id = $1
 	`
 	rows, err := dbms.Db.Queryx(configQuery, integrationID)
+	defer func() {
+		if rows != nil {
+			if closeErr := rows.Close(); closeErr != nil {
+				ctx.GetLogger().Error("Failed to close rows", "error", closeErr)
+			}
+		}
+	}()
 	if err != nil {
 		return "", "", "", false, fmt.Errorf("failed to fetch integration config values: %w", err)
 	}
-	defer func() {
-		if closeErr := rows.Close(); closeErr != nil {
-			ctx.GetLogger().Error("Failed to close rows", "error", closeErr)
-		}
-	}()
 
 	configs := make(map[string]string)
 	for rows.Next() {
@@ -1953,15 +1956,9 @@ func (k *githubAdapter) GetRecommendationResolutionStatus(ctx AccountAdapterCont
 		ctx.GetLogger().Error("Error getting PR status", "error", err)
 		return GetRecommendationResolutionStatusResponse{}, err
 	}
-	jsonResponseBody := resp.Body
-	defer func() {
-		err := jsonResponseBody.Close()
-		if err != nil {
-			ctx.GetLogger().Error("Error closing response body", "error", err)
-		}
-	}()
+	defer func() { _ = resp.Body.Close() }()
 
-	jsonBodyBytes, err := io.ReadAll(jsonResponseBody)
+	jsonBodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return GetRecommendationResolutionStatusResponse{}, err
 	}

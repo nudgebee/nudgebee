@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"nudgebee/collector/cloud/providers"
+	"os"
 	"testing"
 	"time"
 
@@ -217,6 +218,7 @@ func TestStorageAccountService_GetRecommendations(t *testing.T) {
 					Type:        "Microsoft.Storage/storageAccounts",
 					Region:      "eastus",
 					ServiceName: "Microsoft.Storage/storageAccounts",
+					Tags:        map[string][]string{"env": {"production"}},
 					Meta: map[string]interface{}{
 						"properties": map[string]interface{}{
 							"supportsHttpsTrafficOnly": true,
@@ -238,6 +240,7 @@ func TestStorageAccountService_GetRecommendations(t *testing.T) {
 					Type:        "Microsoft.Storage/storageAccounts",
 					Region:      "eastus",
 					ServiceName: "Microsoft.Storage/storageAccounts",
+					Tags:        map[string][]string{"env": {"production"}},
 					Meta: map[string]interface{}{
 						"properties": map[string]interface{}{
 							"supportsHttpsTrafficOnly": false,
@@ -259,6 +262,7 @@ func TestStorageAccountService_GetRecommendations(t *testing.T) {
 					Type:        "Microsoft.Storage/storageAccounts",
 					Region:      "eastus",
 					ServiceName: "Microsoft.Storage/storageAccounts",
+					Tags:        map[string][]string{"env": {"production"}},
 					Meta: map[string]interface{}{
 						"properties": map[string]interface{}{
 							"supportsHttpsTrafficOnly": true,
@@ -280,6 +284,7 @@ func TestStorageAccountService_GetRecommendations(t *testing.T) {
 					Type:        "Microsoft.Storage/storageAccounts",
 					Region:      "eastus",
 					ServiceName: "Microsoft.Storage/storageAccounts",
+					Tags:        map[string][]string{"env": {"production"}},
 					Meta: map[string]interface{}{
 						"properties": map[string]interface{}{
 							"supportsHttpsTrafficOnly": false,
@@ -315,6 +320,7 @@ func TestStorageAccountService_GetRecommendations(t *testing.T) {
 					Type:        "Microsoft.Storage/storageAccounts",
 					Region:      "eastus",
 					ServiceName: "Microsoft.Storage/storageAccounts",
+					Tags:        map[string][]string{"env": {"production"}},
 					Meta: map[string]interface{}{
 						"properties": map[string]interface{}{
 							"supportsHttpsTrafficOnly": true,
@@ -367,6 +373,9 @@ func TestStorageAccountService_GetRecommendations(t *testing.T) {
 }
 
 func TestStorageAccountService_ApplyRecommendation(t *testing.T) {
+	if os.Getenv("AZURE_CLIENT_ID") == "" {
+		t.Skip("Skipping integration test that requires Azure credentials")
+	}
 	svc := &storageAccountService{}
 	ctx := providers.NewCloudProviderContext(context.Background())
 	account := providers.Account{}
@@ -381,6 +390,9 @@ func TestStorageAccountService_ApplyRecommendation(t *testing.T) {
 }
 
 func TestStorageAccountService_ApplyCommand(t *testing.T) {
+	if os.Getenv("AZURE_CLIENT_ID") == "" {
+		t.Skip("Skipping integration test that requires Azure credentials")
+	}
 	svc := &storageAccountService{}
 	ctx := providers.NewCloudProviderContext(context.Background())
 	account := providers.Account{}
@@ -404,7 +416,7 @@ func TestStorageAccountService_QueryMetrices(t *testing.T) {
 
 	resp, err := svc.QueryMetrices(ctx, account, filter)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
+	assert.Contains(t, err.Error(), "StartDate and EndDate must be provided")
 	assert.Equal(t, providers.QueryMetricsResponse{}, resp)
 }
 

@@ -14,6 +14,9 @@ import (
 )
 
 func TestStoreResourcesAwsEc2(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreResources(ctx, os.Getenv("TEST_ACCOUNT"), "AmazonEc2", "us-east-1")
 	assert.Nil(t, err)
@@ -21,6 +24,9 @@ func TestStoreResourcesAwsEc2(t *testing.T) {
 }
 
 func TestStoreResourcesAwsS3(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreResources(ctx, os.Getenv("TEST_ACCOUNT"), "AmazonS3")
 	assert.Nil(t, err)
@@ -28,6 +34,9 @@ func TestStoreResourcesAwsS3(t *testing.T) {
 }
 
 func TestStoreResourcesAwsLambda(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreResources(ctx, os.Getenv("TEST_ACCOUNT"), "AWSLambda")
 	assert.Nil(t, err)
@@ -35,6 +44,9 @@ func TestStoreResourcesAwsLambda(t *testing.T) {
 }
 
 func TestStoreResourcesAwsECS(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreResources(ctx, os.Getenv("TEST_ACCOUNT"), "AmazonECS")
 	assert.Nil(t, err)
@@ -42,6 +54,9 @@ func TestStoreResourcesAwsECS(t *testing.T) {
 }
 
 func TestStoreResourcesAwsELB(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreResources(ctx, os.Getenv("TEST_ACCOUNT"), "AmazonELB")
 	assert.Nil(t, err)
@@ -49,6 +64,9 @@ func TestStoreResourcesAwsELB(t *testing.T) {
 }
 
 func TestStoreResourcesAll(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreResourcesAll(ctx, os.Getenv("TEST_ACCOUNT"))
 
@@ -57,6 +75,9 @@ func TestStoreResourcesAll(t *testing.T) {
 }
 
 func TestStoreResourcesAwsIam(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreResources(ctx, os.Getenv("TEST_ACCOUNT"), "AWSIAM", "us-east-1")
 	assert.Nil(t, err)
@@ -64,6 +85,9 @@ func TestStoreResourcesAwsIam(t *testing.T) {
 }
 
 func TestStoreResourcesAzureAll(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := ListResources(ctx, "c3a2d91d-17b7-4df4-93a0-7a777a399e29", providers.ListResourceRequest{
 		ServiceName: "storage",
@@ -73,6 +97,9 @@ func TestStoreResourcesAzureAll(t *testing.T) {
 }
 
 func TestStoreResourcesAzureSQL(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreRecommendations(ctx, "c3a2d91d-17b7-4df4-93a0-7a777a399e29", providers.ListRecommendationsRequest{
 		ServiceName: "microsoft.network/loadbalancers",
@@ -83,6 +110,9 @@ func TestStoreResourcesAzureSQL(t *testing.T) {
 }
 
 func TestStoreResourcesGCloudCompute(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreResources(ctx, os.Getenv("TEST_ACCOUNT"), "GCEInstance", "us-central1")
 	assert.Nil(t, err)
@@ -90,6 +120,9 @@ func TestStoreResourcesGCloudCompute(t *testing.T) {
 }
 
 func TestStoreResourcesGCloudAll(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreResourcesAll(ctx, os.Getenv("TEST_ACCOUNT"))
 	assert.Nil(t, err)

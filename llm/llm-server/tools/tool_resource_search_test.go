@@ -111,11 +111,17 @@ func TestResourceSearchTool_MultiWordResourceName(t *testing.T) {
 }
 
 func TestGetCurrentPrometheusOtelHosts(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live services backend; set TEST_ACCOUNT to run")
+	}
 	data := GetCurrentOtelHosts(os.Getenv("TEST_ACCOUNT"))
 	assert.NotEmpty(t, data)
 }
 
 func TestGetCurrentK8sAccountState(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live services backend; set TEST_ACCOUNT to run")
+	}
 	data := GetCurrentK8sAccountState(os.Getenv("TEST_ACCOUNT"), 100)
 	assert.NotEmpty(t, data)
 }

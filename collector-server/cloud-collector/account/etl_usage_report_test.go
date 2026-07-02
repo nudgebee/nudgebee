@@ -14,6 +14,9 @@ import (
 )
 
 func TestStoreUsageAws(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreUsage(ctx, "6c008cf8-4d79-4999-8447-573a697d0652", time.January, 2026)
 	assert.Nil(t, err)
@@ -21,6 +24,9 @@ func TestStoreUsageAws(t *testing.T) {
 }
 
 func TestStoreUsageAzure(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreUsage(ctx, "c3a2d91d-17b7-4df4-93a0-7a777a399e29", time.October, 2025)
 	assert.Nil(t, err)
@@ -28,6 +34,9 @@ func TestStoreUsageAzure(t *testing.T) {
 }
 
 func TestStoreUsageAzure2(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := discoverAndStoreAccountResources(ctx, "c3a2d91d-17b7-4df4-93a0-7a777a399e29")
 	assert.Nil(t, err)
@@ -35,6 +44,9 @@ func TestStoreUsageAzure2(t *testing.T) {
 }
 
 func TestStoreUsageGCloud(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreUsage(ctx, os.Getenv("TEST_ACCOUNT"), time.November, 2025)
 	assert.Nil(t, err)

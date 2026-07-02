@@ -25,7 +25,7 @@ func stringToTimeHookFunc() mapstructure.DecodeHookFunc {
 		}
 
 		isTime := t == reflect.TypeOf(time.Time{})
-		isTimePtr := t.Kind() == reflect.Ptr && t.Elem() == reflect.TypeOf(time.Time{})
+		isTimePtr := t.Kind() == reflect.Pointer && t.Elem() == reflect.TypeOf(time.Time{})
 
 		if !isTime && !isTimePtr {
 			return data, nil
@@ -75,7 +75,7 @@ func DecodeMapToStruct(m map[string]any, s any) error {
 		return errors.New("DecodeMapToStruct: s is nil")
 	}
 
-	if reflect.TypeOf(s).Kind() != reflect.Ptr {
+	if reflect.TypeOf(s).Kind() != reflect.Pointer {
 		return errors.New("DecodeMapToStruct: s is not a pointer")
 	}
 
@@ -193,7 +193,7 @@ func ExtractAndUnmarshalJSON(data []byte, v any) error {
 	originalErr := UnmarshalJson(data, v)
 	if originalErr == nil {
 		val := reflect.ValueOf(v)
-		if val.Kind() == reflect.Ptr {
+		if val.Kind() == reflect.Pointer {
 			val = val.Elem()
 		}
 		if !val.IsZero() {
@@ -216,7 +216,7 @@ func ExtractAndUnmarshalJSON(data []byte, v any) error {
 				if candidate != "" && !tried[candidate] {
 					if err := UnmarshalJson([]byte(candidate), v); err == nil {
 						val := reflect.ValueOf(v)
-						if val.Kind() == reflect.Ptr {
+						if val.Kind() == reflect.Pointer {
 							val = val.Elem()
 						}
 						// Only return if unmarshalling resulted in a non-zero value.
@@ -236,7 +236,7 @@ func ExtractAndUnmarshalJSON(data []byte, v any) error {
 		if !tried[candidate] {
 			if err := UnmarshalJson([]byte(candidate), v); err == nil {
 				val := reflect.ValueOf(v)
-				if val.Kind() == reflect.Ptr {
+				if val.Kind() == reflect.Pointer {
 					val = val.Elem()
 				}
 				// Only return if unmarshalling resulted in a non-zero value.

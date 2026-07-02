@@ -292,7 +292,17 @@ func GetConversationOverride(conversationId string) (string, string, Conversatio
 		return entry.provider, entry.model, entry.tierOverrides, nil
 	}
 
-	conv, err := GetConversationDao().GetConversation(conversationId)
+	// Fail closed if the conversation DAO is unavailable (e.g. DB not reachable):
+	// return an explicit error rather than silently reporting "no override" (which
+	// could mask a conversation-level model/tier restriction) — and never deref a
+	// nil DAO, which previously panicked the whole request. Callers already treat
+	// a non-nil error as "skip the override and fall through".
+	dao := GetConversationDao()
+	if dao == nil {
+		return "", "", ConversationTierOverrides{}, fmt.Errorf("conversation DAO is unavailable")
+	}
+
+	conv, err := dao.GetConversation(conversationId)
 	if err != nil {
 		return "", "", ConversationTierOverrides{}, err
 	}

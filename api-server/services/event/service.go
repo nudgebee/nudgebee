@@ -199,6 +199,13 @@ func ListEventResolutions(context *security.RequestContext, rescommendationId st
 	r, err := databaseManager.Db.Queryx(`SELECT id, created_at, updated_at, event_id, type, data, status, type_reference_id,
 			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at
 		FROM event_resolution WHERE event_id = $1`, rescommendationId)
+	defer func() {
+		if r != nil {
+			if cerr := r.Close(); cerr != nil {
+				slog.Error("event: error closing rows", "error", cerr)
+			}
+		}
+	}()
 	if err != nil {
 		return []models.EventResolution{}, err
 	}

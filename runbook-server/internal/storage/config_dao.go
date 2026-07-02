@@ -177,6 +177,9 @@ func (d *ConfigDao) List(ctx context.Context, tenantID string, scope ListScope, 
 		}
 		configs = append(configs, *cfg)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate configs: %w", err)
+	}
 	return configs, nil
 }
 

@@ -53,6 +53,11 @@ func BackfillMessagingIntegrations(logger *slog.Logger, tracer *trace.Tracer, me
 		return result, err
 	}
 
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			slog.Warn("messaging backfill: failed to close rows", "error", closeErr)
+		}
+	}()
 	var collected []messagingPlatformRow
 	for rows.Next() {
 		var r messagingPlatformRow
@@ -63,9 +68,6 @@ func BackfillMessagingIntegrations(logger *slog.Logger, tracer *trace.Tracer, me
 			continue
 		}
 		collected = append(collected, r)
-	}
-	if closeErr := rows.Close(); closeErr != nil {
-		slog.Warn("messaging backfill: failed to close rows", "error", closeErr)
 	}
 	if rowsErr := rows.Err(); rowsErr != nil {
 		return result, rowsErr

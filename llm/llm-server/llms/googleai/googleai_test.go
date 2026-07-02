@@ -36,6 +36,19 @@ func newHTTPRRClient(t *testing.T, opts ...Option) *GoogleAI {
 	// Skip if no credentials and no recording
 	httprr.SkipIfNoCredentialsAndRecordingMissing(t, "GOOGLE_API_KEY")
 
+	// A recording exists but may be corrupt or in an incompatible format. In
+	// replay mode (no GOOGLE_API_KEY) we cannot re-record, so skip rather than
+	// hard-fail — mirroring the missing-recording skips above. With credentials
+	// the recording would be refreshed, so let those runs proceed.
+	if os.Getenv("GOOGLE_API_KEY") == "" {
+		testName := strings.ReplaceAll(t.Name(), "/", "_")
+		testName = strings.ReplaceAll(testName, " ", "_")
+		recordingPath := filepath.Join("testdata", testName+".httprr")
+		if _, err := httprr.Open(recordingPath, nil); err != nil {
+			t.Skipf("httprr recording %s is unusable (%v). Re-record with -httprecord=.", recordingPath, err)
+		}
+	}
+
 	// Create httprr with API key transport wrapper
 	// This is necessary because the Google API library doesn't add the API key
 	// when a custom HTTP client is provided via WithHTTPClient
@@ -373,6 +386,15 @@ func TestGoogleAIErrorHandling(t *testing.T) {
 
 	// Skip test if no credentials and recording is missing
 	httprr.SkipIfNoCredentialsAndRecordingMissing(t, "GOOGLE_API_KEY")
+
+	// Skip on a corrupt/incompatible recording when we cannot re-record (see
+	// newHTTPRRClient for the rationale).
+	if os.Getenv("GOOGLE_API_KEY") == "" {
+		recordingPath := filepath.Join("testdata", strings.ReplaceAll(t.Name(), "/", "_")+".httprr")
+		if _, err := httprr.Open(recordingPath, nil); err != nil {
+			t.Skipf("httprr recording %s is unusable (%v). Re-record with -httprecord=.", recordingPath, err)
+		}
+	}
 
 	rr := httprr.OpenForTest(t, httputil.DefaultTransport)
 

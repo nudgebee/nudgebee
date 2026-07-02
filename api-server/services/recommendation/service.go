@@ -61,6 +61,13 @@ func ListRecommendationResolutions(context *security.RequestContext, rescommenda
 		AND created_at > NOW() - INTERVAL '2 hours'
 		ORDER BY created_at DESC
 	`, rescommendationId, resolutionType, resolverType, resolverId)
+	defer func() {
+		if r != nil {
+			if cerr := r.Close(); cerr != nil {
+				slog.Error("recommendation: error closing rows", "error", cerr)
+			}
+		}
+	}()
 	if err != nil {
 		return []models.RecommendationResolution{}, err
 	}

@@ -14,7 +14,9 @@ import (
 func TestListCustomAgents(t *testing.T) {
 	sc := security.NewRequestContextForSuperAdmin()
 	accountId := os.Getenv("TEST_ACCOUNT")
-	assert.NotEmpty(t, accountId, "TEST_ACCOUNT environment variable must be set")
+	if accountId == "" {
+		t.Skip("requires a live DB and account fixtures; set TEST_ACCOUNT to run")
+	}
 
 	slog.Info("Testing ListCustomAgents", "accountId", accountId)
 
@@ -35,7 +37,9 @@ func TestListCustomAgents(t *testing.T) {
 func TestAgentAdditionalInstructionsAndToolsAndConfigs_WithSystemAgent(t *testing.T) {
 	sc := security.NewRequestContextForSuperAdmin()
 	accountId := os.Getenv("TEST_ACCOUNT")
-	assert.NotEmpty(t, accountId, "TEST_ACCOUNT environment variable must be set")
+	if accountId == "" {
+		t.Skip("requires a live DB and account fixtures; set TEST_ACCOUNT to run")
+	}
 
 	systemAgentName := "promql_query"
 	slog.Info("Testing AgentAdditionalInstructionsAndToolsAndConfigs with system agent", "accountId", accountId, "agentName", systemAgentName)
@@ -61,7 +65,9 @@ func TestAgentAdditionalInstructionsAndToolsAndConfigs_WithSystemAgent(t *testin
 func TestAgentAdditionalInstructionsAndToolsAndConfigs_WithCustomAgent(t *testing.T) {
 	sc := security.NewRequestContextForSuperAdmin()
 	accountId := os.Getenv("TEST_ACCOUNT")
-	assert.NotEmpty(t, accountId, "TEST_ACCOUNT environment variable must be set")
+	if accountId == "" {
+		t.Skip("requires a live DB and account fixtures; set TEST_ACCOUNT to run")
+	}
 
 	slog.Info("Testing AgentAdditionalInstructionsAndToolsAndConfigs with custom agent", "accountId", accountId)
 
@@ -101,7 +107,9 @@ func TestAgentAdditionalInstructionsAndToolsAndConfigs_WithCustomAgent(t *testin
 func TestGetCustomNbAgent_WithSystemAgentExtension(t *testing.T) {
 	sc := security.NewRequestContextForSuperAdmin()
 	accountId := os.Getenv("TEST_ACCOUNT")
-	assert.NotEmpty(t, accountId, "TEST_ACCOUNT environment variable must be set")
+	if accountId == "" {
+		t.Skip("requires a live DB and account fixtures; set TEST_ACCOUNT to run")
+	}
 
 	systemAgentName := "promql_query"
 	slog.Info("Testing GetCustomNbAgent with system agent name", "accountId", accountId, "agentName", systemAgentName)
@@ -118,7 +126,9 @@ func TestGetCustomNbAgent_WithSystemAgentExtension(t *testing.T) {
 func TestListCustomNbAgent_WithMixedAgents(t *testing.T) {
 	sc := security.NewRequestContextForSuperAdmin()
 	accountId := os.Getenv("TEST_ACCOUNT")
-	assert.NotEmpty(t, accountId, "TEST_ACCOUNT environment variable must be set")
+	if accountId == "" {
+		t.Skip("requires a live DB and account fixtures; set TEST_ACCOUNT to run")
+	}
 
 	slog.Info("Testing ListCustomNbAgent", "accountId", accountId)
 
@@ -140,7 +150,9 @@ func TestListCustomNbAgent_WithMixedAgents(t *testing.T) {
 func TestCreateAgentExtension_ForSystemAgent(t *testing.T) {
 	sc := security.NewRequestContextForSuperAdmin()
 	accountId := os.Getenv("TEST_ACCOUNT")
-	assert.NotEmpty(t, accountId, "TEST_ACCOUNT environment variable must be set")
+	if accountId == "" {
+		t.Skip("requires a live DB and account fixtures; set TEST_ACCOUNT to run")
+	}
 	user := os.Getenv("TEST_USER")
 
 	testAgentName := "promql_query_test"

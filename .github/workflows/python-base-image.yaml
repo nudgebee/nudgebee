@@ -1,0 +1,157 @@
+name: nudgebee-python base image
+
+# Builds and publishes the OSS Python base image — ghcr.io/<owner>/nudgebee-python
+# (Alpine + Python 3.12 + uv + native build deps) that the k8s-collector and
+# notifications-server images build FROM.
+#
+# Why this workflow exists: the enterprise pipeline (nudgebee-infra
+# python-base-image-deploy*.yaml) publishes this base only to ECR. The public
+# GHCR tag OSS installs pin had no publisher, so it was pushed once (Sept 2025)
+# and never refreshed — its Alpine OS packages (openssl/musl/zlib/nghttp2) drifted
+# behind security patches and its consumers inherited those CVEs. This workflow
+# gives the GHCR base a real, repeatable build.
+#
+# Freshness: the Dockerfile runs `apk upgrade`, so every rebuild picks up the
+# latest Alpine security patches. The weekly `schedule` below rebuilds even when
+# the Dockerfile itself hasn't changed, so the base can't silently go stale again.
+#
+# Tags (on push to main / schedule / manual dispatch):
+#   :3.12                       rolling — consumers pin this for auto-fresh patches
+#   :3.12-<YYYYMMDD>-<sha7>     immutable snapshot for reproducible pins
+# PRs build both arches to validate, but do not push.
+#
+# Runners mirror edge.yaml: amd64 on ubuntu-latest, arm64 on ubuntu-24.04-arm
+# (native, no QEMU). Consumers are multi-arch, so the base must be too.
+#
+# Note on visibility: a new GHCR package defaults to *private*. After the first
+# push, flip ghcr.io/<owner>/nudgebee-python to public in Settings -> Packages.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Monday 06:00 UTC — refresh OS security patches even with no code change.
+    - cron: "0 6 * * 1"
+  push:
+    branches: ["main"]
+    paths:
+      - deploy/kubernetes/nudgebee-python-base-image/**
+      - .github/workflows/python-base-image.yaml
+  pull_request:
+    branches: ["main"]
+    paths:
+      - deploy/kubernetes/nudgebee-python-base-image/**
+      - .github/workflows/python-base-image.yaml
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: nudgebee-python
+  CONTEXT: deploy/kubernetes/nudgebee-python-base-image
+  # Python major.minor this base tracks; also the rolling tag consumers pin.
+  BASE_VERSION: "3.12"
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      namespace: ${{ steps.v.outputs.namespace }}
+      date: ${{ steps.v.outputs.date }}
+      sha_short: ${{ steps.v.outputs.sha_short }}
+      push: ${{ steps.v.outputs.push }}
+    steps:
+      - id: v
+        run: |
+          set -euo pipefail
+          # Publish at ghcr.io/<owner>/nudgebee-python. repository_owner (not
+          # github.repository) keeps the path flat, matching edge.yaml.
+          ns="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          # PRs validate only; main / schedule / manual dispatch push.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then push=false; else push=true; fi
+          {
+            echo "namespace=$ns"
+            echo "date=$(date -u +%Y%m%d)"
+            echo "sha_short=${GITHUB_SHA:0:7}"
+            echo "push=$push"
+          } >> "$GITHUB_OUTPUT"
+          echo "nudgebee-python push=$push -> ${REGISTRY}/$ns/${IMAGE}:${BASE_VERSION}"
+
+  # One cell per arch, built on its native runner (no QEMU). On push the per-arch
+  # image is published as :<BASE_VERSION>-<arch>; merge-manifest stitches them.
+  build:
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: linux/amd64, arch: amd64, runner: ubuntu-latest }
+          - { platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: needs.prepare.outputs.push == 'true'
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build ${{ matrix.arch }} (push=${{ needs.prepare.outputs.push }})
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.CONTEXT }}
+          push: ${{ needs.prepare.outputs.push == 'true' }}
+          platforms: ${{ matrix.platform }}
+          tags: ${{ env.REGISTRY }}/${{ needs.prepare.outputs.namespace }}/${{ env.IMAGE }}:${{ env.BASE_VERSION }}-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=${{ env.IMAGE }}
+          cache-from: ${{ needs.prepare.outputs.push == 'true' && format('type=registry,ref={0}/{1}/{2}:buildcache-{3}', env.REGISTRY, needs.prepare.outputs.namespace, env.IMAGE, matrix.arch) || '' }}
+          cache-to: ${{ needs.prepare.outputs.push == 'true' && format('type=registry,ref={0}/{1}/{2}:buildcache-{3},mode=max', env.REGISTRY, needs.prepare.outputs.namespace, env.IMAGE, matrix.arch) || '' }}
+
+  # Stitch the per-arch images into one multi-arch manifest and apply the
+  # canonical tags. Skipped on PRs (nothing was pushed to merge).
+  merge-manifest:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.push == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      REPO: ghcr.io/${{ needs.prepare.outputs.namespace }}/nudgebee-python
+      DATE: ${{ needs.prepare.outputs.date }}
+      SHA_SHORT: ${{ needs.prepare.outputs.sha_short }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest
+        run: |
+          set -euo pipefail
+          echo "Merging ${REPO}:${BASE_VERSION} from per-arch images"
+          docker buildx imagetools create \
+            -t "${REPO}:${BASE_VERSION}" \
+            -t "${REPO}:${BASE_VERSION}-${DATE}-${SHA_SHORT}" \
+            --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --annotation "index:org.opencontainers.image.revision=${{ github.sha }}" \
+            --annotation "index:org.opencontainers.image.title=${IMAGE}" \
+            "${REPO}:${BASE_VERSION}-amd64" \
+            "${REPO}:${BASE_VERSION}-arm64"
+
+          docker buildx imagetools inspect "${REPO}:${BASE_VERSION}" || true
