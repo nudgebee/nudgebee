@@ -1021,7 +1021,9 @@ func lookupWorkloadByName(sc *security.RequestContext, dbms *database.DatabaseMa
 // ok=false on no match; an alert about a pod not in k8s state is expected, so a
 // no-rows result is not logged as an error.
 func lookupPodOwner(sc *security.RequestContext, dbms *database.DatabaseManager, tenantId string, candidateAccountIds []string, namespace, podName string) (ownerName, ownerKind, ns string, ok bool) {
-	if strings.TrimSpace(podName) == "" {
+	// Fail-fast: without a tenant and at least one cloud account this would either
+	// error or scan across tenants — never run it unscoped.
+	if strings.TrimSpace(podName) == "" || tenantId == "" || len(candidateAccountIds) == 0 {
 		return "", "", "", false
 	}
 	var row struct {
@@ -1029,17 +1031,23 @@ func lookupPodOwner(sc *security.RequestContext, dbms *database.DatabaseManager,
 		WorkloadType string `db:"workload_type"`
 		Namespace    string `db:"namespace"`
 	}
-	err := dbms.Db.Get(&row, `
+	// Build the namespace filter dynamically rather than "$4 = '' OR namespace = $4":
+	// the OR form defeats the index on (tenant_id, namespace, name), so omit the
+	// predicate entirely when the scope carried no namespace.
+	query := `
 		SELECT workload_name, workload_type, namespace
 		FROM k8s_pods
 		WHERE tenant_id = $1
 		  AND cloud_account_id = ANY($2)
 		  AND name = $3
-		  AND ($4 = '' OR namespace = $4)
-		  AND workload_name IS NOT NULL AND workload_name <> ''
-		ORDER BY last_seen DESC NULLS LAST
-		LIMIT 1
-	`, tenantId, pq.Array(candidateAccountIds), strings.TrimSpace(podName), strings.TrimSpace(namespace))
+		  AND workload_name IS NOT NULL AND workload_name <> ''`
+	args := []any{tenantId, pq.Array(candidateAccountIds), strings.TrimSpace(podName)}
+	if ns := strings.TrimSpace(namespace); ns != "" {
+		query += " AND namespace = $4"
+		args = append(args, ns)
+	}
+	query += " ORDER BY last_seen DESC NULLS LAST LIMIT 1"
+	err := dbms.Db.Get(&row, query, args...)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			sc.GetLogger().Error("datadog pod-owner lookup failed", "error", err, "pod", podName)
@@ -2100,7 +2108,11 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 			sc.GetLogger().Error("failed to get database manager for pod-owner lookup", "error", err)
 		} else {
 			candidateAccountIds, lookupErr := core.GetLinkedCloudAccountIds(sc, accountId, IntegrationDatadogWebhook)
-			if lookupErr != nil || len(candidateAccountIds) == 0 {
+			if lookupErr != nil {
+				sc.GetLogger().Warn("failed to expand linked cloud accounts for pod-owner lookup, falling back to single account",
+					"error", lookupErr, "account_id", accountId)
+			}
+			if len(candidateAccountIds) == 0 {
 				candidateAccountIds = []string{accountId}
 			}
 			if ownerName, ownerKind, ns, ok := lookupPodOwner(sc, dbms, sc.GetSecurityContext().GetTenantId(), candidateAccountIds, subjectNamespace, subjectName); ok {
