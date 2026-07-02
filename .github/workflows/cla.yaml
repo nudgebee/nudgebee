@@ -50,7 +50,7 @@ jobs:
           # The phrase a contributor comments to sign.
           custom-pr-sign-comment: I have read the CLA Document and I hereby sign the CLA
           custom-allsigned-prcomment: All contributors have signed the CLA. Thank you!
-          # Skip bots (they cannot sign).
-          allowlist: dependabot[bot],renovate[bot],*[bot]
+          # Skip bots (they cannot sign). Can be overridden/extended via CLA_ALLOWLIST repository secret.
+          allowlist: ${{ secrets.CLA_ALLOWLIST || 'dependabot[bot],renovate[bot],*[bot]' }}
           # Lock the PR conversation once merged so the signature record is stable.
           lock-pullrequest-aftermerge: true
