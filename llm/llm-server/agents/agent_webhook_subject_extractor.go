@@ -63,6 +63,12 @@ func (a *WebhookSubjectExtractorAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeClassification
 }
 
+// GetModelCategory routes this agent to the Summary tier — mapping an alert to a
+// service name is an analysis/extraction task, not cheap retrieval.
+func (a *WebhookSubjectExtractorAgent) GetModelCategory() core.ModelTier {
+	return core.ModelTierSummary
+}
+
 // GetCacheScope caches the stable system prompt (running services + historical
 // patterns) at Account scope. The block is account-stable, not conversation-
 // specific, and api-server sends a fresh ConversationId per webhook — so Account
