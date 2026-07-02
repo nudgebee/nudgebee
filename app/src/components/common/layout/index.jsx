@@ -1,7 +1,6 @@
 import * as React from 'react';
 import { useState, useMemo, useEffect } from 'react';
 import { useTenantBranding, DEFAULT_LOGO, DEFAULT_FAVICON } from '@hooks/useTenantBranding';
-import { useZoomMagnifyFloor } from '@hooks/useZoomMagnifyFloor';
 import Box from '@mui/material/Box';
 import { Button, Collapse, Container, Typography, Menu, IconButton } from '@mui/material';
 import { useRouter } from 'next/router';
@@ -95,7 +94,7 @@ const getDynamicPath = (path, router) => {
   return path;
 };
 
-const SideDrawerButton = ({ open = false, item = {}, onClick, handleDrawerOpen, compact = false }) => {
+const SideDrawerButton = ({ open = false, item = {}, onClick, handleDrawerOpen }) => {
   const router = useRouter();
   const haveSubItems = !!item?.subItems?.length;
 
@@ -154,7 +153,7 @@ const SideDrawerButton = ({ open = false, item = {}, onClick, handleDrawerOpen, 
         {isActive && <Box sx={styles.activeIndicator} />}
 
         <Box sx={styles.iconContainer}>
-          <Box sx={compact ? { ...styles.iconWrapper, width: ds.space.mul(0, 9), height: ds.space.mul(0, 9) } : styles.iconWrapper}>
+          <Box sx={styles.iconWrapper}>
             <SafeIcon src={item.icon} alt={item.text} fill style={{ objectFit: 'contain' }} />
           </Box>
 
@@ -202,14 +201,6 @@ const PageLayout = ({ children }) => {
   const [openSwitchAccount, setOpenSwitchAccount] = useState(false);
   const [openSettings, setOpenSettings] = useState(false);
   const [openApiTokens, setOpenApiTokens] = useState(false);
-
-  // Pins the app shell to the viewport width so browser zoom magnifies instead of reflowing.
-  const canvasMinWidth = useZoomMagnifyFloor();
-
-  // Real small screens (~1366/1440px laptops) still get the compact sidebar so the nav fits
-  // vertically. canvasMinWidth is frozen at load, so this does NOT toggle mid-zoom — the rail
-  // magnifies uniformly instead of restyling on the first zoom step (the old @media behavior).
-  const isCompactSidebar = canvasMinWidth != null && canvasMinWidth <= 1535;
 
   // Let any component (e.g. the cross-tenant AccountGuard) request the tenant
   // switcher open without prop-drilling. subscribe() returns its unsubscribe
@@ -354,22 +345,9 @@ const PageLayout = ({ children }) => {
           <ApiTokens open={openApiTokens} title={'API Tokens'} onClose={() => setOpenApiTokens(false)} />
           <LayoutHeaderActionSlot open={openSwitchAccount} title={'Switch Tenant'} onClose={handleSwitchAccountClose} />
 
-          {/* minWidth pins the shell to the viewport so zoom-in magnifies (see useZoomMagnifyFloor).
-              justifyContent is flex-start (not center): once content exceeds the viewport under zoom,
-              centering would push the left edge into unscrollable negative space. */}
-          <Box sx={{ display: 'flex', alignItems: 'stretch', justifyContent: 'flex-start', minWidth: canvasMinWidth }}>
+          <Box sx={{ display: 'flex', alignItems: 'stretch', justifyContent: 'center' }}>
             {!isRenderedInIframe() && !pageFlags.isWorkflow && (
-              <Box
-                sx={{
-                  width: COLLAPSED_WIDTH,
-                  ...styles.sideDrawer,
-                  // Compact button metrics for real small screens; spread the base '& button' first
-                  // so its nested hover/menu-item/svg rules survive the override.
-                  ...(isCompactSidebar
-                    ? { '& button': { ...styles.sideDrawer['& button'], py: 'var(--ds-space-2)', height: ds.space.mul(1, 13) } }
-                    : {}),
-                }}
-              >
+              <Box sx={{ width: COLLAPSED_WIDTH, ...styles.sideDrawer }}>
                 <Box className='inner-side-drawer'>
                   <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', marginTop: 'var(--ds-space-3)' }}>
                     <Link href={homeUrl} passHref>
@@ -391,13 +369,7 @@ const PageLayout = ({ children }) => {
                   {menuItems.map((item, idx) => (
                     <React.Fragment key={item.id || `${item.text}-${idx}`}>
                       {['Troubleshoot', 'Clusters', 'Tickets'].includes(item.text) && <Box sx={styles.subSeparator} />}
-                      <SideDrawerButton
-                        open={open}
-                        item={item}
-                        onClick={onMenuClick}
-                        handleDrawerOpen={handleDrawerOpen}
-                        compact={isCompactSidebar}
-                      />
+                      <SideDrawerButton open={open} item={item} onClick={onMenuClick} handleDrawerOpen={handleDrawerOpen} />
                     </React.Fragment>
                   ))}
 
@@ -457,12 +429,9 @@ const PageLayout = ({ children }) => {
               )}
               <Box
                 sx={{
-                  // Derived from the parent column (which already excludes the sidebar via flex),
-                  // NOT 100vw — so it fills the floored canvas and magnifies on zoom instead of
-                  // tracking the shrinking viewport. Pixel-identical to 100vw-minus-sidebar at 100%.
-                  maxWidth: `calc(100% - 90px)`,
-                  width: `calc(100% - 84px)`,
-                  px: open ? '64px' : pageFlags.isAskNudgebee || pageFlags.isAskNudgebeeV2 ? '0px' : '40px',
+                  maxWidth: `calc(100vw - ${COLLAPSED_WIDTH}px - ${ds.space.mul(0, 45)})`,
+                  width: `calc(100vw - ${COLLAPSED_WIDTH}px - ${ds.space.mul(0, 42)})`,
+                  px: open ? ds.space.mul(1, 16) : pageFlags.isAskNudgebee || pageFlags.isAskNudgebeeV2 ? 0 : ds.space.mul(1, 10),
                   backgroundColor:
                     pageFlags.isInvestigate || pageFlags.isOptimize || pageFlags.isTroubleshoot || pageFlags.isAgentic
                       ? colors.background.home
@@ -528,9 +497,11 @@ const styles = {
       display: 'flex',
       justifyContent: 'center',
       textAlign: 'left',
-      borderRadius: '0px',
-      // No max-width:1535px shrink: the sidebar is part of the zoom canvas, so it magnifies
-      // uniformly under zoom rather than restyling on the first zoom step. Frozen to desktop values.
+      borderRadius: 0,
+      '@media (max-width:1535px)': {
+        py: 'var(--ds-space-2)',
+        height: ds.space.mul(1, 13),
+      },
       '&:hover': {
         backgroundColor: colors.secondary.default,
       },
@@ -591,7 +562,10 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
-    // Frozen to desktop size — icons magnify with browser zoom, not shrink via a breakpoint.
+    '@media (max-width:1535px)': {
+      width: ds.space.mul(0, 9),
+      height: ds.space.mul(0, 9),
+    },
   },
   iconLabel: {
     paddingTop: 'var(--ds-space-3)',
@@ -601,6 +575,9 @@ const styles = {
     fontWeight: 'var(--ds-font-weight-regular)',
     fontSize: 'var(--ds-text-caption)',
     color: colors.text.white,
+    '@media (max-width:1535px)': {
+      fontSize: '10px',
+    },
   },
   openTextContainer: {
     flexGrow: 1,
