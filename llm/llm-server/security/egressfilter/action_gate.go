@@ -21,6 +21,14 @@ const (
 	// ActionBlock refuses the LLM call: the wrapper returns *Error wrapped
 	// in ErrSecretsBlocked and the provider is never contacted.
 	ActionBlock
+
+	// ActionRedact mutates the outbound payload — each hit is replaced by
+	// a placeholder (see FilterEvent.Redactions[].Placeholder) before the
+	// call reaches the provider. The provider never sees the raw secret;
+	// the LLM's response is passed through unchanged (no rehydration —
+	// egressfilter redacts secrets irreversibly, unlike Piyush's PII
+	// scrub which is reversible).
+	ActionRedact
 )
 
 // ActionGate resolves the post-detection Action from the configured Mode

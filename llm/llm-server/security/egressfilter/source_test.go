@@ -32,9 +32,9 @@ func TestSerializeMessagesWithSources_TextRoleMapping(t *testing.T) {
 	}
 	_, regions := serializeMessagesWithSources(msgs)
 	if assert.Len(t, regions, 3) {
-		assert.Equal(t, SourceSystem, regions[0].source)
-		assert.Equal(t, SourceUser, regions[1].source)
-		assert.Equal(t, SourceAssistant, regions[2].source)
+		assert.Equal(t, SourceSystem, regions[0].Source)
+		assert.Equal(t, SourceUser, regions[1].Source)
+		assert.Equal(t, SourceAssistant, regions[2].Source)
 	}
 }
 
@@ -54,9 +54,9 @@ func TestSerializeMessagesWithSources_TypeBasedOverridesRole(t *testing.T) {
 	}
 	_, regions := serializeMessagesWithSources(msgs)
 	if assert.Len(t, regions, 3) {
-		assert.Equal(t, SourceToolCallArgs, regions[0].source)
-		assert.Equal(t, SourceToolResult, regions[1].source)
-		assert.Equal(t, SourceImageURL, regions[2].source)
+		assert.Equal(t, SourceToolCallArgs, regions[0].Source)
+		assert.Equal(t, SourceToolResult, regions[1].Source)
+		assert.Equal(t, SourceImageURL, regions[2].Source)
 	}
 }
 
@@ -70,10 +70,10 @@ func TestSerializeMessagesWithSources_RegionsTilePayload(t *testing.T) {
 	payload, regions := serializeMessagesWithSources(msgs)
 	assert.Equal(t, "abc\nxy\n", payload)
 	if assert.Len(t, regions, 2) {
-		assert.Equal(t, 0, regions[0].start)
-		assert.Equal(t, 4, regions[0].end) // "abc\n"
-		assert.Equal(t, 4, regions[1].start)
-		assert.Equal(t, 7, regions[1].end) // "xy\n"
+		assert.Equal(t, 0, regions[0].Start)
+		assert.Equal(t, 4, regions[0].End) // "abc\n"
+		assert.Equal(t, 4, regions[1].Start)
+		assert.Equal(t, 7, regions[1].End) // "xy\n"
 	}
 }
 
@@ -88,10 +88,10 @@ func TestSerializeMessagesWithSources_EmptyTextSkipsRegion(t *testing.T) {
 }
 
 func TestTagHitsBySource_MatchesContainingRegion(t *testing.T) {
-	regions := []sourceRegion{
-		{start: 0, end: 5, source: SourceSystem},
-		{start: 5, end: 12, source: SourceUser},
-		{start: 12, end: 20, source: SourceToolResult},
+	regions := []SourceRegion{
+		{Start: 0, End: 5, Source: SourceSystem},
+		{Start: 5, End: 12, Source: SourceUser},
+		{Start: 12, End: 20, Source: SourceToolResult},
 	}
 	hits := []Hit{
 		{RuleID: "x", Start: 2, End: 4},   // inside system
@@ -103,12 +103,12 @@ func TestTagHitsBySource_MatchesContainingRegion(t *testing.T) {
 	assert.Equal(t, SourceSystem, out[0].Source)
 	assert.Equal(t, SourceUser, out[1].Source)
 	assert.Equal(t, SourceToolResult, out[2].Source)
-	assert.Equal(t, SourceUser, out[3].Source, "Start == region.start must tag as that region")
+	assert.Equal(t, SourceUser, out[3].Source, "Start == region.Start must tag as that region")
 }
 
 func TestTagHitsBySource_UnmappedStaysEmpty(t *testing.T) {
-	regions := []sourceRegion{
-		{start: 0, end: 5, source: SourceSystem},
+	regions := []SourceRegion{
+		{Start: 0, End: 5, Source: SourceSystem},
 	}
 	hits := []Hit{{RuleID: "x", Start: 100, End: 105}} // far outside any region
 	out := tagHitsBySource(hits, regions)
@@ -121,7 +121,7 @@ func TestTagHitsBySource_NoRegionsOrNoHitsIsNoop(t *testing.T) {
 	out := tagHitsBySource(hits, nil)
 	assert.Equal(t, Source(""), out[0].Source)
 	// No hits: nil slice returned cleanly.
-	assert.Nil(t, tagHitsBySource(nil, []sourceRegion{{start: 0, end: 5, source: SourceUser}}))
+	assert.Nil(t, tagHitsBySource(nil, []SourceRegion{{Start: 0, End: 5, Source: SourceUser}}))
 }
 
 func TestDistinctSources_DedupAndSort(t *testing.T) {

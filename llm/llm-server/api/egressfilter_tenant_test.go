@@ -271,8 +271,8 @@ func TestParseMode(t *testing.T) {
 		{"DETECT", false},
 		{"  detect  ", false},
 		{"enforce", false},
-		{"audit", false}, // legacy alias still accepted
-		{"redact", true}, // accepted by ParseMode but not by admin API surface
+		{"audit", false},  // legacy alias still accepted
+		{"redact", false}, // supported once the redact-mode wrapper landed
 		{"garbage", true},
 		{"", true},
 	}

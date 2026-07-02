@@ -154,10 +154,24 @@ A few rules in mind:
 |---|---|---|
 | `ModeDetect` (default) | pass-through, no log | log + detect metric + `FilterEvent`, **forward unchanged** |
 | `ModeEnforce` | pass-through, no log | log + block-metric, **return `*Error`** — only when an `ActionGate` is registered (see below) |
+| `ModeRedact` | pass-through, no log | log + redacted-metric + `FilterEvent` (with `Redactions[]` populated), **forward mutated payload** — hits replaced by `[REDACTED:<rule_id>]` inside the specific message part they landed in. Only when an `ActionGate` is registered. |
 
-`ParseMode(s)` normalises `"enforce"` (any case, trimmed) to `ModeEnforce`;
-the canonical `"detect"` and the legacy alias `"audit"` both resolve to
-`ModeDetect`. Anything else also falls back to `ModeDetect` — wrong-string-defaults-to-safe-mode prevents a config typo from silently breaking the LLM call path.
+`ParseMode(s)` normalises `"enforce"` (any case, trimmed) to `ModeEnforce`,
+`"redact"` to `ModeRedact`; the canonical `"detect"` and the legacy alias
+`"audit"` both resolve to `ModeDetect`. Anything else also falls back to
+`ModeDetect` — wrong-string-defaults-to-safe-mode prevents a config typo
+from silently breaking the LLM call path.
+
+### Redact mode specifics
+
+- **Mechanism lives in the policy provider, not OSS.** The wrapper exposes a `Redactor` plugin (`var Redactor func(messages, hits, regions) ([]MessageContent, []Redaction)`) that the policy provider fills in from its `init()`. Same shape as `ActionGate`. If a build resolves `ActionRedact` without a registered `Redactor`, the wrapper degrades to detect with a one-shot WARN — it never silently forwards the raw secret.
+- **Exported helpers** for anyone writing their own Redactor: `FindRegionIdx`, `CopyMessages`, `ExtractPartText`, `SetPartText`. These handle the four mutable part types (`TextContent`, `ToolCall.FunctionCall.Arguments`, `ToolCallResponse.Content`, `ImageURLContent.URL`) including their pointer forms, so a custom Redactor only needs the orchestration logic.
+- **Placeholder format** (in the reference implementation shipped with the EE bundle): `[REDACTED:<rule_id>]` — informative for support triage, safe to persist (rule ids are canonical identifiers, never a matched value).
+- **Redaction is irreversible**: the LLM response is passed through unchanged. There is no rehydration; this contrasts with Piyush's PII scrub which is reversible-by-design.
+- **Mutation happens surgically** inside the specific message part the hit landed in. `SourceRegion.MsgIdx / PartIdx` tell the Redactor which part to touch.
+- **The caller's message slice is not mutated.** `CopyMessages` allocates fresh `Parts` slices and pointer parts are cloned before rewriting.
+- **Multi-hit-per-part** is applied right-to-left so earlier offsets stay valid as later ranges are rewritten to placeholders of different length.
+- **`FilterEvent.Redactions[i]` aligns with `Hits[i]` by index.** If a hit couldn't be mapped to a mutable part (e.g. offset fell on a separator, or the part type has no text field), `Redactions[i]` is zero-value — consumers distinguish "redacted" from "skipped" by checking `Placeholder != ""`.
 
 ### Mode → Action via `ActionGate`
 
@@ -176,8 +190,11 @@ actually block installs a gate from its own `init()`:
 
 ```go
 egressfilter.ActionGate = func(mode egressfilter.Mode, _ egressfilter.Result) egressfilter.Action {
-    if mode == egressfilter.ModeEnforce {
+    switch mode {
+    case egressfilter.ModeEnforce:
         return egressfilter.ActionBlock
+    case egressfilter.ModeRedact:
+        return egressfilter.ActionRedact
     }
     return egressfilter.ActionAudit
 }

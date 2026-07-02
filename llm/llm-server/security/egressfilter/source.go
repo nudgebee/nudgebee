@@ -48,13 +48,26 @@ const (
 	SourceImageURL Source = "image_url"
 )
 
-// sourceRegion records one contiguous byte range in the flattened payload
-// plus the source the bytes came from. Built by serializeMessagesWithSources
-// in append order, which guarantees the slice is sorted by .start — a
-// property tagHitsBySource's binary search relies on.
-type sourceRegion struct {
-	start, end int
-	source     Source
+// SourceRegion records one contiguous byte range in the flattened payload
+// plus the source the bytes came from and back-pointers into the messages
+// tree. Built by serializeMessagesWithSources in append order, which
+// guarantees the slice is sorted by .Start — a property tagHitsBySource's
+// binary search relies on.
+//
+// MsgIdx and PartIdx locate the part in the original messages slice so
+// a Redactor plugin can mutate the right text field. All region-producing
+// part types (text, tool-call args, tool-call response, image URL) have
+// a single mutable text-like field; the OSS package exports helpers
+// (ExtractPartText, SetPartText, CopyMessages) any redactor implementation
+// can compose against.
+//
+// Exported because the Redactor plugin (see redactor.go) lives outside
+// this package — anyone registering a redactor needs the field layout.
+type SourceRegion struct {
+	Start, End int
+	Source     Source
+	MsgIdx     int
+	PartIdx    int
 }
 
 // tagHitsBySource fills Hit.Source for each hit by binary-searching its
@@ -65,23 +78,23 @@ type sourceRegion struct {
 // Time complexity: O(hits * log(regions)). With ~30 message parts per
 // LLM call and a typical ~5 hits, this is negligible compared to the
 // regex scan itself.
-func tagHitsBySource(hits []Hit, regions []sourceRegion) []Hit {
+func tagHitsBySource(hits []Hit, regions []SourceRegion) []Hit {
 	if len(hits) == 0 || len(regions) == 0 {
 		return hits
 	}
 	for i := range hits {
 		h := &hits[i]
-		// Binary search for the region whose [start, end) contains h.Start.
+		// Binary search for the region whose [Start, End) contains h.Start.
 		// sort.Search returns the smallest index for which the predicate is
-		// true; we want the largest index whose .start <= h.Start, hence
+		// true; we want the largest index whose .Start <= h.Start, hence
 		// the -1 after the search.
 		idx := sort.Search(len(regions), func(k int) bool {
-			return regions[k].start > h.Start
+			return regions[k].Start > h.Start
 		}) - 1
 		if idx >= 0 && idx < len(regions) {
 			r := regions[idx]
-			if h.Start >= r.start && h.Start < r.end {
-				h.Source = r.source
+			if h.Start >= r.Start && h.Start < r.End {
+				h.Source = r.Source
 			}
 		}
 	}

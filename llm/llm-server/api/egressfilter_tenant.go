@@ -237,10 +237,10 @@ func parseMode(raw string) (egressfilter.Mode, string) {
 	// ParseMode silently maps unknown strings to ModeDetect. For an admin
 	// API we want louder validation — explicit list of accepted strings.
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "detect", "audit", "enforce":
+	case "detect", "audit", "enforce", "redact":
 		return m, ""
 	default:
-		return "", "mode must be one of: detect, enforce (legacy: audit)"
+		return "", "mode must be one of: detect, enforce, redact (legacy: audit)"
 	}
 }
 

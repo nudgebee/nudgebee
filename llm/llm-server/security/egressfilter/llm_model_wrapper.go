@@ -42,13 +42,23 @@ type wrappedModel struct {
 // GenerateContent is the primary entrypoint. We serialize the message slice
 // into a single string plus a parallel slice of source regions (so each Hit
 // can be tagged with the kind of part it came from), scan it, and either
-// block or pass through.
+// block, redact, or pass through.
+//
+// When scanAndDecide returns a non-nil mutated slice, that slice is
+// forwarded to the inner model instead of the caller's messages —
+// redact mode replaces hit ranges with placeholders so the provider
+// never sees the raw secret.
 func (w *wrappedModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	payload, regions := serializeMessagesWithSources(messages)
-	if err := w.scanAndDecide(ctx, payload, regions); err != nil {
+	mutated, err := w.scanAndDecide(ctx, payload, regions, messages)
+	if err != nil {
 		return nil, err
 	}
-	return w.inner.GenerateContent(ctx, messages, options...)
+	outbound := messages
+	if mutated != nil {
+		outbound = mutated
+	}
+	return w.inner.GenerateContent(ctx, outbound, options...)
 }
 
 // Call satisfies the deprecated single-prompt entry on llms.Model. It routes
@@ -59,7 +69,17 @@ func (w *wrappedModel) Call(ctx context.Context, prompt string, options ...llms.
 	return llms.GenerateFromSinglePrompt(ctx, w, prompt, options...)
 }
 
-func (w *wrappedModel) scanAndDecide(ctx context.Context, payload string, regions []sourceRegion) error {
+// scanAndDecide runs Scan + policy resolution against the serialized
+// payload and returns either an error (blocked call), a mutated messages
+// slice to forward instead of the caller's (redact mode), or (nil, nil)
+// meaning the caller should forward its original messages unchanged
+// (detect / clean / skipped paths).
+func (w *wrappedModel) scanAndDecide(
+	ctx context.Context,
+	payload string,
+	regions []SourceRegion,
+	messages []llms.MessageContent,
+) ([]llms.MessageContent, error) {
 	start := time.Now()
 
 	// Resolve per-tenant overrides (nil → env defaults apply).
@@ -67,7 +87,7 @@ func (w *wrappedModel) scanAndDecide(ctx context.Context, payload string, region
 	if tcfg != nil && !tcfg.Enabled {
 		// Per-tenant kill switch: skip scan entirely for this tenant.
 		recordScan(ctx, w.provider, w.model, w.mode, "skipped", len(payload), 0, nil)
-		return nil
+		return nil, nil
 	}
 
 	result := Scan(payload)
@@ -80,7 +100,7 @@ func (w *wrappedModel) scanAndDecide(ctx context.Context, payload string, region
 
 	if !result.HasHits() {
 		recordScan(ctx, w.provider, w.model, w.mode, "clean", len(payload), latency, nil)
-		return nil
+		return nil, nil
 	}
 
 	// Effective mode: tenant override wins over the wrapper-constructed
@@ -118,7 +138,46 @@ func (w *wrappedModel) scanAndDecide(ctx context.Context, payload string, region
 		if fn := reporterFromContext(ctx); fn != nil {
 			fn(event)
 		}
-		return fmt.Errorf("egressfilter: %w", err)
+		return nil, fmt.Errorf("egressfilter: %w", err)
+
+	case ActionRedact:
+		// Delegate to the installed Redactor plugin (typically registered
+		// by the EE bundle). If no Redactor is registered — an OSS-only
+		// build, or a misconfigured init order — degrade to detect
+		// behaviour with a one-shot warn so the operator sees the gap.
+		if Redactor == nil {
+			warnRedactWithoutRedactor()
+			recordScan(ctx, w.provider, w.model, effectiveMode, "detect", len(payload), latency, result.Hits)
+			slog.Warn("egressfilter: outbound LLM payload contains potential secret (redact requested but no Redactor registered; falling back to detect)",
+				"audit_id", auditID,
+				"provider", w.provider,
+				"model", w.model,
+				"rule_ids", ruleIDs,
+				"hits", len(result.Hits),
+				"payload_bytes", len(payload),
+				"latency_seconds", latency,
+			)
+			if fn := reporterFromContext(ctx); fn != nil {
+				fn(event)
+			}
+			return nil, nil
+		}
+		mutated, redactions := Redactor(messages, result.Hits, regions)
+		event.Redactions = redactions
+		recordScan(ctx, w.provider, w.model, effectiveMode, "redacted", len(payload), latency, result.Hits)
+		slog.Warn("egressfilter: outbound LLM payload redacted",
+			"audit_id", auditID,
+			"provider", w.provider,
+			"model", w.model,
+			"rule_ids", ruleIDs,
+			"hits", len(result.Hits),
+			"payload_bytes", len(payload),
+			"latency_seconds", latency,
+		)
+		if fn := reporterFromContext(ctx); fn != nil {
+			fn(event)
+		}
+		return mutated, nil
 
 	default:
 		// ActionAudit (and any future non-blocking action): record + log,
@@ -136,7 +195,7 @@ func (w *wrappedModel) scanAndDecide(ctx context.Context, payload string, region
 		if fn := reporterFromContext(ctx); fn != nil {
 			fn(event)
 		}
-		return nil
+		return nil, nil
 	}
 }
 
@@ -168,10 +227,15 @@ func serializeMessages(messages []llms.MessageContent) string {
 // Region boundaries: each region covers [partStart, partEndIncludingNewline)
 // so the regions tile the entire payload, and a hit whose Start lands on
 // the terminating \n of a part is still attributed to that part.
-func serializeMessagesWithSources(messages []llms.MessageContent) (string, []sourceRegion) {
+func serializeMessagesWithSources(messages []llms.MessageContent) (string, []SourceRegion) {
 	var b strings.Builder
-	var regions []sourceRegion
+	var regions []SourceRegion
 
+	// Hoisted so we allocate one closure for the whole call instead of
+	// one per (msg, part) iteration — GenerateContent is on the hot path
+	// of every LLM call. currentMIdx / currentPIdx are updated at the top
+	// of each iteration and read by the closure via capture.
+	var currentMIdx, currentPIdx int
 	addRegion := func(text string, src Source) {
 		if text == "" {
 			return
@@ -179,12 +243,17 @@ func serializeMessagesWithSources(messages []llms.MessageContent) (string, []sou
 		start := b.Len()
 		b.WriteString(text)
 		b.WriteByte('\n')
-		regions = append(regions, sourceRegion{start: start, end: b.Len(), source: src})
+		regions = append(regions, SourceRegion{
+			Start: start, End: b.Len(), Source: src,
+			MsgIdx: currentMIdx, PartIdx: currentPIdx,
+		})
 	}
 
-	for _, m := range messages {
+	for mIdx, m := range messages {
 		textSource := sourceForRole(m.Role)
-		for _, p := range m.Parts {
+		for pIdx, p := range m.Parts {
+			currentMIdx = mIdx
+			currentPIdx = pIdx
 			switch part := p.(type) {
 			case llms.TextContent:
 				addRegion(part.Text, textSource)

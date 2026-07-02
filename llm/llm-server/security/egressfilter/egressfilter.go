@@ -36,6 +36,11 @@ const (
 	// honoured when an ActionGate is registered; otherwise the wrapper
 	// falls back to ActionAudit and logs the gap once.
 	ModeEnforce Mode = "enforce"
+	// ModeRedact requests that hits be replaced with placeholders in the
+	// outbound payload before the LLM call proceeds. Irreversible — the
+	// LLM never sees the raw secret. Only honoured when an ActionGate is
+	// registered; otherwise falls back to ActionAudit.
+	ModeRedact Mode = "redact"
 )
 
 // ParseMode normalises a config string into a Mode. Accepts the canonical
@@ -43,9 +48,11 @@ const (
 // without operator changes. Anything else falls back to ModeDetect —
 // fail-safe for rollout.
 func ParseMode(s string) Mode {
-	norm := strings.ToLower(strings.TrimSpace(s))
-	if Mode(norm) == ModeEnforce {
+	switch Mode(strings.ToLower(strings.TrimSpace(s))) {
+	case ModeEnforce:
 		return ModeEnforce
+	case ModeRedact:
+		return ModeRedact
 	}
 	// Both "detect" (canonical) and "audit" (legacy) → ModeDetect.
 	return ModeDetect
