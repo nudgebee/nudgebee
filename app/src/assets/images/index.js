@@ -289,6 +289,7 @@ export const icOU = require('@assets/ic/ic_ou.svg');
 export const timerSVG = require('@assets/timer.svg');
 export const bellSVG = require('@assets/bell2.svg');
 export const jiraIcon = require('@assets/jira_icon.icon.svg');
+export const ConfluenceIcon = require('@assets/confluence-icon.svg');
 export const serviceNowIcon = require('@assets/servicenow.icon.svg');
 export const slackIcon = require('@assets/slack_icon.icon.svg');
 export const GithubIcon = require('@assets/github-icon.icon.svg');

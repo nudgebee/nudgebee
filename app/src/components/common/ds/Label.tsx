@@ -257,7 +257,7 @@ const Label: React.FC<LabelProps> = ({
     fontSize: tokens.fontSize,
     fontStyle: 'normal',
     fontWeight: 'var(--ds-font-weight-medium)',
-    lineHeight: 1,
+    lineHeight: 1.4,
     color: palette.text,
     textTransform: (textTransform ?? 'capitalize') as React.CSSProperties['textTransform'],
     wordBreak: (wordBreak ?? '') as React.CSSProperties['wordBreak'],
