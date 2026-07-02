@@ -4,10 +4,10 @@ The name **"Nudgebee"** and the Nudgebee logo (collectively, the
 "Marks") are trademarks of Nudgebee. This policy describes when and
 how you may use the Marks.
 
-The source code in this repository is licensed under the Apache
-License, Version 2.0. **The Apache 2.0 license does not grant any
-trademark rights.** Trademark use is governed separately by this
-document.
+The source code in this repository is licensed under the Business
+Source License 1.1 (which converts to the Apache License, Version 2.0
+four years after each release). **Neither license grants any trademark
+rights.** Trademark use is governed separately by this document.
 
 ## Goals of This Policy
 
