@@ -1009,6 +1009,46 @@ func lookupWorkloadByName(sc *security.RequestContext, dbms *database.DatabaseMa
 	return w, true
 }
 
+// lookupPodOwner resolves a pod to its owning workload from k8s_pods, searching
+// every candidate cloud account. The k8s-collector already resolves each pod to its
+// top-level controller and stores it in workload_name/workload_type (Deployment,
+// StatefulSet, DaemonSet, Job, …), so a plain read suffices — no join to
+// k8s_workloads needed. (For the rare pod recorded with a ReplicaSet owner, that
+// ReplicaSet name is used as-is; it's still closer to the workload than the
+// hash-suffixed pod, and it's a fraction of a percent of pods.) namespace may be
+// empty — Datadog "No data" scopes often omit kube_namespace — so the pod is matched
+// by name alone and its namespace is returned to the caller for backfill. Returns
+// ok=false on no match; an alert about a pod not in k8s state is expected, so a
+// no-rows result is not logged as an error.
+func lookupPodOwner(sc *security.RequestContext, dbms *database.DatabaseManager, tenantId string, candidateAccountIds []string, namespace, podName string) (ownerName, ownerKind, ns string, ok bool) {
+	if strings.TrimSpace(podName) == "" {
+		return "", "", "", false
+	}
+	var row struct {
+		WorkloadName string `db:"workload_name"`
+		WorkloadType string `db:"workload_type"`
+		Namespace    string `db:"namespace"`
+	}
+	err := dbms.Db.Get(&row, `
+		SELECT workload_name, workload_type, namespace
+		FROM k8s_pods
+		WHERE tenant_id = $1
+		  AND cloud_account_id = ANY($2)
+		  AND name = $3
+		  AND ($4 = '' OR namespace = $4)
+		  AND workload_name IS NOT NULL AND workload_name <> ''
+		ORDER BY last_seen DESC NULLS LAST
+		LIMIT 1
+	`, tenantId, pq.Array(candidateAccountIds), strings.TrimSpace(podName), strings.TrimSpace(namespace))
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			sc.GetLogger().Error("datadog pod-owner lookup failed", "error", err, "pod", podName)
+		}
+		return "", "", "", false
+	}
+	return row.WorkloadName, strings.ToLower(row.WorkloadType), row.Namespace, true
+}
+
 // parseLogAlertQuery extracts the inner search query from a log alert monitor query
 // e.g. logs("service:sqlserver \"Login failed\"").index("*").rollup("count").by("host").last("5m") > 0
 // returns: service:sqlserver "Login failed"
@@ -1203,6 +1243,7 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	var subjectNamespace string
 	var subjectKind string
 	var deploymentName string
+	var deploymentKind string
 
 	// applyK8sSubject merges a parsed Datadog k8s subject into the running subject
 	// vars. First non-empty wins so an earlier, more authoritative source (the
@@ -1216,6 +1257,7 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		}
 		if deploymentName == "" && s.Owner != "" {
 			deploymentName = s.Owner
+			deploymentKind = s.OwnerKind
 		}
 		if subjectName == "" && s.Name != "" {
 			subjectName = s.Name
@@ -2047,10 +2089,39 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		LearnSubjectMapping(sc, sc.GetSecurityContext().GetTenantId(), TenantAttrHistoricalIncidentsKey, cleanTitle, subjectName)
 	}
 
+	// When the subject is a bare pod (no owning controller was in the alert scope),
+	// resolve the pod's owning workload from k8s state so the event's owner is the
+	// deployment — what k8s_workloads / downstream enrichment key on — instead of the
+	// ephemeral pod. Also backfills the namespace when the scope didn't carry one
+	// (common on "No data" transitions). Only runs for a pod subject with no owner
+	// yet, so it's at most one extra query and a no-op for controller/cloud subjects.
+	if subjectKind == "pod" && deploymentName == "" && subjectName != "" {
+		if dbms, err := database.GetDatabaseManager(database.Metastore); err != nil {
+			sc.GetLogger().Error("failed to get database manager for pod-owner lookup", "error", err)
+		} else {
+			candidateAccountIds, lookupErr := core.GetLinkedCloudAccountIds(sc, accountId, IntegrationDatadogWebhook)
+			if lookupErr != nil || len(candidateAccountIds) == 0 {
+				candidateAccountIds = []string{accountId}
+			}
+			if ownerName, ownerKind, ns, ok := lookupPodOwner(sc, dbms, sc.GetSecurityContext().GetTenantId(), candidateAccountIds, subjectNamespace, subjectName); ok {
+				deploymentName = ownerName
+				deploymentKind = ownerKind
+				if subjectNamespace == "" && ns != "" {
+					subjectNamespace = ns
+				}
+				labels["nb_pod_owner"] = ownerName
+				sc.GetLogger().Info("resolved datadog pod owner from k8s state",
+					"pod", subjectName, "owner", ownerName, "kind", ownerKind, "namespace", subjectNamespace)
+			}
+		}
+	}
+
 	// The deployment owns the pod, so prefer it as the subject owner when known.
 	subjectOwner := subjectName
+	subjectOwnerKind := subjectKind
 	if deploymentName != "" {
 		subjectOwner = deploymentName
+		subjectOwnerKind = deploymentKind
 	}
 
 	event := core.EventIncomingWebhook{
@@ -2072,6 +2143,7 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		CloudResourceId:       cloudResourceId,
 		AccountId:             accountId,
 		EventSubjectOwner:     subjectOwner,
+		EventSubjectOwnerKind: subjectOwnerKind,
 	}
 	return []core.EventIncomingWebhook{event}, nil
 }
