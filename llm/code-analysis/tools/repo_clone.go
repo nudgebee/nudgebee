@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 
 	"nudgebee/code-analysis-agent/internal/credentials"
 	"nudgebee/code-analysis-agent/internal/git"
@@ -193,10 +195,26 @@ func (t *RepoCloneTool) Execute(ctx context.Context, input map[string]any) core.
 	// Clone or reuse repository via worktree for performance
 	cloneResult, err := t.gitClient.CloneOrReuseRepository(ctx, params.RepoURL, internalCreds, params.Branch, repoDir)
 	if err != nil {
-		return core.CreateErrorResponse(
-			fmt.Sprintf("Failed to clone repository: %v", err),
-			"Repository cloning failed",
-		)
+		// Sanitize the raw git error before surfacing it in either Error or
+		// Observation — git usually redacts credentials in URLs but not
+		// always (older versions, custom auth handlers, unusual URL shapes).
+		// Belt-and-suspenders: strip embedded creds from `https://TOKEN@host/...`
+		// / `https://user:pass@host/...` before this string lands in the
+		// LLM prompt or the analytics column. See sanitizeGitError.
+		safeErr := sanitizeGitError(err.Error())
+		errMsg := "Failed to clone repository: " + safeErr
+		// Surface the underlying (sanitized) git error in Observation so
+		// downstream analytics + humans reading tool traces see WHY it failed —
+		// previously Observation was the generic "Repository cloning failed"
+		// with no diagnostic. tracked_wrapper.go persists Observation to
+		// llm_conversation_tool_calls.response, so all monitoring on this
+		// tool was flying blind (2026-07-02 sweep: 20 of 20 repo_clone errors
+		// stored the same generic string with zero signal).
+		observation := "Repository cloning failed: " + safeErr
+		if hint := repoCloneErrorHint(safeErr); hint != "" {
+			observation = observation + "\n\nHint: " + hint
+		}
+		return core.CreateErrorResponse(errMsg, observation)
 	}
 
 	// Get repository information
@@ -299,4 +317,54 @@ func (t *RepoCloneTool) handleLocalRepository(params RepoCloneInput) core.NBTool
 
 func (t *RepoCloneTool) GetType() core.NBToolType {
 	return core.NBToolTypeCodeAnalysis
+}
+
+// urlCredsRegex matches embedded credentials in a git URL — the
+// `TOKEN@` or `user:pass@` prefix before a host. Non-greedy on the user
+// portion (`[^@/\s]+`) so trailing paths and command-line surroundings
+// don't get pulled into the match. Only http/https URLs — git URLs of the
+// form `git@github.com:foo/bar.git` use `git@` as a fixed username with no
+// secret material, so they are intentionally not touched.
+var urlCredsRegex = regexp.MustCompile(`(https?://)[^@/\s]+@`)
+
+// sanitizeGitError strips embedded credentials from URLs in a git error
+// string before it is persisted to the LLM prompt / analytics column.
+// Idempotent, safe on inputs that contain no URLs at all.
+func sanitizeGitError(errStr string) string {
+	return urlCredsRegex.ReplaceAllString(errStr, "${1}<redacted>@")
+}
+
+// repoCloneErrorHint returns an actionable recovery hint for common git clone
+// failure classes. Prior to this, every clone failure surfaced as the generic
+// "Repository cloning failed" — the git error was captured in the Error field
+// but never made it into the LLM-visible observation or the analytics column,
+// so the model had no signal to react to and every failure looked identical.
+// Returns "" for unrecognized errors so the raw git output continues to
+// dominate. Mirrors the tool-hint contract established in llm-server PR #33404.
+func repoCloneErrorHint(rawError string) string {
+	lower := strings.ToLower(rawError)
+	switch {
+	case strings.Contains(lower, "authentication failed"),
+		strings.Contains(lower, "invalid username or password"),
+		strings.Contains(lower, "could not read username"):
+		return "Authentication to the remote failed. The provided credentials are invalid, missing, or lack access to this repository. Report the specific repo URL back to the user so they can supply a valid token — do NOT retry with the same credentials."
+	case strings.Contains(lower, "repository not found"),
+		strings.Contains(lower, "not found") && strings.Contains(lower, "404"):
+		return "The remote returned 'repository not found'. Either the URL is wrong (check spelling of owner/repo), the repo is private and the token lacks access, or the repo was deleted/renamed. Report the exact URL back to the user before retrying with a different URL."
+	case strings.Contains(lower, "permission denied") && strings.Contains(lower, "publickey"):
+		return "SSH key authentication failed. The clone URL is SSH form (git@...) but no SSH key is configured or the key lacks access. If the caller provided an HTTPS token, retry with the HTTPS URL (https://github.com/owner/repo.git) instead of the SSH form."
+	case strings.Contains(lower, "unable to resolve host"),
+		strings.Contains(lower, "could not resolve host"),
+		strings.Contains(lower, "connection timed out"),
+		strings.Contains(lower, "connection refused"):
+		return "Network error reaching the git remote (DNS or connectivity). Not something you can fix from this tool — report the specific host to the user and stop retrying."
+	case strings.Contains(lower, "couldn't find remote ref"),
+		strings.Contains(lower, "remote branch") && strings.Contains(lower, "not found"),
+		strings.Contains(lower, "reference is not a tree"):
+		return "The specified branch does not exist on the remote. Retry with `branch: \"main\"` (or the repo's actual default branch) — or omit the branch parameter to clone the default."
+	case strings.Contains(lower, "disk full"),
+		strings.Contains(lower, "no space left on device"):
+		return "Workspace is out of disk. Not recoverable from this tool — report to the user."
+	}
+	return ""
 }

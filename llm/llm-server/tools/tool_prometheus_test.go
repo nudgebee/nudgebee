@@ -438,3 +438,32 @@ func TestExtractPromQL_SemicolonSeparatedQueries_Passthrough(t *testing.T) {
 	assert.Equal(t, command, promql,
 		"semicolon-separated queries should pass through unchanged")
 }
+
+// TestValidatePromQLSyntax_UnexpectedIdentifierHint pins the tightened hint
+// added 2026-07-02. Previously the `unexpected identifier` branch said
+// "Check metric name spelling" — misleading because the dominant real cause
+// (32 of 62 prometheus errors in the 7d sweep on a single account) was the
+// model sending natural-language text ("the CPU utilization", "is memory
+// pressure high?", "workloads with restarts"), not a misspelled metric.
+// The tightened hint leads with the PromQL-vs-natural-language framing.
+func TestValidatePromQLSyntax_UnexpectedIdentifierHint(t *testing.T) {
+	// Natural-language input — the case the pre-fix hint mis-steered on.
+	got := validatePromQLSyntax("the CPU utilization")
+	assert.NotEmpty(t, got, "invalid PromQL must return a structured error")
+	assert.Contains(t, got, "PromQL, not natural language",
+		"hint must call out the dominant natural-language misuse pattern directly")
+	assert.Contains(t, got, "metrics_list",
+		"hint must point at metrics_list as the discovery path")
+	// The old "check metric name spelling" framing is preserved as a fallback,
+	// so real misspellings still get diagnosed.
+	assert.Contains(t, got, "check metric name spelling",
+		"real-misspelling framing must still surface as the secondary hint")
+}
+
+// TestValidatePromQLSyntax_ValidQueryReturnsEmpty locks the contract that a
+// syntactically-valid PromQL query produces no error (empty string).
+func TestValidatePromQLSyntax_ValidQueryReturnsEmpty(t *testing.T) {
+	assert.Empty(t, validatePromQLSyntax(`kube_pod_container_status_restarts_total{namespace="default"}`))
+	assert.Empty(t, validatePromQLSyntax(`rate(container_cpu_usage_seconds_total[5m])`))
+	assert.Empty(t, validatePromQLSyntax("")) // empty is passthrough, not error
+}

@@ -137,7 +137,20 @@ func validatePromQLSyntax(query string) string {
 		case strings.Contains(msg, "unexpected ','") || strings.Contains(msg, "unexpected end"):
 			hint = "Hint: Multiple queries must use ';' as separator, not ','. Example: query1; query2"
 		case strings.Contains(msg, "unexpected identifier") || strings.Contains(msg, "unexpected character"):
-			hint = "Hint: Check metric name spelling and label syntax. Labels must use '=', '!=', '=~', '!~' operators inside '{}'."
+			// The dominant real cause of this error in prod is the model sending
+			// natural-language text (e.g. "the CPU utilization for pod X",
+			// "is memory pressure high?", "workloads with restarts") instead of
+			// PromQL. Steer the model to a real query shape BEFORE the
+			// original "check metric name" branch — a misspelled metric name
+			// almost never lands as "unexpected identifier: the/is/me/etc."
+			// (2026-07-02 sweep: 32 of 62 prometheus errors matched this
+			// natural-language pattern on a single account).
+			hint = "Hint: This tool executes PromQL, not natural language. " +
+				"Rewrite as an actual PromQL query using metric names + label selectors — e.g. " +
+				"`kube_pod_container_status_restarts_total{namespace=\"NS\"}` or " +
+				"`rate(container_cpu_usage_seconds_total{pod=\"POD\"}[5m])`. " +
+				"If unsure which metric to use, call metrics_list first. " +
+				"If the query already IS PromQL, check metric name spelling and label syntax: labels must use '=', '!=', '=~', '!~' inside '{}'."
 		case strings.Contains(msg, "parse error") && strings.Contains(msg, "["):
 			hint = "Hint: Duration format is invalid. Use 's', 'm', 'h', 'd' suffixes (e.g., [5m], [1h])."
 		case strings.Contains(msg, "unknown function"):
