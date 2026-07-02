@@ -33,15 +33,19 @@ Nudgebee for your clients, that's a partnership — reach out at
 
 ## Change License
 
-Four years after a given version is published, that version's BSL terms expire
-and it becomes available under the **Apache License, Version 2.0** (kept in this
-repo at [`licenses/Apache-2.0.txt`](./licenses/Apache-2.0.txt)). The Change Date
-is tracked per version; the value in `LICENSE` applies to the current release.
+The BSL applies **separately to each released version**, and each version
+converts to the **Apache License, Version 2.0** (kept in this repo at
+[`licenses/Apache-2.0.txt`](./licenses/Apache-2.0.txt)) **four years after that
+version is published** — on its own clock.
 
-> **Maintainer note:** bump the `Change Date` in `LICENSE` at each significant
-> release so it always reads four years out from *that* release. The BSL applies
-> separately per version, so older published versions keep their own (earlier)
-> Change Date and free up on schedule regardless.
+So the source you ship today frees up ~4 years from today's release; a version
+you ship next year frees up ~4 years from *its* release. Your latest code always
+stays ~4 years ahead of the conversion line; only older versions become Apache.
+
+> **Maintainer note:** the `Change Date` in `LICENSE` is the rolling phrase
+> "Four years from the date the Licensed Work is published," so it needs **no
+> per-release editing** — the four-year clock runs automatically from each
+> version's publication date.
 
 ## History
 
