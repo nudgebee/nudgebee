@@ -798,6 +798,41 @@ func TestReAct3BuildScratchpad_CompressionGatedByWindow(t *testing.T) {
 			assert.Empty(t, steps[i].CompressedObservation, "post-refinement step %d should stay full under budget", i)
 		}
 	})
+
+	// Regression guard for production convo 650ba57d (2026-07-01 06:06 UTC):
+	// the rendered scratchpad string can exceed hardCapChars while raw observation
+	// bytes stay under activationChars (tags + thoughts + tool inputs + notebook
+	// nudges add up). Pre-fix: line-291 stamped compressionActive=false based on
+	// obs bytes alone → compressScratchpad fired at line 398 and synthesized a
+	// CompressedObservation on step 0 → visibility card landed as "cause not
+	// classified" because the tracker still said "no window pressure".
+	//
+	// This test constructs the exact shape: zero-byte observations + large
+	// thoughts / tool inputs, tiny scratchpad budget. Post-fix: the tracker must
+	// end the pass with windowPressureActive=true so the visibility card
+	// classifies the event as window-pressure — the only accurate cause when we
+	// hit the hard cap.
+	t.Run("hard-cap path stamps window-pressure even when obs bytes are zero", func(t *testing.T) {
+		config.Config.LlmServerAgentMaxScratchpadChars = 400 // small enough that scaffolding alone exceeds it
+		steps := make([]NBAgentPlannerToolActionStep, 0, 15)
+		for i := 0; i < 15; i++ {
+			steps = append(steps, NBAgentPlannerToolActionStep{
+				Action: NBAgentPlannerToolAction{
+					Tool:      "kubectl",
+					ToolInput: strings.Repeat(fmt.Sprintf("input-%02d ", i), 20),   // ~200 chars
+					Log:       strings.Repeat(fmt.Sprintf("thought-%02d ", i), 20), // ~240 chars
+					ToolID:    fmt.Sprintf("kubectl-%03d", i),
+				},
+				Observation: "", // <-- ZERO obs bytes: totalObsBytes stays 0 < activation
+				Status:      ToolStatusSuccess,
+			})
+		}
+		planner := &NBReActPlanner3{compressionTracker: NewCompressionTracker()}
+		_ = planner.buildScratchpad(steps)
+
+		assert.True(t, planner.compressionTracker.windowPressureActive,
+			"hard-cap path must flip windowPressureActive=true; unfixed the tracker keeps its earlier false stamp and the visibility card classifies as 'unknown'")
+	})
 }
 
 func TestReAct3BuildScratchpadParallelActions(t *testing.T) {

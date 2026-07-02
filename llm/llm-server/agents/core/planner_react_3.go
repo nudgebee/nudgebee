@@ -396,6 +396,17 @@ func (o *NBReActPlanner3) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 	// Aggregate budget: cap total scratchpad size at the window-derived hard ceiling
 	// (falls back to the legacy char budget when the window is unknown).
 	if hardCapChars > 0 && len(scratchpad) > hardCapChars {
+		// Hard cap exceeded is unambiguously a window-pressure event, even if the
+		// upstream compressionActive check (based on totalObsBytes alone) came back
+		// false — the rendered scratchpad string carries tags/headers/thoughts/
+		// notebook nudges that can push it over hardCapChars while the raw
+		// observation bytes stay under activationChars. compressScratchpad here
+		// synthesizes a CompressedObservation on step 0 (see
+		// llmCompressScratchpad's `context-level LLM compression` marker) but has
+		// no way to reach SetCompressionContext itself; without this stamp the
+		// visibility card lands as "cause not classified" — production-observed
+		// 2026-07-01 06:06 UTC on convo 650ba57d.
+		o.compressionTracker.SetCompressionContext(true, o.postRefinementToolIndex)
 		scratchpad = o.compressScratchpad(scratchpad, hardCapChars, intermediateSteps)
 	}
 	return scratchpad
