@@ -1203,17 +1203,13 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	var subjectNamespace string
 	var subjectKind string
 	var deploymentName string
-	// deferredSubject/Kind hold a pod- or node-level subject (one with no owning
-	// controller). It is applied only after the deterministic service-tag →
-	// workload lookup below, so an ephemeral pod never pre-empts the resolvable
-	// workload that Datadog's `service` tag points at.
-	var deferredSubject, deferredKind string
 
 	// applyK8sSubject merges a parsed Datadog k8s subject into the running subject
 	// vars. First non-empty wins so an earlier, more authoritative source (the
 	// monitor's group-by) isn't clobbered by a later one (the log URL), which
-	// instead fills any gaps. Only a resolvable controller becomes the subject
-	// here; pod/node are deferred and pod/container are kept as labels.
+	// instead fills any gaps. s.Name already carries the resolution priority
+	// (owning controller > pod > node), so whatever Datadog names in the scope —
+	// deployment, or just a pod_name — becomes the subject directly, with its kind.
 	applyK8sSubject := func(s datadogK8sSubject) {
 		if subjectNamespace == "" && s.Namespace != "" {
 			subjectNamespace = s.Namespace
@@ -1221,14 +1217,9 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 		if deploymentName == "" && s.Owner != "" {
 			deploymentName = s.Owner
 		}
-		if subjectName == "" && s.Owner != "" {
-			// A resolvable controller (Deployment/StatefulSet/… or ownerref).
-			subjectName = s.Owner
-			subjectKind = s.OwnerKind
-		} else if deferredSubject == "" && s.Owner == "" && s.Name != "" {
-			// Pod or node — defer until the service-tag lookup has had a chance.
-			deferredSubject = s.Name
-			deferredKind = s.Kind
+		if subjectName == "" && s.Name != "" {
+			subjectName = s.Name
+			subjectKind = s.Kind
 		}
 		if s.Pod != "" && labels["pod_name"] == "" {
 			labels["pod_name"] = s.Pod
@@ -1891,11 +1882,11 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 	// notably "No data" — this is the ONLY place the k8s subject appears, so without
 	// it the subject resolves empty and the event is dropped by the empty-subject
 	// guard on ingest. Lowest priority: applyK8sSubject keeps the first non-empty
-	// value, so any earlier, more authoritative source still wins, and a bare pod
-	// here only populates deferredSubject (applied below if nothing better resolves).
-	// Cloud dimensions in the scope are ignored by parseDatadogK8sSubject and handled
-	// by the query-scope cloud parser further down (which reads alert_query/alert_scope
-	// for non-grouped, filter-scoped cloud monitors).
+	// value, so any earlier, more authoritative source (monitor_groups / result /
+	// tags / log-url) still wins; otherwise the pod (or node) here becomes the
+	// subject directly. Cloud dimensions in the scope are ignored by
+	// parseDatadogK8sSubject and handled by the query-scope cloud parser further
+	// down (which reads alert_query/alert_scope for filter-scoped cloud monitors).
 	if p.Alert.AlertScope != "" {
 		applyK8sSubject(parseDatadogK8sSubject([]string{p.Alert.AlertScope}))
 	}
@@ -1985,13 +1976,6 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 			labels["nb_subject_match"] = "datadog_service_name"
 			common.MetricsSubjectResolution(sc.GetContext(), IntegrationDatadogWebhook, "live", "matched_service_name", sc.GetSecurityContext().GetTenantId())
 		}
-	}
-
-	// Apply the deferred pod/node subject only when neither a controller tag nor
-	// the service-tag lookup produced a subject.
-	if subjectName == "" && deferredSubject != "" {
-		subjectName = deferredSubject
-		subjectKind = deferredKind
 	}
 
 	if subjectName == "" && tenant.IsFeatureEnabled(sc, sc.GetSecurityContext().GetTenantId(), tenant.FEATURE_WEBHOOK_LLM_RESOLUTION) {
