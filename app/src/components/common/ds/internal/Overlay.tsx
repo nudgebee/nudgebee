@@ -121,6 +121,7 @@ export function OverlaySurface({
             overflow: 'hidden',
             maxHeight: 'none',
             mt: 'var(--ds-overlay-anchor-gap)',
+            textAlign: 'start',
             animation: 'overlaySurfaceEnter var(--ds-overlay-enter-duration) var(--ds-overlay-enter-easing)',
             '@keyframes overlaySurfaceEnter': {
               '0%': { opacity: 0, transform: 'scaleY(0.9) translateY(-8px)' },

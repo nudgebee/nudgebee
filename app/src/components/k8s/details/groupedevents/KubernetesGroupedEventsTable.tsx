@@ -255,7 +255,7 @@ const transformTableData = (
                 items={CLASSIFICATION_OPTIONS.map((option) => ({
                   id: option.value,
                   label: (
-                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)' }}>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-1)', whiteSpace: 'normal' }}>
                       <Typography sx={{ fontWeight: ds.weight.medium, fontSize: ds.text.small, lineHeight: '16px', color: ds.gray[700] }}>
                         {option.label}
                       </Typography>
