@@ -33,6 +33,7 @@ const ThinkToolName = "think"
 // applies to the `vs.` alternative in decisionMarkerRe.
 var narrationStemRe = regexp.MustCompile(`(?i)\b(` +
 	`i have (enough|sufficient|gathered|confirmed|identified|verified|completed)\b|` +
+	`i have all (the )?(necessary|required|needed) (info|information|data|evidence|context)\b|` +
 	`i'?ve (gathered|confirmed|identified|verified)\b|` +
 	`i am (now )?ready to (provide|give|finalize|emit|generate|write|format|conclude|answer|respond)\b|` +
 	`i'?m (now )?ready to (provide|give|finalize|emit|generate|write|format|conclude|answer|respond)\b|` +
@@ -40,7 +41,17 @@ var narrationStemRe = regexp.MustCompile(`(?i)\b(` +
 	`(the )?investigation is complete\b|` +
 	`notebook updated\b|` +
 	`finaliz(e|ing) (the )?(investigation|answer|response)\b|` +
-	`i (will|am going to|can) (now )?(provide|generate|synthesize|finalize|write|emit|formulate) (the |a )?(final )?(answer|response|conclusion)\b|` +
+	// Trailing-space / word-boundary bug guard: all optional trailing groups
+	// carry their space INSIDE (leading), not as a trailing character.
+	// Original shape `(the |a |this |it )?(final )?(answer|...|into)?\b` could
+	// terminate on a space (e.g. `format this ` when nothing follows), and Go's
+	// RE2 does not fire `\b` between a space and a non-word char like `.`.
+	// Consequence: bare phrases like `I will format this.` slipped past the
+	// guard. New shape ends on a word char whenever an optional group
+	// matches, so `\b` always fires. When ALL optional groups miss we anchor
+	// on `format\b` directly. Regression cases in tool_think_test.go under
+	// the "trailing space bug" name locks this.
+	`i (will|am going to|can) (now )?(provide|generate|synthesize|finalize|write|emit|formulate|format)( (the|a|this|it))?( final)?( (answer|response|conclusion|report|summary|output|into))?\b|` +
 	`proceed to (the |a )?(final )?(answer|response|conclusion)\b|` +
 	`consolidated findings:` +
 	`)`)

@@ -156,6 +156,51 @@ func TestThinkTool_NarrationGuardRejects(t *testing.T) {
 			name:   "consolidated findings followed by space (trailing-boundary bug)",
 			sample: "Consolidated findings: ready to provide the final answer.",
 		},
+		{
+			// 2026-07-02 recheck leak class: the pre-fix regex only knew
+			// `i have (enough|sufficient|gathered|confirmed|identified|
+			// verified|completed)` — the "necessary information" stem is
+			// a distinct sentence structure the model adopted after the
+			// first-order stems started rejecting. Adds
+			// `i have all (the )?(necessary|required|needed)
+			// (info|information|data|evidence|context)`.
+			name:   "I have all the necessary information + I will format (post-33080 leak)",
+			sample: "I have all the necessary information to provide the final answer. I will format it according to the RESOURCE DRILL-DOWN requirements.",
+		},
+		{
+			name:   "I have all the necessary information (bare)",
+			sample: "I have all the necessary information from the previous steps. The node health check is complete. All nodes are Ready.",
+		},
+		{
+			// 2026-07-02 recheck leak class: `i will format this into
+			// the required investigation summary` — `format` was in the
+			// "ready to X" list but missing from the "i will X"
+			// verb-action list. Adds `format` there plus optional
+			// object slots so "into", "it", "this", "the report", etc.
+			// all match.
+			name:   "I will format this into (post-33080 leak — verb missing from I-will list)",
+			sample: "The user has provided a complete incident report. No further tool calls are needed. I will format this into the required investigation summary.",
+		},
+		{
+			// Trailing-space / word-boundary bug regression: the original
+			// pattern had trailing spaces INSIDE the optional groups
+			// (`(the |a |this |it )?`), so a bare phrase ending with `.` or
+			// end-of-string could match up to a trailing space and then fail
+			// the `\b` check (no boundary between space and non-word char).
+			// New pattern moves the space INSIDE the group as a leading
+			// character so the match always ends on a word char.
+			// Regression for the Gemini high-priority finding on PR #33390.
+			name:   "I will format this. (trailing space bug)",
+			sample: "I will format this.",
+		},
+		{
+			name:   "I will format it. (trailing space bug)",
+			sample: "I will format it.",
+		},
+		{
+			name:   "I will format. (trailing space bug, no object at all)",
+			sample: "I will format.",
+		},
 	}
 
 	for _, c := range productionNarrationSamples {
