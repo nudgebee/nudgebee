@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM golang:1.26-alpine AS build-stage
+FROM golang:1.26.4-alpine AS build-stage
 
 # Set destination for COPY
 WORKDIR /app
@@ -23,12 +23,15 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 EXPOSE 8000
 CMD ["/app/services"]
 
-FROM alpine:3.19 AS release-stage
-RUN apk add git graphviz
+FROM alpine:3.22 AS release-stage
+RUN apk add --no-cache git graphviz ca-certificates \
+    && adduser -D -g '' appuser
 WORKDIR /app
 COPY --from=build-stage /app/services /app/services
 COPY --from=build-stage /go/bin/pprof /usr/local/bin/pprof
 COPY --from=build-stage /app/knowledge_graph/core/default_relationships.json /app/knowledge_graph/core/default_relationships.json
-RUN chmod +x /app/services
+RUN chmod +x /app/services \
+    && chown -R appuser:appuser /app
+USER appuser
 EXPOSE 8000
 CMD ["/app/services"]

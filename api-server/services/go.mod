@@ -2,6 +2,8 @@ module nudgebee/services
 
 go 1.26.1
 
+toolchain go1.26.4
+
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.32.0
 	github.com/Cyprinus12138/otelgin v1.0.3
