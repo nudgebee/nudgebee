@@ -100,6 +100,9 @@ func TestPinnedSafeDialContext_ResolvedRestrictedIP(t *testing.T) {
 }
 
 func TestAgentMCP(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires npx and outbound network to reach the MCP server; set TEST_ACCOUNT to run")
+	}
 
 	testAccountId := os.Getenv("TEST_ACCOUNT")
 	testTenantId := os.Getenv("TEST_TENANT")
@@ -150,6 +153,9 @@ func TestAgentMCP(t *testing.T) {
 }
 
 func TestAgentMCP_HttpCrawl(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires outbound network to reach a remote MCP HTTP server; set TEST_ACCOUNT to run")
+	}
 
 	testAccountId := os.Getenv("TEST_ACCOUNT")
 	testTenantId := os.Getenv("TEST_TENANT")

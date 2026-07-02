@@ -46,7 +46,7 @@ func TestExpressRouteService_GetResources_NoCreds(t *testing.T) {
 
 	resources, err := svc.GetResources(ctx, account, "eastus")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "access secret is not provided")
+	assert.Contains(t, err.Error(), "access key (client ID) is not provided")
 	assert.Nil(t, resources)
 }
 
@@ -387,7 +387,7 @@ func TestExpressRouteService_ApplyRecommendation(t *testing.T) {
 	err := svc.ApplyRecommendation(ctx, account, recommendation)
 	assert.Error(t, err)
 	// Credential validation happens first, so we expect this error
-	assert.Contains(t, err.Error(), "access secret is not provided")
+	assert.Contains(t, err.Error(), "access key (client ID) is not provided")
 }
 
 func TestExpressRouteService_ApplyCommand(t *testing.T) {
@@ -408,7 +408,7 @@ func TestExpressRouteService_ApplyCommand(t *testing.T) {
 				Command:    "azure_expressroute_enable_global_reach",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided", // Credential check happens first
+			errorContains: "access key (client ID) is not provided", // Credential check happens first
 		},
 		{
 			name: "unknown command",
@@ -417,7 +417,7 @@ func TestExpressRouteService_ApplyCommand(t *testing.T) {
 				Command:    "unknown_command",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided", // Credential check happens first
+			errorContains: "access key (client ID) is not provided", // Credential check happens first
 		},
 		{
 			name: "valid command structure without Azure connection",
@@ -426,7 +426,7 @@ func TestExpressRouteService_ApplyCommand(t *testing.T) {
 				Command:    "azure_expressroute_enable_global_reach",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided", // Credential check happens first
+			errorContains: "access key (client ID) is not provided", // Credential check happens first
 		},
 	}
 
@@ -486,6 +486,6 @@ func TestExpressRouteService_GetLogGroupName(t *testing.T) {
 
 	logGroup, err := svc.GetLogGroupName(ctx, account, "eastus", resourceID)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "access secret is not provided")
+	assert.Contains(t, err.Error(), "access key (client ID) is not provided")
 	assert.Equal(t, "", logGroup)
 }

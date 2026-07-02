@@ -24,7 +24,7 @@ func TestFrontDoorService_GetResources(t *testing.T) {
 	// Test with missing credentials should return error
 	resources, err := svc.GetResources(ctx, account, "global")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "access secret is not provided")
+	assert.Contains(t, err.Error(), "access key (client ID) is not provided")
 	assert.Nil(t, resources)
 }
 
@@ -225,7 +225,7 @@ func TestFrontDoorService_ApplyRecommendation(t *testing.T) {
 
 	err := svc.ApplyRecommendation(ctx, account, recommendation)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "access secret is not provided")
+	assert.Contains(t, err.Error(), "access key (client ID) is not provided")
 }
 
 func TestFrontDoorService_ApplyCommand(t *testing.T) {
@@ -246,7 +246,7 @@ func TestFrontDoorService_ApplyCommand(t *testing.T) {
 				Command:    "azure_frontdoor_enable_waf",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "unknown command",
@@ -255,7 +255,7 @@ func TestFrontDoorService_ApplyCommand(t *testing.T) {
 				Command:    "unknown_command",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "valid command structure without Azure connection",
@@ -264,7 +264,7 @@ func TestFrontDoorService_ApplyCommand(t *testing.T) {
 				Command:    "azure_frontdoor_enable_https_redirect",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 	}
 
@@ -324,6 +324,6 @@ func TestFrontDoorService_GetLogGroupName(t *testing.T) {
 
 	logGroup, err := svc.GetLogGroupName(ctx, account, "global", resourceID)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "access secret is not provided")
+	assert.Contains(t, err.Error(), "access key (client ID) is not provided")
 	assert.Equal(t, "", logGroup)
 }

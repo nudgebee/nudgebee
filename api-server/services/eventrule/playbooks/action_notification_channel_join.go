@@ -80,12 +80,7 @@ func (a *notificationChannelJoinAction) Execute(ctx PlaybookActionContext, rawPa
 		ctx.GetLogger().Error("failed to join notification channel", "error", err)
 		return nil, fmt.Errorf("failed to join notification channel: %w", err)
 	}
-	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-			ctx.GetLogger().Error("failed to close response body", "error", err)
-		}
-	}(resp.Body)
+	defer func() { _ = resp.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {

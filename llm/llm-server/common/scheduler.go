@@ -119,6 +119,11 @@ func workerSync() error {
 		slog.Error("scheduler: failed to query leader status", "error", err)
 		return err
 	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Error("scheduler: failed to close rows", "error", err)
+		}
+	}()
 
 	type workerToDelete struct {
 		Name      string
@@ -137,9 +142,6 @@ func workerSync() error {
 	if err := rows.Err(); err != nil {
 		slog.Error("scheduler: failed to iterate rows", "error", err)
 		return err
-	}
-	if err := rows.Close(); err != nil {
-		slog.Error("scheduler: failed to close rows", "error", err)
 	}
 
 	for _, w := range workers {

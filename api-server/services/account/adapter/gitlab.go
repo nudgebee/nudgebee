@@ -915,15 +915,9 @@ func (g *gitlabAdapter) GetRecommendationResolutionStatus(ctx AccountAdapterCont
 		return GetRecommendationResolutionStatusResponse{}, err
 	}
 
-	jsonResponseBody := resp.Body
-	defer func() {
-		err := jsonResponseBody.Close()
-		if err != nil {
-			ctx.GetLogger().Error("Error closing response body", "error", err)
-		}
-	}()
+	defer func() { _ = resp.Body.Close() }()
 
-	jsonBodyBytes, err := io.ReadAll(jsonResponseBody)
+	jsonBodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return GetRecommendationResolutionStatusResponse{}, err
 	}

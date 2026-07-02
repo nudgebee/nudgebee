@@ -13,6 +13,9 @@ import (
 // TODO mock DBs
 // TODO mock Tool Execution
 func TestRouterAgent_PostgresAgent(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live DB, services, and LLM; set TEST_ACCOUNT to run")
+	}
 	routerAgent := RouterAgent{}
 	sc := security.NewRequestContextForSuperAdmin()
 
@@ -57,6 +60,9 @@ func TestRouterAgent_PostgresAgent(t *testing.T) {
 }
 
 func TestRouterAgentGeneralQuestion(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live DB, services, and LLM; set TEST_ACCOUNT to run")
+	}
 	routerAgent := RouterAgent{}
 	sc := security.NewRequestContextForSuperAdmin()
 
@@ -97,6 +103,9 @@ func TestRouterAgentGeneralQuestion(t *testing.T) {
 }
 
 func TestRouterAgentDebugAgent(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live DB, services, and LLM; set TEST_ACCOUNT to run")
+	}
 	routerAgent := RouterAgent{}
 	sc := security.NewRequestContextForSuperAdmin()
 
@@ -142,6 +151,9 @@ func TestRouterAgentDebugAgent(t *testing.T) {
 }
 
 func TestRouterAgentPrometheusAgent(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live DB, services, and LLM; set TEST_ACCOUNT to run")
+	}
 	routerAgent := RouterAgent{}
 	sc := security.NewRequestContextForSuperAdmin()
 
@@ -187,6 +199,9 @@ func TestRouterAgentPrometheusAgent(t *testing.T) {
 }
 
 func TestRouterAgentLogsAgent(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live DB, services, and LLM; set TEST_ACCOUNT to run")
+	}
 	routerAgent := RouterAgent{}
 	sc := security.NewRequestContextForSuperAdmin()
 
@@ -231,6 +246,9 @@ func TestRouterAgentLogsAgent(t *testing.T) {
 }
 
 func TestRouterAgentRabbitMqAgent(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live DB, services, and LLM; set TEST_ACCOUNT to run")
+	}
 	routerAgent := RouterAgent{}
 	sc := security.NewRequestContextForSuperAdmin()
 
@@ -275,6 +293,9 @@ func TestRouterAgentRabbitMqAgent(t *testing.T) {
 }
 
 func TestRouterAgentHelpAgent(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live DB, services, and LLM; set TEST_ACCOUNT to run")
+	}
 	routerAgent := HelpAgent{}
 	sc := security.NewRequestContextForSuperAdmin()
 
@@ -313,6 +334,9 @@ func TestRouterAgentHelpAgent(t *testing.T) {
 }
 
 func TestRouterAgentHelpAgent2(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live DB, services, and LLM; set TEST_ACCOUNT to run")
+	}
 	routerAgent := HelpAgent{}
 	sc := security.NewRequestContextForSuperAdmin()
 
@@ -351,6 +375,9 @@ func TestRouterAgentHelpAgent2(t *testing.T) {
 }
 
 func TestRouterAgentCodeAgent(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live DB, services, and LLM; set TEST_ACCOUNT to run")
+	}
 	routerAgent := RouterAgent{}
 	sc := security.NewRequestContextForSuperAdmin()
 
@@ -395,6 +422,9 @@ func TestRouterAgentCodeAgent(t *testing.T) {
 }
 
 func TestRouterAgen5(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live DB, services, and LLM; set TEST_ACCOUNT to run")
+	}
 	routerAgent := RouterAgent{}
 	sc := security.NewRequestContextForSuperAdmin()
 
@@ -436,6 +466,9 @@ func TestRouterAgen5(t *testing.T) {
 }
 
 func TestRouterAgen6(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live DB, services, and LLM; set TEST_ACCOUNT to run")
+	}
 	routerAgent := RouterAgent{}
 	sc := security.NewRequestContextForSuperAdmin()
 

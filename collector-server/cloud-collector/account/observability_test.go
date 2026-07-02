@@ -12,6 +12,9 @@ import (
 )
 
 func TestQueryLogsForResourceId(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	endTime := time.Now()
 	startTime := endTime.Add(-24 * time.Hour)
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
@@ -28,6 +31,9 @@ func TestQueryLogsForResourceId(t *testing.T) {
 }
 
 func TestQueryMetrics(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	response, err := QueryMetrics(security.NewRequestContextForSuperAdmin(), os.Getenv("TEST_ACCOUNT"), providers.QueryMetricsRequest{
 		ServiceName:     "amazonec2",
 		MetricNamespace: "AWS/EC2",
@@ -41,6 +47,9 @@ func TestQueryMetrics(t *testing.T) {
 }
 
 func TestQueryMetrics2(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	response, err := QueryMetrics(security.NewRequestContextForSuperAdmin(), os.Getenv("TEST_ACCOUNT"), providers.QueryMetricsRequest{
 		ServiceName:     "amazonec2",
 		MetricNamespace: "aws/ec2",
@@ -58,6 +67,9 @@ func TestQueryMetrics2(t *testing.T) {
 }
 
 func TestQueryResources(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	response, err := ListResources(security.NewRequestContextForSuperAdmin(), os.Getenv("TEST_ACCOUNT"), providers.ListResourceRequest{
 		ServiceName: "amazonelb",
 		Regions:     []string{"us-east-1"},
@@ -68,6 +80,9 @@ func TestQueryResources(t *testing.T) {
 }
 
 func TestQueryServiceMapEc2(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := QueryServiceMap(ctx, os.Getenv("TEST_ACCOUNT"), providers.QueryServiceMapRequest{
 		Region: "us-east-1",
@@ -83,6 +98,9 @@ func TestQueryServiceMapEc2(t *testing.T) {
 }
 
 func TestQueryServiceMapELB(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := QueryServiceMap(ctx, os.Getenv("TEST_ACCOUNT"), providers.QueryServiceMapRequest{
 		Region: "us-east-1",
@@ -98,6 +116,9 @@ func TestQueryServiceMapELB(t *testing.T) {
 }
 
 func TestQueryServiceMapECS(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := QueryServiceMap(ctx, os.Getenv("TEST_ACCOUNT"), providers.QueryServiceMapRequest{
 		Region: "us-east-1",
@@ -113,6 +134,9 @@ func TestQueryServiceMapECS(t *testing.T) {
 }
 
 func TestQueryServiceMapALB(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := QueryServiceMap(ctx, os.Getenv("TEST_ACCOUNT"), providers.QueryServiceMapRequest{
 		Region: "us-east-1",
@@ -128,6 +152,9 @@ func TestQueryServiceMapALB(t *testing.T) {
 }
 
 func TestQueryLogECSContainer(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := QueryLogs(ctx, os.Getenv("TEST_ACCOUNT"), providers.QueryLogsRequest{
 		Region:      "us-east-1",
@@ -140,6 +167,9 @@ func TestQueryLogECSContainer(t *testing.T) {
 }
 
 func TestQueryLogALB(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := QueryLogs(ctx, os.Getenv("TEST_ACCOUNT"), providers.QueryLogsRequest{
 		Region:      "us-east-1",
@@ -152,6 +182,9 @@ func TestQueryLogALB(t *testing.T) {
 }
 
 func TestListEventRules(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := ListEventRules(ctx, os.Getenv("TEST_ACCOUNT"))
 	assert.Nil(t, err)
@@ -159,6 +192,9 @@ func TestListEventRules(t *testing.T) {
 }
 
 func TestQueryLogIAM(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := QueryLogs(ctx, os.Getenv("TEST_ACCOUNT"), providers.QueryLogsRequest{
 		Region:      "us-east-1",
@@ -171,6 +207,9 @@ func TestQueryLogIAM(t *testing.T) {
 }
 
 func TestQueryServiceMapIAM(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := QueryServiceMap(ctx, os.Getenv("TEST_ACCOUNT"), providers.QueryServiceMapRequest{
 		Region: "us-east-1",

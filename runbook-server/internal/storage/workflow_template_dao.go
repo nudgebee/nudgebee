@@ -204,7 +204,9 @@ func (s *WorkflowTemplateDao) ListGlobal(ctx context.Context, request model.List
 
 		templates = append(templates, tmpl)
 	}
-
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("failed to iterate global workflow templates: %w", err)
+	}
 	return templates, totalCount, nil
 }
 

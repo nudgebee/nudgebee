@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"nudgebee/collector/cloud/providers"
+	"os"
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/cosmos/armcosmos"
@@ -366,6 +367,9 @@ func TestCosmosDBService_GetRecommendations(t *testing.T) {
 }
 
 func TestCosmosDBService_ApplyRecommendation(t *testing.T) {
+	if os.Getenv("AZURE_CLIENT_ID") == "" {
+		t.Skip("Skipping integration test that requires Azure credentials")
+	}
 	svc := &cosmosDBService{}
 	ctx := providers.NewCloudProviderContext(context.Background())
 	account := providers.Account{}
@@ -376,6 +380,9 @@ func TestCosmosDBService_ApplyRecommendation(t *testing.T) {
 }
 
 func TestCosmosDBService_ApplyCommand(t *testing.T) {
+	if os.Getenv("AZURE_CLIENT_ID") == "" {
+		t.Skip("Skipping integration test that requires Azure credentials")
+	}
 	svc := &cosmosDBService{}
 	ctx := providers.NewCloudProviderContext(context.Background())
 	account := providers.Account{}
@@ -394,7 +401,7 @@ func TestCosmosDBService_QueryMetrices(t *testing.T) {
 
 	resp, err := svc.QueryMetrices(ctx, account, filter)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
+	assert.Contains(t, err.Error(), "StartDate and EndDate must be provided")
 	assert.Equal(t, providers.QueryMetricsResponse{}, resp)
 }
 
@@ -418,6 +425,9 @@ func TestCosmosDBService_GetServiceMap(t *testing.T) {
 }
 
 func TestCosmosDBService_GetLogGroupName(t *testing.T) {
+	if os.Getenv("AZURE_CLIENT_ID") == "" {
+		t.Skip("Skipping integration test that requires Azure credentials")
+	}
 	svc := &cosmosDBService{}
 	ctx := providers.NewCloudProviderContext(context.Background())
 	account := providers.Account{}

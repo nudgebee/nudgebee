@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"nudgebee/collector/cloud/providers"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -36,7 +37,8 @@ func TestDefenderService_GetRecommendations(t *testing.T) {
 					Region:      "global",
 					ServiceName: "microsoft.security/pricings",
 					Meta: map[string]interface{}{
-						"pricingTier": "Standard",
+						"pricingTier":                  "Standard",
+						"securityContactConfiguration": map[string]interface{}{"email": "secops@example.com"},
 					},
 				},
 			},
@@ -53,7 +55,8 @@ func TestDefenderService_GetRecommendations(t *testing.T) {
 					Region:      "global",
 					ServiceName: "microsoft.security/pricings",
 					Meta: map[string]interface{}{
-						"pricingTier": "Free",
+						"pricingTier":                  "Free",
+						"securityContactConfiguration": map[string]interface{}{"email": "secops@example.com"},
 					},
 				},
 			},
@@ -74,6 +77,7 @@ func TestDefenderService_GetRecommendations(t *testing.T) {
 						"status": map[string]interface{}{
 							"code": "Unhealthy",
 						},
+						"securityContactConfiguration": map[string]interface{}{"email": "secops@example.com"},
 					},
 				},
 			},
@@ -119,6 +123,9 @@ func TestDefenderService_ApplyRecommendation(t *testing.T) {
 }
 
 func TestDefenderService_ApplyCommand(t *testing.T) {
+	if os.Getenv("AZURE_CLIENT_ID") == "" {
+		t.Skip("Skipping integration test that requires Azure credentials")
+	}
 	svc := &defenderService{}
 	ctx := providers.NewCloudProviderContext(context.Background())
 	account := providers.Account{}
@@ -157,7 +164,7 @@ func TestDefenderService_QueryMetrices(t *testing.T) {
 
 	resp, err := svc.QueryMetrices(ctx, account, filter)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
+	assert.Contains(t, err.Error(), "StartDate and EndDate must be provided")
 	assert.Equal(t, providers.QueryMetricsResponse{}, resp)
 }
 

@@ -306,6 +306,7 @@ func TestDefaultResponseScrubbers(t *testing.T) {
 	// Parse the scrubbed response
 	scrubbedResp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(buf.Bytes())), nil)
 	require.NoError(t, err)
+	defer func() { _ = scrubbedResp.Body.Close() }()
 
 	// Verify scrubbing
 	assert.Empty(t, scrubbedResp.Header.Get("Cf-Ray"))

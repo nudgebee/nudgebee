@@ -198,7 +198,28 @@ func (d *dummyProcessedEventHandler) GetAccountFromExternalId(pCtx providers.Clo
 	}, nil
 }
 
+// seedAccountMetadataForTest populates the package-level account-metadata cache
+// so that update_cloud_resource actions can resolve the account UUID/tenant
+// without a live DB lookup. In production this cache is filled by
+// getAccountByExternalId; in tests we seed it directly. Registers a cleanup so
+// the global cache doesn't leak across tests.
+func seedAccountMetadataForTest(t *testing.T, accountNumber string) {
+	t.Helper()
+	accountMetadataCacheMutex.Lock()
+	accountMetadataCache[accountNumber] = AccountMetadata{
+		ID:       "00000000-0000-0000-0000-000000000001",
+		TenantID: "00000000-0000-0000-0000-000000000002",
+	}
+	accountMetadataCacheMutex.Unlock()
+	t.Cleanup(func() {
+		accountMetadataCacheMutex.Lock()
+		delete(accountMetadataCache, accountNumber)
+		accountMetadataCacheMutex.Unlock()
+	})
+}
+
 func TestAwsEvenBridge_Mock_ECS(t *testing.T) {
+	seedAccountMetadataForTest(t, "123456789012")
 	sqsMessageBody := `{
 		"version": "0",
 		"id": "evt-id-ecs-stopped-unexpectedly",
@@ -249,16 +270,26 @@ func TestAwsEvenBridge_Mock_ECS(t *testing.T) {
 	require.NoError(t, err, "ProcessSQSMessageBodyForEventBridgeEvent returned an error")
 	require.NotEmpty(t, processedEvent.EventId, "Processed event ID is empty, rule might not have matched or processing failed")
 
-	assert.Equal(t, "evt-id-ecs-stopped-unexpectedly", processedEvent.EventId)
+	// A STOPPED task event with a non-zero exit code matches three rules:
+	// ECS_Task_All_Events (generic catch-all) and ECS_Task_Stopped_Unexpectedly
+	// (both emitting), plus Resource_Sync_ECS_Task_State_Change (actions-only).
+	// The processor emits the LAST matching emitting rule's event, so the
+	// catch-all is ordered BEFORE the specific rules in the runbook: the
+	// specific, higher-severity ECS_Task_Stopped_Unexpectedly (HIGH/FIRING) wins
+	// and the crash is not masked by the generic Info/CLOSED event. Its EventId
+	// is the rule's task-level fingerprint; the source-native id is preserved on
+	// FindingId.
+	assert.Equal(t, "ecs-task-stopped:arn:aws:ecs:us-east-1:123456789012:task/my-cluster/abcdef1234567890", processedEvent.EventId)
+	assert.Equal(t, "evt-id-ecs-stopped-unexpectedly", processedEvent.FindingId)
 	assert.Equal(t, "ECS Task State Change", processedEvent.EventName)
 	assert.Equal(t, "ECS Task abcdef1234567890 Stopped Unexpectedly (Exit Code: 137)", processedEvent.Title)
 	assert.Equal(t, providers.EventSeverityHigh, processedEvent.EventSeverity)
 	assert.Contains(t, processedEvent.Description, "ECS Task arn:aws:ecs:us-east-1:123456789012:task/my-cluster/abcdef1234567890")
-	assert.Contains(t, processedEvent.Description, "exited with code 137")
+	assert.Contains(t, processedEvent.Description, "stopped unexpectedly")
 	assert.Equal(t, providers.EventStatusFiring, processedEvent.EventStatus)
 	assert.Equal(t, "AmazonECS", processedEvent.ResourceServiceName)
 	assert.Equal(t, "abcdef1234567890", processedEvent.ResourceId)
-	assert.Equal(t, "ecs-task", processedEvent.ResourceType)
+	assert.Equal(t, "task", processedEvent.ResourceType)
 
 	require.NotNil(t, processedEvent.Raw, "processedEvent.Raw should not be nil")
 	rawMap := processedEvent.Raw
@@ -266,12 +297,16 @@ func TestAwsEvenBridge_Mock_ECS(t *testing.T) {
 	assert.Equal(t, "STOPPED", rawMap["lastStatus"])
 	assert.Equal(t, 1, dummyHandler.getAccountFromCloudProviderIdCallCount, "GetAccountFromCloudProviderAccountId should have been called once")
 
+	// ECS_Task_Stopped_Unexpectedly_EventBridge runs three actions: fetch the
+	// stopped task (aws_get_resource), its task definition (aws_get_resource),
+	// and the primary container's logs (aws_get_log).
 	require.Len(t, processedEvent.AdditionalContext, 3, "Expected 3 action evidence")
 	assert.Equal(t, "aws_get_resource", processedEvent.AdditionalContext[0].AdditionalInfo["action_type"])
 	assert.Equal(t, "aws_get_resource", processedEvent.AdditionalContext[1].AdditionalInfo["action_type"])
 	assert.Equal(t, "aws_get_log", processedEvent.AdditionalContext[2].AdditionalInfo["action_type"])
 }
 func TestAwsEvenBridge_Mock_ECR(t *testing.T) {
+	seedAccountMetadataForTest(t, "123456789012")
 	sqsMessageBody := `{
     "version": "0",
     "id": "fcf0ea66-968f-3eda-ca24-40dcd217003b",
@@ -307,7 +342,11 @@ func TestAwsEvenBridge_Mock_ECR(t *testing.T) {
 	require.NoError(t, err, "ProcessSQSMessageBodyForEventBridgeEvent returned an error")
 	require.NotEmpty(t, processedEvent.EventId, "Processed event ID is empty, rule might not have matched or processing failed")
 
-	assert.Equal(t, "fcf0ea66-968f-3eda-ca24-40dcd217003b", processedEvent.EventId)
+	// The ECR rule defines a fingerprint template, which the processor uses as
+	// the dedup key AND the downstream EventId. The source-native per-delivery
+	// id is preserved on FindingId.
+	assert.Equal(t, "nudgebee_runbook_sidecar_agent:us-east-1:123456789012", processedEvent.EventId)
+	assert.Equal(t, "fcf0ea66-968f-3eda-ca24-40dcd217003b", processedEvent.FindingId)
 	assert.Equal(t, "ECR Image Action", processedEvent.EventName)
 	assert.Equal(t, "ECR Event: Repo nudgebee_runbook_sidecar_agent Action: ECR Image Action", processedEvent.Title)
 	assert.Equal(t, providers.EventSeverityInfo, processedEvent.EventSeverity)
@@ -320,6 +359,7 @@ func TestAwsEvenBridge_Mock_ECR(t *testing.T) {
 }
 
 func TestAwsEventBridge_RDS_TagChange(t *testing.T) {
+	seedAccountMetadataForTest(t, "123456789012")
 	sqsMessageBody := `{
 		"version": "0",
 		"id": "rds-tag-change-001",
@@ -356,16 +396,17 @@ func TestAwsEventBridge_RDS_TagChange(t *testing.T) {
 
 	processedEvent, _, err := processSQSMessageBodyForEventBridgeEvent(pCtx, sqsMessageBody, processor, dummyHandler)
 	require.NoError(t, err)
-	require.NotEmpty(t, processedEvent.EventId, "Rule should have matched RDS AddTagsToResource event")
 
-	assert.Contains(t, processedEvent.Title, "AddTagsToResource")
-	assert.Contains(t, processedEvent.Title, "database-1-instance-1")
-	assert.Equal(t, "AmazonRDS", processedEvent.ResourceServiceName)
-	assert.Equal(t, "database-1-instance-1", processedEvent.ResourceId)
-	assert.Equal(t, "us-east-1", processedEvent.ResourceRegion)
+	// Resource_Sync_RDS_Tag_Change is an actions_only bookkeeping rule: it runs
+	// update_cloud_resource for its side effect and deliberately emits NO
+	// downstream event, so processedEvent is the zero value. We assert the rule
+	// matched (account resolution happened) and that nothing was emitted.
+	assert.Equal(t, 1, dummyHandler.getAccountFromCloudProviderIdCallCount, "account should have been resolved for the matched rule")
+	assert.Empty(t, processedEvent.EventId, "actions_only rule must not emit a downstream event")
 }
 
 func TestAwsEventBridge_EC2_TagChange(t *testing.T) {
+	seedAccountMetadataForTest(t, "123456789012")
 	sqsMessageBody := `{
 		"version": "0",
 		"id": "ec2-tag-change-001",
@@ -408,13 +449,13 @@ func TestAwsEventBridge_EC2_TagChange(t *testing.T) {
 
 	processedEvent, _, err := processSQSMessageBodyForEventBridgeEvent(pCtx, sqsMessageBody, processor, dummyHandler)
 	require.NoError(t, err)
-	require.NotEmpty(t, processedEvent.EventId, "Rule should have matched EC2 CreateTags event")
 
-	assert.Contains(t, processedEvent.Title, "CreateTags")
-	assert.Contains(t, processedEvent.Title, "i-0abc123def456789")
-	assert.Equal(t, "AmazonEC2", processedEvent.ResourceServiceName)
-	assert.Equal(t, "i-0abc123def456789", processedEvent.ResourceId)
-	assert.Equal(t, "us-east-1", processedEvent.ResourceRegion)
+	// Resource_Sync_EC2_Tag_Change is an actions_only bookkeeping rule that
+	// matches instance (i-*) tag changes. It runs update_cloud_resource for its
+	// side effect and emits NO downstream event (unlike the non-instance case,
+	// which falls through to the generic DefaultEventBridgeProcessor).
+	assert.Equal(t, 1, dummyHandler.getAccountFromCloudProviderIdCallCount, "account should have been resolved for the matched rule")
+	assert.Empty(t, processedEvent.EventId, "actions_only rule must not emit a downstream event")
 }
 
 func TestAwsEventBridge_EC2_TagChange_NonInstance_Skipped(t *testing.T) {
@@ -470,6 +511,7 @@ func TestAwsEventBridge_EC2_TagChange_NonInstance_Skipped(t *testing.T) {
 }
 
 func TestAwsEventBridge_RDS_CloudTrail_Lifecycle(t *testing.T) {
+	seedAccountMetadataForTest(t, "123456789012")
 	sqsMessageBody := `{
 		"version": "0",
 		"id": "rds-lifecycle-001",
@@ -505,15 +547,17 @@ func TestAwsEventBridge_RDS_CloudTrail_Lifecycle(t *testing.T) {
 
 	processedEvent, _, err := processSQSMessageBodyForEventBridgeEvent(pCtx, sqsMessageBody, processor, dummyHandler)
 	require.NoError(t, err)
-	require.NotEmpty(t, processedEvent.EventId, "Rule should have matched RDS CreateDBInstance event")
 
-	assert.Contains(t, processedEvent.Title, "CreateDBInstance")
-	assert.Contains(t, processedEvent.Title, "my-new-database")
-	assert.Equal(t, "AmazonRDS", processedEvent.ResourceServiceName)
-	assert.Equal(t, "my-new-database", processedEvent.ResourceId)
+	// Resource_Sync_RDS_CloudTrail_Lifecycle is an actions_only bookkeeping rule:
+	// it runs update_cloud_resource for its side effect and emits NO downstream
+	// event, so processedEvent is the zero value. Assert the rule matched
+	// (account resolution happened) and that nothing was emitted.
+	assert.Equal(t, 1, dummyHandler.getAccountFromCloudProviderIdCallCount, "account should have been resolved for the matched rule")
+	assert.Empty(t, processedEvent.EventId, "actions_only rule must not emit a downstream event")
 }
 
 func TestAwsEventBridge_RDS_CloudTrail_DeleteCluster(t *testing.T) {
+	seedAccountMetadataForTest(t, "123456789012")
 	sqsMessageBody := `{
 		"version": "0",
 		"id": "rds-delete-cluster-001",
@@ -547,15 +591,16 @@ func TestAwsEventBridge_RDS_CloudTrail_DeleteCluster(t *testing.T) {
 
 	processedEvent, _, err := processSQSMessageBodyForEventBridgeEvent(pCtx, sqsMessageBody, processor, dummyHandler)
 	require.NoError(t, err)
-	require.NotEmpty(t, processedEvent.EventId, "Rule should have matched RDS DeleteDBCluster event")
 
-	assert.Contains(t, processedEvent.Title, "DeleteDBCluster")
-	assert.Contains(t, processedEvent.Title, "my-aurora-cluster")
-	assert.Equal(t, "AmazonRDS", processedEvent.ResourceServiceName)
-	assert.Equal(t, "my-aurora-cluster", processedEvent.ResourceId)
+	// Resource_Sync_RDS_CloudTrail_Lifecycle is an actions_only bookkeeping rule:
+	// it runs update_cloud_resource for its side effect and emits NO downstream
+	// event. Assert the rule matched and that nothing was emitted.
+	assert.Equal(t, 1, dummyHandler.getAccountFromCloudProviderIdCallCount, "account should have been resolved for the matched rule")
+	assert.Empty(t, processedEvent.EventId, "actions_only rule must not emit a downstream event")
 }
 
 func TestAwsEventBridge_ECS_CloudTrail_CreateCluster(t *testing.T) {
+	seedAccountMetadataForTest(t, "123456789012")
 	sqsMessageBody := `{
 		"version": "0",
 		"id": "ecs-cluster-001",
@@ -589,15 +634,16 @@ func TestAwsEventBridge_ECS_CloudTrail_CreateCluster(t *testing.T) {
 
 	processedEvent, _, err := processSQSMessageBodyForEventBridgeEvent(pCtx, sqsMessageBody, processor, dummyHandler)
 	require.NoError(t, err)
-	require.NotEmpty(t, processedEvent.EventId, "Rule should have matched ECS CreateCluster event")
 
-	assert.Contains(t, processedEvent.Title, "CreateCluster")
-	assert.Contains(t, processedEvent.Title, "my-new-cluster")
-	assert.Equal(t, "AmazonECS", processedEvent.ResourceServiceName)
-	assert.Equal(t, "my-new-cluster", processedEvent.ResourceId)
+	// Resource_Sync_ECS_Cluster_CloudTrail is an actions_only bookkeeping rule:
+	// it runs update_cloud_resource for its side effect and emits NO downstream
+	// event. Assert the rule matched and that nothing was emitted.
+	assert.Equal(t, 1, dummyHandler.getAccountFromCloudProviderIdCallCount, "account should have been resolved for the matched rule")
+	assert.Empty(t, processedEvent.EventId, "actions_only rule must not emit a downstream event")
 }
 
 func TestAwsEventBridge_ECS_CloudTrail_DeleteService(t *testing.T) {
+	seedAccountMetadataForTest(t, "123456789012")
 	sqsMessageBody := `{
 		"version": "0",
 		"id": "ecs-service-001",
@@ -632,10 +678,10 @@ func TestAwsEventBridge_ECS_CloudTrail_DeleteService(t *testing.T) {
 
 	processedEvent, _, err := processSQSMessageBodyForEventBridgeEvent(pCtx, sqsMessageBody, processor, dummyHandler)
 	require.NoError(t, err)
-	require.NotEmpty(t, processedEvent.EventId, "Rule should have matched ECS DeleteService event")
 
-	assert.Contains(t, processedEvent.Title, "DeleteService")
-	assert.Contains(t, processedEvent.Title, "my-service")
-	assert.Equal(t, "AmazonECS", processedEvent.ResourceServiceName)
-	assert.Equal(t, "my-service", processedEvent.ResourceId)
+	// Resource_Sync_ECS_Service_CloudTrail is an actions_only bookkeeping rule:
+	// it runs update_cloud_resource for its side effect and emits NO downstream
+	// event. Assert the rule matched and that nothing was emitted.
+	assert.Equal(t, 1, dummyHandler.getAccountFromCloudProviderIdCallCount, "account should have been resolved for the matched rule")
+	assert.Empty(t, processedEvent.EventId, "actions_only rule must not emit a downstream event")
 }

@@ -202,8 +202,10 @@ func TestShellCloudAuth_AzureFlow_LoginCaching(t *testing.T) {
 	auth, err := BuildAzureAuth(creds)
 	require.NoError(t, err)
 
-	// Verify login caching check is present
-	assert.Contains(t, auth.CommandPrefix, "azureProfile.json")
+	// Verify login caching check is present: a per-account .auth_complete marker
+	// gates re-login (the auth state is persisted under a per-subscription config
+	// dir, so a marker file is used rather than probing azureProfile.json).
+	assert.Contains(t, auth.CommandPrefix, ".auth_complete")
 	assert.Contains(t, auth.CommandPrefix, "if [ ! -f")
 
 	// No suffix — Azure persists login state

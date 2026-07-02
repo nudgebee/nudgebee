@@ -156,11 +156,12 @@ func TestDatadogMetricsQueryAgent_UpdateExecutorLlmResponse_EdgeCases(t *testing
 	assert.Error(t, err)
 	assert.Equal(t, originalError, err)
 
-	// Invalid query format
+	// Invalid query format: a string with no recognizable metric is rejected so
+	// the planner is forced to retry with a valid metric. The result is nilled.
 	finished = &core.NBAgentPlannerFinishAction{Data: "invalid query format"}
 	_, resultFinished, err = agent.UpdateExecutorLlmResponse([]core.NBAgentPlannerToolAction{}, finished, nil)
-	assert.NoError(t, err)
-	assert.NotNil(t, resultFinished)
+	assert.Error(t, err)
+	assert.Nil(t, resultFinished)
 }
 
 func TestDatadogMetricsQueryAgent_UpdateExecutorLlmResponse_ErrorMessage(t *testing.T) {

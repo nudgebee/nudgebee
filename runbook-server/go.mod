@@ -2,6 +2,8 @@ module nudgebee/runbook
 
 go 1.26.0
 
+toolchain go1.26.4
+
 require (
 	github.com/Cyprinus12138/otelgin v1.0.3
 	github.com/DATA-DOG/go-sqlmock v1.5.2

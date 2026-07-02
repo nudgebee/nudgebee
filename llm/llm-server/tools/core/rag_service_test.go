@@ -9,6 +9,9 @@ import (
 )
 
 func TestAgentRag(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live RAG server and DB; set TEST_ACCOUNT to run")
+	}
 
 	testAgentName := "nb-test-rag"
 	testAccountId := os.Getenv("TEST_ACCOUNT")
@@ -40,6 +43,9 @@ func TestAgentRag(t *testing.T) {
 }
 
 func TestQueryRAG(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live RAG server and DB; set TEST_ACCOUNT to run")
+	}
 
 	testAgentName := "k8s_debug_react"
 	testAccountId := os.Getenv("TEST_ACCOUNT")

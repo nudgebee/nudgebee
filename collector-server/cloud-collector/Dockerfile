@@ -8,7 +8,7 @@
 # internal registry via --build-arg.
 ARG RUNTIME_BASE=ghcr.io/nudgebee/nudgebee-cloud-collector-base:20260112-0715
 
-FROM golang:1.26-alpine AS build-stage
+FROM golang:1.26.4-alpine AS build-stage
 
 WORKDIR /app
 

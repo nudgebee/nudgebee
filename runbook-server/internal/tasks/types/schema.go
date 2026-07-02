@@ -106,7 +106,7 @@ func (s *Schema) Process(params map[string]any) error {
 
 		// Dereference pointers
 		val := reflect.ValueOf(value)
-		if val.Kind() == reflect.Ptr && !val.IsNil() {
+		if val.Kind() == reflect.Pointer && !val.IsNil() {
 			value = val.Elem().Interface()
 			params[name] = value
 		}

@@ -123,13 +123,36 @@ func CreateIntegrationConfig(
 	// applied centrally in integration_webhook.go, so every webhook supports it
 	// without each ConfigSchema having to declare it.
 	if integration.Category() == IntegrationCategoryIncidentWebhook {
+		// Every ConfigSchema() today returns a freshly-allocated Properties map, but
+		// that "returns a private copy" contract is implicit and unenforced. Mutating
+		// the returned map in place would corrupt a shared global — and trigger a fatal
+		// "concurrent map writes" panic under concurrent requests — the day an integration
+		// returns a cached/static schema. Clone before injecting so this site is safe
+		// regardless of how any ConfigSchema is implemented. (range over a nil map is a
+		// no-op, so this also covers the previously nil-checked empty case.)
+		cloned := make(map[string]IntegrationSchemaProperty, len(integrationConfigSchema.Properties)+2)
+		for k, v := range integrationConfigSchema.Properties {
+			cloned[k] = v
+		}
+		integrationConfigSchema.Properties = cloned
 		if _, exists := integrationConfigSchema.Properties["account_mapping"]; !exists {
-			if integrationConfigSchema.Properties == nil {
-				integrationConfigSchema.Properties = map[string]IntegrationSchemaProperty{}
-			}
 			integrationConfigSchema.Properties["account_mapping"] = IntegrationSchemaProperty{
 				Type:        ToolSchemaTypeString,
 				Description: "JSON mapping of labels to account IDs",
+				Default:     "",
+				Hidden:      true,
+			}
+		}
+		// Auto-allow per-source webhook_label_mapping. Like account_mapping, it is
+		// applied centrally in integration_webhook.go (applyConfiguredLabelMappings),
+		// so every incident webhook accepts it without each ConfigSchema declaring
+		// it. Stored as a JSON string: {"subject_name_labels":[...],
+		// "namespace_labels":[...], "severity_labels":[...]} where each entry is a
+		// label key, a "key|regex" capture, or a gonja template over labels.
+		if _, exists := integrationConfigSchema.Properties["webhook_label_mapping"]; !exists {
+			integrationConfigSchema.Properties["webhook_label_mapping"] = IntegrationSchemaProperty{
+				Type:        ToolSchemaTypeString,
+				Description: "JSON mapping of payload labels to subject name / namespace / severity",
 				Default:     "",
 				Hidden:      true,
 			}
@@ -503,6 +526,9 @@ func CreateIntegrationConfig(
 			if err := integrationResult.Scan(&configId); err != nil {
 				return IntegrationDto{}, fmt.Errorf("failed to scan integration id: %w", err)
 			}
+		}
+		if err := integrationResult.Err(); err != nil {
+			return IntegrationDto{}, fmt.Errorf("failed to iterate integration result: %w", err)
 		}
 		isNewIntegration = true
 	}
@@ -1289,6 +1315,11 @@ func DeleteIntegrationConfig(
 				"integration_id", integrationId, "error", qErr)
 			return qErr
 		}
+		defer func() {
+			if cerr := configRows.Close(); cerr != nil {
+				slog.Error("integrations: failed to close config rows", "error", cerr)
+			}
+		}()
 		var configVals []IntegrationConfigValue
 		for configRows.Next() {
 			var cv IntegrationConfigValue
@@ -1298,8 +1329,8 @@ func DeleteIntegrationConfig(
 			}
 			configVals = append(configVals, cv)
 		}
-		if cerr := configRows.Close(); cerr != nil {
-			slog.Error("integrations: failed to close config rows", "error", cerr)
+		if rowErr := configRows.Err(); rowErr != nil {
+			return rowErr
 		}
 
 		isProxy = IsProxyIntegration(integrationType, configVals)
@@ -1377,6 +1408,7 @@ func DeleteIntegrationConfig(
 				"vm_agent_id", integrationId, "error", qErr)
 			return qErr
 		}
+		defer func() { _ = linkRows.Close() }()
 		for linkRows.Next() {
 			var id string
 			if sErr := linkRows.Scan(&id); sErr != nil {
@@ -1386,7 +1418,6 @@ func DeleteIntegrationConfig(
 			}
 			linkedIntegrationIDs = append(linkedIntegrationIDs, id)
 		}
-		_ = linkRows.Close()
 
 		for _, intID := range linkedIntegrationIDs {
 			for _, accID := range affectedAccountIDs {

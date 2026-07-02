@@ -182,6 +182,7 @@ func fetchPinotSchemaDirect(accountId string, cfg *PinotConfig) (*pinotSchemaRes
 	if err != nil {
 		return nil, fmt.Errorf("fetchPinotSchemaDirect: %w", err)
 	}
+	defer func() { _ = resp.Body.Close() }()
 	bodyBytes, err := readPinotResponse(resp, "schema fetch")
 	if err != nil {
 		return nil, err
@@ -345,7 +346,7 @@ func (p *PinotSaasSource) QueryLogs(ctx *security.RequestContext, req FetchLogRe
 	if marshalErr != nil {
 		return nil, fmt.Errorf("pinot.QueryLogs: failed to marshal SQL: %w", marshalErr)
 	}
-	resp, err := pinotRequest("POST", fmt.Sprintf("%s/sql", cfg.Url), string(sqlBody), cfg)
+	resp, err := pinotRequest("POST", fmt.Sprintf("%s/sql", cfg.Url), string(sqlBody), cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("pinot.QueryLogs: request failed: %w", err)
 	}
@@ -362,7 +363,7 @@ func (p *PinotSaasSource) QueryLabels(ctx *security.RequestContext, req FetchLog
 		return nil, fmt.Errorf("pinot.QueryLabels: %w", err)
 	}
 
-	resp, err := pinotRequest("GET", fmt.Sprintf("%s/schemas/%s", cfg.Url, cfg.Table), "", cfg)
+	resp, err := pinotRequest("GET", fmt.Sprintf("%s/schemas/%s", cfg.Url, cfg.Table), "", cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("pinot.QueryLabels: request failed: %w", err)
 	}
@@ -397,7 +398,7 @@ func (p *PinotSaasSource) QueryLabelValues(ctx *security.RequestContext, req Fet
 	if marshalErr != nil {
 		return nil, fmt.Errorf("pinot.QueryLabelValues: failed to marshal SQL: %w", marshalErr)
 	}
-	resp, err := pinotRequest("POST", fmt.Sprintf("%s/sql", cfg.Url), string(sqlBody), cfg)
+	resp, err := pinotRequest("POST", fmt.Sprintf("%s/sql", cfg.Url), string(sqlBody), cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("pinot.QueryLabelValues: request failed: %w", err)
 	}
@@ -479,7 +480,7 @@ func samplePinotTimestampValueDirect(cfg *PinotConfig, tsCol string) (string, er
 	if err != nil {
 		return "", fmt.Errorf("marshal sample sql: %w", err)
 	}
-	resp, err := pinotRequest("POST", fmt.Sprintf("%s/sql", cfg.Url), string(body), cfg)
+	resp, err := pinotRequest("POST", fmt.Sprintf("%s/sql", cfg.Url), string(body), cfg) //nolint:bodyclose
 	if err != nil {
 		return "", fmt.Errorf("sample request failed: %w", err)
 	}

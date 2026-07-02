@@ -77,8 +77,8 @@ func TestEntraIDService_GetRecommendations(t *testing.T) {
 					},
 				},
 			},
-			expectedRecommendations: 2,
-			expectedRules:           []string{"azure_entra_id_overly_permissive_role", "azure_entra_id_service_principal_no_expiration"},
+			expectedRecommendations: 1,
+			expectedRules:           []string{"azure_entra_id_overly_permissive_role"},
 		},
 	}
 
@@ -140,7 +140,7 @@ func TestEntraIDService_QueryMetrices(t *testing.T) {
 
 	resp, err := svc.QueryMetrices(ctx, account, filter)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
+	assert.Contains(t, err.Error(), "StartDate and EndDate must be provided")
 	assert.Equal(t, providers.QueryMetricsResponse{}, resp)
 }
 

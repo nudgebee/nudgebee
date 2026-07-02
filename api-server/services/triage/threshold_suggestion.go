@@ -1653,6 +1653,9 @@ func collectStoredMetricValues(ctx context.Context, db *sqlx.DB, fingerprint, ac
 			}
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return nil
+	}
 
 	return values
 }

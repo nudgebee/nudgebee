@@ -11,7 +11,7 @@
 ARG RUNTIME_BASE=ghcr.io/nudgebee/nudgebee-llm-server-base:ubuntu-noble-20260430
 
 # --- Build Stage ---
-FROM golang:1.26 AS build-stage
+FROM golang:1.26.4 AS build-stage
 
 ARG TARGETPLATFORM
 ARG TARGETOS

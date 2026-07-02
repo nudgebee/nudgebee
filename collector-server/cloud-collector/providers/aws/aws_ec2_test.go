@@ -28,6 +28,12 @@ func TestGetAvailableEc2Instances(t *testing.T) {
 }
 
 func TestPricing(t *testing.T) {
+	// getEc2PricesBasedOnPriceList reads the EC2 price list from the metastore
+	// Postgres DB. Skip when no DB is reachable so the suite stays hermetic;
+	// the test still runs in environments (CI/dev) where the DB is up.
+	if _, err := common.GetDatabaseManager(common.Metastore); err != nil {
+		t.Skip("Skipping test that requires a reachable metastore database")
+	}
 	price, err := getEc2PricesBasedOnPriceList("us-east-1", "m4.xlarge")
 	assert.Nil(t, err)
 	assert.NotNil(t, price)

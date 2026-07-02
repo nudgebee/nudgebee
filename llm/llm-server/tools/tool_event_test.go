@@ -14,6 +14,9 @@ import (
 )
 
 func TestEventAgentExecuteTool(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live DB seeded with events; set TEST_ACCOUNT to run")
+	}
 
 	tool := EventsExecuteTool{}
 	sc := security.NewRequestContextForSuperAdmin()
@@ -48,6 +51,9 @@ func TestEventAgentExecuteTool(t *testing.T) {
 }
 
 func TestEventAgentExecuteTool2(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live DB seeded with events; set TEST_ACCOUNT to run")
+	}
 
 	tool := EventsExecuteTool{}
 	sc := security.NewRequestContextForSuperAdmin()
@@ -82,6 +88,9 @@ func TestEventAgentExecuteTool2(t *testing.T) {
 }
 
 func TestEventAgentExecuteCloudAccount(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("requires a live DB seeded with events; set TEST_ACCOUNT to run")
+	}
 
 	tool := EventsExecuteTool{}
 	sc := security.NewRequestContextForSuperAdmin()

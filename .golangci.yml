@@ -10,3 +10,9 @@ version: "2"
 formatters:
   enable:
     - gofmt
+
+linters:
+  enable:
+    - rowserrcheck    # Checks rows.Err() is called after rows iteration
+    - sqlclosecheck   # Checks sql.Rows and sql.Stmt are closed
+    - bodyclose       # Checks HTTP response bodies are closed

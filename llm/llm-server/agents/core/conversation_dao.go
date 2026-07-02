@@ -1462,20 +1462,18 @@ func (chat *ConversationDao) TerminateConversation(context *security.RequestCont
 	if err != nil {
 		return fmt.Errorf("history: failed to terminate message: %w", err)
 	}
+	defer func() { _ = rows.Close() }()
 	var terminatedMessageIds []string
 	for rows.Next() {
 		var id string
 		if scanErr := rows.Scan(&id); scanErr != nil {
-			_ = rows.Close()
 			return fmt.Errorf("history: failed to scan terminated message id: %w", scanErr)
 		}
 		terminatedMessageIds = append(terminatedMessageIds, id)
 	}
 	if rowsErr := rows.Err(); rowsErr != nil {
-		_ = rows.Close()
 		return fmt.Errorf("history: failed to iterate terminated messages: %w", rowsErr)
 	}
-	_ = rows.Close()
 
 	// Update the associated conversation status to TERMINATED
 	conversationQuery := `UPDATE llm_conversations SET status = $2, updated_at = now() WHERE id = $1 AND account_id = $3`
@@ -1959,6 +1957,11 @@ func (chat *ConversationDao) DeleteConversationMemories(conversationId string) e
 	if err != nil {
 		return fmt.Errorf("history: failed to list conversation memories for deletion: %w", err)
 	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Warn("history: failed to close rows during conversation memory cleanup", "error", err)
+		}
+	}()
 
 	type MemInfo struct {
 		ID        string `db:"id"`
@@ -1968,17 +1971,12 @@ func (chat *ConversationDao) DeleteConversationMemories(conversationId string) e
 	for rows.Next() {
 		var m MemInfo
 		if err := rows.StructScan(&m); err != nil {
-			_ = rows.Close()
 			return fmt.Errorf("history: failed to scan memory row: %w", err)
 		}
 		mems = append(mems, m)
 	}
 	if err := rows.Err(); err != nil {
-		_ = rows.Close()
 		return fmt.Errorf("history: cursor error reading memories: %w", err)
-	}
-	if err := rows.Close(); err != nil {
-		slog.Warn("history: failed to close rows during conversation memory cleanup", "error", err)
 	}
 
 	// 2. Delete from RAG

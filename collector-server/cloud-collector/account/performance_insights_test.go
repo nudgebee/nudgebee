@@ -9,6 +9,9 @@ import (
 )
 
 func TestPerformanceInsightAws(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	resp, err := QueryDatabasePerformance(ctx, os.Getenv("TEST_ACCOUNT"), providers.DatabasePerformanceRequest{
 		Region:             "us-east-1",

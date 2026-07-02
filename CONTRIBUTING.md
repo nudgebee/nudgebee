@@ -5,7 +5,9 @@ explains how to file issues, propose changes, and get a pull request
 merged.
 
 By contributing, you agree that your contributions will be licensed
-under the Apache License, Version 2.0 (see [LICENSE](./LICENSE)).
+under the [Business Source License 1.1](./LICENSE) (and its Change
+License, Apache 2.0), and that Nudgebee may also offer them under
+separate commercial license terms. See [LICENSING.md](./LICENSING.md).
 
 > **New here?** Two fast paths in before this doc:
 >
@@ -23,9 +25,10 @@ first PR, it will post a comment with a one-click link to sign.
 Subsequent PRs require no further action.
 
 The CLA confirms that (a) you have the right to contribute the code
-you're submitting and (b) you grant Nudgebee the license to use it
-under Apache 2.0. It does not transfer copyright — you retain it for
-your contributions.
+you're submitting and (b) you grant Nudgebee a broad license to use,
+distribute, and sublicense it — including under the Business Source
+License 1.1 and under separate commercial license terms. It does not
+transfer copyright — you retain it for your contributions.
 
 ## Code of Conduct
 
@@ -209,9 +212,9 @@ and disclosure timeline with you.
 ## Trademarks
 
 The name "Nudgebee" and any associated logos are trademarks of
-Nudgebee. The Apache 2.0 license does not grant trademark rights.
-See [TRADEMARKS.md](./TRADEMARKS.md) for the project's trademark
-policy.
+Nudgebee. Neither the Business Source License 1.1 nor its Change
+License (Apache 2.0) grants trademark rights. See
+[TRADEMARKS.md](./TRADEMARKS.md) for the project's trademark policy.
 
 ## Questions
 
