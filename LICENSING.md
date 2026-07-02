@@ -55,9 +55,30 @@ releases from this change forward.
 
 ## Contributing
 
-Contributions are accepted under the project's Contributor License Agreement
-(CLA). The CLA ensures the Licensor holds the rights necessary to offer Nudgebee
-under both the BSL and separate commercial licenses.
+Contributions are accepted under the project's [Contributor License Agreement
+(`CLA.md`)](./CLA.md). The CLA grants Nudgebee a sublicensable license "under any
+license," which is what lets the Licensor offer Nudgebee under both the BSL and
+separate commercial licenses. It covers each contributor's past, present, and
+future contributions.
+
+### CLA enforcement (single source of truth)
+
+Signatures are checked by the [`contributor-assistant` GitHub Action](./.github/workflows/cla.yaml),
+which uses **`CLA.md` in this repo** as the document contributors agree to — so
+the signed text and the repo file can never drift apart. Signatures are recorded
+in the `cla-signatures` branch.
+
+**One-time setup:** create a Personal Access Token with rights to commit to this
+repo's signatures branch (classic token with `repo` scope, or a fine-grained
+token with Contents + Pull requests read/write) and store it as the
+`CLA_SIGNATURES_TOKEN` repository secret. The default `GITHUB_TOKEN` cannot push
+to the signatures branch.
+
+**To require everyone to re-sign** (e.g. after a material CLA change, or to retire
+signatures gathered against a prior/incorrect CLA): bump the version segment in
+`path-to-signatures` in `cla.yaml` (`version1` → `version2`). The bot will then
+treat all prior signatures as invalid and re-prompt every contributor on their
+next PR.
 
 ## Per-file header
 
