@@ -1883,6 +1883,23 @@ func (m DatadogWebhook) ProcessEventWebook(sc *security.RequestContext, settings
 
 	cloudResourceId := ""
 
+	// alert_scope k8s fallback. alert_scope is Datadog's own structured group key
+	// for the firing group — the exact "key:value,key:value" scope
+	// (e.g. "kube_cluster_name:...,pod_name:app-dev-...") that the monitor's
+	// group_states expose, delivered in the webhook itself (no API call). For
+	// transitions where Datadog omits monitor_groups / result.group / tags —
+	// notably "No data" — this is the ONLY place the k8s subject appears, so without
+	// it the subject resolves empty and the event is dropped by the empty-subject
+	// guard on ingest. Lowest priority: applyK8sSubject keeps the first non-empty
+	// value, so any earlier, more authoritative source still wins, and a bare pod
+	// here only populates deferredSubject (applied below if nothing better resolves).
+	// Cloud dimensions in the scope are ignored by parseDatadogK8sSubject and handled
+	// by the query-scope cloud parser further down (which reads alert_query/alert_scope
+	// for non-grouped, filter-scoped cloud monitors).
+	if p.Alert.AlertScope != "" {
+		applyK8sSubject(parseDatadogK8sSubject([]string{p.Alert.AlertScope}))
+	}
+
 	// Deterministic service-tag → workload match. Datadog tags every workload
 	// with tags.datadoghq.com/service, and the alert already carries that value
 	// in labels["service"]. Resolve it directly — this is the deterministic

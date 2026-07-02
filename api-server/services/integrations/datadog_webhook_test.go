@@ -443,6 +443,23 @@ func TestParseDatadogK8sSubject(t *testing.T) {
 			wantName: "",
 			wantKind: "",
 		},
+		{
+			// alert_scope of a "No data" transition: the pod lives only here (no
+			// monitor_groups/result/tags), so this must resolve the pod subject.
+			name:     "alert_scope cluster + pod (no data transition) -> pod is subject",
+			facets:   []string{"kube_cluster_name:example-cluster,pod_name:app-dev-64b8465dff-swrgw"},
+			wantName: "app-dev-64b8465dff-swrgw",
+			wantKind: "pod",
+			wantPod:  "app-dev-64b8465dff-swrgw",
+		},
+		{
+			// A cluster-only scope names no workload/pod/node — must NOT resolve a
+			// subject (kube_cluster_name is not a node facet).
+			name:     "alert_scope cluster only -> no subject",
+			facets:   []string{"kube_cluster_name:example-cluster"},
+			wantName: "",
+			wantKind: "",
+		},
 	}
 
 	for _, tt := range tests {
