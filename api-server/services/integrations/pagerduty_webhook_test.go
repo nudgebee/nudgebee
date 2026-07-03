@@ -355,6 +355,35 @@ func TestResolveSubjectFromLabels(t *testing.T) {
 			title:           "TargetDown",
 			expectedSubject: "",
 		},
+		{
+			// container_id label carries /k8s/<ns>/<pod>/<workload>; the workload
+			// (4th segment) is the subject, not the ReplicaSet-hashed pod.
+			name:              "container_id k8s path resolves workload",
+			initialSubject:    "",
+			labels:            map[string]string{"container_id": "/k8s/default/argo-rollouts-54c8dd8467-b2q84/argo-rollouts"},
+			title:             "up rule triggered",
+			expectedSubject:   "argo-rollouts",
+			expectedNamespace: "default",
+		},
+		{
+			// Alertmanager title path /k8s/<ns>/<pod>/<workload> — last resort when
+			// no label carries the subject (PagerDuty enrichment race). Workload wins.
+			name:              "title k8s path resolves workload not pod",
+			initialSubject:    "",
+			labels:            map[string]string{},
+			title:             "[FIRING:1] ApplicationAPIFailures kubernetes-apps /k8s/demo/load-generator-86b88dd659-z7wrw/load-generator GET /api/cart critical",
+			expectedSubject:   "load-generator",
+			expectedNamespace: "demo",
+		},
+		{
+			// 3-segment /k8s/<ns>/<workload> title still resolves the workload.
+			name:              "title k8s path 3-segment resolves workload",
+			initialSubject:    "",
+			labels:            map[string]string{},
+			title:             "alert /k8s/demo/checkout firing",
+			expectedSubject:   "checkout",
+			expectedNamespace: "demo",
+		},
 	}
 
 	for _, tt := range tests {

@@ -319,7 +319,10 @@ var (
 	reNamespace   = regexp.MustCompile(`namespace=\"([^\"]+)\"`)
 	rePod         = regexp.MustCompile(`pod=\"([^\"]+)\"`)
 	reServiceName = regexp.MustCompile(`service_name=\"([^\"]+)\"`)
-	reK8sPath     = regexp.MustCompile(`/k8s/([^/\s]+)/([^/\s]+)`)
+	// /k8s/<namespace>/<pod>/<workload-or-container> — Alertmanager embeds this in
+	// the incident title. The 4th segment (the workload/container name) is optional
+	// and, when present, is the resolvable subject; the pod carries a ReplicaSet hash.
+	reK8sPath = regexp.MustCompile(`/k8s/([^/\s]+)/([^/\s]+)(?:/([^/\s]+))?`)
 )
 
 func (m PagerDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings []core.IntegrationConfigValue, accountId, webhookPayloadString string) ([]core.EventIncomingWebhook, error) {
@@ -631,6 +634,12 @@ func (m PagerDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settin
 	// Improve title: Alertmanager default title is a concatenation of all label values.
 	// Prefer a human-readable summary; fall back to alertname.
 	if title := resolveEventTitleFromLabels(parsedPayload.Investigation.Labels); title != "" {
+		// Preserve the original title before overwriting it: it carries the
+		// /k8s/<ns>/<pod>/<workload> path that the deterministic subject fallback in
+		// resolveSubjectFromLabels relies on, which the human-readable title drops.
+		if parsedPayload.EventTitle != "" && parsedPayload.Investigation.Labels != nil {
+			parsedPayload.Investigation.Labels["nb_pd_raw_title"] = parsedPayload.EventTitle
+		}
 		parsedPayload.EventTitle = title
 	}
 
@@ -3283,6 +3292,32 @@ func resolveEventTitleFromLabels(labels map[string]string) string {
 // and EventSubjectKind from Investigation.Labels populated by enrichment parsing.
 // It checks label keys in priority order and only sets values not already resolved
 // from the title regex parsing.
+// applyK8sPathSubject sets EventSubjectName / EventSubjectNamespace from a
+// /k8s/<namespace>/<pod>/<workload> path — the shape Alertmanager embeds in
+// `container_id` labels and in incident titles. Fully deterministic (no LLM). The
+// 4th segment (workload / container name — matches k8s_workloads) is preferred over
+// the pod, whose ReplicaSet hash never matches the inventory; the pod is kept as a
+// label. Returns true when a subject was set.
+func applyK8sPathSubject(p *core.EventIncomingWebhook, labels map[string]string, path string) bool {
+	match := reK8sPath.FindStringSubmatch(path)
+	if len(match) != 4 {
+		return false
+	}
+	namespace, pod, workload := match[1], match[2], match[3]
+	if workload != "" {
+		p.EventSubjectName = workload
+	} else {
+		p.EventSubjectName = pod
+	}
+	if p.EventSubjectNamespace == "" {
+		p.EventSubjectNamespace = namespace
+	}
+	if pod != "" && labels != nil && labels["pod"] == "" {
+		labels["pod"] = pod
+	}
+	return p.EventSubjectName != ""
+}
+
 func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 	labels := parsedPayload.Investigation.Labels
 	if labels == nil {
@@ -3323,6 +3358,15 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 					parsedPayload.EventSubjectNamespace = parts[1]
 				}
 			}
+		}
+	}
+
+	// Parse container_id (/k8s/{namespace}/{pod}/{workload}) — Alertmanager/Grafana
+	// attach the full k8s path in this label. Structured and reliable, so it runs
+	// ahead of the generic service/pod labels below. Deterministic — no LLM.
+	if parsedPayload.EventSubjectName == "" {
+		if cid := labels["container_id"]; cid != "" {
+			applyK8sPathSubject(parsedPayload, labels, cid)
 		}
 	}
 
@@ -3451,16 +3495,20 @@ func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
 		}
 	}
 
-	// Last resort: parse /k8s/{namespace}/{workload} from the event title.
-	// Alertmanager-routed PagerDuty alerts embed this pattern in the title
-	// even when body.details is unavailable due to API race conditions.
+	// Last resort: parse the /k8s/{namespace}/{pod}/{workload} path Alertmanager
+	// embeds in the incident title. This is fully deterministic (no LLM) and the only
+	// subject source present in the raw webhook — the `service`/`namespace` labels
+	// arrive later via the PagerDuty API enrichment, which races (body.details null),
+	// so relying on them alone sends these alerts to the LLM. Read the ORIGINAL title
+	// (preserved before the human-readable override, which strips the path). Prefer
+	// the 4th segment (workload/container — matches k8s_workloads) over the pod, whose
+	// ReplicaSet hash never matches the inventory; keep the pod as a label.
 	if parsedPayload.EventSubjectName == "" {
-		if match := reK8sPath.FindStringSubmatch(parsedPayload.EventTitle); len(match) == 3 {
-			parsedPayload.EventSubjectName = match[2]
-			if parsedPayload.EventSubjectNamespace == "" {
-				parsedPayload.EventSubjectNamespace = match[1]
-			}
+		k8sPathTitle := labels["nb_pd_raw_title"]
+		if k8sPathTitle == "" {
+			k8sPathTitle = parsedPayload.EventTitle
 		}
+		applyK8sPathSubject(parsedPayload, labels, k8sPathTitle)
 	}
 
 	// Resolve namespace if not already set
