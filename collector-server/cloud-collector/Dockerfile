@@ -10,6 +10,13 @@ ARG RUNTIME_BASE=ghcr.io/nudgebee/nudgebee-cloud-collector-base:20260112-0715
 
 FROM golang:1.26.4-alpine AS build-stage
 
+# Force the build to use exactly go1.26.4 (matches the toolchain directive in
+# go.mod). This also guarantees a distinct build-cache key so edge.yaml's
+# registry cache (mode=max) can't reuse a `go build` layer compiled by an older
+# toolchain — the cause of stdlib CVEs persisting in published images despite
+# the builder image being pinned.
+ENV GOTOOLCHAIN=go1.26.4
+
 WORKDIR /app
 
 # Install git (needed for go mod)

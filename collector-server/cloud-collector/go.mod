@@ -2,6 +2,8 @@ module nudgebee/collector/cloud
 
 go 1.26.1
 
+toolchain go1.26.4
+
 require (
 	cloud.google.com/go/aiplatform v1.124.0
 	cloud.google.com/go/auth v0.20.0
