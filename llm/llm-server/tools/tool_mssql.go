@@ -125,8 +125,9 @@ func (m MSSQLExecuteTool) Call(nbRequestContext core.NbToolContext, input core.N
 			if response == "" {
 				response = err.Error()
 			}
+			// sqlcmd uses `-?` (single dash + question mark), NOT `--help`.
 			return core.NBToolResponse{
-				Data:   response,
+				Data:   cliRecoveryEnvelope(response, "", "sqlcmd", "sqlcmd -?"),
 				Status: core.NBToolResponseStatusError,
 			}, err
 		}
@@ -151,8 +152,14 @@ func (m MSSQLExecuteTool) Call(nbRequestContext core.NbToolContext, input core.N
 				responseData = responseData1
 			}
 		}
+		// Fall back to err.Error() when ExecuteContainerJob returned a nil /
+		// non-string response, so the LLM always sees the failure reason
+		// rather than an empty envelope.
+		if responseData == "" {
+			responseData = err.Error()
+		}
 		return core.NBToolResponse{
-			Data:   responseData,
+			Data:   cliRecoveryEnvelope(responseData, "", "mssql", ""),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}

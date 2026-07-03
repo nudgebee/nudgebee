@@ -115,8 +115,11 @@ func (m MongoDBTool) Call(nbRequestContext core.NbToolContext, input core.NBTool
 		// Propagate the forager error message so the LLM can act on it
 		// (unreachable host, auth failure, etc.) — mirrors parseProxySSHResponse.
 		logger.Error("mongodb: diagnostic failed", "tool", m.toolName, "error", err.Error())
+		// These tools are pre-baked diagnostics (mongo_server_status etc.), so
+		// the "help" ref is more about the MongoDB shell syntax if the error
+		// is a query complaint. mongosh --help covers CLI flags only.
 		return core.NBToolResponse{
-			Data:   err.Error(),
+			Data:   cliRecoveryEnvelope(err.Error(), "", "mongosh", "mongosh --help (or db.<collection>.help() in the shell for query syntax)"),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}

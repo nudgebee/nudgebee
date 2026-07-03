@@ -126,8 +126,11 @@ func (t AwsCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 			if response == "" {
 				response = err.Error()
 			}
+			// aws uses `aws <service> help` (no dashes), NOT `--help`, as the
+			// canonical help subcommand — hardcoding `--help` here would send
+			// the model to a slightly different code path.
 			return core.NBToolResponse{
-				Data:   response,
+				Data:   cliRecoveryEnvelope(response, "", "aws", "aws <service> help"),
 				Status: core.NBToolResponseStatusError,
 			}, err
 		}

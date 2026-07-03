@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestPostgresErrorHint_Patterns pins the postgres-side hint discriminator —
@@ -90,8 +91,26 @@ func TestWrapPostgresError_EnvelopeShape(t *testing.T) {
 		assert.Equal(t, raw, env["original_error"])
 	})
 
-	t.Run("no pattern match: pass-through unchanged", func(t *testing.T) {
+	t.Run("no specific pattern match: generic CLI-recovery fallback fires when raw has CLI signal", func(t *testing.T) {
+		// After wiring the generic fallback into wrapPostgresError, an
+		// unrecognized error that still carries CLI signal (`error:`, `not a
+		// valid`, `syntax error`, etc.) gets the universal "re-read the raw
+		// output before switching commands" nudge instead of raw-passthrough.
+		// The raw error still round-trips verbatim under original_error.
 		raw := `Error: Server returned 500: {"error":"proxy db_query error: query execution failed: ERROR: column \"total_time\" does not exist","result":""}`
+		wrapped := wrapPostgresError(raw)
+		var env map[string]string
+		require.NoError(t, json.Unmarshal([]byte(wrapped), &env))
+		assert.Contains(t, env["error_hint"], "re-read the raw output")
+		assert.Contains(t, env["error_hint"], "psql --help", "postgres tool must point at psql --help for the help ref")
+		assert.Equal(t, raw, env["original_error"])
+	})
+
+	t.Run("truly opaque error (no CLI signal): raw passthrough preserved", func(t *testing.T) {
+		// When the raw error carries no CLI signal (no `error:`, `unknown`,
+		// `invalid`, `usage`, etc.), neither the specific hint nor the generic
+		// fallback fires — raw passthrough is intentional.
+		raw := "connection reset by peer"
 		wrapped := wrapPostgresError(raw)
 		assert.Equal(t, raw, wrapped)
 	})

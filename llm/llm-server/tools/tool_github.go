@@ -142,7 +142,7 @@ func (m GithubCliTool) Call(nbRequestContext core.NbToolContext, input core.NBTo
 			response = err.Error()
 		}
 		return core.NBToolResponse{
-			Data:   wrapCliError(response, githubErrorHint(response)),
+			Data:   cliRecoveryEnvelope(response, githubErrorHint(response), "gh", "gh <subcommand> --help"),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}

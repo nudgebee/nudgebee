@@ -111,8 +111,13 @@ func (m ElasticSearchExecuteTool) Call(nbRequestContext core.NbToolContext, inpu
 				responseData = responseData1
 			}
 		}
+		if responseData == "" {
+			responseData = err.Error()
+		}
+		// ElasticSearch is an HTTP API — no CLI --help. Point at the DSL
+		// docs by name so the model self-directs rather than pivots.
 		return core.NBToolResponse{
-			Data:   responseData,
+			Data:   cliRecoveryEnvelope(responseData, "", "elasticsearch", ""),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}

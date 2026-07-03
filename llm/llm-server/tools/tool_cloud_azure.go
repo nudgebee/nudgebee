@@ -146,7 +146,7 @@ func (t AzureCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToo
 				response = err.Error()
 			}
 			return core.NBToolResponse{
-				Data:   response,
+				Data:   cliRecoveryEnvelope(response, "", "az", "az <command> --help"),
 				Status: core.NBToolResponseStatusError,
 			}, err
 		}

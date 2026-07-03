@@ -341,24 +341,13 @@ func (m PostgresExecuteTool) IdentifyConfig(ctx core.NbToolContext, input core.N
 // for kubectl_execute, but the relay error_hint envelope didn't extend to the
 // postgres path. This closes that gap.
 func wrapPostgresError(rawError string) string {
-	if rawError == "" {
-		return rawError
-	}
-	hint := postgresErrorHint(rawError)
-	if hint == "" {
-		return rawError
-	}
-	envelope := map[string]string{
-		"error_hint":     hint,
-		"original_error": rawError,
-	}
-	body, err := common.MarshalJson(envelope)
-	if err != nil {
-		// Marshal failure is exceptionally unlikely with two string fields;
-		// fall back to raw so the LLM still sees the underlying signal.
-		return rawError
-	}
-	return string(body)
+	// Prefer the postgres-specific hint; cliRecoveryEnvelope falls back to
+	// the generic "read the raw output before switching" nudge on unrecognized
+	// errors that still carry CLI signal. psql --help is the CLI flag list;
+	// `\?` covers meta-commands in interactive mode — either can help when
+	// syntax is the issue. Empty rawError and truly opaque errors pass
+	// through byte-for-byte.
+	return cliRecoveryEnvelope(rawError, postgresErrorHint(rawError), "psql", `psql --help (or \? in interactive mode)`)
 }
 
 // postgresErrorHint maps a raw postgres error string to an actionable hint

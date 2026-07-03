@@ -150,8 +150,9 @@ func (m OracleExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 			if response == "" {
 				response = err.Error()
 			}
+			// sqlplus uses `-H` (uppercase H), NOT `--help`.
 			return core.NBToolResponse{
-				Data:   response,
+				Data:   cliRecoveryEnvelope(response, "", "sqlplus", "sqlplus -H"),
 				Status: core.NBToolResponseStatusError,
 			}, err
 		}
@@ -174,8 +175,14 @@ func (m OracleExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 				responseData = responseData1
 			}
 		}
+		// Fall back to err.Error() when ExecuteContainerJob returned a nil /
+		// non-string response, so the LLM always sees the failure reason
+		// rather than an empty envelope.
+		if responseData == "" {
+			responseData = err.Error()
+		}
 		return core.NBToolResponse{
-			Data:   responseData,
+			Data:   cliRecoveryEnvelope(responseData, "", "oracle", ""),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}

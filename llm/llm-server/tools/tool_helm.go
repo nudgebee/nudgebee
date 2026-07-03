@@ -89,7 +89,7 @@ func (m HelmExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NB
 				response = err.Error()
 			}
 			return core.NBToolResponse{
-				Data:   response,
+				Data:   cliRecoveryEnvelope(response, "", "helm", "helm <command> --help"),
 				Status: core.NBToolResponseStatusError,
 			}, err
 		}
@@ -100,6 +100,8 @@ func (m HelmExecuteTool) Call(nbRequestContext core.NbToolContext, input core.NB
 		}
 		outputformatBytes, err := common.MarshalJson(outputformat)
 		if err != nil {
+			// Marshal failure is an internal serialization bug, not a CLI error —
+			// leave as raw passthrough (no CLI help suggestion would apply).
 			nbRequestContext.Ctx.GetLogger().Error("helm: unable to marshal response", "error", err.Error())
 			return core.NBToolResponse{
 				Data:   response,

@@ -138,8 +138,11 @@ func (m ClickhouseExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 			if response == "" {
 				response = err.Error()
 			}
+			// ClickHouse errors are SQL parser errors, not CLI-flag errors.
+			// clickhouse-client has --help but it doesn't cover query syntax;
+			// point the model at the ClickHouse SQL reference instead.
 			return core.NBToolResponse{
-				Data:   response,
+				Data:   cliRecoveryEnvelope(response, "", "clickhouse", "clickhouse-client --help (or check the ClickHouse SQL reference for query syntax)"),
 				Status: core.NBToolResponseStatusError,
 			}, err
 		}
@@ -163,8 +166,14 @@ func (m ClickhouseExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 				responseData = responseDataStr
 			}
 		}
+		// Fall back to err.Error() when ExecuteContainerJob returned a nil /
+		// non-string response, so the LLM always sees the failure reason
+		// rather than an empty envelope.
+		if responseData == "" {
+			responseData = err.Error()
+		}
 		return core.NBToolResponse{
-			Data:   responseData,
+			Data:   cliRecoveryEnvelope(responseData, "", "clickhouse", ""),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}

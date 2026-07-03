@@ -326,9 +326,36 @@ func TestWrapKubectlError_EnvelopeShape(t *testing.T) {
 		assert.Equal(t, raw, env["original_error"])
 	})
 
-	t.Run("no pattern match: pass-through unchanged", func(t *testing.T) {
-		raw := "Error from server (NotFound): pods \"missing-pod\": not found"
+	t.Run("no specific match, raw carries CLI signal: generic recovery hint fires", func(t *testing.T) {
+		// Post the generic-fallback fold (2026-07-03): unrecognized errors
+		// that still carry CLI signal (`unknown`, `invalid`, `usage`, etc.)
+		// get the universal "re-read the raw output before switching" nudge
+		// with a kubectl <command> --help ref, instead of raw passthrough.
+		// This is the intended new behavior; the raw error still round-trips
+		// under original_error.
+		raw := `error: unknown resource type "podz". Did you mean "pods"?`
+		wrapped := wrapKubectlError(raw, "kubectl get podz")
+		var env map[string]string
+		err := json.Unmarshal([]byte(wrapped), &env)
+		assert.NoError(t, err)
+		assert.Contains(t, env["error_hint"], "re-read the raw output")
+		assert.Contains(t, env["error_hint"], "kubectl <command> --help")
+		assert.Equal(t, raw, env["original_error"])
+	})
+
+	t.Run("resource-NotFound: no CLI-flag signal, raw passthrough preserved", func(t *testing.T) {
+		// A plain "pods not found" error has no CLI-flag signal (unknown flag,
+		// usage, invalid arg, etc.) — the model just needs to change the
+		// resource name, and neither the specific hint nor the generic
+		// fallback adds anything. Raw passthrough is intentional here.
+		raw := `Error from server (NotFound): pods "missing-pod": not found`
 		wrapped := wrapKubectlError(raw, "kubectl get pod missing-pod")
+		assert.Equal(t, raw, wrapped)
+	})
+
+	t.Run("truly opaque error (no CLI signal): raw passthrough preserved", func(t *testing.T) {
+		raw := "connection reset by peer"
+		wrapped := wrapKubectlError(raw, "kubectl get pods")
 		assert.Equal(t, raw, wrapped)
 	})
 

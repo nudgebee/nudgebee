@@ -98,8 +98,10 @@ func (m RedisExecuteTool) Call(nbRequestContext core.NbToolContext, input core.N
 			if response == "" {
 				response = err.Error()
 			}
+			// redis-cli --help lists CLI flags; interactive mode uses HELP <cmd>
+			// to list valid Redis commands.
 			return core.NBToolResponse{
-				Data:   response,
+				Data:   cliRecoveryEnvelope(response, "", "redis-cli", "redis-cli --help (or HELP <command> in interactive mode)"),
 				Status: core.NBToolResponseStatusError,
 			}, err
 		}
@@ -134,8 +136,14 @@ func (m RedisExecuteTool) Call(nbRequestContext core.NbToolContext, input core.N
 				responseData = responseData1
 			}
 		}
+		// Fall back to err.Error() when ExecuteContainerJob returned a nil /
+		// non-string response, so the LLM always sees the failure reason
+		// rather than an empty envelope.
+		if responseData == "" {
+			responseData = err.Error()
+		}
 		return core.NBToolResponse{
-			Data:   responseData,
+			Data:   cliRecoveryEnvelope(responseData, "", "redis-cli", ""),
 			Status: core.NBToolResponseStatusError,
 		}, err
 	}

@@ -127,7 +127,7 @@ func (t GcpCliTool) Call(nbRequestContext core.NbToolContext, input core.NBToolC
 				response = err.Error()
 			}
 			return core.NBToolResponse{
-				Data:   wrapCliError(response, gcloudErrorHint(response)),
+				Data:   cliRecoveryEnvelope(response, gcloudErrorHint(response), "gcloud", "gcloud <command> --help"),
 				Status: core.NBToolResponseStatusError,
 			}, err
 		}
