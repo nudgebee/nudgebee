@@ -105,8 +105,7 @@ RUN apk add --no-cache --virtual .build-deps \
     linux-headers && \
     python3 -m venv /opt/azure-cli-venv && \
     /opt/azure-cli-venv/bin/pip install --no-cache-dir --upgrade pip && \
-    /opt/azure-cli-venv/bin/pip install --no-cache-dir azure-cli && \
-    /opt/azure-cli-venv/bin/pip install --no-cache-dir --upgrade "cryptography>=48.0.1" && \
+    /opt/azure-cli-venv/bin/pip install --no-cache-dir azure-cli "cryptography>=48.0.1" && \
     ln -s /opt/azure-cli-venv/bin/az /usr/local/bin/az && \
     apk del .build-deps
 
