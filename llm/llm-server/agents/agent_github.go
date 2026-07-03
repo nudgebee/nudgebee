@@ -12,8 +12,13 @@ import (
 // Tool/Agent Constants
 const GithubAgentName = "github"
 
+// githubAgentDescription is the single source of truth for the agent/tool
+// description, reused by both the tool registration in init() and GetDescription()
+// so the two never drift.
+const githubAgentDescription = `Interacts with GitHub via the gh CLI for METADATA operations only — issues, PR review/merge state, workflow runs/logs, run artifacts (e.g. downloading a failed run's uploaded artifacts to triage the failure), releases, repo settings, branches, comments, and labels. Smart and self-discovering: handles its own repository and organization detection. DO NOT use this agent to read, analyze, or modify source code, or to raise PRs containing code changes — for any task involving source files in a Git repository (including PR creation that modifies code, bug fixes, refactors, or migrations), use 'agent_code_2' instead. Returns command results and summaries for automation, monitoring, or troubleshooting.`
+
 func init() {
-	toolDescription := `Interacts with GitHub via the gh CLI for METADATA operations only — issues, PR review/merge state, workflow runs/logs, run artifacts (e.g. downloading a failed run's Playwright/E2E report to triage a UI/test failure), releases, repo settings, branches, comments, and labels. Smart and self-discovering: handles its own repository and organization detection. DO NOT use this agent to read, analyze, or modify source code, or to raise PRs containing code changes — for any task involving source files in a Git repository (including PR creation that modifies code, bug fixes, refactors, or migrations), use 'agent_code_2' instead. Returns command results and summaries for automation, monitoring, or troubleshooting.`
+	toolDescription := githubAgentDescription
 	toolInput := "Natural Language query about Github resources or operations."
 	toolOutput := "Output of Github Cli tool"
 	core.RegisterNBAgentFactoryAndTool(GithubAgentName, func(accountId string) (core.NBAgent, error) {
@@ -40,7 +45,7 @@ func (a GithubAgent) GetNameAliases() []string {
 }
 
 func (a GithubAgent) GetDescription() string {
-	return `Interacts with GitHub via the gh CLI for METADATA operations only — issues, PR review/merge state, workflow runs/logs, run artifacts (e.g. downloading a failed run's Playwright/E2E report to triage a UI/test failure), releases, repo settings, branches, comments, and labels. Smart and self-discovering: handles its own repository and organization detection. DO NOT use this agent to read, analyze, or modify source code, or to raise PRs containing code changes — for any task involving source files in a Git repository (including PR creation that modifies code, bug fixes, refactors, or migrations), use 'agent_code_2' instead. Returns command results and summaries for automation, monitoring, or troubleshooting.`
+	return githubAgentDescription
 }
 
 func (a GithubAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
