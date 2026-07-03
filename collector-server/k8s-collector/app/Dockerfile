@@ -15,10 +15,15 @@ RUN apk add --no-cache libsodium-dev cython libexpat pgbadger
 WORKDIR /opt/pysetup
 COPY poetry.lock pyproject.toml ./
 
-# Install dependencies in a virtual environment
+# Install dependencies in a virtual environment.
+# Upgrade the venv's seeded pip: `python -m venv` bundles pip 25.0.1, which
+# carries fixable CVEs that trivy flags on the copied .venv even though uv (not
+# pip) resolves our deps. The upgrade keeps the shipped venv off the vulnerable
+# pip without changing the resolved dependency set.
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/root/.cache/pip \
     python -m venv /opt/pysetup/.venv && \
+    /opt/pysetup/.venv/bin/pip install --no-cache-dir --upgrade pip && \
     uv pip install --requirements pyproject.toml
 
 # Stage 2: production

@@ -43,5 +43,9 @@ RUN export DEBIAN_FRONTEND=noninteractive && \
     "${CONDA_DIR}/bin/conda" install -n myenv -c conda-forge pulp -y && \
     "${CONDA_DIR}/bin/conda" run -n myenv pip install uv && \
     "${CONDA_DIR}/bin/conda" run -n myenv pip uninstall -y importlib-metadata || true && \
+    # Patch the conda base env's msgpack (tooling dep, python 3.13) off the
+    # vulnerable 1.1.2 that trivy flags HIGH. The app runs from `myenv`, but the
+    # base env still ships in the image, so bump it to the fixed release.
+    "${CONDA_DIR}/bin/conda" install -n base -c conda-forge "msgpack-python>=1.2.1" -y && \
     "${CONDA_DIR}/bin/conda" clean --yes --all && \
     rm -rf /root/.cache
