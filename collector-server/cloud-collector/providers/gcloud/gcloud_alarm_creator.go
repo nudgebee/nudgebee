@@ -183,23 +183,87 @@ func ValidateGCPAlarmConfig(config providers.AlarmCreationConfig) error {
 // Cloud Monitoring metric type used to build an alert policy filter for a simple-metric
 // alarm. It prefers the authoritative values carried from the alarm template
 // (ResourceType / MetricTypeFilter); for GCP, config.MetricName is only a short display
-// label (e.g. "DiskUtilization") and is NOT a valid metric.type. The name-based lookup
-// is kept as a fallback for older recommendations generated before these fields existed.
+// label (e.g. "DiskUtilization") and is NOT a valid metric.type.
 func resolveGCPMetricFilter(config providers.AlarmCreationConfig) (resourceType, metricType string, err error) {
-	metricType = config.MetricTypeFilter
-	if metricType == "" {
-		metricType = config.MetricName
+	return resolveGCPMetricAndResource(config.Namespace, config.MetricName, config.MetricTypeFilter, config.ResourceType)
+}
+
+// resolveGCPMetricAndResource resolves the fully-qualified Cloud Monitoring metric type
+// and monitored resource type from whatever a (possibly stale) alarm config carries.
+//
+// Fresh recommendations (see #32489) carry the authoritative metricTypeFilter/resourceType
+// straight from the alarm template, so those are used verbatim. Recommendations stored
+// before that fix carry only the short display label (metricName, e.g. "DiskUtilization")
+// plus the namespace — neither of which is a valid metric.type. For those we recover the
+// missing fields from the alarm template that owns this (namespace, metricName) pair, i.e.
+// the exact values a freshly-generated recommendation would carry, so "Create Alarm" keeps
+// working without regenerating the recommendation. getResourceTypeFromMetric remains as a
+// last-resort fallback for metric types the templates don't describe.
+func resolveGCPMetricAndResource(namespace, metricName, metricTypeFilter, resourceType string) (resType, metType string, err error) {
+	metType = metricTypeFilter
+	resType = resourceType
+
+	// Recover authoritative fields for stale configs that lack them.
+	if metType == "" || resType == "" {
+		if tplMetricType, tplResourceType, ok := lookupGCPTemplateMetricFields(namespace, metricName); ok {
+			if metType == "" {
+				metType = tplMetricType
+			}
+			if resType == "" {
+				resType = tplResourceType
+			}
+		}
 	}
 
-	resourceType = config.ResourceType
-	if resourceType == "" {
-		resourceType, err = getResourceTypeFromMetric(metricType)
+	if metType == "" {
+		metType = metricName
+	}
+
+	if resType == "" {
+		resType, err = getResourceTypeFromMetric(metType)
 		if err != nil {
 			return "", "", err
 		}
 	}
 
-	return resourceType, metricType, nil
+	return resType, metType, nil
+}
+
+// lookupGCPTemplateMetricFields recovers the fully-qualified metric type and monitored
+// resource type for a metric identified by its namespace and short display label, by
+// matching against the embedded alarm templates — the same source of truth used to
+// generate recommendations. Returns ok=false when no template describes the pair.
+func lookupGCPTemplateMetricFields(namespace, metricName string) (metricType, resourceType string, ok bool) {
+	if namespace == "" || metricName == "" {
+		return "", "", false
+	}
+
+	seen := make(map[string]struct{})
+	for _, templates := range GetAllGCPTemplates() {
+		for i := range templates {
+			cfg := templates[i].Configuration
+			if cfg.Namespace != namespace || cfg.MetricName != metricName {
+				continue
+			}
+			if cfg.MetricTypeFilter == "" && cfg.ResourceType == "" {
+				continue
+			}
+			// Guard against templates in different service files describing the
+			// same (namespace, metricName) pair with conflicting fields.
+			key := cfg.MetricTypeFilter + "|" + cfg.ResourceType
+			if _, dup := seen[key]; !dup {
+				seen[key] = struct{}{}
+			}
+			metricType = cfg.MetricTypeFilter
+			resourceType = cfg.ResourceType
+		}
+	}
+
+	if len(seen) != 1 {
+		// No match, or ambiguous match across templates — let the caller fall back.
+		return "", "", false
+	}
+	return metricType, resourceType, true
 }
 
 // buildSimpleCondition builds a condition for a simple metric alarm
@@ -259,15 +323,20 @@ func buildMQLCondition(config providers.AlarmCreationConfig) (*monitoringpb.Aler
 		var metricQuery string
 		for _, metric := range config.Metrics {
 			if metric.MetricStat != nil && metric.MetricStat.Metric.MetricName != "" && metric.ReturnData {
-				// Get resource type for this metric
-				resourceType, err := getResourceTypeFromMetric(metric.MetricStat.Metric.MetricName)
+				// Resolve the fully-qualified metric type and resource type. Like the
+				// simple-metric path, the per-metric MetricName may be only a short
+				// display label on stale configs, so recover the real values from the
+				// alarm templates before building the fetch clause.
+				resourceType, resolvedMetricType, err := resolveGCPMetricAndResource(
+					metric.MetricStat.Metric.Namespace, metric.MetricStat.Metric.MetricName, "", "")
 				if err != nil {
-					// Try to use metric name directly if resource type lookup fails
+					// Last resort: fetch by the metric name as given.
 					resourceType = "gce_instance"
+					resolvedMetricType = metric.MetricStat.Metric.MetricName
 				}
 
 				// Build fetch clause
-				metricQuery = fmt.Sprintf("fetch %s | metric '%s'", resourceType, metric.MetricStat.Metric.MetricName)
+				metricQuery = fmt.Sprintf("fetch %s | metric '%s'", resourceType, resolvedMetricType)
 
 				// Add aggregation if statistic is specified
 				if config.Statistic != "" {
