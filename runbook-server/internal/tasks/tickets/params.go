@@ -3,6 +3,8 @@ package tickets
 import (
 	"errors"
 	"fmt"
+	"strings"
+
 	"nudgebee/runbook/common"
 	"nudgebee/runbook/internal/tasks/types"
 	"nudgebee/runbook/services/integrations"
@@ -78,6 +80,44 @@ func extractOptionalStringSlice(params map[string]any, field string) ([]string, 
 	default:
 		return nil, fmt.Errorf("%s must be an array of strings", field)
 	}
+}
+
+// extractRequiredStringSlice extracts a required string-slice parameter. Accepts
+// a []string / []any (multi-select fields) or a bare string (legacy workflows
+// saved before the field became multi-valued). Returns an error when no
+// non-empty value is present.
+func extractRequiredStringSlice(params map[string]any, field string) ([]string, error) {
+	switch v := params[field].(type) {
+	case string:
+		if s := strings.TrimSpace(v); s != "" {
+			return []string{s}, nil
+		}
+	case []string:
+		out := make([]string, 0, len(v))
+		for _, s := range v {
+			if s = strings.TrimSpace(s); s != "" {
+				out = append(out, s)
+			}
+		}
+		if len(out) > 0 {
+			return out, nil
+		}
+	case []any:
+		out := make([]string, 0, len(v))
+		for i, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("%s[%d] must be a string", field, i)
+			}
+			if s = strings.TrimSpace(s); s != "" {
+				out = append(out, s)
+			}
+		}
+		if len(out) > 0 {
+			return out, nil
+		}
+	}
+	return nil, fmt.Errorf("%s is required", field)
 }
 
 // extractAssignee pulls a platform user identifier out of additional_fields.

@@ -494,28 +494,57 @@ func TransitionTicket(ctx *gin.Context) {
 	})
 }
 
+// coerceStringSlice normalizes an additional_fields value that may be a single
+// string or a JSON array ([]any / []string) into a trimmed, non-empty []string.
+func coerceStringSlice(v any) []string {
+	switch t := v.(type) {
+	case string:
+		if s := strings.TrimSpace(t); s != "" {
+			return []string{s}
+		}
+	case []string:
+		out := make([]string, 0, len(t))
+		for _, s := range t {
+			if s = strings.TrimSpace(s); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, item := range t {
+			if s, ok := item.(string); ok {
+				if s = strings.TrimSpace(s); s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+		return out
+	}
+	return nil
+}
+
 func AssignTicket(ctx *gin.Context) {
 	ticket, ok := bindAndAuthoriseTicketRequest(ctx, "write")
 	if !ok {
 		return
 	}
 
-	// Get assignee from additional_fields
-	assignee := ""
+	// Assignee arrives in additional_fields as either a single string (legacy
+	// single-assignee workflows) or an array of strings (multi-assignee).
+	var assignees []string
 	if ticket.AdditionalFields != nil {
 		if fields, ok := ticket.AdditionalFields.(map[string]any); ok {
-			if a, ok := fields["assignee"].(string); ok {
-				assignee = a
-			}
+			assignees = coerceStringSlice(fields["assignee"])
 		}
 	}
 
-	if assignee == "" {
+	if len(assignees) == 0 {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "assignee is required"})
 		return
 	}
 
-	updateFields := models.UpdateFields{Assignee: assignee}
+	updateFields := models.UpdateFields{Assignees: assignees}
 	err := services.UpdateTicket(ctx, ticket, updateFields)
 	if err != nil {
 		slog.Error("Failed to assign ticket:", "ticketID", ticket.TicketID, "error", err)
@@ -525,7 +554,7 @@ func AssignTicket(ctx *gin.Context) {
 
 	ctx.JSON(http.StatusOK, gin.H{
 		"ticket_id": ticket.TicketID,
-		"assignee":  assignee,
+		"assignee":  assignees,
 		"message":   "Ticket assigned successfully",
 	})
 }

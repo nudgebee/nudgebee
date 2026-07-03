@@ -272,7 +272,7 @@ func (s *PagerDutyService) Update(ctx *gin.Context, config models.TicketConfigur
 
 	// PagerDuty supports only status transitions; reject other fields so the
 	// workflow author sees an explicit error rather than a silent no-op.
-	if updateFields.Severity != "" || updateFields.Assignee != "" || updateFields.Description != "" || len(updateFields.Labels) > 0 {
+	if updateFields.Severity != "" || updateFields.HasAssignee() || updateFields.Description != "" || len(updateFields.Labels) > 0 {
 		return fmt.Errorf("PagerDuty update supports only status; severity, assignee, description, and labels are not supported")
 	}
 

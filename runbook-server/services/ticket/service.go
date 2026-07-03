@@ -725,19 +725,19 @@ func TransitionTicket(ctx *security.RequestContext, request TransitionTicketRequ
 
 // AssignTicketRequest represents a request to assign a ticket
 type AssignTicketRequest struct {
-	TicketId      string `json:"ticket_id"`
-	IntegrationId string `json:"integration_id"`
-	AccountId     string `json:"account_id"`
-	Assignee      string `json:"assignee"`
-	ProjectKey    string `json:"project_key"`
+	TicketId      string   `json:"ticket_id"`
+	IntegrationId string   `json:"integration_id"`
+	AccountId     string   `json:"account_id"`
+	Assignees     []string `json:"assignees"`
+	ProjectKey    string   `json:"project_key"`
 }
 
 // AssignTicketResponse represents the response from assigning a ticket
 type AssignTicketResponse struct {
-	TicketID string `json:"ticket_id"`
-	Assignee string `json:"assignee"`
-	Message  string `json:"message"`
-	Error    string `json:"error,omitempty"`
+	TicketID  string   `json:"ticket_id"`
+	Assignees []string `json:"assignee"`
+	Message   string   `json:"message"`
+	Error     string   `json:"error,omitempty"`
 }
 
 // AssignTicket assigns a ticket to a user
@@ -759,7 +759,7 @@ func AssignTicket(ctx *security.RequestContext, request AssignTicketRequest) (As
 				"created_by":     userID,
 				"project_key":    request.ProjectKey,
 				"additional_fields": map[string]any{
-					"assignee": request.Assignee,
+					"assignee": request.Assignees,
 				},
 			},
 		},

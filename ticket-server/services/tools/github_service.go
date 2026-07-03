@@ -688,8 +688,10 @@ func (s *GitHubService) Update(ctx *gin.Context, config models.TicketConfigurati
 		hasUpdates = true
 	}
 
-	if updateFields.Assignee != "" {
-		issueRequest.Assignee = &updateFields.Assignee
+	if assignees := updateFields.AssigneeList(); len(assignees) > 0 {
+		// GitHub natively supports multiple assignees. Setting the Assignees
+		// array replaces the current set (the requested "set to selected" semantics).
+		issueRequest.Assignees = &assignees
 		hasUpdates = true
 	}
 

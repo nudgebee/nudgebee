@@ -845,8 +845,11 @@ func (s *ServiceNowService) Update(ctx *gin.Context, config models.TicketConfigu
 		}
 	}
 
-	if updateFields.Assignee != "" {
-		if err := updateServiceNowIncidentField(ctx, config, ticketID, "assigned_to", updateFields.Assignee); err != nil {
+	if assignees := updateFields.AssigneeList(); len(assignees) > 0 {
+		if len(assignees) > 1 {
+			return fmt.Errorf("only a single assignee is supported for ServiceNow; %d were provided", len(assignees))
+		}
+		if err := updateServiceNowIncidentField(ctx, config, ticketID, "assigned_to", assignees[0]); err != nil {
 			return err
 		}
 	}
