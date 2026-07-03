@@ -26,12 +26,18 @@ CHAT_BOT_SCOPE = "https://www.googleapis.com/auth/chat.bot"
 # Lets the app manage its own space memberships (self-join / leave). The Workspace
 # admin must authorize this scope for the app in Google before membership calls
 # succeed; until then Google returns 403, which we surface for the guided-grant UI.
-CHAT_MEMBERSHIPS_SCOPE = "https://www.googleapis.com/auth/chat.app.memberships"
+CHAT_APP_MEMBERSHIPS_SCOPE = "https://www.googleapis.com/auth/chat.app.memberships"
 
 # Lets the app create named spaces (find-or-create destinations for runbooks). Like
 # the memberships scope, the Workspace admin must authorize it before spaces.create
 # succeeds; until then Google returns 403, surfaced as reason='needs_authorization'.
 CHAT_SPACES_CREATE_SCOPE = "https://www.googleapis.com/auth/chat.spaces.create"
+
+# Lets the app add/remove *other* users (humans) to spaces it manages. This is
+# distinct from chat.app.memberships (which only governs the app's own membership).
+# The Workspace admin must authorize it before members.create for a human succeeds;
+# until then Google returns 403, surfaced as reason='needs_authorization'.
+CHAT_MEMBERSHIPS_SCOPE = "https://www.googleapis.com/auth/chat.memberships"
 
 
 class GoogleChatAppClient:
@@ -69,7 +75,13 @@ class GoogleChatAppClient:
                 raise ValueError("Google Chat service account key is not configured (GOOGLE_CHAT_SA_KEY).")
             sa_info = json.loads(sa_key)
             credentials = service_account.Credentials.from_service_account_info(
-                sa_info, scopes=[CHAT_BOT_SCOPE, CHAT_MEMBERSHIPS_SCOPE, CHAT_SPACES_CREATE_SCOPE]
+                sa_info,
+                scopes=[
+                    CHAT_BOT_SCOPE,
+                    CHAT_APP_MEMBERSHIPS_SCOPE,
+                    CHAT_SPACES_CREATE_SCOPE,
+                    CHAT_MEMBERSHIPS_SCOPE,
+                ],
             )
 
             # Each transport binds a hard socket timeout: googleapiclient's default
@@ -314,3 +326,69 @@ class GoogleChatAppClient:
         except Exception as e:
             LOG.exception("Unexpected error creating Google Chat space for tenant %s", tenant)
             return {"success": False, "reason": "unexpected_error", "error": str(e)}
+
+    @classmethod
+    def add_members(cls, space, user_ids, tenant=None):
+        """Add one or more human users to a space as the Chat app.
+
+        Requires the chat.memberships scope to be authorized for the app in the
+        target Workspace; until an admin grants it Google returns 403, surfaced as
+        reason='needs_authorization' so the UI can prompt the admin. Each user is
+        added individually so a single failure doesn't block the rest; 409 (already
+        a member) is treated as idempotent success.
+
+        `user_ids` entries may be numeric people IDs ("users/1234...") or bare IDs;
+        the "users/" prefix is added when missing.
+        """
+        space_id = _normalize_space(space)
+        added = []
+        already_members = []
+        failed = []
+
+        for user_id in user_ids:
+            member_name = user_id if str(user_id).startswith("users/") else f"users/{user_id}"
+            try:
+                service = cls._get_service()
+                service.spaces().members().create(
+                    parent=space_id,
+                    body={"member": {"name": member_name, "type": "HUMAN"}},
+                ).execute()
+                added.append(user_id)
+            except HttpError as e:
+                status_code, error_status, error_message = parse_http_error(e)
+                if status_code == 409:
+                    already_members.append(user_id)
+                    continue
+                if status_code == 403:
+                    # An unauthorized scope fails every user identically; report it
+                    # once at the operation level instead of per user.
+                    LOG.error(
+                        "Google Chat (app auth) add-member needs authorization for %s: %s",
+                        space_id,
+                        error_message,
+                    )
+                    return {
+                        "success": False,
+                        "channel_id": space_id,
+                        "reason": "needs_authorization",
+                        "error": error_message,
+                    }
+                LOG.error(
+                    "Google Chat (app auth) add-member error for %s user %s: %s (status=%s)",
+                    space_id,
+                    user_id,
+                    error_message,
+                    status_code,
+                )
+                failed.append({"user_id": user_id, "error": error_message})
+            except Exception as e:
+                LOG.exception("Unexpected error adding Google Chat member %s to %s", user_id, space_id)
+                failed.append({"user_id": user_id, "error": str(e)})
+
+        return {
+            "success": True,
+            "channel_id": space_id,
+            "added": added,
+            "already_members": already_members,
+            "failed": failed,
+        }

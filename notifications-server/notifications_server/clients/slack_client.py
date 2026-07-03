@@ -60,6 +60,10 @@ class SlackClient(WebClient):
         client = WebClient(token=token)
         return client.conversations_join(channel=channel_id, **kwargs)
 
+    def conversations_invite(self, *, token, channel_id=None, users=None, **kwargs):
+        client = WebClient(token=token)
+        return client.conversations_invite(channel=channel_id, users=users, **kwargs)
+
     def reactions_get(self, *, token, channel_id=None, timestamp=None, **kwargs):
         client = WebClient(token=token)
         return client.reactions_get(channel=channel_id, timestamp=timestamp, full=True, **kwargs)

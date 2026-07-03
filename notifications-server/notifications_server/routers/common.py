@@ -254,6 +254,68 @@ async def create_channel(request: Request, payload: Dict[Any, Any]):
         return JSONResponse({"error": {"message": "Unable to create channel"}}, status_code=500)
 
 
+@router.post("/channels/members/add", status_code=201, dependencies=[Depends(verify_action_token)])
+async def add_channel_members(request: Request, payload: Dict[Any, Any]):
+    try:
+        # Get tenant from header (set by authenticated callers like runbook-server)
+        tenant_id = request.headers.get("tenant")
+        if not tenant_id:
+            return JSONResponse(
+                {"error": {"message": ERROR_MISSING_TENANT_HEADER}},
+                status_code=401,
+            )
+
+        platform = payload.get("platform")
+        channel_id = payload.get("channel_id")
+        team_id = payload.get("team_id")
+        user_ids = payload.get("user_ids")
+
+        # Accept a single id or a list; normalize to a clean list of non-empty ids.
+        # Guard against non-iterable payload shapes (e.g. an int) so a malformed
+        # body yields a 400, not an unhandled TypeError.
+        if isinstance(user_ids, str):
+            user_ids = [user_ids]
+        elif not isinstance(user_ids, list):
+            user_ids = []
+        user_ids = [str(u) for u in user_ids if u]
+
+        if not isinstance(platform, str) or not isinstance(channel_id, str) or not user_ids:
+            return JSONResponse(
+                {"error": {"message": "Missing or invalid required fields: platform, channel_id, user_ids"}},
+                status_code=400,
+            )
+
+        if platform.lower() not in ["slack", "ms_teams", "google_chat"]:
+            return JSONResponse(
+                {
+                    "error": {
+                        "message": (
+                            f"Platform {platform} is not supported for adding members. "
+                            "Supported platforms: slack, ms_teams, google_chat"
+                        )
+                    }
+                },
+                status_code=400,
+            )
+
+        with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
+            result = controller.add_channel_members(
+                platform=platform.lower(),
+                tenant_id=tenant_id,
+                channel_id=channel_id,
+                user_ids=user_ids,
+                team_id=team_id,
+            )
+
+            if "error" in result:
+                return JSONResponse(result, status_code=400)
+
+            return JSONResponse(content=result)
+    except Exception:
+        LOG.exception("Error in add_channel_members endpoint")
+        return JSONResponse({"error": {"message": "Unable to add members"}}, status_code=500)
+
+
 @router.post("/channels/message", status_code=201, dependencies=[Depends(verify_action_token)])
 async def send_channel_message(request: Request, payload: Dict[Any, Any]):
     try:
