@@ -43,6 +43,52 @@ func resolveK8sWorkloadNodeID(kg *core.Service, tenantID, accountID string, ref 
 	return res.Nodes[0].ID, true
 }
 
+// maxStoredDependents caps how many dependent identities we persist in the
+// impact_summary. Dependents arrive sorted closest-first (fewest hops, then
+// name), so the stored prefix is the most relevant slice of a large blast
+// radius; dependent_count remains the authoritative total. Bounding the list
+// keeps finops_score_breakdown small even for a high-fan-out resource (e.g. a
+// shared database with hundreds of callers) that the cron rewrites every 6h.
+const maxStoredDependents = 50
+
+// dependentRef is the compact, persisted identity of one blast-radius dependent.
+// It carries what the safety UI and @finops agent need to name a dependent and
+// judge its risk — identity (namespace/name for k8s; name alone for cloud, where
+// namespace is empty and omitted), kind, environment (the production-risk
+// driver), and proximity (hops from the changed resource) — and deliberately
+// drops the graph-internal node_id, an opaque UUID of no use downstream.
+type dependentRef struct {
+	Namespace   string `json:"namespace,omitempty"`
+	Name        string `json:"name"`
+	NodeType    string `json:"node_type"`
+	Environment string `json:"environment,omitempty"`
+	HopsAway    int    `json:"hops_away"`
+}
+
+// compactDependents projects a knowledge-graph blast radius into the bounded list
+// of dependent identities stored on the recommendation. Order is preserved (the
+// summary is already sorted closest-first) and the result is capped at
+// maxStoredDependents. It always returns a non-nil slice so the persisted JSON is
+// [] rather than null when there are no dependents. Provider-agnostic: a cloud
+// recommendation's dependents flow through unchanged, with namespace omitted.
+func compactDependents(deps []core.ImpactedService) []dependentRef {
+	n := len(deps)
+	if n > maxStoredDependents {
+		n = maxStoredDependents
+	}
+	out := make([]dependentRef, n)
+	for i, d := range deps[:n] {
+		out[i] = dependentRef{
+			Namespace:   d.Namespace,
+			Name:        d.Name,
+			NodeType:    string(d.NodeType),
+			Environment: d.Environment,
+			HopsAway:    d.HopsAway,
+		}
+	}
+	return out
+}
+
 // resolveK8sRecommendationImpact resolves a k8s recommendation to its workload
 // node, computes the blast radius, and derives the safety band. ok=false means
 // the recommendation could not be resolved (caller should leave it unannotated).
@@ -65,6 +111,7 @@ func resolveK8sRecommendationImpact(kg *core.Service, tenantID, accountID string
 			"coverage_confidence":   string(impact.CoverageConfidence),
 			"truncated":             impact.Truncated,
 			"safety_reason":         reason,
+			"dependents":            compactDependents(impact.Dependents),
 		},
 	}, true
 }
