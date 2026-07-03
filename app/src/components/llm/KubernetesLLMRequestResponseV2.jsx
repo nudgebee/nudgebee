@@ -1,14 +1,13 @@
 import apiAskNudgebee from '@api1/ask-nudgebee';
-import { decisionsRecord } from '@api1/memory';
 import { ShareIconBlue, SaveIconOutlineselect } from '@assets';
-import Chart from '@ui/Chart';
+import { LineChart } from '@shared';
 import Text from '@shared/format/Text';
 import CopyButton from '@shared/buttons/CopyButton';
 import Tooltip from '@ui/Tooltip';
 import { Divider } from '@ui/Divider';
 import { Link } from '@ui/Link';
 import MarkDowns from '@shared/viewers/MarkDowns';
-import CustomTable from '@shared/tables/CustomTable';
+import CustomTable from '@shared/tables/CustomTable2';
 import FeedbackComponent from '@ui/FeedbackVote';
 import { SummaryBlock } from '@components/k8s/KubernetesClusterSummary';
 import Duration from '@components/llm/common/Duration';
@@ -21,7 +20,7 @@ import { useRouter } from 'next/router';
 import React, { useEffect, useState } from 'react';
 import { ds } from '@utils/colors';
 import { convertToReadableFormat } from 'src/utils/common';
-import KubernetesTable from '@components/k8s/common/KubernetesTable';
+import KubernetesTable2 from '@components/k8s/common/KubernetesTable2';
 import { mapToTableData } from '@components/k8s/details/KubernetesLogStash';
 import { LogDate } from '@components/k8s/common/LogDate';
 import { AgentTokenUsage } from './common/TokenUsageDisplay';
@@ -444,7 +443,7 @@ const KubernetesLLMRequestResponse = (props) => {
                         </Grid>
                         {e.values?.length > 1 ? (
                           <Grid item md={12} mb={ds.space[4]}>
-                            <Chart.Line data={e.values} labels={e.timestamps} />
+                            <LineChart data={e.values} labels={e.timestamps} />
                           </Grid>
                         ) : (
                           <>
@@ -614,7 +613,7 @@ const KubernetesLLMRequestResponse = (props) => {
           let tableData = mapToTableData(logsData);
           return (
             <Grid container sx={{ marginBottom: ds.space[2], fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-blue-700)' }}>
-              <KubernetesTable
+              <KubernetesTable2
                 id={'k8s-logs'}
                 totalRows={tableData.length}
                 data={tableData}
@@ -1049,26 +1048,10 @@ const KubernetesLLMRequestResponse = (props) => {
         llm_response: '',
         user_corrected_response: '',
         additional_notes: createFeedbackObject.type == 'thumbs_up' ? 'User liked the Response' : createFeedbackObject.message,
-        conversation_id: props.sessionId || props.conversationId || props.toolCall.id,
+        conversation_id: props.toolCall.id,
         cloud_account_id: props.accountId,
         useful: createFeedbackObject.type == 'thumbs_up',
       });
-      // Mirror the vote into Memory's Decisions layer so the next chat
-      // sees "user has agreed/disagreed with N RCAs about <subject>".
-      // Fire-and-forget — feedback is the user-facing success path.
-      const isPositive = createFeedbackObject.type == 'thumbs_up';
-      const questionText = typeof props.generateQuestionText === 'function' ? props.generateQuestionText() : props.generateQuestionText;
-      const question = (questionText || '').trim();
-      if (question) {
-        decisionsRecord({
-          decisionType: isPositive ? 'root_cause_agreed' : 'root_cause_disagreed',
-          subject: question.slice(0, 240),
-          rationale: isPositive ? 'user thumbs-up on RCA' : createFeedbackObject.message || 'user thumbs-down on RCA',
-          conversationId: props.toolCall?.id,
-        }).catch(() => {
-          // Memory write is best-effort; never block feedback toast.
-        });
-      }
     }
   };
 
@@ -1144,16 +1127,8 @@ const KubernetesLLMRequestResponse = (props) => {
                     <>
                       <Box sx={{ borderLeft: '1px solid var(--ds-gray-200)', height: ds.space.mul(1, 5), mx: ds.space[1] }} />
                       <Box
-                        role='button'
-                        tabIndex={0}
                         onMouseEnter={(e) => setReferencesAnchorEl(e.currentTarget)}
                         onClick={(e) => setReferencesAnchorEl(e.currentTarget)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            setReferencesAnchorEl(e.currentTarget);
-                          }
-                        }}
                         sx={{
                           display: 'flex',
                           alignItems: 'center',
@@ -1226,16 +1201,8 @@ const KubernetesLLMRequestResponse = (props) => {
                     {props.agentTokenData && <AgentTokenUsage agentData={props.agentTokenData} />}
                     {parsedReferences.length > 0 && (
                       <Box
-                        role='button'
-                        tabIndex={0}
                         onMouseEnter={(e) => setReferencesAnchorEl(e.currentTarget)}
                         onClick={(e) => setReferencesAnchorEl(e.currentTarget)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault();
-                            setReferencesAnchorEl(e.currentTarget);
-                          }
-                        }}
                         sx={{
                           display: 'flex',
                           alignItems: 'center',

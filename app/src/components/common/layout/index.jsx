@@ -30,10 +30,9 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import Tooltip from '@ui/Tooltip';
 import TenantSettings from '@shared/settings/TenantSettings';
 import ApiTokens from '@shared/settings/ApiTokens';
-import { toast as snackbar } from '@ui/Toast';
+import { snackbar } from '@shared/snackbarService';
 import { createGetMenuItem, generateMenuItems } from './UserMenuItems';
-import NubiBrainNav from './NubiBrainNav';
-import { ds } from 'src/utils/colors';
+import { colors } from 'src/utils/colors';
 import { isRenderedInIframe } from 'src/utils/common';
 
 const COLLAPSED_WIDTH = 76;
@@ -173,7 +172,7 @@ const SideDrawerButton = ({ open = false, item = {}, onClick, handleDrawerOpen }
           <Box className='collapsable'>
             {item.subItems?.map((sub, idx) => (
               <Button key={`${sub.text}-${idx}`} onClick={() => onClick(sub.path)} className={`menu-item sub-item`}>
-                <Box sx={{ width: ds.space.mul(1, 5), height: ds.space.mul(1, 5), position: 'relative' }}>
+                <Box sx={{ width: '20px', height: '20px', position: 'relative' }}>
                   <SafeIcon priority={true} src={sub.icon} alt={sub.text} fill style={{ objectFit: 'contain' }} />
                 </Box>
                 {open && (
@@ -229,10 +228,10 @@ const PageLayout = ({ children }) => {
         text: 'Troubleshoot',
         id: 'troubleshoot-sidenavbutton',
       },
-      { path: '/auto-pilot', icon: WorkflowIconWhite, text: 'Automations', id: 'auto-pilot-sidenavbutton' },
       { path: '/optimise', icon: WhiteOptimizeIcon, text: 'Optimize', id: 'optimize-sidenavbutton' },
       { path: '/kubernetes', icon: KubernetesClusterIcon, text: 'Clusters', haveSubItems: true, id: 'clusters-sidenavbutton' },
       { path: '/cloud-account', icon: CloudAccountIcon, text: 'Cloud', haveSubItems: true, id: 'cloud-sidenavbutton' },
+      { path: '/auto-pilot', icon: WorkflowIconWhite, text: 'Automations', id: 'auto-pilot-sidenavbutton' },
       { path: '/tickets', icon: ticketsIcon1, text: 'Tickets', id: 'tickets-sidenavbutton' },
     ];
     if (hasReadAccess()) {
@@ -341,7 +340,6 @@ const PageLayout = ({ children }) => {
                   <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', marginTop: 'var(--ds-space-3)' }}>
                     <Link href={homeUrl} passHref>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      {/* oxlint-disable nextjs/no-img-element -- dynamic branding URL; next/image requires static domain allowlist */}
                       {!brandingLoading && (
                         <img
                           src={logoSrc}
@@ -349,10 +347,9 @@ const PageLayout = ({ children }) => {
                           aria-label={baseTitle}
                           width={50}
                           height={40}
-                          style={{ maxWidth: ds.space.mul(0, 25), maxHeight: ds.space.mul(1, 10), objectFit: 'contain' }}
+                          style={{ maxWidth: '50px', maxHeight: '40px', objectFit: 'contain' }}
                         />
                       )}
-                      {/* oxlint-enable nextjs/no-img-element */}
                     </Link>
                   </Box>
                   <Box sx={styles.separator} />
@@ -365,17 +362,7 @@ const PageLayout = ({ children }) => {
                   ))}
 
                   <Box sx={styles.userMenuContainer}>
-                    <Box sx={{ mb: 'var(--ds-space-3)' }}>
-                      <NubiBrainNav surface='dark' />
-                    </Box>
                     <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                      <Tooltip title='Account Settings' placement='right'>
-                        <IconButton id='account-setting' onClick={(e) => setAnchorElUser(e.currentTarget)} size='small'>
-                          <Box>
-                            <SafeIcon alt='Settings Icon' src={ProfileOutlineIcon} width={16} height={16} />
-                          </Box>
-                        </IconButton>
-                      </Tooltip>
                       {getUserSession()?.tenant?.name && (
                         <Tooltip title={getUserSession()?.tenant?.name} placement='right'>
                           <Typography
@@ -383,8 +370,8 @@ const PageLayout = ({ children }) => {
                             sx={{
                               fontSize: 'var(--ds-text-caption)',
                               fontWeight: 'var(--ds-font-weight-semibold)',
-                              color: ds.background[100],
-                              maxWidth: ds.space.mul(1, 12),
+                              color: colors.text.white,
+                              maxWidth: '48px',
                               textAlign: 'center',
                               mb: 'var(--ds-space-1)',
                             }}
@@ -393,6 +380,13 @@ const PageLayout = ({ children }) => {
                           </Typography>
                         </Tooltip>
                       )}
+                      <Tooltip title='Account Settings' placement='left'>
+                        <IconButton id='account-setting' onClick={(e) => setAnchorElUser(e.currentTarget)} size='small'>
+                          <Box>
+                            <SafeIcon alt='Settings Icon' src={ProfileOutlineIcon} width={16} height={16} />
+                          </Box>
+                        </IconButton>
+                      </Tooltip>
                       <Menu
                         id='menu-appbar'
                         sx={{ '.css-1xyun6z-MuiPaper-root-MuiPopover-paper-MuiMenu-paper': { left: '62px !important' } }}
@@ -402,21 +396,7 @@ const PageLayout = ({ children }) => {
                         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
                         open={Boolean(anchorElUser)}
                         onClose={() => setAnchorElUser(null)}
-                        slotProps={{
-                          paper: {
-                            sx: {
-                              minWidth: 360,
-                              maxWidth: 360,
-                              maxHeight: 'none',
-                              outline: 'none',
-                              border: 'none',
-                              borderRadius: 'var(--ds-overlay-radius)',
-                              boxShadow: 'var(--ds-overlay-shadow)',
-                              backgroundColor: 'var(--ds-overlay-bg)',
-                            },
-                          },
-                        }}
-                        MenuListProps={{ sx: { outline: 'none', py: 'var(--ds-overlay-padding-y)' } }}
+                        slotProps={{ paper: { sx: { minWidth: 360, maxWidth: 360, maxHeight: 'none' } } }}
                       >
                         {avatarSubMenu.map((setting) => getMenuItem(setting))}
                       </Menu>
@@ -434,21 +414,21 @@ const PageLayout = ({ children }) => {
               )}
               <Box
                 sx={{
-                  maxWidth: `calc(100vw - ${COLLAPSED_WIDTH}px - ${ds.space.mul(0, 45)})`,
-                  width: `calc(100vw - ${COLLAPSED_WIDTH}px - ${ds.space.mul(0, 42)})`,
-                  px: open ? ds.space.mul(1, 16) : pageFlags.isAskNudgebee || pageFlags.isAskNudgebeeV2 ? 0 : ds.space.mul(1, 10),
+                  maxWidth: `calc(100vw - ${COLLAPSED_WIDTH}px - 90px)`,
+                  width: `calc(100vw - ${COLLAPSED_WIDTH}px - 84px)`,
+                  px: open ? '64px' : pageFlags.isAskNudgebee || pageFlags.isAskNudgebeeV2 ? '0px' : '40px',
                   backgroundColor:
                     pageFlags.isInvestigate || pageFlags.isOptimize || pageFlags.isTroubleshoot || pageFlags.isAgentic
-                      ? ds.background[100]
+                      ? colors.background.home
                       : pageFlags.isAskNudgebee
-                      ? ds.background[100]
-                      : ds.background[300],
+                      ? colors.background.askNudgebeePage
+                      : colors.background.pages,
                   ...styles.body,
                   position: 'relative',
-                  paddingBottom: isPaddedLayout ? ds.space[3] : 0,
+                  paddingBottom: isPaddedLayout ? '12px' : '0px',
                 }}
               >
-                <Container maxWidth={false} sx={{ maxWidth: ds.space.mul(0, 900) }} style={{ paddingInline: 0 }}>
+                <Container maxWidth='1800px' style={{ paddingInline: 0 }}>
                   <ErrorBoundary resetKey={router.asPath}>{children}</ErrorBoundary>
                 </Container>
               </Box>
@@ -470,7 +450,7 @@ const styles = {
     backgroundColor: 'var(--ds-sidebar-bg, var(--ds-brand-600))',
     minHeight: '100vh',
     transition: 'all ease 0.2s',
-    boxShadow: `${ds.space[0]} 0 ${ds.space[0]} 0 color-mix(in srgb, ${ds.gray[700]} 25%, transparent)`,
+    boxShadow: '2px 0 2px 0 rgba(0,0,0,0.25)',
     display: 'flex',
     justifyContent: 'start',
     alignItems: 'center',
@@ -485,7 +465,7 @@ const styles = {
       flexDirection: 'column',
       justifyContent: 'center',
       alignItems: 'center',
-      gap: 'var(--ds-space-0)',
+      gap: 'var(--ds-space-1)',
       overflow: 'hidden',
       top: 0,
       height: '100vh',
@@ -497,42 +477,42 @@ const styles = {
     },
     '& button': {
       py: 'var(--ds-space-4)',
-      width: ds.space.mul(1, 19),
-      height: ds.space.mul(1, 15),
+      width: '76px',
+      height: '60px',
       display: 'flex',
       justifyContent: 'center',
       textAlign: 'left',
-      borderRadius: 0,
+      borderRadius: '0px',
       '@media (max-width:1535px)': {
         py: 'var(--ds-space-2)',
-        height: ds.space.mul(1, 13),
+        height: '52px',
       },
       '&:hover': {
-        backgroundColor: ds.brand[500],
+        backgroundColor: colors.secondary.default,
       },
       '&.menu-item': {
         borderBottom: 'none',
         justifyContent: 'flex-start',
         gap: 'var(--ds-space-3)',
         borderRadius: 'var(--ds-radius-xl)',
-        color: ds.gray[400],
-        fontSize: 'var(--ds-text-small)',
-        lineHeight: ds.space.mul(0, 8),
+        color: colors.text.secondaryDark,
+        fontSize: 13,
+        lineHeight: '15px',
         fontWeight: 'var(--ds-font-weight-semibold)',
         textTransform: 'none',
         '&.sub-item': { pl: 'var(--ds-space-6)' },
-        '& .sub-text': { fontSize: 'var(--ds-text-caption)', color: ds.gray[600] },
+        '& .sub-text': { fontSize: 8, color: colors.text.tertiary },
         svg: {
-          minHeight: ds.space.mul(1, 5),
-          minWidth: ds.space.mul(1, 5),
-          height: ds.space.mul(1, 5),
-          width: ds.space.mul(1, 5),
-          '&.color-switching-icon': { path: { fill: ds.brand[500] } },
+          minHeight: '20px',
+          minWidth: '20px',
+          height: '20px',
+          width: '20px',
+          '&.color-switching-icon': { path: { fill: colors.switchIconColor } },
         },
         '&.selected': {
-          backgroundColor: ds.brand[500],
-          color: ds.background[100],
-          svg: { '&.color-switching-icon': { path: { fill: ds.background[100] } } },
+          backgroundColor: colors.secondary.default,
+          color: colors.white,
+          svg: { '&.color-switching-icon': { path: { fill: colors.white } } },
         },
       },
     },
@@ -545,43 +525,43 @@ const styles = {
     flexDirection: 'column',
   },
   activeButton: {
-    background: ds.gray.alpha[200],
+    background: colors.background.activeButtonColor,
   },
   activeIndicator: {
-    width: ds.space[1],
+    width: '4px',
     height: '100%',
     position: 'absolute',
     left: 0,
-    background: ds.yellow[500],
+    background: 'var(--nb-color-sidebar-indicator)',
   },
   iconContainer: {
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
-    gap: 0,
+    gap: '0px',
   },
   iconWrapper: {
-    width: ds.space.mul(0, 10),
-    height: ds.space.mul(0, 10),
+    width: '22px',
+    height: '22px',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
     '@media (max-width:1535px)': {
-      width: ds.space.mul(0, 9),
-      height: ds.space.mul(0, 9),
+      width: '18px',
+      height: '18px',
     },
   },
   iconLabel: {
     paddingTop: 'var(--ds-space-3)',
-    lineHeight: ds.space[1],
+    lineHeight: '4px',
     textTransform: 'capitalize',
     fontFamily: 'Roboto',
     fontWeight: 'var(--ds-font-weight-regular)',
-    fontSize: '10px',
-    color: ds.background[100],
+    fontSize: 'var(--ds-text-caption)',
+    color: colors.text.white,
     '@media (max-width:1535px)': {
-      fontSize: '10px',
+      fontSize: 'var(--ds-text-caption)',
     },
   },
   openTextContainer: {
@@ -591,19 +571,19 @@ const styles = {
     whiteSpace: 'nowrap',
   },
   separator: {
-    width: ds.space.mul(0, 23),
-    marginY: ds.space[1],
+    width: '46px',
+    marginY: '4px',
     height: '0.5px',
-    background: ds.background[100],
+    background: colors.background.white,
     display: 'list-item',
     '::marker': { content: '""' },
   },
   subSeparator: {
-    width: ds.space.mul(0, 23),
-    marginY: ds.space[1],
+    width: '46px',
+    marginY: '4px',
     height: '0.25px',
     opacity: '50%',
-    background: ds.gray[400],
+    background: colors.background.secondaryDark,
     display: 'list-item',
     '::marker': { content: '""' },
   },
@@ -611,7 +591,7 @@ const styles = {
     marginTop: 'auto',
     paddingBottom: 'var(--ds-space-2)',
     '& button': {
-      height: ds.space.mul(1, 5),
+      height: '20px',
       py: 'var(--ds-space-4)',
     },
   },

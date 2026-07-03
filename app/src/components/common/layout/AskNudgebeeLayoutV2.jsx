@@ -1,16 +1,16 @@
-import { Box, Button, Container, Menu, Typography } from '@mui/material';
+import { Box, Button, Container, IconButton, Menu, Typography } from '@mui/material';
 import React, { useEffect, useState } from 'react';
 import PropTypes from 'prop-types';
-import { ds } from 'src/utils/colors';
+import { colors } from 'src/utils/colors';
 import { useRouter } from 'next/router';
-import { PlusIconSecondary, ProfileOutlineIcon, ChatOutlineDarkIcon, ArrowBackGrayIcon } from '@assets';
+import { PlusIconSecondary, ProfileOutlineIcon, ChatOutlineDarkIcon, SettingOutlineIcon, ArrowBackGrayIcon } from '@assets';
 import { getUserSession, withAuth } from '@lib/auth';
 import { KeyboardArrowDownRounded } from '@mui/icons-material';
 import { signOut } from 'next-auth/react';
 import { LayoutHeaderActionSlot } from './LayoutHeaderActionSlot';
-import { Button as DsButton } from '@ui/Button';
+import CustomButton from '@shared/NewCustomButton';
 import apiAskNudgebee from '@api1/ask-nudgebee';
-import NubiBrainNav from './NubiBrainNav';
+import SettingsModal from '@components/llm/SettingsModal';
 import TenantSettings from '@shared/settings/TenantSettings';
 import ApiTokens from '@shared/settings/ApiTokens';
 import { createGetMenuItem, generateMenuItems } from './UserMenuItems';
@@ -62,7 +62,7 @@ const SideDrawerButton = ({ open = false, item = {}, handleDrawerOpen, isFirstIt
           ...(isFirstItem && {
             '& > :first-child': {
               padding: 'var(--ds-space-2)',
-              border: `1px solid ${ds.blue[300]}`,
+              border: `1px solid #93C5FD`,
               borderRadius: 'var(--ds-radius-xl)',
               marginTop: 'var(--ds-space-3)',
             },
@@ -73,26 +73,26 @@ const SideDrawerButton = ({ open = false, item = {}, handleDrawerOpen, isFirstIt
         // onMouseEnter={onMouseEnter}
         // onMouseLeave={onMouseLeave}
       >
-        {isActive && <Box sx={{ width: ds.space[1], height: '100%', position: 'absolute', left: 0, background: 'var(--ds-yellow-500)' }} />}
+        {isActive && <Box sx={{ width: '4px', height: '100%', position: 'absolute', left: 0, background: 'var(--ds-yellow-500)' }} />}
         <Box
           sx={{
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
-            gap: 0,
+            gap: '0px',
           }}
         >
           <Box
             sx={{
-              width: ds.space.mul(0, 13),
-              height: ds.space.mul(0, 13),
+              width: '26px',
+              height: '26px',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               position: 'relative',
               '@media (max-width:1535px)': {
-                width: ds.space.mul(0, 9),
-                height: ds.space.mul(0, 9),
+                width: '18px',
+                height: '18px',
               },
             }}
           >
@@ -110,12 +110,12 @@ const SideDrawerButton = ({ open = false, item = {}, handleDrawerOpen, isFirstIt
             <Typography
               sx={{
                 paddingTop: 'var(--ds-space-3)',
-                lineHeight: ds.space[1],
+                lineHeight: '4px',
                 textTransform: 'capitalize',
                 fontFamily: 'Roboto',
                 fontWeight: 'var(--ds-font-weight-regular)',
                 fontSize: 'var(--ds-text-caption)',
-                color: ds.gray[600],
+                color: colors.text.tertiary,
                 '@media (max-width:1535px)': {
                   fontSize: 'var(--ds-text-caption)',
                 },
@@ -148,11 +148,6 @@ const AskNudgebeeLayout = ({
   externalAgentsLoading = false,
 }) => {
   const router = useRouter();
-  // Routes that use this global layout may not carry an `accountId` query
-  // param (e.g. when launched from the sidebar). Empty is OK — the
-  // backend's ai_list_agents handler routes empty account_id to the
-  // tenant-wide agent catalog, and SettingsModal / b-Cortex render their
-  // own tenant-wide views in that case.
   const { accountId } = router.query;
   const { baseTitle } = useTenantBranding();
 
@@ -160,6 +155,7 @@ const AskNudgebeeLayout = ({
   const [avatarSubMenu, setAvatarSubMenu] = useState(['UserInfo', 'Switch Tenant', 'Logout']);
   const [anchorElUser, setAnchorElUser] = useState(null);
   const [openSwitchAccount, setOpenSwitchAccount] = useState(false);
+  const [openSettingsModal, setOpenSettingsModal] = useState(false);
   const [openSettings, setOpenSettings] = useState(false);
   const [openApiTokens, setOpenApiTokens] = useState(false);
   const [internalAgents, setInternalAgents] = useState([]);
@@ -198,15 +194,10 @@ const AskNudgebeeLayout = ({
   };
 
   useEffect(() => {
-    // Empty accountId is valid post-collapse: the backend's
-    // agentListAgent handler routes it to ListAgentsForTenant (system
-    // catalog + every custom agent the caller can read across the
-    // tenant). Drop the previous `accountId &&` gate so the sidebar
-    // picker populates on tenant-wide layout entries too.
-    if (!externalAgents && router.isReady) {
+    if (accountId && !externalAgents) {
       listAgents();
     }
-  }, [accountId, externalAgents, router.isReady]);
+  }, [accountId, externalAgents]);
 
   useEffect(() => {
     const menu = generateMenuItems(getUserSession()?.hasMultipleTenantAccess || false);
@@ -278,6 +269,14 @@ const AskNudgebeeLayout = ({
         <title>{baseTitle}</title>
       </Head>
       {renderSlot('LayoutHeadExtras')}
+      <SettingsModal
+        open={openSettingsModal}
+        onClose={() => setOpenSettingsModal(false)}
+        accountId={accountId}
+        allAgents={effectiveAgents}
+        refreshAgentListing={() => (externalAgents ? onAgentsRefreshed() : listAgents())}
+        loadingAgents={effectiveLoading}
+      />
       <LayoutHeaderActionSlot open={openSwitchAccount} title={'Switch Tenant'} onClose={handleSwitchAccountClose} />
       <TenantSettings
         open={openSettings}
@@ -302,7 +301,7 @@ const AskNudgebeeLayout = ({
                       isColorSwitchingIcon
                       isFirstItem={idx === 1}
                     />
-                    {idx === 0 && <Box sx={{ borderTop: `1px solid ${ds.gray[300]}`, my: 'var(--ds-space-1)' }} />}
+                    {idx === 0 && <Box sx={{ borderTop: `1px solid ${colors.border.secondaryLightest}`, my: 'var(--ds-space-1)' }} />}
                   </React.Fragment>
                 ))}
               </Box>
@@ -314,18 +313,33 @@ const AskNudgebeeLayout = ({
                   display: 'flex',
                   flexDirection: 'column',
                   '& button': {
-                    height: `${ds.space.mul(0, 15)} !important`,
+                    height: '30px !important',
                     py: 'var(--ds-space-4)',
                   },
                 }}
               >
-                <NubiBrainNav
-                  surface='light'
-                  accountId={accountId}
-                  agents={effectiveAgents}
-                  loadingAgents={effectiveLoading}
-                  onRefreshAgents={() => (externalAgents ? onAgentsRefreshed() : listAgents())}
-                />
+                <Box>
+                  <CustomButton
+                    variant='secondary'
+                    startIcon={<SafeIcon src={SettingOutlineIcon} height={20} width={20} alt={'settings'} />}
+                    onClick={() => setOpenSettingsModal(true)}
+                    sx={{
+                      height: '28px',
+                      width: '28px',
+                      border: 'none',
+                      boxShadow: 'none',
+                      backgroundColor: 'transparent',
+                      '&:hover': {
+                        border: '0px',
+                        backgroundColor: 'transparent',
+                      },
+                    }}
+                    showTooltip
+                    toolTipTitle={`Settings`}
+                    tooltipPlacement='right'
+                    marginLeft
+                  />
+                </Box>
 
                 <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                   {getUserSession()?.tenant?.name && (
@@ -336,7 +350,7 @@ const AskNudgebeeLayout = ({
                           fontSize: 'var(--ds-text-caption)',
                           fontWeight: 'var(--ds-font-weight-semibold)',
                           color: 'var(--ds-brand-300)',
-                          maxWidth: ds.space.mul(1, 12),
+                          maxWidth: '48px',
                           textAlign: 'center',
                           mb: 'var(--ds-space-1)',
                         }}
@@ -345,16 +359,13 @@ const AskNudgebeeLayout = ({
                       </Typography>
                     </Tooltip>
                   )}
-                  <DsButton
-                    tone='ghost'
-                    size='sm'
-                    composition='icon-only'
-                    icon={<SafeIcon alt='Profile Icon' src={ProfileOutlineIcon} width={24} height={24} />}
-                    aria-label='Account Settings'
-                    tooltip='Account Settings'
-                    tooltipPlacement='right'
-                    onClick={handleOpenUserMenu}
-                  />
+                  <Tooltip title='Account Settings' placement='left'>
+                    <IconButton onClick={handleOpenUserMenu} size='small'>
+                      <Box>
+                        <SafeIcon alt='Profile Icon' src={ProfileOutlineIcon} width={24} height={24} />
+                      </Box>
+                    </IconButton>
+                  </Tooltip>
                   <Menu
                     id='menu-appbar'
                     sx={{
@@ -362,21 +373,6 @@ const AskNudgebeeLayout = ({
                         left: '62px !important',
                       },
                     }}
-                    slotProps={{
-                      paper: {
-                        sx: {
-                          minWidth: 360,
-                          maxWidth: 360,
-                          maxHeight: 'none',
-                          outline: 'none',
-                          border: 'none',
-                          borderRadius: 'var(--ds-overlay-radius)',
-                          boxShadow: 'var(--ds-overlay-shadow)',
-                          backgroundColor: 'var(--ds-overlay-bg)',
-                        },
-                      },
-                    }}
-                    MenuListProps={{ sx: { outline: 'none', py: 'var(--ds-overlay-padding-y)' } }}
                     anchorEl={anchorElUser}
                     anchorOrigin={{
                       vertical: 'top',
@@ -397,19 +393,19 @@ const AskNudgebeeLayout = ({
             </Box>
           </Box>
 
-          <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%', position: 'sticky', top: 0 }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', width: '100%', position: 'sticky', top: '0px' }}>
             <Box
               sx={{
-                px: open ? ds.space.mul(1, 16) : isAskNudgebeePage ? 0 : ds.space.mul(1, 10),
+                px: open ? '64px' : isAskNudgebeePage ? '0px' : '40px',
                 backgroundColor:
                   router.pathname == '/home' || router.pathname.includes('/investigate')
-                    ? ds.background[100]
+                    ? colors.background.home
                     : isAskNudgebeePage
-                    ? ds.background[100]
-                    : ds.background[300],
+                    ? colors.background.askNudgebeePage
+                    : colors.background.pages,
                 ...styles.body,
                 position: 'relative',
-                paddingBottom: isAskNudgebeePage ? 0 : ds.space.mul(1, 10),
+                paddingBottom: isAskNudgebeePage ? '0px' : '40px',
               }}
             >
               <Container maxWidth='1800px' style={{ paddingInline: 0 }}>
@@ -435,13 +431,13 @@ AskNudgebeeLayout.propTypes = {
 const styles = {
   sideDrawer: {
     zIndex: 10,
-    backgroundColor: ds.background[300],
+    backgroundColor: colors.background.pages,
     transition: 'all ease 0.2s',
     display: 'flex',
     justifyContent: 'start',
     alignItems: 'center',
     flexDirection: 'column',
-    borderRight: `0.5px solid ${ds.gray[300]}`,
+    borderRight: `0.5px solid ${colors.border.secondaryLightest}`,
     p: 0,
 
     '& .inner-side-drawer': {
@@ -452,7 +448,7 @@ const styles = {
       alignItems: 'center',
       gap: 'var(--ds-space-1)',
       overflow: 'hidden',
-      top: 0,
+      top: '0px',
       height: '100vh',
     },
     '& .collapsable': {
@@ -463,27 +459,27 @@ const styles = {
 
     '& button': {
       py: 'var(--ds-space-4)',
-      width: ds.space.mul(1, 17),
-      height: ds.space.mul(0, 35),
+      width: '68px',
+      height: '70px',
       display: 'flex',
       justifyContent: 'center',
       textAlign: 'left',
-      borderRadius: 0,
+      borderRadius: '0px',
       '@media (max-width:1535px)': {
         py: 'var(--ds-space-2)',
-        height: ds.space.mul(1, 13),
+        height: '52px',
       },
       '&:hover': {
-        backgroundColor: 'transparent',
+        backgroundColor: colors.background.transparent,
       },
       '&.menu-item': {
         borderBottom: 'none',
         justifyContent: 'flex-start',
         gap: 'var(--ds-space-3)',
         borderRadius: 'var(--ds-radius-xl)',
-        color: ds.gray[400],
-        fontSize: 'var(--ds-text-small)',
-        lineHeight: ds.space.mul(0, 8),
+        color: colors.text.secondaryDark,
+        fontSize: 13,
+        lineHeight: '15px',
         fontWeight: 'var(--ds-font-weight-semibold)',
         textTransform: 'none',
 
@@ -492,29 +488,29 @@ const styles = {
         },
 
         '& .sub-text': {
-          fontSize: 'var(--ds-text-caption)',
-          color: ds.gray[600],
+          fontSize: 8,
+          color: colors.text.tertiary,
         },
 
         svg: {
-          minHeight: ds.space.mul(1, 5),
-          minWidth: ds.space.mul(1, 5),
-          height: ds.space.mul(1, 5),
-          width: ds.space.mul(1, 5),
+          minHeight: '20px',
+          minWidth: '20px',
+          height: '20px',
+          width: '20px',
           '&.color-switching-icon': {
             path: {
-              fill: ds.brand[500],
+              fill: colors.switchIconColor,
             },
           },
         },
 
         '&.selected': {
-          backgroundColor: ds.brand[500],
-          color: ds.background[100],
+          backgroundColor: colors.secondary.default,
+          color: colors.white,
           svg: {
             '&.color-switching-icon': {
               path: {
-                fill: ds.background[100],
+                fill: colors.white,
               },
             },
           },
@@ -534,7 +530,7 @@ const styles = {
       textAlign: 'center',
 
       '& .line': {
-        height: ds.space[1],
+        height: 4,
         backgroundColor: 'var(--ds-gray-200)',
 
         '&.line-2': {
@@ -552,7 +548,7 @@ const styles = {
   },
 
   activeButton: {
-    background: ds.gray.alpha[200],
+    background: colors.background.activeButtonColor,
   },
 };
 
