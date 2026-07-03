@@ -21,13 +21,16 @@ RUN apk add --no-cache \
     cargo \
     make
 
-# Azure CLI. Upgrade pip, then force cryptography>=48.0.1 after azure-cli pulls
-# its (older) deps — azure-cli tolerates the newer cryptography and it clears the
-# cryptography HIGH that cloud-collector-server inherits from this venv.
+# Azure CLI. Install azure-cli and cryptography>=48.0.1 in one resolver pass so
+# pip satisfies both constraints simultaneously (azure-cli-core declares a bare
+# `cryptography` requirement with no ceiling, so >=48 resolves cleanly). This
+# clears the cryptography HIGH that cloud-collector-server inherits from this
+# venv. Single-pass is deliberate: if a future azure-cli ever pins
+# cryptography<48, this fails loudly at build instead of silently shipping an
+# unsupported combo.
 RUN python3 -m venv /opt/azure-cli-venv && \
     /opt/azure-cli-venv/bin/pip install --no-cache-dir --upgrade pip && \
-    /opt/azure-cli-venv/bin/pip install --no-cache-dir azure-cli && \
-    /opt/azure-cli-venv/bin/pip install --no-cache-dir --upgrade "cryptography>=48.0.1" && \
+    /opt/azure-cli-venv/bin/pip install --no-cache-dir azure-cli "cryptography>=48.0.1" && \
     ln -s /opt/azure-cli-venv/bin/az /usr/local/bin/az && \
     az extension add --name costmanagement
 
