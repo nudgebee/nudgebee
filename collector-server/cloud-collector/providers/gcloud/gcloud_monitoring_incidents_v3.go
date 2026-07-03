@@ -191,9 +191,15 @@ func convertAlertToEvent(ctx providers.CloudProviderContext, httpClient *http.Cl
 		eventTime = &now
 	}
 
-	// Determine severity
+	// Determine severity from the GCP alert policy's severity field.
+	// GCP's AlertPolicy.severity enum is only CRITICAL / ERROR / WARNING /
+	// SEVERITY_UNSPECIFIED — there is no INFO/LOW tier on the GCP side. Most
+	// customer policies leave severity unset, so an unspecified/unknown value
+	// must NOT default to HIGH (that floods HIGH with routine alerts like
+	// deployment notifications). Treat "no severity" as MEDIUM: a real fired
+	// alert, but not critical.
 	var severity providers.EventSeverity
-	if alert.Policy != nil && alert.Policy.Severity != "" {
+	if alert.Policy != nil {
 		switch alert.Policy.Severity {
 		case "CRITICAL":
 			severity = providers.EventSeverityHigh
@@ -202,10 +208,10 @@ func convertAlertToEvent(ctx providers.CloudProviderContext, httpClient *http.Cl
 		case "WARNING":
 			severity = providers.EventSeverityMedium
 		default:
-			severity = providers.EventSeverityHigh
+			severity = providers.EventSeverityMedium
 		}
 	} else {
-		severity = providers.EventSeverityHigh
+		severity = providers.EventSeverityMedium
 	}
 
 	// Determine event status

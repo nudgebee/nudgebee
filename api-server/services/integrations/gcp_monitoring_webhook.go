@@ -42,6 +42,7 @@ type GCPMonitoringIncident struct {
 	Metric                  GCPMonitoringMetric    `json:"metric"`
 	Metadata                GCPMonitoringMetadata  `json:"metadata"`
 	PolicyName              string                 `json:"policy_name"`
+	Severity                string                 `json:"severity"` // GCP policy severity: CRITICAL / ERROR / WARNING (may be empty)
 	PolicyUserLabels        map[string]string      `json:"policy_user_labels"`
 	ConditionName           string                 `json:"condition_name"`
 	Condition               GCPMonitoringCondition `json:"condition"`
@@ -160,24 +161,16 @@ func (m GCPMonitoringWebhook) ProcessEventWebook(sc *security.RequestContext, se
 		investigationStatus = event.EventStatusFiring
 	}
 
-	// Map severity from policy user labels, default to HIGH
-	var eventPriority event.EventPriority
-	if sev, ok := inc.PolicyUserLabels["severity"]; ok {
-		switch strings.ToLower(sev) {
-		case "critical":
-			eventPriority = event.EventPriorityHigh
-		case "high":
-			eventPriority = event.EventPriorityHigh
-		case "medium", "warning":
-			eventPriority = event.EventPriorityMedium
-		case "low", "info":
-			eventPriority = event.EventPriorityLow
-		default:
-			eventPriority = event.EventPriorityHigh
-		}
-	} else {
-		eventPriority = event.EventPriorityHigh
+	// Map severity, preferring GCP's native incident severity field and falling
+	// back to a "severity" policy user label. An unset/unknown value defaults to
+	// MEDIUM (not HIGH) so routine alerts without a configured severity don't all
+	// land in HIGH. This mirrors the polling path in
+	// cloud-collector's gcloud_monitoring_incidents_v3.go.
+	sev := inc.Severity
+	if sev == "" {
+		sev = inc.PolicyUserLabels["severity"]
 	}
+	eventPriority := mapGCPSeverityToPriority(sev)
 
 	// Determine subject name from resource (needed for fingerprint and labels).
 	// Resolution order matches polling in gcloud_monitoring_incidents_v3.go.
@@ -493,6 +486,26 @@ func (m GCPMonitoringWebhook) ProcessEventWebook(sc *security.RequestContext, se
 
 func (m GCPMonitoringWebhook) TestConnection(sc *security.RequestContext, settings []core.IntegrationConfigValue, accountId string) (bool, error) {
 	return true, nil
+}
+
+// mapGCPSeverityToPriority maps a GCP severity string (native policy severity
+// CRITICAL/ERROR/WARNING, or a severity user label) to an event priority.
+// An empty or unrecognized value defaults to MEDIUM — mirrors the polling path
+// in cloud-collector's gcloud_monitoring_incidents_v3.go so both ingestion
+// routes agree.
+func mapGCPSeverityToPriority(sev string) event.EventPriority {
+	switch strings.ToLower(strings.TrimSpace(sev)) {
+	case "critical", "error", "high":
+		return event.EventPriorityHigh
+	case "warning", "medium":
+		return event.EventPriorityMedium
+	case "low":
+		return event.EventPriorityLow
+	case "info", "informational":
+		return event.EventPriorityInfo
+	default:
+		return event.EventPriorityMedium
+	}
 }
 
 // gcpResourceTypeToServiceName maps GCP monitored resource types to human-readable service names.
