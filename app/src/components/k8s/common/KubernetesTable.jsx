@@ -252,7 +252,7 @@ export const TriageRuleEventsTable = ({ query, onOpenTicketForm }) => {
     return (
       <Box p={ds.space[4]}>
         <Typography sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-500)' }}>
-          No events matched by this rule in the selected time range.
+          No events matched by this rule in the last 30 days.
         </Typography>
       </Box>
     );

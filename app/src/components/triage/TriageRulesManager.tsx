@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/router';
 import { applyFiltersOnRouter } from '@lib/router';
 import { Box } from '@mui/material';
@@ -9,6 +9,7 @@ import { Button as DsButton } from '@ui/Button';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
+import { Switch } from '@ui/Switch';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import CustomTable2 from '@shared/tables/CustomTable2';
 import { TriageRuleEventsTable } from '@components/k8s/common/KubernetesTable2';
@@ -64,7 +65,6 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
   // Data state
   const [rules, setRules] = useState<TriageRule[]>([]);
   const [tableData, setTableData] = useState<any[]>([]);
-  const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(false);
 
   // Pagination state
@@ -74,10 +74,15 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
   // Filter state
   const [selectedRuleType, setSelectedRuleType] = useState<string>('');
   const [selectedStatus, setSelectedStatus] = useState<string>('');
+  const [includeSystemRules, setIncludeSystemRules] = useState(true);
   const [selectedAccountFilter, setSelectedAccountFilter] = useState<string[]>(() => {
     const raw = router.query.accountId as string;
     return raw ? raw.split(',').filter(Boolean) : [];
   });
+
+  // System rules are filtered client-side - the list API has no server-side toggle for them.
+  const filteredRules = useMemo(() => (includeSystemRules ? rules : rules.filter((r) => !r.is_system_rule)), [rules, includeSystemRules]);
+  const totalCount = filteredRules.length;
 
   useEffect(() => {
     const raw = router.query.accountId as string;
@@ -189,13 +194,21 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
     );
   };
 
+  // Update a single rule in local state without refetching the whole list.
+  const patchRule = (ruleId: string, patch: Partial<TriageRule>) => {
+    setRules((prev) => prev.map((r) => (r.id === ruleId ? { ...r, ...patch } : r)));
+  };
+
   const handleToggleSystemRuleOverride = async (rule: TriageRule) => {
     if (!accountId) {
       snackbar.error('Account ID is required to toggle system rule');
       return;
     }
+    const previousOverriddenState = rule.is_overridden;
+    const newDisabledState = !previousOverriddenState;
+    patchRule(rule.id, { is_overridden: newDisabledState }); // optimistic update
+
     try {
-      const newDisabledState = !rule.is_overridden;
       const result = await apiTriage.toggleSystemRuleOverride({
         cloud_account_id: accountId,
         system_rule_id: rule.id,
@@ -203,17 +216,15 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
       });
 
       if (result?.success) {
-        snackbar.success(
-          newDisabledState
-            ? `System rule "${rule.name || 'Unnamed'}" disabled for this account`
-            : `System rule "${rule.name || 'Unnamed'}" enabled for this account`
-        );
-        fetchRules();
+        // optimistic update already applied — no snackbar needed
+        console.log(`System rule "${rule.name || 'Unnamed'}" override toggled to ${newDisabledState ? 'disabled' : 'enabled'}`);
       } else {
+        patchRule(rule.id, { is_overridden: previousOverriddenState }); // revert on failure response
         snackbar.error(result?.error || 'Failed to toggle system rule');
       }
     } catch (error) {
       console.error('Failed to toggle system rule override:', error);
+      patchRule(rule.id, { is_overridden: previousOverriddenState }); // revert on request error
       snackbar.error('Failed to toggle system rule');
     }
   };
@@ -232,7 +243,6 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
 
       const rulesData = result?.rules || [];
       setRules(rulesData);
-      setTotalCount(rulesData.length);
     } catch (error) {
       console.error('Failed to fetch triage rules:', error);
       snackbar.error('Failed to fetch triage rules');
@@ -249,7 +259,7 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
   useEffect(() => {
     const startIdx = currentPage * rowsPerPage;
     const endIdx = startIdx + rowsPerPage;
-    const paginatedRules = rules.slice(startIdx, endIdx);
+    const paginatedRules = filteredRules.slice(startIdx, endIdx);
 
     const data = paginatedRules.map((rule) => {
       const matchCriteria = getMatchCriteriaSummary(rule);
@@ -331,7 +341,7 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
     });
 
     setTableData(data);
-  }, [rules, currentPage, rowsPerPage, accountId, isMultiAccountView, accounts]);
+  }, [filteredRules, currentPage, rowsPerPage, accountId, isMultiAccountView, accounts]);
 
   const getMatchCriteriaSummary = (rule: TriageRule): string => {
     const criteria: string[] = [];
@@ -381,19 +391,28 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
       snackbar.error('Cannot modify rule without account ID');
       return;
     }
+    if (!rule.enabled) {
+      // Re-enabling would require a separate API endpoint
+      snackbar.info('To re-enable a rule, please create a new one');
+      return;
+    }
+
+    // For now, we use delete with hard_delete=false to disable
+    // A proper enable/disable endpoint would be better
+    patchRule(rule.id, { enabled: false }); // optimistic update
+
     try {
-      // For now, we use delete with hard_delete=false to disable
-      // A proper enable/disable endpoint would be better
-      if (rule.enabled) {
-        await apiTriage.deleteTriageRule({ cloud_account_id: ruleAccountId, rule_id: rule.id, hard_delete: false });
-        snackbar.success(`Rule "${rule.name || 'Unnamed'}" disabled`);
+      const result = await apiTriage.deleteTriageRule({ cloud_account_id: ruleAccountId, rule_id: rule.id, hard_delete: false });
+      if (result?.success) {
+        // optimistic update already applied — no snackbar needed
+        console.log(`Rule "${rule.name || 'Unnamed'}" disabled`);
       } else {
-        // Re-enabling would require a separate API endpoint
-        snackbar.info('To re-enable a rule, please create a new one');
+        patchRule(rule.id, { enabled: true }); // revert
+        snackbar.error(result?.error || 'Failed to update rule');
       }
-      fetchRules();
     } catch (error) {
       console.error('Failed to toggle rule:', error);
+      patchRule(rule.id, { enabled: true }); // revert
       snackbar.error('Failed to update rule');
     }
   };
@@ -450,9 +469,19 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
     setIsCreateMode(true);
   };
 
-  const handleRuleSuccess = () => {
+  const handleRuleSuccess = (savedRule?: TriageRule) => {
+    const wasCreate = isCreateMode;
     handleCloseRuleModal();
-    fetchRules();
+
+    if (wasCreate || !savedRule) {
+      // New rows need server-assigned fields (is_editable, account_id, match_count, ...)
+      // that the mutation response doesn't include, so refetch the list.
+      fetchRules();
+      return;
+    }
+
+    // Edits return the full updated rule - patch it in directly, no refetch needed.
+    patchRule(savedRule.id, savedRule);
   };
 
   const onPageChange = (page: number, limit: number) => {
@@ -542,10 +571,20 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
               setCurrentPage(0);
             }}
           />
+          <Switch
+            id='triage-rules-filter-include-system'
+            label='System Rules'
+            size='sm'
+            checked={includeSystemRules}
+            onChange={(_e, checked) => {
+              setIncludeSystemRules(checked);
+              setCurrentPage(0);
+            }}
+          />
         </ListingLayout.Toolbar>
 
         <ListingLayout.Body>
-          {!loading && rules.length === 0 ? (
+          {!loading && filteredRules.length === 0 ? (
             <EmptyData
               id='triage-rules-empty'
               img={DataNotAvailable}

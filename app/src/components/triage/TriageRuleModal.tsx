@@ -18,7 +18,7 @@ interface TriageRuleModalProps {
   accountId?: string;
   rule?: TriageRule | null;
   isCreate: boolean;
-  onSuccess?: () => void;
+  onSuccess?: (savedRule?: TriageRule) => void;
 }
 
 const RULE_TYPES = [
@@ -270,7 +270,7 @@ const TriageRuleModal: React.FC<TriageRuleModalProps> = ({ open, handleClose, ac
         }
         snackbar.success(successMsg);
         handleClose();
-        onSuccess?.();
+        onSuccess?.(result.rule);
       } else {
         snackbar.error(result?.error || 'Failed to save rule');
       }
