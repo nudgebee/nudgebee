@@ -141,11 +141,12 @@ class CommonService:
     def get_discord_channels(self, messaging_platform):
         """List text channels the Discord bot has access to across all guilds."""
         from notifications_server.clients.discord_client import DiscordClient
+        from notifications_server.services.discord.token_store import decrypt_token
 
         if not messaging_platform:
             return {"data": []}
 
-        token = messaging_platform.token
+        token = decrypt_token(messaging_platform.token)
         result = DiscordClient.channels_list(token)
         if not result.get("ok"):
             LOG.error("Failed to list Discord channels: %s", result.get("error"))
@@ -2200,9 +2201,10 @@ class CommonService:
 
     def _send_test_discord(self, messaging_platform, channel_id, message):
         from notifications_server.clients.discord_client import DiscordClient
+        from notifications_server.services.discord.token_store import decrypt_token
 
         try:
-            token = messaging_platform.token
+            token = decrypt_token(messaging_platform.token)
             response = DiscordClient.chat_post(token=token, channel_id=channel_id, content=message)
             if not response.get("ok"):
                 return {"success": False, "platform": "discord", "error": response.get("error", "Unknown error")}

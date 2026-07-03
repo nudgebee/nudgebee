@@ -8,6 +8,7 @@ from notifications_server.models.db_base import BaseDB
 from notifications_server.models.enums import EventCategory, EventType, EventActor, EventAction, EventStatus
 from notifications_server.models.models import MessagingPlatform
 from notifications_server.services.audit import create_audit_request
+from notifications_server.services.discord.token_store import encrypt_token
 from notifications_server.utils.datetime_utils import utc_now
 from notifications_server.utils.user_util import get_user_id_by_email
 
@@ -25,7 +26,8 @@ class DiscordService:
             installation.platform = "discord"
             installation.client_id = "discord_bot"
             installation.tenant_id = tenant_id
-            installation.token = bot_token
+            # Bot token is a long-lived credential — encrypt at rest (decrypted at use).
+            installation.token = encrypt_token(bot_token)
             installation.username = user_email or bot_info.get("username", "discord_bot")
             installation.bot_id = bot_info.get("id")
             installation.created_at = utc_now()

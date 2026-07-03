@@ -439,8 +439,15 @@ class DiscordSender(BaseSender):
         super().__init__(cache=cache)
 
     async def acquire_discord_access_token(self, session, discord_installation):
-        # Bot tokens are static, we don't need a refresh token flow
-        return discord_installation.token
+        # Bot tokens are static (no refresh flow); stored encrypted, decrypt at use.
+        # Isolate a decrypt failure to Discord so other platforms still deliver.
+        from notifications_server.services.discord.token_store import decrypt_token
+
+        try:
+            return decrypt_token(discord_installation.token)
+        except Exception as e:
+            LOG.error("Failed to decrypt Discord bot token for installation %s: %s", discord_installation.id, e)
+            return None
 
 
 # ----------------------------- Grouped Message Handler -----------------------------

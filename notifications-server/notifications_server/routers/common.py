@@ -3,6 +3,7 @@ import secrets
 from typing import Dict, Any, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from notifications_server import engine, sync_engine, slack_app, teams_app
@@ -98,6 +99,11 @@ async def send_message(payload: SendMessageRequest) -> List[PlatformResponse]:
     return result
 
 
+def _list_channels_sync(platform, tenant):
+    with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
+        return controller.list_channels(platform, tenant)
+
+
 @router.post("/channels/list", dependencies=[Depends(verify_action_token)])
 async def list_channels(request: Request, body: Dict[Any, Any]):
     try:
@@ -108,9 +114,11 @@ async def list_channels(request: Request, body: Dict[Any, Any]):
 
         platform = body.get("input", {}).get("platform")
 
-        with CommonService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app) as controller:
-            channels = controller.list_channels(platform, tenant)
-            return JSONResponse(content=channels)
+        # CommonService is synchronous and can make blocking HTTP calls (Discord lists
+        # channels across every guild) — run it off the event loop so a slow provider
+        # can't stall the async worker or its health checks.
+        channels = await run_in_threadpool(_list_channels_sync, platform, tenant)
+        return JSONResponse(content=channels)
     except Exception:
         LOG.exception("Error in list_channels endpoint")
         return JSONResponse({"error": {"message": "Unable to list channels"}})
