@@ -418,7 +418,11 @@ func hasToolFailureMajority(scratchpad string) bool {
 	empty := extractAttr("empty")
 	success := extractAttr("success")
 
-	// Conservative: only true when there is no usable data, or no-data results outnumber successes.
-	noData := failed + empty
-	return (noData+success) > 0 && (success == 0 || noData > success)
+	// Empty-but-successful output (write/mutation commands are silent on success)
+	// is NOT a data-quality failure — count it with successes, not against them.
+	// Mirrors buildToolCallSummary's SUCCESS_NO_OUTPUT handling. See issue #29875.
+	effectiveSuccess := success + empty
+
+	// Conservative: only true when there is no usable data, or genuine failures outnumber successes.
+	return (failed+effectiveSuccess) > 0 && (effectiveSuccess == 0 || failed > effectiveSuccess)
 }

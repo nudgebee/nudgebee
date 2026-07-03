@@ -47,7 +47,14 @@ func init() {
 }
 
 const plannerDummyTool = "planner"
-const plannerToolNoData = "No Data"
+
+// plannerToolNoData is the observation written when a tool succeeds (exit 0,
+// status=Success) but produces empty stdout. Many CLI mutations are silent on
+// success (e.g. `gh run rerun`, `kubectl apply`, `helm upgrade`, `aws s3 cp`),
+// so an empty body is NOT a failure signal — it's the normal acceptance signal
+// for write commands, or "no rows" for reads. The text is intentionally explicit
+// to keep the summarizer / React loop from inferring failure from absence of stdout.
+const plannerToolNoData = "Tool exited successfully with no output. For write/mutation operations this typically indicates the action was accepted; for read/query operations this indicates no matching results."
 
 const (
 	logErrGetMessage          = "plannerexecutor: unable to get conversation message"
@@ -440,32 +447,57 @@ func (e *plannerExecutor) Call(ctx context.Context, inputValues map[string]any, 
 	return map[string]any{"output": agents.ErrNotFinished.Error()}, agents.ErrNotFinished
 }
 
-func (e *plannerExecutor) summarizeConversation() (map[string]any, error) {
-	// OTEL: Start Summarize Span
-	_, span := e.ctx.GetTracer().Start(e.ctx.GetContext(), "Agent:Summarize")
-	defer span.End()
-
-	// Build tool call status summary for accurate summarization.
-	var toolSummary strings.Builder
-	toolSummary.WriteString("\n\nTOOL CALL SUMMARY:\n")
+// buildToolCallSummary renders the per-step status block fed into the
+// summarizer prompt and returns whether any genuine FAILURE was observed.
+//
+// Status mapping:
+//   - ToolStatusFailure     → "FAILED"            (counts as failure)
+//   - ToolStatusEmptyResult → "SUCCESS_NO_OUTPUT" (NOT a failure — exit 0
+//     with empty stdout is the normal success signal for write/mutation
+//     CLIs like `gh run rerun`, `kubectl apply`, `helm upgrade`,
+//     `aws s3 cp`. For read commands it means "no rows".)
+//   - ToolStatusWaiting / ToolStatusWaitingForClient → "WAITING" (the action
+//     is pending user confirmation or client execution, not complete — must
+//     not be reported to the summarizer as SUCCESS, mirroring the WAITING
+//     skip in GetToolInvocations).
+//   - everything else       → "SUCCESS"
+//
+// Treating SUCCESS_NO_OUTPUT as failure (the previous behavior) caused two
+// bugs: (1) the React loop retried write/mutation commands, risking
+// duplicate side-effects, and (2) the summarizer reported failure to users
+// when the action had actually succeeded. See issue #29875.
+func buildToolCallSummary(steps []NBAgentPlannerToolActionStep) (string, bool) {
+	var b strings.Builder
+	b.WriteString("\n\nTOOL CALL SUMMARY:\n")
 	hasAnyFailure := false
-	for i, step := range e.steps {
+	for i, step := range steps {
 		status := "SUCCESS"
 		switch step.Status {
 		case ToolStatusFailure:
 			status = "FAILED"
 			hasAnyFailure = true
 		case ToolStatusEmptyResult:
-			status = "NO_DATA"
-			hasAnyFailure = true
+			status = "SUCCESS_NO_OUTPUT"
+		case ToolStatusWaiting, ToolStatusWaitingForClient:
+			status = "WAITING"
 		}
 		toolName := step.Action.Tool
 		if toolName == "" {
 			toolName = "(unknown)"
 		}
-		fmt.Fprintf(&toolSummary, "%d. %s — %s\n", i+1, toolName, status)
+		fmt.Fprintf(&b, "%d. %s — %s\n", i+1, toolName, status)
 	}
-	toolSummary.WriteString("\nIMPORTANT: If the last intended action (like updating/applying changes) was NOT executed because iterations ran out, clearly state that in your summary. Do NOT say 'I will do X' if X was not actually done.\n")
+	b.WriteString("\nIMPORTANT: If the last intended action (like updating/applying changes) was NOT executed because iterations ran out, clearly state that in your summary. Do NOT say 'I will do X' if X was not actually done.\n")
+	return b.String(), hasAnyFailure
+}
+
+func (e *plannerExecutor) summarizeConversation() (map[string]any, error) {
+	// OTEL: Start Summarize Span
+	_, span := e.ctx.GetTracer().Start(e.ctx.GetContext(), "Agent:Summarize")
+	defer span.End()
+
+	// Build tool call status summary for accurate summarization.
+	toolSummaryStr, hasAnyFailure := buildToolCallSummary(e.steps)
 
 	mclist := []llms.MessageContent{
 		{
@@ -486,10 +518,10 @@ func (e *plannerExecutor) summarizeConversation() (map[string]any, error) {
 		mclist = append(mclist, mc)
 	}
 
-	summarizationPrompt := fmt.Sprintf("Summarize all the previous conversation and return a response based on the question asked.\nIMPORTANT: Do not include any internal technical data flows, queries, prompts, architecture paths, or execution plans in your summary.\nIMPORTANT: If you ran out of steps before completing an action, clearly state what was NOT completed.%s", toolSummary.String())
+	summarizationPrompt := fmt.Sprintf("Summarize all the previous conversation and return a response based on the question asked.\nIMPORTANT: Do not include any internal technical data flows, queries, prompts, architecture paths, or execution plans in your summary.\nIMPORTANT: If you ran out of steps before completing an action, clearly state what was NOT completed.\nIMPORTANT: A tool call labeled SUCCESS_NO_OUTPUT means the tool exited with status=success and empty stdout. For write/mutation commands (e.g. gh run rerun, kubectl apply, helm upgrade, aws s3 cp), this is the normal success signal — report the action as completed. Do NOT infer failure from absence of stdout.%s", toolSummaryStr)
 
 	if hasAnyFailure {
-		summarizationPrompt += "\n\nSome tool calls returned NO DATA or FAILED. Review the tool call summary above." +
+		summarizationPrompt += "\n\nSome tool calls FAILED. Review the tool call summary above." +
 			"\n- If the gathered data is sufficient to answer the question, provide a confident answer." +
 			"\n- If critical data is missing and you cannot provide a reliable answer:" +
 			"\n  1. Clearly state what could NOT be investigated and why." +

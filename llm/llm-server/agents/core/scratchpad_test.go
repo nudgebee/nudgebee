@@ -471,3 +471,52 @@ func TestResolveMaxContextTokens_NilContext(t *testing.T) {
 	assert.Equal(t, 0, resolveMaxContextTokens(nil, "acct", "agent", "conv"))
 	assert.Equal(t, 0, resolveMaxContextTokens(nil, "", "", ""))
 }
+
+// TestConstructScratchPad_EmptyResultIsNotFailureFraming pins the ReWOO-solver
+// half of the #29875 fix: a tool that exits 0 with empty stdout
+// (ToolStatusEmptyResult — e.g. `kubectl apply`, `gh run rerun`) must NOT make
+// the data_quality block tell the solver LLM that calls "FAILED" or to emit a
+// "Recommended Next Steps" / missing-data section. Only genuine FAILED calls do.
+func TestConstructScratchPad_EmptyResultIsNotFailureFraming(t *testing.T) {
+	mkStep := func(tool, id string, status ToolStatus) NBAgentPlannerToolActionStep {
+		return NBAgentPlannerToolActionStep{
+			Action:      NBAgentPlannerToolAction{Tool: tool, ToolID: id, ToolInput: "x"},
+			Observation: "obs",
+			Status:      status,
+		}
+	}
+
+	t.Run("empty-only success does not produce failure/next-steps framing", func(t *testing.T) {
+		res := ConstructScratchPad([]NBAgentPlannerToolActionStep{
+			mkStep("kubectl_execute", "s1", ToolStatusEmptyResult), // silent-success write
+		})
+		assert.Contains(t, res, `empty="1"`, "empty count should still be reported in the tag")
+		assert.NotContains(t, res, "FAILED", "silent-success write must not be framed as FAILED")
+		assert.NotContains(t, res, "Recommended Next Steps", "no missing-data nudge for empty-but-successful output")
+		assert.Contains(t, res, "exited successfully")
+	})
+
+	t.Run("genuine failure still produces failure framing", func(t *testing.T) {
+		res := ConstructScratchPad([]NBAgentPlannerToolActionStep{
+			mkStep("kubectl_execute", "s1", ToolStatusFailure),
+		})
+		assert.Contains(t, res, "Some tool calls FAILED.")
+		assert.Contains(t, res, "Recommended Next Steps")
+	})
+}
+
+// TestHasToolFailureMajority_EmptyCountsAsSuccess pins that empty-but-successful
+// results are counted with successes, not against them, so a plan of only
+// silent-success writes is NOT treated as a tool-failure majority (#29875).
+func TestHasToolFailureMajority_EmptyCountsAsSuccess(t *testing.T) {
+	tag := func(failed, empty, success int) string {
+		return fmt.Sprintf("<data_quality failed=\"%d\" empty=\"%d\" success=\"%d\" total=\"%d\">\n", failed, empty, success, failed+empty+success)
+	}
+
+	assert.False(t, hasToolFailureMajority(tag(0, 2, 0)), "empty-only must not be a failure majority")
+	assert.False(t, hasToolFailureMajority(tag(1, 3, 0)), "empties outnumber the single failure → not a majority")
+	assert.False(t, hasToolFailureMajority(tag(0, 1, 1)), "empty + success → not a failure majority")
+	assert.True(t, hasToolFailureMajority(tag(2, 0, 0)), "failures with no usable data → majority")
+	assert.True(t, hasToolFailureMajority(tag(3, 0, 1)), "genuine failures outnumber successes → majority")
+	assert.False(t, hasToolFailureMajority("no tag here"), "missing tag → false")
+}

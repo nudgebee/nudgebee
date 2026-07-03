@@ -1466,3 +1466,108 @@ func TestAccumulateSteps_RetrySuccessReplacesPriorFailure(t *testing.T) {
 		assert.Len(t, e.steps, 2)
 	})
 }
+
+// TestBuildToolCallSummary_EmptyResultIsNotFailure pins the regression for
+// issue #29875: a tool call that exits 0 with empty stdout (e.g. `gh run
+// rerun`, `kubectl apply`, `helm upgrade`) MUST be classified as
+// SUCCESS_NO_OUTPUT and MUST NOT set hasAnyFailure. Treating it as a failure
+// caused the React loop to retry write/mutation commands and the summarizer
+// to report failure to users when the action had actually succeeded.
+func TestBuildToolCallSummary_EmptyResultIsNotFailure(t *testing.T) {
+	mkStep := func(tool string, status ToolStatus) NBAgentPlannerToolActionStep {
+		return NBAgentPlannerToolActionStep{
+			Action: NBAgentPlannerToolAction{Tool: tool},
+			Status: status,
+		}
+	}
+
+	t.Run("all success → no failure, all SUCCESS", func(t *testing.T) {
+		summary, anyFail := buildToolCallSummary([]NBAgentPlannerToolActionStep{
+			mkStep("github_execute", ToolStatusSuccess),
+			mkStep("kubectl", ToolStatusSuccess),
+		})
+		assert.False(t, anyFail)
+		assert.Contains(t, summary, "1. github_execute — SUCCESS")
+		assert.Contains(t, summary, "2. kubectl — SUCCESS")
+		assert.NotContains(t, summary, "FAILED")
+		assert.NotContains(t, summary, "NO_DATA") // legacy label must be gone
+	})
+
+	t.Run("empty result is success-no-output, NOT failure (regression for #29875)", func(t *testing.T) {
+		summary, anyFail := buildToolCallSummary([]NBAgentPlannerToolActionStep{
+			mkStep("github_execute", ToolStatusEmptyResult), // gh run rerun: silent on success
+		})
+		assert.False(t, anyFail, "empty stdout on a successful tool call must NOT be flagged as failure")
+		assert.Contains(t, summary, "SUCCESS_NO_OUTPUT")
+		assert.NotContains(t, summary, "NO_DATA")
+		assert.NotContains(t, summary, "FAILED")
+	})
+
+	t.Run("mixed empty + success → still no failure", func(t *testing.T) {
+		summary, anyFail := buildToolCallSummary([]NBAgentPlannerToolActionStep{
+			mkStep("github_execute", ToolStatusEmptyResult), // silent-success write
+			mkStep("github_execute", ToolStatusSuccess),
+		})
+		assert.False(t, anyFail)
+		assert.Contains(t, summary, "1. github_execute — SUCCESS_NO_OUTPUT")
+		assert.Contains(t, summary, "2. github_execute — SUCCESS")
+	})
+
+	t.Run("real failure → flagged", func(t *testing.T) {
+		summary, anyFail := buildToolCallSummary([]NBAgentPlannerToolActionStep{
+			mkStep("kubectl", ToolStatusFailure),
+		})
+		assert.True(t, anyFail)
+		assert.Contains(t, summary, "FAILED")
+	})
+
+	t.Run("waiting steps are labeled WAITING, not SUCCESS, and don't flag failure", func(t *testing.T) {
+		// A step still pending user confirmation / client execution must not be
+		// reported to the summarizer as a completed SUCCESS — mirrors the
+		// WAITING skip in GetToolInvocations.
+		summary, anyFail := buildToolCallSummary([]NBAgentPlannerToolActionStep{
+			mkStep("github_execute", ToolStatusWaiting),
+			mkStep("kubectl", ToolStatusWaitingForClient),
+		})
+		assert.False(t, anyFail, "a pending/waiting step is not a failure")
+		assert.Contains(t, summary, "1. github_execute — WAITING")
+		assert.Contains(t, summary, "2. kubectl — WAITING")
+		// Pin intent without false-matching the SUCCESS_NO_OUTPUT substring:
+		// a plain-success line ends "— SUCCESS\n", which SUCCESS_NO_OUTPUT does not.
+		assert.NotContains(t, summary, "— SUCCESS\n")
+	})
+
+	t.Run("mixed empty + failure → only the failure flips the flag", func(t *testing.T) {
+		_, anyFail := buildToolCallSummary([]NBAgentPlannerToolActionStep{
+			mkStep("github_execute", ToolStatusEmptyResult),
+			mkStep("kubectl", ToolStatusFailure),
+		})
+		assert.True(t, anyFail, "real failure must still flip hasAnyFailure")
+	})
+
+	t.Run("unnamed tool falls back to (unknown)", func(t *testing.T) {
+		summary, _ := buildToolCallSummary([]NBAgentPlannerToolActionStep{
+			mkStep("", ToolStatusSuccess),
+		})
+		assert.Contains(t, summary, "(unknown)")
+	})
+
+	t.Run("empty steps → header only, no failure", func(t *testing.T) {
+		summary, anyFail := buildToolCallSummary(nil)
+		assert.False(t, anyFail)
+		assert.Contains(t, summary, "TOOL CALL SUMMARY")
+	})
+}
+
+// TestPlannerToolNoData_IsInformative pins that the empty-stdout sentinel
+// observation does not literally read "No Data" any more — the new text must
+// be self-explanatory enough that a downstream LLM does not mistake silent
+// success for failure (issue #29875).
+func TestPlannerToolNoData_IsInformative(t *testing.T) {
+	assert.NotEqual(t, "No Data", plannerToolNoData,
+		"sentinel must not read like a failure marker")
+	assert.Contains(t, strings.ToLower(plannerToolNoData), "successfully",
+		"sentinel must signal success to the LLM")
+	assert.Contains(t, strings.ToLower(plannerToolNoData), "write",
+		"sentinel must explain the write/mutation case")
+}
