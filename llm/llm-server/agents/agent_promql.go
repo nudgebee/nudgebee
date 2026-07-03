@@ -278,7 +278,7 @@ func (p *PromqlAgent) UpdateExecutorLlmResponse(actions []core.NBAgentPlannerToo
 			if part == "" {
 				continue
 			}
-			if _, parseErr := parser.ParseExpr(part); parseErr != nil {
+			if _, parseErr := parser.NewParser(parser.Options{}).ParseExpr(part); parseErr != nil {
 				// Surface the parse error clearly so the parent agent stops retrying.
 				errMsg := fmt.Sprintf("promql_query: generated query is invalid (unsupported function or syntax): %s. Original query: %s", parseErr.Error(), q)
 				finished.Data = errMsg

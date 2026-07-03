@@ -132,7 +132,7 @@ func (a *prometheusAction) getValidPrometheusExpressionFromEventRules(ctx playbo
 		if err != nil {
 			continue
 		}
-		_, parseErr := parser.ParseExpr(expr)
+		_, parseErr := parser.NewParser(parser.Options{}).ParseExpr(expr)
 		if parseErr != nil {
 			ctx.GetLogger().Warn("prometheus auto action: invalid PromQL expression in event_rules",
 				"alert", name, "expr", expr, "error", parseErr)

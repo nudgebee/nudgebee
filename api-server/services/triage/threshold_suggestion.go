@@ -1080,7 +1080,7 @@ func extractPromQLThreshold(exprStr string) (*promQLThreshold, error) {
 		return nil, fmt.Errorf("expression uses absent() — detects missing metrics, not threshold violations")
 	}
 
-	expr, err := parser.ParseExpr(exprStr)
+	expr, err := parser.NewParser(parser.Options{}).ParseExpr(exprStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid PromQL: %w", err)
 	}

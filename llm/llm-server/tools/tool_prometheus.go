@@ -124,7 +124,7 @@ func validatePromQLSyntax(query string) string {
 	if q == "" {
 		return ""
 	}
-	if _, err := parser.ParseExpr(q); err != nil {
+	if _, err := parser.NewParser(parser.Options{}).ParseExpr(q); err != nil {
 		msg := err.Error()
 		// Classify the error and add a fix hint for the LLM
 		hint := ""

@@ -25,7 +25,7 @@ func handlePromQL(actionPayload *ActionRequest, c *gin.Context, tracer *trace.Tr
 			return
 		}
 		result := true
-		_, err = parser.ParseExpr(promQLRequest.PromQl)
+		_, err = parser.NewParser(parser.Options{}).ParseExpr(promQLRequest.PromQl)
 		if err != nil {
 			result = false
 		}
