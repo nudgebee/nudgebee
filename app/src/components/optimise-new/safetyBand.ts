@@ -6,12 +6,25 @@ import { safeJSONParse } from 'src/utils/common';
 // backend string values.
 export type SafetyBand = 'safe' | 'review' | 'risky' | 'unknown';
 
+// DependentRef is one blast-radius dependent as persisted by the backend impact
+// pipeline (recommendation_impact.go): identity plus risk context. namespace is
+// absent for cloud resources; the list is capped server-side at 50 (closest
+// first), with dependent_count carrying the true total.
+export interface DependentRef {
+  namespace?: string;
+  name: string;
+  node_type?: string;
+  environment?: string;
+  hops_away?: number;
+}
+
 export interface ImpactSummary {
   dependent_count?: number;
   production_dependents?: number;
   coverage_confidence?: 'none' | 'low' | 'high';
   truncated?: boolean;
   safety_reason?: string;
+  dependents?: DependentRef[];
 }
 
 const BAND_TONE: Record<SafetyBand, LabelTone> = {

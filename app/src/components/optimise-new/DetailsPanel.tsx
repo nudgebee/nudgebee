@@ -58,12 +58,17 @@ const SafetyRow = ({ label, children }: { label: string; children: ReactNode }) 
   </Box>
 );
 
+// How many impacted workloads to show before collapsing behind a "Show all"
+// toggle — the backend caps the list at 50, too many to render inline.
+const DEP_COLLAPSE_LIMIT = 6;
+
 // BlastRadiusSection surfaces the knowledge-graph safety band + impact rollup.
 // Renders nothing until a recommendation carries the data (k8s recs once impact
 // scoring is enabled), so it's a no-op for everything else.
 const BlastRadiusSection = ({ rec }: { rec: any }) => {
   const band = rec?.safety_band as string | undefined;
   const impact = getImpactSummary(rec);
+  const [showAllDeps, setShowAllDeps] = useState(false);
   const hasImpactData = !!(
     impact &&
     (impact.dependent_count != null || impact.production_dependents != null || impact.coverage_confidence || impact.safety_reason)
@@ -115,6 +120,52 @@ const BlastRadiusSection = ({ rec }: { rec: any }) => {
         )}
         {impact?.safety_reason && (
           <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], lineHeight: 1.6, mt: ds.space[1] }}>{impact.safety_reason}</Typography>
+        )}
+        {impact?.dependents && impact.dependents.length > 0 && (
+          <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1], mt: ds.space[1] }}>
+            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontWeight: ds.weight.medium }}>Impacted workloads</Typography>
+            {(showAllDeps ? impact.dependents : impact.dependents.slice(0, DEP_COLLAPSE_LIMIT)).map((dep, i) => {
+              const id = dep.namespace ? `${dep.namespace}/${dep.name}` : dep.name;
+              return (
+                <Box key={`${id}-${i}`} sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: ds.space[2] }}>
+                  <Typography
+                    title={id}
+                    sx={{
+                      fontFamily: 'var(--ds-font-mono)',
+                      fontSize: ds.text.small,
+                      color: ds.gray[700],
+                      minWidth: 0,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {id}
+                  </Typography>
+                  {dep.environment && (
+                    <Label size='sm' tone='neutral'>
+                      {dep.environment}
+                    </Label>
+                  )}
+                </Box>
+              );
+            })}
+            {impact.dependents.length > DEP_COLLAPSE_LIMIT && (
+              <Typography
+                onClick={() => setShowAllDeps((v) => !v)}
+                sx={{
+                  fontSize: ds.text.small,
+                  color: ds.blue[600],
+                  fontWeight: ds.weight.medium,
+                  cursor: 'pointer',
+                  mt: ds.space[1],
+                  '&:hover': { textDecoration: 'underline' },
+                }}
+              >
+                {showAllDeps ? 'Show less' : `Show all ${impact.dependents.length}`}
+              </Typography>
+            )}
+          </Box>
         )}
       </Box>
     </Card>
@@ -192,8 +243,10 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {}, onViewEvidence }
         })}
       />
 
-      {/* Blast Radius & Safety — knowledge-graph impact + safety band */}
-      <BlastRadiusSection rec={rec} />
+      {/* Blast Radius & Safety — knowledge-graph impact + safety band. Keyed by
+          rec id so the "Show all" toggle state resets when the persistent detail
+          drawer swaps to a different recommendation (it isn't remounted). */}
+      <BlastRadiusSection key={rec?.id} rec={rec} />
 
       {/* Recommendation Summary — key "what changes" data from JSONB */}
       <RecommendationSummary recData={recData} category={category} ruleName={ruleName} />
