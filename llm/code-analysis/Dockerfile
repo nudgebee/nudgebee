@@ -104,7 +104,9 @@ RUN apk add --no-cache --virtual .build-deps \
     make \
     linux-headers && \
     python3 -m venv /opt/azure-cli-venv && \
+    /opt/azure-cli-venv/bin/pip install --no-cache-dir --upgrade pip && \
     /opt/azure-cli-venv/bin/pip install --no-cache-dir azure-cli && \
+    /opt/azure-cli-venv/bin/pip install --no-cache-dir --upgrade "cryptography>=48.0.1" && \
     ln -s /opt/azure-cli-venv/bin/az /usr/local/bin/az && \
     apk del .build-deps
 
@@ -133,6 +135,7 @@ RUN apk add --no-cache \
 # (e.g. poetry pulls in urllib3 2.x which breaks apk-installed aws-cli)
 RUN npm install -g yarn pnpm && \
     python3 -m venv /opt/python-tools && \
+    /opt/python-tools/bin/pip install --no-cache-dir --upgrade pip && \
     /opt/python-tools/bin/pip install --no-cache-dir poetry black flake8 mypy && \
     ln -s /opt/python-tools/bin/poetry /usr/local/bin/poetry && \
     ln -s /opt/python-tools/bin/black /usr/local/bin/black && \
