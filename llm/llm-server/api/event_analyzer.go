@@ -1217,6 +1217,84 @@ func analyzeEventRCAUsingAgentsAndUpdateDb(ctx *security.RequestContext, request
 	return response, nil
 }
 
+// maxInvestigationEvidenceBytes caps how much collected evidence (logs +
+// insights) is inlined into the investigation prompt. The event's evidence is
+// already gathered on the Event object (populated by the events tool's evidence
+// enrichment), so surfacing it lets the investigation reach a verdict instead of
+// reporting "insufficient" for data the event actually carries. The cap bounds
+// token cost the same way maxAnnotationRCAFormatBytes does for rca_format.
+const maxInvestigationEvidenceBytes = 6000
+
+// buildInvestigationEvidenceContext renders the log lines and insight messages
+// already collected on the event into a compact markdown block for the
+// investigation prompt. Returns "" when no usable evidence is present.
+func buildInvestigationEvidenceContext(ev events.InvestigateData) string {
+	var b strings.Builder
+
+	// Log lines: LogData holds the (capped) log body; ErrorLogData holds the
+	// extracted error lines when the events tool cleared LogData in favour of
+	// them (see EventsExecuteTool.processRowWithMessages). Prefer whichever is
+	// populated so the source IPs / error messages reach the agent.
+	logText := strings.TrimSpace(ev.LogData)
+	if logText == "" && len(ev.ErrorLogData) > 0 {
+		logText = strings.TrimSpace(strings.Join(ev.ErrorLogData, "\n"))
+	}
+	if logText != "" {
+		b.WriteString("### Collected Logs\n```\n")
+		b.WriteString(logText)
+		b.WriteString("\n```\n\n")
+	}
+
+	// Insight messages summarise the metric / trace / alert / dependency findings
+	// the enrichers attached to the event. They are short, high-signal strings —
+	// the primary evidence for metric alerts that carry no logs.
+	if insights := collectEvidenceInsights(ev); len(insights) > 0 {
+		b.WriteString("### Collected Insights\n")
+		for _, msg := range insights {
+			b.WriteString("- ")
+			b.WriteString(msg)
+			b.WriteString("\n")
+		}
+	}
+
+	return strings.TrimSpace(b.String())
+}
+
+// collectEvidenceInsights gathers de-duplicated, non-empty insight messages from
+// every insight-bearing field of the collected evidence, preserving encounter
+// order.
+func collectEvidenceInsights(ev events.InvestigateData) []string {
+	var out []string
+	seen := make(map[string]bool)
+	add := func(insights []events.Insight) {
+		for _, in := range insights {
+			msg := strings.TrimSpace(in.Message)
+			if msg == "" || seen[msg] {
+				continue
+			}
+			seen[msg] = true
+			out = append(out, msg)
+		}
+	}
+	for _, d := range []events.InvestigateDataInsight{
+		ev.PodData, ev.NodeData, ev.Deployment, ev.AlertLabels, ev.JobInformation,
+		ev.JobEvents, ev.JobPodEvents, ev.RelatedEvents, ev.ContainerMetrics,
+		ev.Traces, ev.AlertData, ev.ServiceMap,
+	} {
+		add(d.Insight)
+	}
+	for _, list := range [][]events.InvestigateDataInsight{
+		ev.PodMetrics, ev.NodeMetrics, ev.NoisyNeighbours, ev.ApiFailures,
+		ev.PodEvents, ev.NodeEvents, ev.Markdowns, ev.UserActions,
+		ev.RDBMSQueryData, ev.MetricsData, ev.Others,
+	} {
+		for _, d := range list {
+			add(d.Insight)
+		}
+	}
+	return out
+}
+
 func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Event, request EventAnalysisRequest, response EventAnalysisResponse, parsedLabels map[string]any, anaylsisRepo *events.EventAnalysisRepository) (string, string, bool, string, error) {
 	eventDefinition, annotations, err := anaylsisRepo.GetEventRuleDefinition(ctx, request.AccountId, event.AggregationKey)
 	if err != nil {
@@ -1230,6 +1308,21 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 	// Add account context (cloud provider) to help the LLM tailor its output
 	if cloudProvider := agents.GetCloudProviderForAccount(request.AccountId); cloudProvider != "" {
 		eventAnalsysisPrompt = eventAnalsysisPrompt + "\n\n**Account Context:** This account's infrastructure is on " + cloudProvider + ". Tailor your analysis, examples, and recommendations to this infrastructure type."
+	}
+
+	// Surface the evidence already collected on this event (logs plus metric /
+	// trace / alert insights) into the investigation prompt. The investigation
+	// prompt is an audit of "what is provided" — but previously it only received
+	// the event definition, labels and preliminary summary, never the enriched
+	// evidence the events tool attaches to the event. That made thin-payload
+	// alerts (cloud metric alerts especially) report "Data Assessment:
+	// Insufficient" for logs the event actually carried (e.g. a GCP load-balancer
+	// 429 event whose access logs — source IP, URI, Cloud Armor policy — sat in
+	// ErrorLogData but never reached the agent). Treat it as provided data.
+	if evidenceContext := buildInvestigationEvidenceContext(event.Evidences); evidenceContext != "" {
+		eventAnalsysisPrompt = eventAnalsysisPrompt +
+			"\n\n## Collected Evidence\nThe following evidence was already gathered for this event. Treat it as part of the provided data and use it in your assessment before judging whether data is sufficient:\n\n" +
+			core.TruncateHead(evidenceContext, maxInvestigationEvidenceBytes)
 	}
 
 	accountPrompt, _, _ := core.AgentAdditionalInstructionsAndToolsAndConfigs(ctx, request.AccountId, "event_log_analysis")
@@ -2378,6 +2471,11 @@ func synthesizeDetailedResponse(ctx *security.RequestContext, request EventAnaly
 	if investigation == "" && logAnalysis == "" {
 		return summary, nil
 	}
+
+	// When the investigation reports insufficient/partial evidence, the synthesis
+	// prompt's "Evidence Discipline" section keeps this path honest (no fabricated
+	// root cause) — we intentionally do not try to detect that verdict in Go by
+	// scraping the model's prose, which is brittle and drifts with wording.
 
 	// Resolve the conversation UUID from the parent session so token usage can be
 	// tracked with valid FK references. The conversation was already created during
