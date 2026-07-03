@@ -16,17 +16,18 @@ var (
 	metricsApiRequestsFailedTotal metric.Int64Counter
 	metricsApiRequestsTotal       metric.Int64Counter
 
-	metricsAgentOperationsTotal     metric.Int64Counter
-	metricsAgentLatencySeconds      metric.Float64Histogram
-	metricsToolOperationsTotal      metric.Int64Counter
-	metricsToolLatencySeconds       metric.Float64Histogram
-	metricsLLMRequestsTotal         metric.Int64Counter
-	metricsLLMTokensTotal           metric.Int64Counter
-	metricsLLMLatencySeconds        metric.Float64Histogram
-	metricsLLMCacheTotal            metric.Int64Counter
-	metricsLLMCachedTokensTotal     metric.Int64Counter
-	metricsLLMCircuitBreakerTripped metric.Int64Counter
-	metricsLLMRateLimitHitsTotal    metric.Int64Counter
+	metricsAgentOperationsTotal       metric.Int64Counter
+	metricsAgentLatencySeconds        metric.Float64Histogram
+	metricsToolOperationsTotal        metric.Int64Counter
+	metricsToolLatencySeconds         metric.Float64Histogram
+	metricsLLMRequestsTotal           metric.Int64Counter
+	metricsLLMTokensTotal             metric.Int64Counter
+	metricsLLMLatencySeconds          metric.Float64Histogram
+	metricsLLMCacheTotal              metric.Int64Counter
+	metricsLLMCachedTokensTotal       metric.Int64Counter
+	metricsLLMCacheInvalidationsTotal metric.Int64Counter
+	metricsLLMCircuitBreakerTripped   metric.Int64Counter
+	metricsLLMRateLimitHitsTotal      metric.Int64Counter
 
 	// Event analyzer metrics
 	metricsEventAnalysisOperationsTotal metric.Int64Counter
@@ -165,6 +166,15 @@ func InitMetrics() {
 		)
 		if err != nil {
 			slog.Error("metrics: failed to create nb_llm_cached_tokens metric", "error", err)
+		}
+
+		// LLM cache invalidations (provider cache torn down before its planned TTL)
+		metricsLLMCacheInvalidationsTotal, err = meter.Int64Counter(
+			"nb_llm_cache_invalidations",
+			metric.WithDescription("Total LLM provider caches invalidated before expiry, by scope and reason"),
+		)
+		if err != nil {
+			slog.Error("metrics: failed to create nb_llm_cache_invalidations metric", "error", err)
 		}
 
 		// LLM circuit breaker trips
@@ -413,6 +423,25 @@ func MetricsLLMCacheTotal(provider, model, status, accountID string) {
 		attribute.String("model", model),
 		attribute.String("status", status),
 		attribute.String("account_id", accountID),
+	))
+}
+
+// MetricsLLMCacheInvalidations increments the cache invalidation counter,
+// recorded when a live provider cache is torn down before its planned TTL.
+// reason should be one of: "content_changed", "explicit".
+// Labels are intentionally low-cardinality (no account_id) so the series stays
+// aggregatable for alerting on invalidation churn.
+func MetricsLLMCacheInvalidations(provider, model, scope, reason string) {
+	InitMetrics()
+	if metricsLLMCacheInvalidationsTotal == nil {
+		slog.Warn("metrics: metricsLLMCacheInvalidationsTotal is not initialized")
+		return
+	}
+	metricsLLMCacheInvalidationsTotal.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("provider", provider),
+		attribute.String("model", model),
+		attribute.String("scope", scope),
+		attribute.String("reason", reason),
 	))
 }
 
