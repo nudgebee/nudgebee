@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"nudgebee/services/common"
 	"nudgebee/services/eventrule"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/security"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -264,10 +266,54 @@ func extractPromSubject(labels map[string]string) (kind, name string) {
 	if v := labels["pod"]; v != "" {
 		return "pod", v
 	}
+	// PostgreSQL exporter alerts (PostgreSQLCacheHitRatio, …) key on `datname` — the
+	// database — with no k8s workload/pod/service label. Prefer the database HOST
+	// when the alert carries it (server / instance / host / hostname): it points at
+	// the postgres pod or the RDS endpoint, which is the actionable subject, and it
+	// resolves against k8s/cloud inventory. Fall back to the database name so the
+	// subject is never empty — an empty subject sends the alert to the LLM, which
+	// hallucinates an unrelated workload (e.g. datname=rdsadmin → a node-agent
+	// daemonset). The port and loopback hosts (a sidecar exporter's
+	// server=localhost:5432) are dropped so we skip to the next, real host.
+	if dn := labels["datname"]; dn != "" {
+		for _, k := range []string{"server", "instance", "host", "hostname"} {
+			if h := dbHostOnly(labels[k]); h != "" {
+				return "database", h
+			}
+		}
+		return "database", dn
+	}
 	if v := labels["instance"]; v != "" {
 		return "instance", v
 	}
 	return "", ""
+}
+
+// dbHostOnly extracts the bare host from a Prometheus host-label value such as
+// "10.0.0.5:9187", "mydb.abc.rds.amazonaws.com:5432", or "http://exp:9187/metrics",
+// dropping scheme, path, port and IPv6 brackets. Loopback values — which don't
+// identify a real database server (e.g. a sidecar exporter's server=localhost:5432)
+// — return "" so the caller falls through to the next label.
+func dbHostOnly(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
+	}
+	if i := strings.Index(v, "://"); i >= 0 {
+		v = v[i+3:]
+	}
+	if i := strings.IndexByte(v, '/'); i >= 0 {
+		v = v[:i]
+	}
+	if host, _, err := net.SplitHostPort(v); err == nil {
+		v = host
+	}
+	v = strings.Trim(v, "[]")
+	switch strings.ToLower(v) {
+	case "localhost", "127.0.0.1", "::1", "0.0.0.0":
+		return ""
+	}
+	return v
 }
 
 // extractPromNamespace picks the namespace from Prometheus alert labels,

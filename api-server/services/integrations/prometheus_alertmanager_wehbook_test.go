@@ -129,3 +129,68 @@ func TestTools_GetCreatePrometheusAlertManagerWebhookToolConfigs(t *testing.T) {
 	assert.Nil(t, err)
 
 }
+
+func TestExtractPromSubject(t *testing.T) {
+	tests := []struct {
+		name     string
+		labels   map[string]string
+		wantKind string
+		wantName string
+	}{
+		{
+			name:     "datname only falls back to database name",
+			labels:   map[string]string{"alertname": "PostgreSQLCacheHitRatio", "datname": "temporal_visibility", "severity": "warning"},
+			wantKind: "database",
+			wantName: "temporal_visibility",
+		},
+		{
+			name:     "rdsadmin datname falls back to database name (not a workload)",
+			labels:   map[string]string{"alertname": "PostgreSQLCacheHitRatio", "datname": "rdsadmin"},
+			wantKind: "database",
+			wantName: "rdsadmin",
+		},
+		{
+			name:     "server host (RDS endpoint) preferred over datname, port stripped",
+			labels:   map[string]string{"datname": "temporal_visibility", "server": "mydb.abc123.us-east-1.rds.amazonaws.com:5432"},
+			wantKind: "database",
+			wantName: "mydb.abc123.us-east-1.rds.amazonaws.com",
+		},
+		{
+			name:     "instance host preferred over datname, port stripped",
+			labels:   map[string]string{"datname": "temporal", "instance": "10.0.0.1:9187"},
+			wantKind: "database",
+			wantName: "10.0.0.1",
+		},
+		{
+			name:     "loopback server skipped, falls through to real instance host",
+			labels:   map[string]string{"datname": "temporal", "server": "localhost:5432", "instance": "postgres-0:9187"},
+			wantKind: "database",
+			wantName: "postgres-0",
+		},
+		{
+			name:     "controller wins over datname/host",
+			labels:   map[string]string{"deployment": "postgres", "datname": "temporal_visibility", "instance": "10.0.0.1:9187"},
+			wantKind: "deployment",
+			wantName: "postgres",
+		},
+		{
+			name:     "pod wins over datname/host",
+			labels:   map[string]string{"pod": "postgres-0", "datname": "temporal", "server": "10.0.0.1:5432"},
+			wantKind: "pod",
+			wantName: "postgres-0",
+		},
+		{
+			name:     "no subject keys",
+			labels:   map[string]string{"alertname": "SomethingElse", "severity": "warning"},
+			wantKind: "",
+			wantName: "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kind, name := extractPromSubject(tt.labels)
+			assert.Equal(t, tt.wantKind, kind, "kind")
+			assert.Equal(t, tt.wantName, name, "name")
+		})
+	}
+}
