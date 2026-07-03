@@ -24,3 +24,61 @@ For implementation detail on a specific service, read its own `README.md` or `CL
 5. **`app`** renders the result via the RPC gateway.
 
 For a richer walkthrough, see the LLM execution-flow section in [`llm/llm-server/CLAUDE.md`](../llm/llm-server/CLAUDE.md#ai-agent-execution-flow).
+
+
+---
+
+
+
+## Notification System Alert flow
+
+### Overview
+Nudgebee uses an event-driven architecture for handling notifications triggered by alerts.
+
+When an alert is created or updated it does not directly send notifications. Instead it emits an event that is consumed by the notification system
+
+---
+
+### Architecture Flow
+
+Alert Service
+    ↓
+Event Bus
+   ↓
+Notification Service
+   ↓
+Delivery Channels (Email/ Webhook/Push)
+
+
+---
+
+### Event Flow Description
+
+1. An alert is created or updated in the Alert service
+2. The system emits an ALERT_TRIGGERED event
+3. The Event Bus routes the event to subscribed services.
+4. The Notification Service listens for this event
+5. Notifications are dispatched through configured channels.
+
+---
+
+### Common Issues
+
+### 1. Missing Event Emission
+If notifications are not triggered, verify that the alert service emits the ALERT_TRIGGERED event.
+
+### 2. Event Subscription Misconfiguration
+Ensure that notification service is properly subscribed to event bus
+
+### 3. Event Name mismatch
+The event name must match exactly between emitter and listener
+
+
+---
+
+Debugging steps
+
+- Check logs for ALERT_TRIGGERED event emission
+- Verify notification service is running
+- Confirm event bus connectivity
+- Validate subscription registration in notification module
