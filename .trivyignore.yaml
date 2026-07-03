@@ -11,8 +11,11 @@ misconfigurations:
   # disposable/isolated benchmark cluster, never production.
   - id: AVD-KSV-0041
     paths:
+      # Scoped to benchmark-server ONLY. A bare "templates/clusterrole.yaml"
+      # would also match a direct `trivy config deploy/kubernetes/<other-svc>`
+      # scan and silently ignore a real KSV041 elsewhere — so keep the
+      # benchmark-server path segment in the glob.
       - "**/benchmark-server/templates/clusterrole.yaml"
-      - "templates/clusterrole.yaml"
     statement: >-
       benchmark-server harness needs secret create/delete to kubectl-apply
       scenario manifests (some include kind: Secret); not deployed in prod.
