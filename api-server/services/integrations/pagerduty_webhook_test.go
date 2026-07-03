@@ -412,6 +412,127 @@ func TestResolveSubjectFromLabels(t *testing.T) {
 	}
 }
 
+// TestExtractGCPMonitoringSubject covers deterministic parsing of GCP Cloud
+// Monitoring alert titles routed through PagerDuty (Cloud SQL, GCE, replica,
+// with/without the metric-labels datasource hint, and non-GCP titles).
+func TestExtractGCPMonitoringSubject(t *testing.T) {
+	const viewIncident = " | View incident: https://console.cloud.google.com/monitoring/alerting/alerts/0.abc?channelType=pagerduty&project=example-gcp-proj"
+	tests := []struct {
+		name         string
+		title        string
+		wantResource string
+		wantProject  string
+		wantKind     string
+	}{
+		{
+			name:         "cloudsql slow-queries (log-based metric) sets cloudsql_database kind",
+			title:        "logging/user/dev-pg-slow-queries for example-gcp-proj example-pg-instance with metric labels {log=cloudsql.googleapis.com/postgres.log} is above the threshold of 5.000 with a value of 6.000." + viewIncident,
+			wantResource: "example-pg-instance",
+			wantProject:  "example-gcp-proj",
+			wantKind:     "cloudsql_database",
+		},
+		{
+			name:         "CPU utilization (no datasource hint) resolves resource, kind empty",
+			title:        "CPU utilization for example-gcp-proj example-pg-instance is above the threshold of 0.700 with a value of 0.712." + viewIncident,
+			wantResource: "example-pg-instance",
+			wantProject:  "example-gcp-proj",
+			wantKind:     "",
+		},
+		{
+			name:         "Uptime below-threshold resolves the replica resource",
+			title:        "Uptime for example-gcp-proj example-pg-replica is below the threshold of 1 with a value of 0." + viewIncident,
+			wantResource: "example-pg-replica",
+			wantProject:  "example-gcp-proj",
+			wantKind:     "",
+		},
+		{
+			name:         "metric absence alert resolves resource, kind empty",
+			title:        "Scheduler Heartbeats for example-gcp-proj example-pg-instance is absent." + viewIncident,
+			wantResource: "example-pg-instance",
+			wantProject:  "example-gcp-proj",
+			wantKind:     "",
+		},
+		{
+			name:         "project falls back to leading for-clause token when URL lacks it",
+			title:        "CPU utilization for my-proj my-instance is above the threshold of 0.9 with a value of 0.95. | Policy: p | View incident: https://console.cloud.google.com/monitoring/alerting/alerts/0.abc",
+			wantResource: "my-instance",
+			wantProject:  "my-proj",
+			wantKind:     "",
+		},
+		{
+			name:         "non-GCP title returns empty",
+			title:        "[FIRING:1] HighErrorCriticalLogs custom-alerts nudgebee-agent critical",
+			wantResource: "",
+			wantProject:  "",
+			wantKind:     "",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resource, project, kind := extractGCPMonitoringSubject(tt.title)
+			assert.Equal(t, tt.wantResource, resource, "resource")
+			assert.Equal(t, tt.wantProject, project, "project")
+			assert.Equal(t, tt.wantKind, kind, "kind")
+		})
+	}
+}
+
+// TestApplyGCPMonitoringSubject covers the end-to-end apply: subject + kind set,
+// GCP project mirrored into the cluster label (ingest guard needs a cluster), and
+// no-op when a subject already exists.
+func TestApplyGCPMonitoringSubject(t *testing.T) {
+	t.Run("cloudsql alert resolves subject, kind and cluster", func(t *testing.T) {
+		p := &core.EventIncomingWebhook{
+			EventTitle: "logging/user/dev-pg-slow-queries for example-gcp-proj example-pg-instance with metric labels {log=cloudsql.googleapis.com/postgres.log} is above the threshold of 5.000 with a value of 6.000. | View incident: https://console.cloud.google.com/monitoring/alerting/alerts/0.abc?channelType=pagerduty&project=example-gcp-proj",
+			Investigation: core.EventIncomingWebhookInvestigation{
+				Labels: map[string]string{},
+			},
+		}
+		applyGCPMonitoringSubject(p)
+		assert.Equal(t, "example-pg-instance", p.EventSubjectName)
+		assert.Equal(t, "cloudsql_database", p.EventSubjectKind)
+		assert.Equal(t, "example-gcp-proj", p.Investigation.Labels["cluster"])
+		assert.Equal(t, "example-gcp-proj", p.Investigation.Labels["project_id"])
+		assert.Equal(t, "gcp_monitoring_title", p.Investigation.Labels["nb_subject_match"])
+	})
+
+	t.Run("existing subject is left untouched", func(t *testing.T) {
+		p := &core.EventIncomingWebhook{
+			EventSubjectName: "checkout",
+			EventSubjectKind: "deployment",
+			EventTitle:       "CPU utilization for example-gcp-proj example-pg-instance is above the threshold of 0.7 with a value of 0.8. | View incident: https://console.cloud.google.com/monitoring/alerting/alerts/0.abc?project=example-gcp-proj",
+			Investigation:    core.EventIncomingWebhookInvestigation{Labels: map[string]string{}},
+		}
+		applyGCPMonitoringSubject(p)
+		assert.Equal(t, "checkout", p.EventSubjectName)
+		assert.Equal(t, "deployment", p.EventSubjectKind)
+		assert.Empty(t, p.Investigation.Labels["cluster"])
+	})
+
+	t.Run("preserves an existing cluster label", func(t *testing.T) {
+		p := &core.EventIncomingWebhook{
+			EventTitle: "CPU utilization for example-gcp-proj example-pg-instance is above the threshold of 0.7 with a value of 0.8. | View incident: https://console.cloud.google.com/monitoring/alerting/alerts/0.abc?project=example-gcp-proj",
+			Investigation: core.EventIncomingWebhookInvestigation{
+				Labels: map[string]string{"cluster": "pre-existing"},
+			},
+		}
+		applyGCPMonitoringSubject(p)
+		assert.Equal(t, "example-pg-instance", p.EventSubjectName)
+		assert.Equal(t, "pre-existing", p.Investigation.Labels["cluster"])
+	})
+
+	t.Run("nil label map is initialized so cluster is set (ingest guard needs it)", func(t *testing.T) {
+		p := &core.EventIncomingWebhook{
+			EventTitle:    "CPU utilization for example-gcp-proj example-pg-instance is above the threshold of 0.7 with a value of 0.8. | View incident: https://console.cloud.google.com/monitoring/alerting/alerts/0.abc?project=example-gcp-proj",
+			Investigation: core.EventIncomingWebhookInvestigation{Labels: nil},
+		}
+		applyGCPMonitoringSubject(p)
+		assert.Equal(t, "example-pg-instance", p.EventSubjectName)
+		assert.NotNil(t, p.Investigation.Labels)
+		assert.Equal(t, "example-gcp-proj", p.Investigation.Labels["cluster"])
+	})
+}
+
 // TestLLMLabelExtraction_Grafana tests the LLM extraction with a real Grafana PagerDuty alert payload.
 // Requires TEST_USER, TEST_TENANT, TEST_ACCOUNT env vars and a running LLM server.
 func TestLLMLabelExtraction_Grafana(t *testing.T) {

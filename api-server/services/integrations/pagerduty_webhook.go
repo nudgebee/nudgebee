@@ -323,6 +323,12 @@ var (
 	// the incident title. The 4th segment (the workload/container name) is optional
 	// and, when present, is the resolvable subject; the pod carries a ReplicaSet hash.
 	reK8sPath = regexp.MustCompile(`/k8s/([^/\s]+)/([^/\s]+)(?:/([^/\s]+))?`)
+
+	// GCP Cloud Monitoring alert-title parsing (for alerts routed to PagerDuty).
+	// The `for <project> <resource…>` clause runs up to the metric-labels, threshold,
+	// or metric-absence boundary; the project id is read from the View-incident URL.
+	reGCPMonitoringFor = regexp.MustCompile(`(?i)\bfor\s+(.+?)\s+(?:with metric labels\b|is (?:above|below) the threshold\b|is absent\b)`)
+	reGCPProject       = regexp.MustCompile(`[?&]project=([A-Za-z0-9:_.-]+)`)
 )
 
 func (m PagerDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settings []core.IntegrationConfigValue, accountId, webhookPayloadString string) ([]core.EventIncomingWebhook, error) {
@@ -654,6 +660,13 @@ func (m PagerDutyWebhook) ProcessEventWebook(sc *security.RequestContext, settin
 	if parsedPayload.EventSubjectName != "" {
 		matchWorkloadAndEnrich(sc, &parsedPayload, accountId)
 	}
+
+	// GCP Cloud Monitoring alerts routed via PagerDuty carry the resource only in
+	// the incident title (no structured labels survive). Parse it deterministically
+	// before the LLM fallback so a Cloud SQL / GCE / GKE resource resolves to itself
+	// instead of an LLM-hallucinated k8s workload. Runs after matchWorkloadAndEnrich
+	// so a real workload always wins.
+	applyGCPMonitoringSubject(&parsedPayload)
 
 	// LLM fallback: if no subject found after deterministic parsing, use LLM
 	if parsedPayload.EventSubjectName == "" {
@@ -3316,6 +3329,103 @@ func applyK8sPathSubject(p *core.EventIncomingWebhook, labels map[string]string,
 		labels["pod"] = pod
 	}
 	return p.EventSubjectName != ""
+}
+
+// extractGCPMonitoringSubject parses a GCP Cloud Monitoring alert title that was
+// routed through PagerDuty. These arrive with ONLY the human-readable title — the
+// PagerDuty Events-API payload carries no structured GCP resource labels, and the
+// incident API enrichment's body.details just echoes the same text — so the resource
+// must be read from the title. The format is stable:
+//
+//	<metric/condition> for <project> <resource…> [with metric labels {…}] is
+//	(above|below) the threshold of N with a value of N. | Violation started: … |
+//	Policy: … | Condition: … | View incident:
+//	https://console.cloud.google.com/monitoring/alerting/…?…&project=<project>
+//
+// It returns the resource display name (the trailing value of the `for` clause — the
+// space-joined resource-label values end with the instance/resource name, e.g. a
+// Cloud SQL instance), the project id (from the View-incident URL, falling back to
+// the leading `for`-clause token), and a kind when the datasource is identifiable
+// (Cloud SQL log-based metrics carry `cloudsql.googleapis.com` in their labels).
+// All return values are empty when the title is not a GCP Cloud Monitoring alert.
+func extractGCPMonitoringSubject(title string) (resource, project, kind string) {
+	if title == "" || !strings.Contains(title, "console.cloud.google.com/monitoring/alerting") {
+		return "", "", ""
+	}
+	if m := reGCPProject.FindStringSubmatch(title); m != nil {
+		project = m[1]
+	}
+	// Parse the resource out of the first pipe segment (the summary line) so a
+	// stray " for " in a later segment can never be matched.
+	summary := strings.SplitN(title, " | ", 2)[0]
+	m := reGCPMonitoringFor.FindStringSubmatch(summary)
+	if m == nil {
+		return "", project, ""
+	}
+	fields := strings.Fields(strings.TrimSpace(m[1])) // "<project> <resource…>"
+	if len(fields) == 0 {
+		return "", project, ""
+	}
+	resource = fields[len(fields)-1]
+	if project == "" {
+		project = fields[0]
+	}
+	// Never let the bare project become the subject (e.g. a resource-less clause).
+	if resource == project {
+		return "", project, ""
+	}
+	if strings.Contains(title, "cloudsql.googleapis.com") {
+		kind = "cloudsql_database"
+	}
+	return resource, project, kind
+}
+
+// applyGCPMonitoringSubject resolves the subject for a GCP Cloud Monitoring alert
+// routed via PagerDuty from the incident title (see extractGCPMonitoringSubject).
+// Without it the title carries no label the workload parser understands, so the
+// alert falls to the LLM, which has no matching workload and hallucinates an
+// unrelated one (observed: a Cloud SQL `dev-pg-slow-queries` alert resolved to a
+// `nudgebee-agent-prod-node-agent` daemonset). Sets the GCP project as the event
+// cluster (`cluster` label) to mirror native GCP events (whose cluster IS the
+// project) and satisfy the ingest guard, which drops any event with an empty
+// cluster. Must run AFTER matchWorkloadAndEnrich (so a real workload always wins)
+// and BEFORE the LLM fallback (so these alerts never reach it). No-op unless the
+// subject is still empty and the title is a GCP Cloud Monitoring alert.
+func applyGCPMonitoringSubject(parsedPayload *core.EventIncomingWebhook) {
+	if parsedPayload.EventSubjectName != "" {
+		return
+	}
+	labels := parsedPayload.Investigation.Labels
+	title := ""
+	if labels != nil {
+		title = labels["nb_pd_raw_title"]
+	}
+	if title == "" {
+		title = parsedPayload.EventTitle
+	}
+	resource, project, kind := extractGCPMonitoringSubject(title)
+	if resource == "" {
+		return
+	}
+	parsedPayload.EventSubjectName = resource
+	if kind != "" {
+		parsedPayload.EventSubjectKind = kind
+	}
+	// Guard against a nil label map: without this a resolved subject would be set
+	// but the `cluster` label never written, and the ingest guard drops any event
+	// with an empty cluster.
+	if labels == nil {
+		labels = map[string]string{}
+		parsedPayload.Investigation.Labels = labels
+	}
+	if project != "" {
+		labels["project_id"] = project
+		if labels["cluster"] == "" {
+			labels["cluster"] = project
+		}
+	}
+	labels["nb_subject_match"] = "gcp_monitoring_title"
+	labels["nb_subject_resolution"] = "gcp-monitoring"
 }
 
 func resolveSubjectFromLabels(parsedPayload *core.EventIncomingWebhook) {
