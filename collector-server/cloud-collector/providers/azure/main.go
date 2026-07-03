@@ -1400,7 +1400,7 @@ func (a *azureProvider) ListEventRules(ctx providers.CloudProviderContext, accou
 			page, err := pager.NextPage(ctx.GetContext())
 			if err != nil {
 				ctx.GetLogger().Error("azure:ListEventRules failed to get next page", "error", err, "subscriptionID", subID)
-				continue
+				break
 			}
 
 			for _, alert := range page.Value {
@@ -1493,7 +1493,7 @@ func (a *azureProvider) ListEventRules(ctx providers.CloudProviderContext, accou
 			page, err := sqrPager.NextPage(ctx.GetContext())
 			if err != nil {
 				ctx.GetLogger().Error("azure:ListEventRules failed to get scheduled query rules page", "error", err, "subscriptionID", subID)
-				continue
+				break
 			}
 
 			for _, rule := range page.Value {
