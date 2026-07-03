@@ -21,9 +21,7 @@
  *     explicit override for the rare "this isn't a utilisation gauge" case.)
  *   - Don't use ProgressBar for unknown maximums. That's `ProgressLinear`.
  *
- * Migration:
- *   `import ProgressBar from '@shared/widgets/ProgressBar'`
- * → `import { ProgressBar } from '@ui/ProgressBar'`
+
  *   Tone selection moves from per-call to `thresholds` (per spec).
  */
 import * as React from 'react';

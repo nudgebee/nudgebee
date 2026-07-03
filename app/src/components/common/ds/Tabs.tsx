@@ -1,10 +1,6 @@
 /**
  * Tabs — DS V2.
  *
- * Phase 1: functionality only. Visual styling is deferred to Phase 2.
- *
- * Consolidates `CustomTabs` and `CustomTabsForDrilldown` from
- * `@components1/common/`. `ButtonTabs` is out of scope for this phase.
  *
  * Migration plan: design-system/tabs-migration-plan.md
  *

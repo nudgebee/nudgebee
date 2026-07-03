@@ -1308,7 +1308,7 @@ const VerticalAutoOptimizeSingleConfiguration = ({
               <Box>
                 <TimeHeader title='Daily' subtitle=' Actions can be scheduled for one or more hours each day' />
                 <ToggleGroup
-                  selection='multi'
+                  selection='multiple'
                   size='sm'
                   ariaLabel='Daily hours'
                   value={[]}
@@ -1325,7 +1325,7 @@ const VerticalAutoOptimizeSingleConfiguration = ({
               <Box>
                 <TimeHeader title='Weekly' subtitle='Which day of the week' />
                 <ToggleGroup
-                  selection='multi'
+                  selection='multiple'
                   size='sm'
                   ariaLabel='Weekly days'
                   value={[]}

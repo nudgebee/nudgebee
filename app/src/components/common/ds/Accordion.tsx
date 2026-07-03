@@ -1,13 +1,10 @@
 /**
- * Accordion — DS V2 of legacy CustomAccordion + AccordionSmall.
+ * Accordion.
  * Spec:        app/design-system/primitives/layout/accordion.html
  * Variants:    density = 'sm' | 'md'
  *              selection = 'single' | 'multi'
  *              composition = 'label' | 'label+meta' | 'icon+label+meta' (auto from items[i] shape)
  *
- * Migration:   `import CustomAccordion from '@shared/CustomAccordion'`
- *              `import AccordionSmall from '@shared/AccordionSmall'`
- *           →  `import { Accordion } from '@ui/Accordion'`
  *
  * Don't (per spec):
  *   - Don't use Accordion for < 3 rows. Two collapsibles are just two Cards.
@@ -23,6 +20,8 @@ export type AccordionSelection = 'single' | 'multi';
 export interface AccordionItem {
   id: string;
   label: React.ReactNode;
+  /** Optional secondary line rendered below the label */
+  description?: React.ReactNode;
   /** Optional right-aligned chip / status / count */
   meta?: React.ReactNode;
   /** Optional left-aligned icon */
@@ -124,16 +123,29 @@ export function Accordion({ items, selection = 'multi', density = 'md', defaultE
                   {item.icon}
                 </span>
               )}
-              <span
-                style={{
-                  fontSize: d.fontSize,
-                  fontWeight: 'var(--ds-font-weight-medium)' as React.CSSProperties['fontWeight'],
-                  color: 'var(--ds-gray-700)',
-                  flex: 1,
-                  textAlign: 'left',
-                }}
-              >
-                {item.label}
+              <span style={{ flex: 1, textAlign: 'left' }}>
+                <span
+                  style={{
+                    display: 'block',
+                    fontSize: d.fontSize,
+                    fontWeight: 'var(--ds-font-weight-medium)' as React.CSSProperties['fontWeight'],
+                    color: 'var(--ds-gray-700)',
+                  }}
+                >
+                  {item.label}
+                </span>
+                {item.description && (
+                  <span
+                    style={{
+                      display: 'block',
+                      fontSize: 'var(--ds-text-caption)',
+                      fontWeight: 'var(--ds-font-weight-regular)' as React.CSSProperties['fontWeight'],
+                      color: 'var(--ds-gray-400)',
+                    }}
+                  >
+                    {item.description}
+                  </span>
+                )}
               </span>
               {item.meta !== undefined && (
                 <span

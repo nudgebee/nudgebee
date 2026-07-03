@@ -107,6 +107,14 @@ export interface SelectMultipleProps extends SelectBaseProps {
   onChange: (next: string[]) => void;
   /** Max labels shown inline before collapsing to '+N'. Default 2. */
   maxChips?: number;
+  /**
+   * Hide the per-option (and select-all) checkboxes in the popup. Default
+   * `false`. Use for add-only multi pickers — where picks are surfaced
+   * elsewhere (e.g. a table) and the popup options are filtered down to the
+   * not-yet-selected set, so a checkbox would always render unchecked and read
+   * as noise. Clicking a row still toggles selection.
+   */
+  hideOptionCheckbox?: boolean;
 }
 
 export type SelectProps = SelectSingleProps | SelectMultipleProps;
@@ -286,6 +294,10 @@ export function Select(props: SelectProps) {
   }, [filteredOptions, props.multiple, props.multiple ? props.value : null]);
 
   const allFilteredSelected = !!props.multiple && filteredOptions.length > 0 && filteredOptions.every((o) => isSelected(o.value));
+
+  // Multi mode renders a checkbox per option (+ select-all) unless the caller
+  // opts out for an add-only picker.
+  const showOptionCheckbox = props.multiple && !props.hideOptionCheckbox;
 
   const handleItemClick = (opt: SelectOption) => {
     if (opt.disabled) return;
@@ -527,7 +539,7 @@ export function Select(props: SelectProps) {
 
         <OverlayScrollBox>
           {/* Select-all / Clear-all row — multi mode only, hidden while loading */}
-          {!loading && props.multiple && filteredOptions.length > 0 && (
+          {!loading && showOptionCheckbox && filteredOptions.length > 0 && (
             <OverlaySelectAll
               checked={allFilteredSelected}
               onToggle={allFilteredSelected ? handleClearAll : handleSelectAll}
@@ -539,7 +551,7 @@ export function Select(props: SelectProps) {
           {/* Loading → skeleton rows; else empty state distinguishes
               "no options at all" from "search returned nothing" */}
           {loading ? (
-            <OverlayLoadingSkeleton size='md' showCheckbox={!!props.multiple} />
+            <OverlayLoadingSkeleton size='md' showCheckbox={showOptionCheckbox} />
           ) : filteredOptions.length === 0 ? (
             <Box
               sx={{
@@ -560,7 +572,7 @@ export function Select(props: SelectProps) {
                   size='md'
                   selected
                   disabled={opt.disabled}
-                  icon={props.multiple ? <OverlayCheckbox checked /> : opt.icon}
+                  icon={showOptionCheckbox ? <OverlayCheckbox checked /> : opt.icon}
                   onClick={() => handleItemClick(opt)}
                 >
                   {opt.label ?? opt.value}
@@ -575,7 +587,7 @@ export function Select(props: SelectProps) {
                   size='md'
                   selected={isSelected(opt.value)}
                   disabled={opt.disabled}
-                  icon={props.multiple ? <OverlayCheckbox checked={isSelected(opt.value)} /> : opt.icon}
+                  icon={showOptionCheckbox ? <OverlayCheckbox checked={isSelected(opt.value)} /> : opt.icon}
                   onClick={() => handleItemClick(opt)}
                 >
                   {opt.label ?? opt.value}
