@@ -599,6 +599,14 @@ func (o *NBReActPlanner3) resolveObservation(step NBAgentPlannerToolActionStep) 
 			"In your analysis, explicitly state: 'Unable to verify [what you checked]: tool call failed.'\n" +
 			obs
 	}
+	// Mirrors the [TOOL-FAILED] marker above for the empty-but-successful write case
+	// (see #29875) — without it the model misreads empty stdout as failure and retries.
+	if step.Status == ToolStatusEmptyResult {
+		obs = "[SUCCESS-NO-OUTPUT] This action completed successfully (exit code 0, empty output). " +
+			"For write/mutation commands this IS success, not a failure or missing data. " +
+			"Do NOT retry this exact command and do NOT report it as failed.\n" +
+			obs
+	}
 	return obs
 }
 

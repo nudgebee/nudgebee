@@ -722,6 +722,56 @@ func TestReAct3BuildScratchpadSingleAction(t *testing.T) {
 	assert.NotContains(t, scratchpad, "<actions>")
 }
 
+// TestReAct3BuildScratchpad_EmptyResultGetsSuccessMarker pins the fix for issue
+// #29875's ReAct3 gap: a write/mutation command that exits 0 with empty stdout
+// (ToolStatusEmptyResult) must be marked as an explicit success in the scratchpad,
+// mirroring the [TOOL-FAILED] treatment ToolStatusFailure already gets. Without
+// this, the LLM only sees the hedged plannerToolNoData sentinel text and may still
+// report the action as failed or re-issue it through a different tool.
+func TestReAct3BuildScratchpad_EmptyResultGetsSuccessMarker(t *testing.T) {
+	planner := &NBReActPlanner3{}
+	steps := []NBAgentPlannerToolActionStep{
+		{
+			Action: NBAgentPlannerToolAction{
+				Tool:      "github_execute",
+				ToolInput: `{"command":"gh run rerun 123 --repo org/repo"}`,
+				Log:       "Rerunning the workflow.",
+				ToolID:    "github_execute-001",
+			},
+			Observation: plannerToolNoData,
+			Status:      ToolStatusEmptyResult,
+		},
+	}
+
+	scratchpad := planner.buildScratchpad(steps)
+	assert.Contains(t, scratchpad, "[SUCCESS-NO-OUTPUT]")
+	assert.Contains(t, scratchpad, "This action completed successfully")
+	assert.Contains(t, scratchpad, "Do NOT retry this exact command")
+	assert.NotContains(t, scratchpad, "[TOOL-FAILED]")
+}
+
+// TestReAct3BuildScratchpad_FailureStillGetsFailureMarker guards against the
+// empty-result marker above accidentally suppressing the existing failure marker.
+func TestReAct3BuildScratchpad_FailureStillGetsFailureMarker(t *testing.T) {
+	planner := &NBReActPlanner3{}
+	steps := []NBAgentPlannerToolActionStep{
+		{
+			Action: NBAgentPlannerToolAction{
+				Tool:      "shell_execute",
+				ToolInput: "gh run rerun 123 --repo org/repo",
+				Log:       "retry",
+				ToolID:    "shell_execute-001",
+			},
+			Observation: "run 123 cannot be rerun; its workflow file may be broken",
+			Status:      ToolStatusFailure,
+		},
+	}
+
+	scratchpad := planner.buildScratchpad(steps)
+	assert.Contains(t, scratchpad, "[TOOL-FAILED]")
+	assert.NotContains(t, scratchpad, "[SUCCESS-NO-OUTPUT]")
+}
+
 // TestReAct3BuildScratchpad_CompressionGatedByWindow verifies the core fix: with
 // many steps (>recentStepsFullContext) but a scratchpad well under the budget, NO
 // older observation is compressed; once the scratchpad exceeds the budget, older
