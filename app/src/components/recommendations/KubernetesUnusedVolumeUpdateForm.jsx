@@ -1,7 +1,7 @@
 import { Typography } from '@mui/material';
 import { Input } from '@ui/Input';
 import Stack from '@mui/material/Stack';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Box from '@mui/material/Box';
 import apiRecommendations from '@api1/recommendation';
 import { colors } from 'src/utils/colors';
@@ -14,6 +14,13 @@ const KubernetesUnusedVolumePopupForm = ({ open, onClose, onSuccess, onFailure, 
   const [confirmationText, setConfirmationText] = useState('');
   const [errorText, setErrorText] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      setConfirmationText('');
+      setErrorText('');
+    }
+  }, [open]);
 
   const submitRecommendation = () => {
     if (confirmationText === data?.name) {
@@ -67,7 +74,7 @@ const KubernetesUnusedVolumePopupForm = ({ open, onClose, onSuccess, onFailure, 
               >
                 Volume Name:
               </Typography>{' '}
-              <Box display='flex' flexDirection='row' gap='8px' mt={1}>
+              <Box display='flex' flexDirection='row' gap='8px' alignItems='center' mt={1}>
                 <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', color: colors.text.secondary, fontWeight: 'var(--ds-font-weight-regular)' }}>
                   {data?.name}
                 </Typography>
