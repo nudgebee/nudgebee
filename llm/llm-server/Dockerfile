@@ -20,11 +20,13 @@ ARG TARGETARCH
 ENV GOOS=${TARGETOS:-linux}
 ENV GOARCH=${TARGETARCH:-amd64}
 ENV CGO_ENABLED=0
-# Force exactly go1.26.4 (matches the go.mod toolchain directive) and give the
-# `go build` layer a distinct cache key so edge.yaml's registry cache can't
-# reuse an older-toolchain build — the cause of stdlib CVEs lingering in the
-# published image despite the pinned builder.
-ENV GOTOOLCHAIN=go1.26.4
+# Use the builder image's bundled Go toolchain, never an auto-downloaded one.
+# GOTOOLCHAIN=local future-proofs a base bump (golang:1.26.5 -> compiles with
+# 1.26.5 automatically; a hardcoded version would silently download+reuse the old
+# toolchain) and gives the `go build` layer a distinct cache key so edge.yaml's
+# registry cache can't reuse an older-toolchain build — the cause of stdlib CVEs
+# lingering in the published image despite the pinned builder.
+ENV GOTOOLCHAIN=local
 
 WORKDIR /app
 COPY go.mod go.sum ./
