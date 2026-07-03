@@ -8,6 +8,7 @@ import { useMemo } from 'react';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
 import { AuthTemplateV2 as AuthTemplate } from '@components/auth/AuthTemplateV2';
+import { ds } from '@utils/colors';
 
 const FALLBACK_LOGO = '/branding/default/logo.svg';
 
@@ -88,15 +89,15 @@ export default function AuthError() {
         <Box display='flex' flexDirection='column' justifyContent='space-between' alignItems='flex-start'>
           <Box
             sx={{
-              height: '80px',
+              height: ds.space.mul(4, 5),
               width: '100%',
               display: 'flex',
               justifyContent: 'center',
               alignItems: 'center',
-              mb: '4px',
+              mb: ds.space[1],
               '& img': {
-                width: '64px',
-                height: '64px',
+                width: ds.space.mul(2, 8),
+                height: ds.space.mul(2, 8),
               },
             }}
           >
@@ -120,16 +121,16 @@ export default function AuthError() {
               alignItems: 'center',
               flexDirection: 'column',
               width: '100%',
-              marginBottom: '12px',
+              marginBottom: ds.space[3],
             }}
           >
-            <Typography fontSize={'32px'} fontWeight={'600'} color={'#374151'} fontFamily={'Roboto'}>
+            <Typography fontSize={'var(--ds-text-display)'} fontWeight={'600'} color={ds.gray[700]} fontFamily={'Roboto'}>
               {title}
             </Typography>
           </Box>
         </Box>
-        <Box bgcolor={'#FEF2F2'} p={'10px 14px'} borderRadius={'4px'} mb={2}>
-          <Typography fontSize={'13px'} color={'#7F1D1D'} lineHeight={1.5} textAlign='left'>
+        <Box bgcolor={ds.red[100]} p={`${ds.space.mul(0, 5)} ${ds.space.mul(0, 7)}`} borderRadius={ds.radius.sm} mb={ds.space[4]}>
+          <Typography fontSize={'var(--ds-text-body)'} color={ds.red[700]} lineHeight={1.5} textAlign='left'>
             {message}
           </Typography>
         </Box>
@@ -139,10 +140,10 @@ export default function AuthError() {
           variant='contained'
           onClick={() => router.replace('/signin')}
           sx={{
-            mt: '8px',
+            mt: 'var(--ds-space-2)',
             textTransform: 'none',
-            backgroundColor: '#1F2937',
-            '&:hover': { backgroundColor: '#111827' },
+            backgroundColor: 'var(--ds-brand-700)',
+            '&:hover': { backgroundColor: 'var(--ds-brand-700)' },
           }}
         >
           Back to sign in

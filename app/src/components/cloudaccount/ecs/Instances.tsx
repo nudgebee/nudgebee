@@ -7,7 +7,7 @@ import { hasWriteAccess } from '@lib/auth';
 import { Label } from '@ui/Label';
 import ECSSummary from './Summary'; // Corrected import
 import Datetime from '@shared/format/Datetime';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { toast as snackbar } from '@ui/Toast';
 import TagsCell from '@components/cloudaccount/TagsCell';
 import { buildStateApiParams, getStateDropdownOptions } from '@components/cloudaccount/stateFilter';
@@ -19,13 +19,14 @@ import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import { Button as DsButton } from '@ui/Button';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
-import { Tabs as DsTabs } from '@ui/Tabs';
-import CustomSearch from '@shared/CustomSearch';
+import { ToggleGroup, type ToggleGroupOption } from '@ui/ToggleGroup';
+import SearchInput from '@ui/SearchInput';
 import DownloadButton from '@shared/buttons/DownloadButton';
+import ServiceRefreshButton from '@components/cloudaccount/ServiceRefreshButton';
 import { CustomText } from '@components/cloudaccount/common';
 import { ds } from '@utils/colors';
 
-export interface ICustomTable2Row {
+export interface ICustomTableRow {
   component?: JSX.Element;
   drilldownQuery?: {
     clusterName?: any;
@@ -131,7 +132,7 @@ export const ECSTasks = (props: {
         setLoading(false);
         const cloudResourceCount = res.data?.data?.cloud_resourses_aggregate?.aggregate?.count || 0;
         const cloudResourceData = (res.data?.data?.cloud_resourses || []).map((item: any) => {
-          const data: ICustomTable2Row[] = [];
+          const data: ICustomTableRow[] = [];
           const writeAccess = hasWriteAccess(props?.accountId);
           const MENU_ITEMS = writeAccess
             ? [
@@ -161,7 +162,11 @@ export const ECSTasks = (props: {
               <Box>
                 <Label text={item.meta?.LastStatus || item.status} />
                 {item.meta?.StoppedReason && item.meta?.LastStatus === 'STOPPED' && (
-                  <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[600], maxWidth: 150 }} noWrap title={item.meta.StoppedReason}>
+                  <Typography
+                    sx={{ fontSize: ds.text.caption, color: ds.gray[600], maxWidth: ds.space.mul(0, 75) }}
+                    noWrap
+                    title={item.meta.StoppedReason}
+                  >
                     Reason: {item.meta.StoppedReason}
                   </Typography>
                 )}
@@ -229,7 +234,7 @@ export const ECSTasks = (props: {
         title={props.heading}
         actions={<DownloadButton id={`${ecsInstancesTableId}-download`} onClick={() => ({ tableId: ecsInstancesTableId })} />}
       >
-        <CustomSearch
+        <SearchInput
           id='ecs-tasks-search'
           label='Search by Name/ARN Snippet'
           value={searchFilter}
@@ -387,7 +392,7 @@ export const ECSServices = (props: {
         setLoading(false);
         const cloudResourceCount = res.data?.data?.cloud_resourses_aggregate?.aggregate?.count || 0;
         const cloudResourceData = (res.data?.data?.cloud_resourses || []).map((item: any) => {
-          const data: ICustomTable2Row[] = [];
+          const data: ICustomTableRow[] = [];
           const serviceState = item?.status || item?.meta?.Status || '-';
           const menuItems = writeAccess ? buildMenuItems(ecsServiceActions, serviceState, writeAccess) : undefined;
 
@@ -483,9 +488,14 @@ export const ECSServices = (props: {
     <ListingLayout id='ecs-services-list'>
       <ListingLayout.Toolbar
         title={props.heading}
-        actions={<DownloadButton id={`${ecsInstancesTableId}-download`} onClick={() => ({ tableId: ecsInstancesTableId })} />}
+        actions={
+          <>
+            <ServiceRefreshButton id={ecsInstancesTableId} accountId={props.accountId} serviceName='AmazonECS' onDone={() => listEcsService()} />
+            <DownloadButton id={`${ecsInstancesTableId}-download`} onClick={() => ({ tableId: ecsInstancesTableId })} />
+          </>
+        }
       >
-        <CustomSearch
+        <SearchInput
           id='ecs-services-search'
           label='Search by Name/ARN Snippet'
           value={searchFilter}
@@ -644,8 +654,8 @@ const ECSServiceEvent = ({ ecsDetails }: ECSServiceEventProps) => {
     return <Typography sx={{ p: 2 }}>No events available for this service.</Typography>;
   }
 
-  const tableData: ICustomTable2Row[][] = events.map((event: ECSEvent) => {
-    const row: ICustomTable2Row[] = [];
+  const tableData: ICustomTableRow[][] = events.map((event: ECSEvent) => {
+    const row: ICustomTableRow[] = [];
     row.push({
       component: <Typography variant='body2'>{event.Message}</Typography>,
     });
@@ -656,7 +666,7 @@ const ECSServiceEvent = ({ ecsDetails }: ECSServiceEventProps) => {
     return row;
   });
 
-  return <CustomTable2 id={SERVICE_EVENT_TABLE_ID} headers={SERVICE_EVENT_HEADERS} tableData={tableData} loading={false} />;
+  return <CustomTable id={SERVICE_EVENT_TABLE_ID} headers={SERVICE_EVENT_HEADERS} tableData={tableData} loading={false} />;
 };
 
 interface AwsvpcConfiguration {
@@ -990,7 +1000,7 @@ export const ECSClusters = (props: {
         setLoading(false);
         const cloudResourceCount = res.data?.data?.cloud_resourses_aggregate?.aggregate?.count || 0;
         const cloudResourceData = (res.data?.data?.cloud_resourses || []).map((item: any) => {
-          const data: ICustomTable2Row[] = [];
+          const data: ICustomTableRow[] = [];
           const writeAccess = hasWriteAccess(props?.accountId);
           const MENU_ITEMS = writeAccess
             ? [
@@ -1084,7 +1094,7 @@ export const ECSClusters = (props: {
         title={props.heading}
         actions={<DownloadButton id={`${ecsClustersTableId}-download`} onClick={() => ({ tableId: ecsClustersTableId })} />}
       >
-        <CustomSearch
+        <SearchInput
           id='ecs-clusters-search'
           label='Search by Name/ARN Snippet'
           value={searchFilter}
@@ -1594,19 +1604,21 @@ const ECSTaskTagsDisplay = ({ taskDetails }: ECSTaskTagsDisplayProps) => {
 
 // --- End of New Components for ECS Task Details ---
 
-const ECS_TABS = [
-  { id: 'clusters', label: 'Clusters' },
-  { id: 'services', label: 'Services' },
-  { id: 'tasks', label: 'Tasks' },
+type ECSTabKey = 'clusters' | 'services' | 'tasks';
+
+const ECS_TABS: ToggleGroupOption<ECSTabKey>[] = [
+  { value: 'clusters', label: 'Clusters' },
+  { value: 'services', label: 'Services' },
+  { value: 'tasks', label: 'Tasks' },
 ];
 
 const ECSInstances = (props: { accountId: string | undefined; heading: string | undefined }) => {
-  const [activeTab, setActiveTab] = useState<string>('clusters');
+  const [activeTab, setActiveTab] = useState<ECSTabKey>('clusters');
 
   return (
     <Box id='ecs-cluster-list'>
-      <DsTabs tabs={ECS_TABS} value={activeTab} onChange={setActiveTab} ariaLabel='ECS resource types' />
-      <Box sx={{ pt: ds.space[5] }}>
+      <ToggleGroup<ECSTabKey> selection='single' options={ECS_TABS} value={activeTab} onChange={setActiveTab} ariaLabel='ECS resource types' />
+      <Box sx={{ pt: ds.space[3] }}>
         {activeTab === 'clusters' && <ECSClusters accountId={props.accountId} heading='' />}
         {activeTab === 'services' && <ECSServices accountId={props.accountId} serviceName='AmazonECS' heading='' />}
         {activeTab === 'tasks' && <ECSTasks accountId={props.accountId} serviceName='AmazonECS' heading='' />}

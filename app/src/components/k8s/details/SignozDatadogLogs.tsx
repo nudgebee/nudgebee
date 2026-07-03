@@ -1,17 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import { Box } from '@mui/material';
-import { Text } from '@shared';
+import Text from '@shared/format/Text';
 import { ListingLayout } from '@ui/ListingLayout';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import { formatDateTime } from '@lib/datetime';
-import { colors } from 'src/utils/colors';
-import CustomTable from '@shared/tables/CustomTable2';
+import { ds } from 'src/utils/colors';
+import CustomTable from '@shared/tables/CustomTable';
 import { getTableData4 } from '@components/k8s/investigate/cards/util';
 
 export const LOG_LEVEL_COLORS: any = {
-  error: colors.high,
-  info: colors.toDo,
-  debug: colors.debug,
+  error: ds.red[500],
+  info: ds.blue[300],
+  debug: ds.gray[500],
 };
 
 export function LogDate({ timestamp, log }: Readonly<{ timestamp: number; log: string }>) {

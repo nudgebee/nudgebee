@@ -67,8 +67,8 @@ const ImageScanEvidence = ({ recommendation, ruleName: _ruleName, estimatedSavin
   };
 
   return (
-    <Box sx={{ p: '14px' }}>
-      <SectionTitle title='Container Image Vulnerability' muiIcon={<SearchIcon sx={{ fontSize: '16px' }} />} />
+    <Box sx={{ p: ds.space.mul(0, 7) }}>
+      <SectionTitle title='Container Image Vulnerability' muiIcon={<SearchIcon sx={{ fontSize: ds.text.title }} />} />
 
       {/* Vulnerability ID + Severity */}
       {(vulnerabilityId || severity) && (
@@ -76,7 +76,7 @@ const ImageScanEvidence = ({ recommendation, ruleName: _ruleName, estimatedSavin
           sx={{
             display: 'flex',
             alignItems: 'center',
-            gap: '10px',
+            gap: ds.space.mul(0, 5),
             p: ds.space[3],
             backgroundColor: severityBg(severity),
             borderRadius: ds.radius.lg,
@@ -127,8 +127,8 @@ const ImageScanEvidence = ({ recommendation, ruleName: _ruleName, estimatedSavin
       {/* Severity counts (grouped view) */}
       {hasCounts && (
         <>
-          <SectionTitle title='Vulnerability Counts' muiIcon={<BarChartIcon sx={{ fontSize: '16px' }} />} />
-          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '6px', mb: ds.space[3] }}>
+          <SectionTitle title='Vulnerability Counts' muiIcon={<BarChartIcon sx={{ fontSize: ds.text.title }} />} />
+          <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: ds.space.mul(0, 3), mb: ds.space[3] }}>
             <SeverityCountBox label='Critical' count={criticalCount || 0} variant='critical' />
             <SeverityCountBox label='High' count={highCount || 0} variant='high' />
             <SeverityCountBox label='Medium' count={mediumCount || 0} variant='medium' />
@@ -195,7 +195,7 @@ const SeverityCountBox = ({ label, count, variant }: { label: string; count: num
       }}
     >
       <Typography sx={{ fontSize: ds.text.title, fontWeight: ds.weight.semibold, color: active ? tone.text : ds.gray[500] }}>{count}</Typography>
-      <Typography sx={{ fontSize: '9px', color: ds.gray[500], textTransform: 'uppercase' }}>{label}</Typography>
+      <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], textTransform: 'uppercase' }}>{label}</Typography>
     </Box>
   );
 };

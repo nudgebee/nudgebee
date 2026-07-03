@@ -9,17 +9,17 @@ import * as React from 'react';
 import { Box } from '@mui/material';
 import TimelineOutlinedIcon from '@mui/icons-material/TimelineOutlined';
 import ShowChartIcon from '@mui/icons-material/ShowChart';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable2 from '@shared/tables/CustomTable';
 import { Card } from '@ui/Card';
 import { Banner } from '@ui/Banner';
 import { CostCallout } from '@ui/CostCallout';
 import { EmptyState } from '@ui/EmptyState';
-import BarSeries from '../components/BarSeries';
-import LineSeries from '../components/LineSeries';
+import Chart from '@ui/Chart';
 import SectionHeader from '../components/Section';
+import { seriesColor } from '../components/palette';
 import { fmtCost, fmtDuration, fmtTokens } from '../format';
 import { makeSeverity, SeverityCell } from '../components/severity';
-import { timeSeriesToChart } from '../adapt';
+import { bucketsToSeries, timeSeriesToChart } from '../adapt';
 import type { UsageGroupRow, UsageMetrics } from '@api1/ai-cost';
 import type { CostFilters } from '../types';
 
@@ -166,12 +166,25 @@ export function ModelsView({ metrics, filters }: ModelsViewProps) {
             icon={<TimelineOutlinedIcon />}
             subtitle='Number of model calls in each period, by model'
           />
-          <LineSeries buckets={calls.buckets} keys={calls.keys} id='calls-per-model' integer />
+          <Chart.TimeSeries
+            {...bucketsToSeries(calls.buckets, calls.keys)}
+            shape='line'
+            integerY
+            format={(v) => String(Math.round(v))}
+            colorFor={seriesColor}
+            id='calls-per-model'
+          />
         </Card>
 
         <Card sx={{ flex: '1 1 360px', minWidth: 0 }}>
           <SectionHeader title='Model cost-share over time' icon={<ShowChartIcon />} />
-          <BarSeries buckets={share.buckets} keys={share.keys} id='model-share-over-time' />
+          <Chart.TimeSeries
+            {...bucketsToSeries(share.buckets, share.keys)}
+            shape='bar'
+            format={fmtCost}
+            colorFor={seriesColor}
+            id='model-share-over-time'
+          />
         </Card>
       </Box>
     </Box>

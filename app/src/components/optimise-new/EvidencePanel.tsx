@@ -32,7 +32,7 @@ const formatMetricValue = (value: any, unit: string): string => {
 };
 
 export const MetricRow = ({ label, value, unit = '', highlight = false }: { label: string; value: any; unit?: string; highlight?: boolean }) => (
-  <Box sx={{ display: 'flex', justifyContent: 'space-between', py: '6px', borderBottom: `1px solid ${ds.gray[200]}` }}>
+  <Box sx={{ display: 'flex', justifyContent: 'space-between', py: ds.space.mul(0, 3), borderBottom: `1px solid ${ds.gray[200]}` }}>
     <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontWeight: ds.weight.medium }}>{label}</Typography>
     <Typography
       sx={{
@@ -50,13 +50,13 @@ export const MetricRow = ({ label, value, unit = '', highlight = false }: { labe
 );
 
 export const SectionTitle = ({ title, icon: _icon, muiIcon }: { title: string; icon?: string; muiIcon?: React.ReactNode }) => (
-  <Box sx={{ display: 'flex', alignItems: 'center', gap: '6px', mt: ds.space[4], mb: ds.space[2] }}>
-    {muiIcon && <Box sx={{ display: 'flex', color: ds.gray[500], fontSize: '16px' }}>{muiIcon}</Box>}
+  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space.mul(0, 3), mt: ds.space[4], mb: ds.space[2] }}>
+    {muiIcon && <Box sx={{ display: 'flex', color: ds.gray[500], fontSize: ds.text.title }}>{muiIcon}</Box>}
     <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>{title}</Typography>
   </Box>
 );
 
-export const SavingsFooter = ({ savings }: { savings: number }) => {
+export const SavingsFooter = ({ savings, note = 'Based on observed usage data' }: { savings: number; note?: string }) => {
   const displayValue = Math.abs(savings);
   let savingsColor: string = ds.gray[700];
   if (savings > 0) savingsColor = ds.green[600];
@@ -64,7 +64,7 @@ export const SavingsFooter = ({ savings }: { savings: number }) => {
 
   return (
     <>
-      <Divider sx={{ my: '14px' }} />
+      <Divider sx={{ my: ds.space.mul(0, 7) }} />
       <Box
         sx={{
           display: 'flex',
@@ -76,7 +76,7 @@ export const SavingsFooter = ({ savings }: { savings: number }) => {
       >
         <Box>
           <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.gray[500] }}>Projected Monthly Savings</Typography>
-          <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], fontStyle: 'italic' }}>Based on observed usage data</Typography>
+          {note && <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], fontStyle: 'italic' }}>{note}</Typography>}
         </Box>
         <Currency
           value={displayValue}
@@ -175,7 +175,7 @@ const renderSecurity = (rec: any, ruleName: string, estimatedSavings?: number) =
 const EvidencePanel = ({ recommendation, category, ruleName, estimatedSavings, cloudResource, fullRecommendation }: EvidencePanelProps) => {
   if (!recommendation) {
     return (
-      <Box sx={{ p: '20px', textAlign: 'center' }}>
+      <Box sx={{ p: ds.space.mul(0, 10), textAlign: 'center' }}>
         <Typography sx={{ fontSize: ds.text.body, color: ds.gray[500], fontStyle: 'italic' }}>
           No detailed evidence data available for this recommendation.
         </Typography>

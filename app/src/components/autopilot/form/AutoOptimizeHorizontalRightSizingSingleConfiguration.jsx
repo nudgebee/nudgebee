@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import AutoPilotHeaderCard from '@components/autopilot/card/AutoOptimizeHeaderCard';
 import { Box, Typography } from '@mui/material';
-import { Tabs } from '@ui/Tabs';
+import Tabs from '@shared/navigation/Tabs';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import { formatMemory } from '@lib/formatter';
 import apiAutoPlaybook from '@api1/autoPlaybook';
@@ -15,7 +15,7 @@ import ActionButtons from './AutoOptimizeActionButtons';
 import NotificationForm from './AutoOptimizeNotificationForm';
 import { Textarea } from '@components/k8s/common/TextArea';
 import apiAutoPilot from '@api1/autoPilot';
-import { snackbar } from '@shared/snackbarService';
+import { toast as snackbar } from '@ui/Toast';
 import { ds } from '@utils/colors';
 
 const HEAT_MAP_METRIC_OPTIONS = [
@@ -489,8 +489,14 @@ const HorizontalAutoOptimizeSingleConfiguration = ({
       <Box sx={{ display: 'flex', gap: ds.space[4], marginTop: ds.space[4] }}>
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[5], flex: 1 }}>
           <Box sx={{ margin: `${ds.space[5]} 0` }}>
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Tabs tabs={[{ id: 'last-7-day-usage', label: 'Last 7 Day Usage' }]} value='last-7-day-usage' onChange={() => {}} size='md' />
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: ds.space[2] }}>
+              <Tabs
+                options={{ tabOptions: [{ value: 'last-7-day-usage', text: 'Last 7 Day Usage' }] }}
+                value='last-7-day-usage'
+                onChange={() => {}}
+                behavior='filter'
+                variant='secondary'
+              />
               <ToggleGroup
                 id='heat-map-metric-toggle'
                 selection='single'

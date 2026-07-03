@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import PropTypes from 'prop-types';
 import { Box } from '@mui/material';
 import MessageItem from './MessageItem';
-import CustomTable from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { convertToReadableFormat } from 'src/utils/common';
 import Text from '@shared/format/Text';
 import CustomDrawer, { SecondaryDrawer } from '@shared/CustomDrawer';
@@ -271,6 +271,7 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
                     onShowFullText={() => setShowFullText(!showFullText)}
                     isLoadingInvestigation={isProcessing}
                     {...itemProps}
+                    generateQuestionText={group?.question?.text || itemProps?.generateQuestionText}
                     siblingTasks={tasks}
                     agentTokenData={itemProps.getAgentTokenDataForMessage?.(task)}
                     messageTokenData={itemProps.messageTokenData?.[task.id] || itemProps.messageTokenData?.[task.messageId]}
@@ -294,6 +295,7 @@ const MessageStream = ({ messages, isProcessing, collapsedObj, setCollapsedObj, 
                 onShowFullText={() => setShowFullText(!showFullText)}
                 isLoadingInvestigation={isProcessing}
                 {...itemProps}
+                generateQuestionText={group?.question?.text || itemProps?.generateQuestionText}
                 siblingTasks={tasks}
                 agentTokenData={itemProps.getAgentTokenDataForMessage(response)}
                 messageTokenData={itemProps.messageTokenData?.[response.id] || itemProps.messageTokenData?.[response.messageId]}

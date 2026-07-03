@@ -4,10 +4,10 @@ import { Input } from '@ui/Input';
 import { Button } from '@ui/Button';
 import { Close, Add, DragIndicator, Edit as EditIcon } from '@mui/icons-material';
 import { DurationField } from './advanced-config';
-import { Modal } from '@shared/modal';
-import { FormCard, FormField } from '@shared/NewReusabeFormComponents';
-import CustomLabels from '@shared/widgets/CustomLabels';
-import { colors } from 'src/utils/colors';
+import { Modal } from '@ui/Modal';
+import { FormCard, FormField } from '@shared/forms/FormComponents';
+import { Label } from '@ui/Label';
+import { ds } from 'src/utils/colors';
 import CodeMirror from '@uiw/react-codemirror';
 import { json } from '@codemirror/lang-json';
 import type { WorkflowSettings, WorkflowInput } from '@components/workflow/types';
@@ -140,7 +140,7 @@ const JsonEditor: React.FC<{
           closeBrackets: true,
         }}
         style={{
-          border: error ? '1px solid #ef4444' : '1px solid #d1d5db',
+          border: error ? `1px solid ${ds.red[500]}` : `1px solid ${ds.gray[300]}`,
           borderRadius: 'var(--ds-radius-md)',
           fontSize: 'var(--ds-text-body)',
         }}
@@ -198,7 +198,7 @@ const ArrayEditor: React.FC<{
     <Box>
       <Box
         sx={{
-          border: error ? '1px solid #ef4444' : '1px solid #d1d5db',
+          border: error ? `1px solid ${ds.red[500]}` : `1px solid ${ds.gray[300]}`,
           borderRadius: 'var(--ds-radius-md)',
           p: 1,
           backgroundColor: 'var(--ds-background-200)',
@@ -269,7 +269,7 @@ const WorkflowSettingsModal: React.FC<WorkflowSettingsModalProps> = ({ open, onC
   const RemoveButton: React.FC<{ onClick: () => void; size?: 'small' | 'medium' | 'large'; backgroundColor?: string }> = ({
     onClick,
     size = 'small',
-    backgroundColor = 'rgba(0, 0, 0, 0.1)',
+    backgroundColor = 'var(--ds-gray-alpha-300)',
   }) => (
     <IconButton
       size={size}
@@ -282,9 +282,9 @@ const WorkflowSettingsModal: React.FC<WorkflowSettingsModalProps> = ({ open, onC
         width: '16px',
         height: '16px',
         backgroundColor,
-        border: '1px solid rgba(0, 0, 0, 0.08)',
+        border: '1px solid var(--ds-gray-alpha-200)',
         '&:hover': {
-          backgroundColor: 'rgba(0, 0, 0, 0.15)',
+          backgroundColor: 'color-mix(in srgb, black 15%, transparent)',
           transform: 'scale(1.1)',
         },
         '&:active': {
@@ -293,7 +293,7 @@ const WorkflowSettingsModal: React.FC<WorkflowSettingsModalProps> = ({ open, onC
         transition: 'all 0.15s ease-in-out',
         '& .MuiSvgIcon-root': {
           fontSize: 'var(--ds-text-small)',
-          color: colors.text.secondary,
+          color: ds.gray[700],
         },
       }}
     >
@@ -482,7 +482,7 @@ const WorkflowSettingsModal: React.FC<WorkflowSettingsModalProps> = ({ open, onC
       actionButtons={actionButtons}
     >
       <Box sx={{ p: 3, display: 'flex', flexDirection: 'column', gap: 3 }}>
-        <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-small)', color: colors.text.secondary, fontStyle: 'italic' }}>
+        <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[700], fontStyle: 'italic' }}>
           Settings are applied to the current editor session. Save the automation to persist changes.
         </Typography>
         {/* Execution Settings */}
@@ -514,7 +514,7 @@ const WorkflowSettingsModal: React.FC<WorkflowSettingsModalProps> = ({ open, onC
             value={settings.retries}
             onChange={(e: any) => handleSettingChange('retries', e.target.value as number)}
             placeholder='Select retry count'
-            fieldType='dropdown'
+            fieldType='select'
             options={
               [0, 1, 2, 3, 4, 5].map((retry) => ({
                 label: `${retry} ${retry === 1 ? 'retry' : 'retries'}`,
@@ -574,7 +574,7 @@ const WorkflowSettingsModal: React.FC<WorkflowSettingsModalProps> = ({ open, onC
                             p: 1.5,
                             border: '1px solid var(--ds-brand-150)',
                             borderRadius: 'var(--ds-radius-md)',
-                            backgroundColor: 'white',
+                            backgroundColor: ds.background[100],
                             cursor: 'pointer',
                             '&:hover': {
                               backgroundColor: 'var(--ds-background-200)',
@@ -585,9 +585,9 @@ const WorkflowSettingsModal: React.FC<WorkflowSettingsModalProps> = ({ open, onC
                         >
                           <Box sx={{ flex: 1, display: 'flex', alignItems: 'center', gap: 1.5, minWidth: 0 }}>
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexShrink: 0 }}>
-                              <CustomLabels text={input.id} textTransform='none' variant='blue' />
-                              <CustomLabels text={input.type} textTransform='none' variant='grey' />
-                              {!input.validation?.isValid && <CustomLabels text='Invalid' textTransform='none' variant='red' />}
+                              <Label text={input.id} textTransform='none' variant='blue' />
+                              <Label text={input.type} textTransform='none' variant='grey' />
+                              {!input.validation?.isValid && <Label text='Invalid' textTransform='none' variant='red' />}
                             </Box>
                             <Typography
                               variant='body2'
@@ -717,7 +717,7 @@ const WorkflowSettingsModal: React.FC<WorkflowSettingsModalProps> = ({ open, onC
                                 else handleEditValueChange('default', '');
                               }}
                               placeholder='Type'
-                              fieldType='dropdown'
+                              fieldType='select'
                               label='Type'
                               description=''
                               options={
@@ -788,7 +788,7 @@ const WorkflowSettingsModal: React.FC<WorkflowSettingsModalProps> = ({ open, onC
                                 value={String(editingInput.default)}
                                 onChange={(e: any) => handleEditValueChange('default', e.target.value === 'true')}
                                 placeholder='Select boolean value'
-                                fieldType='dropdown'
+                                fieldType='select'
                                 label=''
                                 description=''
                                 options={
@@ -889,7 +889,7 @@ const WorkflowSettingsModal: React.FC<WorkflowSettingsModalProps> = ({ open, onC
                         value={newInput.type}
                         onChange={(e: any) => handleInputValueChange('type', e.target.value)}
                         placeholder='Type'
-                        fieldType='dropdown'
+                        fieldType='select'
                         label='Type'
                         description=''
                         options={
@@ -960,7 +960,7 @@ const WorkflowSettingsModal: React.FC<WorkflowSettingsModalProps> = ({ open, onC
                           value={String(newInput.default)}
                           onChange={(e: any) => handleInputValueChange('default', e.target.value === 'true')}
                           placeholder='Select boolean value'
-                          fieldType='dropdown'
+                          fieldType='select'
                           label=''
                           description=''
                           options={
@@ -1147,8 +1147,8 @@ const WorkflowSettingsModal: React.FC<WorkflowSettingsModalProps> = ({ open, onC
                     .filter((tag) => !tag.startsWith('ai_session_id:'))
                     .map((tag) => (
                       <Box key={tag} sx={{ display: 'flex', alignItems: 'center', position: 'relative' }}>
-                        <CustomLabels text={tag} textTransform='none' variant='grey' />
-                        <RemoveButton onClick={() => handleRemoveTag(tag)} backgroundColor='rgba(255, 255, 255, 0.8)' />
+                        <Label text={tag} textTransform='none' variant='grey' />
+                        <RemoveButton onClick={() => handleRemoveTag(tag)} backgroundColor='color-mix(in srgb, white 80%, transparent)' />
                       </Box>
                     ))}
                 </Box>

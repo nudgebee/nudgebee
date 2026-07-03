@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { Box, Typography, Chip, Tooltip } from '@mui/material';
 import { Check, Warning } from '@mui/icons-material';
 import { Input } from '@ui/Input';
-import { colors } from 'src/utils/colors';
 import { DURATION_PRESETS, FIELD_HELPER_TEXT } from './advancedConfigPresets';
 
 interface DurationFieldProps {
@@ -70,7 +69,7 @@ const DurationField: React.FC<DurationFieldProps> = ({ label, value, onChange, d
     <Box>
       <Typography
         variant='body2'
-        sx={{ mb: 1, fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.secondary }}
+        sx={{ mb: 1, fontSize: 'var(--ds-text-body)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-500)' }}
       >
         {label}
       </Typography>
@@ -85,7 +84,11 @@ const DurationField: React.FC<DurationFieldProps> = ({ label, value, onChange, d
         trailingIcon={
           localValue ? (
             <Tooltip title={isValid ? 'Valid duration' : errorMessage}>
-              {isValid ? <Check sx={{ fontSize: 16, color: 'success.main' }} /> : <Warning sx={{ fontSize: 16, color: 'error.main' }} />}
+              {isValid ? (
+                <Check sx={{ fontSize: 'var(--ds-text-title)', color: 'success.main' }} />
+              ) : (
+                <Warning sx={{ fontSize: 'var(--ds-text-title)', color: 'error.main' }} />
+              )}
             </Tooltip>
           ) : undefined
         }
@@ -101,10 +104,10 @@ const DurationField: React.FC<DurationFieldProps> = ({ label, value, onChange, d
               sx={{
                 fontSize: 'var(--ds-text-caption)',
                 height: 22,
-                bgcolor: localValue === preset.value ? 'primary.light' : colors.lowestLight,
-                color: localValue === preset.value ? 'primary.contrastText' : colors.text.secondary,
+                bgcolor: localValue === preset.value ? 'primary.light' : 'var(--ds-green-200)',
+                color: localValue === preset.value ? 'primary.contrastText' : 'var(--ds-brand-500)',
                 '&:hover': {
-                  bgcolor: localValue === preset.value ? 'primary.main' : colors.background.tertiaryLightest,
+                  bgcolor: localValue === preset.value ? 'primary.main' : 'var(--ds-gray-100)',
                 },
               }}
             />
@@ -113,7 +116,7 @@ const DurationField: React.FC<DurationFieldProps> = ({ label, value, onChange, d
       </Box>
       {isValid && warningMessage && (
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
-          <Warning sx={{ fontSize: 14, color: 'warning.main' }} />
+          <Warning sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'warning.main' }} />
           <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-caption)', color: 'warning.main' }}>
             {warningMessage}
           </Typography>

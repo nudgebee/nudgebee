@@ -26,7 +26,7 @@ const ActionButtons = ({ buttons, setActiveButton }: ActionButtonsProps) => {
     <Box
       sx={{
         display: 'flex',
-        height: '56px',
+        height: ds.space.mul(1, 14),
         justifyContent: 'flex-end',
         alignItems: 'center',
         gap: ds.space[3],

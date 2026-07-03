@@ -13,14 +13,14 @@ const SpotRecommendationEvidence = ({ recommendation, estimatedSavings }: SpotRe
   const rec = safeParseJSON(recommendation);
 
   return (
-    <Box sx={{ p: '14px' }}>
-      <SectionTitle title='Spot Instance Recommendation' muiIcon={<AttachMoneyIcon sx={{ fontSize: '16px' }} />} />
+    <Box sx={{ p: ds.space.mul(0, 7) }}>
+      <SectionTitle title='Spot Instance Recommendation' muiIcon={<AttachMoneyIcon sx={{ fontSize: ds.text.title }} />} />
 
       <Box
         sx={{
           backgroundColor: ds.gray[100],
           borderRadius: ds.radius.lg,
-          p: '10px',
+          p: ds.space.mul(0, 5),
           border: `1px solid ${ds.gray[200]}`,
         }}
       >
@@ -78,7 +78,18 @@ const SpotRecommendationEvidence = ({ recommendation, estimatedSavings }: SpotRe
   );
 };
 
-const KNOWN_FIELDS = new Set(['type', 'namespace', 'controller_name', 'replica_count', 'estimated_saving', 'reason']);
+const KNOWN_FIELDS = new Set([
+  'type',
+  'namespace',
+  'controller_name',
+  'replica_count',
+  'estimated_saving',
+  'reason',
+  // Internal identifiers — raw UUIDs, not user-facing detail.
+  'cloud_account_id',
+  'resource_id',
+  'tenant_id',
+]);
 
 function renderRemainingFields(rec: any) {
   const remaining = Object.entries(rec).filter(([key, value]) => !KNOWN_FIELDS.has(key) && value != null && typeof value !== 'object');
@@ -90,7 +101,7 @@ function renderRemainingFields(rec: any) {
         mt: ds.space[2],
         backgroundColor: ds.gray[100],
         borderRadius: ds.radius.lg,
-        p: '10px',
+        p: ds.space.mul(0, 5),
         border: `1px solid ${ds.gray[200]}`,
       }}
     >

@@ -2,6 +2,9 @@ import json
 import logging
 import threading
 
+import google_auth_httplib2
+import googleapiclient.http
+import httplib2
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -68,7 +71,26 @@ class GoogleChatAppClient:
             credentials = service_account.Credentials.from_service_account_info(
                 sa_info, scopes=[CHAT_BOT_SCOPE, CHAT_MEMBERSHIPS_SCOPE, CHAT_SPACES_CREATE_SCOPE]
             )
-            cls._service = build("chat", "v1", credentials=credentials, cache_discovery=False)
+
+            # Each transport binds a hard socket timeout: googleapiclient's default
+            # httplib2.Http() has timeout=None, so a stalled TLS session would hang the
+            # calling thread until the OS TCP timeout (minutes) — see GOOGLE_CHAT_API_TIMEOUT.
+            def _authed_http():
+                return google_auth_httplib2.AuthorizedHttp(
+                    credentials, http=httplib2.Http(timeout=settings.google_chat.api_timeout)
+                )
+
+            # This service is a cross-thread singleton (outbound sends run via
+            # asyncio.to_thread; the inbound event handler now runs in threadpool workers).
+            # httplib2.Http is NOT thread-safe — a shared instance corrupts its connection
+            # pool under concurrency (SSLError / IncompleteRead). requestBuilder hands every
+            # API request a fresh AuthorizedHttp so the service can be shared safely.
+            def _build_request(_http, *args, **kwargs):
+                return googleapiclient.http.HttpRequest(_authed_http(), *args, **kwargs)
+
+            cls._service = build(
+                "chat", "v1", http=_authed_http(), requestBuilder=_build_request, cache_discovery=False
+            )
             return cls._service
 
     @classmethod

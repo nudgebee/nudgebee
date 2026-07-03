@@ -53,18 +53,21 @@ const ExecutionStatusBar: React.FC<ExecutionStatusBarProps> = ({
     >
       <Box
         sx={{
-          backgroundColor: 'rgba(255, 255, 255, 0.95)',
-          border: `2px solid ${hasPendingApproval ? '#f59e0b' : '#2563eb'}`,
+          backgroundColor: 'color-mix(in srgb, white 95%, transparent)',
+          border: `2px solid ${hasPendingApproval ? 'var(--ds-amber-400)' : 'var(--ds-blue-600)'}`,
           borderRadius: 'var(--ds-radius-xl)',
           padding: 'var(--ds-space-2) var(--ds-space-4)',
           display: 'flex',
           alignItems: 'center',
           gap: 'var(--ds-space-3)',
-          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)',
+          boxShadow: '0 var(--ds-space-1) var(--ds-space-3) color-mix(in srgb, black 15%, transparent)',
         }}
       >
-        <CircularProgress size={18} thickness={4} sx={{ color: hasPendingApproval ? '#f59e0b' : '#2563eb' }} />
-        <Typography variant='body2' sx={{ fontWeight: 'var(--ds-font-weight-medium)', color: hasPendingApproval ? '#f59e0b' : '#2563eb' }}>
+        <CircularProgress size={18} thickness={4} sx={{ color: hasPendingApproval ? 'var(--ds-amber-400)' : 'var(--ds-blue-600)' }} />
+        <Typography
+          variant='body2'
+          sx={{ fontWeight: 'var(--ds-font-weight-medium)', color: hasPendingApproval ? 'var(--ds-amber-400)' : 'var(--ds-blue-600)' }}
+        >
           Manual run in progress...
         </Typography>
         {totalTasks > 0 && (
@@ -96,7 +99,7 @@ const ExecutionStatusBar: React.FC<ExecutionStatusBarProps> = ({
             width: '12px',
             height: '12px',
             borderRadius: '50%',
-            backgroundColor: hasPendingApproval ? '#f59e0b' : '#2563eb',
+            backgroundColor: hasPendingApproval ? 'var(--ds-amber-400)' : 'var(--ds-blue-600)',
             animation: 'pulse 1.5s ease-in-out infinite',
           }}
         />
@@ -116,7 +119,7 @@ const ExecutionStatusBar: React.FC<ExecutionStatusBarProps> = ({
               display: 'flex',
               flexDirection: 'column',
               gap: 'var(--ds-space-2)',
-              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.08)',
+              boxShadow: '0 var(--ds-space-1) var(--ds-space-3) var(--ds-gray-alpha-200)',
             }}
           >
             <Typography sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-500)' }}>

@@ -15,7 +15,7 @@ import { TicketsIcon } from '@assets';
 import { getBrandingAsset } from '@hooks/useTenantBranding';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { getLast7Days } from '@lib/datetime';
-import type { ICustomTable2Row } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/Instances';
 import ClusterNameWithRegion from '@components/k8s/common/ClusterNameWithRegion';
 import Text from '@shared/format/Text';
 import { ds } from '@utils/colors';
@@ -98,7 +98,7 @@ const CloudAccountTools = (props: { accountId: string | undefined; serviceName: 
         setLoading(false);
         const ticketReferenceMap = new Map();
         const eventsData = res.data?.events?.map((item: any) => {
-          const data: ICustomTable2Row[] = [];
+          const data: ICustomTableRow[] = [];
           const MENU_ITEMS = [
             {
               id: `${TABLE_ID}-action-${item.id}-create-ticket`,

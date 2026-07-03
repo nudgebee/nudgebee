@@ -1,4 +1,5 @@
 import React, { useEffect, useRef } from 'react';
+import { ds } from 'src/utils/colors';
 
 interface SvgRendererProps {
   svg: string;
@@ -54,8 +55,8 @@ const SvgRenderer: React.FC<SvgRendererProps> = ({ svg, style }) => {
   }, [svg]);
 
   const containerStyle: React.CSSProperties = {
-    width: '600px',
-    height: '2000px',
+    width: ds.space.mul(0, 300),
+    height: ds.space.mul(0, 1000),
     border: '1px solid var(--ds-brand-200)',
     ...style,
   };

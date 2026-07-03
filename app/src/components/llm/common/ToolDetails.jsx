@@ -18,11 +18,11 @@ import LLMAnswerRenderer from './LLMAnswerRenderer';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import ReferencesPopover from './ReferencesModal';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
-import { LineChart } from '@shared';
+import Chart from '@ui/Chart';
 import Text from '@shared/format/Text';
-import CustomTable from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { Divider } from '@ui/Divider';
-import KubernetesTable2 from '@components/k8s/common/KubernetesTable2';
+import KubernetesTable from '@components/k8s/common/KubernetesTable';
 import { mapToTableData } from '@components/k8s/details/KubernetesLogStash';
 import { LogDate } from '@components/k8s/common/LogDate';
 import KubernetesSecurityDetails from '@components/recommendations/security/KubernetesSecurityDetails';
@@ -228,7 +228,7 @@ const renderPrometheusCharts = (metricsQueryObject) => (
             )}
             {e.values?.length > 1 ? (
               <Grid item xs={12} mb={ds.space[4]}>
-                <LineChart data={e.values} labels={e.timestamps} />
+                <Chart.Line data={e.values} labels={e.timestamps} />
               </Grid>
             ) : e.values?.[0] != null ? (
               <Grid item xs={12} mb={ds.space[2]}>
@@ -582,7 +582,7 @@ const FormattedToolResponse = ({ responseText, toolName, toolCall, accountId }) 
       if (results?.result?.length > 0) {
         const tableData = mapToTableData(results.result);
         return (
-          <KubernetesTable2
+          <KubernetesTable
             id={'tool-details-es-logs'}
             totalRows={tableData.length}
             data={tableData}
@@ -908,8 +908,16 @@ const ToolDetails = ({ toolCall, accountId, conversationId }) => {
         </Typography>
         {parsedReferences.length > 0 && (
           <Box
+            role='button'
+            tabIndex={0}
             onMouseEnter={(e) => setReferencesAnchorEl(e.currentTarget)}
             onClick={(e) => setReferencesAnchorEl(e.currentTarget)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                setReferencesAnchorEl(e.currentTarget);
+              }
+            }}
             sx={{
               display: 'flex',
               alignItems: 'center',

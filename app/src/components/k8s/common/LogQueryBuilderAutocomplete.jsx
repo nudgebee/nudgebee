@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, memo } from 'react';
 import {
   Box,
   TextField,
@@ -83,7 +83,7 @@ const normalizeBlock = (block) => ({
   operations: Array.isArray(block?.operations) ? block.operations.map(normalizeOperation) : block?.operations,
 });
 
-const TruncatedTooltip = ({ title, children }) => {
+const TruncatedTooltip = memo(({ title, children }) => {
   const [open, setOpen] = useState(false);
 
   const handleMouseEnter = useCallback((e) => {
@@ -112,7 +112,7 @@ const TruncatedTooltip = ({ title, children }) => {
       </span>
     </DsTooltip>
   );
-};
+});
 
 const DEFAULT_QUERY_BLOCK = () => ({
   id: 0,
@@ -178,6 +178,7 @@ const LogQueryBuilderAutocomplete = ({
   heading = 'Label',
   providerType = '',
   suggestionsMinWidth = 280,
+  kgFilters,
 }) => {
   // State for multiple query blocks
   const [queryBlocks, setQueryBlocks] = useState(() => initializeQueryBlocks(prebuildQueryBlocks, logProvider));
@@ -572,8 +573,10 @@ const LogQueryBuilderAutocomplete = ({
           return [];
         } else if (logProvider === 'knowledge_graph') {
           const res = await apiKubernetes1.knowledgeGraphFilterOptionLabelValues({
-            filterType: heading == 'Attribute Filter' ? 'attribute' : 'label',
+            filterType: heading === 'Attribute' ? 'attribute' : 'label',
             filterKey: findLabel.label,
+            // Scope candidate values to the user's currently-composed (draft) filters.
+            ...(kgFilters || {}),
           });
           const labelValues = res?.data?.data?.kg_get_filter_values?.data?.values || [];
           setValues((prev) => ({

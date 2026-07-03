@@ -7,7 +7,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import PropTypes from 'prop-types';
 import { Chip } from '@ui/Chip';
 import { ds } from '@utils/colors';
-import CustomTabs from '../CustomTabs';
+import Tabs from './Tabs';
 import Link from 'next/link';
 
 const AnchorComponent = ({
@@ -15,7 +15,7 @@ const AnchorComponent = ({
   filterOptions = [],
   marginTop = 0,
   onChangeFilter,
-  boxShadow = '0px 2px 24px 2px #00000014',
+  boxShadow = `0px ${ds.space[0]} ${ds.space[5]} ${ds.space[0]} ${ds.gray.alpha[200]}`,
   buttonTitle = '',
   buttonComponent,
   handleButtonAction,
@@ -148,6 +148,9 @@ const AnchorComponent = ({
     const searchParams = new URLSearchParams(queryString);
     searchParams.delete('tab');
     searchParams.delete('subtab');
+    // `integration` is sub-navigation state scoped to the Integrations tab; drop it
+    // when building other top-level tab URLs so it doesn't leak across tabs.
+    searchParams.delete('integration');
 
     return { path, searchParams };
   };
@@ -332,7 +335,7 @@ const AnchorComponent = ({
           position: 'absolute',
           left: 0,
           right: 0,
-          zIndex: 0,
+          zIndex: 2,
           borderTop: '0.5px solid var(--ds-gray-200)',
         }}
         onMouseLeave={handlePopoverClose}
@@ -350,19 +353,18 @@ const AnchorComponent = ({
               height: ds.space[1],
             },
             '&::-webkit-scrollbar-track': {
-              boxShadow: 'inset 0 0 6px rgba(0,0,0,0.00)',
-              webkitBoxShadow: 'inset 0 0 6px rgba(0,0,0,0.00)',
+              boxShadow: `inset 0 0 ${ds.space.mul(0, 3)} transparent`,
+              webkitBoxShadow: `inset 0 0 ${ds.space.mul(0, 3)} transparent`,
             },
             '&::-webkit-scrollbar-thumb': {
-              backgroundColor: 'rgba(0,0,0,.1)',
+              backgroundColor: ds.gray.alpha[300],
             },
           }}
         >
           <Box>
-            {currentOpt?.tabOptions && (
+            {currentOpt?.tabOptions && anchorEl && (
               <Popover
                 sx={{
-                  zIndex: 10,
                   '& .MuiPopover-paper': {
                     backgroundColor: 'var(--ds-overlay-bg)',
                     borderRadius: 'var(--ds-overlay-radius)',
@@ -390,6 +392,7 @@ const AnchorComponent = ({
                   vertical: 'top',
                   horizontal: 'left',
                 }}
+                disablePortal={true}
               >
                 <Box onMouseLeave={handlePopoverClose}>
                   {showGroupedTabs ? (
@@ -446,8 +449,8 @@ const AnchorComponent = ({
                     transform: 'translate3d(var(--at-indicator-x, 0px), 0, 0)',
                     backgroundColor: 'var(--ds-tab-active-bg, var(--ds-blue-200))',
                     borderRadius: 'var(--ds-radius-md)',
-                    transition: 'transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1), width 280ms cubic-bezier(0.2, 0.8, 0.2, 1)',
-                    willChange: 'transform, width',
+                    transition: 'transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1)',
+                    willChange: 'transform',
                     zIndex: 0,
                     pointerEvents: 'none',
                   },
@@ -461,8 +464,8 @@ const AnchorComponent = ({
                     transform: 'translate3d(var(--at-indicator-x, 0px), 0, 0)',
                     backgroundColor: 'var(--ds-tab-active-indicator, var(--ds-brand-500))',
                     borderRadius: 'var(--ds-radius-sm)',
-                    transition: 'transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1), width 280ms cubic-bezier(0.2, 0.8, 0.2, 1)',
-                    willChange: 'transform, width',
+                    transition: 'transform 280ms cubic-bezier(0.2, 0.8, 0.2, 1)',
+                    willChange: 'transform',
                     zIndex: 2,
                     pointerEvents: 'none',
                   },
@@ -479,6 +482,7 @@ const AnchorComponent = ({
                         disableRipple
                         disableFocusRipple
                         data-tab-selected={selected ? 'true' : 'false'}
+                        data-popover-open={currentOpt?.value === opt.value && Boolean(anchorEl) ? 'true' : 'false'}
                         onClick={() => {
                           setActiveDropdownTab(currentOpt.value);
                           setActiveDropdownSubtab(0);
@@ -517,12 +521,12 @@ const AnchorComponent = ({
                               stroke: selected ? 'var(--ds-gray-700)' : 'var(--ds-gray-600)',
                             },
                           },
-                          '&:hover .arrow-icon': { transform: 'rotate(180deg)' },
+                          '&:hover .arrow-icon, &[data-popover-open="true"] .arrow-icon': { transform: 'rotate(180deg)' },
                           '& .arrow-icon': {
                             transition: 'transform 0.3s ease',
                             color: selected ? 'var(--ds-tab-active, var(--ds-brand-700))' : 'var(--ds-gray-500)',
                           },
-                          '&:hover:not([data-tab-selected="true"])': {
+                          '&:hover:not([data-tab-selected="true"]), &[data-popover-open="true"]:not([data-tab-selected="true"])': {
                             backgroundColor: 'var(--ds-gray-100)',
                             color: 'var(--ds-tab-active, var(--ds-brand-700))',
                           },
@@ -598,7 +602,7 @@ const AnchorComponent = ({
               display: 'flex',
               backgroundColor: 'var(--ds-background-100)',
               p: 'var(--ds-space-2) var(--ds-space-5) 0 var(--ds-space-5)',
-              boxShadow: '0 1px 2px rgba(16,24,40,0.04)',
+              boxShadow: `0 1px ${ds.space[0]} ${ds.gray.alpha[100]}`,
               alignItems: 'center',
               border: '1px solid var(--ds-gray-200)',
               borderRadius: 'var(--ds-radius-md)',
@@ -636,7 +640,7 @@ const AnchorComponent = ({
         </Box>
       ) : filterOptions[activeDropdownTab]?.tabOptions?.length > 0 ? (
         <Box mt={ds.space.mul(0, 32)} position={'relative'} mb={ds.space[4]}>
-          <CustomTabs
+          <Tabs
             options={{
               ...filterOptions[activeDropdownTab],
               tabOptions: showGroupedTabs

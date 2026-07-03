@@ -9,24 +9,23 @@ import { hasWriteAccess } from '@lib/auth';
 import PropTypes from 'prop-types';
 import { toast as snackbar } from '@ui/Toast';
 import { useData } from '@context/DataContext';
-import Title from '@shared/Title';
-import CodeMirror from '@uiw/react-codemirror';
-import { yaml } from '@codemirror/lang-yaml';
+import Heading from '@components/common/Heading';
+import { CodeEditor } from '@ui/CodeEditor';
 import { useRouter } from 'next/router';
 import { applyFiltersOnRouter } from '@lib/router';
 import apiUser from '@api1/user';
 import Text from '@shared/format/Text';
-import { colors, ds } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 import { latestUpdatedAt } from 'src/utils/common';
 import { Modal } from '@ui/Modal';
-import CustomTicketLink from '@shared/CustomTicketLink';
+import TicketLink from '@shared/links/TicketLink';
 import { Link as CustomLink } from '@ui/Link';
 
 import WidgetCard from '@ui/WidgetCard';
 import { ListingLayout } from '@ui/ListingLayout';
 import { Stat } from '@ui/Stat';
 import { CostCallout } from '@ui/CostCallout';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { Button as DsButton } from '@ui/Button';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import { ScanRefreshButton } from './ScanRefreshButton';
@@ -55,7 +54,7 @@ export const KubernetesSpotUpdatePopupForm = ({ open, onClose }) => {
       <Box display='flex' justifyContent='end' />
       <Box display='flex' flexDirection='column' justifyContent='space-between' alignItems='left' my='5px' mx='10px' py='1px'>
         <Box mt={2}>
-          <Title title='Why Use Spot Instances with EKS?' />
+          <Heading value='Why Use Spot Instances with EKS?' borderWidth='md' />
           <Typography variant='body1' color='textSecondary' paragraph>
             While Spot Instances come with the risk of interruption, they are ideal for certain Kubernetes workloads:
           </Typography>
@@ -72,7 +71,7 @@ export const KubernetesSpotUpdatePopupForm = ({ open, onClose }) => {
         </Box>
 
         <Box mt={3}>
-          <Title title='Mitigating the Side Effects of Spot Instances' />
+          <Heading value='Mitigating the Side Effects of Spot Instances' borderWidth='md' />
           <Typography variant='body1' color='textSecondary' component='ul' sx={{ pl: 3 }}>
             <li>
               <strong>Interruptions:</strong> Kubernetes helps manage disruptions with features like Pod Disruption Budgets (PDBs) and draining nodes,
@@ -91,7 +90,7 @@ export const KubernetesSpotUpdatePopupForm = ({ open, onClose }) => {
         </Box>
 
         <Box mt={3}>
-          <Title title='Node Selector Vs Node Affinity' />
+          <Heading value='Node Selector Vs Node Affinity' borderWidth='md' />
           <Typography variant='body1' color='textSecondary' component='div'>
             <Typography component='ul' sx={{ pl: 3 }}>
               <strong>Use nodeSelector when:</strong>
@@ -106,33 +105,35 @@ export const KubernetesSpotUpdatePopupForm = ({ open, onClose }) => {
           </Typography>
         </Box>
         <br />
-        <Title title={'Using Node Selector'} />
-        <CodeMirror
-          value={
-            "apiVersion: v1\nkind: Pod\nmetadata:\n  name: batch-processor\nspec:\n  nodeSelector:\n    eks.amazonaws.com/capacitytype: SPOT\n  containers:\n    - name: batch-processor\n      image: your-batch-processor-image\n      command:\n        - /bin/sh\n        - '-c'\n        - process data.txt"
-          }
-          height='300px'
-          extensions={[yaml()]}
-          editable={false}
-          style={{
-            border: '1px solid silver',
-            marginTop: 'var(--ds-space-2)',
-          }}
-        />
+        <Heading value={'Using Node Selector'} borderWidth='md' />
+        <Box sx={{ mt: 'var(--ds-space-2)' }}>
+          <CodeEditor
+            language='yaml'
+            tone='dark'
+            readOnly
+            height='300px'
+            value={
+              "apiVersion: v1\nkind: Pod\nmetadata:\n  name: batch-processor\nspec:\n  nodeSelector:\n    eks.amazonaws.com/capacitytype: SPOT\n  containers:\n    - name: batch-processor\n      image: your-batch-processor-image\n      command:\n        - /bin/sh\n        - '-c'\n        - process data.txt"
+            }
+            copyToast='YAML copied'
+            data-testid='spot-node-selector-yaml'
+          />
+        </Box>
         <br />
-        <Title title={'Using Node Affinity'} />
-        <CodeMirror
-          value={
-            "apiVersion: v1\nkind: Pod\nmetadata:\n  name: with-node-affinity\nspec:\n  affinity:\n    nodeAffinity:\n      requiredDuringSchedulingIgnoredDuringExecution:\n        nodeSelectorTerms:\n          - matchExpressions:\n              - key: eks.amazonaws.com/capacitytype\n                operator: In\n                values:\n                  - SPOT\n  containers:\n    - name: batch-processor\n      image: your-batch-processor-image\n      command:\n        - /bin/sh\n        - '-c'\n        - process data.txt"
-          }
-          height='300px'
-          extensions={[yaml()]}
-          editable={false}
-          style={{
-            border: '1px solid silver',
-            marginTop: 'var(--ds-space-2)',
-          }}
-        />
+        <Heading value={'Using Node Affinity'} borderWidth='md' />
+        <Box sx={{ mt: 'var(--ds-space-2)' }}>
+          <CodeEditor
+            language='yaml'
+            readOnly
+            tone='dark'
+            height='300px'
+            value={
+              "apiVersion: v1\nkind: Pod\nmetadata:\n  name: with-node-affinity\nspec:\n  affinity:\n    nodeAffinity:\n      requiredDuringSchedulingIgnoredDuringExecution:\n        nodeSelectorTerms:\n          - matchExpressions:\n              - key: eks.amazonaws.com/capacitytype\n                operator: In\n                values:\n                  - SPOT\n  containers:\n    - name: batch-processor\n      image: your-batch-processor-image\n      command:\n        - /bin/sh\n        - '-c'\n        - process data.txt"
+            }
+            copyToast='YAML copied'
+            data-testid='spot-node-affinity-yaml'
+          />
+        </Box>
       </Box>
     </Modal>
   );
@@ -328,7 +329,7 @@ const KubernetesSpotRecommendation = ({ enabledSummary = true, enabledFilters = 
           data.push({
             component: (
               <>
-                <Text value={item.recommendation?.controller_name} sx={{ color: colors.text.primary }} />
+                <Text value={item.recommendation?.controller_name} sx={{ color: ds.blue[500] }} />
                 {isOptimisePage && (
                   <Box sx={{ display: 'flex', gap: 'var(--ds-space-1)' }}>
                     <Text value={'acc: '} secondaryText />
@@ -343,7 +344,7 @@ const KubernetesSpotRecommendation = ({ enabledSummary = true, enabledFilters = 
                     </CustomLink>
                   </Box>
                 )}
-                {item.ticket && <CustomTicketLink ticketURL={item.ticket?.url} ticketID={item.ticket?.ticket_id} />}
+                {item.ticket && <TicketLink ticketURL={item.ticket?.url} ticketID={item.ticket?.ticket_id} />}
               </>
             ),
           });
@@ -358,7 +359,7 @@ const KubernetesSpotRecommendation = ({ enabledSummary = true, enabledFilters = 
               <Currency
                 value={item.estimated_savings || '-'}
                 precison={1}
-                sxPrefix={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)', color: colors.text.secondaryDark }}
+                sxPrefix={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-regular)', color: ds.gray[400] }}
               />
             ),
           });
@@ -389,7 +390,7 @@ const KubernetesSpotRecommendation = ({ enabledSummary = true, enabledFilters = 
                     {
                       id: `spot-action-ticket-${item.id}`,
                       label: item.ticket?.ticket_id ? `Ticket: ${item.ticket.ticket_id}` : 'Create ticket',
-                      icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: 16 }} />,
+                      icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: ds.text.title }} />,
                       disabled: !!item.ticket?.ticket_id,
                       onSelect: () => {
                         openTicketForItem(item);
@@ -664,7 +665,7 @@ const KubernetesSpotRecommendation = ({ enabledSummary = true, enabledFilters = 
         </ListingLayout.Toolbar>
 
         <ListingLayout.Body>
-          <CustomTable2
+          <CustomTable
             id={kubernetesSpotTable}
             headers={tableHeaders}
             tableData={kubernetesSpotRecommendation}

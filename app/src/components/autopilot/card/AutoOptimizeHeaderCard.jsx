@@ -1,5 +1,6 @@
 import React from 'react';
-import { Box, Divider, Typography } from '@mui/material';
+import { Box, Typography } from '@mui/material';
+import { Divider } from '@ui/Divider';
 import { Select } from '@ui/Select';
 import { useData } from '@context/DataContext';
 import PropTypes from 'prop-types';
@@ -321,14 +322,20 @@ const AutoPilotHeaderCard = ({
         <Box
           sx={{
             width: 'auto',
-            minHeight: '88px',
+            minHeight: ds.space.mul(1, 22),
             borderRadius: ds.radius.md,
             padding: `${ds.space[3]} ${ds.space[4]}`,
             background: ds.background[100],
             border: updatedCard && `0.5px solid ${ds.blue[600]}`,
             boxShadow: updatedCard
-              ? '0px 2px 7px 0px #3B82F60F, 0px 4px 6px -1px #3B82F61F'
-              : '0px 0px 6px -1px rgba(83, 123, 216, 0.40), 0px 2px 10.5px -2px rgba(0, 0, 0, 0.05)',
+              ? `0px ${ds.space[0]} 7px 0px color-mix(in srgb, ${ds.blue[500]} 6%, transparent), 0px ${ds.space[1]} ${ds.space.mul(
+                  0,
+                  3
+                )} -1px color-mix(in srgb, ${ds.blue[500]} 12%, transparent)`
+              : `0px 0px ${ds.space.mul(0, 3)} -1px color-mix(in srgb, ${ds.blue[500]} 40%, transparent), 0px ${ds.space[0]} 10.5px ${ds.space.mul(
+                  0,
+                  -1
+                )} ${ds.gray.alpha[100]}`,
             display: updatedCard && 'flex',
             alignItems: updatedCard && 'center',
           }}
@@ -356,7 +363,7 @@ const AutoPilotHeaderCard = ({
                   </Box>
                 </Box>
               </Box>
-              <Divider orientation='vertical' sx={{ height: '60px' }} />
+              <Divider orientation='vertical' sx={{ height: ds.space.mul(1, 15) }} />
               <Box>
                 <TextWithValue
                   title='Pods'
@@ -371,7 +378,7 @@ const AutoPilotHeaderCard = ({
                   valueColor={ds.gray[700]}
                 />
               </Box>
-              <Divider orientation='vertical' sx={{ height: '60px' }} />
+              <Divider orientation='vertical' sx={{ height: ds.space.mul(1, 15) }} />
             </Box>
           )}
           {updatedCard && (
@@ -384,7 +391,7 @@ const AutoPilotHeaderCard = ({
                 direction='column'
                 updatedCard={updatedCard}
               />
-              <Divider orientation='vertical' sx={{ height: '60px' }} />
+              <Divider orientation='vertical' sx={{ height: ds.space.mul(1, 15) }} />
               <Box sx={{ gap: ds.space[1], display: 'flex' }}>
                 <Box>
                   <TextWithValue
@@ -394,7 +401,7 @@ const AutoPilotHeaderCard = ({
                     valueColor={ds.gray[700]}
                     sx={{
                       '& .title': {
-                        width: '90px',
+                        width: ds.space.mul(1, 22.5),
                       },
                     }}
                   />
@@ -405,13 +412,13 @@ const AutoPilotHeaderCard = ({
                     valueColor={ds.gray[700]}
                     sx={{
                       '& .title': {
-                        width: '90px',
+                        width: ds.space.mul(1, 22.5),
                       },
                     }}
                   />
                 </Box>
               </Box>
-              <Divider orientation='vertical' sx={{ height: '60px' }} />
+              <Divider orientation='vertical' sx={{ height: ds.space.mul(1, 15) }} />
 
               <Box>
                 <TextWithValue
@@ -421,7 +428,7 @@ const AutoPilotHeaderCard = ({
                   valueColor={ds.gray[700]}
                   sx={{
                     '& .title': {
-                      width: '90px',
+                      width: ds.space.mul(1, 22.5),
                     },
                   }}
                 />
@@ -432,7 +439,7 @@ const AutoPilotHeaderCard = ({
                   valueColor={ds.gray[700]}
                   sx={{
                     '& .title': {
-                      width: '90px',
+                      width: ds.space.mul(1, 22.5),
                     },
                   }}
                 />
@@ -445,12 +452,15 @@ const AutoPilotHeaderCard = ({
           <Box
             sx={{
               width: 'auto',
-              minHeight: '88px',
+              minHeight: ds.space.mul(1, 22),
               borderRadius: ds.radius.md,
               padding: `${ds.space[3]} ${ds.space[4]}`,
               background: ds.background[100],
               border: `0.5px solid ${ds.green[400]}`,
-              boxShadow: '0px 2px 7px 0px #22C55E0F, 0px 4px 6px -1px #22C55E1F',
+              boxShadow: `0px ${ds.space[0]} 7px 0px color-mix(in srgb, ${ds.green[500]} 6%, transparent), 0px ${ds.space[1]} ${ds.space.mul(
+                0,
+                3
+              )} -1px color-mix(in srgb, ${ds.green[500]} 12%, transparent)`,
             }}
           >
             <Box sx={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', height: '100%' }}>
@@ -463,7 +473,7 @@ const AutoPilotHeaderCard = ({
                   precison={1}
                   sx={{
                     color: ds.green[500],
-                    fontSize: '24px',
+                    fontSize: ds.text.display,
                     fontWeight: ds.weight.medium,
                   }}
                   sxSuffix={{
@@ -487,10 +497,11 @@ const AutoPilotHeaderCard = ({
       {header && (
         <Box
           sx={{
-            borderRadius: '4px 4px 0px 0px',
+            borderRadius: `${ds.radius.sm} ${ds.radius.sm} 0 0`,
             borderTop: `1px solid ${ds.blue[100]}`,
             background: ds.blue[100],
-            padding: '8px 16px',
+            py: ds.space[2],
+            px: ds.space[4],
           }}
         >
           <Typography sx={{ color: ds.gray[700], fontSize: ds.text.title, fontWeight: ds.weight.semibold }}>{header}</Typography>

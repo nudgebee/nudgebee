@@ -7,7 +7,7 @@ import * as React from 'react';
 import { Box } from '@mui/material';
 import { Card } from '@ui/Card';
 import { Button } from '@ui/Button';
-import DonutChart from './DonutChart';
+import Chart from '@ui/Chart';
 import { seriesColor } from './palette';
 import { fmtCost, fmtPct } from '../format';
 import type { RankedSlice } from '../types';
@@ -52,7 +52,19 @@ function RankedBars({ slices, onSelect }: { slices: RankedSlice[]; onSelect?: (k
       {visible.map((s, i) => (
         <Box
           key={s.key}
+          role={onSelect ? 'button' : undefined}
+          tabIndex={onSelect ? 0 : undefined}
           onClick={onSelect ? () => onSelect(s.key) : undefined}
+          onKeyDown={
+            onSelect
+              ? (e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onSelect(s.key);
+                  }
+                }
+              : undefined
+          }
           sx={onSelect ? { cursor: 'pointer', '&:hover .ranked-fill': { filter: 'brightness(0.92)' } } : undefined}
         >
           <Box
@@ -106,15 +118,17 @@ export function BreakdownWidgets({ byModel, bySource, onSelectModel, onSelectSou
       {/* Cost by model — donut + ranked list (model · count · share · cost) */}
       <Card header={<Box sx={cardTitleSx}>Cost by model</Box>} sx={{ flex: '1 1 360px', minWidth: 320 }}>
         <Box sx={{ display: 'flex', gap: 'var(--ds-space-6)', alignItems: 'center' }}>
-          <DonutChart
+          <Chart.Doughnut
             values={donutValues}
             labels={donutLabels}
             colors={donutColors}
             size={132}
-            formatValue={(raw) => fmtCost(raw)}
+            cutout='66%'
+            formatValue={(raw: number) => fmtCost(raw)}
             centerLabel='Total'
             centerValue={fmtCost(modelTotal)}
-            onSelectSlice={onSelectModel}
+            externalTooltip
+            onItemClick={onSelectModel}
           />
           <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
             <Box

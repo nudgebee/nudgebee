@@ -2,7 +2,7 @@ import { Box, IconButton, Typography, Tooltip } from '@mui/material';
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { colors } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 import { CollapseLeftIcon } from '@assets';
 import KubernetesLLMResponseGenerator from '@components/llm/KubernetesLLMResponseGeneratorV2';
 import { v4 as uuidv4 } from 'uuid';
@@ -26,6 +26,9 @@ interface NubiChatSidebarProps {
   categorySource?: string;
   // Workflow generation callback - called when AI chat generates a workflow JSON
   onWorkflowGenerated?: (workflowJson: string, sessionId: string) => void;
+  // Fires on every completed workflow-mode turn (even tool-only server-side edits that
+  // don't echo a JSON), so the parent can re-fetch and refresh after the assistant edits.
+  onConversationComplete?: (sessionId: string) => void;
   // Layout customization
   position?: 'left' | 'right';
   mode?: 'overlay' | 'fixed';
@@ -53,11 +56,12 @@ const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
   categorySource,
   position = 'right',
   mode = 'overlay',
-  width = '500px',
-  topOffset = '56px',
+  width = ds.space.mul(0, 250),
+  topOffset = ds.space.mul(0, 28),
   showHeader = true,
   enableKeyboardShortcut = true,
   onWorkflowGenerated,
+  onConversationComplete,
   urlConversationId = '',
   urlSessionId = '',
 }) => {
@@ -139,15 +143,20 @@ const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
       sx={{
         ...getPositionStyles(),
         width: isVisible ? width : '0px',
-        backgroundColor: colors.background.white,
-        boxShadow: isOverlay && isVisible ? (isLeft ? '4px 0px 20px rgba(0, 0, 0, 0.1)' : '-4px 0px 20px rgba(0, 0, 0, 0.1)') : 'none',
+        backgroundColor: ds.background[100],
+        boxShadow:
+          isOverlay && isVisible
+            ? isLeft
+              ? `${ds.space[1]} 0px 20px ${ds.gray.alpha[300]}`
+              : `${ds.space.mul(1, -1)} 0px 20px ${ds.gray.alpha[300]}`
+            : 'none',
         transform: getTransform(),
         transition:
           'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), width 0.3s cubic-bezier(0.4, 0, 0.2, 1), min-width 0.3s cubic-bezier(0.4, 0, 0.2, 1), max-width 0.3s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.3s ease',
         display: 'flex',
         flexDirection: 'column',
-        borderLeft: isRight ? `1px solid ${colors.border.secondary}` : 'none',
-        borderRight: isLeft && isVisible ? `1px solid ${colors.border.secondary}` : 'none',
+        borderLeft: isRight ? `1px solid ${ds.brand[200]}` : 'none',
+        borderRight: isLeft && isVisible ? `1px solid ${ds.brand[200]}` : 'none',
         overflow: 'hidden',
       }}
     >
@@ -159,9 +168,9 @@ const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
             alignItems: 'center',
             justifyContent: 'space-between',
             padding: 'var(--ds-space-2) var(--ds-space-4)',
-            borderBottom: `1px solid ${colors.border.vertical}`,
-            backgroundColor: colors.background.white,
-            minHeight: '24px',
+            borderBottom: `1px solid ${ds.gray[200]}`,
+            backgroundColor: ds.background[100],
+            minHeight: ds.space.mul(0, 12),
             position: 'sticky',
             top: 0,
             zIndex: 10,
@@ -175,7 +184,7 @@ const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
                   fontSize: 'var(--ds-text-title)',
                   fontWeight: 'var(--ds-font-weight-semibold)',
                   fontFamily: 'Roboto',
-                  color: colors.text.secondary,
+                  color: ds.brand[500],
                   lineHeight: 1.2,
                 }}
               >
@@ -186,7 +195,7 @@ const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
                   sx={{
                     fontSize: 'var(--ds-text-caption)',
                     fontWeight: 'var(--ds-font-weight-regular)',
-                    color: colors.text.tertiary,
+                    color: ds.gray[600],
                     fontFamily: 'Roboto',
                     textTransform: 'capitalize',
                   }}
@@ -203,7 +212,7 @@ const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
                 onClick={onClose}
                 size='small'
                 sx={{
-                  color: colors.text.secondary,
+                  color: ds.brand[500],
                 }}
               >
                 <Box
@@ -228,7 +237,7 @@ const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
           flex: 1,
           overflow: 'hidden',
           position: 'relative',
-          backgroundColor: colors.background.white,
+          backgroundColor: ds.background[100],
           display: 'flex',
           flexDirection: 'column',
           minHeight: 0,
@@ -254,6 +263,8 @@ const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
             workflowDefinition={context?.data?.definition || null}
             // @ts-expect-error JSX component lacks type annotations for this callback prop
             onWorkflowGenerated={onWorkflowGenerated}
+            // @ts-expect-error JSX component lacks type annotations for this callback prop
+            onConversationComplete={onConversationComplete}
           />
         ) : (
           <Box
@@ -269,7 +280,7 @@ const NubiChatSidebar: React.FC<NubiChatSidebarProps> = ({
             <Typography
               sx={{
                 fontSize: 'var(--ds-text-body-lg)',
-                color: colors.text.tertiary,
+                color: ds.gray[600],
                 fontFamily: 'Roboto',
               }}
             >

@@ -32,6 +32,7 @@ import {
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
 import { Chip as DsChip } from '@ui/Chip';
+import { DropdownMenu } from '@ui/DropdownMenu';
 import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import AddIcon from '@mui/icons-material/Add';
@@ -103,6 +104,12 @@ import {
   workflowWebhookIcon,
   workflowCalendarIcon,
   SaveIconOutline,
+  moreItems,
+  pmCheckCircle,
+  checkIconBold,
+  DeleteIconRed,
+  GitMergeIcon,
+  ArrowDown,
 } from '@assets';
 import { getNubiIconUrl, useTenantBranding } from '@hooks/useTenantBranding';
 import { useUnsavedChangesTracking } from './hooks/useUnsavedChangesTracking';
@@ -113,7 +120,7 @@ import { useWorkflowShortcuts } from './hooks/useWorkflowShortcuts';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { hasFeatureAccess, hasWriteAccess } from '@lib/auth';
 import { Modal } from '@ui/Modal';
-import { Text } from '@shared';
+import Text from '@shared/format/Text';
 
 // Lazy-loaded heavy components — only loaded when actually needed
 const ExecutionsView = lazy(() => import('./ExecutionsView'));
@@ -157,6 +164,9 @@ interface WorkflowData {
   draft_version_id?: string | null;
   draft_version_number?: number | null;
   draft_version_name?: string | null;
+  // Server-side change marker — used to detect when the assistant has edited the
+  // workflow out-of-band so the builder can refresh only on a genuine change.
+  updated_at?: string | null;
 }
 
 /** Filter tasks to only those in the included set and clean up dangling depends_on references. */
@@ -171,12 +181,12 @@ const filterTasksForPartialRun = (tasks: any[], includedIds: Set<string>): any[]
 
 function getEdgeStrokeColor(isSwitchEdge: boolean, isSwitchDefault: boolean, hasCondition: boolean, parsedCondition: any): string {
   if (isSwitchEdge) {
-    return isSwitchDefault ? '#9CA3AF' : '#8B5CF6';
+    return isSwitchDefault ? 'var(--ds-gray-500)' : 'var(--ds-purple-400)';
   }
   if (hasCondition && parsedCondition) {
     return parsedCondition.color;
   }
-  return 'rgb(192, 192, 192)';
+  return 'var(--ds-gray-400)';
 }
 
 function rejectConnection(sourceNodeId: string, targetNodeId: string, setNodes: any) {
@@ -450,6 +460,15 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
 
   // NuBi Chat Sidebar state
   const [showNubiChat, setShowNubiChat] = useState(false); // Overlay mode - hidden by default
+  // True once the chat panel has been opened at least once. Keeps NubiChatSidebar mounted
+  // after the first open so collapsing the panel doesn't unmount it and lose the conversation,
+  // while still deferring the initial mount until the user actually opens it.
+  const nubiChatEverOpenedRef = useRef(false);
+  useEffect(() => {
+    if (showNubiChat) {
+      nubiChatEverOpenedRef.current = true;
+    }
+  }, [showNubiChat]);
   const [nubiChatFeatureEnabled, setNubiChatFeatureEnabled] = useState(false); // Feature flag for NubiChat
   const [nubiChatContext, setNubiChatContext] = useState<{
     type: 'workflow' | 'workflowbuilder';
@@ -1752,6 +1771,77 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   // current closure without having to list handleSaveWorkflow's many deps.
   const handleSaveWorkflowRef = useRef(handleSaveWorkflow);
   handleSaveWorkflowRef.current = handleSaveWorkflow;
+
+  // When the embedded assistant (NubiChat) finishes a turn in which it edited THIS
+  // workflow server-side, the builder must reflect those changes without a manual page
+  // reload. The assistant persists via the workflow_update tool and frequently does NOT
+  // echo the full definition in its reply, so we can't rely on the message text — instead
+  // we re-fetch the authoritative workflow and apply it. Guard rails: (1) skip when the
+  // server hasn't actually changed since our last load/save (read-only Q&A turns), so we
+  // don't pointlessly rebuild the canvas; (2) never silently clobber the user's local
+  // unsaved canvas edits — surface a notice and let them reconcile.
+  const assistantReloadInFlightRef = useRef(false);
+  const reloadWorkflowFromAssistant = async () => {
+    if (!accountId || !workflowId || workflowId === 'new') {
+      return;
+    }
+    if (assistantReloadInFlightRef.current) {
+      return;
+    }
+    assistantReloadInFlightRef.current = true;
+    try {
+      const reload: any = await apiWorkflow.getWorkflowById(accountId, workflowId);
+      const reloaded = reload?.data?.workflow_get;
+      if (!reloaded) {
+        return;
+      }
+      // No server-side change since our last load/save → nothing for the assistant to refresh.
+      if (reloaded.updated_at && workflowData?.updated_at && reloaded.updated_at === workflowData.updated_at) {
+        return;
+      }
+      if (hasUnsavedChanges) {
+        snackbar.warning('The assistant updated this automation on the server. Save or discard your local changes, then reload to view them.');
+        return;
+      }
+      // Pause/resume are paired in a nested try-finally so resume only ever runs when
+      // pause did — the early returns above (and any throw before this point) must not
+      // resume a detection that was never paused.
+      pauseChangeDetection();
+      try {
+        setWorkflowData(reloaded);
+        setDraftAheadOfLive(false);
+        if (reloaded.definition) {
+          const { nodes: nextNodes, edges: nextEdges } = convertWorkflowToReactFlow(
+            reloaded.definition,
+            {
+              minHorizontalSpacing: 250,
+              minVerticalSpacing: 180,
+              minTriggerSpacing: 250,
+              minConditionalSpacing: 120,
+            },
+            taskDefinitions
+          );
+          setNodes(nextNodes);
+          setEdges(nextEdges);
+        }
+        snackbar.success('Automation updated by Assistant');
+      } finally {
+        resumeChangeDetection();
+      }
+    } catch (error) {
+      console.error('Error reloading workflow after assistant update:', error);
+    } finally {
+      assistantReloadInFlightRef.current = false;
+    }
+  };
+  // Mirror the freshest closure into a ref so the callback handed to the lazy NubiChat
+  // subtree keeps a stable identity (it won't churn the chat's completion effect) while
+  // always running against the latest workflowData / hasUnsavedChanges.
+  const reloadWorkflowFromAssistantRef = useRef(reloadWorkflowFromAssistant);
+  reloadWorkflowFromAssistantRef.current = reloadWorkflowFromAssistant;
+  const handleAssistantTurnComplete = useCallback(() => {
+    void reloadWorkflowFromAssistantRef.current();
+  }, []);
 
   const openHistoryDrawer = useCallback(async () => {
     if (!workflowId || isNewWorkflow || !accountId) {
@@ -3138,7 +3228,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
         ...edge,
         animated: false, // Stop all animations
         style: {
-          stroke: 'rgb(175, 175, 175)',
+          stroke: 'var(--ds-gray-400)',
           strokeWidth: 1,
         },
       }))
@@ -3199,7 +3289,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
           display: 'flex',
           justifyContent: 'center',
           alignItems: 'center',
-          backgroundColor: 'rgb(243, 243, 243)',
+          backgroundColor: 'var(--ds-gray-100)',
         }}
       >
         <Typography sx={{ color: 'var(--ds-gray-600)' }}>Unable to get workflowId from URL params</Typography>
@@ -3273,14 +3363,153 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
             flex: 1,
             height: '100%',
             position: 'relative',
-            backgroundColor: 'rgb(246, 246, 246)',
+            backgroundColor: 'var(--ds-gray-100)',
             overflow: 'auto',
           }}
         >
           {/* Render different views based on current mode */}
+          {/* NubiChat Sidebar + toggle — lifted OUT of the editor/executions
+              conditional below so the assistant (and its conversation state)
+              persists across Editor <-> Executions tab switches instead of
+              unmounting with the editor subtree.
+              Gated by canEdit: read-only users (who are forced into the
+              Executions tab) have no workflow-authoring access, so the Nubi
+              assistant must not be offered to them. */}
+          {nubiChatFeatureEnabled && canEdit && (
+            <Box
+              sx={{
+                position: 'absolute',
+                left: showNubiChat ? '0' : `-${nubiChatWindowWidth}px`,
+                top: 0,
+                height: '100%',
+                width: `${nubiChatWindowWidth}px`,
+                borderRight: '1px solid var(--ds-gray-200)',
+                backgroundColor: ds.background[100],
+                overflow: 'hidden',
+                transition: isResizingRef.current ? 'none' : 'left 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                zIndex: 20,
+              }}
+            >
+              <Suspense
+                fallback={
+                  <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
+                    <CircularProgress size={24} />
+                  </Box>
+                }
+              >
+                {/* Kept mounted once opened (showNubiChat || everOpened) so collapsing —
+                    which slides the parent Box off-screen via `left` — does NOT unmount the
+                    chat and lose the conversation. Deferred until first open to avoid
+                    mounting before the workflow/context is ready. */}
+                {(showNubiChat || nubiChatEverOpenedRef.current) && (
+                  <NubiChatSidebar
+                    isVisible={true}
+                    onClose={() => setShowNubiChat(false)}
+                    accountId={accountId}
+                    position='left'
+                    mode='fixed'
+                    width={`${nubiChatWindowWidth}px`}
+                    showHeader={true}
+                    context={nubiChatContext}
+                    querySuffix={nubiChatSuffix}
+                    urlConversationId={urlConversationId}
+                    urlSessionId={effectiveSessionId}
+                    onWorkflowGenerated={handleAssistantTurnComplete}
+                    onConversationComplete={handleAssistantTurnComplete}
+                  />
+                )}
+                {/* Drag resize handle */}
+                <Box
+                  onMouseDown={handleResizeMouseDown('nubi')}
+                  sx={{
+                    position: 'absolute',
+                    right: -3,
+                    top: 0,
+                    width: '8px',
+                    height: '100%',
+                    cursor: 'col-resize',
+                    zIndex: 25,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    '&::after': {
+                      content: '""',
+                      width: '2px',
+                      height: '32px',
+                      borderRadius: 'var(--ds-radius-sm)',
+                      backgroundColor: 'rgba(0, 0, 0, 0.15)',
+                      transition: 'background-color 0.15s, height 0.15s',
+                    },
+                    '&:hover::after': {
+                      backgroundColor: 'rgba(59, 130, 246, 0.7)',
+                      height: '48px',
+                    },
+                    '&:hover': {
+                      backgroundColor: 'rgba(59, 130, 246, 0.08)',
+                    },
+                  }}
+                />
+              </Suspense>
+            </Box>
+          )}
+          {/* NubiChat Toggle Button (Feature Flag Controlled, write-access only) */}
+          {nubiChatFeatureEnabled && canEdit && (
+            <Box
+              id='workflow-nubi-chat-toggle'
+              onClick={() => setShowNubiChat(!showNubiChat)}
+              sx={{
+                position: 'absolute',
+                left: showNubiChat ? `${nubiChatWindowWidth}px` : '0',
+                top: '50%',
+                ml: '-25px',
+                transform: 'translateY(-50%) rotate(-90deg)',
+                transformOrigin: 'center',
+                zIndex: 30,
+                backgroundColor: ds.background[100],
+                border: `1px solid ${ds.brand[200]}`,
+                borderLeft: showNubiChat ? `1px solid ${ds.brand[200]}` : 'none',
+                borderTopLeftRadius: 0,
+                borderBottomLeftRadius: '8px',
+                borderTopRightRadius: 0,
+                borderBottomRightRadius: '8px',
+                padding: 'var(--ds-space-2) var(--ds-space-3)',
+                transition: isResizingRef.current ? 'none' : 'left 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 'var(--ds-space-1)',
+                '&:hover': {
+                  backgroundColor: 'var(--ds-background-200)',
+                },
+                boxShadow: '2px 0 8px rgba(0, 0, 0, 0.1)',
+              }}
+            >
+              {showNubiChat ? (
+                <ChevronLeftIcon fontSize='small' sx={{ color: ds.gray[700], transform: 'rotate(90deg)' }} />
+              ) : (
+                <ChevronRightIcon fontSize='small' sx={{ color: ds.gray[700], transform: 'rotate(90deg)' }} />
+              )}
+              <Typography
+                sx={{
+                  fontSize: 'var(--ds-text-small)',
+                  fontWeight: 'var(--ds-font-weight-medium)',
+                  color: ds.gray[700],
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                AI Chat
+              </Typography>
+            </Box>
+          )}
           {currentMode === 'executions' ? (
             /* Executions View - Full screen dedicated view */
-            <Box sx={{ height: '100%', width: '100%' }}>
+            <Box
+              sx={{
+                height: '100%',
+                marginLeft: nubiChatFeatureEnabled && canEdit && showNubiChat ? `${nubiChatWindowWidth}px` : '0',
+                transition: isResizingRef.current ? 'none' : 'margin-left 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+              }}
+            >
               <Suspense fallback={<Loader style={{ height: '100%', width: '100%' }} />}>
                 <ExecutionsView
                   workflowId={workflowId}
@@ -3417,133 +3646,12 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
               />
               {/* Split View Container - NubiChat + Editor + JSON */}
               <Box sx={{ height: '100%', width: '100%', display: 'flex', flexDirection: 'row', position: 'relative', overflow: 'hidden' }}>
-                {/* NubiChat Sidebar - Sliding Panel on Left (Feature Flag + write-access only) */}
-                {nubiChatFeatureEnabled && canEdit && (
-                  <Box
-                    sx={{
-                      position: 'absolute',
-                      left: showNubiChat ? '0' : `-${nubiChatWindowWidth}px`,
-                      top: 0,
-                      height: '100%',
-                      width: `${nubiChatWindowWidth}px`,
-                      borderRight: '1px solid rgb(226, 226, 227)',
-                      backgroundColor: ds.background[100],
-                      overflow: 'hidden',
-                      transition: isResizingRef.current ? 'none' : 'left 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                      zIndex: 20,
-                    }}
-                  >
-                    <Suspense
-                      fallback={
-                        <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-                          <CircularProgress size={24} />
-                        </Box>
-                      }
-                    >
-                      {showNubiChat && (
-                        <NubiChatSidebar
-                          isVisible={true}
-                          onClose={() => setShowNubiChat(false)}
-                          accountId={accountId}
-                          position='left'
-                          mode='fixed'
-                          width={`${nubiChatWindowWidth}px`}
-                          showHeader={true}
-                          context={nubiChatContext}
-                          querySuffix={nubiChatSuffix}
-                          urlConversationId={urlConversationId}
-                          urlSessionId={effectiveSessionId}
-                        />
-                      )}
-                      {/* Drag resize handle */}
-                      <Box
-                        onMouseDown={handleResizeMouseDown('nubi')}
-                        sx={{
-                          position: 'absolute',
-                          right: -3,
-                          top: 0,
-                          width: '8px',
-                          height: '100%',
-                          cursor: 'col-resize',
-                          zIndex: 25,
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          '&::after': {
-                            content: '""',
-                            width: '2px',
-                            height: '32px',
-                            borderRadius: 'var(--ds-radius-sm)',
-                            backgroundColor: 'rgba(0, 0, 0, 0.15)',
-                            transition: 'background-color 0.15s, height 0.15s',
-                          },
-                          '&:hover::after': {
-                            backgroundColor: 'rgba(59, 130, 246, 0.7)',
-                            height: '48px',
-                          },
-                          '&:hover': {
-                            backgroundColor: 'rgba(59, 130, 246, 0.08)',
-                          },
-                        }}
-                      />
-                    </Suspense>
-                  </Box>
-                )}
-                {/* NubiChat Toggle Button (Feature Flag + write-access only) */}
-                {nubiChatFeatureEnabled && canEdit && (
-                  <Box
-                    id='workflow-nubi-chat-toggle'
-                    onClick={() => setShowNubiChat(!showNubiChat)}
-                    sx={{
-                      position: 'absolute',
-                      left: showNubiChat ? `${nubiChatWindowWidth}px` : '0',
-                      top: '50%',
-                      ml: '-25px',
-                      transform: 'translateY(-50%) rotate(-90deg)',
-                      transformOrigin: 'center',
-                      zIndex: 30,
-                      backgroundColor: ds.background[100],
-                      border: `1px solid ${ds.brand[200]}`,
-                      borderLeft: showNubiChat ? `1px solid ${ds.brand[200]}` : 'none',
-                      borderTopLeftRadius: 0,
-                      borderBottomLeftRadius: '8px',
-                      borderTopRightRadius: 0,
-                      borderBottomRightRadius: '8px',
-                      padding: 'var(--ds-space-2) var(--ds-space-3)',
-                      transition: isResizingRef.current ? 'none' : 'left 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 'var(--ds-space-1)',
-                      '&:hover': {
-                        backgroundColor: 'rgb(249, 249, 249)',
-                      },
-                      boxShadow: '2px 0 8px rgba(0, 0, 0, 0.1)',
-                    }}
-                  >
-                    {showNubiChat ? (
-                      <ChevronLeftIcon fontSize='small' sx={{ color: ds.gray[700], transform: 'rotate(90deg)' }} />
-                    ) : (
-                      <ChevronRightIcon fontSize='small' sx={{ color: ds.gray[700], transform: 'rotate(90deg)' }} />
-                    )}
-                    <Typography
-                      sx={{
-                        fontSize: 'var(--ds-text-small)',
-                        fontWeight: 'var(--ds-font-weight-medium)',
-                        color: ds.gray[700],
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      AI Chat
-                    </Typography>
-                  </Box>
-                )}
                 {/* Middle: Workflow Editor */}
                 <Box
                   sx={{
                     height: '100%',
                     flex: 1,
-                    marginLeft: nubiChatFeatureEnabled && showNubiChat ? `${nubiChatWindowWidth}px` : '0',
+                    marginLeft: nubiChatFeatureEnabled && canEdit && showNubiChat ? `${nubiChatWindowWidth}px` : '0',
                     marginRight: jsonPanelVisible ? `${jsonWindowWidth}px` : '0',
                     position: 'relative',
                     transition: isResizingRef.current
@@ -3587,7 +3695,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                             type: 'smoothstep',
                             style: {
                               strokeWidth: 1,
-                              stroke: 'rgb(175, 175, 175)',
+                              stroke: 'var(--ds-gray-400)',
                             },
                           }}
                           connectionLineType={'smoothstep' as any}
@@ -3626,13 +3734,13 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                               width: 50,
                               height: 100,
                               backgroundColor: 'white',
-                              border: '1px solid rgb(187, 187, 187)',
+                              border: '1px solid var(--ds-gray-400)',
                               borderRadius: 'var(--ds-radius-sm)',
                               margin: '0px var(--ds-space-3) var(--ds-space-7) 0px',
                             }}
                           />
                           {/* Soften the canvas dots to be less distracting */}
-                          <Background color='rgba(0, 0, 0, 0.42)' />
+                          <Background color={`color-mix(in srgb, ${ds.gray[700]} 42%, transparent)`} />
                           <Controls style={{ marginBottom: 'var(--ds-space-7)' }} />
                         </ReactFlow>
                       </Box>
@@ -3678,7 +3786,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                               top: '50%',
                               left: '50%',
                               transform: 'translate(-50%, -50%)',
-                              border: '1px solid rgb(226, 226, 227)',
+                              border: '1px solid var(--ds-gray-200)',
                               backgroundColor: 'white',
                               borderRadius: 'var(--ds-radius-xl)',
                               padding: 'var(--ds-space-6) var(--ds-space-5)',
@@ -3703,8 +3811,8 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                                   alignItems: 'center',
                                   justifyContent: 'center',
                                   padding: 'var(--ds-space-4)',
-                                  boxShadow: '0 4px 12px rgba(34, 197, 94, 0.3)',
-                                  border: '2px solid rgba(255, 255, 255, 0.2)',
+                                  boxShadow: `0 var(--ds-space-1) var(--ds-space-3) color-mix(in srgb, ${ds.green[500]} 30%, transparent)`,
+                                  border: '2px solid color-mix(in srgb, white 20%, transparent)',
                                 }}
                               >
                                 <SafeIcon
@@ -3886,7 +3994,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                         <Box
                           sx={{
                             position: 'absolute',
-                            bottom: '24px',
+                            bottom: ds.space[5],
                             left: '50%',
                             transform: 'translateX(-50%)',
                             zIndex: 100,
@@ -3894,7 +4002,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                             border: `1px solid ${ds.gray[200]}`,
                             borderRadius: 'var(--ds-radius-xl)',
                             padding: 'var(--ds-space-2) var(--ds-space-2)',
-                            boxShadow: '0 -2px 16px rgba(0, 0, 0, 0.08)',
+                            boxShadow: '0 calc(var(--ds-space-0) * -1) var(--ds-space-4) var(--ds-gray-alpha-200)',
                             display: 'flex',
                             alignItems: 'center',
                             gap: 'var(--ds-space-2)',
@@ -3960,7 +4068,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                             <Box sx={{ display: 'flex', alignItems: 'center' }} data-testid='run-split-button'>
                               <Button
                                 id='run-current-btn'
-                                tone='ghost'
+                                tone='secondary'
                                 size='sm'
                                 icon={<SafeIcon src={PlayIconBlue} alt='Run' width={16} height={16} />}
                                 disabled={isTestRunning || isDryRunning}
@@ -3975,7 +4083,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                                 tone='ghost'
                                 size='sm'
                                 aria-label='More run options'
-                                icon={<ArrowDropDownIcon sx={{ fontSize: 20 }} />}
+                                icon={<ArrowDropDownIcon sx={{ fontSize: ds.text.heading }} />}
                                 disabled={isTestRunning || isDryRunning}
                                 onClick={(e: React.MouseEvent<HTMLElement>) => setRunMenuAnchor(e.currentTarget)}
                               />
@@ -4032,7 +4140,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                               id='workflow-stop-btn'
                               tone='danger'
                               size='sm'
-                              icon={<StopCircleOutlinedIcon sx={{ fontSize: 16 }} />}
+                              icon={<StopCircleOutlinedIcon sx={{ fontSize: ds.text.title }} />}
                               onClick={handleCancelExecution}
                             >
                               Cancel
@@ -4060,7 +4168,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                               id='workflow-dry-run-stop-btn'
                               tone='danger'
                               size='sm'
-                              icon={<StopCircleOutlinedIcon sx={{ fontSize: 16 }} />}
+                              icon={<StopCircleOutlinedIcon sx={{ fontSize: ds.text.title }} />}
                               onClick={handleCancelDryRun}
                             >
                               Cancel
@@ -4138,9 +4246,9 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                     backgroundColor: ds.background[100],
                     border: `1px solid ${ds.brand[200]}`,
                     borderRight: jsonPanelVisible ? `1px solid ${ds.brand[200]}` : 'none',
-                    borderBottomLeftRadius: '8px',
+                    borderBottomLeftRadius: 'var(--ds-radius-lg)',
                     borderTopRightRadius: 0,
-                    borderBottomRightRadius: '8px',
+                    borderBottomRightRadius: 'var(--ds-radius-lg)',
                     padding: 'var(--ds-space-2) var(--ds-space-3)',
                     transition: isResizingRef.current ? 'none' : 'right 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
                     cursor: 'pointer',
@@ -4148,9 +4256,9 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                     alignItems: 'center',
                     gap: 'var(--ds-space-1)',
                     '&:hover': {
-                      backgroundColor: 'rgb(249, 249, 249)',
+                      backgroundColor: 'var(--ds-background-200)',
                     },
-                    boxShadow: '-2px 0 8px rgba(0, 0, 0, 0.1)',
+                    boxShadow: 'calc(var(--ds-space-0) * -1) 0 var(--ds-space-2) var(--ds-gray-alpha-300)',
                   }}
                 >
                   <Typography
@@ -4177,8 +4285,8 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                     top: 0,
                     height: 'calc(100% - 8px)',
                     width: `${jsonWindowWidth}px`,
-                    borderLeft: '1px solid rgb(226, 226, 227)',
-                    backgroundColor: 'rgb(30, 30, 30)',
+                    borderLeft: '1px solid var(--ds-gray-200)',
+                    backgroundColor: 'var(--ds-gray-700)',
                     overflow: 'hidden',
                     transition: isResizingRef.current ? 'none' : 'right 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
                     zIndex: 20,
@@ -4210,15 +4318,15 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                           width: '2px',
                           height: '32px',
                           borderRadius: 'var(--ds-radius-sm)',
-                          backgroundColor: 'rgba(0, 0, 0, 0.15)',
+                          backgroundColor: 'color-mix(in srgb, black 15%, transparent)',
                           transition: 'background-color 0.15s, height 0.15s',
                         },
                         '&:hover::after': {
-                          backgroundColor: 'rgba(59, 130, 246, 0.7)',
+                          backgroundColor: 'color-mix(in srgb, var(--ds-blue-500) 70%, transparent)',
                           height: '48px',
                         },
                         '&:hover': {
-                          backgroundColor: 'rgba(59, 130, 246, 0.08)',
+                          backgroundColor: 'color-mix(in srgb, var(--ds-blue-500) 8%, transparent)',
                         },
                       }}
                     />
@@ -4424,6 +4532,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                 open={showDryRunModal}
                 onClose={() => setShowDryRunModal(false)}
                 result={dryRunResult}
+                accountId={accountId}
                 draftVersionNumber={workflowData?.draft_version_number ?? undefined}
               />
             </Suspense>
@@ -4508,6 +4617,23 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                       const author = v.created_by_user?.display_name || v.created_by || 'unknown';
                       const when = v.created_at ? new Date(v.created_at).toLocaleString() : '';
                       const sourceLabel = v.source === 'restore' && v.restored_from_version ? `restored from v${v.restored_from_version}` : v.source;
+                      // All row mutations reload workflow data or the live pointer,
+                      // so any one in flight cross-disables the whole row's actions
+                      // to avoid racing on stale UI state.
+                      const anyInFlight = statusUpdatingVersionNumber !== null || settingLive || restoring || deleting;
+                      const currentStatus = v.status ?? 'PAUSED';
+                      // Delete is blocked for the two versions the workflow still
+                      // depends on — the live version and the version the current
+                      // draft is branched off. The backend re-guards both, so this
+                      // is purely UX.
+                      const isDraftBase = v.version_number === workflowData?.draft_version_number;
+                      const deleteBlockReason = v.is_live ? 'live version' : isDraftBase ? 'current draft base' : '';
+                      const statusItems: { value: 'ACTIVE' | 'PAUSED' | 'INACTIVE'; label: string; color: string }[] = [
+                        { value: 'ACTIVE', label: 'Active', color: 'var(--ds-green-600)' },
+                        { value: 'PAUSED', label: 'Paused', color: 'var(--ds-amber-600)' },
+                        { value: 'INACTIVE', label: 'Inactive', color: 'var(--ds-gray-600)' },
+                      ];
+                      const currentStatusMeta = statusItems.find((s) => s.value === currentStatus) ?? statusItems[1];
                       return (
                         <Box
                           key={v.id}
@@ -4519,14 +4645,24 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                             px: 2,
                             py: 2,
                             borderBottom: idx === versions.length - 1 ? 'none' : '1px solid var(--ds-brand-150)',
+                            ...(v.is_live && {
+                              borderLeft: '3px solid var(--ds-green-500)',
+                              pl: 'calc(16px - 3px)',
+                              backgroundColor: 'var(--ds-green-100)',
+                            }),
                           }}
                         >
                           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5, minWidth: 0, flex: 1 }}>
                             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
                               <DsChip size='xs' variant='tag' tone='neutral'>{`v${v.version_number}`}</DsChip>
                               {v.is_live && (
-                                <DsChip size='xs' variant='status' tone='success'>
-                                  Live
+                                <DsChip
+                                  size='xs'
+                                  variant='status'
+                                  tone='success'
+                                  icon={<SafeIcon src={pmCheckCircle} alt='Live' width={14} height={14} />}
+                                >
+                                  Live now
                                 </DsChip>
                               )}
                               {v.name && (
@@ -4544,92 +4680,86 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
                               </Typography>
                             )}
                             <Typography variant='caption' sx={{ color: 'var(--ds-gray-700)' }}>
-                              {when}
-                            </Typography>
-                            <Typography variant='caption' sx={{ color: 'var(--ds-gray-600)' }}>
-                              by {author}
+                              {when} · {author}
                             </Typography>
                           </Box>
-                          {/* Version-row write actions (status / Make Live /
-                              Checkout) all mutate the workflow, so hide the
-                              controls from read-only users — but still surface
-                              the version status as a read-only chip so they
-                              don't lose that information. */}
+                          {/* Version-row write actions (Make live / Checkout / Set
+                              status / Delete) all mutate the workflow, so hide the
+                              controls from read-only users — but still surface the
+                              version status as a read-only chip so they don't lose
+                              that information. */}
                           {canEdit ? (
-                            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, alignItems: 'stretch', flexShrink: 0, minWidth: 130 }}>
-                              {/* Per-version status dropdown (DS Select). Mutating
-                                any version updates workflow_versions.status; if
-                                the row is live the DAO also mirrors it onto
-                                workflows.status in the same tx. clearable=false
-                                because status must always have a value — DS
-                                Select otherwise renders an inline clear (✕). */}
-                              {/* All three row controls (Select, Make Live, Checkout)
-                                cross-disable on any of the three in-flight markers.
-                                Each mutation reloads workflow data or live pointer,
-                                so concurrent clicks would race on stale UI state. */}
-                              <Select
-                                size='sm'
-                                value={v.status ?? 'PAUSED'}
-                                onChange={(next) => handleChangeVersionStatus(v.version_number, next as 'ACTIVE' | 'PAUSED' | 'INACTIVE')}
-                                disabled={statusUpdatingVersionNumber !== null || settingLive || restoring || deleting}
-                                clearable={false}
-                                options={[
-                                  { value: 'ACTIVE', label: 'Active' },
-                                  { value: 'PAUSED', label: 'Paused' },
-                                  { value: 'INACTIVE', label: 'Inactive' },
-                                ]}
-                                data-testid={`workflow-version-status-select-v${v.version_number}`}
-                              />
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexShrink: 0 }}>
                               {!v.is_live && (
                                 <Button
                                   id={`workflow-make-live-v${v.version_number}-btn`}
-                                  tone='primary'
+                                  tone='secondary'
                                   size='sm'
                                   onClick={() => setConfirmLiveVersion(v)}
-                                  disabled={statusUpdatingVersionNumber !== null || settingLive || restoring || deleting}
+                                  disabled={anyInFlight}
                                 >
-                                  Make Live
+                                  Make live
                                 </Button>
                               )}
-                              <Button
-                                id={`workflow-restore-v${v.version_number}-btn`}
-                                tone='secondary'
-                                size='sm'
-                                onClick={() => setConfirmRestoreVersion(v)}
-                                disabled={statusUpdatingVersionNumber !== null || settingLive || restoring || deleting}
-                              >
-                                Checkout
-                              </Button>
-                              {/* Delete is always shown, but disabled for the two
-                                versions the workflow still depends on — the live
-                                version and the version the current draft is branched
-                                off — with a tooltip explaining why. The backend
-                                re-guards both, so this is purely UX. */}
-                              {(() => {
-                                const isDraftBase = v.version_number === workflowData?.draft_version_number;
-                                const blockReason = v.is_live
-                                  ? 'Cannot delete the live version. Make another version live first.'
-                                  : isDraftBase
-                                  ? 'Cannot delete the version your current draft is based on. Checkout another version first.'
-                                  : '';
-                                return (
-                                  <Tooltip title={blockReason} disableHoverListener={!blockReason}>
-                                    <span style={{ width: '100%', display: 'block' }}>
-                                      <Button
-                                        id={`workflow-delete-v${v.version_number}-btn`}
-                                        tone='danger'
-                                        size='sm'
-                                        fullWidth
-                                        onClick={() => setConfirmDeleteVersion(v)}
-                                        disabled={!!blockReason || statusUpdatingVersionNumber !== null || settingLive || restoring || deleting}
-                                        data-testid={`workflow-version-delete-v${v.version_number}`}
-                                      >
-                                        Delete
-                                      </Button>
-                                    </span>
-                                  </Tooltip>
-                                );
-                              })()}
+                              {/* Status surfaced upfront as its own button-menu so the
+                                  current per-version status is readable without opening
+                                  the kebab. Selecting an option mutates
+                                  workflow_versions.status; if the row is live the DAO
+                                  mirrors it onto workflows.status in the same tx. */}
+                              <DropdownMenu
+                                align='end'
+                                trigger={
+                                  <Button
+                                    tone='secondary'
+                                    size='sm'
+                                    composition='text+icon'
+                                    iconPlacement='end'
+                                    icon={<SafeIcon src={ArrowDown} alt='' width={12} height={12} />}
+                                    disabled={anyInFlight}
+                                    id={`workflow-version-status-menu-v${v.version_number}`}
+                                  >
+                                    <span style={{ color: currentStatusMeta.color }}>{currentStatusMeta.label}</span>
+                                  </Button>
+                                }
+                                items={statusItems.map((s) => ({
+                                  label: <span style={{ color: s.color }}>{s.label}</span>,
+                                  icon: currentStatus === s.value ? <SafeIcon src={checkIconBold} alt='current' width={16} height={16} /> : undefined,
+                                  onSelect: () => handleChangeVersionStatus(v.version_number, s.value),
+                                  disabled: anyInFlight || currentStatus === s.value,
+                                  id: `workflow-version-status-${s.value.toLowerCase()}-v${v.version_number}`,
+                                }))}
+                              />
+                              <DropdownMenu
+                                minWidth={ds.space.mul(0, 60)}
+                                align='end'
+                                trigger={
+                                  <Button
+                                    composition='icon-only'
+                                    tone='ghost'
+                                    size='sm'
+                                    aria-label='Version actions'
+                                    icon={<SafeIcon src={moreItems} alt='Version actions' width={18} height={18} />}
+                                    id={`workflow-version-menu-v${v.version_number}`}
+                                  />
+                                }
+                                items={[
+                                  {
+                                    label: 'Checkout',
+                                    icon: <SafeIcon src={GitMergeIcon} alt='' width={16} height={16} />,
+                                    onSelect: () => setConfirmRestoreVersion(v),
+                                    disabled: anyInFlight,
+                                    id: `workflow-restore-v${v.version_number}-btn`,
+                                  },
+                                  {
+                                    label: deleteBlockReason ? `Delete (${deleteBlockReason})` : 'Delete',
+                                    tone: 'danger' as const,
+                                    icon: <SafeIcon src={DeleteIconRed} alt='' width={16} height={16} />,
+                                    onSelect: () => setConfirmDeleteVersion(v),
+                                    disabled: !!deleteBlockReason || anyInFlight,
+                                    id: `workflow-version-delete-v${v.version_number}`,
+                                  },
+                                ]}
+                              />
                             </Box>
                           ) : (
                             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexShrink: 0, minWidth: 130 }}>

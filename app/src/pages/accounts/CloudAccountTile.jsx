@@ -1,4 +1,5 @@
-import { Grid, Typography, TextField, Stack, InputAdornment, IconButton } from '@mui/material';
+import { Box, Grid, Typography, Stack } from '@mui/material';
+import { Input } from '@ui/Input';
 import { ContentCopy } from '@mui/icons-material';
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import apiAccount from '@api1/account';
@@ -6,20 +7,19 @@ import apiIntegrations from '@api1/integrations';
 import { Modal } from '@ui/Modal';
 import { isK8sAccountNameValid, safeJSONParse, toKebabCase } from 'src/utils/common';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import Datetime from '@shared/format/Datetime';
 import Text from '@shared/format/Text';
 import { Label } from '@ui/Label';
 import { hasWriteAccess } from '@lib/auth';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
-import CustomSearch from '@shared/CustomSearch';
+import SearchInput from '@ui/SearchInput';
 import { Button as DsButton } from '@ui/Button';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { toast as snackbar } from '@ui/Toast';
-import { inputSx } from '@data/themes/inputField';
 import { action } from 'src/utils/actionStyles';
-import NDialog from '@shared/modal/NDialog';
+import { ds } from 'src/utils/colors';
 import { useUpdateAllClusterOption } from '@shared/layout/UpdateDataContext';
 import apiKubernetes1 from '@api1/kubernetes1';
 import apiUser from '@api1/user';
@@ -573,57 +573,72 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
         title={`Rename ${cloudProvider} Account`}
         loader={renameLoading}
       >
-        <Grid container spacing={2} p={2}>
+        <Grid container spacing={ds.space[4]} p={ds.space[4]}>
           <Grid item xs={12}>
-            <TextField
-              sx={inputSx}
+            <Input
               value={newAccountName}
-              size='small'
-              margin='normal'
-              fullWidth
+              size='sm'
               id='rename-account-name'
               label='Display Name'
               required
-              onChange={(e) => handleRenameAccountNameChange(e.target.value)}
-              error={!!renameError}
-              helperText={renameError}
+              onChange={(value) => handleRenameAccountNameChange(value)}
+              error={renameError || undefined}
             />
           </Grid>
         </Grid>
-        <Grid container spacing={2} mt={1} mb={2} justifyContent='flex-end' sx={{ button: { minWidth: '140px' }, paddingRight: '16px' }}>
-          <Grid item>
-            <DsButton tone='secondary' size='md' onClick={closeRenameModal} disabled={renameLoading}>
-              Cancel
-            </DsButton>
-          </Grid>
-          <Grid item>
-            <DsButton
-              tone='primary'
-              size='md'
-              disabled={!!renameError || renameLoading || !newAccountName || newAccountName === selectedAccount?.account_name}
-              onClick={handleRenameSubmit}
-            >
-              Save
-            </DsButton>
-          </Grid>
-        </Grid>
+        <Box
+          sx={{
+            display: 'flex',
+            justifyContent: 'flex-end',
+            gap: ds.space[4],
+            mt: ds.space[2],
+            mb: ds.space[4],
+            pr: ds.space[4],
+            '& button': { minWidth: ds.space.mul(1, 35) },
+          }}
+        >
+          <DsButton tone='secondary' size='md' onClick={closeRenameModal} disabled={renameLoading}>
+            Cancel
+          </DsButton>
+          <DsButton
+            tone='primary'
+            size='md'
+            disabled={!!renameError || renameLoading || !newAccountName || newAccountName === selectedAccount?.account_name}
+            onClick={handleRenameSubmit}
+          >
+            Save
+          </DsButton>
+        </Box>
       </Modal>
-      <NDialog
-        buttonText='Confirm'
-        submitTone={updateAccountStatus.status == 'active' ? 'primary' : 'danger'}
-        handleClose={() => setUpdateAccountStatus({})}
-        dialogTitle={
+      <Modal
+        handleClose={isStatusUpdating ? () => {} : () => setUpdateAccountStatus({})}
+        open={updateAccountStatus && Object.keys(updateAccountStatus).length > 0}
+        title={
           <Typography component='h2' variant='h6' fontWeight={600}>
             {updateAccountStatus.status == 'active' ? 'Enable' : 'Disable'} {cloudProvider} Account
           </Typography>
         }
-        dialogContent={`Are you sure you want to ${updateAccountStatus.status == 'active' ? 'enable' : 'disable'} "${
+        width='md'
+        loader={isStatusUpdating}
+        actionButtons={
+          <>
+            <DsButton id='cloud-account-status-cancel-btn' tone='secondary' onClick={() => setUpdateAccountStatus({})} disabled={isStatusUpdating}>
+              Cancel
+            </DsButton>
+            <DsButton
+              tone={updateAccountStatus.status == 'active' ? 'primary' : 'danger'}
+              loading={isStatusUpdating}
+              onClick={handleUpdateAccountStatus}
+            >
+              Confirm
+            </DsButton>
+          </>
+        }
+      >
+        {`Are you sure you want to ${updateAccountStatus.status == 'active' ? 'enable' : 'disable'} "${
           updateAccountStatus.name
         }" the configured ${cloudProvider} Account?`}
-        handleSubmit={handleUpdateAccountStatus}
-        loading={isStatusUpdating}
-        open={updateAccountStatus && Object.keys(updateAccountStatus).length > 0}
-      />
+      </Modal>
       <Modal
         width='md'
         open={eventGridModalOpen}
@@ -635,70 +650,75 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
           <>
             <MarkDowns data={EVENTGRID_INSTRUCTIONS} sx={{ width: 'auto' }} />
 
-            <Grid container mt={2} mb={2} spacing={2}>
+            <Grid container mt={ds.space[4]} mb={ds.space[4]} spacing={ds.space[4]}>
               <Grid item xs={12}>
-                <TextField
-                  sx={inputSx}
+                <Input
                   value={eventGridData.external_id || ''}
-                  size='small'
-                  fullWidth
+                  size='sm'
                   id='eventgrid-external-id-token'
                   label='Account Token (NudgebeeExternalId)'
-                  InputProps={{
-                    readOnly: true,
-                    endAdornment: (
-                      <InputAdornment position='end'>
-                        <IconButton aria-label='copy token' onClick={() => copyToClipboard(eventGridData.external_id)} edge='end'>
-                          <ContentCopy fontSize='small' />
-                        </IconButton>
-                      </InputAdornment>
-                    ),
-                  }}
-                  helperText='Copy this token and paste it into the NudgebeeExternalId field.'
+                  readOnly
+                  onChange={() => {}}
+                  help='Copy this token and paste it into the NudgebeeExternalId field.'
+                  trailingIcon={
+                    <span
+                      role='button'
+                      aria-label='copy token'
+                      onClick={() => copyToClipboard(eventGridData.external_id)}
+                      style={{ cursor: 'pointer', display: 'inline-flex' }}
+                    >
+                      <ContentCopy fontSize='small' />
+                    </span>
+                  }
                 />
               </Grid>
               {eventGridData.webhook_url && (
                 <Grid item xs={12}>
-                  <TextField
-                    sx={inputSx}
+                  <Input
                     value={eventGridData.webhook_url}
-                    size='small'
-                    fullWidth
+                    size='sm'
                     id='eventgrid-webhook-url'
                     label='Webhook URL (NudgebeeWebhookUrl)'
-                    InputProps={{
-                      readOnly: true,
-                      endAdornment: (
-                        <InputAdornment position='end'>
-                          <IconButton aria-label='copy webhook url' onClick={() => copyToClipboard(eventGridData.webhook_url)} edge='end'>
-                            <ContentCopy fontSize='small' />
-                          </IconButton>
-                        </InputAdornment>
-                      ),
-                    }}
-                    helperText='Copy this value and paste it into the NudgebeeWebhookUrl field.'
+                    readOnly
+                    onChange={() => {}}
+                    help='Copy this value and paste it into the NudgebeeWebhookUrl field.'
+                    trailingIcon={
+                      <span
+                        role='button'
+                        aria-label='copy webhook url'
+                        onClick={() => copyToClipboard(eventGridData.webhook_url)}
+                        style={{ cursor: 'pointer', display: 'inline-flex' }}
+                      >
+                        <ContentCopy fontSize='small' />
+                      </span>
+                    }
                   />
                 </Grid>
               )}
             </Grid>
 
-            <Grid container spacing={2} mt={1} mb={4} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
-              <Grid item>
-                <DsButton id='close-eventgrid-btn' tone='secondary' size='md' onClick={closeEventGridModal}>
-                  Close
-                </DsButton>
-              </Grid>
-              <Grid item>
-                <DsButton
-                  id='deploy-arm-template-btn'
-                  tone='primary'
-                  size='md'
-                  onClick={() => window.open(eventGridData.url, '_blank', 'noopener,noreferrer')}
-                >
-                  Deploy via Azure Portal
-                </DsButton>
-              </Grid>
-            </Grid>
+            <Box
+              sx={{
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: ds.space[4],
+                mt: ds.space[2],
+                mb: ds.space[6],
+                '& button': { minWidth: ds.space.mul(1, 35) },
+              }}
+            >
+              <DsButton id='close-eventgrid-btn' tone='secondary' size='md' onClick={closeEventGridModal}>
+                Close
+              </DsButton>
+              <DsButton
+                id='deploy-arm-template-btn'
+                tone='primary'
+                size='md'
+                onClick={() => window.open(eventGridData.url, '_blank', 'noopener,noreferrer')}
+              >
+                Deploy via Azure Portal
+              </DsButton>
+            </Box>
           </>
         )}
       </Modal>
@@ -709,61 +729,58 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
         title='Edit Billing Config'
         loader={billingLoading}
       >
-        <Grid container spacing={2} p={2}>
+        <Grid container spacing={ds.space[4]} p={ds.space[4]}>
           <Grid item xs={12}>
-            <TextField
-              sx={inputSx}
+            <Input
               value={billingProjectId}
-              size='small'
-              margin='normal'
-              fullWidth
+              size='sm'
               id='billing-project-id'
               label='Billing Project ID'
-              onChange={(e) => setBillingProjectId(e.target.value)}
-              helperText='The GCP project containing the BigQuery billing export. Leave empty if same as service account project.'
+              onChange={(value) => setBillingProjectId(value)}
+              help='The GCP project containing the BigQuery billing export. Leave empty if same as service account project.'
             />
           </Grid>
           <Grid item xs={12}>
-            <TextField
-              sx={inputSx}
+            <Input
               value={billingDatasetName}
-              size='small'
-              margin='normal'
-              fullWidth
+              size='sm'
               id='billing-dataset-name'
               label='BigQuery Dataset Name'
               required
-              onChange={(e) => setBillingDatasetName(e.target.value)}
+              onChange={(value) => setBillingDatasetName(value)}
               placeholder='e.g., billing_export'
             />
           </Grid>
           <Grid item xs={12}>
-            <TextField
-              sx={inputSx}
+            <Input
               value={billingTableName}
-              size='small'
-              margin='normal'
-              fullWidth
+              size='sm'
               id='billing-table-name'
               label='BigQuery Table Name'
               required
-              onChange={(e) => setBillingTableName(e.target.value)}
+              onChange={(value) => setBillingTableName(value)}
               placeholder='e.g., gcp_billing_export_v1_XXXXX'
             />
           </Grid>
         </Grid>
-        <Grid container spacing={2} mt={1} mb={2} justifyContent='flex-end' sx={{ button: { minWidth: '140px' }, paddingRight: '16px' }}>
-          <Grid item>
-            <DsButton tone='secondary' size='md' onClick={closeBillingModal} disabled={billingLoading}>
-              Cancel
-            </DsButton>
-          </Grid>
-          <Grid item>
-            <DsButton tone='primary' size='md' disabled={billingLoading || !billingDatasetName || !billingTableName} onClick={handleBillingSubmit}>
-              Save
-            </DsButton>
-          </Grid>
-        </Grid>
+        <Box
+          sx={{
+            display: 'flex',
+            justifyContent: 'flex-end',
+            gap: ds.space[4],
+            mt: ds.space[2],
+            mb: ds.space[4],
+            pr: ds.space[4],
+            '& button': { minWidth: ds.space.mul(1, 35) },
+          }}
+        >
+          <DsButton tone='secondary' size='md' onClick={closeBillingModal} disabled={billingLoading}>
+            Cancel
+          </DsButton>
+          <DsButton tone='primary' size='md' disabled={billingLoading || !billingDatasetName || !billingTableName} onClick={handleBillingSubmit}>
+            Save
+          </DsButton>
+        </Box>
       </Modal>
       <Modal
         width='md'
@@ -776,47 +793,52 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
           <>
             <MarkDowns data={EVENTBRIDGE_INSTRUCTIONS} sx={{ width: 'auto' }} />
 
-            <Grid container mt={2} mb={2} spacing={2}>
+            <Grid container mt={ds.space[4]} mb={ds.space[4]} spacing={ds.space[4]}>
               <Grid item xs={12}>
-                <TextField
-                  sx={inputSx}
+                <Input
                   value={eventBridgeData.external_id || ''}
-                  size='small'
-                  fullWidth
+                  size='sm'
                   id='eventbridge-external-id-token'
                   label='Account Token (NudgebeeExternalId)'
-                  InputProps={{
-                    readOnly: true,
-                    endAdornment: (
-                      <InputAdornment position='end'>
-                        <IconButton aria-label='copy token' onClick={() => copyToClipboard(eventBridgeData.external_id)} edge='end'>
-                          <ContentCopy fontSize='small' />
-                        </IconButton>
-                      </InputAdornment>
-                    ),
-                  }}
-                  helperText='This token is pre-filled in the CloudFormation template.'
+                  readOnly
+                  onChange={() => {}}
+                  help='This token is pre-filled in the CloudFormation template.'
+                  trailingIcon={
+                    <span
+                      role='button'
+                      aria-label='copy token'
+                      onClick={() => copyToClipboard(eventBridgeData.external_id)}
+                      style={{ cursor: 'pointer', display: 'inline-flex' }}
+                    >
+                      <ContentCopy fontSize='small' />
+                    </span>
+                  }
                 />
               </Grid>
             </Grid>
 
-            <Grid container spacing={2} mt={1} mb={4} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
-              <Grid item>
-                <DsButton id='close-eventbridge-btn' tone='secondary' size='md' onClick={closeEventBridgeModal}>
-                  Close
-                </DsButton>
-              </Grid>
-              <Grid item>
-                <DsButton
-                  id='deploy-cfn-template-btn'
-                  tone='primary'
-                  size='md'
-                  onClick={() => window.open(eventBridgeData.url, '_blank', 'noopener,noreferrer')}
-                >
-                  Deploy via AWS Console
-                </DsButton>
-              </Grid>
-            </Grid>
+            <Box
+              sx={{
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: ds.space[4],
+                mt: ds.space[2],
+                mb: ds.space[6],
+                '& button': { minWidth: ds.space.mul(1, 35) },
+              }}
+            >
+              <DsButton id='close-eventbridge-btn' tone='secondary' size='md' onClick={closeEventBridgeModal}>
+                Close
+              </DsButton>
+              <DsButton
+                id='deploy-cfn-template-btn'
+                tone='primary'
+                size='md'
+                onClick={() => window.open(eventBridgeData.url, '_blank', 'noopener,noreferrer')}
+              >
+                Deploy via AWS Console
+              </DsButton>
+            </Box>
           </>
         )}
       </Modal>
@@ -846,7 +868,7 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
         <ListingLayout.Toolbar
           title={
             <Stack direction='row' alignItems='center' spacing={1}>
-              <Typography color={'var(--ds-gray-700)'} fontSize='16px' fontWeight={600}>
+              <Typography color={ds.gray[700]} fontSize={ds.text.title} fontWeight={600}>
                 {title}
               </Typography>
               <CloudProviderIcon cloud_provider={cloudProvider} />
@@ -886,7 +908,7 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
             value={statusOptions.find((o) => o.value === selectedStatusFilter) ?? null}
             onSelect={(_e, item) => handleStatusFilterChange({ target: { value: item?.value || '' } })}
           />
-          <CustomSearch
+          <SearchInput
             id={`${cloudProvider?.toLowerCase()}-name-search`}
             value={nameInput}
             onChange={(next) => {
@@ -911,7 +933,7 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
           />
         </ListingLayout.Toolbar>
         <ListingLayout.Body>
-          <CustomTable2
+          <CustomTable
             loading={loading}
             tableData={tableData}
             headers={TABLE_HEADERS}

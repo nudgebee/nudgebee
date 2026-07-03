@@ -14,6 +14,7 @@ import {
 } from '@assets';
 import { Divider } from '@ui/Divider';
 import SafeIcon from '@shared/icons/SafeIcon';
+import { ds } from '@utils/colors';
 
 interface Task {
   id: string;
@@ -231,7 +232,7 @@ const VerticalStepNavigation: React.FC<VerticalStepNavigationProps> = ({
                   px: 'var(--ds-space-2)',
                   borderRadius: 'var(--ds-radius-md)',
                   border: 'none',
-                  minHeight: '48px',
+                  minHeight: ds.space[7],
                   backgroundColor: 'transparent',
                   cursor: 'pointer',
                   transition: 'background-color var(--ds-motion-micro) var(--ds-motion-ease)',
@@ -299,7 +300,7 @@ const VerticalStepNavigation: React.FC<VerticalStepNavigationProps> = ({
                           key={task.id}
                           onClick={() => handleTaskClick(step.id, task.id)}
                           sx={{
-                            width: 'calc(100% - 8px)',
+                            width: `calc(100% - ${ds.space[2]})`,
                             display: 'flex',
                             alignItems: 'center',
                             justifyContent: 'flex-start',
@@ -308,8 +309,8 @@ const VerticalStepNavigation: React.FC<VerticalStepNavigationProps> = ({
                             py: 'var(--ds-space-1)',
                             ml: 'var(--ds-space-2)',
                             borderRadius: 'var(--ds-radius-sm)',
-                            border: isActiveTask ? '1px solid var(--ds-blue-300)' : '2px solid transparent',
-                            borderLeft: isActiveTask ? '4px solid var(--ds-blue-300)' : '4px solid transparent',
+                            border: isActiveTask ? '1px solid var(--ds-blue-300)' : `${ds.space[0]} solid transparent`,
+                            borderLeft: isActiveTask ? `${ds.space[1]} solid var(--ds-blue-300)` : `${ds.space[1]} solid transparent`,
                             minHeight: '36px',
                             backgroundColor: isActiveTask ? 'var(--ds-blue-100)' : 'transparent',
                             cursor: 'pointer',

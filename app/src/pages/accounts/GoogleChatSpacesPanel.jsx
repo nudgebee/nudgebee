@@ -5,8 +5,9 @@ import { ListingLayout } from '@ui/ListingLayout';
 import { Button as DsButton } from '@ui/Button';
 import { Label } from '@ui/Label';
 import { Modal } from '@ui/Modal';
-import CustomTable from '@shared/tables/CustomTable2';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
+import { snackbar } from '@ui/Toast';
+import CustomTable from '@shared/tables/CustomTable';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import Text from '@shared/format/Text';
 import Datetime from '@shared/format/Datetime';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
@@ -33,11 +34,23 @@ function parseConfigValues(configValues) {
   return {};
 }
 
-const PERMISSION_TONE = { authorized: 'success', needs_authorization: 'warning', no_spaces: 'neutral' };
+// A GraphQL action resolves (doesn't throw) on a backend error, surfacing it in the
+// body — so the result must be inspected before treating a write as successful.
+function gqlErrorOf(response) {
+  return response?.errors?.[0]?.message || response?.data?.errors?.[0]?.message || response?.message || '';
+}
+
+const PERMISSION_TONE = {
+  authorized: 'success',
+  needs_authorization: 'warning',
+  no_spaces: 'neutral',
+  sa_not_configured: 'critical',
+};
 const PERMISSION_TEXT = {
   authorized: 'Join permission: authorized',
   needs_authorization: 'Join permission: needs admin authorization',
   no_spaces: 'Join permission: connect a space to check',
+  sa_not_configured: 'Google Chat is not configured on this deployment',
   unknown: 'Join permission: unknown',
 };
 
@@ -60,7 +73,6 @@ export default function GoogleChatSpacesPanel() {
   const [connecting, setConnecting] = useState(false);
   const [busyId, setBusyId] = useState('');
   const [toDelete, setToDelete] = useState(null);
-  const [notice, setNotice] = useState(null);
   const [permissionStatus, setPermissionStatus] = useState('unknown');
   const [checkingPermission, setCheckingPermission] = useState(false);
 
@@ -111,7 +123,10 @@ export default function GoogleChatSpacesPanel() {
   const alreadyBound = useMemo(() => spaces.some((s) => s.spaceId === incomingSpaceId), [spaces, incomingSpaceId]);
   const showPendingRow = incomingValid && !alreadyBound && !loading;
 
-  const upsertConfig = (spaceId, values) =>
+  // integrationId switches the backend from create (rejects an existing name) to
+  // update (upserts the given fields), so re-saving a bound space — e.g. toggling
+  // is_default — actually persists instead of erroring on the duplicate name.
+  const upsertConfig = (spaceId, values, integrationId) =>
     apiIntegrations.addIntegrations({
       integration_name: GOOGLE_CHAT_SPACE_TYPE,
       integration_config_name: spaceId,
@@ -119,29 +134,29 @@ export default function GoogleChatSpacesPanel() {
       account_ids: [],
       source: 'user',
       skip_validation: true,
+      ...(integrationId ? { integration_id: integrationId } : {}),
     });
 
   const handleConnect = async () => {
     setConnecting(true);
-    setNotice(null);
     try {
       const response = await upsertConfig(incomingSpaceId, [
         { name: 'display_name', value: incomingDisplayName },
         { name: 'space_type', value: 'SPACE' },
       ]);
-      const gqlError = response?.errors?.[0]?.message || response?.data?.errors?.[0]?.message || response?.message || '';
+      const gqlError = gqlErrorOf(response);
       if (gqlError) {
         if (gqlError.toLowerCase().includes('already exists')) {
-          setNotice({ tone: 'warning', text: 'This space is already bound to a Nudgebee organization.' });
+          snackbar.warning('This space is already bound to a Nudgebee organization.');
         } else {
-          setNotice({ tone: 'critical', text: gqlError });
+          snackbar.error(gqlError);
         }
       } else if (response?.data?.data?.integrations_create_config?.id) {
-        setNotice({ tone: 'success', text: 'Space connected. Return to Google Chat and retry your message.' });
+        snackbar.success('Space connected. Return to Google Chat and retry your message.');
       }
       await loadSpaces();
     } catch (err) {
-      setNotice({ tone: 'critical', text: err?.message || 'Failed to connect this space.' });
+      snackbar.error(err?.message || 'Failed to connect this space.');
     } finally {
       setConnecting(false);
     }
@@ -150,17 +165,27 @@ export default function GoogleChatSpacesPanel() {
   // Set one space as the tenant default; clear the previous default (one per tenant).
   const handleSetDefault = async (space) => {
     setBusyId(space.spaceId);
-    setNotice(null);
     try {
       const previous = spaces.find((s) => s.isDefault && s.spaceId !== space.spaceId);
-      await upsertConfig(space.spaceId, [{ name: 'is_default', value: 'true' }]);
-      if (previous) {
-        await upsertConfig(previous.spaceId, [{ name: 'is_default', value: 'false' }]);
+      const res = await upsertConfig(space.spaceId, [{ name: 'is_default', value: 'true' }], space.id);
+      const gqlError = gqlErrorOf(res);
+      if (gqlError) {
+        snackbar.error(gqlError);
+        return;
       }
-      setNotice({ tone: 'success', text: `“${space.displayName}” is now the default space for notifications.` });
+      // Best-effort: clearing the old default must not mask the success above. If it
+      // fails, the resolver still picks deterministically until the next save.
+      if (previous) {
+        try {
+          await upsertConfig(previous.spaceId, [{ name: 'is_default', value: 'false' }], previous.id);
+        } catch {
+          // ignore
+        }
+      }
+      snackbar.success(`“${space.displayName}” is now the default space for notifications.`);
       await loadSpaces();
     } catch (err) {
-      setNotice({ tone: 'critical', text: err?.message || 'Failed to set the default space.' });
+      snackbar.error(err?.message || 'Failed to set the default space.');
     } finally {
       setBusyId('');
     }
@@ -168,13 +193,17 @@ export default function GoogleChatSpacesPanel() {
 
   const handleRemoveDefault = async (space) => {
     setBusyId(space.spaceId);
-    setNotice(null);
     try {
-      await upsertConfig(space.spaceId, [{ name: 'is_default', value: 'false' }]);
-      setNotice({ tone: 'success', text: `Removed “${space.displayName}” as the default space.` });
+      const res = await upsertConfig(space.spaceId, [{ name: 'is_default', value: 'false' }], space.id);
+      const gqlError = gqlErrorOf(res);
+      if (gqlError) {
+        snackbar.error(gqlError);
+        return;
+      }
+      snackbar.success(`Removed “${space.displayName}” as the default space.`);
       await loadSpaces();
     } catch (err) {
-      setNotice({ tone: 'critical', text: err?.message || 'Failed to remove the default space.' });
+      snackbar.error(err?.message || 'Failed to remove the default space.');
     } finally {
       setBusyId('');
     }
@@ -189,15 +218,15 @@ export default function GoogleChatSpacesPanel() {
         integration_config_name: toDelete.spaceId,
         source: 'user',
       });
-      const gqlError = response?.errors?.[0]?.message || response?.data?.errors?.[0]?.message || response?.message || '';
+      const gqlError = gqlErrorOf(response);
       if (gqlError) {
-        setNotice({ tone: 'critical', text: gqlError });
+        snackbar.error(gqlError);
       } else {
-        setNotice({ tone: 'success', text: `Unbound “${toDelete.displayName}”.` });
+        snackbar.success(`Unbound “${toDelete.displayName}”.`);
       }
       await loadSpaces();
     } catch (err) {
-      setNotice({ tone: 'critical', text: err?.message || 'Failed to unbind this space.' });
+      snackbar.error(err?.message || 'Failed to unbind this space.');
     } finally {
       setBusyId('');
       setToDelete(null);
@@ -300,12 +329,6 @@ export default function GoogleChatSpacesPanel() {
           </Stack>
         </ListingLayout.Toolbar>
         <ListingLayout.Body>
-          {notice ? (
-            <Box sx={{ mb: 2 }}>
-              <Label tone={notice.tone} text={notice.text} size='md' />
-            </Box>
-          ) : null}
-
           {showPendingRow ? (
             <Box sx={{ p: 2, mb: 2, border: '1px solid', borderColor: 'warning.main', borderRadius: 1 }} data-testid='gchat-pending-row'>
               <Stack direction='row' alignItems='center' justifyContent='space-between' spacing={2}>

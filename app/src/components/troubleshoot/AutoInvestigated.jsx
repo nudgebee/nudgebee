@@ -10,11 +10,11 @@ import { ds } from 'src/utils/colors';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
-import { Text } from '@shared';
+import Text from '@shared/format/Text';
 import SeverityIcon from '@ui/SeverityIcon';
 import { Button } from '@ui/Button';
 import { FiArrowRight } from 'react-icons/fi';
-import CustomTable from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import Datetime from '@shared/format/Datetime';
 import apiHome from '@api1/home';
@@ -178,7 +178,7 @@ const AutoInvestigated = () => {
         },
         {
           component: (
-            <Box display={'flex'} flexDirection={'row'} alignItems={'center'} gap={'6px'} justifyContent={'flex-end'}>
+            <Box display={'flex'} flexDirection={'row'} alignItems={'center'} gap={ds.space.mul(0, 3)} justifyContent={'flex-end'}>
               <Button
                 tone='secondary'
                 size='sm'
@@ -274,7 +274,7 @@ const AutoInvestigated = () => {
               passedSelectedDateTime={{ startTime: selectedDateRange.startDate, endTime: selectedDateRange.endDate }}
               onChange={handleDateRangeChange}
               data-testid='auto-investigated-date-range'
-              sx={{ height: '32px' }}
+              sx={{ height: ds.space[6] }}
             />
             <DownloadButton id='auto-investigated-download-btn' onClick={() => ({ tableId: tableId, fileName: 'auto-investigated.csv' })} />
           </>

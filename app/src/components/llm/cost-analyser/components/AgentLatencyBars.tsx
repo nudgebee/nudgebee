@@ -9,7 +9,7 @@
  */
 import * as React from 'react';
 import { Box } from '@mui/material';
-import { Bar } from 'react-chartjs-2';
+import Chart from '@ui/Chart';
 import { PASTEL_PALETTE } from './palette';
 import { makeExternalTooltip } from './chartKit';
 import { fmtDuration } from '../format';
@@ -136,7 +136,7 @@ export function AgentLatencyBars({ profiles, thresholdSeconds, percentile, onSel
   return (
     <Box id={id} sx={{ minWidth: 0 }}>
       <Box sx={{ position: 'relative', height, width: '100%', minWidth: 0, overflow: 'hidden' }}>
-        <Bar data={{ labels, datasets }} options={options as any} plugins={[thresholdLine, valueLabels]} />
+        <Chart.Bar labels={labels} dataset={datasets} options={options} customPlugins={[thresholdLine, valueLabels]} maxHeight={height} />
       </Box>
       <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--ds-space-2) var(--ds-space-4)', mt: 'var(--ds-space-2)' }}>
         {SERIES.map((s) => (

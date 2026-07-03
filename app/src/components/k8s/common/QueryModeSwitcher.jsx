@@ -815,7 +815,8 @@ const QueryModeSwitcher = ({
                   backgroundColor: 'var(--ds-background-100)',
                   borderRadius: 'var(--ds-radius-lg)',
                   border: '1px solid var(--ds-blue-500) !important',
-                  boxShadow: '0px 2px 7px 0px #3B82F60F, 0px 4px 6px -1px #3B82F61F',
+                  boxShadow:
+                    '0px 2px 7px 0px color-mix(in srgb, var(--ds-blue-500) 6%, transparent), 0px 4px 6px -1px color-mix(in srgb, var(--ds-blue-500) 12%, transparent)',
                   padding: 'var(--ds-space-3) var(--ds-space-5)',
                   width: '100%',
                   justifyContent: 'space-between',

@@ -127,8 +127,8 @@ const SavingsPlanEvidence = ({ recommendation, ruleName, estimatedSavings }: Sav
     .slice(0, 6);
 
   return (
-    <Box sx={{ p: '14px' }}>
-      <SectionTitle title={sectionTitle} muiIcon={<MonetizationOnIcon sx={{ fontSize: '16px' }} />} />
+    <Box sx={{ p: ds.space.mul(0, 7) }}>
+      <SectionTitle title={sectionTitle} muiIcon={<MonetizationOnIcon sx={{ fontSize: ds.text.title }} />} />
 
       {/* Cost Explorer RI: instance/service details */}
       {isCERI && <CERIDetails rec={rec} />}
@@ -140,7 +140,7 @@ const SavingsPlanEvidence = ({ recommendation, ruleName, estimatedSavings }: Sav
       {!isCERI && !isCESP && <COHDetails rec={rec} />}
 
       {/* Cost Analysis */}
-      <SectionTitle title='Cost Analysis' muiIcon={<TrendingDownIcon sx={{ fontSize: '16px' }} />} />
+      <SectionTitle title='Cost Analysis' muiIcon={<TrendingDownIcon sx={{ fontSize: ds.text.title }} />} />
 
       <Box
         sx={{
@@ -177,7 +177,7 @@ const SavingsPlanEvidence = ({ recommendation, ruleName, estimatedSavings }: Sav
           sx={{
             backgroundColor: ds.gray[100],
             borderRadius: ds.radius.lg,
-            p: '10px',
+            p: ds.space.mul(0, 5),
             border: `1px solid ${ds.gray[200]}`,
             mb: ds.space[3],
           }}

@@ -3,7 +3,6 @@ import { Box, Chip, Typography } from '@mui/material';
 import { Button } from '@ui/Button';
 import { Add, DataObject } from '@mui/icons-material';
 import { Input } from '@ui/Input';
-import { colors } from 'src/utils/colors';
 import { SET_STATE_PRESETS, SET_VARS_PRESETS, FIELD_HELPER_TEXT } from './advancedConfigPresets';
 import { emptyStateStyles } from './advancedConfigStyles';
 import { useJsonViewMode } from '@components/workflow/hooks/useJsonViewMode';
@@ -127,9 +126,9 @@ const KeyValueField: React.FC<KeyValueFieldProps> = ({ label, field, value, onCh
               key={index}
               sx={{
                 p: 1.5,
-                border: `1px solid ${colors.lowestLight}`,
-                borderRadius: 1,
-                bgcolor: colors.background.tertiaryLightest,
+                border: `1px solid var(--ds-green-200)`,
+                borderRadius: 'var(--ds-radius-sm)',
+                bgcolor: 'var(--ds-gray-100)',
               }}
             >
               <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
@@ -164,8 +163,8 @@ const KeyValueField: React.FC<KeyValueFieldProps> = ({ label, field, value, onCh
                           sx={{
                             fontSize: 'var(--ds-text-caption)',
                             height: 16,
-                            bgcolor: entry.ttl === preset ? 'primary.light' : colors.lowestLight,
-                            color: entry.ttl === preset ? 'primary.contrastText' : colors.text.secondary,
+                            bgcolor: entry.ttl === preset ? 'primary.light' : 'var(--ds-green-200)',
+                            color: entry.ttl === preset ? 'primary.contrastText' : 'var(--ds-brand-500)',
                           }}
                         />
                       ))}
@@ -205,13 +204,19 @@ const KeyValueField: React.FC<KeyValueFieldProps> = ({ label, field, value, onCh
                 <br />
                 Add entries to {field === 'set_state' ? 'persist data across automation runs' : 'share data between tasks'}.
               </Typography>
-              <Button tone='secondary' size='sm' icon={<Add sx={{ fontSize: 16 }} />} disabled={disabled} onClick={handleAddEntry}>
+              <Button
+                tone='secondary'
+                size='sm'
+                icon={<Add sx={{ fontSize: 'var(--ds-text-title)' }} />}
+                disabled={disabled}
+                onClick={handleAddEntry}
+              >
                 Add Your First Entry
               </Button>
             </Box>
           ) : (
             <Box sx={{ alignSelf: 'flex-start' }}>
-              <Button tone='ghost' size='sm' icon={<Add sx={{ fontSize: 14 }} />} disabled={disabled} onClick={handleAddEntry}>
+              <Button tone='ghost' size='sm' icon={<Add sx={{ fontSize: 'var(--ds-text-body-lg)' }} />} disabled={disabled} onClick={handleAddEntry}>
                 Add Entry
               </Button>
             </Box>

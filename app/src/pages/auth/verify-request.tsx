@@ -6,6 +6,7 @@ import { useRouter } from 'next/router';
 import { StarsIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
+import { ds } from '@utils/colors';
 
 const FALLBACK_LOGO = '/branding/default/logo.svg';
 import 'swiper/css/bundle';
@@ -35,15 +36,15 @@ export default function VerifyRequest() {
       <Box display={'flex'} flexDirection={'column'} justifyContent='space-between' alignItems='flex-start'>
         <Box
           sx={{
-            height: '80px',
+            height: ds.space.mul(4, 5),
             width: '100%',
             display: 'flex',
             justifyContent: 'center',
             alignItems: 'center',
-            mb: '4px',
+            mb: ds.space[1],
             '& img': {
-              width: '64px',
-              height: '64px',
+              width: ds.space.mul(2, 8),
+              height: ds.space.mul(2, 8),
             },
           }}
         >
@@ -68,18 +69,18 @@ export default function VerifyRequest() {
             alignItems: 'center',
             flexDirection: 'column',
             width: '100%',
-            marginBottom: '12px',
+            marginBottom: ds.space[3],
           }}
         >
-          <Typography fontSize={'32px'} fontWeight={'600'} color={'#374151'} fontFamily={'Roboto'}>
+          <Typography fontSize={'var(--ds-text-display)'} fontWeight={'600'} color={ds.gray[700]} fontFamily={'Roboto'}>
             Check your email
           </Typography>
         </Box>
       </Box>
       <br />
       <div>
-        <Box bgcolor={'#EFF6FF'} p={'8px 14px'} borderRadius={'4px'} mb={2}>
-          <Typography display={'flex'} alignItems={'center'} gap={1} fontSize={'12px'} color={'#374151'}>
+        <Box bgcolor={ds.blue[100]} p={`${ds.space[2]} ${ds.space.mul(0, 7)}`} borderRadius={ds.radius.sm} mb={ds.space[4]}>
+          <Typography display={'flex'} alignItems={'center'} gap={ds.space[2]} fontSize={'var(--ds-text-small)'} color={ds.gray[700]}>
             <SafeIcon src={StarsIcon} alt='stars' />A sign-in link has been sent to your email address. Please check your inbox or spam folder.
           </Typography>
         </Box>
@@ -90,10 +91,10 @@ export default function VerifyRequest() {
         variant='contained'
         onClick={() => router.replace('/signin')}
         sx={{
-          mt: '8px',
+          mt: 'var(--ds-space-2)',
           textTransform: 'none',
-          backgroundColor: '#1F2937',
-          '&:hover': { backgroundColor: '#111827' },
+          backgroundColor: 'var(--ds-brand-700)',
+          '&:hover': { backgroundColor: 'var(--ds-brand-700)' },
         }}
       >
         Back to sign in

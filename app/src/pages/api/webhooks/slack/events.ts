@@ -47,7 +47,7 @@ export default async function trigger(req: NextApiRequest, res: NextApiResponse)
       calculatedSignatureBuffer.length !== requestSignatureBuffer.length ||
       !crypto.timingSafeEqual(calculatedSignatureBuffer, requestSignatureBuffer)
     ) {
-      console.log('WEBHOOK SIGNATURE MISMATCH');
+      console.error('WEBHOOK SIGNATURE MISMATCH');
       return res.status(401).send('Error: Signature mismatch security error');
     }
 

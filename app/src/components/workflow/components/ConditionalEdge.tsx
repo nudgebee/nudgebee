@@ -37,7 +37,7 @@ const ConditionalEdge: React.FC<ConditionalEdgeProps> = ({
     targetPosition,
   });
 
-  const edgeColor = data?.color || style?.stroke || 'rgb(192, 192, 192)';
+  const edgeColor = data?.color || style?.stroke || 'var(--ds-gray-400)';
   const label = data?.label;
 
   return (
@@ -80,12 +80,12 @@ const ConditionalEdge: React.FC<ConditionalEdgeProps> = ({
                 fontSize: 'var(--ds-text-caption)',
                 fontWeight: 'var(--ds-font-weight-medium)',
                 color: edgeColor,
-                backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                backgroundColor: `color-mix(in srgb, white 95%, transparent)`,
                 padding: 'var(--ds-space-1) var(--ds-space-1)',
                 borderRadius: 'var(--ds-radius-sm)',
                 border: `1px solid ${edgeColor}`,
                 whiteSpace: 'nowrap',
-                boxShadow: '0 1px 2px rgba(0,0,0,0.1)',
+                boxShadow: '0 1px var(--ds-space-0) var(--ds-gray-alpha-300)',
               }}
             >
               {label}
@@ -98,7 +98,7 @@ const ConditionalEdge: React.FC<ConditionalEdgeProps> = ({
             style={{
               position: 'absolute',
               transform: `translate(-50%, -50%) translate(${labelX}px,${labelY + 12}px)`,
-              fontSize: 12,
+              fontSize: 'var(--ds-text-small)',
               pointerEvents: 'all',
               zIndex: 1000,
               display: 'flex',

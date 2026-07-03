@@ -1,6 +1,6 @@
 import React from 'react';
 import { type TextFieldProps, type SxProps, type Theme, TextField, Typography, Box } from '@mui/material';
-import { colors } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 
 interface CustomTextFieldProps {
   label?: string;
@@ -67,11 +67,11 @@ const CustomTextField: React.FC<CustomTextFieldProps> = ({
       fontSize: 'var(--ds-text-body-lg)',
       marginLeft: 'var(--ds-space-1)',
       fontWeight: 'var(--ds-font-weight-medium)',
-      color: colors.text.secondary,
+      color: ds.brand[500],
     },
     instructionText: {
       fontSize: 'var(--ds-text-small)',
-      color: colors.text.tertiary,
+      color: ds.gray[600],
       marginLeft: 'var(--ds-space-1)',
     },
     inputField: {
@@ -80,36 +80,36 @@ const CustomTextField: React.FC<CustomTextFieldProps> = ({
         borderRadius: 'var(--ds-radius-md)',
         fontSize: 'var(--ds-text-body-lg)',
         backgroundColor: 'white',
-        color: colors.text.secondary,
+        color: ds.brand[500],
         mt: 'var(--ds-space-1)',
         transition: 'all 0.2s ease-in-out',
         '&.Mui-error fieldset': {
-          borderColor: colors.border.error,
+          borderColor: ds.red[500],
           borderWidth: '1px',
         },
         '& fieldset': {
-          borderColor: colors.border.secondaryLightest,
+          borderColor: ds.gray[300],
           transition: 'border-color 0.2s ease-in-out',
         },
         '&.Mui-disabled': {
           backgroundColor: 'var(--ds-background-300)',
           '& fieldset': {
-            borderColor: colors.border.secondaryLightest,
+            borderColor: ds.gray[300],
           },
           '& .MuiInputBase-input': {
-            color: colors.text.disabledInput,
+            color: ds.gray[400],
           },
           '&:hover fieldset': {
-            borderColor: colors.border.secondaryLightest,
+            borderColor: ds.gray[300],
           },
         },
         '&:hover fieldset': {
-          borderColor: colors.border.primaryLightest,
+          borderColor: ds.blue[400],
         },
 
         ...(showActiveState && {
           '&.Mui-focused fieldset': {
-            borderColor: activeColor || colors.border.primary || '#3B82F6',
+            borderColor: activeColor || ds.blue[500],
             borderWidth: '2px',
           },
           '&.Mui-focused .MuiInputBase-input': {
@@ -140,12 +140,12 @@ const CustomTextField: React.FC<CustomTextFieldProps> = ({
         marginTop: 'var(--ds-space-1)',
         fontSize: 'var(--ds-text-small)',
         '&.Mui-error': {
-          color: colors.border.error,
+          color: ds.red[500],
         },
       },
     },
     errorText: {
-      color: colors.border.error,
+      color: ds.red[500],
       fontSize: 'var(--ds-text-small)',
       fontWeight: 'var(--ds-font-weight-medium)',
       mt: 1,
@@ -157,7 +157,7 @@ const CustomTextField: React.FC<CustomTextFieldProps> = ({
       {label && (
         <Typography sx={styles.label}>
           {label}
-          {required && <span style={{ color: colors.border.error, marginLeft: 'var(--ds-space-1)' }}>*</span>}
+          {required && <span style={{ color: ds.red[500], marginLeft: 'var(--ds-space-1)' }}>*</span>}
         </Typography>
       )}
       {instructionText && <Typography sx={styles.instructionText}>{instructionText}</Typography>}

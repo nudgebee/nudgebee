@@ -78,7 +78,7 @@ export const RefreshSubmitButton: React.FC<RefreshSubmitButtonProps> = ({ loadin
         Run Query
       </ButtonBase>
 
-      <Divider orientation='vertical' color='rgba(255,255,255,0.25)' sx={{ m: 0 }} />
+      <Divider orientation='vertical' sx={{ m: 0, borderColor: 'color-mix(in srgb, var(--ds-background-100) 25%, transparent)' }} />
 
       <DropdownMenu
         trigger={

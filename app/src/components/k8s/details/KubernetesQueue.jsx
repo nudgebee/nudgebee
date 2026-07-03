@@ -2,11 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import DownloadButton from '@shared/buttons/DownloadButton';
-import KubernetesTable2 from '@components/k8s/common/KubernetesTable2';
+import KubernetesTable from '@components/k8s/common/KubernetesTable';
 import k8sApi from '@api1/kubernetes';
 import { Box } from '@mui/material';
 import PropTypes from 'prop-types';
-import { Text } from '@shared';
+import Text from '@shared/format/Text';
 import KubernetesTracesListing from './KubernetesTracesListing';
 import KubernetesServiceMap from '@components/k8s/details/KubernetesServiceMap';
 import AppDashboard from '@components/dashboards/AppDashboard';
@@ -87,7 +87,7 @@ const KubernetesQueueTable = ({ accountId }) => {
         />
       </ListingLayout.Toolbar>
       <ListingLayout.Body>
-        <KubernetesTable2
+        <KubernetesTable
           id={kubernetesQueueTable}
           headers={QUEUE_HEADERS}
           data={data}

@@ -1,5 +1,5 @@
 import { Box, Typography } from '@mui/material';
-import { Modal } from '@shared/modal';
+import { Modal } from '@ui/Modal';
 import JsonTreeView from '@shared/viewers/JsonTreeView';
 
 interface TestResponseModalProps {
@@ -41,7 +41,7 @@ const renderResult = (result: any) => {
         <Typography variant='subtitle2' sx={{ fontWeight: 'var(--ds-font-weight-semibold)', mb: 2, color: 'var(--ds-brand-500)' }}>
           Full Response:
         </Typography>
-        <JsonTreeView data={result} defaultExpanded={2} maxHeight='400px' fontSize='12px' />
+        <JsonTreeView data={result} defaultExpanded={2} maxHeight='400px' fontSize='var(--ds-text-small)' />
       </Box>
     );
   }
@@ -64,7 +64,7 @@ const TestResponseModal: React.FC<TestResponseModalProps> = ({ open, onClose, ta
                 sx={{
                   fontWeight: 'var(--ds-font-weight-semibold)',
                   mb: 2,
-                  color: status === 'COMPLETED' ? '#059669' : '#dc2626',
+                  color: status === 'COMPLETED' ? 'var(--ds-green-600)' : 'var(--ds-red-600)',
                 }}
               >
                 Status: {status}

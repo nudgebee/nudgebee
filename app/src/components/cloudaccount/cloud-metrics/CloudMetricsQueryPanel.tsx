@@ -7,6 +7,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { Box } from '@mui/material';
 import FilterDropdown from '@ui/FilterDropdown';
 import { Input as DsInput } from '@ui/Input';
+import { ds } from '@utils/colors';
 import apiCloudAccount from '@api1/cloud-account';
 import observability from '@api1/observability';
 
@@ -269,7 +270,7 @@ export function useCloudMetricsQueryPanel({
         options={STATISTIC_OPTIONS}
         onSelect={(_e: any, item: any) => setSelectedStatistic(item?.value || 'Average')}
       />
-      <Box sx={{ minWidth: 300, maxWidth: 300 }}>
+      <Box sx={{ minWidth: ds.space.mul(0, 150), maxWidth: ds.space.mul(0, 150) }}>
         <DsInput
           id='cloud-metrics-additional'
           size='sm'

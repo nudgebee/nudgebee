@@ -1,7 +1,6 @@
 import React from 'react';
 import { Box, Typography, Tooltip } from '@mui/material';
 import { DragIndicator } from '@mui/icons-material';
-import { colors } from 'src/utils/colors';
 
 interface DraggableOutputFieldProps {
   taskId: string;
@@ -68,7 +67,7 @@ const DraggableOutputField: React.FC<DraggableOutputFieldProps> = ({
     dragElement.style.position = 'absolute';
     dragElement.style.top = '-1000px';
     dragElement.style.opacity = '0.8';
-    dragElement.style.backgroundColor = '#e3f2fd';
+    dragElement.style.backgroundColor = 'var(--ds-blue-100)';
     document.body.appendChild(dragElement);
     e.dataTransfer.setDragImage(dragElement, 0, 0);
 
@@ -110,15 +109,15 @@ const DraggableOutputField: React.FC<DraggableOutputFieldProps> = ({
           gap: 1,
           p: 0.75,
           border: '1px dashed',
-          borderColor: hasValue ? '#a7f3d0' : '#d1d5db',
-          borderRadius: 1,
-          backgroundColor: hasValue ? '#f0fdf4' : '#f9fafb',
+          borderColor: hasValue ? 'var(--ds-green-200)' : 'var(--ds-gray-300)',
+          borderRadius: 'var(--ds-radius-sm)',
+          backgroundColor: hasValue ? 'var(--ds-green-100)' : 'var(--ds-background-200)',
           cursor: 'grab',
           transition: 'all 0.2s ease',
           '&:hover': {
             borderColor: 'var(--ds-blue-400)',
             backgroundColor: 'var(--ds-blue-100)',
-            boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+            boxShadow: '0 var(--ds-space-0) var(--ds-space-1) var(--ds-gray-alpha-300)',
           },
           '&:active': {
             cursor: 'grabbing',
@@ -126,11 +125,11 @@ const DraggableOutputField: React.FC<DraggableOutputFieldProps> = ({
           },
         }}
       >
-        <DragIndicator sx={{ fontSize: 14, color: 'var(--ds-gray-400)' }} />
+        <DragIndicator sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-gray-400)' }} />
 
         <Box
           sx={{
-            bgcolor: colors.text.secondary,
+            bgcolor: 'var(--ds-brand-500)',
             color: 'white',
             px: 0.5,
             py: 0.125,
@@ -150,7 +149,7 @@ const DraggableOutputField: React.FC<DraggableOutputFieldProps> = ({
             sx={{
               fontSize: 'var(--ds-text-caption)',
               fontWeight: 'var(--ds-font-weight-semibold)',
-              color: colors.text.secondary,
+              color: 'var(--ds-brand-500)',
               lineHeight: 1.2,
               overflow: 'hidden',
               textOverflow: 'ellipsis',

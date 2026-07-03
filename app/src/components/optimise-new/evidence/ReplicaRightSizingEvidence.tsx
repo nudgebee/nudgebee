@@ -13,8 +13,11 @@ interface ReplicaRightSizingEvidenceProps {
 }
 
 const ReplicaRightSizingEvidence = ({ recommendation, estimatedSavings }: ReplicaRightSizingEvidenceProps) => {
-  const rec = safeParseJSON(recommendation);
-  if (!rec) return null;
+  const parsed = safeParseJSON(recommendation);
+  if (!parsed) return null;
+  // The payload nests the analysis under a `recommendation` key
+  // ({kind, metadata, recommendation}); fall back to the root for older flat recs.
+  const rec = parsed.recommendation && typeof parsed.recommendation === 'object' ? parsed.recommendation : parsed;
 
   const allocatedReplica = rec.allocated_replica ?? rec.allocated?.[rec.allocated?.length - 1]?.replicas;
   const recommendedReplica = rec.recommended_replica ?? rec.recommended?.[rec.recommended?.length - 1]?.replicas;
@@ -31,11 +34,19 @@ const ReplicaRightSizingEvidence = ({ recommendation, estimatedSavings }: Replic
   const recommendedSeries = Array.isArray(rec.recommended) ? rec.recommended : [];
 
   return (
-    <Box sx={{ p: '14px' }}>
-      <SectionTitle title='Replica Right-Sizing' muiIcon={<BarChartIcon sx={{ fontSize: '16px' }} />} />
+    <Box sx={{ p: ds.space.mul(0, 7) }}>
+      <SectionTitle title='Replica Right-Sizing' muiIcon={<BarChartIcon sx={{ fontSize: ds.text.title }} />} />
 
       {errorMsg && (
-        <Box sx={{ backgroundColor: ds.red[100], borderRadius: ds.radius.lg, p: '10px', border: `1px solid ${ds.red[200]}`, mb: ds.space[3] }}>
+        <Box
+          sx={{
+            backgroundColor: ds.red[100],
+            borderRadius: ds.radius.lg,
+            p: ds.space.mul(0, 5),
+            border: `1px solid ${ds.red[200]}`,
+            mb: ds.space[3],
+          }}
+        >
           <Typography sx={{ fontSize: ds.text.small, color: ds.red[700] }}>{errorMsg}</Typography>
         </Box>
       )}
@@ -47,7 +58,7 @@ const ReplicaRightSizingEvidence = ({ recommendation, estimatedSavings }: Replic
             display: 'flex',
             alignItems: 'center',
             gap: ds.space[4],
-            p: '14px',
+            p: ds.space.mul(0, 7),
             backgroundColor: ds.blue[100],
             borderRadius: ds.radius.lg,
             border: `1px solid ${ds.blue[200]}`,
@@ -57,13 +68,13 @@ const ReplicaRightSizingEvidence = ({ recommendation, estimatedSavings }: Replic
         >
           <Box sx={{ textAlign: 'center' }}>
             <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], mb: ds.space[0] }}>Current</Typography>
-            <Typography sx={{ fontSize: '24px', fontWeight: ds.weight.semibold, color: ds.red[600] }}>{allocatedReplica}</Typography>
+            <Typography sx={{ fontSize: ds.text.display, fontWeight: ds.weight.semibold, color: ds.red[600] }}>{allocatedReplica}</Typography>
             <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>replicas</Typography>
           </Box>
-          <ArrowForwardIcon sx={{ fontSize: '20px', color: ds.blue[700] }} />
+          <ArrowForwardIcon sx={{ fontSize: ds.text.heading, color: ds.blue[700] }} />
           <Box sx={{ textAlign: 'center' }}>
             <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], mb: ds.space[0] }}>Recommended</Typography>
-            <Typography sx={{ fontSize: '24px', fontWeight: ds.weight.semibold, color: ds.green[600] }}>{recommendedReplica}</Typography>
+            <Typography sx={{ fontSize: ds.text.display, fontWeight: ds.weight.semibold, color: ds.green[600] }}>{recommendedReplica}</Typography>
             <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>replicas</Typography>
           </Box>
         </Box>
@@ -90,12 +101,15 @@ const ReplicaRightSizingEvidence = ({ recommendation, estimatedSavings }: Replic
       {/* Replica trend mini-chart (text-based) */}
       {allocatedSeries.length > 0 && (
         <>
-          <SectionTitle title={`Replica History (${allocatedSeries.length} data points)`} muiIcon={<TrendingUpIcon sx={{ fontSize: '16px' }} />} />
+          <SectionTitle
+            title={`Replica History (${allocatedSeries.length} data points)`}
+            muiIcon={<TrendingUpIcon sx={{ fontSize: ds.text.title }} />}
+          />
           <Box
             sx={{
               backgroundColor: ds.gray[100],
               borderRadius: ds.radius.lg,
-              p: '10px',
+              p: ds.space.mul(0, 5),
               border: `1px solid ${ds.gray[200]}`,
               mb: ds.space[3],
               maxHeight: '150px',
@@ -135,7 +149,7 @@ const ReplicaRightSizingEvidence = ({ recommendation, estimatedSavings }: Replic
       {/* Evidence metrics */}
       {latestEvidence && (
         <>
-          <SectionTitle title='Workload Metrics (Latest)' muiIcon={<BoltIcon sx={{ fontSize: '16px' }} />} />
+          <SectionTitle title='Workload Metrics (Latest)' muiIcon={<BoltIcon sx={{ fontSize: ds.text.title }} />} />
           <Box sx={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: ds.space[2], mb: ds.space[3] }}>
             {latestEvidence.cpu != null && (
               <MetricBox label='CPU Usage' value={`${Number(latestEvidence.cpu).toFixed(3)} cores`} color={ds.blue[500]} />
@@ -159,7 +173,7 @@ const ReplicaRightSizingEvidence = ({ recommendation, estimatedSavings }: Replic
 const MetricBox = ({ label, value, color }: { label: string; value: string; color: string }) => (
   <Box
     sx={{
-      p: '10px',
+      p: ds.space.mul(0, 5),
       borderRadius: ds.radius.lg,
       backgroundColor: ds.gray[100],
       border: `1px solid ${ds.gray[200]}`,

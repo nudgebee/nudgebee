@@ -1,20 +1,6 @@
-import {
-  Grid,
-  IconButton,
-  Typography,
-  Stepper,
-  Step,
-  StepLabel,
-  StepConnector,
-  stepConnectorClasses,
-  styled,
-  Box,
-  Collapse,
-  Alert,
-  Checkbox,
-  FormControlLabel,
-  Chip,
-} from '@mui/material';
+import { Grid, Typography, Stepper, Step, StepLabel, StepConnector, stepConnectorClasses, styled, Box, Collapse, Alert } from '@mui/material';
+import { Chip } from '@ui/Chip';
+import { Checkbox } from '@ui/Checkbox';
 import { Input } from '@ui/Input';
 import {
   Visibility,
@@ -30,51 +16,56 @@ import {
 } from '@mui/icons-material';
 import { useState } from 'react';
 import apiAccount from '@api1/account';
-import { Modal } from '@shared/modal';
+import { Modal } from '@ui/Modal';
 import { isK8sAccountNameValid, parseHttpResponseBodyMessage } from 'src/utils/common';
 import { Button } from '@ui/Button';
-import { snackbar } from '@shared/snackbarService';
+import { toast as snackbar } from '@ui/Toast';
 import MarkDowns from '@shared/viewers/MarkDowns';
+import { ds } from 'src/utils/colors';
 
 const StepConnectorStyled = styled(StepConnector)(() => ({
   [`&.${stepConnectorClasses.alternativeLabel}`]: {
-    top: 10,
-    left: 'calc(-50% + 16px)',
-    right: 'calc(50% + 16px)',
+    top: ds.space.mul(1, 5),
+    left: `calc(-50% + ${ds.space[4]})`,
+    right: `calc(50% + ${ds.space[4]})`,
   },
   [`&.${stepConnectorClasses.active}, &.${stepConnectorClasses.completed}`]: {
     [`& .${stepConnectorClasses.line}`]: {
-      borderColor: '#16A34A',
+      borderColor: ds.green[500],
       borderTopWidth: 2,
     },
   },
   [`& .${stepConnectorClasses.line}`]: {
-    borderColor: '#D0D0D0',
+    borderColor: ds.brand[200],
     borderTopWidth: 1,
-    borderRadius: 1,
+    borderRadius: ds.radius.sm,
   },
 }));
 
 const StepIconCustom = ({ active, completed, icon }) => {
   const styles = completed
-    ? { backgroundColor: '#4caf50', border: 'none', color: 'white' }
-    : { backgroundColor: 'white', border: active ? '1px solid #16A34A' : '1px solid #D0D0D0', color: active ? '#16A34A' : '#666' };
+    ? { backgroundColor: ds.green[400], border: 'none', color: ds.background[100] }
+    : {
+        backgroundColor: ds.background[100],
+        border: active ? `1px solid ${ds.green[500]}` : `1px solid ${ds.gray[300]}`,
+        color: active ? ds.green[500] : ds.gray[600],
+      };
 
   return (
     <Box
       sx={{
-        width: '24px',
-        height: '24px',
-        borderRadius: '50%',
+        width: ds.space[5],
+        height: ds.space[5],
+        borderRadius: ds.radius.pill,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        fontSize: '14px',
+        fontSize: ds.text.bodyLg,
         fontWeight: 'bold',
         ...styles,
       }}
     >
-      {completed ? <Check sx={{ fontSize: '16px' }} /> : icon}
+      {completed ? <Check sx={{ fontSize: ds.text.title }} /> : icon}
     </Box>
   );
 };
@@ -351,16 +342,16 @@ const AddAzureAccountModal = ({ open, onClose }) => {
       title='Add Azure Account'
       loader={isLoading}
     >
-      <Stepper activeStep={step} alternativeLabel connector={<StepConnectorStyled />} sx={{ mb: 3, mt: 2 }}>
+      <Stepper activeStep={step} alternativeLabel connector={<StepConnectorStyled />} sx={{ mb: ds.space[5], mt: ds.space[4] }}>
         {STEP_LABELS.map((label, index) => (
           <Step key={label} completed={step > index}>
             <StepLabel
               StepIconComponent={StepIconCustom}
               sx={{
                 '& .MuiStepLabel-label.MuiStepLabel-alternativeLabel': {
-                  fontSize: '14px',
-                  marginTop: '10px',
-                  color: step === index ? '#374151' : 'inherit',
+                  fontSize: ds.text.bodyLg,
+                  marginTop: ds.space[2],
+                  color: step === index ? ds.gray[700] : 'inherit',
                   fontWeight: step === index ? 500 : 'normal',
                 },
               }}
@@ -375,35 +366,37 @@ const AddAzureAccountModal = ({ open, onClose }) => {
       {step === 0 && (
         <>
           {/* Collapsible Setup Guide */}
-          <Box sx={{ mb: 1 }}>
+          <Box sx={{ mb: ds.space[2] }}>
             <Box
               sx={{
                 display: 'flex',
                 alignItems: 'center',
                 cursor: 'pointer',
-                gap: 0.5,
-                py: 1,
+                gap: ds.space[1],
+                py: ds.space[2],
               }}
               onClick={() => setGuideExpanded(!guideExpanded)}
             >
-              <HelpOutline sx={{ fontSize: 18, color: '#6B7280' }} />
-              <Typography sx={{ fontSize: 13, color: '#6B7280', fontWeight: 500 }}>Setup Guide — How to create an Azure service principal</Typography>
-              {guideExpanded ? <ExpandLess sx={{ fontSize: 18, color: '#6B7280' }} /> : <ExpandMore sx={{ fontSize: 18, color: '#6B7280' }} />}
+              <HelpOutline sx={{ fontSize: 18, color: ds.gray[600] }} />
+              <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600], fontWeight: ds.weight.medium }}>
+                Setup Guide — How to create an Azure service principal
+              </Typography>
+              {guideExpanded ? <ExpandLess sx={{ fontSize: 18, color: ds.gray[600] }} /> : <ExpandMore sx={{ fontSize: 18, color: ds.gray[600] }} />}
             </Box>
             <Collapse in={guideExpanded}>
               <Box
                 sx={{
-                  mt: 1,
-                  p: 2,
-                  bgcolor: '#f8f9fa',
-                  borderRadius: '8px',
-                  border: '1px solid #e0e0e0',
+                  mt: ds.space[2],
+                  p: ds.space[4],
+                  bgcolor: ds.background[200],
+                  borderRadius: ds.radius.lg,
+                  border: `1px solid ${ds.gray[300]}`,
                 }}
               >
                 <MarkDowns
                   data={SETUP_GUIDE_CONTENT}
                   sx={{
-                    maxHeight: '300px',
+                    maxHeight: ds.space.mul(1, 75),
                     overflowY: 'auto',
                     padding: '0px',
                     borderRadius: '0px',
@@ -414,7 +407,7 @@ const AddAzureAccountModal = ({ open, onClose }) => {
           </Box>
 
           <Grid container>
-            <Box sx={{ mt: 2, width: '100%' }}>
+            <Box sx={{ mt: ds.space[4], width: '100%' }}>
               <Input
                 value={accountNameValue}
                 size='sm'
@@ -426,7 +419,7 @@ const AddAzureAccountModal = ({ open, onClose }) => {
                 error={validationError.accountName || undefined}
               />
             </Box>
-            <Box sx={{ mt: 2, width: '100%' }}>
+            <Box sx={{ mt: ds.space[4], width: '100%' }}>
               <Input
                 value={tenantId}
                 size='sm'
@@ -439,7 +432,7 @@ const AddAzureAccountModal = ({ open, onClose }) => {
                 help={validationError.tenantId ? undefined : 'Found in Azure Portal > Microsoft Entra ID > Overview'}
               />
             </Box>
-            <Box sx={{ mt: 2, width: '100%' }}>
+            <Box sx={{ mt: ds.space[4], width: '100%' }}>
               <Input
                 value={clientId}
                 size='sm'
@@ -452,7 +445,7 @@ const AddAzureAccountModal = ({ open, onClose }) => {
                 help={validationError.clientId ? undefined : 'Found in Azure Portal > App Registrations > Your App > Overview'}
               />
             </Box>
-            <Box sx={{ mt: 2, width: '100%', display: 'flex', alignItems: 'flex-start', gap: 1 }}>
+            <Box sx={{ mt: ds.space[4], width: '100%', display: 'flex', alignItems: 'flex-start', gap: ds.space[2] }}>
               <Box sx={{ flex: 1 }}>
                 <Input
                   value={clientSecret}
@@ -467,29 +460,35 @@ const AddAzureAccountModal = ({ open, onClose }) => {
                   help={validationError.clientSecret ? undefined : 'Found in App Registrations > Certificates & secrets'}
                 />
               </Box>
-              <IconButton
-                aria-label='toggle password visibility'
-                onClick={handleClickShowSecret}
-                onMouseDown={handleMouseDownPassword}
-                sx={{ mt: '22px' }}
-              >
-                {showSecret ? <VisibilityOff /> : <Visibility />}
-              </IconButton>
+              <Box onMouseDown={handleMouseDownPassword} sx={{ mt: ds.space[5] }}>
+                <Button
+                  tone='ghost'
+                  composition='icon-only'
+                  aria-label='toggle password visibility'
+                  onClick={handleClickShowSecret}
+                  icon={showSecret ? <VisibilityOff /> : <Visibility />}
+                />
+              </Box>
             </Box>
           </Grid>
 
-          <Grid container spacing={2} mt={1} mb={4} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
-            <Grid item>
-              <Button id='cancel-btn' size='md' tone='secondary' onClick={() => handleCloseModal(false)}>
-                Cancel
-              </Button>
-            </Grid>
-            <Grid item>
-              <Button size='md' id='next-to-subscriptions' tone='primary' onClick={handleNextToSubscriptions}>
-                Next
-              </Button>
-            </Grid>
-          </Grid>
+          <Box
+            sx={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              gap: ds.space[4],
+              mt: ds.space[2],
+              mb: ds.space[6],
+              '& button': { minWidth: ds.space.mul(1, 35) },
+            }}
+          >
+            <Button id='cancel-btn' size='md' tone='secondary' onClick={() => handleCloseModal(false)}>
+              Cancel
+            </Button>
+            <Button size='md' id='next-to-subscriptions' tone='primary' onClick={handleNextToSubscriptions}>
+              Next
+            </Button>
+          </Box>
         </>
       )}
 
@@ -497,8 +496,10 @@ const AddAzureAccountModal = ({ open, onClose }) => {
       {step === 1 && (
         <>
           {discoveredSubscriptions.length === 0 && !discoveryError && (
-            <Box sx={{ textAlign: 'center', py: 4 }}>
-              <Typography sx={{ fontSize: 14, color: '#6B7280', mb: 2 }}>Discover subscriptions accessible by your service principal.</Typography>
+            <Box sx={{ textAlign: 'center', py: ds.space[6] }}>
+              <Typography sx={{ fontSize: ds.text.bodyLg, color: ds.gray[600], mb: ds.space[4] }}>
+                Discover subscriptions accessible by your service principal.
+              </Typography>
               <Button
                 size='md'
                 id='discover-subscriptions'
@@ -513,8 +514,8 @@ const AddAzureAccountModal = ({ open, onClose }) => {
           )}
 
           {discoveryError && (
-            <Box sx={{ py: 2 }}>
-              <Alert severity='error' sx={{ mb: 2 }}>
+            <Box sx={{ py: ds.space[4] }}>
+              <Alert severity='error' sx={{ mb: ds.space[4] }}>
                 {discoveryError}
               </Alert>
               <Box sx={{ textAlign: 'center' }}>
@@ -527,36 +528,38 @@ const AddAzureAccountModal = ({ open, onClose }) => {
 
           {discoveredSubscriptions.length > 0 && (
             <>
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1 }}>
-                <Typography sx={{ fontSize: 14, fontWeight: 500 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: ds.space[2] }}>
+                <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.medium }}>
                   {discoveredSubscriptions.length} subscription{discoveredSubscriptions.length > 1 ? 's' : ''} found
-                  <Chip label={`${selectedSubscriptionIds.size} selected`} size='small' sx={{ ml: 1 }} color='primary' variant='outlined' />
+                  <Chip size='sm' tone='info' sx={{ ml: ds.space[2] }}>{`${selectedSubscriptionIds.size} selected`}</Chip>
                 </Typography>
               </Box>
 
-              <Box sx={{ mb: 1 }}>
+              <Box sx={{ mb: ds.space[2] }}>
                 <Input
                   size='sm'
                   placeholder='Search subscriptions...'
                   value={subscriptionSearchFilter}
                   onChange={setSubscriptionSearchFilter}
-                  leadingIcon={<SearchOutlined sx={{ fontSize: 18, color: '#9CA3AF' }} />}
+                  leadingIcon={<SearchOutlined sx={{ fontSize: 18, color: ds.gray[400] }} />}
                 />
               </Box>
 
-              <Box sx={{ display: 'flex', alignItems: 'center', mb: 0.5 }}>
-                <FormControlLabel
-                  control={<Checkbox checked={allFilteredSelected} onChange={handleSelectAll} size='small' />}
-                  label={<Typography sx={{ fontSize: 13 }}>{allFilteredSelected ? 'Deselect all' : 'Select all'}</Typography>}
+              <Box sx={{ display: 'flex', alignItems: 'center', mb: ds.space[1] }}>
+                <Checkbox
+                  checked={allFilteredSelected}
+                  onChange={handleSelectAll}
+                  size='sm'
+                  label={<Typography sx={{ fontSize: ds.text.body }}>{allFilteredSelected ? 'Deselect all' : 'Select all'}</Typography>}
                 />
               </Box>
 
               <Box
                 sx={{
-                  maxHeight: '280px',
+                  maxHeight: ds.space.mul(1, 70),
                   overflowY: 'auto',
-                  border: '1px solid #E5E7EB',
-                  borderRadius: '8px',
+                  border: `1px solid ${ds.brand[150]}`,
+                  borderRadius: ds.radius.lg,
                 }}
               >
                 {filteredSubscriptions.map((sub) => (
@@ -565,21 +568,22 @@ const AddAzureAccountModal = ({ open, onClose }) => {
                     sx={{
                       display: 'flex',
                       alignItems: 'center',
-                      px: 1.5,
-                      py: 0.5,
-                      borderBottom: '1px solid #F3F4F6',
+                      px: ds.space[3],
+                      py: ds.space[1],
+                      borderBottom: `1px solid ${ds.background[300]}`,
                       '&:last-child': { borderBottom: 'none' },
-                      '&:hover': { bgcolor: '#F9FAFB' },
+                      '&:hover': { bgcolor: ds.background[200] },
                     }}
                   >
                     <Checkbox
                       checked={selectedSubscriptionIds.has(sub.subscription_id)}
                       onChange={() => handleToggleSubscription(sub.subscription_id)}
-                      size='small'
+                      size='sm'
+                      aria-label={`Select ${sub.display_name}`}
                     />
-                    <Box sx={{ flex: 1, ml: 0.5 }}>
-                      <Typography sx={{ fontSize: 13, fontWeight: 500 }}>{sub.display_name}</Typography>
-                      <Typography sx={{ fontSize: 11, color: '#9CA3AF' }}>{sub.subscription_id}</Typography>
+                    <Box sx={{ flex: 1, ml: ds.space[1] }}>
+                      <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.medium }}>{sub.display_name}</Typography>
+                      <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[400] }}>{sub.subscription_id}</Typography>
                     </Box>
                   </Box>
                 ))}
@@ -587,18 +591,23 @@ const AddAzureAccountModal = ({ open, onClose }) => {
             </>
           )}
 
-          <Grid container spacing={2} mt={1} mb={4} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
-            <Grid item>
-              <Button id='back-to-credentials' size='md' tone='secondary' onClick={() => setStep(0)}>
-                Back
-              </Button>
-            </Grid>
-            <Grid item>
-              <Button size='md' id='next-to-review' tone='primary' onClick={handleNextToReview} disabled={selectedSubscriptionIds.size === 0}>
-                Next
-              </Button>
-            </Grid>
-          </Grid>
+          <Box
+            sx={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              gap: ds.space[4],
+              mt: ds.space[2],
+              mb: ds.space[6],
+              '& button': { minWidth: ds.space.mul(1, 35) },
+            }}
+          >
+            <Button id='back-to-credentials' size='md' tone='secondary' onClick={() => setStep(0)}>
+              Back
+            </Button>
+            <Button size='md' id='next-to-review' tone='primary' onClick={handleNextToReview} disabled={selectedSubscriptionIds.size === 0}>
+              Next
+            </Button>
+          </Box>
         </>
       )}
 
@@ -607,7 +616,7 @@ const AddAzureAccountModal = ({ open, onClose }) => {
         <>
           {!onboardResults && (
             <>
-              <Alert severity='info' icon={<InfoOutlined sx={{ fontSize: 16 }} />} sx={{ mb: 2 }}>
+              <Alert severity='info' icon={<InfoOutlined sx={{ fontSize: 16 }} />} sx={{ mb: ds.space[4] }}>
                 {selectedSubscriptionIds.size} subscription{selectedSubscriptionIds.size > 1 ? 's' : ''} will be onboarded under &quot;
                 {accountNameValue}&quot;.
                 {selectedSubscriptionIds.size > 1 && ' The first subscription becomes the parent account.'}
@@ -615,10 +624,10 @@ const AddAzureAccountModal = ({ open, onClose }) => {
 
               <Box
                 sx={{
-                  maxHeight: '300px',
+                  maxHeight: ds.space.mul(1, 75),
                   overflowY: 'auto',
-                  border: '1px solid #E5E7EB',
-                  borderRadius: '8px',
+                  border: `1px solid ${ds.brand[150]}`,
+                  borderRadius: ds.radius.lg,
                 }}
               >
                 {discoveredSubscriptions
@@ -629,20 +638,22 @@ const AddAzureAccountModal = ({ open, onClose }) => {
                       sx={{
                         display: 'flex',
                         alignItems: 'center',
-                        px: 2,
-                        py: 1,
-                        borderBottom: '1px solid #F3F4F6',
+                        px: ds.space[4],
+                        py: ds.space[2],
+                        borderBottom: `1px solid ${ds.background[300]}`,
                         '&:last-child': { borderBottom: 'none' },
                       }}
                     >
                       <Box sx={{ flex: 1 }}>
-                        <Typography sx={{ fontSize: 13, fontWeight: 500 }}>
+                        <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.medium }}>
                           {sub.display_name}
                           {idx === 0 && selectedSubscriptionIds.size > 1 && (
-                            <Chip label='Parent' size='small' sx={{ ml: 1, height: 20 }} color='primary' />
+                            <Chip size='sm' tone='info' sx={{ ml: ds.space[2], height: ds.space.mul(1, 5) }}>
+                              Parent
+                            </Chip>
                           )}
                         </Typography>
-                        <Typography sx={{ fontSize: 11, color: '#9CA3AF' }}>{sub.subscription_id}</Typography>
+                        <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[400] }}>{sub.subscription_id}</Typography>
                       </Box>
                     </Box>
                   ))}
@@ -651,29 +662,29 @@ const AddAzureAccountModal = ({ open, onClose }) => {
           )}
 
           {onboardResults && (
-            <Box sx={{ mb: 2 }}>
+            <Box sx={{ mb: ds.space[4] }}>
               {onboardResults.accounts?.map((result) => (
                 <Box
                   key={result.subscription_id}
                   sx={{
                     display: 'flex',
                     alignItems: 'center',
-                    px: 2,
-                    py: 1,
-                    borderBottom: '1px solid #F3F4F6',
+                    px: ds.space[4],
+                    py: ds.space[2],
+                    borderBottom: `1px solid ${ds.background[300]}`,
                     '&:last-child': { borderBottom: 'none' },
                   }}
                 >
                   {result.status === 'created' ? (
-                    <CheckCircleOutline sx={{ color: '#16A34A', fontSize: 18, mr: 1 }} />
+                    <CheckCircleOutline sx={{ color: ds.green[500], fontSize: 18, mr: ds.space[2] }} />
                   ) : (
-                    <ErrorOutline sx={{ color: '#DC2626', fontSize: 18, mr: 1 }} />
+                    <ErrorOutline sx={{ color: ds.red[600], fontSize: 18, mr: ds.space[2] }} />
                   )}
                   <Box sx={{ flex: 1 }}>
-                    <Typography sx={{ fontSize: 13, fontWeight: 500 }}>
+                    <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.medium }}>
                       {discoveredSubscriptions.find((s) => s.subscription_id === result.subscription_id)?.display_name || result.subscription_id}
                     </Typography>
-                    <Typography sx={{ fontSize: 11, color: result.status === 'created' ? '#16A34A' : '#DC2626' }}>
+                    <Typography sx={{ fontSize: ds.text.caption, color: result.status === 'created' ? ds.green[500] : ds.red[600] }}>
                       {result.status === 'created' ? 'Onboarded successfully' : result.error}
                     </Typography>
                   </Box>
@@ -682,36 +693,39 @@ const AddAzureAccountModal = ({ open, onClose }) => {
             </Box>
           )}
 
-          <Grid container spacing={2} mt={1} mb={4} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
+          <Box
+            sx={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              gap: ds.space[4],
+              mt: ds.space[2],
+              mb: ds.space[6],
+              '& button': { minWidth: ds.space.mul(1, 35) },
+            }}
+          >
             {!onboardResults && (
               <>
-                <Grid item>
-                  <Button id='back-to-subscriptions' size='md' tone='secondary' onClick={() => setStep(1)} disabled={isSubmitting}>
-                    Back
-                  </Button>
-                </Grid>
-                <Grid item>
-                  <Button
-                    size='md'
-                    id='onboard-subscriptions'
-                    tone='primary'
-                    loading={isSubmitting}
-                    disabled={isSubmitting}
-                    onClick={handleBulkOnboard}
-                  >
-                    Onboard
-                  </Button>
-                </Grid>
+                <Button id='back-to-subscriptions' size='md' tone='secondary' onClick={() => setStep(1)} disabled={isSubmitting}>
+                  Back
+                </Button>
+                <Button
+                  size='md'
+                  id='onboard-subscriptions'
+                  tone='primary'
+                  loading={isSubmitting}
+                  disabled={isSubmitting}
+                  onClick={handleBulkOnboard}
+                >
+                  Onboard
+                </Button>
               </>
             )}
             {onboardResults && (
-              <Grid item>
-                <Button size='md' id='close-modal' tone='primary' onClick={() => handleCloseModal(true)}>
-                  Done
-                </Button>
-              </Grid>
+              <Button size='md' id='close-modal' tone='primary' onClick={() => handleCloseModal(true)}>
+                Done
+              </Button>
             )}
-          </Grid>
+          </Box>
         </>
       )}
     </Modal>

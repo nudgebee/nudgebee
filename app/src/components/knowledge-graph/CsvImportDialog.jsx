@@ -180,9 +180,9 @@ const CsvImportDialog = ({ open, onClose, onImported }) => {
       {result ? (
         <ResultView result={result} onDone={handleDone} />
       ) : (
-        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5, p: 2 }}>
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 1 }}>
-            <Typography sx={{ fontSize: '12px', color: ds?.text?.secondaryDark ?? '#6b7280', lineHeight: 1.5, flex: '1 1 0' }}>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[3], p: ds.space[4] }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: ds.space[2] }}>
+            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], lineHeight: 1.5, flex: '1 1 0' }}>
               Required columns: <strong>source_node_type</strong>, <strong>source_name</strong>, <strong>dest_node_type</strong>,{' '}
               <strong>dest_name</strong>. Optional qualifiers narrow ambiguous matches. Relationship defaults to <code>CALLS</code> when blank.
             </Typography>
@@ -195,7 +195,7 @@ const CsvImportDialog = ({ open, onClose, onImported }) => {
 
           {/* Mode toggle: Paste vs Upload file. Kept compact on its own row
               so the textarea / drop zone below has the visual weight. */}
-          <Box sx={{ display: 'inline-flex', gap: 0.5 }}>
+          <Box sx={{ display: 'inline-flex', gap: ds.space[1] }}>
             <Button tone={mode === MODE_PASTE ? 'primary' : 'secondary'} size='xs' onClick={() => setMode(MODE_PASTE)}>
               Paste
             </Button>
@@ -215,13 +215,13 @@ const CsvImportDialog = ({ open, onClose, onImported }) => {
                 width: '100%',
                 minHeight: '180px',
                 fontFamily: 'monospace',
-                fontSize: '12px',
-                padding: '10px 12px',
-                borderRadius: '6px',
-                border: `1px solid ${ds?.border?.secondary ?? '#e5e7eb'}`,
+                fontSize: ds.text.small,
+                padding: `${ds.space.mul(0, 5)} ${ds.space[3]}`,
+                borderRadius: ds.radius.md,
+                border: `1px solid ${ds.brand[200]}`,
                 resize: 'vertical',
                 outline: 'none',
-                '&:focus': { borderColor: ds?.border?.primary ?? '#3b82f6' },
+                '&:focus': { borderColor: ds.blue[500] },
               }}
             />
           ) : (
@@ -230,9 +230,9 @@ const CsvImportDialog = ({ open, onClose, onImported }) => {
               onDrop={handleDrop}
               onClick={() => fileInputRef.current?.click()}
               sx={{
-                border: `2px dashed ${ds?.border?.secondary ?? '#e5e7eb'}`,
-                borderRadius: '8px',
-                padding: '24px',
+                border: `${ds.space[0]} dashed ${ds.brand[200]}`,
+                borderRadius: ds.radius.lg,
+                padding: ds.space[5],
                 textAlign: 'center',
                 cursor: 'pointer',
                 minHeight: '160px',
@@ -240,7 +240,7 @@ const CsvImportDialog = ({ open, onClose, onImported }) => {
                 flexDirection: 'column',
                 alignItems: 'center',
                 justifyContent: 'center',
-                '&:hover': { borderColor: ds?.border?.primary ?? '#9ca3af' },
+                '&:hover': { borderColor: ds.gray[500] },
               }}
             >
               <input
@@ -250,14 +250,14 @@ const CsvImportDialog = ({ open, onClose, onImported }) => {
                 style={{ display: 'none' }}
                 onChange={(e) => handleFile(e.target.files?.[0])}
               />
-              <Typography sx={{ fontSize: '13px', color: ds?.text?.secondary ?? '#374151', mb: 0.5 }}>
+              <Typography sx={{ fontSize: ds.text.body, color: ds.brand[500], mb: ds.space[1] }}>
                 {fileName ? `Selected: ${fileName}` : 'Drop a CSV here or click to browse'}
               </Typography>
-              <Typography sx={{ fontSize: '11px', color: ds?.text?.secondaryDark ?? '#6b7280' }}>Max {MAX_CSV_BYTES / 1024} KB</Typography>
+              <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>Max {MAX_CSV_BYTES / 1024} KB</Typography>
             </Box>
           )}
 
-          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, pt: 0.5 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[2], pt: ds.space[1] }}>
             <Button tone='secondary' size='md' onClick={handleClose} disabled={submitting}>
               Cancel
             </Button>
@@ -283,18 +283,21 @@ const ResultView = ({ result, onDone }) => {
   const imported = result?.imported ?? [];
   const rejected = result?.rejected ?? [];
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, p: 2 }}>
-      <Typography sx={{ fontSize: '14px', fontWeight: 600 }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[4], p: ds.space[4] }}>
+      <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.semibold }}>
         {imported.length} imported, {rejected.length} rejected
       </Typography>
 
       {imported.length > 0 && (
         <Box>
-          <Typography sx={{ fontSize: '12px', fontWeight: 600, color: ds?.text?.secondary ?? '#374151', mb: 1 }}>Imported</Typography>
-          <Box sx={{ maxHeight: '200px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+          <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold, color: ds.brand[500], mb: ds.space[2] }}>Imported</Typography>
+          <Box sx={{ maxHeight: '200px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
             {imported.map((r) => (
-              <Box key={r.row_index} sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 8px' }}>
-                <Typography sx={{ fontSize: '12px' }}>
+              <Box
+                key={r.row_index}
+                sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: `${ds.space.mul(0, 3)} ${ds.space[2]}` }}
+              >
+                <Typography sx={{ fontSize: ds.text.small }}>
                   Row #{r.row_index} → id {r.id}
                 </Typography>
                 <Label tone={r.status === 'resolved' ? 'success' : 'warning'}>{r.status?.replace(/_/g, ' ') ?? 'imported'}</Label>
@@ -306,8 +309,8 @@ const ResultView = ({ result, onDone }) => {
 
       {rejected.length > 0 && (
         <Box>
-          <Typography sx={{ fontSize: '12px', fontWeight: 600, color: ds?.text?.secondary ?? '#374151', mb: 1 }}>Rejected</Typography>
-          <Box sx={{ maxHeight: '200px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+          <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold, color: ds.brand[500], mb: ds.space[2] }}>Rejected</Typography>
+          <Box sx={{ maxHeight: '200px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
             {rejected.map((r) => (
               <Box
                 key={r.row_index}
@@ -315,13 +318,13 @@ const ResultView = ({ result, onDone }) => {
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'center',
-                  padding: '6px 8px',
-                  border: `1px solid ${ds?.border?.danger ?? '#fecaca'}`,
-                  borderRadius: '4px',
+                  padding: `${ds.space.mul(0, 3)} ${ds.space[2]}`,
+                  border: `1px solid ${ds.red[200]}`,
+                  borderRadius: ds.radius.sm,
                 }}
               >
-                <Typography sx={{ fontSize: '12px' }}>Row #{r.row_index}</Typography>
-                <Typography sx={{ fontSize: '11px', color: ds?.text?.danger ?? '#b91c1c' }}>{r.error}</Typography>
+                <Typography sx={{ fontSize: ds.text.small }}>Row #{r.row_index}</Typography>
+                <Typography sx={{ fontSize: ds.text.caption, color: ds.red[600] }}>{r.error}</Typography>
               </Box>
             ))}
           </Box>
@@ -348,28 +351,26 @@ ResultView.propTypes = {
 const CsvSchemaPanel = () => (
   <Box
     sx={{
-      border: `1px solid ${ds?.border?.secondary ?? '#e5e7eb'}`,
-      borderRadius: '6px',
-      backgroundColor: ds?.background?.secondary ?? '#f9fafb',
-      padding: '10px 12px',
+      border: `1px solid ${ds.brand[200]}`,
+      borderRadius: ds.radius.md,
+      backgroundColor: ds.background[200],
+      padding: `${ds.space.mul(0, 5)} ${ds.space[3]}`,
       display: 'flex',
       flexDirection: 'column',
-      gap: 1,
+      gap: ds.space[2],
     }}
   >
-    <Typography sx={{ fontSize: '11px', color: ds?.text?.secondaryDark ?? '#6b7280' }}>
-      Recommended header row (paste verbatim into row 1 of your CSV):
-    </Typography>
+    <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>Recommended header row (paste verbatim into row 1 of your CSV):</Typography>
     <Box
       component='pre'
       sx={{
         fontFamily: 'monospace',
-        fontSize: '11px',
+        fontSize: ds.text.caption,
         margin: 0,
-        padding: '6px 8px',
-        backgroundColor: ds?.background?.primary ?? '#ffffff',
-        border: `1px solid ${ds?.border?.secondary ?? '#e5e7eb'}`,
-        borderRadius: '4px',
+        padding: `${ds.space.mul(0, 3)} ${ds.space[2]}`,
+        backgroundColor: ds.background[100],
+        border: `1px solid ${ds.brand[200]}`,
+        borderRadius: ds.radius.sm,
         whiteSpace: 'pre-wrap',
         wordBreak: 'break-all',
       }}
@@ -377,23 +378,23 @@ const CsvSchemaPanel = () => (
       {CSV_HEADER_ROW}
     </Box>
 
-    <Box sx={{ maxHeight: '240px', overflowY: 'auto', mt: 0.5 }}>
+    <Box sx={{ maxHeight: '240px', overflowY: 'auto', mt: ds.space[1] }}>
       <Box
         component='table'
         sx={{
           width: '100%',
           borderCollapse: 'collapse',
-          fontSize: '11px',
+          fontSize: ds.text.caption,
           '& th, & td': {
             textAlign: 'left',
             verticalAlign: 'top',
-            padding: '6px 8px',
-            borderBottom: `1px solid ${ds?.border?.secondary ?? '#e5e7eb'}`,
+            padding: `${ds.space.mul(0, 3)} ${ds.space[2]}`,
+            borderBottom: `1px solid ${ds.brand[200]}`,
           },
           '& th': {
-            fontWeight: 600,
-            color: ds?.text?.secondary ?? '#374151',
-            backgroundColor: ds?.background?.primary ?? '#ffffff',
+            fontWeight: ds.weight.semibold,
+            color: ds.brand[500],
+            backgroundColor: ds.background[100],
             position: 'sticky',
             top: 0,
           },
@@ -411,14 +412,14 @@ const CsvSchemaPanel = () => (
           {CSV_SCHEMA.map((col) => (
             <tr key={col.name}>
               <td>
-                <code style={{ fontSize: '11px' }}>{col.name}</code>
+                <code style={{ fontSize: ds.text.caption }}>{col.name}</code>
               </td>
               <td>
                 <Label tone={col.required ? 'critical' : 'neutral'}>{col.required ? 'required' : 'optional'}</Label>
               </td>
               <td>{col.purpose}</td>
               <td>
-                <code style={{ fontSize: '10px', color: ds?.text?.secondaryDark ?? '#6b7280' }}>{col.example}</code>
+                <code style={{ fontSize: ds.text.caption, color: ds.gray[500] }}>{col.example}</code>
               </td>
             </tr>
           ))}

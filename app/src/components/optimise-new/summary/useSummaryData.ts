@@ -7,8 +7,22 @@ import { getBudgetExpectedMonthlyExpense } from '@lib/budget';
 import { transformApiToInsight } from './transformRecommendation';
 import type { CurrencyCostSummary, AccountCost } from './AccountClusterPane';
 
-const CURRENCY_MAP: Record<string, string> = { USD: '$', INR: '₹' };
 const DEFAULT_SYMBOL = '$';
+
+// Resolve an ISO currency code (USD/INR/EUR/GBP/…) to its narrow symbol via Intl,
+// so any billing currency a cloud provider reports renders correctly rather than
+// falling back to '$' for everything outside a hardcoded USD/INR map.
+const getCurrencySymbol = (currency: string): string => {
+  try {
+    return (
+      new Intl.NumberFormat('en-US', { style: 'currency', currency, currencyDisplay: 'narrowSymbol' })
+        .formatToParts(0)
+        .find((p) => p.type === 'currency')?.value || DEFAULT_SYMBOL
+    );
+  } catch {
+    return DEFAULT_SYMBOL;
+  }
+};
 
 export function useSummaryData() {
   const [accounts, setAccounts] = useState<Record<string, { account_name: string; cloud_provider: string }>>({});
@@ -170,7 +184,7 @@ export function useSummaryData() {
           const data = folded[id];
           const currencyIso = dominantCurrency(data?.currencyAmounts || {});
           if (currencyIso) realCurrencies.add(currencyIso);
-          const symbol = CURRENCY_MAP[currencyIso] || DEFAULT_SYMBOL;
+          const symbol = currencyIso ? getCurrencySymbol(currencyIso) : DEFAULT_SYMBOL;
           accountCurrency[id] = symbol;
           const acctName = accounts[id]?.account_name || id;
 
@@ -212,7 +226,7 @@ export function useSummaryData() {
         setAccountCosts(perAccount);
         setCurrencySymbols(accountCurrency);
         setSavingsCurrency(tenantCurrency);
-        setSavingsSymbol(CURRENCY_MAP[tenantCurrency] || DEFAULT_SYMBOL);
+        setSavingsSymbol(getCurrencySymbol(tenantCurrency));
       } catch (err) {
         console.error('Failed to fetch cost data:', err);
       } finally {

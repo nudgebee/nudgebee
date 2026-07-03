@@ -53,7 +53,6 @@ import { spliceEdgesOnNodeDelete } from '@components/workflow/utils/spliceNode';
 import { disableTask, enableTask } from '@components/workflow/utils/toggleTaskDisable';
 import { findTaskOutputReferences, type TaskOutputReference } from '@components/workflow/utils/workflowValidation';
 
-import { colors } from 'src/utils/colors';
 import SafeIcon from '@shared/icons/SafeIcon';
 
 // Tasks marked as deprecated still execute, but render a Deprecated pill on the node.
@@ -447,7 +446,7 @@ const ActionNode = ({ id, data, isConnectable, selected, onTestTask, accountId, 
             width: '28px',
             backgroundColor: 'white',
             padding: 'var(--ds-space-1)',
-            color: data.taskConfig?.valid === false ? '#dc2626' : '#16a34a',
+            color: data.taskConfig?.valid === false ? 'var(--ds-red-600)' : 'var(--ds-green-500)',
           }}
         >
           {getValidationIcon()}
@@ -459,12 +458,12 @@ const ActionNode = ({ id, data, isConnectable, selected, onTestTask, accountId, 
   const isDisabled = data.taskConfig?.disabled === true;
 
   const getBorder = (): string => {
-    if (data.isDeleted) return '2px dashed #999999';
-    if (isDisabled) return '2px dashed #9ca3af';
-    if (data.connectionRejected) return '3px solid #ef4444';
-    if (data.taskConfig?.valid === false) return '2px solid #fbbf24';
-    if (selected) return '2px solid #1D4ED8';
-    return `1px solid ${colors.iconColor}`;
+    if (data.isDeleted) return '2px dashed var(--ds-gray-500)';
+    if (isDisabled) return '2px dashed var(--ds-gray-500)';
+    if (data.connectionRejected) return '3px solid var(--ds-red-500)';
+    if (data.taskConfig?.valid === false) return '2px solid var(--ds-amber-400)';
+    if (selected) return '2px solid var(--ds-blue-600)';
+    return '1px solid var(--ds-brand-200)';
   };
 
   const getNodeStyle = (): React.CSSProperties => {
@@ -487,7 +486,7 @@ const ActionNode = ({ id, data, isConnectable, selected, onTestTask, accountId, 
             alignItems: 'center',
             gap: 4,
             padding: 'var(--ds-space-1) var(--ds-space-2)',
-            borderRadius: 999,
+            borderRadius: 'var(--ds-radius-pill)',
             background: 'var(--ds-gray-600)',
             color: 'white',
             fontSize: 10,
@@ -497,14 +496,14 @@ const ActionNode = ({ id, data, isConnectable, selected, onTestTask, accountId, 
             boxShadow: '0 1px 2px rgba(0,0,0,0.15)',
           }}
         >
-          <PauseCircleOutlineIcon sx={{ fontSize: 12, color: 'white' }} />
+          <PauseCircleOutlineIcon sx={{ fontSize: 'var(--ds-text-small)', color: 'white' }} />
           Disabled
         </div>
       )}
       <BaseNode
         selected={selected}
         border={getBorder()}
-        background={data.isDeleted || isDisabled ? '#f9fafb' : 'white'}
+        background={data.isDeleted || isDisabled ? 'var(--ds-background-200)' : 'white'}
         nodeStyle={getNodeStyle()}
         onDelete={handleDeleteClick}
         content={{
@@ -551,13 +550,13 @@ const ActionNode = ({ id, data, isConnectable, selected, onTestTask, accountId, 
                   alignItems: 'center',
                   padding: 'var(--ds-space-1)',
                   borderRadius: 'var(--ds-radius-sm)',
-                  backgroundColor: idError ? '#f3f4f6' : '#f0f9ff',
-                  border: `1px solid ${idError ? '#d1d5db' : '#0ea5e9'}`,
+                  backgroundColor: idError ? 'var(--ds-gray-100)' : 'var(--ds-blue-100)',
+                  border: `1px solid ${idError ? 'var(--ds-gray-300)' : 'var(--ds-blue-500)'}`,
                   opacity: idError ? 0.5 : 1,
                 }}
                 title={idError || 'Save ID'}
               >
-                <CheckIcon sx={{ fontSize: 'var(--ds-text-title)', color: idError ? '#9ca3af' : '#0ea5e9' }} />
+                <CheckIcon sx={{ fontSize: 'var(--ds-text-title)', color: idError ? 'var(--ds-gray-500)' : 'var(--ds-blue-500)' }} />
               </button>
               <button
                 id='wf-node-action-cancel-id-btn'
@@ -590,19 +589,23 @@ const ActionNode = ({ id, data, isConnectable, selected, onTestTask, accountId, 
             <Box sx={{ display: 'flex', flexDirection: 'column' }}>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
                 <Typography
-                  sx={{ fontSize: 'var(--ds-text-body-lg)', fontWeight: 'bold', color: data.isDeleted ? '#9ca3af' : colors.text.secondary }}
+                  sx={{
+                    fontSize: 'var(--ds-text-body-lg)',
+                    fontWeight: 'bold',
+                    color: data.isDeleted ? 'var(--ds-gray-500)' : 'var(--ds-brand-500)',
+                  }}
                 >
                   {id}
                 </Typography>
                 {data.isDeleted && (
                   <Box
                     sx={{
-                      backgroundColor: colors.text.red,
+                      backgroundColor: 'var(--ds-red-500)',
                       borderRadius: 'var(--ds-radius-sm)',
                       padding: 'var(--ds-space-1) var(--ds-space-2)',
                       fontSize: 'var(--ds-text-small)',
                       fontWeight: 'var(--ds-font-weight-regular)',
-                      color: colors.text.white,
+                      color: 'var(--ds-background-100)',
                     }}
                   >
                     Deleted
@@ -623,13 +626,13 @@ const ActionNode = ({ id, data, isConnectable, selected, onTestTask, accountId, 
                   </Box>
                 )}
               </Box>
-              <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.tertiary, mt: -0.5 }}>{data.label}</Typography>
+              <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-gray-600)', mt: -0.5 }}>{data.label}</Typography>
             </Box>
           ),
           description: data?.description || (data.isDeleted ? data.taskConfig?.type : ''),
           iconContainerStyle: {
-            backgroundColor: data.isDeleted ? '#9ca3af' : '#6172F3',
-            color: data.isDeleted ? '#6b7280' : '#3b82f6',
+            backgroundColor: data.isDeleted ? 'var(--ds-gray-500)' : 'var(--ds-purple-500)',
+            color: data.isDeleted ? 'var(--ds-gray-600)' : 'var(--ds-blue-500)',
           },
           statusBadges: getStatusBadges(),
         }}
@@ -646,7 +649,7 @@ const ActionNode = ({ id, data, isConnectable, selected, onTestTask, accountId, 
                 height: '14px',
                 backgroundColor: 'transparent',
                 borderTop: 'none',
-                borderBottom: '4px solid rgb(142, 185, 255)',
+                borderBottom: '4px solid var(--ds-blue-300)',
                 borderLeft: 'none',
                 borderRight: 'none',
                 top: '-18px',
@@ -667,7 +670,7 @@ const ActionNode = ({ id, data, isConnectable, selected, onTestTask, accountId, 
                   height: '14px',
                   backgroundColor: 'transparent',
                   borderBottom: 'none',
-                  borderTop: '4px solid rgb(142, 185, 255)',
+                  borderTop: '4px solid var(--ds-blue-300)',
                   borderLeft: 'none',
                   borderRight: 'none',
                   bottom: '-18px',
@@ -685,8 +688,8 @@ const ActionNode = ({ id, data, isConnectable, selected, onTestTask, accountId, 
                 icon: <PlayArrowIcon sx={{ fontSize: 'var(--ds-text-body-lg)', color: 'var(--ds-green-500)', pointerEvents: 'none' }} />,
                 onClick: handleTestTask,
                 title: 'Manual run this task',
-                hoverBackgroundColor: 'rgb(220, 255, 233)',
-                hoverBorderColor: 'rgb(126, 218, 160)',
+                hoverBackgroundColor: 'var(--ds-green-100)',
+                hoverBorderColor: 'var(--ds-green-300)',
               }
             : undefined
         }
@@ -697,20 +700,20 @@ const ActionNode = ({ id, data, isConnectable, selected, onTestTask, accountId, 
                 {
                   label: isDisabled ? 'Enable task' : 'Disable task',
                   icon: isDisabled ? (
-                    <PlayCircleOutlineIcon sx={{ fontSize: 16, color: 'var(--ds-blue-500)' }} />
+                    <PlayCircleOutlineIcon sx={{ fontSize: 'var(--ds-text-title)', color: 'var(--ds-blue-500)' }} />
                   ) : (
-                    <PauseCircleOutlineIcon sx={{ fontSize: 16, color: 'var(--ds-gray-600)' }} />
+                    <PauseCircleOutlineIcon sx={{ fontSize: 'var(--ds-text-title)', color: 'var(--ds-gray-600)' }} />
                   ),
                   onClick: handleToggleDisable,
                 },
                 {
                   label: 'Rename',
-                  icon: <EditOutlinedIcon sx={{ fontSize: 16, color: 'var(--ds-gray-600)' }} />,
+                  icon: <EditOutlinedIcon sx={{ fontSize: 'var(--ds-text-title)', color: 'var(--ds-gray-600)' }} />,
                   onClick: handleEditId,
                 },
                 {
                   label: 'Duplicate',
-                  icon: <ContentCopyOutlinedIcon sx={{ fontSize: 16, color: 'var(--ds-gray-600)' }} />,
+                  icon: <ContentCopyOutlinedIcon sx={{ fontSize: 'var(--ds-text-title)', color: 'var(--ds-gray-600)' }} />,
                   onClick: handleDuplicateTask,
                 },
               ]

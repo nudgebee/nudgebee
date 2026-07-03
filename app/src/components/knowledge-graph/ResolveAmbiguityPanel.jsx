@@ -94,18 +94,18 @@ const ResolveAmbiguityPanel = ({ row, onBack, onResolved }) => {
     // Constrain the resolve view to a comfortable form width in the wide
     // parent modal — the candidate list reads better in a column than
     // stretched across the full lg modal.
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, py: 2, maxWidth: '720px', mx: 'auto' }}>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[4], py: ds.space[4], maxWidth: '720px', mx: 'auto' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
         <Button tone='link' size='sm' onClick={onBack} icon={<SafeIcon src={ArrowBackGrayIcon} alt='back' width={14} height={14} />}>
           Back to declarations
         </Button>
       </Box>
 
       <Box>
-        <Typography sx={{ fontSize: '14px', fontWeight: 600, color: ds?.text?.secondary ?? '#374151' }}>
+        <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.semibold, color: ds.brand[500] }}>
           Disambiguate: {sourceHeader} → {destHeader}
         </Typography>
-        <Typography sx={{ fontSize: '12px', color: ds?.text?.secondaryDark ?? '#6b7280', mt: 0.5 }}>
+        <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], mt: ds.space[1] }}>
           Pick a node for {showSourceList && showDestList ? 'each side' : showSourceList ? 'the source' : 'the destination'}; the row resolves in one
           step.
         </Typography>
@@ -133,7 +133,7 @@ const ResolveAmbiguityPanel = ({ row, onBack, onResolved }) => {
       )}
       {showDestTooMany && <TooManyBanner side='destination' matchCount={row.dest_match_count ?? 0} />}
 
-      <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, pt: 2 }}>
+      <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[2], pt: ds.space[4] }}>
         <Button tone='secondary' size='md' onClick={onBack} disabled={submitting}>
           Cancel
         </Button>
@@ -155,8 +155,8 @@ ResolveAmbiguityPanel.propTypes = {
 // secondary identifying fields (namespace / cluster / arn) underneath.
 const CandidateSection = ({ title, candidates, picked, onPick, name }) => (
   <Box>
-    <Typography sx={{ fontSize: '13px', fontWeight: 600, color: ds?.text?.secondary ?? '#374151', mb: 1 }}>{title}</Typography>
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+    <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.brand[500], mb: ds.space[2] }}>{title}</Typography>
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[1] }}>
       {candidates.map((c) => {
         const checked = picked === c.node_id;
         return (
@@ -166,19 +166,20 @@ const CandidateSection = ({ title, candidates, picked, onPick, name }) => (
             sx={{
               display: 'flex',
               alignItems: 'flex-start',
-              gap: 1,
-              padding: '8px 12px',
-              borderRadius: '6px',
-              border: `1px solid ${checked ? ds?.border?.primary ?? '#3b82f6' : ds?.border?.secondary ?? '#e5e7eb'}`,
+              gap: ds.space[2],
+              py: ds.space[2],
+              px: ds.space[3],
+              borderRadius: ds.radius.md,
+              border: `1px solid ${checked ? ds.blue[500] : ds.brand[200]}`,
               cursor: 'pointer',
-              backgroundColor: checked ? ds?.background?.primaryLightest ?? '#eff6ff' : 'transparent',
-              '&:hover': { backgroundColor: ds?.background?.tertiaryLightest ?? '#f3f4f6' },
+              backgroundColor: checked ? ds.blue[100] : 'transparent',
+              '&:hover': { backgroundColor: ds.gray[100] },
             }}
           >
-            <Radio name={name} size='small' checked={checked} onChange={() => onPick(c.node_id)} sx={{ p: 0, mt: '2px' }} />
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, minWidth: 0 }}>
-              <Typography sx={{ fontSize: '13px', fontWeight: 500 }}>{c.display_name}</Typography>
-              <Typography sx={{ fontSize: '11px', color: ds?.text?.secondaryDark ?? '#6b7280' }}>
+            <Radio name={name} size='small' checked={checked} onChange={() => onPick(c.node_id)} sx={{ p: 0, mt: ds.space[0] }} />
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[0], minWidth: 0 }}>
+              <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.medium }}>{c.display_name}</Typography>
+              <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>
                 {c.node_type}
                 {c.namespace ? ` · ${c.namespace}` : ''}
                 {c.cluster ? ` · ${c.cluster}` : ''}
@@ -206,16 +207,16 @@ CandidateSection.propTypes = {
 const TooManyBanner = ({ side, matchCount }) => (
   <Box
     sx={{
-      padding: '12px 14px',
-      borderRadius: '6px',
-      border: `1px solid ${ds?.border?.warning ?? '#fcd34d'}`,
-      backgroundColor: ds?.background?.warningLightest ?? '#fffbeb',
+      padding: `${ds.space[3]} ${ds.space.mul(0, 7)}`,
+      borderRadius: ds.radius.md,
+      border: `1px solid ${ds.amber[400]}`,
+      backgroundColor: ds.amber[100],
     }}
   >
-    <Typography sx={{ fontSize: '13px', fontWeight: 600, color: ds?.text?.warning ?? '#92400e', mb: 0.5 }}>
+    <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.amber[700], mb: ds.space[1] }}>
       {matchCount} {side} candidates — too many to pick from
     </Typography>
-    <Typography sx={{ fontSize: '12px', color: ds?.text?.warning ?? '#92400e' }}>
+    <Typography sx={{ fontSize: ds.text.small, color: ds.amber[700] }}>
       Add a <strong>namespace</strong>, <strong>cluster</strong>, or <strong>ARN</strong> qualifier to narrow the match — re-upload via CSV, or call{' '}
       <code>kg_update_manual_dependency</code> directly.
     </Typography>

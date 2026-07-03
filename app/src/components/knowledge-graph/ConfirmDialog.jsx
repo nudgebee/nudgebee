@@ -4,7 +4,7 @@
 // Used by Manual Dependencies for destructive actions (single-row delete,
 // panic-button "Delete all"). Kept local to the knowledge-graph folder so
 // the destructive-action UX stays consistent across this feature; if other
-// surfaces need the same primitive later, lift to @common-new.
+// surfaces need the same primitive later, lift to @common.
 
 import { Box, Typography } from '@mui/material';
 import PropTypes from 'prop-types';
@@ -24,9 +24,9 @@ const ConfirmDialog = ({
   onClose,
 }) => (
   <Modal width='sm' title={title} open={open} handleClose={onClose} onClose={onClose}>
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, p: 2 }}>
-      <Typography sx={{ fontSize: '13px', color: ds?.text?.secondary ?? '#374151', lineHeight: 1.5 }}>{message}</Typography>
-      <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, pt: 0.5 }}>
+    <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[4], p: ds.space[4] }}>
+      <Typography sx={{ fontSize: ds.text.body, color: ds.gray[700], lineHeight: 1.5 }}>{message}</Typography>
+      <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[2], pt: ds.space[1] }}>
         <Button tone='secondary' size='md' onClick={onClose} disabled={submitting}>
           {cancelLabel}
         </Button>

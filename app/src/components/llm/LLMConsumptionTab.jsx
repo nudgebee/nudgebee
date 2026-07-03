@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import Tooltip from '@ui/Tooltip';
 import PropTypes from 'prop-types';
 import { Box, Typography, Alert, Collapse, Stack } from '@mui/material';
@@ -24,6 +24,7 @@ import apiUser from '@api1/user';
 import WidgetCard from '@ui/WidgetCard';
 import { ProgressBar } from '@ui/ProgressBar';
 import { Label } from '@ui/Label';
+import ScopeChip from '@components/llm/ScopeChip';
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -371,12 +372,14 @@ ModuleCell.propTypes = {
 // {assistantName} Chat). Each cell stacks its enabled limit lines. Halves
 // the row count vs. the previous scope×module layout while keeping the
 // per-module breakdown visible — totals already live in the KPI strip.
-const UsageMatrix = ({ budgetData, tenantName, accountName, assistantName }) => {
+const UsageMatrix = ({ budgetData, tenantName, accountName, assistantName, isTenantWide }) => {
   const moduleLabels = getModuleLabels(assistantName);
-  const scopes = [
-    { key: 'tenant', label: 'Tenant', name: tenantName },
-    { key: 'account', label: 'Account', name: accountName },
-  ];
+  const scopes = isTenantWide
+    ? [{ key: 'tenant', label: 'Tenant', name: tenantName }]
+    : [
+        { key: 'tenant', label: 'Tenant', name: tenantName },
+        { key: 'account', label: 'Account', name: accountName },
+      ];
 
   // The cross-product (cols × modules × scopes) is cheap, but only `budgetData`
   // varies between renders — memoize so we don't re-traverse on parent renders
@@ -480,6 +483,9 @@ UsageMatrix.propTypes = {
   tenantName: PropTypes.string.isRequired,
   accountName: PropTypes.string.isRequired,
   assistantName: PropTypes.string.isRequired,
+  // Drops the account row when true (Settings opened from the global
+  // sidebar — no current account in scope).
+  isTenantWide: PropTypes.bool,
 };
 
 const HEADER_CELL_SX = {
@@ -1111,6 +1117,12 @@ ActiveConfigsCompact.propTypes = {
 // ─── main component ──────────────────────────────────────────────────────────
 
 const LLMConsumptionTab = ({ accountId }) => {
+  // Tenant-wide mode: when Settings is opened from the global sidebar
+  // there's no current account. Budget status is per-account, so we skip
+  // the KPI strip + Usage matrix entirely and show only the Active
+  // Budgets (tenant scope) + Budgets for All Accounts (everything else)
+  // sections that operators can still act on.
+  const isTenantWide = !accountId;
   const { assistantName } = useTenantBranding();
   const [loading, setLoading] = useState(true);
   const [budgetData, setBudgetData] = useState(null);
@@ -1139,6 +1151,20 @@ const LLMConsumptionTab = ({ accountId }) => {
   const isAdmin = isTenantAdmin() || isSuperAdmin;
   const tenantName = session?.tenant?.name || 'Tenant';
 
+  // Suppress setState / toast after unmount. Settings tab switching
+  // unmounts this component while the budget-status + configs fetches
+  // are still in flight; the resolved closure must no-op or it surfaces
+  // a misleading "Failed to fetch" / "api: failed to list budget configs"
+  // toast on a tab that's no longer visible. Reset on every mount to
+  // survive StrictMode's double-mount.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   // Account list is essentially static for the session — fetch it ONCE on
   // mount and reuse from every consumer (budget-status effect, loadConfigs,
   // BudgetEditModal). Avoids the previous pattern of re-fetching on every
@@ -1164,14 +1190,14 @@ const LLMConsumptionTab = ({ accountId }) => {
 
   useEffect(() => {
     const fetchBudgetStatus = async () => {
-      if (!accountId) {
-        setError('Account ID is required');
-        setLoading(false);
-        return;
-      }
       try {
         setLoading(true);
-        const response = await apiBudget.getBudgetStatus(accountId);
+        // Tenant-wide entry sends an empty account_id; the backend
+        // returns tenant-scope data only (the per-account branch is
+        // skipped) so the KPI strip + Usage matrix can render real
+        // tenant usage instead of going blank.
+        const response = await apiBudget.getBudgetStatus(accountId || '');
+        if (!mountedRef.current) return;
         if (response.errors && response.errors.length > 0) {
           setError('Failed to fetch budget status');
           snackbar.error('Failed to fetch budget status');
@@ -1181,15 +1207,16 @@ const LLMConsumptionTab = ({ accountId }) => {
           setError('No data available');
         }
       } catch {
+        if (!mountedRef.current) return;
         setError('An error occurred while fetching budget status');
         snackbar.error('An error occurred while fetching budget status');
       } finally {
-        setLoading(false);
+        if (mountedRef.current) setLoading(false);
       }
     };
 
     fetchBudgetStatus();
-  }, [accountId, refreshKey]);
+  }, [accountId, refreshKey, isTenantWide]);
 
   const loadConfigs = useCallback(async () => {
     if (!isAdmin) return;
@@ -1200,6 +1227,7 @@ const LLMConsumptionTab = ({ accountId }) => {
         apiBudget.listBudgetConfigs('account'),
         apiBudget.getSystemDefaults(),
       ]);
+      if (!mountedRef.current) return;
       const apiErrors = tenantRes.errors || accountRes.errors || defaultsRes.errors;
       if (apiErrors) {
         const msg = Array.isArray(apiErrors) ? apiErrors[0]?.message : 'Failed to load configurations';
@@ -1210,9 +1238,10 @@ const LLMConsumptionTab = ({ accountId }) => {
       if (defaultsRes.data?.max_caps) setMaxCaps(defaultsRes.data.max_caps);
       if (defaultsRes.data?.defaults) setSystemDefaults(defaultsRes.data.defaults);
     } catch {
+      if (!mountedRef.current) return;
       snackbar.error('Failed to load budget configurations');
     } finally {
-      setConfigsLoading(false);
+      if (mountedRef.current) setConfigsLoading(false);
     }
   }, [isAdmin]);
 
@@ -1252,8 +1281,9 @@ const LLMConsumptionTab = ({ accountId }) => {
     // If the tenant AND the current account already have budgets, surface a
     // pre-dialog nudge: most "Add Budget" clicks here will hit the save-time
     // conflict guard once the user picks a scope+module. Catching it before
-    // the form saves a wasted edit.
-    if (tenantActiveConfigs.length > 0 && accountActiveConfigs.length > 0) {
+    // the form saves a wasted edit. Skipped in tenant-wide mode — no
+    // current-account context to compare against.
+    if (!isTenantWide && tenantActiveConfigs.length > 0 && accountActiveConfigs.length > 0) {
       setExistingWarningOpen(true);
       return;
     }
@@ -1264,19 +1294,34 @@ const LLMConsumptionTab = ({ accountId }) => {
 
   // Split configs so the ones that affect THIS view (tenant + current
   // account) stay always-visible, and unrelated other-account configs hide
-  // behind a small toggle.
+  // behind a small toggle. In tenant-wide mode there's no current account,
+  // so `accountActiveConfigs` is empty and EVERY account-config flows into
+  // `otherConfigs` for the "Budgets for All Accounts" section.
   const tenantActiveConfigs = useMemo(() => configs.filter((c) => c.entity_type === 'tenant'), [configs]);
-  const accountActiveConfigs = useMemo(() => configs.filter((c) => c.entity_type === 'account' && c.entity_id === accountId), [configs, accountId]);
-  const otherConfigs = useMemo(() => configs.filter((c) => c.entity_type === 'account' && c.entity_id !== accountId), [configs, accountId]);
+  const accountActiveConfigs = useMemo(
+    () => (isTenantWide ? [] : configs.filter((c) => c.entity_type === 'account' && c.entity_id === accountId)),
+    [configs, accountId, isTenantWide]
+  );
+  const otherConfigs = useMemo(
+    () =>
+      isTenantWide
+        ? configs.filter((c) => c.entity_type === 'account')
+        : configs.filter((c) => c.entity_type === 'account' && c.entity_id !== accountId),
+    [configs, accountId, isTenantWide]
+  );
 
-  // Scope arrays for ActiveConfigsCompact. Active = tenant + current account.
-  // Other-account section = one scope per non-current account that has configs.
+  // Scope arrays for ActiveConfigsCompact. Active = tenant + current account
+  // (tenant only when no account is selected). Other-account section = one
+  // scope per non-current account that has configs.
   const activeScopes = useMemo(
-    () => [
-      { key: 'tenant', label: 'Tenant', name: tenantName, configs: tenantActiveConfigs },
-      { key: `account-${accountId}`, label: 'Account', name: accountName || accountId, configs: accountActiveConfigs },
-    ],
-    [tenantName, accountName, accountId, tenantActiveConfigs, accountActiveConfigs]
+    () =>
+      isTenantWide
+        ? [{ key: 'tenant', label: 'Tenant', name: tenantName, configs: tenantActiveConfigs }]
+        : [
+            { key: 'tenant', label: 'Tenant', name: tenantName, configs: tenantActiveConfigs },
+            { key: `account-${accountId}`, label: 'Account', name: accountName || accountId, configs: accountActiveConfigs },
+          ],
+    [isTenantWide, tenantName, accountName, accountId, tenantActiveConfigs, accountActiveConfigs]
   );
 
   const otherAccountScopes = useMemo(() => {
@@ -1312,7 +1357,7 @@ const LLMConsumptionTab = ({ accountId }) => {
     );
   }
 
-  if (!budgetData) {
+  if (!budgetData && !isTenantWide) {
     return (
       <Box sx={{ p: ds.space[5] }}>
         <Typography sx={{ fontSize: 'var(--ds-text-body)', color: 'var(--ds-gray-500)' }}>No budget data available</Typography>
@@ -1320,7 +1365,8 @@ const LLMConsumptionTab = ({ accountId }) => {
     );
   }
 
-  const { period, today } = budgetData;
+  const period = budgetData?.period;
+  const today = budgetData?.today;
 
   // Build per-tile KPI props. When the source aggregate is null (no enabled
   // limit), render a placeholder tile ("No limit configured") instead of a
@@ -1335,10 +1381,12 @@ const LLMConsumptionTab = ({ accountId }) => {
         }
       : { value: 'No limit configured', progress: null, exhausted: false, placeholder: true };
 
-  const tenantSpendKpi = buildKpi(kpi.tenantSpend, formatCurrency);
-  const accountSpendKpi = buildKpi(kpi.accountSpend, formatCurrency);
-  const conversationsKpi = buildKpi(kpi.conversations, formatCount);
-  const todaySpendKpi = buildKpi(kpi.todaySpend, formatCurrency);
+  // In tenant-wide mode budgetData is null (we skipped the per-account
+  // fetch), so kpi is null and the KPI tiles render path is gated below.
+  const tenantSpendKpi = kpi ? buildKpi(kpi.tenantSpend, formatCurrency) : null;
+  const accountSpendKpi = kpi ? buildKpi(kpi.accountSpend, formatCurrency) : null;
+  const conversationsKpi = kpi ? buildKpi(kpi.conversations, formatCount) : null;
+  const todaySpendKpi = kpi ? buildKpi(kpi.todaySpend, formatCurrency) : null;
 
   return (
     <Box sx={{ p: 0, pb: ds.space[5] }}>
@@ -1355,12 +1403,18 @@ const LLMConsumptionTab = ({ accountId }) => {
                   fontFamily: 'Poppins',
                 }}
               >
-                Usage for {formatPeriod(period)}
+                Usage for {period ? formatPeriod(period) : '—'}
               </Typography>
-              <Label tone={STATUS_TO_LABEL[kpi.status].tone} dot size='md'>
-                {STATUS_TO_LABEL[kpi.status].text}
-              </Label>
-              {kpi.hasDailyEnabled && today && (
+              {/* Tenant-admins can manage tenant-scope budgets even
+                  without an account selected, so the chip omits the
+                  "Read-only" suffix here. */}
+              <ScopeChip accountId={accountId} readOnly={false} />
+              {kpi && (
+                <Label tone={STATUS_TO_LABEL[kpi.status].tone} dot size='md'>
+                  {STATUS_TO_LABEL[kpi.status].text}
+                </Label>
+              )}
+              {kpi?.hasDailyEnabled && today && (
                 <Chip tone='neutral' size='2xs'>
                   {`Today: ${today}`}
                 </Chip>
@@ -1384,52 +1438,65 @@ const LLMConsumptionTab = ({ accountId }) => {
           Account-scope exhaustion is self-serve (edit the account budget)
           so it surfaces via the Exhausted status pill instead, without
           this banner. */}
-      {kpi.tenantExhausted && (
+      {kpi?.tenantExhausted && (
         <Alert severity='warning' sx={{ mb: ds.space[3], fontSize: 'var(--ds-text-small)' }}>
           Tenant budget exhausted. Please contact Nudgebee support to enable {assistantName} and LLM-based Event Analysis.
         </Alert>
       )}
 
-      {/* KPI strip */}
-      <Box sx={{ display: 'flex', gap: ds.space[3], mb: ds.space[3] }}>
-        <KpiTile
-          label='Monthly spend — tenant'
-          value={tenantSpendKpi.value}
-          sublabel={tenantName}
-          progress={tenantSpendKpi.progress}
-          exhausted={tenantSpendKpi.exhausted}
-          placeholder={tenantSpendKpi.placeholder}
-        />
-        <KpiTile
-          label='Monthly spend — account'
-          value={accountSpendKpi.value}
-          sublabel={accountName || accountId}
-          progress={accountSpendKpi.progress}
-          exhausted={accountSpendKpi.exhausted}
-          placeholder={accountSpendKpi.placeholder}
-        />
-        <KpiTile
-          label='Conversations (month)'
-          value={conversationsKpi.value}
-          sublabel='Tenant • all modules'
-          progress={conversationsKpi.progress}
-          exhausted={conversationsKpi.exhausted}
-          placeholder={conversationsKpi.placeholder}
-        />
-        {kpi.hasDailyEnabled && (
-          <KpiTile
-            label="Today's spend"
-            value={todaySpendKpi.value}
-            sublabel='Tenant • all modules'
-            progress={todaySpendKpi.progress}
-            exhausted={todaySpendKpi.exhausted}
-            placeholder={todaySpendKpi.placeholder}
-          />
-        )}
-      </Box>
+      {/* KPI strip + Usage matrix. In tenant-wide mode the per-account
+          tile is hidden (backend returns no account branch) and the
+          matrix renders just the tenant row. */}
+      {kpi && (
+        <>
+          <Box sx={{ display: 'flex', gap: ds.space[3], mb: ds.space[3] }}>
+            <KpiTile
+              label='Monthly spend — tenant'
+              value={tenantSpendKpi.value}
+              sublabel={tenantName}
+              progress={tenantSpendKpi.progress}
+              exhausted={tenantSpendKpi.exhausted}
+              placeholder={tenantSpendKpi.placeholder}
+            />
+            {!isTenantWide && (
+              <KpiTile
+                label='Monthly spend — account'
+                value={accountSpendKpi.value}
+                sublabel={accountName || accountId}
+                progress={accountSpendKpi.progress}
+                exhausted={accountSpendKpi.exhausted}
+                placeholder={accountSpendKpi.placeholder}
+              />
+            )}
+            <KpiTile
+              label='Conversations (month)'
+              value={conversationsKpi.value}
+              sublabel='Tenant • all modules'
+              progress={conversationsKpi.progress}
+              exhausted={conversationsKpi.exhausted}
+              placeholder={conversationsKpi.placeholder}
+            />
+            {kpi.hasDailyEnabled && (
+              <KpiTile
+                label="Today's spend"
+                value={todaySpendKpi.value}
+                sublabel='Tenant • all modules'
+                progress={todaySpendKpi.progress}
+                exhausted={todaySpendKpi.exhausted}
+                placeholder={todaySpendKpi.placeholder}
+              />
+            )}
+          </Box>
 
-      {/* Usage matrix */}
-      <UsageMatrix budgetData={budgetData} tenantName={tenantName} accountName={accountName || accountId} assistantName={assistantName} />
+          <UsageMatrix
+            budgetData={budgetData}
+            tenantName={tenantName}
+            accountName={accountName || accountId}
+            assistantName={assistantName}
+            isTenantWide={isTenantWide}
+          />
+        </>
+      )}
 
       {/* Admin: Active Budgets (always visible) + Other Accounts (collapsible) */}
       {isAdmin && (
@@ -1464,7 +1531,15 @@ const LLMConsumptionTab = ({ accountId }) => {
               {otherConfigs.length > 0 && (
                 <Box sx={{ mt: ds.space[4] }}>
                   <Box
+                    role='button'
+                    tabIndex={0}
                     onClick={() => setConfigsOpen((v) => !v)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setConfigsOpen((v) => !v);
+                      }
+                    }}
                     sx={{
                       display: 'flex',
                       alignItems: 'center',
@@ -1485,7 +1560,7 @@ const LLMConsumptionTab = ({ accountId }) => {
                           letterSpacing: 0.4,
                         }}
                       >
-                        Budgets for Other Accounts
+                        {isTenantWide ? 'Budgets for All Accounts' : 'Budgets for Other Accounts'}
                       </Typography>
                       <Chip tone='neutral' size='2xs' variant='count'>
                         {otherConfigs.length}
@@ -1619,7 +1694,11 @@ const LLMConsumptionTab = ({ accountId }) => {
 };
 
 LLMConsumptionTab.propTypes = {
-  accountId: PropTypes.string.isRequired,
+  // Optional: empty / unset means tenant-wide read (Settings opened from
+  // the global sidebar) — KPI/matrix are hidden and the active-scopes
+  // section collapses to Tenant only with all account configs flowing
+  // into the bottom list.
+  accountId: PropTypes.string,
 };
 
 export default LLMConsumptionTab;

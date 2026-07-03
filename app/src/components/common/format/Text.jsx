@@ -1,7 +1,7 @@
 import { Box, Typography } from '@mui/material';
 import { styled } from '@mui/material/styles';
 import { useRef, useEffect, useState } from 'react';
-import CopyableText from '@shared/CopyableText';
+import CopyButton from '@shared/buttons/CopyButton';
 import PropTypes from 'prop-types';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import Tooltip from '@ui/Tooltip';
@@ -76,9 +76,10 @@ const Text = ({
 
   if (copyableTooltip) {
     toolTip = (
-      <CopyableText copyableText={value} iconColor='white' format={format}>
+      <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
         {value}
-      </CopyableText>
+        <CopyButton text={value} />
+      </Box>
     );
   }
 

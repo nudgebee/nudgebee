@@ -1,4 +1,4 @@
-import CustomButton from '@shared/NewCustomButton';
+import { Button } from '@ui/Button';
 import TextareaAutosize, { type TextareaAutosizeProps } from '@mui/material/TextareaAutosize';
 import { Avatar, Box, ButtonBase as MuiButtonBase, ClickAwayListener, Popper, styled, Typography } from '@mui/material';
 import type { Theme } from '@mui/material/styles';
@@ -14,8 +14,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import { toast as snackbar } from '@ui/Toast';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import { Input } from '@ui/Input';
-import { Button } from '@ui/Button';
-import CustomTooltip from '@ui/Tooltip';
+import Tooltip from '@ui/Tooltip';
 import CheckIcon from '@mui/icons-material/Check';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 
@@ -338,7 +337,7 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                     ]}
                   />
                 </Box>
-                <CustomTooltip
+                <Tooltip
                   placement='top'
                   PopperProps={{ sx: { zIndex: 10000 }, modifiers: [{ name: 'preventOverflow', options: { padding: 8 } }] }}
                   title={
@@ -348,7 +347,7 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                   }
                 >
                   <InfoOutlinedIcon sx={{ fontSize: 16, color: 'var(--ds-gray-500)', cursor: 'help' }} />
-                </CustomTooltip>
+                </Tooltip>
               </Box>
 
               {mode === 'tier' && (
@@ -393,7 +392,7 @@ export const ModelPickerPopover: React.FC<ModelPickerPopoverProps> = ({
                         justifyContent: 'space-between',
                         width: '100%',
                         textAlign: 'left',
-                        padding: 'var(--ds-overlay-item-padding-md, 8px var(--ds-space-3))',
+                        padding: 'var(--ds-overlay-item-padding-md, var(--ds-space-2) var(--ds-space-3))',
                         gap: 'var(--ds-space-2)',
                         backgroundColor: selected ? 'var(--ds-overlay-item-selected-bg, var(--ds-blue-100))' : 'transparent',
                         '&:hover': {
@@ -991,8 +990,8 @@ const AutoSuggestTextarea: React.FC<AutoSuggestTextareaProps> = ({
             </>
           )}
           <Box sx={{ width: '1px', height: ds.space[5], backgroundColor: 'var(--ds-brand-200)', mx: 'var(--ds-space-3)' }} />
-          <CustomButton
-            size='Medium'
+          <Button
+            size='md'
             onClick={() => {
               if (isFollowUp && allowStop) {
                 buttonProperties.onClickStop();
@@ -1000,7 +999,10 @@ const AutoSuggestTextarea: React.FC<AutoSuggestTextareaProps> = ({
                 handleSend();
               }
             }}
-            startIcon={isFollowUp && allowStop ? <StopIcon sx={{ color: 'white' }} /> : ArrowRightWhiteIcon}
+            icon={
+              isFollowUp && allowStop ? <StopIcon sx={{ color: 'white' }} /> : <SafeIcon src={ArrowRightWhiteIcon} alt='' width={18} height={18} />
+            }
+            aria-label={isFollowUp && allowStop ? 'Stop' : 'Send'}
             disabled={!(isFollowUp && allowStop) && (!text || !buttonProperties.enable)}
           />
         </Box>
@@ -1043,9 +1045,9 @@ const AutoSuggestTextarea: React.FC<AutoSuggestTextareaProps> = ({
                   alignItems: 'center',
                   justifyContent: 'center',
                   borderRadius: '50%',
-                  backgroundColor: 'rgba(0,0,0,0.55)',
+                  backgroundColor: 'color-mix(in srgb, var(--ds-gray-700) 55%, transparent)',
                   cursor: 'pointer',
-                  '&:hover': { backgroundColor: 'rgba(0,0,0,0.8)' },
+                  '&:hover': { backgroundColor: 'color-mix(in srgb, var(--ds-gray-700) 80%, transparent)' },
                 }}
               >
                 <CloseIcon sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-background-100)' }} />
@@ -1105,16 +1107,16 @@ const AutoSuggestTextarea: React.FC<AutoSuggestTextareaProps> = ({
             sx={{
               display: 'flex',
               alignItems: 'center',
-              color: ds.gray[600],
+              color: suggestionsAt.length === 0 ? ds.gray[400] : ds.gray[600],
               border: `0.5px solid ${ds.gray[300]}`,
               borderRadius: 'var(--ds-radius-sm)',
               padding: 'var(--ds-space-1) var(--ds-space-2)',
               gap: 'var(--ds-space-1)',
-              cursor: 'pointer',
+              cursor: suggestionsAt.length === 0 ? 'default' : 'pointer',
               whiteSpace: 'nowrap',
               flexShrink: 0,
             }}
-            onClick={handleButtonClick}
+            onClick={suggestionsAt.length === 0 ? undefined : handleButtonClick}
           >
             {selectedAgent ? (
               <>
@@ -1165,6 +1167,10 @@ const AutoSuggestTextarea: React.FC<AutoSuggestTextareaProps> = ({
                   ✕
                 </Box>
               </>
+            ) : suggestionsAt.length === 0 ? (
+              <Tooltip title='You can add an agent in Settings' variant='default' placement='top'>
+                <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: ds.gray[400] }}>No agent connected</Typography>
+              </Tooltip>
             ) : (
               <>
                 <Typography sx={{ fontSize: 'var(--ds-text-caption)' }}>Agent</Typography>
@@ -1188,9 +1194,9 @@ const AutoSuggestTextarea: React.FC<AutoSuggestTextareaProps> = ({
           )}
           <Box sx={{ flex: 1 }} />
           {/* Submit / Stop button */}
-          <CustomButton
+          <Button
             id='set-config-btn'
-            size='Medium'
+            size='md'
             onClick={() => {
               if (isFollowUp && allowStop) {
                 buttonProperties.onClickStop();
@@ -1198,7 +1204,10 @@ const AutoSuggestTextarea: React.FC<AutoSuggestTextareaProps> = ({
                 handleSend();
               }
             }}
-            startIcon={isFollowUp && allowStop ? <StopIcon sx={{ color: 'white' }} /> : ArrowRightWhiteIcon}
+            icon={
+              isFollowUp && allowStop ? <StopIcon sx={{ color: 'white' }} /> : <SafeIcon src={ArrowRightWhiteIcon} alt='' width={18} height={18} />
+            }
+            aria-label={isFollowUp && allowStop ? 'Stop' : 'Send'}
             disabled={!(isFollowUp && allowStop) && (!text || !buttonProperties.enable)}
           />
         </Box>

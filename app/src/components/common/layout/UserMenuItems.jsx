@@ -3,9 +3,9 @@ import { MenuItem, Typography, ListItemAvatar, Avatar, ListItemText } from '@mui
 import SafeIcon from '@shared/icons/SafeIcon';
 import { signOut } from 'next-auth/react';
 import { getUserSession, isTenantAdmin } from '@lib/auth';
-import { colors } from 'src/utils/colors';
 import { SwitchTenentIconDark, LogoutIconDark, SettingsIcon, ApiIcon } from '@assets';
-import CustomTooltip from '../CustomTooltip';
+import { ds } from 'src/utils/colors';
+import Tooltip from '@ui/Tooltip';
 
 const VersionMenuItem = () => {
   const version = getUserSession()?.appVersion || 'N/A';
@@ -21,14 +21,21 @@ const VersionMenuItem = () => {
   }, []);
 
   return (
-    <MenuItem sx={{ p: 'var(--ds-space-3)' }} disabled={true}>
-      <CustomTooltip title={isOverflowing ? version : ''}>
+    <MenuItem
+      sx={{
+        padding: 'var(--ds-overlay-item-padding-md)',
+        margin: '0 var(--ds-overlay-item-margin-x)',
+        borderRadius: 'var(--ds-overlay-item-radius)',
+      }}
+      disabled={true}
+    >
+      <Tooltip title={isOverflowing ? version : ''}>
         <Typography
           ref={textRef}
           sx={{
             fontSize: 'var(--ds-text-body-lg)',
             fontWeight: 'var(--ds-font-weight-regular)',
-            color: colors.text.secondary,
+            color: 'var(--ds-gray-700)',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
@@ -38,7 +45,7 @@ const VersionMenuItem = () => {
         >
           {displayText}
         </Typography>
-      </CustomTooltip>
+      </Tooltip>
     </MenuItem>
   );
 };
@@ -57,14 +64,25 @@ export const createGetMenuItem = ({ setAnchorElUser, setOpenSwitchAccount, setOp
   const getMenuItem = (setting) => {
     if (setting === 'UserInfo') {
       return (
-        <MenuItem key={setting} sx={{ p: 'var(--ds-space-3)', borderBottom: `1px solid ${colors.border.secondaryLight}` }}>
+        <MenuItem
+          key={setting}
+          sx={{
+            padding: 'var(--ds-overlay-item-padding-md)',
+            margin: '0 var(--ds-overlay-item-margin-x)',
+            borderRadius: 'var(--ds-overlay-item-radius)',
+            borderBottom: '0.5px solid var(--ds-gray-200)',
+            '&:hover': { backgroundColor: 'var(--ds-overlay-item-hover-bg)' },
+            '&.Mui-disabled': { opacity: 1 },
+          }}
+          disabled={true}
+        >
           <ListItemAvatar>
             {getUserSession()?.user?.image ? (
-              <Avatar height={'38px'} width={'38px'}>
+              <Avatar sx={{ width: ds.space.mul(0, 19), height: ds.space.mul(0, 19) }}>
                 <SafeIcon src={SwitchTenentIconDark} alt='switch tenent' />
               </Avatar>
             ) : (
-              <Avatar height={'38px'} width={'38px'} />
+              <Avatar sx={{ width: ds.space.mul(0, 19), height: ds.space.mul(0, 19) }} />
             )}
           </ListItemAvatar>
           <ListItemText
@@ -79,11 +97,11 @@ export const createGetMenuItem = ({ setAnchorElUser, setOpenSwitchAccount, setOp
                       display: 'block',
                       fontSize: 'var(--ds-text-caption)',
                       fontWeight: 'var(--ds-font-weight-medium)',
-                      color: colors.text.secondary,
+                      color: 'var(--ds-blue-600)',
                       mt: 'var(--ds-space-1)',
                       px: 'var(--ds-space-1)',
                       py: 'var(--ds-space-1)',
-                      backgroundColor: colors.background.primaryLightest,
+                      backgroundColor: 'var(--ds-overlay-item-selected-bg)',
                       borderRadius: 'var(--ds-radius-sm)',
                       width: 'fit-content',
                     }}
@@ -96,11 +114,11 @@ export const createGetMenuItem = ({ setAnchorElUser, setOpenSwitchAccount, setOp
             primaryTypographyProps={{
               fontSize: 'var(--ds-text-title)',
               fontWeight: 'var(--ds-font-weight-semibold)',
-              color: colors.text.secondary,
+              color: 'var(--ds-gray-700)',
             }}
             secondaryTypographyProps={{
               fontSize: 'var(--ds-text-small)',
-              color: colors.text.secondaryDark,
+              color: 'var(--ds-gray-500)',
               component: 'div',
             }}
           />
@@ -110,7 +128,13 @@ export const createGetMenuItem = ({ setAnchorElUser, setOpenSwitchAccount, setOp
       return (
         <MenuItem
           key={setting}
-          sx={{ p: 'var(--ds-space-3)', borderBottom: `1px solid ${colors.border.secondaryLight}` }}
+          sx={{
+            padding: 'var(--ds-overlay-item-padding-md)',
+            margin: '0 var(--ds-overlay-item-margin-x)',
+            borderRadius: 'var(--ds-overlay-item-radius)',
+            borderBottom: '0.5px solid var(--ds-gray-200)',
+            '&:hover': { backgroundColor: 'var(--ds-overlay-item-hover-bg)' },
+          }}
           onClick={() => {
             setAnchorElUser(null);
             setOpenSwitchAccount(true);
@@ -118,12 +142,12 @@ export const createGetMenuItem = ({ setAnchorElUser, setOpenSwitchAccount, setOp
         >
           <Typography
             textAlign='left'
-            fontSize={14}
+            fontSize={'var(--ds-text-body-lg)'}
             display={'flex'}
             alignItems={'center'}
-            gap={'10px'}
+            gap={'var(--ds-space-2)'}
             fontWeight={'400'}
-            color={colors.text.secondary}
+            color={'var(--ds-gray-700)'}
           >
             <SafeIcon src={SwitchTenentIconDark} alt='switch tenent' /> Switch Tenant
           </Typography>
@@ -133,7 +157,13 @@ export const createGetMenuItem = ({ setAnchorElUser, setOpenSwitchAccount, setOp
       return (
         <MenuItem
           key={setting}
-          sx={{ p: 'var(--ds-space-3)', borderBottom: `1px solid ${colors.border.secondaryLight}` }}
+          sx={{
+            padding: 'var(--ds-overlay-item-padding-md)',
+            margin: '0 var(--ds-overlay-item-margin-x)',
+            borderRadius: 'var(--ds-overlay-item-radius)',
+            borderBottom: '0.5px solid var(--ds-gray-200)',
+            '&:hover': { backgroundColor: 'var(--ds-overlay-item-hover-bg)' },
+          }}
           onClick={() => {
             setAnchorElUser(null);
             signOut({ callbackUrl: '/' });
@@ -141,12 +171,12 @@ export const createGetMenuItem = ({ setAnchorElUser, setOpenSwitchAccount, setOp
         >
           <Typography
             textAlign='left'
-            fontSize={14}
+            fontSize={'var(--ds-text-body-lg)'}
             display={'flex'}
             alignItems={'center'}
-            gap={'10px'}
+            gap={'var(--ds-space-2)'}
             fontWeight={'400'}
-            color={colors.text.secondary}
+            color={'var(--ds-gray-700)'}
           >
             <SafeIcon src={LogoutIconDark} alt='logout' /> Logout
           </Typography>
@@ -158,7 +188,13 @@ export const createGetMenuItem = ({ setAnchorElUser, setOpenSwitchAccount, setOp
       return (
         <MenuItem
           key={setting}
-          sx={{ p: 'var(--ds-space-3)', borderBottom: `1px solid ${colors.border.secondaryLight}` }}
+          sx={{
+            padding: 'var(--ds-overlay-item-padding-md)',
+            margin: '0 var(--ds-overlay-item-margin-x)',
+            borderRadius: 'var(--ds-overlay-item-radius)',
+            borderBottom: '0.5px solid var(--ds-gray-200)',
+            '&:hover': { backgroundColor: 'var(--ds-overlay-item-hover-bg)' },
+          }}
           onClick={() => {
             setAnchorElUser(null);
             setOpenSettings(true);
@@ -166,12 +202,12 @@ export const createGetMenuItem = ({ setAnchorElUser, setOpenSwitchAccount, setOp
         >
           <Typography
             textAlign='left'
-            fontSize={14}
+            fontSize={'var(--ds-text-body-lg)'}
             display={'flex'}
             alignItems={'center'}
-            gap={'10px'}
+            gap={'var(--ds-space-2)'}
             fontWeight={'400'}
-            color={colors.text.secondary}
+            color={'var(--ds-gray-700)'}
           >
             <SafeIcon src={SettingsIcon} alt='settings' /> Settings
           </Typography>
@@ -181,7 +217,13 @@ export const createGetMenuItem = ({ setAnchorElUser, setOpenSwitchAccount, setOp
       return (
         <MenuItem
           key={setting}
-          sx={{ p: 'var(--ds-space-3)', borderBottom: `1px solid ${colors.border.secondaryLight}` }}
+          sx={{
+            padding: 'var(--ds-overlay-item-padding-md)',
+            margin: '0 var(--ds-overlay-item-margin-x)',
+            borderRadius: 'var(--ds-overlay-item-radius)',
+            borderBottom: '0.5px solid var(--ds-gray-200)',
+            '&:hover': { backgroundColor: 'var(--ds-overlay-item-hover-bg)' },
+          }}
           onClick={() => {
             setAnchorElUser(null);
             setOpenApiTokens(true);
@@ -189,12 +231,12 @@ export const createGetMenuItem = ({ setAnchorElUser, setOpenSwitchAccount, setOp
         >
           <Typography
             textAlign='left'
-            fontSize={14}
+            fontSize={'var(--ds-text-body-lg)'}
             display={'flex'}
             alignItems={'center'}
-            gap={'10px'}
+            gap={'var(--ds-space-2)'}
             fontWeight={'400'}
-            color={colors.text.secondary}
+            color={'var(--ds-gray-700)'}
           >
             <SafeIcon src={ApiIcon} alt='api tokens' /> API Tokens
           </Typography>

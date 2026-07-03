@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { ds } from '@utils/colors';
 
 interface ConsoleLogOutputProps {
   data: string;
@@ -57,7 +58,9 @@ const ConsoleLogOutput = React.memo(({ data, sx }: ConsoleLogOutputProps) => {
 
           return (
             <div key={index} style={getLineStyles(line)}>
-              {!isNoNewerLogsMessage && <span style={{ userSelect: 'none', marginRight: 8, color: 'gray', minWidth: '15px' }}>•</span>}
+              {!isNoNewerLogsMessage && (
+                <span style={{ userSelect: 'none', marginRight: ds.space[2], color: ds.gray[500], minWidth: '15px' }}>•</span>
+              )}
               <span>{cleanLine}</span>
             </div>
           );

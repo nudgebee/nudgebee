@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { Box, Stack, Typography, Grid, Divider } from '@mui/material';
 import DSModal from '@ui/Modal';
 import ClusterNode from './common/ClusterNode';
-import Title from '@shared/Title';
 import { formatNumber } from '@lib/formatter';
 import Currency from '@shared/format/Currency';
 import KubernetesMemoryCpuOverView from '@components/k8s/common/KubernetesMemoryCpuOverView';
@@ -11,7 +10,7 @@ import DSCard from '@ui/Card';
 import { Stat } from '@ui/Stat';
 import DSTooltip from '@ui/Tooltip';
 import DSLink from '@ui/Link';
-import HeadingWithBorder from '@shared/HeadingWithBorder';
+import Heading from '@components/common/Heading';
 import { RecentErrorIcon, MatricsIcon, ServiceMapsIcon, PodsIcon, StarsIcon, ApplicationsIconblue } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import apiKubernetes1 from '@api1/kubernetes1';
@@ -27,7 +26,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { colorsArray } from 'src/utils/common';
 import { GetInsightIcon } from '@shared/icons/GetInsightIcon';
 import CustomOptimizationsSummaryCard from './common/CustomOptimizationsSummaryCard';
-import SecondaryLink from '@shared/SecondaryLink';
 import HighlightText from './common/HighlightComponent';
 import { useRouter } from 'next/router';
 import { Button as DSButton } from '@ui/Button';
@@ -37,21 +35,21 @@ import Link from 'next/link';
 export const SummaryBlock = ({ title, children, greenColor, redColor, sx, hideTitle = false, height = '' }) => {
   const getBorderColor = (greenColor, redColor) => {
     if (greenColor) {
-      return '#C1ECC0';
+      return 'var(--ds-green-200)';
     }
     if (redColor) {
-      return '#FFD9D9';
+      return 'var(--ds-red-200)';
     }
-    return '#3162D04D';
+    return 'color-mix(in srgb, var(--ds-blue-600) 30%, transparent)';
   };
   const getBgColor = (greenColor, redColor) => {
     if (greenColor) {
-      return '#F7FFF6';
+      return 'var(--ds-green-100)';
     }
     if (redColor) {
-      return '#FFF9F9';
+      return 'var(--ds-red-100)';
     }
-    return '#F3F6FD';
+    return 'var(--ds-blue-100)';
   };
 
   const borderColor = getBorderColor(greenColor, redColor);
@@ -66,15 +64,15 @@ export const SummaryBlock = ({ title, children, greenColor, redColor, sx, hideTi
         height: height,
       }}
     >
-      {!hideTitle && <Title title={title} fontSize={'16px'} height={'2px'} />}
+      {!hideTitle && <Heading value={title} borderWidth='md' borderColor='var(--ds-blue-500)' />}
       <Box
         sx={{
           border: '1px solid',
           borderColor: borderColor,
           backgroundColor: backgroundColor,
-          padding: redColor ? '9px 20px' : '16px 24px',
-          borderRadius: '10px',
-          marginTop: hideTitle ? 0 : '10px',
+          padding: redColor ? 'var(--ds-space-2) var(--ds-space-5)' : 'var(--ds-space-4) var(--ds-space-5)',
+          borderRadius: 'var(--ds-radius-lg)',
+          marginTop: hideTitle ? 0 : 'calc(var(--ds-space-0) * 5)',
           ...sx,
         }}
       >
@@ -98,13 +96,14 @@ export const ClusterSummaryBlock = ({ children, sx }) => {
     <Box display='flex' flexDirection='column' justifyContent='flex-start'>
       <Box
         sx={{
-          borderColor: 'rgba(255, 255, 255, 1)',
-          backgroundColor: 'rgba(255, 255, 255, 1)',
-          padding: '18px 24px 10px 24px',
+          borderColor: 'var(--ds-background-100)',
+          backgroundColor: 'var(--ds-background-100)',
+          padding: 'calc(var(--ds-space-0) * 9) var(--ds-space-5) calc(var(--ds-space-0) * 5) var(--ds-space-5)',
           minHeight: '80px',
-          borderRadius: '8px',
-          marginTop: '10px',
-          boxShadow: '0px 4px 6px -1px rgba(0, 0, 0, 0.05), 0px 2px 4px -2px rgba(0, 0, 0, 0.05)',
+          borderRadius: 'var(--ds-radius-lg)',
+          marginTop: 'calc(var(--ds-space-0) * 5)',
+          boxShadow:
+            '0px var(--ds-space-1) calc(var(--ds-space-0) * 3) -1px var(--ds-gray-alpha-100), 0px var(--ds-space-0) var(--ds-space-1) calc(var(--ds-space-0) * -1) var(--ds-gray-alpha-100)',
           ...sx,
         }}
       >
@@ -125,13 +124,17 @@ export const PotentialSavings = ({ clusterSummary = {} }) => {
       title='Potential savings'
       hideTitle={false}
       greenColor
-      sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '18px' }}
+      sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 'calc(var(--ds-space-0) * 9)' }}
     >
       <Box display='flex' flexDirection='column' alignItems='flex-end'>
-        <Typography color='#737373' fontSize={'14px'}>
+        <Typography color='var(--ds-gray-500)' fontSize={'var(--ds-text-body-lg)'}>
           Savings{''}
         </Typography>
-        <Currency sx={{ color: '#2F4267', fontSize: '36px', fontWeight: 600 }} value={clusterSummary?.yearly_recommendation_saving} suffix='/yr' />
+        <Currency
+          sx={{ color: 'var(--ds-brand-600)', fontSize: '36px', fontWeight: 600 }}
+          value={clusterSummary?.yearly_recommendation_saving}
+          suffix='/yr'
+        />
       </Box>
     </SummaryBlock>
   );
@@ -144,10 +147,10 @@ PotentialSavings.propTypes = {
 const ClusterBlock = ({ cluster = {} }) => {
   return (
     <Box>
-      <Typography color='#737373' fontSize={'12px'} fontWeight={400} mb={'1px'}>
+      <Typography color='var(--ds-gray-500)' fontSize={'var(--ds-text-small)'} fontWeight={400} mb={'var(--ds-space-0)'}>
         {cluster.lable}
       </Typography>
-      <Typography color='#374151' fontSize={'24px'} lineHeight={'36px'} fontWeight={600}>
+      <Typography color='var(--ds-gray-700)' fontSize={'24px'} lineHeight={'36px'} fontWeight={600}>
         {formatNumber(cluster.count)}
       </Typography>
     </Box>
@@ -248,18 +251,7 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
   return (
     <Stack direction={'column'}>
       <DSCard variant='accent' tone='success' size='md'>
-        <HeadingWithBorder
-          value='Cluster Summary'
-          borderWidth='3px'
-          borderColor='var(--ds-blue-500)'
-          sx={{
-            '& p': {
-              fontSize: 'var(--ds-text-title)',
-              fontWeight: 'var(--ds-font-weight-semibold)',
-              color: 'var(--ds-gray-700)',
-            },
-          }}
-        />
+        <Heading value='Cluster Summary' borderWidth='md' borderColor='var(--ds-blue-500)' />
         <Box
           sx={{
             borderRadius: 'var(--ds-radius-sm)',
@@ -272,10 +264,10 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
           <Box
             display={'grid'}
             gridTemplateColumns={'0.6fr 5px 2fr'}
-            gap='20px'
+            gap='calc(var(--ds-space-1) * 5)'
             sx={{
               '@media (max-width: 1350px)': {
-                gap: '10px',
+                gap: 'calc(var(--ds-space-0) * 5)',
               },
             }}
           >
@@ -301,7 +293,7 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
             <></>
           </Box>
         </Box>
-        <Divider sx={{ backgroundColor: 'var(--ds-gray-200)', mt: '5px' }} />
+        <Divider sx={{ backgroundColor: 'var(--ds-gray-200)', mt: 'var(--ds-space-1)' }} />
         <Box
           sx={{
             borderRadius: 'var(--ds-radius-sm)',
@@ -314,10 +306,10 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
           <Box
             display={'grid'}
             gridTemplateColumns={'0.6fr 5px 2fr'}
-            gap='20px'
+            gap='calc(var(--ds-space-1) * 5)'
             sx={{
               '@media (max-width: 1350px)': {
-                gap: '10px',
+                gap: 'calc(var(--ds-space-0) * 5)',
               },
             }}
           >
@@ -328,18 +320,18 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
               onClick={() => router.push(`/kubernetes/details/${accountId}?accountId=${accountId}#kubernetes/applications`)}
             />
             <Divider orientation='vertical' flexItem />
-            <Box display={'grid'} gridTemplateColumns={'1fr 1fr'} width={'100%'} gap={'20px'} rowGap={'2px'}>
+            <Box display={'grid'} gridTemplateColumns={'1fr 1fr'} width={'100%'} gap={'calc(var(--ds-space-0) * 10)'} rowGap={'var(--ds-space-0)'}>
               {kindArray && kindArray.length > 0 ? (
                 kindArray.map((kind) => (
-                  <SecondaryLink
+                  <DSLink
                     key={kind.type}
-                    onClick={() => router.push(`/kubernetes/details/${accountId}?workloadType=${kind.type}#kubernetes/applications`)}
+                    href={`/kubernetes/details/${accountId}?workloadType=${kind.type}#kubernetes/applications`}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
                       width: '100%',
-                      gap: '10px',
+                      gap: 'calc(var(--ds-space-0) * 5)',
                       color:
                         kind.type === 'Deployment'
                           ? 'var(--ds-blue-500)'
@@ -357,7 +349,7 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
                         '& span': {
                           fontWeight: 'var(--ds-font-weight-medium)',
                           color: 'var(--ds-gray-700)',
-                          paddingLeft: '5px',
+                          paddingLeft: 'var(--ds-space-1)',
                         },
                       }}
                     >
@@ -370,7 +362,7 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
                     >
                       {kind.count}
                     </Typography>
-                  </SecondaryLink>
+                  </DSLink>
                 ))
               ) : (
                 <></>
@@ -378,7 +370,7 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
             </Box>
           </Box>
         </Box>
-        <Divider sx={{ backgroundColor: 'var(--ds-gray-200)', mt: '5px' }} />
+        <Divider sx={{ backgroundColor: 'var(--ds-gray-200)', mt: 'var(--ds-space-1)' }} />
 
         <Box
           sx={{
@@ -392,10 +384,10 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
           <Box
             display={'grid'}
             gridTemplateColumns={'0.6fr 5px 2fr'}
-            gap='20px'
+            gap='calc(var(--ds-space-1) * 5)'
             sx={{
               '@media (max-width: 1350px)': {
-                gap: '10px',
+                gap: 'calc(var(--ds-space-0) * 5)',
               },
             }}
           >
@@ -410,8 +402,8 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
               display={'grid'}
               gridTemplateColumns={'1fr 1fr'}
               width={'100%'}
-              gap={'12px'}
-              rowGap={'2px'}
+              gap={'var(--ds-space-3)'}
+              rowGap={'var(--ds-space-0)'}
               flexWrap={'wrap'}
               sx={{
                 '@media (max-width: 1200px)': {
@@ -429,16 +421,23 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
                         ? 'var(--ds-green-400)'
                         : colorsArray[index % colorsArray.length];
                     return (
-                      <Box key={`${p.type}-box`} display={'flex'} alignItems={'center'} justifyContent={'space-between'} width={'100%'} gap={'6px'}>
+                      <Box
+                        key={`${p.type}-box`}
+                        display={'flex'}
+                        alignItems={'center'}
+                        justifyContent={'space-between'}
+                        width={'100%'}
+                        gap={'calc(var(--ds-space-0) * 3)'}
+                      >
                         <Box display={'flex'} alignItems={'center'}>
                           <Box
                             sx={{
                               height: '6px',
                               width: '6px',
                               backgroundColor: backgroundColor,
-                              borderRadius: '2px',
+                              borderRadius: 'calc(var(--ds-radius-sm) / 2)',
                               display: 'inline-block',
-                              mr: '6px',
+                              mr: 'calc(var(--ds-space-0) * 3)',
                             }}
                           />
                           <Typography
@@ -448,7 +447,7 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
                               '& span': {
                                 fontWeight: 'var(--ds-font-weight-medium)',
                                 color: 'var(--ds-gray-700)',
-                                pl: '5px',
+                                pl: 'var(--ds-space-1)',
                               },
                             }}
                           >
@@ -469,7 +468,7 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
             </Box>
           </Box>
         </Box>
-        <Divider sx={{ backgroundColor: 'var(--ds-gray-100)', mt: '5px' }} />
+        <Divider sx={{ backgroundColor: 'var(--ds-gray-100)', mt: 'var(--ds-space-1)' }} />
 
         <Box
           sx={{
@@ -483,10 +482,10 @@ const ClusterSummary = ({ clusterSummary = {}, accountId }) => {
           <Box
             display={'grid'}
             gridTemplateColumns={'0.8fr 5px 1fr 1fr'}
-            gap='20px'
+            gap='calc(var(--ds-space-1) * 5)'
             sx={{
               '@media (max-width: 1350px)': {
-                gap: '10px',
+                gap: 'calc(var(--ds-space-0) * 5)',
               },
             }}
           >
@@ -551,18 +550,18 @@ const HealthBlock = ({ healthData = {} }) => {
       flexDirection='row'
       height={'52px'}
       sx={{
-        borderRadius: '6px',
-        backgroundColor: healthData?.status === 'error' ? '#FEF2F2' : '#F0FDF4',
-        boxShadow: '0px 4px 10px 0px rgba(232, 232, 232, 0.25)',
-        padding: '4px 0px',
+        borderRadius: 'var(--ds-radius-md)',
+        backgroundColor: healthData?.status === 'error' ? 'var(--ds-red-100)' : 'var(--ds-green-100)',
+        boxShadow: '0px var(--ds-space-1) calc(var(--ds-space-0) * 5) 0px color-mix(in srgb, var(--ds-gray-200) 25%, transparent)',
+        padding: 'var(--ds-space-1) 0px',
       }}
     >
       <Grid container alignItems={'center'}>
         <Grid item xs={8}>
           <Typography
-            pl={'10px'}
+            pl={'calc(var(--ds-space-0) * 5)'}
             textAlign={'left'}
-            color={'var(--grey-100, #737373)'}
+            color={'var(--ds-gray-500)'}
             fontSize={'var(--ds-text-body)'}
             fontWeight={'var(--ds-font-weight-regular)'}
           >
@@ -571,9 +570,9 @@ const HealthBlock = ({ healthData = {} }) => {
         </Grid>
         <Grid item xs={4}>
           <Typography
-            pr={'15px'}
+            pr={'var(--ds-space-4)'}
             textAlign={'right'}
-            color={'#374151'}
+            color={'var(--ds-gray-700)'}
             fontSize={'var(--ds-text-heading)'}
             fontWeight={'var(--ds-font-weight-semibold)'}
           >
@@ -705,7 +704,7 @@ const UtilizationAndHealth = ({ clusterSummary = {}, accountId }) => {
       gap: 'var(--ds-space-2)',
       borderRadius: 'var(--ds-radius-sm)',
       px: 'var(--ds-space-1)',
-      py: '2px',
+      py: 'var(--ds-space-0)',
       textDecoration: 'none',
       color: 'inherit',
     };
@@ -744,20 +743,9 @@ const UtilizationAndHealth = ({ clusterSummary = {}, accountId }) => {
       >
         {utilizationInsights?.map((list) => renderInsightRow(list, closeUtilizationModal))}
       </DSModal>
-      <Stack direction={'column'} height='100%' gap='10px'>
+      <Stack direction={'column'} height='100%' gap='calc(var(--ds-space-0) * 5)'>
         <DSCard variant='accent' tone='success' size='md' sx={{ height: '100%' }}>
-          <HeadingWithBorder
-            value='Insights'
-            borderWidth='3px'
-            borderColor='var(--ds-blue-500)'
-            sx={{
-              '& p': {
-                fontSize: 'var(--ds-text-title)',
-                fontWeight: 'var(--ds-font-weight-semibold)',
-                color: 'var(--ds-gray-700)',
-              },
-            }}
-          />
+          <Heading value='Insights' borderWidth='md' borderColor='var(--ds-blue-500)' />
           <Box sx={{ display: 'grid', gridTemplateColumns: '1fr', gap: 'var(--ds-space-1)', mt: 'var(--ds-space-3)' }}>
             {utilizationInsights?.slice(0, initialDisplayCount)?.map((list) => renderInsightRow(list))}
             {utilizationInsights?.length > initialDisplayCount && (
@@ -778,18 +766,7 @@ const UtilizationAndHealth = ({ clusterSummary = {}, accountId }) => {
               marginBottom: 'var(--ds-space-2)',
             }}
           >
-            <HeadingWithBorder
-              value='Utilization & Health'
-              borderWidth='3px'
-              borderColor='var(--ds-blue-500)'
-              sx={{
-                '& p': {
-                  fontSize: 'var(--ds-text-title)',
-                  fontWeight: 'var(--ds-font-weight-semibold)',
-                  color: 'var(--ds-gray-700)',
-                },
-              }}
-            />
+            <Heading value='Utilization & Health' borderWidth='md' borderColor='var(--ds-blue-500)' />
           </Box>
           <Box>
             <KubernetesMemoryCpuOverView requiredTooltip={true} showUpdatedUi={true} showUsage={true} accountId={accountId} />
@@ -964,21 +941,10 @@ const CostSummary = ({ clusterSummary = {}, accountId }) => {
       <CustomOptimizationsSummaryCard accountId={accountId} clusterSummary={clusterSummary} loading={clusterSummary.length > 0} />
       <Box>
         <DSCard variant='accent' tone='info' size='md'>
-          <HeadingWithBorder
-            value='Quick Links'
-            borderWidth='3px'
-            borderColor='var(--ds-blue-500)'
-            sx={{
-              '& p': {
-                fontSize: 'var(--ds-text-title)',
-                fontWeight: 'var(--ds-font-weight-semibold)',
-                color: 'var(--ds-gray-700)',
-              },
-            }}
-          />
-          <Box display='grid' gridTemplateColumns={'repeat(2,1fr)'} mt='5px'>
+          <Heading value='Quick Links' borderWidth='md' borderColor='var(--ds-blue-500)' />
+          <Box display='grid' gridTemplateColumns={'repeat(2,1fr)'} mt='var(--ds-space-1)'>
             {uniqueLinks.map((link) => (
-              <Box display={'flex'} alignItems={'center'} key={link.name} my={'3px'} gap={'var(--ds-space-2)'}>
+              <Box display={'flex'} alignItems={'center'} key={link.name} my={'var(--ds-space-1)'} gap={'var(--ds-space-2)'}>
                 <Box
                   sx={{
                     height: '16px',

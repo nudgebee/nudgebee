@@ -21,7 +21,7 @@ import { Button } from '@ui/Button';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
 import { toast as snackbar } from '@ui/Toast';
-import CustomTooltip from '@shared/CustomTooltip';
+import Tooltip from '@ui/Tooltip';
 import apiKnowledgeGraph from '@api1/knowledge-graph';
 import KgNodePicker from './KgNodePicker';
 import { ds } from 'src/utils/colors';
@@ -502,15 +502,15 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
 
   return (
     <Modal width='md' title={isEdit ? 'Edit Manual Dependency' : 'New Manual Dependency'} open={open} handleClose={onClose} onClose={onClose}>
-      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, p: 2 }}>
-        <Typography sx={{ fontSize: '12px', color: ds?.text?.secondaryDark ?? '#6b7280', lineHeight: 1.5 }}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space[4], p: ds.space[4] }}>
+        <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], lineHeight: 1.5 }}>
           Declare one service-to-service dependency. Pick the <strong>kind</strong> on each side — <strong>Kubernetes</strong> or{' '}
           <strong>Cloud</strong> to type identifiers, or <strong>Pick from KG</strong> to browse existing nodes via account / type / node dropdowns
           and pin the row directly. <strong>Cloud</strong> covers AWS, Azure, and GCP; Resource ID accepts an ARN, an Azure resource ID, or a GCP
           self-link. Cross-stack pairs (k8s → cloud) work as long as the cloud resource is in the Knowledge Graph.
         </Typography>
 
-        <Box sx={{ display: 'flex', gap: 3, alignItems: 'flex-start' }}>
+        <Box sx={{ display: 'flex', gap: ds.space[5], alignItems: 'flex-start' }}>
           <EndpointColumn
             label='Source'
             fields={form}
@@ -536,7 +536,7 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
           />
         </Box>
 
-        <Box sx={{ display: 'flex', gap: 2 }}>
+        <Box sx={{ display: 'flex', gap: ds.space[4] }}>
           <Box sx={{ flex: '0 0 220px' }}>
             <FieldLabel text='Relationship' tooltip={TOOLTIPS.relationship} />
             <Select
@@ -552,7 +552,7 @@ const EditManualDependencyDialog = ({ open, row, onClose, onSaved }) => {
           </Box>
         </Box>
 
-        <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 1, pt: 0.5 }}>
+        <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: ds.space[2], pt: ds.space[1] }}>
           <Button tone='secondary' size='md' onClick={onClose} disabled={submitting}>
             Cancel
           </Button>
@@ -590,12 +590,12 @@ const EndpointColumn = ({ label, fields, updateField, updateKind, updatePickerFi
   // instead of looking empty before its option lists are opened.
   const selectedNodeLabel = kind === KIND_KG_PICK && get('picked_node_id') ? get('name') || get('picked_node_id') : '';
   return (
-    <Box sx={{ flex: '1 1 0', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1.25 }}>
-      <Typography sx={{ fontSize: '13px', fontWeight: 600, color: ds?.text?.secondary ?? '#374151' }}>{label}</Typography>
+    <Box sx={{ flex: '1 1 0', minWidth: 0, display: 'flex', flexDirection: 'column', gap: ds.space.mul(1, 2.5) }}>
+      <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.brand[500] }}>{label}</Typography>
 
       <Box>
         <FieldLabel text='Kind' tooltip={TOOLTIPS.kind} />
-        <Box sx={{ display: 'inline-flex', gap: 0.5, flexWrap: 'wrap' }}>
+        <Box sx={{ display: 'inline-flex', gap: ds.space[1], flexWrap: 'wrap' }}>
           <Button tone={kind === KIND_K8S ? 'primary' : 'secondary'} size='xs' onClick={() => updateKind(prefix)(KIND_K8S)}>
             Kubernetes
           </Button>
@@ -659,7 +659,7 @@ const EndpointColumn = ({ label, fields, updateField, updateKind, updatePickerFi
                   onChange={set('arn')}
                 />
               </Box>
-              <Box sx={{ display: 'flex', gap: 1 }}>
+              <Box sx={{ display: 'flex', gap: ds.space[2] }}>
                 <Box sx={{ flex: '1 1 0', minWidth: 0 }}>
                   <FieldLabel text='Cloud account' tooltip={TOOLTIPS.cloudAccount} />
                   <Select
@@ -699,12 +699,12 @@ EndpointColumn.propTypes = {
 // hover surfaces the description — keeps the form chrome compact while
 // still self-documenting every field.
 const FieldLabel = ({ text, tooltip }) => (
-  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 0.5 }}>
-    <Typography sx={{ fontSize: '12px', fontWeight: 500, color: ds?.text?.secondaryDark ?? '#6b7280' }}>{text}</Typography>
+  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], mb: ds.space[1] }}>
+    <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.medium, color: ds.gray[500] }}>{text}</Typography>
     {tooltip && (
-      <CustomTooltip title={tooltip} placement='top'>
-        <InfoOutlinedIcon sx={{ fontSize: '14px', color: ds?.text?.secondaryDark ?? '#9ca3af', cursor: 'help' }} />
-      </CustomTooltip>
+      <Tooltip title={tooltip} placement='top'>
+        <InfoOutlinedIcon sx={{ fontSize: ds.text.bodyLg, color: ds.gray[500], cursor: 'help' }} />
+      </Tooltip>
     )}
   </Box>
 );

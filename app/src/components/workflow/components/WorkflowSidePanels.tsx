@@ -4,7 +4,6 @@ import ChevronLeftIcon from '@mui/icons-material/ChevronLeft';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import NubiChatSidebar from '@shared/layout/NubiChatSidebar';
 import JsonEditorTab from './JsonEditorTab';
-import { colors } from 'src/utils/colors';
 
 interface NubiChatContext {
   type: 'workflow' | 'workflowbuilder';
@@ -116,8 +115,8 @@ export function WorkflowSidePanels({
           top: 0,
           height: '100%',
           width: `${nubiWidth}px`,
-          borderRight: '1px solid rgb(226, 226, 227)',
-          backgroundColor: colors.background.white,
+          borderRight: '1px solid var(--ds-gray-200)',
+          backgroundColor: 'var(--ds-background-100)',
           overflow: 'hidden',
           transition: isResizingRef.current ? 'none' : 'left 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
           zIndex: 20,
@@ -157,11 +156,11 @@ export function WorkflowSidePanels({
               transition: 'background-color 0.15s, height 0.15s',
             },
             '&:hover::after': {
-              backgroundColor: 'rgba(59, 130, 246, 0.7)',
+              backgroundColor: 'color-mix(in srgb, var(--ds-blue-500) 70%, transparent)',
               height: '48px',
             },
             '&:hover': {
-              backgroundColor: 'rgba(59, 130, 246, 0.08)',
+              backgroundColor: 'color-mix(in srgb, var(--ds-blue-500) 8%, transparent)',
             },
           }}
         />
@@ -178,13 +177,13 @@ export function WorkflowSidePanels({
           transform: 'translateY(-50%) rotate(-90deg)',
           transformOrigin: 'center',
           zIndex: 30,
-          backgroundColor: colors.background.white,
-          border: `1px solid ${colors.border.secondary}`,
-          borderLeft: showNubiChat ? `1px solid ${colors.border.secondary}` : 'none',
+          backgroundColor: 'var(--ds-background-100)',
+          border: '1px solid var(--ds-brand-200)',
+          borderLeft: showNubiChat ? '1px solid var(--ds-brand-200)' : 'none',
           borderTopLeftRadius: 0,
-          borderBottomLeftRadius: '8px',
+          borderBottomLeftRadius: 'var(--ds-radius-lg)',
           borderTopRightRadius: 0,
-          borderBottomRightRadius: '8px',
+          borderBottomRightRadius: 'var(--ds-radius-lg)',
           padding: 'var(--ds-space-2) var(--ds-space-3)',
           transition: isResizingRef.current ? 'none' : 'left 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
           cursor: 'pointer',
@@ -192,18 +191,18 @@ export function WorkflowSidePanels({
           alignItems: 'center',
           gap: 'var(--ds-space-1)',
           '&:hover': {
-            backgroundColor: 'rgb(249, 249, 249)',
+            backgroundColor: 'var(--ds-background-200)',
           },
-          boxShadow: '2px 0 8px rgba(0, 0, 0, 0.1)',
+          boxShadow: 'var(--ds-space-0) 0 var(--ds-space-2) var(--ds-gray-alpha-300)',
         }}
       >
         {showNubiChat ? (
-          <ChevronLeftIcon fontSize='small' sx={{ color: colors.text.secondary, transform: 'rotate(90deg)' }} />
+          <ChevronLeftIcon fontSize='small' sx={{ color: 'var(--ds-brand-500)', transform: 'rotate(90deg)' }} />
         ) : (
-          <ChevronRightIcon fontSize='small' sx={{ color: colors.text.secondary, transform: 'rotate(90deg)' }} />
+          <ChevronRightIcon fontSize='small' sx={{ color: 'var(--ds-brand-500)', transform: 'rotate(90deg)' }} />
         )}
         <Typography
-          sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: colors.text.secondary, whiteSpace: 'nowrap' }}
+          sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-brand-500)', whiteSpace: 'nowrap' }}
         >
           AI Chat
         </Typography>
@@ -236,12 +235,12 @@ export function WorkflowSidePanels({
           transform: 'translateY(-50%) rotate(90deg)',
           transformOrigin: 'center',
           zIndex: 30,
-          backgroundColor: colors.background.white,
-          border: `1px solid ${colors.border.secondary}`,
-          borderRight: jsonPanelVisible ? `1px solid ${colors.border.secondary}` : 'none',
-          borderBottomLeftRadius: '8px',
+          backgroundColor: 'var(--ds-background-100)',
+          border: '1px solid var(--ds-brand-200)',
+          borderRight: jsonPanelVisible ? '1px solid var(--ds-brand-200)' : 'none',
+          borderBottomLeftRadius: 'var(--ds-radius-lg)',
           borderTopRightRadius: 0,
-          borderBottomRightRadius: '8px',
+          borderBottomRightRadius: 'var(--ds-radius-lg)',
           padding: 'var(--ds-space-2) var(--ds-space-3)',
           transition: isResizingRef.current ? 'none' : 'right 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
           cursor: 'pointer',
@@ -249,20 +248,20 @@ export function WorkflowSidePanels({
           alignItems: 'center',
           gap: 'var(--ds-space-1)',
           '&:hover': {
-            backgroundColor: 'rgb(249, 249, 249)',
+            backgroundColor: 'var(--ds-background-200)',
           },
-          boxShadow: '-2px 0 8px rgba(0, 0, 0, 0.1)',
+          boxShadow: 'calc(var(--ds-space-0) * -1) 0 var(--ds-space-2) var(--ds-gray-alpha-300)',
         }}
       >
         <Typography
-          sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: colors.text.secondary, whiteSpace: 'nowrap' }}
+          sx={{ fontSize: 'var(--ds-text-small)', fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-brand-500)', whiteSpace: 'nowrap' }}
         >
           JSON
         </Typography>
         {jsonPanelVisible ? (
-          <ChevronRightIcon fontSize='small' sx={{ color: colors.text.secondary, transform: 'rotate(-90deg)' }} />
+          <ChevronRightIcon fontSize='small' sx={{ color: 'var(--ds-brand-500)', transform: 'rotate(-90deg)' }} />
         ) : (
-          <ChevronLeftIcon fontSize='small' sx={{ color: colors.text.secondary, transform: 'rotate(-90deg)' }} />
+          <ChevronLeftIcon fontSize='small' sx={{ color: 'var(--ds-brand-500)', transform: 'rotate(-90deg)' }} />
         )}
       </Box>
 
@@ -274,8 +273,8 @@ export function WorkflowSidePanels({
           top: 0,
           height: 'calc(100% - 8px)',
           width: `${jsonWidth}px`,
-          borderLeft: '1px solid rgb(226, 226, 227)',
-          backgroundColor: 'rgb(30, 30, 30)',
+          borderLeft: '1px solid var(--ds-gray-200)',
+          backgroundColor: 'var(--ds-gray-700)',
           overflow: 'hidden',
           transition: isResizingRef.current ? 'none' : 'right 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
           zIndex: 20,
@@ -304,11 +303,11 @@ export function WorkflowSidePanels({
               transition: 'background-color 0.15s, height 0.15s',
             },
             '&:hover::after': {
-              backgroundColor: 'rgba(59, 130, 246, 0.7)',
+              backgroundColor: 'color-mix(in srgb, var(--ds-blue-500) 70%, transparent)',
               height: '48px',
             },
             '&:hover': {
-              backgroundColor: 'rgba(59, 130, 246, 0.08)',
+              backgroundColor: 'color-mix(in srgb, var(--ds-blue-500) 8%, transparent)',
             },
           }}
         />

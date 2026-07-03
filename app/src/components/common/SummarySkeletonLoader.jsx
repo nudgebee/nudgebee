@@ -1,5 +1,6 @@
 import React from 'react';
 import { Box, Skeleton } from '@mui/material';
+import { ds } from 'src/utils/colors';
 
 const SummarySkeletonLoader = () => {
   return (
@@ -15,10 +16,12 @@ const SummarySkeletonLoader = () => {
       {/* Service Summary Skeleton */}
       <Box
         sx={{
-          backgroundColor: 'rgba(255, 255, 255, 1)',
+          backgroundColor: ds.background[100],
           padding: 'var(--ds-space-4) var(--ds-space-5)',
           borderRadius: 'var(--ds-radius-lg)',
-          boxShadow: '0px 4px 6px -1px rgba(0, 0, 0, 0.05), 0px 2px 4px -2px rgba(0, 0, 0, 0.05)',
+          boxShadow: `0px ${ds.space[1]} ${ds.space.mul(0, 3)} -1px ${ds.gray.alpha[100]}, 0px ${ds.space[0]} ${ds.space[1]} -2px ${
+            ds.gray.alpha[100]
+          }`,
         }}
       >
         <Skeleton variant='text' width='60%' height={20} sx={{ mb: 2 }} />
@@ -41,10 +44,12 @@ const SummarySkeletonLoader = () => {
       {/* Utilization & Health Skeleton */}
       <Box
         sx={{
-          backgroundColor: 'rgba(255, 255, 255, 1)',
+          backgroundColor: ds.background[100],
           padding: 'var(--ds-space-4) var(--ds-space-5)',
           borderRadius: 'var(--ds-radius-lg)',
-          boxShadow: '0px 4px 6px -1px rgba(0, 0, 0, 0.05), 0px 2px 4px -2px rgba(0, 0, 0, 0.05)',
+          boxShadow: `0px ${ds.space[1]} ${ds.space.mul(0, 3)} -1px ${ds.gray.alpha[100]}, 0px ${ds.space[0]} ${ds.space[1]} -2px ${
+            ds.gray.alpha[100]
+          }`,
         }}
       >
         <Skeleton variant='text' width='40%' height={20} sx={{ mb: 2 }} />
@@ -65,10 +70,12 @@ const SummarySkeletonLoader = () => {
       {/* Cost Summary Skeleton */}
       <Box
         sx={{
-          backgroundColor: 'rgba(255, 255, 255, 1)',
+          backgroundColor: ds.background[100],
           padding: 'var(--ds-space-4) var(--ds-space-5)',
           borderRadius: 'var(--ds-radius-lg)',
-          boxShadow: '0px 4px 6px -1px rgba(0, 0, 0, 0.05), 0px 2px 4px -2px rgba(0, 0, 0, 0.05)',
+          boxShadow: `0px ${ds.space[1]} ${ds.space.mul(0, 3)} -1px ${ds.gray.alpha[100]}, 0px ${ds.space[0]} ${ds.space[1]} -2px ${
+            ds.gray.alpha[100]
+          }`,
         }}
       >
         <Skeleton variant='text' width='70%' height={20} sx={{ mb: 2 }} />

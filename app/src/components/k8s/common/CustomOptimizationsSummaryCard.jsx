@@ -2,7 +2,7 @@ import React from 'react';
 import { Box, Typography, Divider } from '@mui/material';
 import Currency from '@shared/format/Currency';
 import DSCard from '@ui/Card';
-import HeadingWithBorder from '@shared/HeadingWithBorder';
+import Heading from '@components/common/Heading';
 import { Button as DSButton } from '@ui/Button';
 import { ExternalLinkIcon, OptimiseIconBlue } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
@@ -40,7 +40,7 @@ const CustomOptimizationsSummaryCard = ({ clusterSummary, accountId, loading = f
   return (
     <DSCard variant='accent' tone='success' size='md' sx={{ height: '-webkit-fill-available' }}>
       <Box display='flex' alignItems={'center'}>
-        <HeadingWithBorder
+        <Heading
           span={
             <DSButton
               tone='ghost'
@@ -52,15 +52,14 @@ const CustomOptimizationsSummaryCard = ({ clusterSummary, accountId, loading = f
           }
           value='Optimizations'
           borderColor='var(--ds-blue-500)'
-          borderWidth='3px'
-          sx={{ '& p': { fontSize: 'var(--ds-text-title)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-gray-700)' } }}
+          borderWidth='md'
         />
       </Box>
       {loading ? (
         <Skeleton shape='rect' height={40} />
       ) : (
         <Box display={'grid'} gridTemplateColumns={'1fr 1fr'}>
-          <Box mt='20px'>
+          <Box mt='calc(var(--ds-space-1) * 5)'>
             <Box
               sx={{
                 display: 'flex',
@@ -84,14 +83,14 @@ const CustomOptimizationsSummaryCard = ({ clusterSummary, accountId, loading = f
               </Box>
             </Box>
           </Box>
-          <Box sx={{ borderLeft: '1px solid var(--ds-gray-200)', mt: '20px' }}>
+          <Box sx={{ borderLeft: '1px solid var(--ds-gray-200)', mt: 'calc(var(--ds-space-1) * 5)' }}>
             <Box
               sx={{
                 display: 'flex',
                 flexDirection: 'column',
                 justifyContent: 'center',
                 alignItems: 'start',
-                ml: '10px',
+                ml: 'calc(var(--ds-space-0) * 5)',
               }}
             >
               <Box display='flex' alignItems={'center'}>
@@ -125,8 +124,8 @@ const CustomOptimizationsSummaryCard = ({ clusterSummary, accountId, loading = f
         </Box>
       )}
 
-      <Divider sx={{ backgroundColor: 'var(--ds-gray-200)', marginTop: '20px' }} />
-      <Box mt='20px'>
+      <Divider sx={{ backgroundColor: 'var(--ds-gray-200)', marginTop: 'calc(var(--ds-space-1) * 5)' }} />
+      <Box mt='calc(var(--ds-space-1) * 5)'>
         {loading ? (
           <Skeleton shape='rect' height={40} />
         ) : (
@@ -160,7 +159,7 @@ const CustomOptimizationsSummaryCard = ({ clusterSummary, accountId, loading = f
                       color: 'var(--ds-gray-500)',
                       fontSize: 'var(--ds-text-small)',
                       fontWeight: 'var(--ds-font-weight-regular)',
-                      ml: '10px',
+                      ml: 'calc(var(--ds-space-0) * 5)',
                     }}
                     withTooltip={false}
                     suffix='/mo'
@@ -171,8 +170,8 @@ const CustomOptimizationsSummaryCard = ({ clusterSummary, accountId, loading = f
           </Box>
         )}
       </Box>
-      <Divider sx={{ backgroundColor: 'var(--ds-gray-200)', marginTop: '20px' }} />
-      <Box mt='20px'>
+      <Divider sx={{ backgroundColor: 'var(--ds-gray-200)', marginTop: 'calc(var(--ds-space-1) * 5)' }} />
+      <Box mt='calc(var(--ds-space-1) * 5)'>
         {loading ? (
           <Skeleton shape='rect' height={40} />
         ) : (
@@ -182,7 +181,7 @@ const CustomOptimizationsSummaryCard = ({ clusterSummary, accountId, loading = f
               justifyContent: 'space-between',
               alignItems: 'flex-end',
               flexWrap: 'wrap',
-              gap: '12px',
+              gap: 'var(--ds-space-3)',
             }}
           >
             <Box>
@@ -197,7 +196,7 @@ const CustomOptimizationsSummaryCard = ({ clusterSummary, accountId, loading = f
                     color: 'var(--ds-gray-600)',
                     fontSize: 'var(--ds-text-small)',
                     fontWeight: 'var(--ds-font-weight-regular)',
-                    pl: '10px',
+                    pl: 'calc(var(--ds-space-0) * 5)',
                   },
                 }}
               >
