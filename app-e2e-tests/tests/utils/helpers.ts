@@ -1,5 +1,33 @@
 import { Page, Locator } from "@playwright/test";
 
+/**
+ * Dismiss the "Welcome to Nudgebee" first-login tour dialog (TourWelcomeDialog)
+ * if it appears. Best-effort and non-blocking: clicks Snooze, falling back to
+ * the header close (x) button. Safe to call when no popup is present — it
+ * simply returns after a short wait.
+ */
+export async function dismissWelcomeTour(page: Page, timeout = 4000): Promise<boolean> {
+  const snoozeBtn = page.locator("#tour-welcome-snooze");
+  const closeBtn = page.locator("#close-modal-btn");
+
+  const appeared = await snoozeBtn
+    .waitFor({ state: "visible", timeout })
+    .then(() => true)
+    .catch(() => false);
+
+  if (!appeared) return false;
+
+  try {
+    await snoozeBtn.click();
+  } catch {
+    await closeBtn.click().catch(() => {});
+  }
+
+  await snoozeBtn.waitFor({ state: "hidden", timeout: 5000 }).catch(() => {});
+  console.log("Dismissed Welcome to Nudgebee tour popup");
+  return true;
+}
+
 export async function ensureSwitchEnabled(
   page: Page,
   selector: string,

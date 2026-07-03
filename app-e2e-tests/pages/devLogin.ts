@@ -1,4 +1,5 @@
 import { Page } from "@playwright/test";
+import { dismissWelcomeTour } from "../tests/utils/helpers";
 
 export async function doDevLogin(page: Page): Promise<void> {
   const baseUrl     = process.env.BASE_URL;
@@ -45,6 +46,8 @@ export async function doDevLogin(page: Page): Promise<void> {
 
   await page.waitForURL(/\/(home|workflow)/, { timeout: 50000 });
   await waitForLoaderToDisappear(page);
+
+  await dismissWelcomeTour(page);
 
   if (clusterName) {
     await selectCluster(page, clusterName);
