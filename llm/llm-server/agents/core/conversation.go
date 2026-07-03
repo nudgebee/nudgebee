@@ -1090,7 +1090,10 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 
 	}
 
-	if request.Query != "" && newConversation {
+	// Single-shot internal classifiers (e.g. webhook_subject_name_extractor) get a
+	// throwaway conversation per call with no user-facing title — skip the
+	// summary_agent title generation for them.
+	if request.Query != "" && newConversation && !isSingleShotClassifier(agent) {
 		generateConversationTitleAsync(ctx, request.ConversationId, request.MessageId, request.AccountId, agent.GetName(), request.Query, request.UserId)
 	}
 
@@ -1105,7 +1108,9 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 
 	// Generate acknowledgment for new messages (not for retries or existing messages)
 	// TO Do move this to async task
-	if messageStatus != ConversationStatusWaiting && messageType != MessageTypeFollowup && agent.GetName() != RouterAgentName && agent.GetName() != ToolLlm && request.Query != "" {
+	// Single-shot internal classifiers have no user watching for an acknowledgment,
+	// so skip the acknowledgment_agent call for them.
+	if messageStatus != ConversationStatusWaiting && messageType != MessageTypeFollowup && agent.GetName() != RouterAgentName && agent.GetName() != ToolLlm && request.Query != "" && !isSingleShotClassifier(agent) {
 		processAcknowledgmentAsync(ctx, request.AccountId, request.Query, agent.GetName(), conversation.ID.String(), request.MessageId, request.UserId)
 	}
 
@@ -1180,8 +1185,10 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 		status = ConversationStatusFailed
 	}
 
-	// After getting the agent response, update the context asynchronously
-	if len(agentResponse.Response) > 0 && agentResponse.AgentName != RouterAgentName && agentResponse.AgentName != ToolLlm {
+	// After getting the agent response, update the context asynchronously.
+	// Single-shot internal classifiers use a throwaway conversation per call, so
+	// there is nothing to carry forward — skip context_memories_extractions.
+	if len(agentResponse.Response) > 0 && agentResponse.AgentName != RouterAgentName && agentResponse.AgentName != ToolLlm && !isSingleShotClassifier(agent) {
 		updateConversationContextAsync(ctx, request, agentResponseContent, conversation.ID.String(), conversation.Context, agentResponse.AgentName)
 	}
 	conversation, err = GetConversationDao().GetConversation(conversation.ID.String())
@@ -1246,7 +1253,7 @@ func handleConversationRequest(ctx *security.RequestContext, request NBAgentRequ
 	if agentResponse.MessageId == "" {
 		agentResponse.MessageId = request.MessageId
 	}
-	if agentResponse.FollowupRequest.Question == "" && agentResponse.Status != ConversationStatusWaiting && agentResponse.Status != ConversationStatusWaitingForClientTool && agent.GetName() != RouterAgentName && agentResponse.AgentName != ToolLlm {
+	if agentResponse.FollowupRequest.Question == "" && agentResponse.Status != ConversationStatusWaiting && agentResponse.Status != ConversationStatusWaitingForClientTool && agent.GetName() != RouterAgentName && agentResponse.AgentName != ToolLlm && !isSingleShotClassifier(agent) {
 		tools := agent.GetSupportedTools(ctx)
 		evaluateAgentResponseAsync(ctx, agentResponse, request.AccountId, tools, request.UserId)
 	}

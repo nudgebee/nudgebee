@@ -3529,7 +3529,10 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 	}
 
 	// Phase 2: Long-Term Memory Extraction
-	if status == AgentExecutionStatusSuccess && len(response) > 0 && agent.GetName() != ToolLlm {
+	// Single-shot internal classifiers (e.g. webhook_subject_name_extractor) run
+	// on a throwaway conversation and produce a bare label, not an investigation
+	// worth remembering — skip the memory_extractor / session-memory LLM calls.
+	if status == AgentExecutionStatusSuccess && len(response) > 0 && agent.GetName() != ToolLlm && !isSingleShotClassifier(agent) {
 		bgCtx := security.NewRequestContext(
 			context.Background(),
 			ctx.GetSecurityContext(),

@@ -37,10 +37,41 @@ type catTestCategorisedAgent struct {
 
 func (a catTestCategorisedAgent) GetModelCategory() ModelTier { return a.category }
 
+// catTestClassificationAgent is a category-less agent whose planner type is
+// Classification — the single-shot-classifier default path.
+type catTestClassificationAgent struct{ catTestAgent }
+
+func (catTestClassificationAgent) GetPlannerType() AgentPlannerType {
+	return AgentPlannerTypeClassification
+}
+
+// catTestClassificationCategorisedAgent is a classification agent that DOES
+// declare a category, to prove the explicit override still wins.
+type catTestClassificationCategorisedAgent struct {
+	catTestClassificationAgent
+	category ModelTier
+}
+
+func (a catTestClassificationCategorisedAgent) GetModelCategory() ModelTier { return a.category }
+
 func TestAgentModelCategory(t *testing.T) {
+	// A nil agent → Retrieval default (no panic).
+	assert.Equal(t, ModelTierRetrieval, agentModelCategory(nil),
+		"nil agent → Retrieval default (no panic)")
+
 	// An agent that does not implement NBAgentCategoryProvider → Retrieval default.
 	assert.Equal(t, ModelTierRetrieval, agentModelCategory(catTestAgent{}),
 		"agent without the optional interface → Retrieval (fleet default)")
+
+	// A category-less classification agent → Summary default (single-shot
+	// analysis/extraction, not the cheap Retrieval floor).
+	assert.Equal(t, ModelTierSummary, agentModelCategory(catTestClassificationAgent{}),
+		"category-less classification agent → Summary default")
+
+	// An explicit category still wins even for a classification agent.
+	assert.Equal(t, ModelTierRetrieval,
+		agentModelCategory(catTestClassificationCategorisedAgent{category: ModelTierRetrieval}),
+		"declared category overrides the classification Summary default")
 
 	// An agent that declares a category → that category.
 	for _, tier := range []ModelTier{ModelTierReasoning, ModelTierRetrieval, ModelTierSummary} {
@@ -51,6 +82,15 @@ func TestAgentModelCategory(t *testing.T) {
 	// An agent may still declare the empty tier to opt into the global default
 	// (the escape hatch) instead of the Retrieval floor.
 	assert.Equal(t, ModelTier(""), agentModelCategory(catTestCategorisedAgent{category: ""}))
+}
+
+func TestIsSingleShotClassifier(t *testing.T) {
+	assert.True(t, isSingleShotClassifier(catTestClassificationAgent{}),
+		"classification planner type → single-shot classifier")
+	assert.False(t, isSingleShotClassifier(catTestAgent{}),
+		"react planner type → not a single-shot classifier")
+	assert.False(t, isSingleShotClassifier(nil),
+		"nil agent → not a single-shot classifier (no panic)")
 }
 
 // applyAgentModelTier must override an inherited tier for a category-less agent
