@@ -2,6 +2,8 @@ package recommendation
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"nudgebee/services/account"
@@ -84,6 +86,43 @@ func ListRecommendationResolutions(context *security.RequestContext, rescommenda
 		return []models.RecommendationResolution{}, fmt.Errorf("recommendation: iterate recommendation_resolution rows: %w", err)
 	}
 	return resolutions, nil
+}
+
+// findOpenPRResolution returns the most recent PullRequest resolution for a
+// recommendation whose PR is still open on the remote, or nil when none exists.
+//
+// A resolution counts as "open" when it carries a real PR URL (type_reference_id
+// like http...) and its pr_lifecycle_state is not one of the terminal states
+// ('merged' / 'closed' / 'unresolvable') that the reconciler in
+// account/adapter/pr_lifecycle.go drives rows to once a PR is resolved. Failed
+// PR-creation attempts leave type_reference_id empty, so they are ignored. NULL
+// lifecycle rows with a URL are treated as open (a PR was raised but the
+// reconciler has not classified it yet) to stay on the safe side of not opening
+// a duplicate.
+func findOpenPRResolution(recommendationId string) (*models.RecommendationResolution, error) {
+	databaseManager, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return nil, err
+	}
+	row := databaseManager.Db.QueryRowx(`
+		SELECT id, created_at, updated_at, recommendation_id, type, data, status, type_reference_id,
+			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at
+		FROM recommendation_resolution
+		WHERE recommendation_id = $1
+		AND type = $2
+		AND type_reference_id LIKE 'http%'
+		AND (pr_lifecycle_state IS NULL OR pr_lifecycle_state NOT IN ('merged', 'closed', 'unresolvable'))
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, recommendationId, string(models.RecommendationResolutionTypePullRequest))
+	resolution := models.RecommendationResolution{}
+	if err := row.StructScan(&resolution); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("error scanning open PR resolution: %w", err)
+	}
+	return &resolution, nil
 }
 
 func hasInProgressRecommendation(existingRecommendations []models.RecommendationResolution) (bool, string) {
@@ -260,6 +299,41 @@ func ApplyRecommendation(ctx *security.RequestContext, query RecommendationApply
 	}
 	if query.ResolverId == "" {
 		query.ResolverId = ctx.GetSecurityContext().GetUserId()
+	}
+
+	// Guard against opening duplicate PRs for the same recommendation. Autopilot
+	// re-applies the same rightsizing recommendation on every scheduled run with a
+	// fresh resolver_id (a new auto_pilot_task per run), so the resolver-scoped
+	// InProgress check in ListRecommendationResolutions can never see the prior
+	// run — each run would otherwise raise a brand-new PR for a recommendation
+	// that already has one open. If a non-terminal PR already exists, return it
+	// instead of raising another. Once the reconciler / GitHub webhook drives that
+	// PR to a terminal state (merged/closed/unresolvable), a fresh PR is allowed.
+	if resolutionType == models.RecommendationResolutionTypePullRequest {
+		existingPR, err := findOpenPRResolution(r.Id)
+		if err != nil {
+			ctx.GetLogger().Error("error checking for existing open PR", "error", err, "recommendation_id", r.Id)
+			return RecommendationApplyResponse{}, err
+		}
+		if existingPR != nil {
+			lifecycleState := ""
+			if existingPR.PRLifecycleState != nil {
+				lifecycleState = *existingPR.PRLifecycleState
+			}
+			ctx.GetLogger().Info("skipping duplicate PR: recommendation already has an open PR",
+				"recommendation_id", r.Id,
+				"existing_resolution_id", existingPR.Id,
+				"pr_url", existingPR.TypeReferenceId,
+				"pr_lifecycle_state", lifecycleState)
+			return RecommendationApplyResponse{
+				Data: []any{map[string]any{
+					"message": fmt.Sprintf("a pull request is already open for this recommendation - %s", existingPR.TypeReferenceId),
+					"pr_url":  existingPR.TypeReferenceId,
+				}},
+				Resolution: *existingPR,
+				Status:     models.RecommendationStatusInProgress,
+			}, nil
+		}
 	}
 
 	ctx.GetLogger().Info("DEBUG: calling adapter",
