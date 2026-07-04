@@ -180,6 +180,30 @@ func TestExtractPromSubject(t *testing.T) {
 			wantName: "postgres-0",
 		},
 		{
+			name:     "app_id resolves workload when no k8s controller/pod labels present",
+			labels:   map[string]string{"alertname": "HighErrorCriticalLogs", "app_id": "/k8s/prod/checkout-api", "namespace": "shop"},
+			wantKind: "workload",
+			wantName: "checkout-api",
+		},
+		{
+			name:     "controller wins over app_id",
+			labels:   map[string]string{"deployment": "checkout", "app_id": "/k8s/prod/checkout-api"},
+			wantKind: "deployment",
+			wantName: "checkout",
+		},
+		{
+			name:     "app_id wins over service and pod",
+			labels:   map[string]string{"app_id": "/k8s/prod/checkout-api", "service": "checkout-svc", "pod": "checkout-api-abc123"},
+			wantKind: "workload",
+			wantName: "checkout-api",
+		},
+		{
+			name:     "malformed app_id ignored, falls through to pod",
+			labels:   map[string]string{"app_id": "checkout-api", "pod": "checkout-api-abc123"},
+			wantKind: "pod",
+			wantName: "checkout-api-abc123",
+		},
+		{
 			name:     "no subject keys",
 			labels:   map[string]string{"alertname": "SomethingElse", "severity": "warning"},
 			wantKind: "",
@@ -191,6 +215,27 @@ func TestExtractPromSubject(t *testing.T) {
 			kind, name := extractPromSubject(tt.labels)
 			assert.Equal(t, tt.wantKind, kind, "kind")
 			assert.Equal(t, tt.wantName, name, "name")
+		})
+	}
+}
+
+func TestExtractAppIDWorkload(t *testing.T) {
+	tests := []struct {
+		name  string
+		appID string
+		want  string
+	}{
+		{name: "standard /k8s/{ns}/{workload}", appID: "/k8s/prod/checkout-api", want: "checkout-api"},
+		{name: "app-group middle segment (not a namespace)", appID: "/k8s/newrelic/newrelic-bundle-nri-kube-events", want: "newrelic-bundle-nri-kube-events"},
+		{name: "empty", appID: "", want: ""},
+		{name: "not a k8s path", appID: "checkout-api", want: ""},
+		{name: "wrong prefix", appID: "/vm/prod/checkout-api", want: ""},
+		{name: "too few segments", appID: "/k8s/prod", want: ""},
+		{name: "too many segments (pod path handled elsewhere)", appID: "/k8s/prod/pod-x/checkout-api", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, extractAppIDWorkload(tt.appID), "workload")
 		})
 	}
 }

@@ -237,7 +237,7 @@ func (m PrometheusAlertManagerWebhook) ProcessEventWebook(sc *security.RequestCo
 }
 
 // extractPromSubject picks the K8s subject from Prometheus alert labels.
-// Priority: K8s controllers > service-mesh workload > service > pod > instance.
+// Priority: K8s controllers > service-mesh workload > app_id > service > pod > instance.
 // Controllers preferred over pod because pod names are ephemeral. Service
 // preferred over pod when no controller label is present since prometheus
 // usually labels alerts with the K8s Service name. The `job` label is
@@ -259,6 +259,19 @@ func extractPromSubject(labels map[string]string) (kind, name string) {
 		if v := labels[k]; v != "" {
 			return "workload", v
 		}
+	}
+	// NudgeBee-native aggregated alerts (HighErrorCriticalLogs, …) carry none of
+	// the standard k8s controller/pod labels — their PromQL groups by (namespace,
+	// app_id) so the workload rides only in `app_id` (formatted /k8s/{ns}/{app}).
+	// Extract the workload deterministically; an empty subject would otherwise send
+	// the alert to the LLM, which hallucinates an unrelated workload. Ranked below
+	// explicit controller/mesh labels (which are authoritative) but above the
+	// generic service/pod fallbacks. Namespace is intentionally not taken from
+	// app_id's middle segment — it is an app-group (e.g. "nudgebee"), not the k8s
+	// namespace — so the real `namespace` label (handled by extractPromNamespace)
+	// wins.
+	if w := extractAppIDWorkload(labels["app_id"]); w != "" {
+		return "workload", w
 	}
 	if v := labels["service"]; v != "" {
 		return "service", v
@@ -287,6 +300,23 @@ func extractPromSubject(labels map[string]string) (kind, name string) {
 		return "instance", v
 	}
 	return "", ""
+}
+
+// extractAppIDWorkload parses NudgeBee's native `app_id` label — formatted
+// `/k8s/{namespace}/{workload}` — and returns the workload (last path segment).
+// Mirrors the same parse in the PagerDuty webhook handler
+// (resolveSubjectFromLabels) so both ingest paths resolve app_id identically.
+// Returns "" when app_id is absent or not in the /k8s/{ns}/{workload} form so the
+// caller falls through to the next label.
+func extractAppIDWorkload(appID string) string {
+	if appID == "" {
+		return ""
+	}
+	parts := strings.Split(strings.TrimPrefix(appID, "/"), "/")
+	if len(parts) == 3 && parts[0] == "k8s" {
+		return parts[2]
+	}
+	return ""
 }
 
 // dbHostOnly extracts the bare host from a Prometheus host-label value such as
