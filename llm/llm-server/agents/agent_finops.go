@@ -134,7 +134,7 @@ func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 5. **One short paragraph after the table** — headline finding + top 1-2 next steps. No bullet lists restating rows.
 6. **Surface data quality.** Null or clearly-wrong values render as "—"/"⚠" with a footnote; never present corrupt data as fact, never silently drop it.
 7. **Cite inline.** Append the source tool in the cell or header: [spend_summary], [recommendations], [anomaly_execute], [prometheus_execute], [kubectl_execute].
-8. **Make rows clickable.** For optimization/rightsizing/recommendation tables, the Action cell is a Markdown link [<label>](<url>): <label> is a DYNAMIC, intent-aware next step for that row (e.g. "Resize to 10Gi ▸", "Delete unused PVC ▸" — derive it, don't use a fixed string); <url> is the optimize deep-link base from your account context with <Category> and <resource_name> filled in for that row. One click takes the user into the optimise workflow filtered to that resource. Omit the link for purely informational rows.
+8. **Make rows clickable.** For optimization/rightsizing/recommendation tables, the Action cell is a Markdown link [<label>](<url>): <label> is a DYNAMIC, intent-aware next step for that row (e.g. "Resize to 10Gi ▸", "Delete unused PVC ▸" — derive it, don't use a fixed string); <url> is the optimize deep-link base from your account context with <Category> and <workload_name> filled in for that row. <workload_name> MUST be the workload/controller name (the row's 'name'), NEVER a pod name (pod_name) — the optimise recommendations table is keyed by workload, so a pod name with a ReplicaSet hash suffix (e.g. 'web-7d9f8b6c5-abcde') matches zero recommendations. If a row is a pod, use its owning workload's name. One click takes the user into the optimise workflow filtered to that resource. Omit the link for purely informational rows.
 9. **Chart when it helps.** When a visual makes the finding land faster, embed ONE ` + "```nb-chart" + ` fenced JSON block right after the table, choosing type and data DYNAMICALLY: bar (compare a measure across resources, e.g. provisioned vs used), doughnut/pie (share of a total, e.g. spend by service), line/area (trend over time). Spec: {"type":"bar","title":"...","labels":[...],"series":[{"key":"Provisioned","data":[...]},{"key":"Used","data":[...]}],"format":"gi|usd|percent|number"} — doughnut/pie use "values":[...] instead of series. Keep it ≤12 labels / ≤4 series and reuse the table's own numbers (never raw time-series). Skip the chart for single-row, clarification, or pure-text answers.
 
 Mark rows (stable) for <5% change, NEW for absent-in-prior-period, GONE for terminated. Every cost answer includes a dollar figure (state explicitly if unavailable).`
@@ -214,7 +214,8 @@ func (a *FinOpsAgent) fetchFinOpsAccountContext(ctx *security.RequestContext) st
 	if baseURL == "" {
 		baseURL = "http://localhost:3000"
 	}
-	fmt.Fprintf(&b, "Optimize page deep-link base: %s/optimise?account=%s&category=<Category>&search=<resource_name>#recommendations\n", baseURL, a.accountId)
+	fmt.Fprintf(&b, "Optimize page deep-link base: %s/optimise?account=%s&category=<Category>&search=<workload_name>#recommendations\n", baseURL, a.accountId)
+	b.WriteString("For the deep-link 'search' param use the workload/controller name (the resource 'name'), NEVER pod_name — the optimise table is keyed by workload, so a pod name matches no recommendations.\n")
 
 	b.WriteString("As of: " + time.Now().UTC().Format("2006-01-02") + "\n")
 	b.WriteString("</account_context>")
