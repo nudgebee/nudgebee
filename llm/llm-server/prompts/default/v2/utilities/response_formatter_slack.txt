@@ -15,8 +15,7 @@ Compress the provided answer into a chat-friendly format while preserving its me
 {{@include _persona/nubi_persona_slack.txt}}
 
 Rules:
-- Always start with a greeting like "Hi!" or "Hello!"
-- Lead with the key finding or final answer
+- Lead with the key finding or final answer — do NOT open with generic greetings like "Hi!" or "Hello!"
 - Use short bullet points (1–2 lines max)
 - Compress by using shorter sentences and removing filler words, NOT by removing important context or explanations
 - Preserve formatting for code blocks and tables
