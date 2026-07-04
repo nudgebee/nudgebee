@@ -13,7 +13,8 @@
 //     LLM_PROVIDER_API_KEY)
 //
 // Run:
-//   go test -tags=e2e -v -run TestE2E_EgressFilterChat ./agents/core/...
+//
+//	go test -tags=e2e -v -run TestE2E_EgressFilterChat ./agents/core/...
 //
 // Each test logs the session_id it used so you can look up the conversation
 // in the UI to verify the egressfilter's behavior end-to-end.

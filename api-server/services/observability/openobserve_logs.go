@@ -59,7 +59,7 @@ func isSafeIdentifier(s string) bool {
 		return false
 	}
 	for _, r := range s {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' && r != '.' {
 			return false
 		}
 	}
@@ -240,7 +240,8 @@ func (s *OpenObserveLogSource) QueryLogs(ctx *security.RequestContext, req Fetch
 		}
 
 		for k, v := range hit {
-			if k == "_timestamp" {
+			switch k {
+			case "_timestamp":
 				if tVal, ok := v.(float64); ok {
 					// convert micros to format
 					ts := time.UnixMicro(int64(tVal))
@@ -249,17 +250,17 @@ func (s *OpenObserveLogSource) QueryLogs(ctx *security.RequestContext, req Fetch
 					out.Timestamp = tStr
 				}
 				out.Labels[k] = v
-			} else if k == "message" || k == "log" || k == "body" {
+			case "message", "log", "body":
 				if str, ok := v.(string); ok {
 					out.Message = str
 				}
 				out.Labels[k] = v
-			} else if k == "severity" || k == "level" {
+			case "severity", "level":
 				if str, ok := v.(string); ok {
 					out.Severity = str
 				}
 				out.Labels[k] = v
-			} else {
+			default:
 				out.Labels[k] = v
 			}
 		}
