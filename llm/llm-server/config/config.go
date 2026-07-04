@@ -383,11 +383,6 @@ type appConfig struct {
 	// Split from KGToolsEnabled so the drill-down can be canaried or disabled
 	// separately if its payload size or latency proves problematic.
 	KGGetNodeEnabled bool `mapstructure:"llm_server_kg_get_node_enabled"`
-	// ServiceDependencyGraphV2Enabled selects the KG-only V2 implementation of the
-	// service_dependency_graph agent. V1 and V2 register under the SAME name
-	// ("service_dependency_graph") and are mutually exclusive at process start —
-	// exactly one of them runs RegisterNBAgentFactoryAndTool. Defaults to false.
-	ServiceDependencyGraphV2Enabled bool `mapstructure:"llm_server_service_dependency_graph_v2_enabled"`
 	// LlmServerSkillSelectionTopK, when > 0, enables question-aware skill selection.
 	// At top-level entry the executor scores every active KB mapped to the agent
 	// (or any inherited ancestor) against the user's question and keeps only the top
@@ -852,7 +847,6 @@ func init() {
 	viper.SetDefault("llm_server_think_tool_enabled", true)
 	viper.SetDefault("llm_server_kg_tools_enabled", true)
 	viper.SetDefault("llm_server_kg_get_node_enabled", false)
-	viper.SetDefault("llm_server_service_dependency_graph_v2_enabled", true)
 	viper.SetDefault("llm_server_evaluation_enabled", false)
 	viper.SetDefault("llm_server_auto_identify_account_enabled", false)
 	viper.SetDefault("llm_server_image_support_enabled", false)

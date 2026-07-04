@@ -431,13 +431,10 @@ func getAwsPlannerSupportedTools(ctx *security.RequestContext, accountId string)
 		DelegateAgentToolName,
 	}
 
-	// The KG-backed V2 service_dependency_graph covers cloud (AWS/GCP/Azure)
-	// topology, not just K8s, so expose it to this orchestrator when V2 is active.
-	// V1 is K8s-only — gate on the V2 flag so AWS debugging never gets the
-	// K8s-only runtime-metrics variant.
-	if config.Config.ServiceDependencyGraphV2Enabled {
-		supportedToolNames = append(supportedToolNames, ServiceDependencyGraph)
-	}
+	// The KG-backed service_dependency_graph covers cloud (AWS/GCP/Azure) topology,
+	// not just K8s, so expose it to this orchestrator. The old V1 variant that
+	// was K8s-only has been removed; the V2 flag guard here went with it.
+	supportedToolNames = append(supportedToolNames, ServiceDependencyGraph)
 
 	// shell_execute is injected automatically by FilterAndInjectDefaultTools when enabled.
 	// It auto-injects cloud credentials based on account type.

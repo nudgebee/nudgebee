@@ -12,72 +12,72 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestServiceDependencyV2_GetName_MatchesV1(t *testing.T) {
-	agent := ServiceDependencyGraphAgentV2{accountId: "test-account"}
+func TestServiceDependency_GetName_MatchesRegisteredName(t *testing.T) {
+	agent := ServiceDependencyGraphAgent{accountId: "test-account"}
 	assert.Equal(t, ServiceDependencyGraph, agent.GetName(),
-		"V2 must register under V1's name to keep parent prompts/callers invariant")
+		"agent must be registered as 'service_dependency_graph' — parent prompts and callers key on this name")
 	assert.Equal(t, "service_dependency_graph", agent.GetName())
 }
 
-func TestServiceDependencyV2_GetNameAliases(t *testing.T) {
-	agent := ServiceDependencyGraphAgentV2{accountId: "test-account"}
+func TestServiceDependency_GetNameAliases(t *testing.T) {
+	agent := ServiceDependencyGraphAgent{accountId: "test-account"}
 	aliases := agent.GetNameAliases()
 	assert.Contains(t, aliases, "Service Dependency Graph")
 	assert.Contains(t, aliases, "Knowledge Graph")
 	assert.Contains(t, aliases, "KG")
 }
 
-func TestServiceDependencyV2_GetPlannerType(t *testing.T) {
-	agent := ServiceDependencyGraphAgentV2{accountId: "test-account"}
+func TestServiceDependency_GetPlannerType(t *testing.T) {
+	agent := ServiceDependencyGraphAgent{accountId: "test-account"}
 	assert.Equal(t, core.AgentPlannerTypeReAct, agent.GetPlannerType())
 }
 
-func TestServiceDependencyV2_GetCacheScope_Account(t *testing.T) {
-	agent := ServiceDependencyGraphAgentV2{accountId: "test-account"}
+func TestServiceDependency_GetCacheScope_Account(t *testing.T) {
+	agent := ServiceDependencyGraphAgent{accountId: "test-account"}
 	assert.Equal(t, core.CacheScopeAccount, agent.GetCacheScope(),
-		"V2 must declare CacheScopeAccount so the embedded agent_kg_usage.txt sits in the 12h-cached prefix")
+		"agent must declare CacheScopeAccount so the embedded agent_kg_usage.txt sits in the 12h-cached prefix")
 }
 
-func TestServiceDependencyV2_OptsOutOfDefaultTools(t *testing.T) {
-	agent := ServiceDependencyGraphAgentV2{accountId: "test-account"}
+func TestServiceDependency_OptsOutOfDefaultTools(t *testing.T) {
+	agent := ServiceDependencyGraphAgent{accountId: "test-account"}
 	optOut, ok := interface{}(agent).(core.DefaultToolsOptOut)
-	assert.True(t, ok, "V2 must implement DefaultToolsOptOut")
+	assert.True(t, ok, "agent must implement DefaultToolsOptOut")
 	assert.True(t, optOut.OptOutDefaultTools(),
-		"V2 is KG-only — it must opt out of shell_execute/load_skills injection")
+		"agent is KG-only — it must opt out of shell_execute/load_skills injection")
 }
 
-func TestServiceDependencyV2_GetDescription_CoversK8sAndCloud(t *testing.T) {
-	agent := ServiceDependencyGraphAgentV2{accountId: "test-account"}
+func TestServiceDependency_GetDescription_CoversK8sAndCloud(t *testing.T) {
+	agent := ServiceDependencyGraphAgent{accountId: "test-account"}
 	desc := agent.GetDescription()
 	assert.Contains(t, desc, "Knowledge Graph",
 		"description must advertise the KG as the data source")
 	for _, must := range []string{"K8s", "AWS", "GCP", "Azure"} {
 		assert.Contains(t, desc, must,
-			"V2 description must claim coverage for both Kubernetes and the major clouds")
+			"description must claim coverage for both Kubernetes and the major clouds")
 	}
 }
 
-func TestServiceDependencyV2_GetSupportedTools_KGAndResourceSearchOnly(t *testing.T) {
-	agent := ServiceDependencyGraphAgentV2{accountId: "test-account"}
+func TestServiceDependency_GetSupportedTools_KGAndResourceSearchOnly(t *testing.T) {
+	agent := ServiceDependencyGraphAgent{accountId: "test-account"}
 	sc := security.NewRequestContextForSuperAdmin()
 
 	prevGetNode := config.Config.KGGetNodeEnabled
 	t.Cleanup(func() { config.Config.KGGetNodeEnabled = prevGetNode })
 
 	// Flag OFF: kg_get_node must be absent; KG search/traverse + resource_search
-	// must be present; the V1 runtime SDG tool must NEVER appear.
+	// must be present; the runtime SDG tool (removed with the V1 agent) must NEVER appear.
 	config.Config.KGGetNodeEnabled = false
 	supported := agent.GetSupportedTools(sc)
 	names := toolNames(supported)
 
 	assert.Contains(t, names, tools.ToolKGSearchNodes,
-		"V2 must expose kg_search_nodes for KG discovery")
+		"agent must expose kg_search_nodes for KG discovery")
 	assert.Contains(t, names, tools.ToolKGTraverse,
-		"V2 must expose kg_traverse for dependency / topology / cloud-routing traversal")
+		"agent must expose kg_traverse for dependency / topology / cloud-routing traversal")
 	assert.Contains(t, names, ResourceSearchAgentName,
-		"V2 must expose resource_search for fuzzy K8s + cloud resource matching")
+		"agent must expose resource_search for fuzzy K8s + cloud resource matching")
 	assert.NotContains(t, names, tools.ToolServiceDependencyGraph,
-		"V2 must NOT expose the runtime SDG tool — KG-only")
+		"agent must NOT expose the (removed) runtime SDG tool — KG-only")
 	assert.NotContains(t, names, tools.ToolKGGetNode,
 		"kg_get_node must be gated by KGGetNodeEnabled")
 
@@ -94,8 +94,8 @@ func TestServiceDependencyV2_GetSupportedTools_KGAndResourceSearchOnly(t *testin
 	assert.NotContains(t, names, tools.ToolServiceDependencyGraph)
 }
 
-func TestServiceDependencyV2_GetSystemPrompt_RoleAndConstraints(t *testing.T) {
-	agent := ServiceDependencyGraphAgentV2{accountId: "test-account"}
+func TestServiceDependency_GetSystemPrompt_RoleAndConstraints(t *testing.T) {
+	agent := ServiceDependencyGraphAgent{accountId: "test-account"}
 	sc := security.NewRequestContextForSuperAdmin()
 
 	prompt := agent.GetSystemPrompt(sc, core.NBAgentRequest{
@@ -113,8 +113,8 @@ func TestServiceDependencyV2_GetSystemPrompt_RoleAndConstraints(t *testing.T) {
 	assert.NotEmpty(t, prompt.Constraints)
 }
 
-func TestServiceDependencyV2_GetSystemPrompt_EmbedsKgUsage(t *testing.T) {
-	agent := ServiceDependencyGraphAgentV2{accountId: "test-account"}
+func TestServiceDependency_GetSystemPrompt_EmbedsKgUsage(t *testing.T) {
+	agent := ServiceDependencyGraphAgent{accountId: "test-account"}
 	sc := security.NewRequestContextForSuperAdmin()
 
 	prompt := agent.GetSystemPrompt(sc, core.NBAgentRequest{
@@ -137,8 +137,8 @@ func TestServiceDependencyV2_GetSystemPrompt_EmbedsKgUsage(t *testing.T) {
 		"agent_kg_usage.txt's pattern catalog must be embedded")
 }
 
-func TestServiceDependencyV2_GetSystemPrompt_ToolUsageEntries(t *testing.T) {
-	agent := ServiceDependencyGraphAgentV2{accountId: "test-account"}
+func TestServiceDependency_GetSystemPrompt_ToolUsageEntries(t *testing.T) {
+	agent := ServiceDependencyGraphAgent{accountId: "test-account"}
 	sc := security.NewRequestContextForSuperAdmin()
 
 	prevGetNode := config.Config.KGGetNodeEnabled
@@ -154,7 +154,7 @@ func TestServiceDependencyV2_GetSystemPrompt_ToolUsageEntries(t *testing.T) {
 	assert.Contains(t, prompt.ToolUsage, tools.ToolKGTraverse)
 	assert.Contains(t, prompt.ToolUsage, ResourceSearchAgentName)
 	assert.NotContains(t, prompt.ToolUsage, tools.ToolServiceDependencyGraph,
-		"V2 must not advertise the runtime SDG tool in its prompt")
+		"agent must not advertise the (removed) runtime SDG tool in its prompt")
 	assert.NotContains(t, prompt.ToolUsage, tools.ToolKGGetNode,
 		"kg_get_node ToolUsage must be flag-gated")
 
@@ -174,8 +174,8 @@ func TestServiceDependencyV2_GetSystemPrompt_ToolUsageEntries(t *testing.T) {
 		"with KGGetNodeEnabled=true kg_get_node ToolUsage must be advertised")
 }
 
-func TestServiceDependencyV2_GetSystemPrompt_ExamplesCoverK8sAndCloud(t *testing.T) {
-	agent := ServiceDependencyGraphAgentV2{accountId: "test-account"}
+func TestServiceDependency_GetSystemPrompt_ExamplesCoverK8sAndCloud(t *testing.T) {
+	agent := ServiceDependencyGraphAgent{accountId: "test-account"}
 	sc := security.NewRequestContextForSuperAdmin()
 
 	prompt := agent.GetSystemPrompt(sc, core.NBAgentRequest{

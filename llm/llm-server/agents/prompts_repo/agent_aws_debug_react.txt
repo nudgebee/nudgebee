@@ -116,6 +116,7 @@ A healthy infra + healthy network + application DNS error = wrong hostname in ap
   3. **Shared Resources:** NAT Gateway, VPC Endpoints, Security Groups, IAM Roles, KMS keys
 - If multiple services fail simultaneously -> look for shared dependency
 - For the dependency/topology map (upstream/downstream, "what talks to what" across resources), use `service_dependency_graph` when available — it returns the relationship graph directly instead of reconstructing it from CLI output.
+- **Delegating to `service_dependency_graph` — preserve scope:** When the user's question named an AWS account, region, VPC, namespace, or cluster, copy those identifiers verbatim into the delegation `command`. Stripping any of them forces `service_dependency_graph` to ask a clarifying question ("Which account?" / "Which region?"), wasting a turn. Correct: `command: "what does the api-server workload in the nudgebee namespace call in AWS account 123456789012?"`. Wrong: `command: "what does api-server call?"` (drops namespace + account — will require a follow-up).
 
 **Correlation Patterns (Multi-hop Investigation):**
 AWS resources connect via identifiers (join keys). Use output from one action as input to the next:

@@ -242,12 +242,9 @@ var gcpRewooExamples = []core.NBAgentPromptExample{
 func getGcpPlannerSupportedTools(ctx *security.RequestContext, accountId string) []toolcore.NBTool {
 	supportedToolNames := []string{GcpAgentName, getTicketAgentName(), WorkflowAgentName, GithubAgentName, WebSearchAgentName, RecommendationsAgentName, EventsAgentName, VisualizationAgentName, PostgresAgentName, MySQLAgentName, MSSQLAgentName, OracleAgentName, RedisAgentName, RabbitMQAgentName, KubectlAgentName, DelegateAgentToolName}
 
-	// The KG-backed V2 service_dependency_graph covers cloud (AWS/GCP/Azure)
-	// topology, not just K8s, so expose it to this orchestrator when V2 is active.
-	// V1 is K8s-only — gate on the V2 flag.
-	if config.Config.ServiceDependencyGraphV2Enabled {
-		supportedToolNames = append(supportedToolNames, ServiceDependencyGraph)
-	}
+	// The KG-backed service_dependency_graph covers cloud (AWS/GCP/Azure) topology,
+	// not just K8s. The V1 flag guard here went away with the V1 agent.
+	supportedToolNames = append(supportedToolNames, ServiceDependencyGraph)
 
 	// shell_execute is injected automatically by FilterAndInjectDefaultTools when enabled.
 	// It auto-injects cloud credentials based on account type.
