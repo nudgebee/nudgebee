@@ -204,6 +204,36 @@ func TestExtractPromSubject(t *testing.T) {
 			wantName: "checkout-api-abc123",
 		},
 		{
+			name:     "persistentvolumeclaim wins over instance/node host and job scraper (PV filling up)",
+			labels:   map[string]string{"alertname": "KubePersistentVolumeFillingUp", "persistentvolumeclaim": "data-opensearch-0", "namespace": "search", "instance": "node-pool-abc:10250", "job": "kubelet"},
+			wantKind: "persistentvolumeclaim",
+			wantName: "data-opensearch-0",
+		},
+		{
+			name:     "persistentvolumeclaim wins over service and pod",
+			labels:   map[string]string{"persistentvolumeclaim": "data-db-0", "service": "kubelet", "pod": "db-0"},
+			wantKind: "persistentvolumeclaim",
+			wantName: "data-db-0",
+		},
+		{
+			name:     "hpa resolves to horizontalpodautoscaler",
+			labels:   map[string]string{"hpa": "checkout-hpa", "instance": "1.2.3.4:9090"},
+			wantKind: "horizontalpodautoscaler",
+			wantName: "checkout-hpa",
+		},
+		{
+			name:     "job_name resolves to job (not the prometheus scrape job label)",
+			labels:   map[string]string{"job_name": "nightly-backup", "job": "kubelet"},
+			wantKind: "job",
+			wantName: "nightly-backup",
+		},
+		{
+			name:     "controller wins over persistentvolumeclaim",
+			labels:   map[string]string{"statefulset": "opensearch", "persistentvolumeclaim": "data-opensearch-0"},
+			wantKind: "statefulset",
+			wantName: "opensearch",
+		},
+		{
 			name:     "no subject keys",
 			labels:   map[string]string{"alertname": "SomethingElse", "severity": "warning"},
 			wantKind: "",

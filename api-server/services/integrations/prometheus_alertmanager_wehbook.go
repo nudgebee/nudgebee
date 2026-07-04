@@ -237,7 +237,7 @@ func (m PrometheusAlertManagerWebhook) ProcessEventWebook(sc *security.RequestCo
 }
 
 // extractPromSubject picks the K8s subject from Prometheus alert labels.
-// Priority: K8s controllers > service-mesh workload > app_id > service > pod > instance.
+// Priority: K8s controllers > service-mesh workload > app_id > PVC/HPA/Job > service > pod > instance.
 // Controllers preferred over pod because pod names are ephemeral. Service
 // preferred over pod when no controller label is present since prometheus
 // usually labels alerts with the K8s Service name. The `job` label is
@@ -272,6 +272,25 @@ func extractPromSubject(labels map[string]string) (kind, name string) {
 	// wins.
 	if w := extractAppIDWorkload(labels["app_id"]); w != "" {
 		return "workload", w
+	}
+	// Specific k8s resource labels (PVC / HPA / Job) name the resource the alert is
+	// actually about and must win over the generic service/pod/instance fallbacks
+	// below. E.g. KubePersistentVolumeFillingUp / KubernetesVolumeOutOfDiskSpace carry
+	// persistentvolumeclaim=<pvc> alongside instance=<node host> and job=kubelet (the
+	// scrape target) — the PVC is the subject, not the node or the kubelet scraper, so
+	// without this branch these alerts resolve to the node instance (or the kubelet
+	// scrape service). Mirrors the PagerDuty handler's resourceKeys precedence
+	// (resolveSubjectFromLabels). `job_name` (NOT the prometheus `job` scrape label) is
+	// the real K8s Job that kube-state-metrics emits on kube_job_* series.
+	for _, rk := range []struct{ key, kind string }{
+		{"persistentvolumeclaim", "persistentvolumeclaim"},
+		{"horizontalpodautoscaler", "horizontalpodautoscaler"},
+		{"hpa", "horizontalpodautoscaler"},
+		{"job_name", "job"},
+	} {
+		if v := labels[rk.key]; v != "" {
+			return rk.kind, v
+		}
 	}
 	if v := labels["service"]; v != "" {
 		return "service", v
