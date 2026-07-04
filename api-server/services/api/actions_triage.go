@@ -120,6 +120,13 @@ func handleTriageAction(h *ActionRequest, c *gin.Context, tracer *trace.Tracer, 
 		handleEventRevertThresholdSuggestion(h, c, ctx)
 	case "event_get_recurrence_info":
 		handleEventGetRecurrenceInfo(h, c, ctx)
+	// Workload criticality (Service Criticality review screen)
+	case "workload_list_criticality":
+		handleWorkloadListCriticality(h, c, ctx)
+	case "workload_upsert_criticality":
+		handleWorkloadUpsertCriticality(h, c, ctx)
+	case "workload_delete_criticality":
+		handleWorkloadDeleteCriticality(h, c, ctx)
 	default:
 		c.JSON(400, common.ErrorActionBadRequest(fmt.Sprintf("unknown action: %s", actionName)))
 	}

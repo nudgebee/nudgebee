@@ -34,6 +34,7 @@ import { action } from 'src/utils/actionStyles';
 import { parseHttpResponseBodyMessage } from 'src/utils/common';
 import SLOInspectionIcon from '@assets/kubernetes/slo-inspection.svg';
 import apiKubernetes1 from '@api1/kubernetes1';
+import apiCriticality from '@api1/criticality';
 import { Select } from '@ui/Select';
 import CopyButton from '@shared/buttons/CopyButton';
 import { Label } from '@ui/Label';
@@ -84,9 +85,14 @@ export const WORKLOAD_HEADERS = [
   '',
 ];
 
+// Map a workload criticality to a Label variant, matching the SeverityInfographic palette. Medium is
+// the default/normal tier (rendered in a calm grey so every workload shows a tier without alarming).
+const CRITICALITY_VARIANT = { critical: 'criticalRed', high: 'red', medium: 'grey', low: 'blue' };
+
 const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
   const router = useRouter();
   const [data, setData] = useState([]);
+  const [criticalityMap, setCriticalityMap] = useState({});
   const [totalCount, setTotalCount] = useState(0);
   const [currentPage, setCurrentPage] = useState(0);
   const [namespaceFilter, setNamespaceFilter] = useState([]);
@@ -605,6 +611,22 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
                       <CopyButton text={item.name} size='sm' />
                     </Box>
                     <Text showAutoEllipsis value={item.name} />
+                    {CRITICALITY_VARIANT[criticalityMap[item.cloud_resource_id]?.level] && (
+                      <CustomTooltip
+                        placement='top'
+                        title={`Service criticality: ${criticalityMap[item.cloud_resource_id].level}${
+                          criticalityMap[item.cloud_resource_id].rationale ? ` — ${criticalityMap[item.cloud_resource_id].rationale}` : ''
+                        }. Drives incident-triage priority; manage under Troubleshoot › Service Criticality.`}
+                      >
+                        <Box sx={{ flexShrink: 0, ml: 'var(--ds-space-2)' }}>
+                          <Label
+                            height='14px'
+                            text={criticalityMap[item.cloud_resource_id].level}
+                            variant={CRITICALITY_VARIANT[criticalityMap[item.cloud_resource_id].level]}
+                          />
+                        </Box>
+                      </CustomTooltip>
+                    )}
                   </Box>
                   <Text showAutoEllipsis value={`ns: ${item.namespace + ' | ' + item.kind}`} secondaryText />
                 </>
@@ -662,6 +684,27 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
     setData([]);
     listWorkloads();
   }, [accountId, currentPage, recordsPerPage, selectedNamespace, selectedWorkloadType, JSON.stringify(resource_ids), sortObject, selectedName]);
+
+  // Load the account's workload criticality (keyed by cloud_resource_id) so each row can show a tier
+  // badge next to its name. Fetched once per account, in parallel with the workload list. Deliberately
+  // NOT a listWorkloads() dependency (that would double-fetch and flicker the table); rows read the
+  // map when they build, and it is refreshed on any later re-fetch. Best-effort — a failure or a slow
+  // response just leaves rows unbadged until the next load.
+  useEffect(() => {
+    if (!accountId) {
+      return;
+    }
+    apiCriticality
+      .list({ cloud_account_id: accountId, limit: 500 })
+      .then((res) => {
+        const map = {};
+        (res?.items || []).forEach((it) => {
+          map[it.cloud_resource_id] = { level: it.criticality, rationale: it.rationale };
+        });
+        setCriticalityMap(map);
+      })
+      .catch(() => {});
+  }, [accountId]);
 
   useEffect(() => {
     if (!accountId || resource_ids.length > 0) {

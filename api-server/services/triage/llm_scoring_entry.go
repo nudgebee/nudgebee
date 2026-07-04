@@ -28,7 +28,11 @@ const mintTimeout = 2 * time.Minute
 // changes in a way that should re-classify existing classes (new categories, recalibrated severity
 // rules, etc.). When feature_llm_triage_remint_enabled is on, a served verdict minted under an older
 // version is lazily re-minted. Cosmetic prompt edits should NOT bump it.
-const classificationPromptVersion = 1
+//
+// v2: the classifier now receives observed workload facts (ingress-backing, dependency fan-in,
+// operator labels) and grounding guidance, so blast/intrinsic are decided from topology facts
+// instead of guessed from the workload name.
+const classificationPromptVersion = 2
 
 // ComputeScoreLLM scores an event via its cached per-class verdict + the deterministic policy.
 // On cache miss it scores with a conservative fallback verdict and (best-effort, off the hot
@@ -154,7 +158,7 @@ func triggerMint(db *sqlx.DB, event *models.Event, tenantID, classKey string) {
 		// Detached but BOUNDED: cap the LLM call so a hung llm-server can't leak this goroutine.
 		ctx, cancel := context.WithTimeout(context.Background(), mintTimeout)
 		defer cancel()
-		verdict, err := mintSignalVerdict(ctx, event)
+		verdict, err := mintSignalVerdict(ctx, db, event)
 		if err != nil {
 			// Release the claim so a future event re-attempts (e.g. once the minter is wired
 			// or after a transient llm-server failure). Until then, fallback scoring is used.
@@ -201,7 +205,7 @@ func triggerRemint(db *sqlx.DB, event *models.Event, tenantID, classKey string) 
 		// Bounded LLM call (see triggerMint); DB revert/persist use a fresh context.
 		ctx, cancel := context.WithTimeout(context.Background(), mintTimeout)
 		defer cancel()
-		verdict, err := mintSignalVerdict(ctx, event)
+		verdict, err := mintSignalVerdict(ctx, db, event)
 		if err != nil {
 			revertRemint(context.Background(), db, tenantID, classKey)
 			slog.WarnContext(ctx, "signal-class re-mint failed; kept existing verdict",
@@ -286,7 +290,7 @@ func releaseClaim(ctx context.Context, db *sqlx.DB, tenantID, classKey string) {
 // llm.ChatCompletion client — no new endpoint, no new agent, no agentic investigation, one
 // LLM call. The full classification instructions live in the query (since `@llm` has no domain
 // system prompt). The returned JSON verdict is parsed and persisted per signal-class.
-func mintSignalVerdict(ctx context.Context, event *models.Event) (*SignalVerdict, error) {
+func mintSignalVerdict(ctx context.Context, db *sqlx.DB, event *models.Event) (*SignalVerdict, error) {
 	tenantID := ""
 	if event.Tenant != nil {
 		tenantID = *event.Tenant
@@ -299,9 +303,15 @@ func mintSignalVerdict(ctx context.Context, event *models.Event) (*SignalVerdict
 		return nil, fmt.Errorf("mint requires tenant and account")
 	}
 
+	// Gather the workload's observed facts to ground the classifier prompt (labels, topology, and
+	// the resolved workload_criticality — an operator override wins, else the live derivation).
+	// Population of the workload_criticality table is owned by the discovery job, not this hot-ish
+	// path, so the inventory is complete rather than alert-gated.
+	facts := fetchWorkloadFacts(ctx, db, event)
+
 	sc := security.NewRequestContextForTenantAdmin(tenantID, slog.Default(), nil, nil)
 	resp, err := llm.ChatCompletion(sc, llm.ConversationApiRequest{
-		Query:     classificationPrompt(event),
+		Query:     classificationPrompt(event, facts),
 		AccountId: accountID,
 		UserId:    systemUserID,
 		Async:     false,
@@ -319,9 +329,10 @@ func mintSignalVerdict(ctx context.Context, event *models.Event) (*SignalVerdict
 // classificationPrompt builds the single-shot `@llm` query: the validated triage-classifier
 // instructions + the alert context. `@llm` routes to a generic direct-LLM agent (no tools, no
 // investigation), so all guidance must be inline.
-func classificationPrompt(event *models.Event) string {
+func classificationPrompt(event *models.Event, facts workloadFacts) string {
 	return "@llm You are a Kubernetes/cloud alert TRIAGE CLASSIFIER. Classify the single alert below into a structured verdict. Do NOT investigate, call tools, or ask questions.\n\n" +
-		"## Alert\n" + buildEventContext(event) + "\n" +
+		"## Alert\n" + buildEventContext(event, facts) + "\n" +
+		groundingGuidance +
 		"## Output\nReturn ONLY a JSON object (no markdown fence, no prose) with EXACTLY these keys:\n" +
 		`{"category":"<one fixed value below>","intrinsic":"critical|high|medium|low|info","blast":"control_plane|customer_facing|data_durability|monitoring_backbone|single_workload|expected_change","recurrence_semantics":"escalating|neutral|noise","env_sensitivity":"none|partial|full","min_priority":"P3","max_priority":"P0","confidence":0.0,"reasoning":"<=200 chars"}` + "\n\n" +
 		"## category — pick EXACTLY ONE from this fixed list; do NOT invent new labels:\n" +
@@ -339,8 +350,9 @@ func classificationPrompt(event *models.Event) string {
 		"min_priority = LEAST-severe bound, max_priority = MOST-severe bound (P0 most severe, then P1, P2, P3 least). confidence MUST be a number 0.0-1.0; reasoning MUST be <= 200 characters."
 }
 
-// buildEventContext renders the compact alert context the classifier reasons over.
-func buildEventContext(event *models.Event) string {
+// buildEventContext renders the compact alert context the classifier reasons over, including any
+// observed workload facts (topology, labels) so blast/intrinsic are grounded in reality.
+func buildEventContext(event *models.Event, facts workloadFacts) string {
 	get := func(p *string) string {
 		if p == nil {
 			return ""
@@ -365,8 +377,20 @@ func buildEventContext(event *models.Event) string {
 		}
 		fmt.Fprintf(&b, "- description: %s\n", d)
 	}
+	renderWorkloadFacts(&b, facts)
 	return b.String()
 }
+
+// groundingGuidance instructs the classifier to prefer the observed workload facts (rendered by
+// renderWorkloadFacts) over the workload name when deciding blast/intrinsic. Kept general — it
+// teaches how to read the facts, never a specific workload or incident.
+const groundingGuidance = "## Grounding — PREFER OBSERVED FACTS over the workload's name:\n" +
+	"- workload_criticality is this workload's resolved business criticality; source=user is an operator's explicit declaration and is AUTHORITATIVE — honor it for intrinsic/blast (critical/high => raise, low => damp). source=fact_signal is derived from topology and should be weighed as strong evidence.\n" +
+	"- customer_facing=true means the workload is actually ingress/LoadBalancer-backed (a user-facing request path); set blast=customer_facing unless it is genuinely a control-plane component. A false value means it is NOT directly user-facing.\n" +
+	"- dependency_fan_in is how many services are observed to depend on this workload; a large value means it is a shared dependency — raise blast above single_workload (a datastore/queue/cache with many dependents leans data_durability or control_plane). A handful of callers is ordinary; reserve the escalation for genuine hubs.\n" +
+	"- declared_criticality_label is the operator's OWN tiering declaration — treat it as authoritative for intrinsic/blast.\n" +
+	"- image/labels identify what the workload IS (e.g. a database, cache, gateway) — use them, not just the name.\n" +
+	"- When these fact lines are ABSENT, they are simply unobserved — do NOT infer low importance from their absence; fall back to the alert semantics.\n\n"
 
 // parseVerdict extracts the JSON verdict from the model text (tolerating markdown fences and a
 // string-valued confidence) and maps min_priority/max_priority -> BandFloor/BandCeiling.

@@ -92,6 +92,7 @@ import apiKubernetes1 from '@api1/kubernetes1';
 import { Chip } from '@ui/Chip';
 import apiRecommendations from '@api1/recommendation';
 import EmptyData from '@shared/EmptyData';
+import WorkloadCriticalityManager from '@components/criticality/WorkloadCriticalityManager';
 import SafeIcon from '@shared/icons/SafeIcon';
 
 const KubernetesLogs = dynamic(() => import('@components/k8s/details/KubernetesLogs'), { ssr: false });
@@ -257,6 +258,7 @@ const KubernetesDetails = () => {
         { id: 'all_events', text: 'All Events', value: 5, fragment: 'all-events', icon: AllEventsIcon },
         { id: 'anomaly', text: 'Anomaly', value: 6, fragment: 'anomaly', icon: AnomalyIcon, betaIcon: true },
         { id: 'triage-rules', text: 'Triage Rules', value: 8, fragment: 'triage-rules', icon: AlertManagerIcon },
+        { id: 'service-criticality', text: 'Service Criticality', value: 10, fragment: 'service-criticality', icon: AlertManagerIcon },
       ],
     },
     {
@@ -924,6 +926,7 @@ const KubernetesDetails = () => {
               {selectedSubTab === 6 && <KubernetesAnomaly accountId={kubeId} />}
               {selectedSubTab == 7 && <KubernetesGroupedEventsTable accountId={kubeId} groupEventType={'fingerprint'} isTroubleshootPage={false} />}
               {selectedSubTab == 8 && <TriageRulesManager accountId={kubeId} />}
+              {selectedSubTab === 10 && <WorkloadCriticalityManager accountId={kubeId} />}
             </>
           )}
           {[tabOptions[3].value].includes(selectedTab) && (

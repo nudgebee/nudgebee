@@ -600,6 +600,19 @@ func handleCrons(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logge
 				}
 			}()
 			c.JSON(200, gin.H{"status": "ok"})
+		case "Workload Criticality Discovery":
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						ctx.GetLogger().Error("cron: panic in workload criticality discovery", "panic", r)
+					}
+				}()
+				ctx.GetLogger().Info("cron: discovering workload criticality")
+				if err := triage.DiscoverWorkloadCriticalityAllAccounts(ctx); err != nil {
+					ctx.GetLogger().Error("cron: failed to discover workload criticality", "error", err)
+				}
+			}()
+			c.JSON(200, gin.H{"status": "ok"})
 		default:
 			common.MetricsApiRequestsFailedTotal(c.Request.Context(), "rpc_cron", "invalid_cron_job")
 			c.JSON(400, common.ErrorActionBadRequest("Invalid cron job"))
