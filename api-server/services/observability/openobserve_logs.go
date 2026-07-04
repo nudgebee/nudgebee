@@ -54,12 +54,27 @@ func escapeOpenObserveString(value string) string {
 	return strings.ReplaceAll(value, "'", "''")
 }
 
+func isSafeIdentifier(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.') {
+			return false
+		}
+	}
+	return true
+}
+
 func buildOpenObserveBinaryClause(binary query.BinaryWhereClause, mapping map[string]string) (string, error) {
 	var parts []string
 	for field, ops := range binary {
 		col := field
 		if mapped, ok := mapping[col]; ok {
 			col = mapped
+		}
+		if !isSafeIdentifier(col) {
+			return "", fmt.Errorf("invalid or unsafe column name: %q", col)
 		}
 		for op, val := range ops {
 			strVal := fmt.Sprintf("%v", val)
@@ -297,8 +312,11 @@ func (s *OpenObserveLogSource) QueryLabelValues(ctx *security.RequestContext, re
 	if mapped, ok := openObserveLogLabelMapping[col]; ok {
 		col = mapped
 	}
+	if !isSafeIdentifier(col) {
+		return nil, fmt.Errorf("invalid or unsafe label name: %q", col)
+	}
 
-	sql := fmt.Sprintf(`SELECT %s FROM "default" GROUP BY %s LIMIT 100`, col, col)
+	sql := fmt.Sprintf("SELECT %s FROM \"default\" GROUP BY %s LIMIT 100", col, col)
 
 	startTimeMicros := req.StartTime * 1000
 	endTimeMicros := req.EndTime * 1000
@@ -340,7 +358,7 @@ func (s *OpenObserveLogSource) QueryLabelValues(ctx *security.RequestContext, re
 
 	var values []OutputLogLabelValue
 	for _, hit := range searchResp.Hits {
-		if val, ok := hit[col]; ok {
+		if val, ok := hit[col]; ok && val != nil {
 			strVal := fmt.Sprintf("%v", val)
 			if strVal != "" {
 				values = append(values, OutputLogLabelValue{

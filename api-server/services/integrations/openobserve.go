@@ -124,7 +124,7 @@ func (m OpenObserve) ValidateConfig(sc *security.SecurityContext, config []core.
 		errs = append(errs, fmt.Errorf("openobserve_url is required"))
 	} else if !strings.HasPrefix(openobserveURL, "http://") && !strings.HasPrefix(openobserveURL, "https://") {
 		errs = append(errs, fmt.Errorf("openobserve_url must start with http:// or https:// (got %q)", openobserveURL))
-	} else if hasURLPath(rawURL) {
+	} else if parsed, err := neturl.Parse(rawURL); err == nil && parsed.Path != "" && parsed.Path != "/" {
 		errs = append(errs, fmt.Errorf("openobserve_url must be the base URL only — remove the path after the host (use %q, not %q)", openobserveURL, rawURL))
 	}
 	if orgID == "" {

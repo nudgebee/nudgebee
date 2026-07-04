@@ -186,6 +186,9 @@ func (s *OpenObserveTraceSource) QueryTraces(ctx *security.RequestContext, req T
 		}
 
 		for k, v := range hit {
+			if v == nil {
+				continue
+			}
 			strVal := fmt.Sprintf("%v", v)
 			switch k {
 			case "trace_id":
@@ -297,6 +300,9 @@ func (s *OpenObserveTraceSource) GetLabelValues(ctx *security.RequestContext, re
 	if mapped, ok := openObserveTraceLabelMapping[col]; ok {
 		col = mapped
 	}
+	if !isSafeIdentifier(col) {
+		return common.OpenTelemetryTraceLabelValues{}, fmt.Errorf("invalid or unsafe label name: %q", col)
+	}
 
 	sql := fmt.Sprintf(`SELECT %s FROM "default" GROUP BY %s LIMIT 100`, col, col)
 
@@ -340,7 +346,7 @@ func (s *OpenObserveTraceSource) GetLabelValues(ctx *security.RequestContext, re
 
 	var values []string
 	for _, hit := range searchResp.Hits {
-		if val, ok := hit[col]; ok {
+		if val, ok := hit[col]; ok && val != nil {
 			strVal := fmt.Sprintf("%v", val)
 			if strVal != "" {
 				values = append(values, strVal)
