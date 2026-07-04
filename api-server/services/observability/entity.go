@@ -142,6 +142,46 @@ type FetchMetricsListRequest struct {
 	Request              map[string]any `json:"request"`
 }
 
+// FetchMetricSeriesRequest asks "which metric __name__ families have series for
+// workload W in namespace N", independent of how W is instrumented. The provider
+// resolves a set of candidate (namespace-label, workload-label) pairs to try, so
+// the workload-identifying label is DISCOVERED, not assumed — see MetricSeriesResult.
+// Used by the metrics_list_series action to make the prometheus agent's empty-result
+// discovery deterministic instead of LLM catalog-guessing.
+type FetchMetricSeriesRequest struct {
+	AccountId            string         `json:"account_id"`
+	MetricProvider       string         `json:"metric_provider"`
+	MetricProviderSource string         `json:"metric_provider_source"`
+	Namespace            string         `json:"namespace"`
+	Workload             string         `json:"workload"`
+	StartTime            int64          `json:"start_time"`
+	EndTime              int64          `json:"end_time"`
+	Limit                int            `json:"limit"` // cap on metric families returned per candidate lookup; 0 => provider default
+	Request              map[string]any `json:"request"`
+}
+
+// MetricSeriesMatch is one resolved (namespace-label, workload-label) candidate that
+// actually has series for the requested workload, with the metric __name__ families
+// found under it. Families are always discovered from real series — never hardcoded.
+// MatchType records how the workload value was matched ("exact" | "prefix") so a
+// caller knows how to filter (e.g. pod names carry a replica-hash suffix → prefix).
+type MetricSeriesMatch struct {
+	NamespaceLabel string   `json:"namespace_label"`
+	WorkloadLabel  string   `json:"workload_label"`
+	MatchType      string   `json:"match_type"`
+	Families       []string `json:"families"`
+}
+
+// MetricSeriesResult is the raw discovered set: families grouped by the labels that
+// found them, so a caller knows which labels to filter by per family (querying an
+// eBPF family with pod=, or a scraped family with destination_workload_name=, both
+// return empty — the grouping prevents reproducing the N/A bug one layer down). No
+// ranking is applied here by design: the caller picks the relevant family.
+type MetricSeriesResult struct {
+	Matches   []MetricSeriesMatch `json:"matches"`
+	Truncated bool                `json:"truncated"`
+}
+
 type FetchMetricsLabelValueRequest struct {
 	AccountId            string         `json:"account_id"`
 	MetricProvider       string         `json:"metric_provider"`

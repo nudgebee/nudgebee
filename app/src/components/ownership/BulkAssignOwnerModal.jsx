@@ -62,7 +62,7 @@ export default function BulkAssignOwnerModal({ open, onClose, defaultAccountId, 
 
   const actionButtons = (
     <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-end', width: '100%' }}>
-      <DsButton tone='secondary' size='md' onClick={() => onClose(false)} id='bulk-assign-cancel'>
+      <DsButton tone='secondary' size='md' onClick={() => onClose(false)} disabled={saving} id='bulk-assign-cancel'>
         Cancel
       </DsButton>
       <DsButton tone='primary' size='md' onClick={handleSave} disabled={!valid} loading={saving} id='bulk-assign-save'>
@@ -72,7 +72,14 @@ export default function BulkAssignOwnerModal({ open, onClose, defaultAccountId, 
   );
 
   return (
-    <Modal open={open} handleClose={() => onClose(false)} title='Bulk assign owner' width='sm' actionButtons={actionButtons}>
+    <Modal
+      open={open}
+      handleClose={() => (saving ? undefined : onClose(false))}
+      title='Bulk assign owner'
+      width='sm'
+      loader={saving}
+      actionButtons={actionButtons}
+    >
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-4)', py: 1 }}>
         <AccountSelect
           id='bulk-account'

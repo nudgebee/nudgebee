@@ -25,7 +25,7 @@ exclude = '''
 [tool.poetry.dependencies]
 python = "^3.11"
 python-dotenv = "^1.2.2"
-fastapi = "0.136.3"
+fastapi = "0.137.1"
 slack-bolt = "1.28.0"
 # Direct dep: webhook_auth.py uses slack_sdk.signature.SignatureVerifier for the
 # inbound Slack HMAC gate. Pinned explicitly (not just transitively via slack-bolt)
@@ -57,7 +57,7 @@ nh3 = "^0.3.4"
 # secrets at rest, byte-compatible with api-server. Pinned explicitly (it is otherwise
 # only a transitive dep via msal/pyjwt) so the crypto boundary can't break under a
 # resolution change.
-cryptography = "48.0.0"
+cryptography = "48.0.1"
 
 [build-system]
 requires = ["poetry-core"]
@@ -68,5 +68,5 @@ pre-commit = "4.6.0"
 black = "^26.3.1"
 mypy = "1.20.2"
 flake8 = "7.3.0"
-sqlglot = "30.8.0"
+sqlglot = "30.11.0"
 pytest = ">=8.3,<10.0"

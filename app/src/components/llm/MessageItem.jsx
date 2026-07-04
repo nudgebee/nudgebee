@@ -128,6 +128,24 @@ const MessageItem = ({
     return Array.isArray(message.references) ? message.references : [];
   }, [message.references]);
 
+  // Per-message metadata is a generic JSONB slot the backend writes for
+  // subsystems that want to surface structured signals next to the bubble
+  // (the outbound egressfilter today, future PII tokenization, etc.). The
+  // backend ships it as a raw JSON string so the frontend dispatches on
+  // whichever top-level keys it understands. See llm-server
+  // docs/llm-egress-filter.md §7b for the egressfilter event shape.
+  const egressfilterEvents = React.useMemo(() => {
+    if (!message.metadata) {
+      return [];
+    }
+    try {
+      const parsed = typeof message.metadata === 'string' ? JSON.parse(message.metadata) : message.metadata;
+      return Array.isArray(parsed?.egressfilter) ? parsed.egressfilter : [];
+    } catch {
+      return [];
+    }
+  }, [message.metadata]);
+
   const getUniqueReferencesCount = (references) => {
     if (!references || references.length === 0) {
       return 0;
@@ -173,6 +191,7 @@ const MessageItem = ({
         messageTokenData={responseMeta.messageTokenData}
         onTokenUsageHover={responseMeta.onTokenUsageHover}
         isFetchingTokenData={responseMeta.isFetchingTokenData}
+        egressfilterEvents={egressfilterEvents}
       />
     );
   } else if (isTask && !['followup-question', 'acknowledgment', 'planner'].includes(messageType) && onOpenToolDetails) {
@@ -561,6 +580,10 @@ MessageItem.propTypes = {
     plannerId: PropTypes.string,
     question: PropTypes.string,
     messageId: PropTypes.string,
+    // Generic per-message JSONB attachment slot (raw JSON text from the
+    // backend). Currently carries `egressfilter` event arrays; future
+    // subsystems (PII tokenization) write under their own top-level keys.
+    metadata: PropTypes.string,
   }).isRequired,
   index: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
   isLastInGroup: PropTypes.bool,

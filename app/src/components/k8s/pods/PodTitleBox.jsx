@@ -33,7 +33,7 @@ const PodTitleBox = ({ rightComponent, marginBottom = ds.space[4], pod = {} }) =
         backgroundColor: 'white',
         borderRadius: 'var(--ds-radius-xl)',
         p: 'var(--ds-space-3) var(--ds-space-4) var(--ds-space-3) var(--ds-space-5)',
-        boxShadow: '0px 4px 8px 0px #00000008',
+        boxShadow: '0px var(--ds-space-1) var(--ds-space-2) var(--ds-gray-alpha-100)',
         overflow: 'hidden',
         mt: 'var(--ds-space-4)',
         mb: marginBottom,

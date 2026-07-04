@@ -1,6 +1,5 @@
 import React from 'react';
 import { Box, Button } from '@mui/material';
-import { colors } from 'src/utils/colors';
 import SafeIcon from '@shared/icons/SafeIcon';
 
 interface ToggleOption {
@@ -22,34 +21,34 @@ interface ToggleButtonsProps {
 function getButtonStyles(isActive: boolean, isSmall: boolean) {
   if (isActive && isSmall) {
     return {
-      background: colors.background.white,
-      color: colors.text.primary,
-      boxShadow: '0px 1px 3px rgba(16, 24, 40, 0.1)',
-      hoverBackground: colors.background.white,
+      background: 'var(--ds-background-100)',
+      color: 'var(--ds-blue-500)',
+      boxShadow: '0 1px 3px var(--ds-gray-alpha-300)',
+      hoverBackground: 'var(--ds-background-100)',
       iconFilter: 'brightness(0) saturate(100%) invert(45%) sepia(76%) saturate(521%) hue-rotate(179deg) brightness(93%) contrast(108%)',
     };
   }
   if (isActive) {
     return {
-      background: colors.background.secondary,
-      color: colors.text.white,
-      boxShadow: '0px 2px 20px rgba(16, 24, 40, 0.15)',
-      hoverBackground: colors.background.secondary,
+      background: 'var(--ds-brand-500)',
+      color: 'var(--ds-background-100)',
+      boxShadow: '0 var(--ds-space-0) calc(var(--ds-space-0) * 10) color-mix(in srgb, black 15%, transparent)',
+      hoverBackground: 'var(--ds-brand-500)',
       iconFilter: 'brightness(0) invert(1)',
     };
   }
   if (isSmall) {
     return {
       background: 'transparent',
-      color: colors.text.secondaryDark,
+      color: 'var(--ds-gray-400)',
       boxShadow: 'none',
-      hoverBackground: colors.background.tertiaryLightestest,
+      hoverBackground: 'var(--ds-background-200)',
       iconFilter: 'brightness(0) saturate(100%) invert(50%) sepia(0%) hue-rotate(0deg)',
     };
   }
   return {
     background: 'transparent',
-    color: colors.text.secondary,
+    color: 'var(--ds-brand-500)',
     boxShadow: 'none',
     hoverBackground: 'transparent',
     iconFilter: 'none',
@@ -59,25 +58,25 @@ function getButtonStyles(isActive: boolean, isSmall: boolean) {
 const ToggleButtons: React.FC<ToggleButtonsProps> = ({ options, activeValue, width, size = 'default', noShadow, onChange }) => {
   const sizeConfig = {
     default: {
-      containerPadding: '6px 8px',
-      containerBorderRadius: '8px',
-      buttonPadding: '6px 12px',
-      buttonFontSize: '13px',
-      buttonBorderRadius: '6px',
+      containerPadding: 'calc(var(--ds-space-0) * 3) var(--ds-space-2)',
+      containerBorderRadius: 'var(--ds-radius-lg)',
+      buttonPadding: 'calc(var(--ds-space-0) * 3) var(--ds-space-3)',
+      buttonFontSize: 'var(--ds-text-body)',
+      buttonBorderRadius: 'var(--ds-radius-md)',
     },
     large: {
-      containerPadding: '0px',
-      containerBorderRadius: '12px',
-      buttonPadding: '8px 20px',
-      buttonFontSize: '16px',
-      buttonBorderRadius: '8px',
+      containerPadding: '0',
+      containerBorderRadius: 'var(--ds-radius-xl)',
+      buttonPadding: 'var(--ds-space-2) calc(var(--ds-space-0) * 10)',
+      buttonFontSize: 'var(--ds-text-title)',
+      buttonBorderRadius: 'var(--ds-radius-lg)',
     },
     sm: {
-      containerPadding: '4px',
-      containerBorderRadius: '8px',
-      buttonPadding: '6px 10px',
-      buttonFontSize: '12px',
-      buttonBorderRadius: '6px',
+      containerPadding: 'var(--ds-space-1)',
+      containerBorderRadius: 'var(--ds-radius-lg)',
+      buttonPadding: 'calc(var(--ds-space-0) * 3) calc(var(--ds-space-0) * 5)',
+      buttonFontSize: 'var(--ds-text-small)',
+      buttonBorderRadius: 'var(--ds-radius-md)',
     },
   };
 
@@ -89,10 +88,13 @@ const ToggleButtons: React.FC<ToggleButtonsProps> = ({ options, activeValue, wid
     <Box
       sx={{
         display: 'flex',
-        backgroundColor: isSmall ? colors.background.tertiaryLightest : 'white',
+        backgroundColor: isSmall ? 'var(--ds-gray-100)' : 'white',
         borderRadius: config.containerBorderRadius,
-        border: isSmall ? 'none' : '1px solid #dee2e6',
-        boxShadow: noShadow || isSmall ? 'none' : '0px 4px 15px -1px rgba(229, 229, 229, 1), 0px 2px 20px 0px rgb(233, 233, 233)',
+        border: isSmall ? 'none' : '1px solid var(--ds-gray-200)',
+        boxShadow:
+          noShadow || isSmall
+            ? 'none'
+            : '0 var(--ds-space-1) calc(var(--ds-space-0) * 7.5) -1px var(--ds-gray-100), 0 var(--ds-space-0) calc(var(--ds-space-0) * 10) 0 var(--ds-gray-100)',
         padding: config.containerPadding,
         width: width,
       }}
@@ -111,7 +113,7 @@ const ToggleButtons: React.FC<ToggleButtonsProps> = ({ options, activeValue, wid
               background: styles.background,
               border: 'none',
               padding: config.buttonPadding,
-              color: option.disabled ? colors.text.tertiary : styles.color,
+              color: option.disabled ? 'var(--ds-gray-600)' : styles.color,
               fontSize: config.buttonFontSize,
               fontWeight: isActive && isSmall ? 600 : 400,
               cursor: option.disabled ? 'not-allowed' : 'pointer',
@@ -122,7 +124,7 @@ const ToggleButtons: React.FC<ToggleButtonsProps> = ({ options, activeValue, wid
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              gap: isSmall ? '4px' : '8px',
+              gap: isSmall ? 'var(--ds-space-1)' : 'var(--ds-space-2)',
               minWidth: 0,
               whiteSpace: 'nowrap',
               lineHeight: 1,

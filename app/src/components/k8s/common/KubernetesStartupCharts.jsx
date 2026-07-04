@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import k8sApi from '@api1/kubernetes';
 import { Box, Typography, Grid, Alert } from '@mui/material';
-import { LineChart } from '@shared';
-import { ds } from 'src/utils/colors';
+import Chart from '@ui/Chart';
+import { ds, resolveColor, resolveColors } from 'src/utils/colors';
 import PropTypes from 'prop-types';
 
 const STARTUP_WINDOW_MINUTES = 30;
@@ -10,7 +10,7 @@ const MIN_POD_AGE_MINUTES = 5;
 const MAX_PODS = 5;
 
 // Distinct colors for per-pod usage lines
-const POD_COLORS = ['#8B5CF6', '#F59E0B', '#06B6D4', '#EC4899', '#10B981'];
+const POD_COLORS = resolveColors([ds.purple[500], ds.amber[500], '#06B6D4', '#EC4899', '#10B981']);
 
 function fetchPodMetrics(pod, query, groupBy, datasource) {
   const createdMs = new Date(pod.timestamp).getTime();
@@ -192,7 +192,7 @@ const KubernetesStartupCharts = ({ accountId, workloadName, namespaceName, conta
             type: 'line',
             tension: 0.3,
             label: 'Recommendation',
-            borderColor: '#2ca84c',
+            borderColor: resolveColor(ds.green[500]),
             fill: false,
             data: Array.from({ length: relativeLabels.length }, () => cpuReccValue),
             borderWidth: 1,
@@ -204,7 +204,7 @@ const KubernetesStartupCharts = ({ accountId, workloadName, namespaceName, conta
           type: 'line',
           tension: 0.3,
           label: 'Requested',
-          borderColor: '#2f7af0',
+          borderColor: resolveColor(ds.blue[500]),
           fill: false,
           data: requestCpuValues,
           borderWidth: 1,
@@ -215,7 +215,7 @@ const KubernetesStartupCharts = ({ accountId, workloadName, namespaceName, conta
           type: 'line',
           tension: 0.3,
           label: 'Limit',
-          borderColor: '#e5484d',
+          borderColor: resolveColor(ds.red[500]),
           borderDash: [8, 2],
           fill: false,
           data: limitCpuValues,
@@ -228,7 +228,7 @@ const KubernetesStartupCharts = ({ accountId, workloadName, namespaceName, conta
             type: 'line',
             tension: 0.3,
             label: 'Recommendation',
-            borderColor: '#2ca84c',
+            borderColor: resolveColor(ds.green[500]),
             fill: false,
             data: Array.from({ length: relativeLabels.length }, () => memReccValue),
             borderWidth: 1,
@@ -240,7 +240,7 @@ const KubernetesStartupCharts = ({ accountId, workloadName, namespaceName, conta
           type: 'line',
           tension: 0.3,
           label: 'Requested',
-          borderColor: '#2f7af0',
+          borderColor: resolveColor(ds.blue[500]),
           fill: false,
           data: requestMemValues,
           borderWidth: 1,
@@ -251,7 +251,7 @@ const KubernetesStartupCharts = ({ accountId, workloadName, namespaceName, conta
           type: 'line',
           tension: 0.3,
           label: 'Limit',
-          borderColor: '#e5484d',
+          borderColor: resolveColor(ds.red[500]),
           borderDash: [8, 2],
           fill: false,
           data: limitMemValues,
@@ -329,7 +329,7 @@ const KubernetesStartupCharts = ({ accountId, workloadName, namespaceName, conta
             <Typography fontSize={ds.text.bodyLg} fontWeight={600} color={ds.brand[500]}>
               Startup CPU (Core)
             </Typography>
-            <LineChart dataset={cpuDatasets} labels={labels} scaleOptions={scaleOptions} loading={isLoading} />
+            <Chart.Line dataset={cpuDatasets} labels={labels} scaleOptions={scaleOptions} loading={isLoading} />
           </Box>
         </Grid>
         <Grid item xs={6}>
@@ -347,7 +347,7 @@ const KubernetesStartupCharts = ({ accountId, workloadName, namespaceName, conta
             <Typography fontSize={ds.text.bodyLg} fontWeight={600} color={ds.brand[500]}>
               Startup Memory (MB)
             </Typography>
-            <LineChart dataset={memDatasets} labels={labels} scaleOptions={scaleOptions} loading={isLoading} />
+            <Chart.Line dataset={memDatasets} labels={labels} scaleOptions={scaleOptions} loading={isLoading} />
           </Box>
         </Grid>
       </Grid>

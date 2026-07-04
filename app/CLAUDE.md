@@ -46,8 +46,10 @@ npm run analyze
 src/
 ├── pages/          # Next.js pages and API routes
 ├── api1/           # GraphQL service modules (feature-organized)
-├── components1/    # React components by feature
-│   └── common/     # Shared UI components
+├── components/     # All React components
+│   ├── common/     # Shared UI components (@shared/*)
+│   │   └── ds/     # Design-system primitives (@ui/*)
+│   └── */          # Feature components (k8s, cloudaccount, llm, …)
 ├── context/        # React Context providers
 ├── hooks/          # Custom React hooks
 ├── lib/            # Utilities, HTTP service, auth
@@ -61,8 +63,9 @@ src/
 Use these instead of relative imports:
 
 - `@api1/*` → `src/api1/*`
-- `@components1/*` → `src/components1/*`
-- `@common/*` → `src/components1/common/*`
+- `@components/*` → `src/components/*`
+- `@ui/*` → `src/components/common/ds/*` (design-system primitives)
+- `@shared/*` → `src/components/common/*` (shared UI components)
 - `@lib/*` → `src/lib/*`
 - `@hooks/*` → `src/hooks/*`
 - `@context/*` → `src/context/*`
@@ -227,7 +230,7 @@ For the complete design system reference (typography classes, component catalog 
 
 The DS has two parallel artifacts that **must stay in sync**:
 
-1. **Code** — `app/src/component-new/ds/<Name>.tsx` (the runtime primitive)
+1. **Code** — `app/src/components/common/ds/<Name>.tsx` (the runtime primitive)
 2. **Spec** — `app/design-system/primitives/<category>/<name>.html` + visual styles in `app/design-system/shared/primitive-helpers.css`
 
 Each `ds/<Name>.tsx` declares its spec path in the top JSDoc — e.g. `* Spec: app/design-system/primitives/action/chip.html`. **Read that line first.**

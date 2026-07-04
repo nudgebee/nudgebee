@@ -5,12 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"nudgebee/collector/cloud/providers"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
 func TestGetAwsCloudwatchAlarms(t *testing.T) {
+	if os.Getenv("AWS_ACCESS_KEY_ID") == "" {
+		t.Skip("Skipping integration test that requires AWS credentials")
+	}
 	r, err := getAwsCloudwatchAlarms(providers.NewCloudProviderContext(context.Background()), providers.Account{
 		AccountNumber: testAWSAccountNumber,
 	}, AlarmsFilter{
@@ -21,6 +25,9 @@ func TestGetAwsCloudwatchAlarms(t *testing.T) {
 }
 
 func TestGetAwsCloudwatchAlarmsForResource(t *testing.T) {
+	if os.Getenv("AWS_ACCESS_KEY_ID") == "" {
+		t.Skip("Skipping integration test that requires AWS credentials")
+	}
 	r, err := getAwsCloudwatchAlarms(providers.NewCloudProviderContext(context.Background()), providers.Account{
 		AccountNumber: testAWSAccountNumber}, AlarmsFilter{
 		ResourceIds: []string{"main"},
@@ -255,6 +262,9 @@ func TestExtractCloudWatchAlarmInfoFromEB(t *testing.T) {
 }
 
 func TestBuildAlarmRawMap(t *testing.T) {
+	if os.Getenv("AWS_ACCESS_KEY_ID") == "" {
+		t.Skip("Skipping integration test that requires AWS credentials")
+	}
 	r, err := getAwsCloudwatchAlarms(providers.NewCloudProviderContext(context.Background()), providers.Account{
 		AccountNumber: testAWSAccountNumber,
 	}, AlarmsFilter{})

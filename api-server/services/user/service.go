@@ -93,12 +93,12 @@ func sendTenantInvitationEmail(ctx *security.RequestContext, userId, tenantId st
 			ctx.GetLogger().Error("invitation: error starting transaction", "error", txErr)
 		} else {
 			if _, err := tx.Exec(`UPDATE tenant_users SET is_default = false WHERE tenant != $1 AND "user" = $2`, tenantObj.Id, userObj.Id); err != nil {
-				_ = tx.Rollback()
+				database.LogRollback(tx, ctx.GetLogger())
 				ctx.GetLogger().Error("invitation: error clearing default tenant", "error", err)
 				return
 			}
 			if _, err := tx.Exec(`UPDATE tenant_users SET is_default = true WHERE tenant = $1 AND "user" = $2`, tenantObj.Id, userObj.Id); err != nil {
-				_ = tx.Rollback()
+				database.LogRollback(tx, ctx.GetLogger())
 				ctx.GetLogger().Error("invitation: error setting default tenant", "error", err)
 				return
 			}

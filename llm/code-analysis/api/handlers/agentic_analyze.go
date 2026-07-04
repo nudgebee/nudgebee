@@ -50,30 +50,28 @@ type NBAgent interface {
 }
 
 type AgenticAnalyzeHandler struct {
-	config            *config.Config
-	gitClient         *git.GitClient
-	llmClient         *llm.Client
-	CredHandler       *credentials.CredentialHandler
-	orchestratorAgent *agents.OrchestratorAgent
+	config      *config.Config
+	gitClient   *git.GitClient
+	CredHandler *credentials.CredentialHandler
 }
 
 func NewAgenticAnalyzeHandler(cfg *config.Config, gitClient *git.GitClient, credHandler *credentials.CredentialHandler) (*AgenticAnalyzeHandler, error) {
-	// Initialize LLM client
-	llmClient, err := llm.NewClient(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize LLM client: %w", err)
+	// The real LLM client + orchestrator are built fresh per request (see
+	// resolveClients), using the per-request llm_config that llm-server forwards.
+	// A bad *startup* config (e.g. an empty env fallback when per-request
+	// forwarding is in use) must NOT disable the endpoint: doing so 503s every
+	// request even though each one carries a complete, valid llm_config. We probe
+	// the startup client only to surface a warning; a request that actually falls
+	// back to the startup config and finds it invalid fails individually in
+	// resolveClients with a clear per-request error.
+	if _, err := llm.NewClient(cfg); err != nil {
+		log.Printf("WARN: agentic handler: startup LLM client unavailable; /analyze will rely on per-request llm_config forwarded by llm-server: %v", err)
 	}
 
-	// Initialize orchestrator agent (which manages specialist + fixer agents)
-	logger := common.NewLogger("agentic_handler", "orchestrator", "system", nil)
-	orchestratorAgent := agents.NewOrchestratorAgent(cfg, llmClient, gitClient, logger)
-
 	return &AgenticAnalyzeHandler{
-		config:            cfg,
-		gitClient:         gitClient,
-		llmClient:         llmClient,
-		CredHandler:       credHandler,
-		orchestratorAgent: orchestratorAgent,
+		config:      cfg,
+		gitClient:   gitClient,
+		CredHandler: credHandler,
 	}, nil
 }
 
@@ -117,6 +115,10 @@ type AgenticAnalyzeRequest struct {
 	ConversationId string               `json:"conversation_id,omitempty"`
 	MessageId      string               `json:"message_id,omitempty"`
 	BuildConfig    *session.BuildConfig `json:"build_config,omitempty"`
+	// AnalysisID is set internally by HandleAnalyze (the async entrypoint) to the
+	// progress-store key so the analysis can attach its tool tracker for live
+	// /status streaming. Not part of the wire contract — callers never send it.
+	AnalysisID string `json:"-"`
 	// Skills is a pre-rendered <skills> block of operator-authored skills mapped
 	// to the code agent. Resolved and forwarded by llm-server (which owns the
 	// skills DB); injected verbatim into the internal agent prompts.
@@ -126,6 +128,40 @@ type AgenticAnalyzeRequest struct {
 	Followup bool   `json:"followup,omitempty"`
 	PRURL    string `json:"pr_url,omitempty"`
 	PRBranch string `json:"pr_branch,omitempty"`
+
+	// LLMConfig, when present, carries the tenant-resolved LLM provider config
+	// forwarded by llm-server so this stateless service honors the tenant's own
+	// LLM integration instead of the pod's global LLM_* secret-env fallback.
+	// nil ⇒ use the process defaults loaded from env at startup.
+	LLMConfig *LLMConfigOverride `json:"llm_config,omitempty"`
+}
+
+// LLMConfigOverride is the per-request LLM provider config forwarded by
+// llm-server (see core.ForwardedLLMConfig). Only non-empty fields override the
+// startup defaults. The API key is plaintext and must never be logged.
+type LLMConfigOverride struct {
+	Provider    string `json:"provider,omitempty"`
+	Model       string `json:"model,omitempty"`
+	ApiKey      string `json:"api_key,omitempty"`
+	ApiEndpoint string `json:"endpoint,omitempty"`
+	ApiVersion  string `json:"api_version,omitempty"`
+	ApiType     string `json:"api_type,omitempty"`
+	Region      string `json:"region,omitempty"`
+}
+
+func (o *LLMConfigOverride) toConfigOverride() config.LLMOverride {
+	if o == nil {
+		return config.LLMOverride{}
+	}
+	return config.LLMOverride{
+		Provider:    o.Provider,
+		Model:       o.Model,
+		ApiKey:      o.ApiKey,
+		ApiEndpoint: o.ApiEndpoint,
+		ApiVersion:  o.ApiVersion,
+		ApiType:     o.ApiType,
+		Region:      o.Region,
+	}
 }
 
 type PRInfo struct {
@@ -255,12 +291,14 @@ type TokenUsage struct {
 }
 
 type ToolInvocation struct {
-	ToolName  string `json:"tool_name"`
-	Input     any    `json:"input"`
-	Output    any    `json:"output"`
-	Status    string `json:"status"`
-	Duration  string `json:"duration"`
-	Timestamp string `json:"timestamp"`
+	ToolName   string `json:"tool_name"`
+	Input      any    `json:"input"`
+	Output     any    `json:"output"`
+	Status     string `json:"status"`
+	Duration   string `json:"duration"`
+	Timestamp  string `json:"timestamp"`
+	Thought    string `json:"thought,omitempty"`     // Planner reasoning that led to this step
+	StepNumber int    `json:"step_number,omitempty"` // Stable per-step ordinal (identity across polls)
 }
 
 func (ah *AgenticAnalyzeHandler) HandleAgenticAnalyze(ctx context.Context, req AgenticAnalyzeRequest) (*AgenticAnalyzeResponse, error) {
@@ -320,6 +358,10 @@ func (ah *AgenticAnalyzeHandler) HandleAnalyze(c *gin.Context) {
 
 	common.InitAnalysis(analysisID)
 
+	// Bind the progress-store key onto the request so PerformAgenticAnalysis can
+	// attach its tool tracker to this analysis state for live /status streaming.
+	req.AnalysisID = analysisID
+
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), ah.config.Analysis.MaxProcessingTime)
 		defer cancel()
@@ -347,7 +389,7 @@ func (ah *AgenticAnalyzeHandler) HandleAnalyze(c *gin.Context) {
 // HandleStatus returns the current progress and result of an async analysis.
 func (ah *AgenticAnalyzeHandler) HandleStatus(c *gin.Context) {
 	analysisID := strings.TrimPrefix(c.Param("id"), "/")
-	state := common.GetAnalysisState(analysisID)
+	state := common.Snapshot(analysisID)
 	if state == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "analysis not found"})
 		return
@@ -358,6 +400,12 @@ func (ah *AgenticAnalyzeHandler) HandleStatus(c *gin.Context) {
 		"status":      state.Status,
 		"progress":    state.Progress,
 	}
+	// Stream the steps taken so far on every poll (running and completed) so the
+	// caller can render tool calls live, like other agents. Outputs are truncated
+	// and credential-scrubbed by projectLiveInvocations.
+	if state.Tracker != nil {
+		resp["tool_invocations"] = ah.projectLiveInvocations(state.Tracker.GetInvocations())
+	}
 	if state.Status == "completed" {
 		resp["result"] = state.Result
 	}
@@ -367,12 +415,37 @@ func (ah *AgenticAnalyzeHandler) HandleStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req AgenticAnalyzeRequest) (*AgenticAnalyzeResponse, error) {
-	// Snapshot token usage before this analysis to compute per-request delta later.
-	// The llmClient is a singleton shared across requests, so we track the delta
-	// rather than the cumulative total.
-	tokensBefore := ah.llmClient.SnapshotTokenUsage()
+// resolveClients returns the LLM client and orchestrator to use for this
+// request. When the request carries no llm_config override it reuses the
+// process-default client; otherwise it builds a fresh client from the
+// overlaid config. In BOTH cases it builds a fresh per-request orchestrator so
+// concurrent async analyses never race on shared agent state (workspaceDir,
+// logger, toolTracker). It also returns the effective config for downstream
+// agents (e.g. PR followup) that need it.
+func (ah *AgenticAnalyzeHandler) resolveClients(req AgenticAnalyzeRequest, logger *common.Logger) (*config.Config, *llm.Client, *agents.OrchestratorAgent, error) {
+	// Always build a fresh client + orchestrator per request. Beyond honoring a
+	// per-request llm_config override, this isolates the client's cumulative
+	// token counter so concurrent analyses don't pollute each other's deltas,
+	// and avoids sharing the orchestrator's mutable state (workspaceDir/logger/
+	// toolTracker). Client init is lazy/cheap.
+	cfg := ah.config
+	if req.LLMConfig != nil {
+		cfg = ah.config.CloneWithLLMOverride(req.LLMConfig.toConfigOverride())
+	}
+	client, err := llm.NewClient(cfg)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("failed to build per-request LLM client: %w", err)
+	}
+	if req.LLMConfig != nil {
+		logger.Log(common.EventAnalysisStart, "Using per-request (tenant) LLM config", map[string]any{
+			"provider": cfg.LLM.Provider,
+			"model":    cfg.LLM.Model,
+		})
+	}
+	return cfg, client, agents.NewOrchestratorAgent(cfg, client, ah.gitClient, logger), nil
+}
 
+func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req AgenticAnalyzeRequest) (*AgenticAnalyzeResponse, error) {
 	// Normalize and validate request before processing
 	if err := ah.normalizeAndValidateRequest(&req); err != nil {
 		return nil, fmt.Errorf("request validation failed: %w", err)
@@ -388,6 +461,17 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 		"branch":     req.GitRepository.Branch,
 	})
 
+	// Resolve the per-request LLM client + a fresh per-request orchestrator.
+	cfg, client, orch, err := ah.resolveClients(req, logger)
+	if err != nil {
+		return nil, err
+	}
+
+	// Snapshot token usage before this analysis to compute the per-request delta.
+	// For a fresh per-request client this starts at zero; for the shared default
+	// client the delta isolates this analysis's contribution.
+	tokensBefore := client.SnapshotTokenUsage()
+
 	// Resolve credentials only if not using local repository and CredHandler is available
 	var resolvedCreds *credentials.ResolvedCredentials
 	if ah.CredHandler != nil && req.GitRepository.LocalPath == "" {
@@ -400,11 +484,11 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 
 	// PR followup mode — route to PRFollowupAgent instead of orchestrator
 	if req.Followup && req.PRURL != "" {
-		return ah.performFollowupAnalysis(ctx, req, logger, resolvedCreds)
+		return ah.performFollowupAnalysis(ctx, cfg, client, req, logger, resolvedCreds)
 	}
 
 	// Configure all agents with the logger
-	ah.orchestratorAgent.SetLogger(logger)
+	orch.SetLogger(logger)
 
 	// Handle repository cloning for remote URLs
 	var repositoryPath string
@@ -465,8 +549,15 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 	// Create tool invocation tracker for this analysis session
 	toolTracker := common.NewToolInvocationTracker(req.ConversationId)
 
+	// Attach the tracker to the async analysis state so /status can stream the
+	// steps taken so far on every poll (live tool-call display). No-op for the
+	// sync path, where AnalysisID is empty.
+	if req.AnalysisID != "" {
+		common.AttachTracker(req.AnalysisID, toolTracker)
+	}
+
 	// Enable tool tracking for all agents
-	ah.enableToolTracking(toolTracker, logger)
+	ah.enableToolTracking(orch, toolTracker, logger)
 
 	// Create NBAgentRequest with proper query construction
 	var query string
@@ -506,7 +597,7 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 	}
 
 	// Determine which agent to use based on request content
-	selectedAgent := ah.selectAgent(agentRequest, repositoryPath)
+	selectedAgent := ah.selectAgent(orch, agentRequest, repositoryPath)
 
 	// Configure the selected agent with the logger
 	selectedAgent.SetLogger(logger)
@@ -584,7 +675,7 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 	// per-message retry guard and permanently lock out retries that could have recovered.
 	var relevanceCheck *RelevanceCheckResult
 	if !parseFailed {
-		relevanceCheck, err = ah.validateResponseRelevanceWithLLM(agentResponse, req, logger)
+		relevanceCheck, err = ah.validateResponseRelevanceWithLLM(ctx, client, agentResponse, req, logger)
 	}
 	if err != nil {
 		logger.Error(common.EventAnalysisFailure, "Failed to validate response relevance", err, nil)
@@ -643,11 +734,11 @@ func (ah *AgenticAnalyzeHandler) PerformAgenticAnalysis(ctx context.Context, req
 	logger.FinalAnswer(agentResponse, "agent")
 
 	// Collect per-request token usage by computing delta from the pre-analysis snapshot.
-	// The llmClient is a singleton, so the cumulative total includes all prior requests.
-	// Delta gives us the tokens consumed by THIS analysis only.
+	// For a fresh per-request client the delta equals the total; for the shared
+	// default client it isolates THIS analysis's contribution.
 	var tokenUsage *TokenUsage
-	if ah.llmClient != nil {
-		tokensAfter := ah.llmClient.SnapshotTokenUsage()
+	if client != nil {
+		tokensAfter := client.SnapshotTokenUsage()
 		delta := llm.TokenUsageDelta(tokensBefore, tokensAfter)
 		if delta.TotalTokens > 0 {
 			tokenUsage = &TokenUsage{
@@ -1064,11 +1155,11 @@ func (ah *AgenticAnalyzeHandler) createQueryContext(req AgenticAnalyzeRequest) s
 }
 
 // selectAgent determines which agent to use based on the request content
-func (ah *AgenticAnalyzeHandler) selectAgent(agentRequest agents.NBAgentRequest, repositoryPath string) NBAgent {
+func (ah *AgenticAnalyzeHandler) selectAgent(orch *agents.OrchestratorAgent, agentRequest agents.NBAgentRequest, repositoryPath string) NBAgent {
 	// Set the workspace directory for this analysis session
 	// For log-only analysis (empty repositoryPath), agents will work in log-analysis mode
-	ah.orchestratorAgent.SetWorkspaceDir(repositoryPath)
-	return ah.orchestratorAgent
+	orch.SetWorkspaceDir(repositoryPath)
+	return orch
 }
 
 // createQueryConfigWithPath creates the query configuration map with a specific repository path
@@ -1372,7 +1463,7 @@ type RelevanceCheckResult struct {
 }
 
 // validateResponseRelevanceWithLLM uses LLM to determine if the agent response addresses the user's actual request
-func (ah *AgenticAnalyzeHandler) validateResponseRelevanceWithLLM(agentResponse *AnalysisResult, req AgenticAnalyzeRequest, logger *common.Logger) (*RelevanceCheckResult, error) {
+func (ah *AgenticAnalyzeHandler) validateResponseRelevanceWithLLM(ctx context.Context, client *llm.Client, agentResponse *AnalysisResult, req AgenticAnalyzeRequest, logger *common.Logger) (*RelevanceCheckResult, error) {
 	// Create a focused prompt for the LLM to evaluate relevance
 	relevancePrompt := fmt.Sprintf(`You are a relevance validator for code analysis results. Your job is to determine if an automated analysis actually addresses the user's specific request.
 
@@ -1407,7 +1498,7 @@ Provide your assessment in JSON format:
 		agentResponse.Title, agentResponse.Description, agentResponse.FilePath, agentResponse.ErrorMessage)
 
 	// Use the LLM client to get relevance assessment
-	response, err := ah.generateSimpleCompletion(context.Background(), relevancePrompt)
+	response, err := ah.generateSimpleCompletion(ctx, client, relevancePrompt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to validate relevance with LLM: %w", err)
 	}
@@ -1458,7 +1549,7 @@ Provide your assessment in JSON format:
 }
 
 // generateSimpleCompletion is a helper method to generate simple text completions using the LLM client
-func (ah *AgenticAnalyzeHandler) generateSimpleCompletion(ctx context.Context, prompt string) (string, error) {
+func (ah *AgenticAnalyzeHandler) generateSimpleCompletion(ctx context.Context, client *llm.Client, prompt string) (string, error) {
 	// Import the required types
 	messages := []llms.MessageContent{
 		{
@@ -1469,7 +1560,7 @@ func (ah *AgenticAnalyzeHandler) generateSimpleCompletion(ctx context.Context, p
 		},
 	}
 
-	response, err := ah.llmClient.GenerateContent(ctx, messages)
+	response, err := client.GenerateContent(ctx, messages)
 	if err != nil {
 		return "", err
 	}
@@ -1521,28 +1612,78 @@ func (ah *AgenticAnalyzeHandler) sanitizeAgentResponseString(responseStr *string
 	*responseStr = re4.ReplaceAllString(*responseStr, `"token": "***REDACTED***"`)
 }
 
+// liveOutputPreviewCap bounds the per-step output shipped in the live /status
+// stream. The step display only needs a preview; the full output (which can be
+// file contents or command stdout) lives in the final result.
+const liveOutputPreviewCap = 8192
+
 // convertTrackedInvocations converts TrackedToolInvocation to ToolInvocation format
 func (ah *AgenticAnalyzeHandler) convertTrackedInvocations(tracked []common.TrackedToolInvocation) []ToolInvocation {
 	invocations := make([]ToolInvocation, len(tracked))
 
 	for i, t := range tracked {
+		thought, _ := t.Metadata["intention"].(string)
+		// Prefer the human-readable observation over the raw tool data blob so the
+		// rendered step result is plain text, not escaped JSON.
+		output := t.Output
+		if obs, ok := t.Metadata["observation"].(string); ok && obs != "" {
+			output = obs
+		}
 		invocations[i] = ToolInvocation{
-			ToolName:  t.ToolName,
-			Input:     t.Input,
-			Output:    t.Output,
-			Status:    t.Status,
-			Duration:  t.Duration,
-			Timestamp: t.Timestamp,
+			ToolName:   t.ToolName,
+			Input:      t.Input,
+			Output:     output,
+			Status:     t.Status,
+			Duration:   t.Duration,
+			Timestamp:  t.Timestamp,
+			Thought:    thought,
+			StepNumber: t.StepNumber,
 		}
 	}
 
 	return invocations
 }
 
+// projectLiveInvocations prepares tracked invocations for the live /status stream:
+// it truncates each step's output to a preview and credential-scrubs it. The
+// planner path stores raw, unsanitized tool output (CompleteInvocation), which is
+// otherwise only scrubbed on the final response — so this is the sanitization
+// seam for the per-poll stream. Input is already redacted by the tracker.
+func (ah *AgenticAnalyzeHandler) projectLiveInvocations(tracked []common.TrackedToolInvocation) []ToolInvocation {
+	invocations := ah.convertTrackedInvocations(tracked)
+	for i := range invocations {
+		invocations[i].Output = ah.sanitizeAndTruncateOutput(invocations[i].Output, liveOutputPreviewCap)
+	}
+	return invocations
+}
+
+// sanitizeAndTruncateOutput renders a tool output to a string, scrubs credential
+// patterns, and truncates it to a byte cap (rune-safe). Returns nil for nil input.
+func (ah *AgenticAnalyzeHandler) sanitizeAndTruncateOutput(out any, cap int) any {
+	if out == nil {
+		return nil
+	}
+	var s string
+	if str, ok := out.(string); ok {
+		s = str
+	} else if b, err := json.Marshal(out); err == nil {
+		s = string(b)
+	} else {
+		s = fmt.Sprintf("%v", out)
+	}
+
+	ah.sanitizeAgentResponseString(&s)
+
+	if len(s) > cap {
+		s = strings.ToValidUTF8(s[:cap], "") + "…[truncated]"
+	}
+	return s
+}
+
 // enableToolTracking wraps all agent tools with tracking capabilities
-func (ah *AgenticAnalyzeHandler) enableToolTracking(tracker *common.ToolInvocationTracker, logger *common.Logger) {
+func (ah *AgenticAnalyzeHandler) enableToolTracking(orch *agents.OrchestratorAgent, tracker *common.ToolInvocationTracker, logger *common.Logger) {
 	// Enable tracking for orchestrator agent
-	ah.orchestratorAgent.EnableToolTracking(tracker, logger)
+	orch.EnableToolTracking(tracker, logger)
 	logger.Log(common.EventAnalysisStart, "Tool tracking enabled for orchestrator agent", map[string]any{
 		"tracker_ready": true,
 	})
@@ -1555,7 +1696,7 @@ type ToolTrackable interface {
 
 // performFollowupAnalysis handles PR followup mode — routes to PRFollowupAgent
 // to address CI failures and review comments on existing PRs/MRs.
-func (ah *AgenticAnalyzeHandler) performFollowupAnalysis(ctx context.Context, req AgenticAnalyzeRequest, logger *common.Logger, resolvedCreds *credentials.ResolvedCredentials) (*AgenticAnalyzeResponse, error) {
+func (ah *AgenticAnalyzeHandler) performFollowupAnalysis(ctx context.Context, cfg *config.Config, client *llm.Client, req AgenticAnalyzeRequest, logger *common.Logger, resolvedCreds *credentials.ResolvedCredentials) (*AgenticAnalyzeResponse, error) {
 	startTime := time.Now()
 
 	prNumber, err := agents.ParsePRNumber(req.PRURL)
@@ -1641,8 +1782,8 @@ func (ah *AgenticAnalyzeHandler) performFollowupAnalysis(ctx context.Context, re
 		}
 	}
 
-	// Create and execute the PRFollowupAgent
-	followupAgent := agents.NewPRFollowupAgent(ah.config, ah.llmClient, logger, workspaceDir, gitToken, provider)
+	// Create and execute the PRFollowupAgent with the per-request config + client
+	followupAgent := agents.NewPRFollowupAgent(cfg, client, logger, workspaceDir, gitToken, provider)
 
 	followupReq := agents.PRFollowupRequest{
 		RepoURL:  req.GitRepository.URL,

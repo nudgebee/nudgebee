@@ -24,7 +24,7 @@ COPY ./ /hasura-migrations
 
 WORKDIR /hasura-migrations
 
-ARG GOLANG_MIGRATE_VERSION=v4.17.0
+ARG GOLANG_MIGRATE_VERSION=v4.19.1
 # Download, install golang-migrate, and clean up the .deb file
 RUN DEB_FILENAME="migrate.linux-${TARGETARCH}.deb" \
     && curl -fsSL \
@@ -37,4 +37,11 @@ RUN DEB_FILENAME="migrate.linux-${TARGETARCH}.deb" \
         -o "${DEB_FILENAME}" \
     && dpkg -i "${DEB_FILENAME}" \
     && rm "${DEB_FILENAME}"
+
+# Run the Job as a non-root user. run-migrations.sh only reads the world-readable
+# migration files under /hasura-migrations and talks to Postgres/ClickHouse/
+# RabbitMQ over the network — it writes nothing to disk — so no root is needed.
+# ubuntu:24.04 ships a built-in unprivileged `ubuntu` user (uid 1000); reuse it.
+USER ubuntu
+
 CMD ["/bin/bash", "./run-migrations.sh"]

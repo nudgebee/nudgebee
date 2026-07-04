@@ -199,6 +199,12 @@ SELECT
     m.parent_agent_id::text     AS parent_agent_id,
     m.message_config            AS message_config,
     m.ack_message               AS ack_message,
+    -- Generic per-message jsonb attachment slot — namespace-keyed so multiple
+    -- subsystems (egressfilter, future PII tokenization) can each write under
+    -- their own top-level key. Returned as text so the SDL stays a String;
+    -- frontend JSON.parses on the fields it understands. Nullable when no
+    -- subsystem wrote anything for the row.
+    m.metadata::text            AS metadata,
     -- Correlated json_agg subquery (not a LEFT JOIN — avoids message-row
     -- fan-out). Scoped by message_id + conversation_id; m is already
     -- tenant-vetted by the c.tenant_id filter below, so no extra account

@@ -33,6 +33,11 @@ func init() {
 
 const PromqlAgentName = "promql_query"
 
+// promQLParser is a shared, stateless PromQL parser reused across validations.
+// ParseExpr builds a fresh internal parser per call, so the single instance is
+// concurrency-safe and avoids per-call allocations.
+var promQLParser = parser.NewParser(parser.Options{})
+
 type PromqlAgent struct {
 	externalHosts       map[string]string
 	externalHostsCached bool
@@ -278,7 +283,7 @@ func (p *PromqlAgent) UpdateExecutorLlmResponse(actions []core.NBAgentPlannerToo
 			if part == "" {
 				continue
 			}
-			if _, parseErr := parser.ParseExpr(part); parseErr != nil {
+			if _, parseErr := promQLParser.ParseExpr(part); parseErr != nil {
 				// Surface the parse error clearly so the parent agent stops retrying.
 				errMsg := fmt.Sprintf("promql_query: generated query is invalid (unsupported function or syntax): %s. Original query: %s", parseErr.Error(), q)
 				finished.Data = errMsg

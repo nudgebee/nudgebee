@@ -1,19 +1,27 @@
 import { Box, Typography, Chip } from '@mui/material';
-import { Modal } from '@shared/modal';
+import { Modal } from '@ui/Modal';
+import { Button } from '@ui/Button';
+import SafeIcon from '@shared/icons/SafeIcon';
 import JsonTreeView from '@shared/viewers/JsonTreeView';
 import type { WorkflowDryRunResponse } from '@api1/workflow/types';
+import { useTenantBranding } from '@hooks/useTenantBranding';
+import { getLlmSessionId, buildAskNudgebeeHref } from '../utils/llmChat';
 
 interface DryRunResultModalProps {
   open: boolean;
   onClose: () => void;
   result: WorkflowDryRunResponse | null;
+  // Account context for the Ask-Nudgebee deep link on LLM tasks.
+  accountId: string;
   // The draft was run against an inline definition, not the published live
   // version. When provided, the modal shows "Dry run of draft based on vN" so
   // users know exactly what they tested.
   draftVersionNumber?: number;
 }
 
-const DryRunResultModal: React.FC<DryRunResultModalProps> = ({ open, onClose, result, draftVersionNumber }) => {
+const DryRunResultModal: React.FC<DryRunResultModalProps> = ({ open, onClose, result, accountId, draftVersionNumber }) => {
+  const { assistantName, nubiIconUrl } = useTenantBranding();
+
   if (!result) {
     return null;
   }
@@ -40,8 +48,8 @@ const DryRunResultModal: React.FC<DryRunResultModalProps> = ({ open, onClose, re
             label={result.status}
             size='small'
             sx={{
-              backgroundColor: isSuccess ? '#d1fae5' : isFailed ? '#fee2e2' : '#e5e7eb',
-              color: isSuccess ? '#065f46' : isFailed ? '#991b1b' : '#374151',
+              backgroundColor: isSuccess ? 'var(--ds-green-100)' : isFailed ? 'var(--ds-red-100)' : 'var(--ds-gray-200)',
+              color: isSuccess ? 'var(--ds-green-700)' : isFailed ? 'var(--ds-red-700)' : 'var(--ds-gray-600)',
               fontWeight: 'var(--ds-font-weight-semibold)',
             }}
           />
@@ -79,7 +87,7 @@ const DryRunResultModal: React.FC<DryRunResultModalProps> = ({ open, onClose, re
             <Typography variant='subtitle2' sx={{ fontWeight: 'var(--ds-font-weight-semibold)', mb: 1, color: 'var(--ds-brand-500)' }}>
               Output:
             </Typography>
-            <JsonTreeView data={result.output} defaultExpanded={2} maxHeight='300px' fontSize='12px' />
+            <JsonTreeView data={result.output} defaultExpanded={2} maxHeight='300px' fontSize='var(--ds-text-small)' />
           </Box>
         )}
 
@@ -108,18 +116,35 @@ const DryRunResultModal: React.FC<DryRunResultModalProps> = ({ open, onClose, re
                       label={task.status}
                       size='small'
                       sx={{
-                        backgroundColor: task.status === 'COMPLETED' ? '#d1fae5' : task.status === 'FAILED' ? '#fee2e2' : '#e5e7eb',
-                        color: task.status === 'COMPLETED' ? '#065f46' : task.status === 'FAILED' ? '#991b1b' : '#374151',
+                        backgroundColor:
+                          task.status === 'COMPLETED' ? 'var(--ds-green-100)' : task.status === 'FAILED' ? 'var(--ds-red-100)' : 'var(--ds-gray-200)',
+                        color:
+                          task.status === 'COMPLETED' ? 'var(--ds-green-700)' : task.status === 'FAILED' ? 'var(--ds-red-700)' : 'var(--ds-gray-600)',
                         fontSize: 'var(--ds-text-caption)',
                       }}
                     />
+                    {(() => {
+                      const sid = getLlmSessionId(task);
+                      if (!sid) return null;
+                      return (
+                        <Button
+                          size='xs'
+                          tone='secondary'
+                          icon={<SafeIcon alt={`Ask ${assistantName}`} src={nubiIconUrl} height={20} width={20} />}
+                          data-testid='dry-run-go-to-chat-btn'
+                          onClick={() => window.open(buildAskNudgebeeHref(accountId, sid), '_blank', 'noopener,noreferrer')}
+                        >
+                          Go to chat
+                        </Button>
+                      );
+                    })()}
                   </Box>
                   {task.error && (
                     <Typography variant='caption' sx={{ color: 'var(--ds-red-700)', display: 'block', mb: 1 }}>
                       Error: {task.error}
                     </Typography>
                   )}
-                  {task.output && <JsonTreeView data={task.output} defaultExpanded={1} maxHeight='150px' fontSize='11px' />}
+                  {task.output && <JsonTreeView data={task.output} defaultExpanded={1} maxHeight='150px' fontSize='var(--ds-text-caption)' />}
                 </Box>
               ))}
             </Box>

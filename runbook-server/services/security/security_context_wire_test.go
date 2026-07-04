@@ -50,10 +50,14 @@ func TestSecurityContextWire_ScopedEntityIds(t *testing.T) {
 		t.Errorf("account_admin_readonly must NOT have write access to account B")
 	}
 
-	// ListAccountIds returns the union of both scoped roles' accounts.
+	// ListAccountIds returns the union of both scoped roles' accounts, in
+	// role-iteration order (account_admin before account_admin_readonly).
 	ids := sc.ListAccountIds()
 	if len(ids) != 2 {
 		t.Fatalf("ListAccountIds expected 2 accounts (union), got %d: %v", len(ids), ids)
+	}
+	if ids[0] != acctA || ids[1] != acctB {
+		t.Errorf("ListAccountIds expected [%s, %s], got %v", acctA, acctB, ids)
 	}
 
 	// Round-trip back out must keep ScopedEntityIds intact.
@@ -67,5 +71,31 @@ func TestSecurityContextWire_ScopedEntityIds(t *testing.T) {
 	}
 	if !sc2.HasAccountAccess(acctA, SecurityAccessTypeRead) {
 		t.Errorf("round-tripped context lost account_admin scope")
+	}
+}
+
+// TestSecurityContextWire_MissingScopedEntityIds ensures a payload with no
+// ScopedEntityIds (nil map) fails closed — no panic, and a scoped role is
+// denied rather than silently granted.
+func TestSecurityContextWire_MissingScopedEntityIds(t *testing.T) {
+	const acctA = "11111111-1111-1111-1111-111111111111"
+
+	wire := []byte(`{
+		"TenantId": "t1",
+		"UserId": "u1",
+		"AccountIds": ["` + acctA + `"],
+		"Roles": ["account_admin"]
+	}`)
+
+	var sc SecurityContext
+	if err := common.UnmarshalJson(wire, &sc); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	if sc.HasAccountAccess(acctA, SecurityAccessTypeRead) {
+		t.Errorf("expected no access when ScopedEntityIds is missing (fail closed)")
+	}
+	if len(sc.ListAccountIds()) != 0 {
+		t.Errorf("expected empty account IDs when ScopedEntityIds is missing")
 	}
 }

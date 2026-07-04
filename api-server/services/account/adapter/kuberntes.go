@@ -47,6 +47,15 @@ func applyMemoryUnit(unit any) any {
 }
 
 func generateAgentTask(ctx AccountAdapterContext, recommendation models.Recommendation, action string, actionParams map[string]any, source string) (string, error) {
+	return generateAgentTaskWithStatus(ctx, recommendation, action, actionParams, source, "TODO")
+}
+
+// generateAgentTaskWithStatus inserts an agent_task with an explicit status.
+// Status "TODO" lets the in-cluster legacy agent pick it up; "PROCESSING" (in
+// the agent's IGNORE_STATUS) makes the agent skip it so api-server can process
+// it itself — used by the in-place rightsizing path, which later finalizes the
+// task to COMPLETED or resets it to TODO for the legacy rollout fallback.
+func generateAgentTaskWithStatus(ctx AccountAdapterContext, recommendation models.Recommendation, action string, actionParams map[string]any, source string, status string) (string, error) {
 	manager, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return "", err
@@ -64,7 +73,7 @@ func generateAgentTask(ctx AccountAdapterContext, recommendation models.Recommen
 		recommendationSource = source
 	}
 
-	_, err = manager.Db.Exec("INSERT INTO agent_task (cloud_account_id, tenant, status, action, payload, source, source_id, resoruce_id, id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", recommendation.CloudAccountId, recommendation.TenantId, "TODO", action, string(jsonActionParams), recommendationSource, recommendation.Id, recommendation.ResourceId, taskId)
+	_, err = manager.Db.Exec("INSERT INTO agent_task (cloud_account_id, tenant, status, action, payload, source, source_id, resoruce_id, id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)", recommendation.CloudAccountId, recommendation.TenantId, status, action, string(jsonActionParams), recommendationSource, recommendation.Id, recommendation.ResourceId, taskId)
 	if err != nil {
 		ctx.GetLogger().Error("failed to insert agent task", "error", err)
 		return "", err
@@ -193,7 +202,7 @@ func (k *kuberntesAdapter) ApplyRecommendation(ctx AccountAdapterContext, reques
 			return ApplyRecommendationResponse{}, fmt.Errorf("failed to marshal annotation: %w", err)
 		}
 
-		taskId, err := generateAgentTask(ctx, request.Recommendation, "rightsizing_resource", map[string]any{
+		agentTaskPayload := map[string]any{
 			"action_name": "rightsizing_resource",
 			"action_params": map[string]any{
 				"kind":        resourceMeta["controllerKind"],
@@ -202,7 +211,35 @@ func (k *kuberntesAdapter) ApplyRecommendation(ctx AccountAdapterContext, reques
 				"containers":  containers,
 				"annotations": map[string]string{"recommendation_apply.vertical-scaler": string(annotationJson)},
 			},
-		}, recommendationSource)
+		}
+
+		// Zero-downtime path: when in_place is requested and the cluster supports
+		// it (>= 1.35), create the agent_task as PROCESSING (the legacy agent
+		// skips it) and resize the running pods in place from api-server. On
+		// success the task is finalized COMPLETED; if in-place is infeasible the
+		// task is reset to TODO so the legacy rollout path applies it normally.
+		inPlace, _ := request.ProviderConfig["in_place"].(bool)
+		if inPlace && clusterSupportsInPlaceResize(ctx, request.Recommendation.CloudAccountId) {
+			taskId, err := generateAgentTaskWithStatus(ctx, request.Recommendation, "rightsizing_resource", agentTaskPayload, recommendationSource, "PROCESSING")
+			if err != nil {
+				return ApplyRecommendationResponse{}, fmt.Errorf("failed to generate agent task: %w", err)
+			}
+			accountId := request.Recommendation.CloudAccountId
+			kind, _ := resourceMeta["controllerKind"].(string)
+			name, _ := resourceMeta["controller"].(string)
+			ns, _ := resourceMeta["namespace"].(string)
+			logger := ctx.GetLogger()
+			go runInPlaceRightsizing(logger, accountId, taskId, kind, name, ns, containers)
+			return ApplyRecommendationResponse{
+				Data:                     request.Data,
+				Status:                   RecommendationResolutionStatusInProgress,
+				ResolutionType:           RecommendationResolutionTypeDeploymentChange,
+				ResolutionTypeRefrenceId: taskId,
+				StatusMessage:            "Applying in-place (no restart)",
+			}, nil
+		}
+
+		taskId, err := generateAgentTask(ctx, request.Recommendation, "rightsizing_resource", agentTaskPayload, recommendationSource)
 		if err != nil {
 			return ApplyRecommendationResponse{}, fmt.Errorf("failed to generate agent task: %w", err)
 		}

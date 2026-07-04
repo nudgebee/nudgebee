@@ -16,6 +16,7 @@ import SafeIcon from '@shared/icons/SafeIcon';
 import CustomTable2 from '@shared/tables/CustomTable2';
 import { getUsersByTenant } from '@lib/UserService';
 import UserGroup from './UserGroup';
+import IntegrationProfiles from './IntegrationProfiles';
 import { toast as snackbar } from '@ui/Toast';
 import { safeJSONParse } from 'src/utils/common';
 
@@ -129,7 +130,7 @@ const AllUsers = () => {
           tableComponentsList.push([
             {
               component: <Text value={user.display_name} showAutoEllipsis />,
-              drilldownQuery: { groupNames: user.user_groups.map((group) => group.name) },
+              drilldownQuery: { groupNames: user.user_groups.map((group) => group.name), userId: user.id },
             },
             {
               component: <Label margin='auto' text={user.status} />,
@@ -283,6 +284,18 @@ const AllUsers = () => {
                   componentFn: (option, query) => {
                     return <UserGroup groupNames={query.groupNames.length ? query.groupNames : null} onUserUpdate={fetchUsers} />;
                   },
+                },
+                {
+                  text: 'Integration profiles',
+                  value: 1,
+                  key: 'integration-profiles',
+                  componentFn: (option, query) => (
+                    <ListingLayout id='box-user-integration-profiles'>
+                      <ListingLayout.Body>
+                        <IntegrationProfiles userId={query.userId} readOnly hideHeading />
+                      </ListingLayout.Body>
+                    </ListingLayout>
+                  ),
                 },
               ],
             }}

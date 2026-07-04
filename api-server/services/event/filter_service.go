@@ -27,6 +27,7 @@ const (
 		  AND subject_namespace != ''
 		  AND ($3::timestamp IS NULL OR created_at >= $3)
 		  AND ($4::timestamp IS NULL OR created_at <= $4)
+		  AND ($6::text IS NULL OR subject_owner = $6)
 		GROUP BY subject_namespace
 		ORDER BY count DESC, value ASC
 		LIMIT $5
@@ -41,6 +42,7 @@ const (
 		  AND subject_owner != ''
 		  AND ($3::timestamp IS NULL OR created_at >= $3)
 		  AND ($4::timestamp IS NULL OR created_at <= $4)
+		  AND ($6::text IS NULL OR subject_namespace = $6)
 		GROUP BY subject_owner
 		ORDER BY count DESC, value ASC
 		LIMIT $5
@@ -167,6 +169,7 @@ const (
 		  AND subject_namespace != ''
 		  AND ($3::timestamp IS NULL OR created_at >= $3)
 		  AND ($4::timestamp IS NULL OR created_at <= $4)
+		  AND ($6::text IS NULL OR subject_owner = $6)
 		ORDER BY value ASC
 		LIMIT $5
 	`
@@ -180,6 +183,7 @@ const (
 		  AND subject_owner != ''
 		  AND ($3::timestamp IS NULL OR created_at >= $3)
 		  AND ($4::timestamp IS NULL OR created_at <= $4)
+		  AND ($6::text IS NULL OR subject_namespace = $6)
 		ORDER BY value ASC
 		LIMIT $5
 	`
@@ -438,14 +442,14 @@ func executeFilterQuery(
 		} else {
 			query = queryNamespaceFilter
 		}
-		args = baseArgs
+		args = append(baseArgs, req.SubjectName) // $6: filter namespaces to those with this workload
 	case EventFilterTypeWorkload:
 		if includeCount {
 			query = queryWorkloadFilterWithCount
 		} else {
 			query = queryWorkloadFilter
 		}
-		args = baseArgs
+		args = append(baseArgs, req.SubjectNamespace) // $6: filter workloads to those in this namespace
 	case EventFilterTypeSubjectType:
 		if includeCount {
 			query = querySubjectTypeFilterWithCount

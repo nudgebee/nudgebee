@@ -10,7 +10,7 @@ import { Trend } from '@ui/Trend';
 import { Chip } from '@ui/Chip';
 import { Skeleton } from '@ui/Skeleton';
 import { Stat } from '@ui/Stat';
-import { formatDollars, type AccountSummary, type MainCategory } from './insights';
+import { type AccountSummary, type MainCategory } from './insights';
 
 // ─── Cost data types ──────────────────────────────────────────────────────
 
@@ -173,11 +173,13 @@ const PaneHeader = ({ costByCurrency, costLoading }: { costByCurrency?: Currency
 const AccountCard = ({
   account,
   acctCost,
+  defaultCurrencySymbol,
   selected,
   onSelect,
 }: {
   account: AccountSummary;
   acctCost?: AccountCost;
+  defaultCurrencySymbol: string;
   selected: boolean;
   onSelect: (accountId: string) => void;
 }) => {
@@ -255,7 +257,9 @@ const AccountCard = ({
             justifySelf: 'end',
           }}
         >
-          {account.totalDollarImpact > 0 ? `${formatDollars(account.totalDollarImpact)}/mo savings` : 'no savings'}
+          {account.totalDollarImpact > 0
+            ? `${formatCurrency(account.totalDollarImpact, acctCost?.currencySymbol || defaultCurrencySymbol)}/mo savings`
+            : 'no savings'}
         </Typography>
 
         {/* Row 2, col 1 — MTD value (large) + trend, or empty-state */}
@@ -296,11 +300,21 @@ interface AccountClusterPaneProps {
   costByCurrency?: CurrencyCostSummary[];
   accountCosts?: Record<string, AccountCost>;
   costLoading?: boolean;
+  /** Currency symbol for an account's savings when it has no billing data of its own. */
+  defaultCurrencySymbol?: string;
   selectedAccountId?: string | null;
   onSelectAccount?: (accountId: string | null) => void;
 }
 
-const AccountClusterPane = ({ accounts, costByCurrency, accountCosts, costLoading, selectedAccountId, onSelectAccount }: AccountClusterPaneProps) => {
+const AccountClusterPane = ({
+  accounts,
+  costByCurrency,
+  accountCosts,
+  costLoading,
+  defaultCurrencySymbol = '$',
+  selectedAccountId,
+  onSelectAccount,
+}: AccountClusterPaneProps) => {
   const handleSelect = (accountId: string) => {
     if (!onSelectAccount) return;
     onSelectAccount(selectedAccountId === accountId ? null : accountId);
@@ -322,6 +336,7 @@ const AccountClusterPane = ({ accounts, costByCurrency, accountCosts, costLoadin
             key={acct.accountId}
             account={acct}
             acctCost={accountCosts?.[acct.accountId]}
+            defaultCurrencySymbol={defaultCurrencySymbol}
             selected={selectedAccountId === acct.accountId}
             onSelect={handleSelect}
           />

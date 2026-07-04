@@ -31,15 +31,15 @@ const UnusedPVCEvidence = ({ recommendation, estimatedSavings, cloudResource }: 
   }
 
   return (
-    <Box sx={{ p: '14px' }}>
-      <SectionTitle title='Unused Persistent Volume Claim' muiIcon={<InventoryIcon sx={{ fontSize: '16px' }} />} />
+    <Box sx={{ p: ds.space.mul(0, 7) }}>
+      <SectionTitle title='Unused Persistent Volume Claim' muiIcon={<InventoryIcon sx={{ fontSize: ds.text.title }} />} />
 
       {/* Warning banner */}
       <Box
         sx={{
           display: 'flex',
           alignItems: 'flex-start',
-          gap: '10px',
+          gap: ds.space.mul(0, 5),
           p: ds.space[3],
           backgroundColor: ds.amber[100],
           borderRadius: ds.radius.lg,
@@ -47,7 +47,7 @@ const UnusedPVCEvidence = ({ recommendation, estimatedSavings, cloudResource }: 
           mb: ds.space[3],
         }}
       >
-        <WarningAmberIcon sx={{ fontSize: '18px', color: ds.amber[700], mt: '1px' }} />
+        <WarningAmberIcon sx={{ fontSize: ds.text.title, color: ds.amber[700], mt: ds.space[0] }} />
         <Box>
           <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.amber[700], mb: ds.space[1] }}>
             Unbound Volume Detected

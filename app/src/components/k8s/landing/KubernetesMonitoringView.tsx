@@ -6,7 +6,7 @@ import Loader from '@shared/Loader';
 import apiKubernetes from '@api1/kubernetes';
 import type { ApplicationStats } from 'src/utils/common';
 import { getLast7Days } from '@lib/datetime';
-import FilterGroup from '@shared/ds/FilterGroup';
+import InlineFilters from './InlineFilters';
 import { useData } from '@context/DataContext';
 import apiHome from '@api1/home';
 
@@ -283,7 +283,7 @@ const KubernetesMonitoring: React.FC = () => {
 
   return (
     <>
-      <FilterGroup
+      <InlineFilters
         filterOptions={[
           {
             type: 'dropdown',

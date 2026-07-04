@@ -1,6 +1,13 @@
 package integrations
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/url"
+	"time"
+
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/security"
 )
@@ -78,4 +85,84 @@ func (Slack) ConfigSchema() core.IntegrationSchema {
 
 func (Slack) ValidateConfig(_ *security.SecurityContext, _ []core.IntegrationConfigValue, _ string) []error {
 	return nil
+}
+
+// slackMembersResponse mirrors the Slack users.list payload.
+type slackMembersResponse struct {
+	OK      bool   `json:"ok"`
+	Error   string `json:"error"`
+	Members []struct {
+		ID       string `json:"id"`
+		Name     string `json:"name"`
+		RealName string `json:"real_name"`
+		Deleted  bool   `json:"deleted"`
+		IsBot    bool   `json:"is_bot"`
+		Profile  struct {
+			Email       string `json:"email"`
+			RealName    string `json:"real_name"`
+			DisplayName string `json:"display_name"`
+		} `json:"profile"`
+	} `json:"members"`
+	ResponseMetadata struct {
+		NextCursor string `json:"next_cursor"`
+	} `json:"response_metadata"`
+}
+
+// ListUsers enumerates Slack workspace members (email from profile) via the stored
+// bot token, calling slack.com directly. Bots and deactivated users are skipped.
+// Implements core.UserLister.
+func (Slack) ListUsers(ctx context.Context, values []core.IntegrationConfigValue) ([]core.ExternalUser, error) {
+	token := core.ConfigValue(values, SlackConfigBotToken)
+	if token == "" {
+		return nil, fmt.Errorf("slack: missing bot token")
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	var out []core.ExternalUser
+	cursor := ""
+	for page := 0; page < 100; page++ { // safety cap: 100 pages * 200 = 20k users
+		endpoint := "https://slack.com/api/users.list?limit=200"
+		if cursor != "" {
+			endpoint += "&cursor=" + url.QueryEscape(cursor)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return out, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return out, fmt.Errorf("slack: list users: %w", err)
+		}
+		var parsed slackMembersResponse
+		decErr := json.NewDecoder(resp.Body).Decode(&parsed)
+		_ = resp.Body.Close()
+		if decErr != nil {
+			return out, fmt.Errorf("slack: decode users: %w", decErr)
+		}
+		if !parsed.OK {
+			return out, fmt.Errorf("slack: api error: %s", parsed.Error)
+		}
+
+		for _, m := range parsed.Members {
+			if m.Deleted || m.IsBot || m.ID == "USLACKBOT" || m.Profile.Email == "" {
+				continue
+			}
+			name := m.Profile.DisplayName
+			if name == "" {
+				name = m.Profile.RealName
+			}
+			if name == "" {
+				name = m.Name
+			}
+			out = append(out, core.ExternalUser{ID: m.ID, Username: m.Name, Email: m.Profile.Email, DisplayName: name})
+		}
+
+		cursor = parsed.ResponseMetadata.NextCursor
+		if cursor == "" {
+			break
+		}
+	}
+	return out, nil
 }

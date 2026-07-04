@@ -22,13 +22,6 @@
  *
  * Don't (per spec):
  *   - Don't use List for > 50 items without virtualisation. That's a Table problem.
- *
- * Migration:
- *   `import CustomListWithShowMore from '@shared/CustomListWithShowMore'`
- * → `import { List } from '@ui/List'`
- *   Truncation moves from per-list config to the standard `truncate` prop;
- *   `initialCount` → `truncate={{ show: N }}`, and bullets/tooltip move behind
- *   the `bullet` / `maxItemLength` props.
  */
 import * as React from 'react';
 import { Box, ButtonBase } from '@mui/material';

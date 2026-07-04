@@ -9,7 +9,7 @@ const AutoPilotInfoCard = ({ shadow, cardTag, title, button, children, _data = {
       {cardTag && (
         <Box sx={{ marginBottom: ds.space[3], marginLeft: ds.space[1] }}>
           <Typography sx={{ color: ds.gray[700], fontSize: ds.text.body, fontWeight: ds.weight.semibold }}>{cardTag}</Typography>
-          <Box sx={{ backgroundColor: ds.blue[400], height: '2px', width: '28px' }} />
+          <Box sx={{ backgroundColor: ds.blue[400], height: ds.space[0], width: ds.space.mul(1, 7) }} />
         </Box>
       )}
       <Box

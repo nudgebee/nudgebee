@@ -59,8 +59,11 @@ func fargateServiceStatusToNbStatus(status *string) providers.ResourceStatus {
 	}
 }
 
-// Regex to check for ':latest' tag or no tag (which implies latest)
-var fargateLatestTagRegex = regexp.MustCompile(`(:latest|[^:]+)$`)
+// Regex to check for ':latest' tag or no tag (which implies latest).
+// Matches when the final image path segment is untagged (e.g. "nginx",
+// "docker.io/library/nginx") or explicitly tagged ":latest"; a specific
+// version tag like ":1.19.0" does not match.
+var fargateLatestTagRegex = regexp.MustCompile(`(^|/)[^/:]+(:latest)?$`)
 
 type amazonFargate struct {
 	DefaultAwsServiceImpl

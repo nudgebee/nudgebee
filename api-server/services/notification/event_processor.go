@@ -1,6 +1,8 @@
 package notification
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -71,27 +73,10 @@ func TriggerNotificationForRecommendationResolution(ctx *security.RequestContext
 		ctx.GetLogger().Error("error getting database manager", "error", err)
 		return err
 	}
-	rows, err := dbms.Db.Queryx(`select ca.account_name from cloud_accounts ca where id=$1`, recommendation.CloudAccountId)
-
-	if err != nil {
-		ctx.GetLogger().Error("Error in fetching agent status", "error", err)
-		return err
-	}
-
-	defer func() {
-		err := rows.Close()
-		if err != nil {
-			ctx.GetLogger().Error("Error closing rows", "error", err)
-		}
-	}()
-
 	accountName := ""
-	for rows.Next() {
-		err = rows.Scan(&accountName)
-		if err != nil {
-			ctx.GetLogger().Error("Error getting account name", "error", err)
-			return err
-		}
+	if scanErr := dbms.Db.QueryRowx(`select ca.account_name from cloud_accounts ca where id=$1`, recommendation.CloudAccountId).Scan(&accountName); scanErr != nil && !errors.Is(scanErr, sql.ErrNoRows) {
+		ctx.GetLogger().Error("Error getting account name", "error", scanErr)
+		return scanErr
 	}
 
 	resourceName := ""
@@ -169,28 +154,10 @@ func TriggerNotificationForEventResolution(ctx *security.RequestContext, event m
 		ctx.GetLogger().Error("error getting database manager", "error", err)
 		return err
 	}
-	rows, err := dbms.Db.Queryx(`select ca.account_name from cloud_accounts ca where id=$1`, *event.CloudAccountId)
-
-	if err != nil {
-		ctx.GetLogger().Error("Error in fetching agent status", "error", err)
-		return err
-	}
-
-	defer func() {
-		err := rows.Close()
-		if err != nil {
-			ctx.GetLogger().Error("Error closing rows", "error", err)
-
-		}
-	}()
-
 	accountName := ""
-	for rows.Next() {
-		err = rows.Scan(&accountName)
-		if err != nil {
-			ctx.GetLogger().Error("Error getting account name", "error", err)
-			return err
-		}
+	if scanErr := dbms.Db.QueryRowx(`select ca.account_name from cloud_accounts ca where id=$1`, *event.CloudAccountId).Scan(&accountName); scanErr != nil && !errors.Is(scanErr, sql.ErrNoRows) {
+		ctx.GetLogger().Error("Error getting account name", "error", scanErr)
+		return scanErr
 	}
 
 	// summary defined by status and type

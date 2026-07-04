@@ -1,7 +1,7 @@
 import { Box, Typography, Grid } from '@mui/material';
 import PropTypes from 'prop-types';
-import { LineChart } from '@shared';
-import { ds } from '@utils/colors';
+import Chart from '@ui/Chart';
+import { ds, resolveColor } from '@utils/colors';
 
 const KubernetesRecommendationCharts = ({ memoryData, cpuData, recc, loading }) => {
   const memoryLabels = Object.values(memoryData.labels);
@@ -19,7 +19,7 @@ const KubernetesRecommendationCharts = ({ memoryData, cpuData, recc, loading }) 
         type: 'line',
         tension: 0.3,
         label: 'Limit',
-        borderColor: '#e5484d',
+        borderColor: resolveColor(ds.red[500]),
         borderDash: [8, 2],
         fill: false,
         data: cpuData.data[2],
@@ -31,7 +31,7 @@ const KubernetesRecommendationCharts = ({ memoryData, cpuData, recc, loading }) 
         type: 'line',
         tension: 0.3,
         label: 'Recommendation',
-        borderColor: '#2ca84c',
+        borderColor: resolveColor(ds.green[500]),
         fill: false,
         data: Array(cpuLabels.length).fill(cpuReccValue),
         borderWidth: 1,
@@ -41,7 +41,7 @@ const KubernetesRecommendationCharts = ({ memoryData, cpuData, recc, loading }) 
         type: 'line',
         tension: 0.3,
         label: 'Requested',
-        borderColor: '#2f7af0',
+        borderColor: resolveColor(ds.blue[500]),
         fill: false,
         data: cpuData.data[1],
         borderWidth: 1,
@@ -52,7 +52,7 @@ const KubernetesRecommendationCharts = ({ memoryData, cpuData, recc, loading }) 
         type: 'line',
         label: 'Usage',
         tension: 0.3,
-        borderColor: '#f5b400',
+        borderColor: resolveColor(ds.amber[500]),
         fill: false,
         data: cpuData.data[0],
         borderWidth: 1,
@@ -68,7 +68,7 @@ const KubernetesRecommendationCharts = ({ memoryData, cpuData, recc, loading }) 
         type: 'line',
         tension: 0.3,
         label: 'Limit',
-        borderColor: '#e5484d',
+        borderColor: resolveColor(ds.red[500]),
         borderDash: [8, 2],
         fill: false,
         data: memoryData.data[2],
@@ -80,7 +80,7 @@ const KubernetesRecommendationCharts = ({ memoryData, cpuData, recc, loading }) 
         type: 'line',
         tension: 0.3,
         label: 'Recommendation',
-        borderColor: '#2ca84c',
+        borderColor: resolveColor(ds.green[500]),
         fill: false,
         data: Array(memoryLabels.length).fill(memoryReccValue),
         borderWidth: 1,
@@ -90,7 +90,7 @@ const KubernetesRecommendationCharts = ({ memoryData, cpuData, recc, loading }) 
         type: 'line',
         tension: 0.3,
         label: 'Requested',
-        borderColor: '#2f7af0',
+        borderColor: resolveColor(ds.blue[500]),
         fill: false,
         data: memoryData.data[1],
         borderWidth: 1,
@@ -100,7 +100,7 @@ const KubernetesRecommendationCharts = ({ memoryData, cpuData, recc, loading }) 
       {
         type: 'line',
         label: 'Usage',
-        borderColor: '#f5b400',
+        borderColor: resolveColor(ds.amber[500]),
         tension: 0.3,
         fill: false,
         data: memoryData.data[0],
@@ -160,7 +160,7 @@ const KubernetesRecommendationCharts = ({ memoryData, cpuData, recc, loading }) 
           <Typography fontSize={ds.text.bodyLg} fontWeight={600} color={ds.brand[500]}>
             CPU(Core)
           </Typography>
-          <LineChart dataset={cpuData1.datasets} labels={cpuData1.labels} scaleOptions={cpuOptions.scales} loading={loading} />
+          <Chart.Line dataset={cpuData1.datasets} labels={cpuData1.labels} scaleOptions={cpuOptions.scales} loading={loading} />
         </Box>
       </Grid>
       <Grid item xs={6}>
@@ -179,7 +179,7 @@ const KubernetesRecommendationCharts = ({ memoryData, cpuData, recc, loading }) 
           <Typography fontSize={ds.text.bodyLg} fontWeight={600} color={ds.brand[500]}>
             Memory(MB)
           </Typography>
-          <LineChart dataset={memoryData1.datasets} labels={memoryData1.labels} scaleOptions={memOptions.scales} loading={loading} />
+          <Chart.Line dataset={memoryData1.datasets} labels={memoryData1.labels} scaleOptions={memOptions.scales} loading={loading} />
         </Box>
       </Grid>
     </Grid>

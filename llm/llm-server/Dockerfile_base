@@ -18,9 +18,15 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download -x
 
-# Install the Playwright-Go CLI globally using the version from go.mod
-RUN PWGO_VER=$(grep -oE "playwright-go v\S+" /app/go.mod | sed 's/playwright-go //g') && \
-    go install github.com/playwright-community/playwright-go/cmd/playwright@${PWGO_VER}
+# Install the Playwright-Go CLI globally using the version from go.mod.
+# Canonical module path is github.com/mxschmitt/playwright-go (the playwright-community
+# path's newest tags reverted to it). v0.6100.0 also fetches the driver from the npm
+# registry + nodejs.org instead of the retired playwright.azureedge.net CDN, which now
+# 404s and broke this build on the older v0.5700.1 driver zip.
+# Resolve the version with `go list -m` (robust against go.mod formatting) rather
+# than grep/sed; the toolchain is present and `go mod download` has already run.
+RUN PWGO_VER=$(go list -m -f '{{.Version}}' github.com/mxschmitt/playwright-go) && \
+    go install github.com/mxschmitt/playwright-go/cmd/playwright@${PWGO_VER}
 
 # --- Stage 2: Install Playwright browsers and copy playwright-go CLI ---
 FROM ubuntu:noble AS playwright-installer
@@ -30,8 +36,12 @@ LABEL version="noble-playwright-go-optimized"
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install minimal system dependencies, letting playwright install --with-deps handle the rest
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install minimal system dependencies, letting playwright install --with-deps handle the rest.
+# apt-get upgrade patches the ubuntu:noble base packages to the latest security
+# releases — the tag lags upstream, so without it the image (and llm-server, which
+# builds FROM it) inherits ~90 fixable OS CVEs. DEBIAN_FRONTEND=noninteractive is
+# already set above, so upgrade won't prompt.
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
     ca-certificates \
     tzdata \
     wget \

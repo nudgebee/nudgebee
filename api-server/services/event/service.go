@@ -10,6 +10,7 @@ import (
 	"nudgebee/services/account/adapter"
 	"nudgebee/services/common"
 	"nudgebee/services/config"
+	"nudgebee/services/event/lifecycle"
 	"nudgebee/services/eventrule"
 	"nudgebee/services/eventrule/playbooks"
 	integrationcore "nudgebee/services/integrations/core"
@@ -21,7 +22,6 @@ import (
 	"nudgebee/services/relay"
 	"nudgebee/services/security"
 	"nudgebee/services/triage"
-	"nudgebee/services/workflow"
 	"regexp"
 	"strconv"
 	"strings"
@@ -199,6 +199,13 @@ func ListEventResolutions(context *security.RequestContext, rescommendationId st
 	r, err := databaseManager.Db.Queryx(`SELECT id, created_at, updated_at, event_id, type, data, status, type_reference_id,
 			resolver_type, resolver_id, status_message, pr_iteration_count, pr_lifecycle_state, last_pr_check_at
 		FROM event_resolution WHERE event_id = $1`, rescommendationId)
+	defer func() {
+		if r != nil {
+			if cerr := r.Close(); cerr != nil {
+				slog.Error("event: error closing rows", "error", cerr)
+			}
+		}
+	}()
 	if err != nil {
 		return []models.EventResolution{}, err
 	}
@@ -2465,19 +2472,48 @@ func processPagerDutyComment(ctx *security.RequestContext, newEvent map[string]a
 	return nil
 }
 
-var eventProcessors = map[string]func(ctx *security.RequestContext, newEvent map[string]any) (err error){
-	"triage":            processTriage,
-	"notification":      notification.ProcessEvent,
-	"llm":               llm.ProcessEvent,
-	"pagerduty_comment": processPagerDutyComment,
-	"workflow":          workflow.ProcessEvent,
-	// "autopilot":    autopilot.ProcessEvent,
+// init registers this package's in-process lifecycle hooks. triage and llm are
+// NOT hooks — they are pipeline steps PostProcessEvent runs directly, in order,
+// to PRODUCE the lifecycle phases (triage sets nb_status; llm enqueues the
+// investigation). See package event/lifecycle.
+func init() {
+	// notification fires at creation and is never gated on the LLM — the
+	// primary alert must be instant and reliable (augment, don't gate).
+	lifecycle.RegisterLifecycleHook(lifecycle.PhaseEventCreated, "notification", notification.ProcessEvent)
+
+	// pagerduty_comment posts a "report ready" deep link. For an investigated
+	// event that link is only meaningful once the report exists, so post it at
+	// investigation.completed; for a non-investigated event there is no
+	// investigation to wait for, so post at creation.
+	lifecycle.RegisterLifecycleHook(lifecycle.PhaseEventCreated, "pagerduty_comment", pagerdutyCommentIfNotInvestigated)
+	lifecycle.RegisterLifecycleHook(lifecycle.PhaseInvestigationCompleted, "pagerduty_comment", processPagerDutyComment)
+
+	// workflow is intentionally NOT an in-process hook: lifecycle.Emit publishes
+	// the event to the runbook event exchange for every workflow-eligible phase
+	// (exactly what the old workflow processor did). Workflows subscribe to a
+	// phase via their trigger's params.on (default event.created).
 }
 
-// RegisterEventProcessor allows dynamic registration of event processors
-func RegisterEventProcessor(name string, processor func(ctx *security.RequestContext, newEvent map[string]any) (err error)) {
-	eventProcessors[name] = processor
+// pagerdutyCommentIfNotInvestigated runs processPagerDutyComment at creation
+// only when no investigation was enqueued. When an investigation is in flight,
+// the comment is posted later at investigation.completed (the deep-linked report
+// is not ready yet). llm.ProcessEvent sets the enqueue marker, which
+// PostProcessEvent runs before emitting event.created.
+func pagerdutyCommentIfNotInvestigated(ctx *security.RequestContext, newEvent map[string]any) error {
+	if enqueued, _ := newEvent[llm.EventInvestigationEnqueuedKey].(bool); enqueued {
+		return nil
+	}
+	return processPagerDutyComment(ctx, newEvent)
 }
+
+// Pipeline-step / emit seams. PostProcessEvent calls these indirectly so the
+// orchestration (triage → llm → event.created) is unit-testable without a live
+// DB / MQ. Overridden in tests.
+var (
+	triageStep    = processTriage
+	llmStep       = llm.ProcessEvent
+	emitLifecycle = lifecycle.Emit
+)
 
 func PostProcessEvent(ctx *security.RequestContext, newEvent map[string]any) {
 
@@ -2494,26 +2530,29 @@ func PostProcessEvent(ctx *security.RequestContext, newEvent map[string]any) {
 	// a workflow-trigger Event Type. Guarded + idempotent (no-op once registered).
 	registerNativeEventTypeRule(ctx, newEvent)
 
-	// Triage must run before other processors so its classification
-	// (nb_status etc.) is visible in newEvent to downstream gates such as
-	// llm.ProcessEvent's suppressed-skip check. Map iteration order is
-	// non-deterministic, so without this, llm/notification/workflow may
-	// run before triage updates the DB and observe stale nb_status.
-	if triageFn, ok := eventProcessors["triage"]; ok {
-		if err := triageFn(ctx, newEvent); err != nil {
-			ctx.GetLogger().Error("Error processing event by", "processor", "triage", "error", err)
-		}
-	}
+	// triage runs first so its classification (nb_status etc.) is in newEvent
+	// before any hook or workflow sees it: downstream gates such as
+	// notification's priority/suppressed check and llm's suppressed-skip depend
+	// on it. triage produces the classification carried by event.created.
+	runStep(ctx, "triage", triageStep, newEvent)
 
-	for name, processor := range eventProcessors {
-		if name == "triage" {
-			continue
-		}
-		p1 := processor
-		err := p1(ctx, newEvent)
-		if err != nil {
-			ctx.GetLogger().Error("Error processing event by", "processor", name, "error", err)
-		}
+	// llm runs next: it decides eligibility and, when it enqueues an
+	// investigation, sets llm.EventInvestigationEnqueuedKey. event.created
+	// (below) observes that marker so pagerduty_comment defers to
+	// investigation.completed for investigated events.
+	runStep(ctx, "llm", llmStep, newEvent)
+
+	// event.created: the new event is classified and ready. Fans out to the
+	// created-phase hooks (notification, pagerduty-if-not-investigated) and
+	// publishes to the runbook exchange for on=event.created workflows.
+	emitLifecycle(ctx, lifecycle.PhaseEventCreated, newEvent, nil)
+}
+
+// runStep runs a single pipeline step (triage / llm), logging any error and
+// continuing. These are not lifecycle hooks — they run directly and in order.
+func runStep(ctx *security.RequestContext, name string, fn func(*security.RequestContext, map[string]any) error, newEvent map[string]any) {
+	if err := fn(ctx, newEvent); err != nil {
+		ctx.GetLogger().Error("Error processing event by", "processor", name, "error", err)
 	}
 }
 

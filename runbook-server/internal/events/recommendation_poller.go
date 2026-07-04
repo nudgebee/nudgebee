@@ -94,7 +94,9 @@ func (p *RecommendationPoller) poll(ctx context.Context) {
 			"cluster":           rec.Cluster,
 		}
 
-		matches := p.registry.Match("optimization.recommendation", rec.CloudAccountID, event)
+		// Optimization triggers are stored with the default lifecycle phase
+		// (event.created); recommendations are not lifecycle-phased events.
+		matches := p.registry.Match("optimization.recommendation", rec.CloudAccountID, event, string(model.DefaultLifecyclePhase))
 		if len(matches) == 0 {
 			continue
 		}

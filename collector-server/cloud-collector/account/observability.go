@@ -77,6 +77,24 @@ func QueryDeploymentDiff(ctx *security.RequestContext, accountId string, query p
 	return diffProvider.QueryDeploymentDiff(ctx, account, query)
 }
 
+// QueryTraces fetches distributed traces for an account, if the provider supports it.
+func QueryTraces(ctx *security.RequestContext, accountId string, query providers.QueryTracesRequest) (providers.QueryTracesResponse, error) {
+	account, provider, err := getAccount(ctx, accountId)
+	if err != nil {
+		ctx.GetLogger().Error("unable to fetch account", "error", err)
+		return providers.QueryTracesResponse{}, err
+	}
+	cloudProvider, ok := providers.GetProvider(provider)
+	if !ok {
+		return providers.QueryTracesResponse{}, fmt.Errorf("provider not found")
+	}
+	traceProvider, ok := cloudProvider.(providers.TraceProvider)
+	if !ok {
+		return providers.QueryTracesResponse{}, fmt.Errorf("traces not supported for provider %s", provider)
+	}
+	return traceProvider.QueryTraces(ctx, account, query)
+}
+
 func ListResources(ctx *security.RequestContext, accountId string, request providers.ListResourceRequest) (providers.ListResourcesResponse, error) {
 	resources, _, err := getResourcesInternal(ctx, accountId, request)
 	return resources, err

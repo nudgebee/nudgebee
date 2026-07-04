@@ -4,6 +4,7 @@ import { Stepper, Step, StepLabel, Box, StepConnector, stepConnectorClasses, sty
 import { Check, Error } from '@mui/icons-material';
 import { Button as DsButton } from '@ui/Button';
 import { hasWriteAccess } from '@lib/auth';
+import { ds } from '@utils/colors';
 
 interface CustomStepperProps {
   steps: string[];
@@ -24,20 +25,20 @@ interface CustomStepperProps {
 
 const CustomConnector = styled(StepConnector)(() => ({
   [`&.${stepConnectorClasses.alternativeLabel}`]: {
-    top: 10,
-    left: 'calc(-50% + 16px)',
-    right: 'calc(50% + 16px)',
+    top: ds.space.mul(0, 5),
+    left: `calc(-50% + ${ds.space[4]})`,
+    right: `calc(50% + ${ds.space[4]})`,
   },
   [`&.${stepConnectorClasses.active}, &.${stepConnectorClasses.completed}`]: {
     [`& .${stepConnectorClasses.line}`]: {
       borderColor: 'var(--ds-green-500)',
-      borderTopWidth: 2,
+      borderTopWidth: ds.space[0],
     },
   },
   [`& .${stepConnectorClasses.line}`]: {
     borderColor: 'var(--ds-brand-200)',
     borderTopWidth: 1,
-    borderRadius: 1,
+    borderRadius: ds.radius.sm,
     transition: 'all 0.2s ease-in-out',
   },
 }));
@@ -58,15 +59,15 @@ const CustomStepIcon: React.FC<
     }
     if (completed) {
       return {
-        backgroundColor: completedBgColor || '#4caf50',
+        backgroundColor: completedBgColor || 'var(--ds-green-400)',
         border: 'none',
         color: 'white',
       };
     }
     return {
       backgroundColor: 'white',
-      border: active ? '1px solid #16A34A' : '1px solid #D0D0D0',
-      color: active ? '#16A34A' : '#666',
+      border: active ? '1px solid var(--ds-green-500)' : '1px solid var(--ds-gray-300)',
+      color: active ? 'var(--ds-green-500)' : 'var(--ds-gray-500)',
     };
   };
 
@@ -75,8 +76,8 @@ const CustomStepIcon: React.FC<
   return (
     <Box
       sx={{
-        width: '24px',
-        height: '24px',
+        width: ds.space[5],
+        height: ds.space[5],
         borderRadius: '50%',
         display: 'flex',
         alignItems: 'center',
@@ -124,7 +125,7 @@ const CustomStepper: React.FC<CustomStepperProps> = ({
         connector={<CustomConnector />}
         sx={{
           p: 'var(--ds-space-4) var(--ds-space-7)',
-          borderBottom: `1px solid #EBEBEB`,
+          borderBottom: `1px solid var(--ds-gray-200)`,
           flexShrink: 0, // Prevent stepper from shrinking
         }}
       >
@@ -141,7 +142,7 @@ const CustomStepper: React.FC<CustomStepperProps> = ({
                     fontSize: 'var(--ds-text-body-lg)',
                     cursor: 'pointer',
                     marginTop: 'var(--ds-space-2)',
-                    color: hasError ? '#EF4444' : isActive ? '#374151' : 'inherit',
+                    color: hasError ? 'var(--ds-red-500)' : isActive ? 'var(--ds-gray-700)' : 'inherit',
                     fontWeight: hasError || isActive ? 500 : 'normal',
                   },
                   '& .MuiStepLabel-iconContainer': {
@@ -164,12 +165,12 @@ const CustomStepper: React.FC<CustomStepperProps> = ({
         display='flex'
         justifyContent='space-between'
         alignItems='center'
-        p='16px 24px'
+        p={`${ds.space[4]} ${ds.space[5]}`}
         sx={{
           borderTop: '0.5px solid var(--ds-gray-200)',
           backgroundColor: 'white',
           flexShrink: 0, // Prevent buttons from shrinking
-          '& button': { minWidth: '140px' },
+          '& button': { minWidth: ds.space.mul(0, 70) },
         }}
       >
         <DsButton tone='secondary' size='md' disabled={activeStep === 1 || isSubmitting} onClick={onBack}>

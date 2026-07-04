@@ -148,7 +148,7 @@ func (e *ElasticSaasMetricSource) FetchMetricsQuery(ctx *security.RequestContext
 		esURL := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
 		slog.Info("ES metrics query debug", "url", esURL, "body", renderedQuery)
 
-		resp, err := esRequestJSON("POST", esURL, queryBody, cfg)
+		resp, err := esRequestJSON("POST", esURL, queryBody, cfg) //nolint:bodyclose
 		if err != nil {
 			errStr := fmt.Sprintf("failed to query metric: %v", err)
 			results = append(results, QueryResult{
@@ -217,7 +217,7 @@ func (e *ElasticSaasMetricSource) FetchMetricList(ctx *security.RequestContext, 
 		return nil, err
 	}
 
-	resp, err := esRequest("GET", fmt.Sprintf("%s/_cat/indices?format=json", cfg.Url), "", cfg)
+	resp, err := esRequest("GET", fmt.Sprintf("%s/_cat/indices?format=json", cfg.Url), "", cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query metric list: %w", err)
 	}
@@ -259,9 +259,11 @@ func (e *ElasticSaasMetricSource) FetchMetricLabelValues(ctx *security.RequestCo
 		return nil, fmt.Errorf("index is required for Elasticsearch metric label values query")
 	}
 
-	// Try .keyword suffix first for text fields, fall back to original field name.
+	// OTel-native keyword fields (resource.attributes.*, scope.*, metrics.*) are
+	// already aggregatable keywords; appending .keyword targets a subfield that
+	// does not exist. Append it only for other (legacy text) fields.
 	labelField := req.Label
-	if !strings.HasSuffix(labelField, ".keyword") {
+	if !strings.HasSuffix(labelField, ".keyword") && !isOTelKeywordField(labelField) {
 		labelField = labelField + ".keyword"
 	}
 
@@ -279,7 +281,7 @@ func (e *ElasticSaasMetricSource) FetchMetricLabelValues(ctx *security.RequestCo
 		}
 	}
 
-	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, index), buildDSL(labelField), cfg)
+	resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, index), buildDSL(labelField), cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query metric label values: %w", err)
 	}
@@ -288,7 +290,7 @@ func (e *ElasticSaasMetricSource) FetchMetricLabelValues(ctx *security.RequestCo
 	if err != nil {
 		// If .keyword field doesn't exist, retry with original field name
 		if labelField != req.Label {
-			resp, err = esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, index), buildDSL(req.Label), cfg)
+			resp, err = esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, index), buildDSL(req.Label), cfg) //nolint:bodyclose
 			if err != nil {
 				return nil, fmt.Errorf("failed to query metric label values: %w", err)
 			}
@@ -339,7 +341,7 @@ func (e *ElasticSaasMetricSource) FetchMetricsLabels(ctx *security.RequestContex
 	}
 
 	// Fetch field names from the index mapping.
-	resp, err := esRequest("GET", fmt.Sprintf("%s/%s/_mapping", cfg.Url, index), "", cfg)
+	resp, err := esRequest("GET", fmt.Sprintf("%s/%s/_mapping", cfg.Url, index), "", cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query metrics labels: %w", err)
 	}
@@ -390,7 +392,7 @@ func normalizeESMetricsWhere(wc query.QueryWhereClause) query.QueryWhereClause {
 		out.Binary = query.BinaryWhereClause{}
 		for field, ops := range wc.Binary {
 			newField := field
-			if !strings.HasSuffix(field, ".keyword") {
+			if !strings.HasSuffix(field, ".keyword") && !isOTelKeywordField(field) {
 				for op, val := range ops {
 					if op == query.Eq || op == query.Nq || op == query.In || op == query.NotIn {
 						if _, isString := val.(string); isString {
@@ -422,6 +424,37 @@ func normalizeESMetricsWhere(wc query.QueryWhereClause) query.QueryWhereClause {
 	return out
 }
 
+// isOTelKeywordField reports whether a field path is already a keyword in the
+// OTel-native ES mapping (mapping.mode: otel) — resource attributes, scope
+// fields and metric dimensions are all keyword at the base level, so appending
+// a ".keyword" subfield (needed for legacy text fields) would target a field
+// that does not exist and silently match nothing.
+func isOTelKeywordField(field string) bool {
+	return strings.HasPrefix(field, "resource.attributes.") ||
+		strings.HasPrefix(field, "scope.") ||
+		strings.HasPrefix(field, "metrics.")
+}
+
+// otelMetricLabels flattens the dimensions of an OTel-native metric doc into a
+// label map: resource.attributes.* (k8s.namespace.name, k8s.pod.name, …) plus
+// any per-datapoint attributes.*.
+func otelMetricLabels(src map[string]any) map[string]string {
+	ra, _ := nestedMap(src, "resource", "attributes")
+	a, _ := src["attributes"].(map[string]any)
+	labels := make(map[string]string, len(ra)+len(a))
+	for k, v := range ra {
+		if v != nil {
+			labels[k] = fmt.Sprintf("%v", v)
+		}
+	}
+	for k, v := range a {
+		if v != nil {
+			labels[k] = fmt.Sprintf("%v", v)
+		}
+	}
+	return labels
+}
+
 // parseESMetricsHits parses an ES search response into []Result grouped by label set.
 // Each unique combination of metric name + attributes becomes one Result with
 // collected timestamps (epoch seconds) and values.
@@ -446,16 +479,55 @@ func parseESMetricsHits(bodyBytes []byte) ([]Result, error) {
 	groups := make(map[string]*seriesData)
 	var groupOrder []string
 
+	// add appends one datapoint to the series identified by labels.
+	add := func(labels map[string]string, ts int64, val float64) {
+		keyBytes, _ := json.Marshal(labels)
+		key := string(keyBytes)
+		if _, exists := groups[key]; !exists {
+			groups[key] = &seriesData{metric: labels}
+			groupOrder = append(groupOrder, key)
+		}
+		groups[key].timestamps = append(groups[key].timestamps, ts)
+		groups[key].values = append(groups[key].values, val)
+	}
+
 	for _, hit := range esResp.Hits.Hits {
 		src := hit.Source
 
-		name, _ := src["name"].(string)
+		// Parse ISO timestamp to epoch seconds (time, else @timestamp).
 		timeStr, _ := src["time"].(string)
 		if timeStr == "" {
 			timeStr, _ = src["@timestamp"].(string)
 		}
+		t, err := time.Parse(time.RFC3339Nano, timeStr)
+		if err != nil {
+			continue
+		}
+		ts := t.Unix()
 
-		// Extract metric value: prefer value, then sum, then count
+		// OTel-native mapping (mapping.mode: otel): each doc keys its metrics by
+		// name under "metrics" and carries dimensions under resource.attributes.
+		// One doc can hold several metrics sharing the same labels+timestamp, so
+		// emit a series per metric name.
+		if metricsMap, ok := src["metrics"].(map[string]any); ok && len(metricsMap) > 0 {
+			base := otelMetricLabels(src)
+			for name, raw := range metricsMap {
+				val, ok := raw.(float64)
+				if !ok {
+					continue
+				}
+				labels := make(map[string]string, len(base)+1)
+				for k, v := range base {
+					labels[k] = v
+				}
+				labels["__name__"] = name
+				add(labels, ts, val)
+			}
+			continue
+		}
+
+		// Legacy flat shape: {name, value|sum|count, attributes}.
+		name, _ := src["name"].(string)
 		var val float64
 		if v, ok := src["value"].(float64); ok {
 			val = v
@@ -464,15 +536,6 @@ func parseESMetricsHits(bodyBytes []byte) ([]Result, error) {
 		} else if v, ok := src["count"].(float64); ok {
 			val = v
 		}
-
-		// Parse ISO timestamp to epoch seconds
-		t, err := time.Parse(time.RFC3339Nano, timeStr)
-		if err != nil {
-			continue
-		}
-		ts := t.Unix()
-
-		// Build label map from name + attributes
 		labels := map[string]string{}
 		if name != "" {
 			labels["__name__"] = name
@@ -482,17 +545,7 @@ func parseESMetricsHits(bodyBytes []byte) ([]Result, error) {
 				labels[k] = fmt.Sprintf("%v", v)
 			}
 		}
-
-		// Group by unique label set
-		keyBytes, _ := json.Marshal(labels)
-		key := string(keyBytes)
-
-		if _, exists := groups[key]; !exists {
-			groups[key] = &seriesData{metric: labels}
-			groupOrder = append(groupOrder, key)
-		}
-		groups[key].timestamps = append(groups[key].timestamps, ts)
-		groups[key].values = append(groups[key].values, val)
+		add(labels, ts, val)
 	}
 
 	results := make([]Result, 0, len(groups))
@@ -614,7 +667,7 @@ func fetchESMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTr
 		esURL := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
 		slog.Info("ES utilisation query", "metric", metricKey, "otlp", otlpName, "url", esURL)
 
-		resp, reqErr := esRequestJSON("POST", esURL, queryBody, cfg)
+		resp, reqErr := esRequestJSON("POST", esURL, queryBody, cfg) //nolint:bodyclose
 		if reqErr != nil {
 			errStr := fmt.Sprintf("failed to query metric %s: %v", metricKey, reqErr)
 			results = append(results, QueryResult{QueryKey: metricKey, Query: renderedQuery, Error: &errStr})

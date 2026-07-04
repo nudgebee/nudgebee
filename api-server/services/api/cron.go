@@ -28,6 +28,7 @@ import (
 	"nudgebee/services/tenant"
 	"nudgebee/services/traces"
 	"nudgebee/services/triage"
+	"nudgebee/services/user"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -146,6 +147,20 @@ func handleCrons(r *gin.Engine, tracer *trace.Tracer, meter *metric.Meter, logge
 				// log the end time
 				endTime := time.Now()
 				ctx.GetLogger().Info("cron: Insight analysis completed in", "duration", endTime.Sub(startTime))
+			}()
+			c.JSON(200, gin.H{"status": "ok"})
+		case "Identity Sync":
+			// Optional payload {"tenant_id": "..."} restricts the sync to one tenant
+			// (handy for testing / targeted re-syncs); empty syncs all tenants.
+			tenantFilter, _ := actionPayload.Payload["tenant_id"].(string)
+			go func() {
+				t0 := time.Now()
+				ctx.GetLogger().Info("cron: syncing integration user identities", "tenant_filter", tenantFilter)
+				_, err := user.RunIdentitySync(ctx, tenantFilter)
+				if err != nil {
+					ctx.GetLogger().Error("cron: error syncing integration user identities", "error", err)
+				}
+				ctx.GetLogger().Info("cron: identity sync done", "duration", time.Since(t0))
 			}()
 			c.JSON(200, gin.H{"status": "ok"})
 		case "Resource Meta refresh":

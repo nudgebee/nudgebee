@@ -3,6 +3,7 @@ import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Toolti
 import { Bar } from 'react-chartjs-2';
 import { titleCase } from '@lib/formatter';
 import LogsIcon from '@assets/investigation/logs-blue.svg';
+import { ds, resolveColor } from '@utils/colors';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
 
@@ -32,7 +33,7 @@ class SpendBreakdownChartCard {
         const raw = changeIdx >= 0 ? row[changeIdx] : row[1];
         return parseFloat(String(raw).replace(/[$,+]/g, '') || 0);
       });
-      this.colors = this.values.map((v) => (v >= 0 ? '#EF4444' : '#22C55E'));
+      this.colors = this.values.map((v) => (v >= 0 ? resolveColor(ds.red[500]) : resolveColor(ds.green[500])));
 
       if (this.enricherData?.insight?.length > 0) {
         this.insightData = this.enricherData.insight;

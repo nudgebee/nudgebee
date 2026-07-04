@@ -6,7 +6,7 @@ import ClusterStatusIndicator from './widgets/ClusterStatusIndicator';
 import Link from 'next/link';
 import { ds } from 'src/utils/colors';
 import { MenuArrowDownIcon } from '@assets';
-import Text from './format/Text';
+import Text from '@shared/format/Text';
 import CloudProviderIcon from './icons/CloudIcon';
 import SafeIcon from './icons/SafeIcon';
 import { toKebabCase } from 'src/utils/common';
@@ -56,7 +56,7 @@ const CustomDropdown = ({
   onChange,
   options = [],
   label = '',
-  minWidth = '180px',
+  minWidth = ds.space.mul(0, 90),
   isDisabled = false,
   disableClearable = false,
   align = 'left',
@@ -77,7 +77,7 @@ const CustomDropdown = ({
   isRequired = false,
   isLoading = false,
   groupByCloudProvider = false,
-  listboxHeight = '400px',
+  listboxHeight = ds.space.mul(0, 200),
   showPadding = false,
   error = false,
   helperText = '',
@@ -145,7 +145,7 @@ const CustomDropdown = ({
           '@keyframes customDropdownSlideIn': {
             '0%': {
               opacity: 0,
-              transform: dynamicDirection === 'up' ? 'scaleY(0.9) translateY(8px)' : 'scaleY(0.9) translateY(-8px)',
+              transform: dynamicDirection === 'up' ? `scaleY(0.9) translateY(${ds.space[2]})` : `scaleY(0.9) translateY(${ds.space.mul(2, -1)})`,
             },
             '100%': { opacity: 1, transform: 'scaleY(1) translateY(0)' },
           },
@@ -365,12 +365,11 @@ const CustomDropdown = ({
             marginBottom: 'var(--ds-space-1) !important',
             color: 'var(--ds-gray-600)',
             borderBottom: '1px solid',
-            borderImage:
-              'linear-gradient(to right, rgb(223, 223, 223) 0%, rgb(223, 223, 223) 30%, rgba(223, 223, 223, 0.6) 70%, rgba(223, 223, 223, 0.3) 90%, transparent 100%) 1',
+            borderImage: `linear-gradient(to right, ${ds.gray[300]} 0%, ${ds.gray[300]} 30%, color-mix(in srgb, ${ds.gray[300]} 60%, transparent) 70%, color-mix(in srgb, ${ds.gray[300]} 30%, transparent) 90%, transparent 100%) 1`,
             padding: 'var(--ds-space-1) var(--ds-space-1) !important',
           }}
         >
-          <CloudProviderIcon cloud_provider={option.label} height='16px' width='16px' />
+          <CloudProviderIcon cloud_provider={option.label} height={ds.space[4]} width={ds.space[4]} />
           <Text
             value={option.label === 'K8s' ? 'K8s clusters' : option.label}
             showAutoEllipsis
@@ -440,7 +439,7 @@ const CustomDropdown = ({
           <SafeIcon
             src={option.icon}
             alt={option?.label || ''}
-            style={{ height: '18px', width: '18px', marginRight: 'var(--ds-space-2)', flexShrink: 0 }}
+            style={{ height: ds.space.mul(0, 9), width: ds.space.mul(0, 9), marginRight: 'var(--ds-space-2)', flexShrink: 0 }}
           />
         )}
         {React.isValidElement(option?.label) ? (
@@ -474,8 +473,8 @@ const CustomDropdown = ({
           src={MenuArrowDownIcon}
           alt='dropdown arrow'
           style={{
-            height: '18px',
-            width: '18px',
+            height: ds.space.mul(0, 9),
+            width: ds.space.mul(0, 9),
             opacity: '80%',
             transition: 'transform 0.3s ease',
           }}
@@ -545,8 +544,8 @@ const CustomDropdown = ({
                   <CloudProviderIcon
                     sx={{ paddingLeft: 2 }}
                     cloud_provider={options.find((opt) => opt.value === value)?.cloud_provider || clusterData.cloud_provider || 'K8S'}
-                    height={'14px'}
-                    width={'14px'}
+                    height={ds.space.mul(0, 7)}
+                    width={ds.space.mul(0, 7)}
                   />
                 </InputAdornment>
               ) : null,

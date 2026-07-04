@@ -7,8 +7,11 @@ import (
 	"nudgebee/runbook/config"
 	"nudgebee/runbook/internal/tasks/types"
 	"nudgebee/runbook/services/relay"
+	"nudgebee/runbook/services/security"
 	"strings" // Added strings
+	"time"
 
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
@@ -372,6 +375,31 @@ func (t *VerticalRightsizeTask) Execute(taskCtx types.TaskContext, params map[st
 		return result, nil
 	}
 
+	// Direct-apply path (GitOps/ticket not enabled). Unless explicitly disabled,
+	// attempt a zero-downtime in-place pod resize when the cluster supports it
+	// (K8s >= 1.35, where the feature is GA), falling back to the rollout below on ineligibility,
+	// patch error, or an infeasible resize.
+	inPlaceRequested := true
+	if v, ok := params["in_place"].(bool); ok {
+		inPlaceRequested = v
+	}
+	if inPlaceRequested {
+		decision := evaluateInPlace(taskCtx, accountId, kind)
+		if decision.eligible {
+			ipResult, ipErr := t.applyInPlace(taskCtx, requestContext, accountId, kind, name, namespace, patchContainers, annoKey, annoVal, patch, description)
+			if ipErr != nil {
+				return nil, ipErr
+			}
+			if ipResult != nil {
+				return ipResult, nil
+			}
+			// nil result → in-place not feasible; fall through to the rollout patch.
+			taskCtx.GetLogger().Info("In-place resize not feasible, falling back to rollout", "kind", kind, "name", name, "namespace", namespace)
+		} else {
+			taskCtx.GetLogger().Info("In-place resize not eligible, using rollout", "reason", decision.reason, "kind", kind, "name", name)
+		}
+	}
+
 	// using 'strategic merge patch' is default for kubectl patch, but for custom resources or standard ones it varies.
 	// However, updating list elements in strategic merge patch requires "name" key which we have.
 	cmdPatch := fmt.Sprintf("kubectl patch %s %s -n %s --patch '%s'", kind, name, namespace, patchStr)
@@ -397,6 +425,212 @@ func (t *VerticalRightsizeTask) Execute(taskCtx types.TaskContext, params map[st
 		"patch":       patch,
 		"description": description,
 	}, nil
+}
+
+// applyInPlace resizes a workload's running pods via the pod `resize`
+// subresource (KEP-1287), without recreating them. The controller template is
+// intentionally left untouched (any template change triggers a rollout), so the
+// change is not persisted — pods recreated later revert to template values.
+//
+// It returns a success result on completion, or (nil, nil) to signal the caller
+// to fall back to the rollout patch (pods couldn't be listed, a patch errored,
+// or a resize was infeasible). A non-nil error is a hard failure.
+func (t *VerticalRightsizeTask) applyInPlace(taskCtx types.TaskContext, requestContext *security.RequestContext, accountId, kind, name, namespace string, patchContainers []map[string]any, annoKey, annoVal string, patch map[string]any, description string) (map[string]any, error) {
+	pods, err := listWorkloadPods(requestContext, accountId, kind, name, namespace)
+	if err != nil {
+		taskCtx.GetLogger().Warn("In-place: failed to list pods, falling back to rollout", "error", err)
+		return nil, nil
+	}
+	if len(pods) == 0 {
+		taskCtx.GetLogger().Warn("In-place: no pods found, falling back to rollout", "kind", kind, "name", name)
+		return nil, nil
+	}
+
+	// The resize subresource accepts only spec.containers[].resources.
+	resizePatch := map[string]any{"spec": map[string]any{"containers": patchContainers}}
+	resizePatchBytes, err := common.MarshalJson(resizePatch)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal resize patch: %w", err)
+	}
+	resizePatchStr := string(resizePatchBytes)
+
+	annotationPatchStr := ""
+	if annoKey != "" {
+		annoBytes, aerr := common.MarshalJson(map[string]any{
+			"metadata": map[string]any{"annotations": map[string]string{annoKey: annoVal}},
+		})
+		if aerr == nil {
+			annotationPatchStr = string(annoBytes)
+		}
+	}
+
+	// Trigger the resize (and best-effort annotation) on every pod that isn't
+	// already at target up front, so the kubelets actuate in parallel; then poll
+	// them together. Total time is ~the poll budget, not budget × replicas.
+	resized := []string{}
+	targeted := []string{}
+	for _, pod := range pods {
+		podName, _, _ := unstructured.NestedString(pod, "metadata", "name")
+		if podName == "" {
+			continue
+		}
+
+		// Idempotency: skip pods already at the target resources.
+		if podResourcesMatch(pod, patchContainers) {
+			taskCtx.GetLogger().Info("In-place: pod already at target, skipping", "pod", podName)
+			resized = append(resized, podName)
+			continue
+		}
+
+		cmd := fmt.Sprintf("kubectl patch pod %s -n %s --subresource=resize --patch '%s'", podName, namespace, resizePatchStr)
+		resp, err := relay.ExecuteRelayJob(requestContext, accountId, relay.RelayJobKubectl, "", cmd, nil)
+		if err != nil {
+			taskCtx.GetLogger().Warn("In-place: resize patch failed, falling back to rollout", "pod", podName, "error", err)
+			return nil, nil
+		}
+		if stderr := kubectlStderr(resp); stderr != "" {
+			taskCtx.GetLogger().Warn("In-place: resize patch error, falling back to rollout", "pod", podName, "stderr", stderr)
+			return nil, nil
+		}
+
+		// Stamp the traceability annotation on the pod (separate normal patch;
+		// the resize subresource only accepts resources). Best-effort.
+		if annotationPatchStr != "" {
+			annoCmd := fmt.Sprintf("kubectl patch pod %s -n %s --patch '%s'", podName, namespace, annotationPatchStr)
+			if _, aerr := relay.ExecuteRelayJob(requestContext, accountId, relay.RelayJobKubectl, "", annoCmd, nil); aerr != nil {
+				taskCtx.GetLogger().Warn("In-place: failed to stamp pod annotation (non-fatal)", "pod", podName, "error", aerr)
+			}
+		}
+		targeted = append(targeted, podName)
+	}
+
+	if len(targeted) > 0 && !t.waitForResizes(taskCtx, requestContext, accountId, namespace, targeted) {
+		return nil, nil // infeasible / timeout → fall back to rollout
+	}
+	resized = append(resized, targeted...)
+
+	return map[string]any{
+		"status":       "success",
+		"mode":         "in_place",
+		"resized_pods": resized,
+		"patch":        patch,
+		"description":  description,
+		"note":         "Applied in-place without restart; workload template was not modified, so pods will revert to template values if recreated.",
+	}, nil
+}
+
+// waitForResizes polls the given pods (bounded) for in-place resize completion,
+// inspecting the KEP-1287 status conditions. Returns true when all complete;
+// false on an infeasible/errored resize or when the budget is exhausted,
+// signalling the caller to fall back to a rollout. Polling all pods together
+// (rather than one-at-a-time) bounds total time to ~the budget regardless of
+// replica count.
+func (t *VerticalRightsizeTask) waitForResizes(taskCtx types.TaskContext, requestContext *security.RequestContext, accountId, namespace string, pods []string) bool {
+	const (
+		interval    = 5 * time.Second
+		maxAttempts = 12 // ~60s budget
+	)
+	ctx := taskCtx.GetContext()
+	pending := make(map[string]struct{}, len(pods))
+	for _, p := range pods {
+		pending[p] = struct{}{}
+	}
+	// Reuse a single timer across iterations (Reset after the channel is drained
+	// by the select) instead of time.After in the loop, which leaks a timer per
+	// iteration until it fires.
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	for i := 0; i < maxAttempts; i++ {
+		for pod := range pending {
+			resp, err := relay.ExecuteRelayJob(requestContext, accountId, relay.RelayJobKubectl, "", fmt.Sprintf("kubectl get pod %s -n %s -o json", pod, namespace), nil)
+			if err != nil {
+				continue
+			}
+			pm, perr := parseKubectlResponse(resp)
+			if perr != nil {
+				continue
+			}
+			switch state, msg := resizeStatus(pm); state {
+			case resizeDone:
+				delete(pending, pod)
+			case resizeInfeasible:
+				taskCtx.GetLogger().Warn("In-place: resize infeasible, falling back to rollout", "pod", pod, "message", msg)
+				return false
+			}
+		}
+		if len(pending) == 0 {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+		}
+		timer.Reset(interval)
+	}
+	return false
+}
+
+// kubectlStderr extracts a non-empty stderr from a relay kubectl response, if any.
+func kubectlStderr(resp any) string {
+	respStr, ok := resp.(string)
+	if !ok {
+		return ""
+	}
+	kubectlResp := map[string]any{}
+	if err := common.UnmarshalJson([]byte(respStr), &kubectlResp); err != nil {
+		return ""
+	}
+	if stderr, ok := kubectlResp["stderr"].(string); ok {
+		return strings.TrimSpace(stderr)
+	}
+	return ""
+}
+
+// podResourcesMatch reports whether every target container's requests/limits
+// already match the pod's live containerStatuses resources. Used to skip pods
+// that are already at the desired size. Conservative: any parse/lookup miss
+// returns false (don't skip).
+func podResourcesMatch(pod map[string]any, patchContainers []map[string]any) bool {
+	statuses, found, _ := unstructured.NestedSlice(pod, "status", "containerStatuses")
+	if !found {
+		return false
+	}
+	liveByName := map[string]map[string]any{}
+	for _, s := range statuses {
+		sm, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+		cname, _ := sm["name"].(string)
+		liveByName[cname] = sm
+	}
+	for _, pc := range patchContainers {
+		cname, _ := pc["name"].(string)
+		live, ok := liveByName[cname]
+		if !ok {
+			return false
+		}
+		target, _ := pc["resources"].(map[string]any)
+		for _, kind := range []string{"requests", "limits"} {
+			tgt, _ := target[kind].(map[string]any)
+			for res, valRaw := range tgt {
+				if valRaw == nil {
+					continue
+				}
+				liveVal, lfound, _ := unstructured.NestedString(live, "resources", kind, res)
+				if !lfound {
+					return false
+				}
+				tq, err1 := resource.ParseQuantity(fmt.Sprintf("%v", valRaw))
+				lq, err2 := resource.ParseQuantity(liveVal)
+				if err1 != nil || err2 != nil || tq.Cmp(lq) != 0 {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 func (t *VerticalRightsizeTask) generateTicketDescription(kind, name, namespace string, changes []containerChange) string {
@@ -579,11 +813,18 @@ func (t *VerticalRightsizeTask) InputSchema() *types.Schema {
 					},
 				},
 			},
+			"in_place": {
+				Type:        types.PropertyTypeBoolean,
+				Title:       "In-Place Resize",
+				Description: "Attempt a zero-downtime in-place pod resize when the cluster supports it (K8s >= 1.35, where the feature is GA), falling back to a rolling restart otherwise. Defaults to true. Ignored when GitOps/ticket is enabled.",
+				Default:     true,
+				Order:       8,
+			},
 			"gitops_config": {
 				Type:        types.PropertyTypeObject,
 				Title:       "GitOps",
 				Description: "Configuration for GitOps integration (e.g., Pull Request creation).",
-				Order:       8,
+				Order:       9,
 				Schema: &types.Schema{
 					Properties: map[string]types.Property{
 						"enabled": {

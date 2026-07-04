@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 
 	"nudgebee/llm/audit"
 	"nudgebee/llm/common"
@@ -52,6 +53,12 @@ type AgentDto struct {
 	UpdatedAt             time.Time        `json:"updated_at" db:"updated_at"`
 	UpdatedBy             string           `json:"updated_by" db:"updated_by"`
 	Overridden            bool             `json:"overridden,omitempty"`
+	// AccountId / AccountName are populated only by ListAgentsForTenant
+	// — the per-account list path leaves them empty (the page already
+	// knows which account it's on). The b-Cortex tenant-wide view uses
+	// them to render an Account column.
+	AccountId   string `json:"account_id,omitempty" db:"account_id"`
+	AccountName string `json:"account_name,omitempty" db:"account_name"`
 }
 
 type AgentUpdateDto struct {
@@ -886,7 +893,155 @@ func serializeRowToAgent(context *security.RequestContext, rows *sqlx.Rows) (Age
 		agent.Tools = tools
 	}
 
+	// AccountId / AccountName are joined in by the tenant-wide list path
+	// (ListCustomAgentsForTenant) so the b-Cortex UI can render an Account
+	// column. The per-account list path doesn't include these columns —
+	// the map lookup is nil and we leave the struct fields empty.
+	if raw, ok := agentMap["account_id"]; ok && raw != nil {
+		switch v := raw.(type) {
+		case []byte:
+			agent.AccountId = string(v)
+		case string:
+			agent.AccountId = v
+		}
+	}
+	if raw, ok := agentMap["account_name"]; ok && raw != nil {
+		switch v := raw.(type) {
+		case []byte:
+			agent.AccountName = string(v)
+		case string:
+			agent.AccountName = v
+		}
+	}
+
 	return agent, nil
+}
+
+// ListCustomAgentsForTenant returns custom agents across every account the
+// caller can read in the tenant. Row-level filter mirrors HasAccountAccess:
+// super/tenant admins see every account; scoped account-admins see only
+// the accounts in their JWT-carried list; users with no account role get
+// an empty slice. Each row carries account_id + account_name so the
+// b-Cortex sidebar surface can render an Account column.
+func ListCustomAgentsForTenant(context *security.RequestContext, allowOnlyEnabled bool) []AgentDto {
+	secCtx := context.GetSecurityContext()
+	tenantID := secCtx.GetTenantId()
+	if tenantID == "" {
+		return []AgentDto{}
+	}
+
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		getLogger(context).Error("ListCustomAgentsForTenant: failed to get database manager", "error", err)
+		return []AgentDto{}
+	}
+	agents := make([]AgentDto, 0)
+
+	// Joins cloud_accounts so we can both filter by tenant and surface the
+	// account name. The tenant filter on cloud_accounts.tenant closes the
+	// cross-tenant query path even when the caller's account list is large.
+	// JOIN on the UUID columns directly so PG can use the agent-id / account-id
+	// indexes — casting both sides to text forces a hash join across the
+	// entire installation table. The ::text cast survives in the SELECT
+	// list because AgentDto.AccountId scans into a string.
+	baseSelect := `SELECT lg.*, lgi.account_id::text AS account_id,
+	                      COALESCE(ca.account_name, '') AS account_name
+	                 FROM llm_agents lg
+	                 JOIN llm_agents_installation lgi ON lg.id = lgi.agent_id
+	            LEFT JOIN cloud_accounts ca           ON lgi.account_id = ca.id
+	                WHERE lg.type = $1
+	                  AND ca.tenant = $2`
+
+	seesAllAccountsInTenant := secCtx.IsSuperAdmin() ||
+		secCtx.IsSuperAdminReadonly() ||
+		secCtx.IsTenantAdmin() ||
+		secCtx.IsTenantReadAdmin()
+
+	var (
+		rows  *sqlx.Rows
+		query string
+		args  []any
+	)
+	if seesAllAccountsInTenant {
+		query = baseSelect
+		args = []any{AgentTypeCustom, tenantID}
+		if allowOnlyEnabled {
+			query += ` AND lg.status = $3`
+			args = append(args, "enabled")
+		}
+	} else {
+		accountIDs := secCtx.GetAccountIds()
+		if len(accountIDs) == 0 {
+			return []AgentDto{}
+		}
+		query = baseSelect + ` AND lgi.account_id = ANY($3::uuid[])`
+		args = []any{AgentTypeCustom, tenantID, pq.Array(accountIDs)}
+		if allowOnlyEnabled {
+			query += ` AND lg.status = $4`
+			args = append(args, "enabled")
+		}
+	}
+
+	rows, err = dbms.Db.Queryx(query, args...)
+	if err != nil {
+		getLogger(context).Error("ListCustomAgentsForTenant: query failed", "error", err, "tenant_id", tenantID, "sees_all", seesAllAccountsInTenant)
+		return []AgentDto{}
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			getLogger(context).Error("ListCustomAgentsForTenant: failed to close rows", "error", err)
+		}
+	}()
+	for rows.Next() {
+		agent, err := serializeRowToAgent(context, rows)
+		if err != nil {
+			getLogger(context).Error("ListCustomAgentsForTenant: failed to serialize row", "error", err)
+			continue
+		}
+		agents = append(agents, agent)
+	}
+	// Surface mid-iteration driver/connection errors instead of silently
+	// returning a partial list.
+	if err := rows.Err(); err != nil {
+		getLogger(context).Error("ListCustomAgentsForTenant: rows iteration failed", "error", err, "tenant_id", tenantID)
+		return []AgentDto{}
+	}
+	return agents
+}
+
+// ListAgentsForTenant returns the system-agent catalog plus every custom
+// agent the caller can read across the tenant. System agents come from the
+// compiled-in nbSystemAgents map; their per-account tool resolution is
+// skipped because there's no account context. The b-Cortex sidebar surface
+// uses this when launched without an accountId.
+func ListAgentsForTenant(context *security.RequestContext, allowOnlyEnabled bool) []AgentDto {
+	agents := make([]AgentDto, 0, len(nbSystemAgents))
+	customAgents := ListCustomAgentsForTenant(context, allowOnlyEnabled)
+
+	for agent := range nbSystemAgents {
+		nbAgent, err := getSystemAgent(agent, "")
+		if err != nil {
+			agents = append(agents, AgentDto{
+				Name:   agent,
+				Type:   AgentTypeSystem,
+				Status: AgentStatusDisabled,
+			})
+			continue
+		}
+		agents = append(agents, AgentDto{
+			Name:         agent,
+			Aliases:      nbAgent.GetNameAliases(),
+			Type:         AgentTypeSystem,
+			Status:       AgentStatusEnabled,
+			Description:  nbAgent.GetDescription(),
+			ExecutorType: nbAgent.GetPlannerType(),
+			// Tools intentionally empty — tool resolution is per-account.
+			Config: map[string]any{},
+		})
+	}
+
+	agents = append(agents, customAgents...)
+	return agents
 }
 
 func ListCustomAgents(context *security.RequestContext, accountId string, allowOnlyEnabled bool) []AgentDto {

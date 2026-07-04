@@ -171,8 +171,23 @@ func ProcessEvent(ctx *security.RequestContext, event map[string]any) (err error
 		return err
 	}
 
+	// Signal that an investigation is in flight for this event. The
+	// event.created lifecycle hook reads this so pagerduty_comment skips posting
+	// its "report ready" deep link at creation and posts it at
+	// investigation.completed instead (the report isn't ready yet). The
+	// investigation result itself arrives via the investigation-completed
+	// callback (event/queue consumer). See EventInvestigationEnqueuedKey.
+	event[EventInvestigationEnqueuedKey] = true
+
 	return nil
 }
+
+// EventInvestigationEnqueuedKey is a private marker set on the event map by
+// ProcessEvent when it enqueues an LLM investigation. The event.created
+// lifecycle hook reads it to decide whether pagerduty_comment posts now or
+// defers to investigation.completed. It is stripped from the map before any
+// persistence and is never an event column.
+const EventInvestigationEnqueuedKey = "_investigation_enqueued"
 
 const tenantAttrEventAutoAnalysisRules = "event_auto_analysis_rules"
 

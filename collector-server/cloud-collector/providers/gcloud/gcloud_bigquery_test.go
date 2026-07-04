@@ -1,11 +1,59 @@
 package gcloud
 
 import (
+	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
+	"cloud.google.com/go/bigquery"
 	"github.com/stretchr/testify/assert"
 )
+
+// TestTableToResourceDropsSchema guards the fix for the collector OOM: a table's
+// column Schema (and an external table's ExternalDataConfig schema) can be
+// hundreds of KB and, accumulated across a large project, exhausted the 3Gi
+// limit. tableToResource must drop those before serializing Meta, while keeping
+// the fields the recommendation engine relies on.
+func TestTableToResourceDropsSchema(t *testing.T) {
+	var schema bigquery.Schema
+	for i := 0; i < 5000; i++ {
+		schema = append(schema, &bigquery.FieldSchema{
+			Name:        fmt.Sprintf("column_%d_with_a_reasonably_long_name", i),
+			Type:        bigquery.StringFieldType,
+			Description: "padding description text to inflate per-field metadata size",
+		})
+	}
+
+	md := &bigquery.TableMetadata{
+		Name:             "big_table",
+		Schema:           schema,
+		NumBytes:         20 * 1024 * 1024 * 1024, // 20 GB
+		LastModifiedTime: time.Now(),
+		ExternalDataConfig: &bigquery.ExternalDataConfig{
+			SourceURIs: []string{"gs://bucket/*"},
+			Schema:     schema,
+		},
+	}
+
+	res := (&bigQueryService{}).tableToResource("ds", "big_table", md, "US", "proj")
+
+	// Column schema must not survive into Meta, regardless of input size.
+	if s, ok := res.Meta["Schema"]; ok {
+		assert.Nil(t, s, "Schema must be dropped from Meta")
+	}
+	if e, ok := res.Meta["ExternalDataConfig"]; ok {
+		assert.Nil(t, e, "ExternalDataConfig must be dropped from Meta")
+	}
+
+	// Size information the recommendation engine keys off must be preserved.
+	assert.Contains(t, res.Meta, "NumBytes", "NumBytes must be preserved in Meta")
+
+	// Serialized Meta must be small even though the input schema was huge.
+	b, err := json.Marshal(res.Meta)
+	assert.NoError(t, err)
+	assert.Less(t, len(b), 8*1024, "trimmed Meta should be small, got %d bytes", len(b))
+}
 
 func TestGetTableSizeGB(t *testing.T) {
 	tests := []struct {

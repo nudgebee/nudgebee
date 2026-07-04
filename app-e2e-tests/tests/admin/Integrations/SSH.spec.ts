@@ -1,7 +1,7 @@
 import { test } from "@playwright/test";
 import { navigateToServersTab, testConnection, saveAndHandleAlreadyExists } from "./util";
 
-const requiredEnv = ["SSH_HOST", "SSH_INTEGRATION_CONFIG_NAME", "SSH_SECRET"];
+const requiredEnv = ["SSH_INTEGRATION_CONFIG_NAME", "SSH_SECRET"];
 const missingEnv = requiredEnv.filter((key) => !process.env[key]);
 
 test("Add SSH Account Integration", async ({ page }) => {
@@ -17,7 +17,6 @@ test("Add SSH Account Integration", async ({ page }) => {
   await locators.sshAccountIdDropdown.click();
   await locators.sshAccountIdOption(process.env.CLUSTER!).first().click();
   await locators.sshAccountIdDropdown.press("Escape");
-  await locators.sshHostInput.fill(process.env.SSH_HOST!);
   await locators.sshConfigNameInput.fill(process.env.SSH_INTEGRATION_CONFIG_NAME!);
   await locators.sshK8sSecretInput.fill(process.env.SSH_SECRET!);
 
@@ -35,6 +34,9 @@ test("Add SSH Account Integration", async ({ page }) => {
     successToast: locators.sshSuccessToast,
     testName: "Add SSH Account Integration",
     operationNames: ["AddIntegrations"],
-    ignoreErrorMessages: ["already has a 'ssh' integration"],
+    ignoreErrorMessages: [
+      "already has a 'ssh' integration",
+      `integration config name '${process.env.SSH_INTEGRATION_CONFIG_NAME}' already exists for this integration type`,
+    ],
   });
 });

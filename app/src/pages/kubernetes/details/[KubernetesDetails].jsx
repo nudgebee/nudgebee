@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/router';
-import AnchorComponent from '@shared/navigation/AnchorComponent';
+import AnchorComponent from '@components/common/navigation/AnchorComponent';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import KuberneteUtilizationSummary from '@components/k8s/KuberneteUtilizationSummary';
 import KubernetesRightSizing from '@components/recommendations/KubernetesRightSizing';
@@ -20,13 +20,14 @@ import KubernetesLogsPattern from '@components/k8s/details/KubernetesLogsPattern
 import KubernetesEventsTable from '@components/events/KubernetesEvents';
 import KubernetesApplicationApiFailure from '@components/events/KubernetesApplicationApiFailure';
 import { useData } from '@context/DataContext';
+import { hasWriteAccess } from '@lib/auth';
 import LogsIcon from '@assets/kubernetes/logs-icon.svg';
 import { Box, Typography } from '@mui/material';
 import { ToggleGroup } from '@ui/ToggleGroup';
 import { ds } from '@utils/colors';
 import Loader from '@shared/Loader';
 import { ListingLayout } from '@ui/ListingLayout';
-import { snackbar } from '@shared/snackbarService';
+import { toast as snackbar } from '@ui/Toast';
 import KubernetesApplicationLogFailure from '@components/events/KubernetesApplicationLogFailure';
 import KubernetesGroupedEvents from '@components/events/KubernetesGroupedEvents';
 import {
@@ -100,7 +101,7 @@ import KubernetesClusterSummaryUtilization from '@components/k8s/KubernetesClust
 import { KubernetesNodesTrends } from '@components/k8s/details/KubernetesNodesTrends';
 import KubernetesNodeClass from '@components/k8s/details/KubernetesNodeClass';
 import apiKubernetes1 from '@api1/kubernetes1';
-import CustomPill from '@shared/CustomPill';
+import { Chip } from '@ui/Chip';
 import KubernetesAutoScalerLogs from '@components/k8s/details/KubernetesAutoScalerLogs';
 import apiRecommendations from '@api1/recommendation';
 import ClusterUpgradeFeature from '@components/k8s/ClusterUpgradeFeature';
@@ -123,7 +124,6 @@ import KubernetesClusterUpgradePlanner from '@components/k8s/clusterUpgradePlann
 import QueryMetrics from '@components/k8s/details/QueryMetrics';
 import KubernetesGroupedEventsTable from '@components/k8s/details/groupedevents/KubernetesGroupedEventsTable';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { hasWriteAccess } from '@lib/auth';
 
 const GrafanaIframe = ({ accountId }) => {
   const iframeRef = useRef(null);
@@ -154,8 +154,8 @@ const GrafanaIframe = ({ accountId }) => {
 
   return (
     <>
-      <Box display='flex' justifyContent='space-between' alignItems='center' marginBottom='5px'>
-        <Typography style={{ margin: 'auto', fontWeight: 600 }}>Grafana Dashboard</Typography>
+      <Box display='flex' justifyContent='space-between' alignItems='center' marginBottom={ds.space[1]}>
+        <Typography style={{ margin: 'auto', fontWeight: 'var(--ds-font-weight-semibold)' }}>Grafana Dashboard</Typography>
         <SafeIcon alt='full screen' src={FullScreenIcon} onClick={toggleFullscreen} style={{ cursor: 'pointer' }} width={20} height={20} />
       </Box>
       <iframe
@@ -304,7 +304,7 @@ const KubernetesDetails = () => {
           value: 3,
           icon: ClusterUpgradeIcon,
           tabName: 'tools',
-          betaIcon: <SafeIcon src={BetaIcon} alt='Beta Icon' width={25} height={20} style={{ marginLeft: '2px' }} />,
+          betaIcon: <SafeIcon src={BetaIcon} alt='Beta Icon' width={25} height={20} style={{ marginLeft: 'var(--ds-space-1)' }} />,
         },
         {
           id: 'Upgrade Planner',
@@ -313,7 +313,7 @@ const KubernetesDetails = () => {
           value: 4,
           icon: ClusterUpgradeIcon,
           tabName: 'tools',
-          betaIcon: <SafeIcon src={BetaIcon} alt='Beta Icon' width={25} height={20} style={{ marginLeft: '2px' }} />,
+          betaIcon: <SafeIcon src={BetaIcon} alt='Beta Icon' width={25} height={20} style={{ marginLeft: 'var(--ds-space-1)' }} />,
         },
         {
           id: 'ssl-certificate-issues',
@@ -341,7 +341,7 @@ const KubernetesDetails = () => {
       const isJaeger = selectedCluster?.cloud_provider === 'jaeger';
       // Grafana embeds a full query/explore surface, so restrict it to users
       // with write access on this cluster — read-only roles are blocked.
-      const canAccessGrafana = grafana && hasWriteAccess(kubeId);
+      const canAccessGrafana = grafana && kubeId && hasWriteAccess(kubeId);
       setTabOptions((prevOptions) =>
         prevOptions.map((option) => {
           if (option.name === 'Grafana') return { ...option, disabled: !canAccessGrafana };
@@ -510,7 +510,7 @@ const KubernetesDetails = () => {
       return (
         <>
           <a
-            style={{ display: 'block', marginBottom: '8px', marginLeft: '-7%' }}
+            style={{ display: 'block', marginBottom: 'var(--ds-space-2)', marginLeft: '-7%' }}
             target='_blank'
             href='https://karpenter.sh/docs/getting-started/migrating-from-cas/'
             rel='noreferrer'
@@ -518,7 +518,7 @@ const KubernetesDetails = () => {
             Karpenter: For a smooth setup, please follow the instructions in this documentation.
           </a>
 
-          <p style={{ textAlign: 'center', fontWeight: 'bold', margin: '8px 0' }}>Or</p>
+          <p style={{ textAlign: 'center', fontWeight: 'bold', margin: 'var(--ds-space-2) 0' }}>Or</p>
 
           <a
             style={{ display: 'block', marginLeft: '-7%' }}
@@ -703,9 +703,11 @@ const KubernetesDetails = () => {
                   <Box
                     sx={{
                       display: 'flex',
+                      alignItems: 'center',
                       bgcolor: ds.background[100],
-                      p: `${ds.space[1]} ${ds.space[3]} ${ds.space[3]} 0`,
-                      borderRadius: `0 0 ${ds.radius.md} ${ds.radius.md}`,
+                      p: ds.space[2],
+                      borderRadius: ds.radius.md,
+                      mb: ds.space[2],
                     }}
                   >
                     <ToggleGroup
@@ -716,7 +718,7 @@ const KubernetesDetails = () => {
                       options={getAutoscalerTabBasedOnAutoscalerType().map((item) => ({
                         value: String(item.value),
                         label: (
-                          <Box display='flex' gap={'6px'} alignItems={'center'}>
+                          <Box display='flex' gap={ds.space.mul(0, 3)} alignItems={'center'}>
                             {item?.icon && <SafeIcon src={item?.icon} height={item?.height || 20} width={item?.width || 20} alt={item.label} />}
                             {item.label}
                           </Box>
@@ -778,9 +780,11 @@ const KubernetesDetails = () => {
                   <Box
                     sx={{
                       display: 'flex',
+                      alignItems: 'center',
                       bgcolor: ds.background[100],
-                      p: `${ds.space[1]} ${ds.space[3]} ${ds.space[3]} 0`,
-                      borderRadius: `0 0 ${ds.radius.md} ${ds.radius.md}`,
+                      p: ds.space[2],
+                      borderRadius: ds.radius.md,
+                      mb: ds.space[2],
                     }}
                   >
                     <ToggleGroup
@@ -806,9 +810,9 @@ const KubernetesDetails = () => {
                       ].map((item) => ({
                         value: item.value,
                         label: (
-                          <Box display='flex' gap={'6px'} alignItems={'center'}>
+                          <Box display='flex' gap={ds.space.mul(0, 3)} alignItems={'center'}>
                             {item.label}
-                            {item.count && <CustomPill value={item.count} />}
+                            {item.count && <Chip count={item.count} tone='info' size='xs' />}
                           </Box>
                         ),
                       }))}
@@ -843,9 +847,11 @@ const KubernetesDetails = () => {
                   <Box
                     sx={{
                       display: 'flex',
+                      alignItems: 'center',
                       bgcolor: ds.background[100],
-                      p: `${ds.space[1]} ${ds.space[3]} ${ds.space[3]} 0`,
-                      borderRadius: `0 0 ${ds.radius.md} ${ds.radius.md}`,
+                      p: ds.space[2],
+                      borderRadius: ds.radius.md,
+                      mb: ds.space[2],
                     }}
                   >
                     <ToggleGroup
@@ -933,7 +939,7 @@ const KubernetesDetails = () => {
               {selectedSubTab == 6 && <KubernetesTracesGroupListing accountId={kubeId} />}
               {selectedSubTab == 7 && <KubernetesTracesCrossZoneListing accountId={kubeId} />}
               {selectedSubTab == 8 && <KubernetesSLOConfigs accountId={kubeId} />}
-              {selectedSubTab == 9 && hasWriteAccess(kubeId) && <GrafanaIframe accountId={kubeId} />}
+              {selectedSubTab == 9 && kubeId && hasWriteAccess(kubeId) && <GrafanaIframe accountId={kubeId} />}
             </>
           )}
           {[tabOptions[5].value].includes(selectedTab) && (

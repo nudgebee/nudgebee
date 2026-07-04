@@ -69,6 +69,20 @@ func TestResolvePath(t *testing.T) {
 			expectError:    true,
 		},
 		{
+			name:           "Path traversal via conversation ID",
+			inputPath:      "passwd",
+			conversationID: "../../../../etc",
+			expectedPath:   "",
+			expectError:    true,
+		},
+		{
+			name:           "Path traversal via conversation ID with dots",
+			inputPath:      "shadow",
+			conversationID: "../../../etc",
+			expectedPath:   "",
+			expectError:    true,
+		},
+		{
 			name:         "Workspace root",
 			inputPath:    ".",
 			expectedPath: "/tmp/code-analysis",

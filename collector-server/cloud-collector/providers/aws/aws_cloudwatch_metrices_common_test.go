@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"nudgebee/collector/cloud/providers"
+	"os"
 	"testing"
 	"time"
 
@@ -181,6 +182,9 @@ func TestListAwsCloudwatchMetrics_NewServices(t *testing.T) {
 // This is a regression test for the bug where filter.ResourceType was checked
 // instead of the auto-populated resourceType variable
 func TestGetAwsRdsMetricsWithoutResourceType(t *testing.T) {
+	if os.Getenv("AWS_ACCESS_KEY_ID") == "" {
+		t.Skip("Skipping integration test that requires AWS credentials")
+	}
 	startDate := time.Now().Add(-time.Hour * 24)
 	endDate := time.Now()
 

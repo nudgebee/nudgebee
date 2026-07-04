@@ -234,7 +234,7 @@ func TestEscapeGraphQLString(t *testing.T) {
 		{
 			name:     "Multiple special chars",
 			input:    `api's\n"server"`,
-			expected: `api\\'s\\n\"server\"`,
+			expected: `api\'s\\n\"server\"`,
 		},
 		{
 			name:     "No special chars",

@@ -131,6 +131,16 @@ func (c *cloudLogs) QueryLogs(ctx *security.RequestContext, fetchLogRequest Fetc
 		for _, v := range result.Labels {
 			labels[v.Label] = v.Value
 		}
+		// Merge the collector's structured attributes (httpRequest method/status/url,
+		// trace.id, source location, …) into labels so the on-demand log viewer and
+		// logs-by-trace can render request summaries instead of bare resource labels.
+		// The collector emits OTel-style keys; an explicit label wins on collision so a
+		// provider label is never clobbered by an attribute.
+		for k, v := range result.Attributes {
+			if _, exists := labels[k]; !exists {
+				labels[k] = v
+			}
+		}
 		timestamp := ""
 		if result.Timestamp > 0 {
 			timestamp = time.UnixMilli(result.Timestamp).Format(time.RFC3339Nano)

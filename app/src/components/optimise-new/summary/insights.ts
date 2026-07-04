@@ -29,6 +29,11 @@ export interface InsightItem {
   impactLabel: string;
   /** Parsed dollar value for sorting/totals — 0 if non-monetary */
   dollarImpact: number;
+  /** Concise rule/catalog title used as the card & list headline (e.g. "Pod Right Sizing"). */
+  title: string;
+  /** Terse action/context line under the title (e.g. "Reduce CPU 96%"); '' when none. */
+  brief: string;
+  /** Full prose description — hover tooltip + ticket subject only, no longer the headline. */
   summary: string;
   nextStep: { label: string; destructive?: boolean };
   /** Days since detected or time-in-state */
@@ -154,9 +159,22 @@ export const sortInsights = (items: InsightItem[], sortBy: SortKey = 'savings'):
 
 export const subtotal = (items: InsightItem[]): number => items.reduce((s, i) => s + i.dollarImpact, 0);
 
-export const formatDollars = (n: number): string => {
-  if (n >= 1000) return '$' + (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
-  return '$' + n.toLocaleString('en-US');
+// `symbol` lets callers render the tenant/account billing currency (estimated_savings
+// is denominated in the account currency, not always USD). Defaults to '$'.
+export const formatDollars = (n: number, symbol = '$'): string => {
+  if (n >= 1000) return symbol + (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+  return symbol + n.toLocaleString('en-US');
+};
+
+// Secondary line for cards/list rows: show the terse `brief` under the title only
+// when it adds information beyond the title. Drops it when it duplicates the title,
+// and hard-clamps the rare long one so a row stays a single scannable line rather
+// than wrapping a full sentence (the original "titles too big" complaint).
+const SECONDARY_LINE_MAX = 80;
+export const secondaryLine = (item: InsightItem): string => {
+  const b = (item.brief || '').trim();
+  if (!b || b === item.title) return '';
+  return b.length > SECONDARY_LINE_MAX ? b.slice(0, SECONDARY_LINE_MAX - 1).trimEnd() + '…' : b;
 };
 
 export const formatAge = (days: number): string => {
@@ -189,14 +207,14 @@ export const getTop3 = (items: InsightItem[]): InsightItem[] => {
 
 // ─── Sub-category one-liner generator ──────────────────────────────────────
 
-export const subCategorySummaryLine = (items: InsightItem[]): string => {
+export const subCategorySummaryLine = (items: InsightItem[], symbol = '$'): string => {
   if (items.length === 0) return '';
   const criticals = items.filter((i) => i.severity === 'critical');
   const dollars = subtotal(items);
   const topItem = items[0]; // already sorted by priority
 
   if (criticals.length > 0 && dollars > 0) {
-    return `${criticals.length} critical, ${formatDollars(dollars)}/mo at stake — top hit: ${topItem.resourceId}`;
+    return `${criticals.length} critical, ${formatDollars(dollars, symbol)}/mo at stake — top hit: ${topItem.resourceId}`;
   }
   if (criticals.length > 0) {
     return `${criticals.length} critical — ${topItem.summary.toLowerCase().slice(0, 60)}`;
@@ -211,17 +229,20 @@ export const subCategorySummaryLine = (items: InsightItem[]): string => {
 
 // ─── Nubi briefing generator ───────────────────────────────────────────────
 
-export const generateNubiBriefing = (items: InsightItem[]): string => {
+// `totalDollars` is the canonical full-set savings total (the headline number); pass
+// it so the briefing agrees with the headline instead of summing only the shown rows.
+export const generateNubiBriefing = (items: InsightItem[], totalDollars?: number, symbol = '$'): string => {
   const criticals = items.filter((i) => i.severity === 'critical').length;
-  const dollars = subtotal(items);
+  const dollars = totalDollars ?? subtotal(items);
 
   if (criticals > 0 && dollars > 0) {
     return `${criticals} critical issues and ${formatDollars(
-      dollars
+      dollars,
+      symbol
     )}/mo in savings potential need your attention this week. The biggest risks are in security and cost.`;
   }
   if (dollars > 0) {
-    return `${formatDollars(dollars)}/mo in optimization opportunities across ${items.length} findings. ${criticals} are critical severity.`;
+    return `${formatDollars(dollars, symbol)}/mo in optimization opportunities across ${items.length} findings. ${criticals} are critical severity.`;
   }
   return `${items.length} findings flagged this week, ${criticals} critical. Start with the top 3 below.`;
 };

@@ -2,11 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import DownloadButton from '@shared/buttons/DownloadButton';
-import KubernetesTable2 from '@components/k8s/common/KubernetesTable2';
+import KubernetesTable from '@components/k8s/common/KubernetesTable';
 import k8sApi from '@api1/kubernetes';
 import { Label } from '@ui/Label';
 import { Box, Grid, Typography } from '@mui/material';
-import { Modal } from '@shared/modal';
+import { Modal } from '@ui/Modal';
 import Datetime from '@shared/format/Datetime';
 import PropTypes from 'prop-types';
 import { getAllowedNamespaces, hasWriteAccess } from '@lib/auth';
@@ -15,14 +15,23 @@ import { applyFiltersOnRouter } from '@lib/router';
 import recommendationApi from '@api1/recommendation';
 import AutoOptimizePVRightSizingSingleConfiguration from '@components/autopilot/form/AutoOptimizePVRightSizingSingleConfiguration';
 import Text from '@shared/format/Text';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { ds } from 'src/utils/colors';
 import { action } from 'src/utils/actionStyles';
 import AutoPilotSettingIcon from '@assets/application/auto-pilot-new.svg';
 import { DeleteIconRed as DeleteIcon } from '@assets';
 import EditFileIcon from '@assets/application/edit-new.svg';
 
-const NAMESPACE_HEADERS = ['Name', 'Namespace', 'Status', 'Capacity', 'StorageClass', 'AccessMode', 'Age', ''];
+const NAMESPACE_HEADERS = [
+  { name: 'Name', width: '22%' },
+  { name: 'Namespace', width: '14%' },
+  { name: 'Status', width: '10%' },
+  { name: 'Capacity', width: '10%' },
+  { name: 'StorageClass', width: '16%' },
+  { name: 'AccessMode', width: '12%' },
+  { name: 'Age', width: '12%' },
+  { name: '', width: '4%' },
+];
 
 function parseK8sDate(date) {
   return new Date(date?.replace(' ', 'T'));
@@ -266,7 +275,7 @@ const KubernetesPVCTable = ({ accountId }) => {
         />
       </ListingLayout.Toolbar>
       <ListingLayout.Body>
-        <KubernetesTable2
+        <KubernetesTable
           id={kubernetesPVCTable}
           headers={NAMESPACE_HEADERS}
           data={filteredData}

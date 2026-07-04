@@ -6,16 +6,19 @@ import { ds } from 'src/utils/colors';
 import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
 import DragHandleIcon from '@mui/icons-material/DragHandle';
 import ConfirmationNumberOutlinedIcon from '@mui/icons-material/ConfirmationNumberOutlined';
-import CustomTicketLink from '@shared/CustomTicketLink';
-import CustomPRLink from '@shared/CustomPRLink';
+import TicketLink from '@shared/links/TicketLink';
+import PRLink from '@shared/links/PRLink';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import { Label } from '@ui/Label';
 import recommendationApi from '@api1/recommendation';
 import { interpolateMitigations } from '@api1/recommendation/data';
-import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import { formatRuleName } from './utils';
 import ApplyMitigationModal from '@components/cloudaccount/ApplyMitigationModal';
 import { hasWriteAccess } from '@lib/auth';
+import InterpretationPanel from './interpretation/InterpretationPanel';
+import { buildInterpretation } from './interpretation/buildInterpretation';
+import { extractContainerData, summarizeCloudRightSizing, formatCloudTargetSpec } from './rightSizingData';
+import ConfigIssuesList, { summarizeConfigIssues, LEVEL_TONE, LEVEL_NAME } from './evidence/configIssues';
 
 interface DetailsPanelProps {
   fullRecommendation: any;
@@ -58,7 +61,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
 
   if (loading) {
     return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', py: '40px' }}>
+      <Box sx={{ display: 'flex', justifyContent: 'center', py: ds.space.mul(0, 20) }}>
         <CircularProgress size={24} />
       </Box>
     );
@@ -78,41 +81,28 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
 
   return (
     <Box sx={{ p: `${ds.space[4]} 20px`, display: 'flex', flexDirection: 'column', gap: ds.space[4] }}>
-      {/* Rule Title & Service */}
-      <Box>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: '6px', flexWrap: 'wrap' }}>
-          <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>{title}</Typography>
-          {serviceName && (
-            <Label size='sm' tone='neutral'>
-              {serviceName}
-            </Label>
-          )}
-        </Box>
-        {description && <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], lineHeight: 1.6 }}>{description}</Typography>}
-      </Box>
+      {/* Interpretation — verdict / why / impact / risk, re-framed from the
+          resolved title, description and insight (replaces the generic blurb). */}
+      <InterpretationPanel
+        {...buildInterpretation({
+          category,
+          ruleName,
+          title,
+          description,
+          serviceName,
+          insight,
+          savings: rec.estimated_savings || 0,
+          recData,
+          recommendations: details?.recommendations,
+        })}
+      />
 
-      {/* Insight — why this matters */}
-      {insight && (
-        <Box
-          sx={{
-            display: 'flex',
-            gap: '10px',
-            p: ds.space[3],
-            borderRadius: ds.radius.lg,
-            backgroundColor: ds.blue[100],
-            border: `1px solid ${ds.blue[200]}`,
-          }}
-        >
-          <InfoOutlinedIcon sx={{ fontSize: '16px', color: ds.blue[700], mt: '1px', flexShrink: 0 }} />
-          <Typography sx={{ fontSize: ds.text.small, color: ds.blue[700], lineHeight: 1.6 }}>{insight}</Typography>
-        </Box>
-      )}
-
-      {/* Recommendation Summary — key data from JSONB */}
+      {/* Recommendation Summary — key "what changes" data from JSONB */}
       <RecommendationSummary recData={recData} category={category} ruleName={ruleName} />
 
-      {/* Recommendation Steps — from catalog */}
-      {details?.recommendations?.length > 0 && (
+      {/* Additional recommendation steps — the first step is surfaced as the
+          interpretation "why", so only render the remainder here (if any). */}
+      {details?.recommendations?.length > 1 && (
         <>
           <Divider />
           <Box>
@@ -120,9 +110,17 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
               Recommendations
             </Typography>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              {details.recommendations.map((step: string, idx: number) => (
+              {details.recommendations.slice(1).map((step: string, idx: number) => (
                 <Box key={step.substring(0, 60)} sx={{ display: 'flex', gap: ds.space[2], alignItems: 'flex-start' }}>
-                  <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold, color: ds.blue[600], minWidth: '18px', mt: '1px' }}>
+                  <Typography
+                    sx={{
+                      fontSize: ds.text.small,
+                      fontWeight: ds.weight.semibold,
+                      color: ds.blue[600],
+                      minWidth: ds.space.mul(0, 10),
+                      mt: ds.space[0],
+                    }}
+                  >
                     {idx + 1}.
                   </Typography>
                   <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], lineHeight: 1.6 }}>{step}</Typography>
@@ -161,7 +159,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
             )}
             <Box
               sx={{
-                p: '10px',
+                p: ds.space.mul(0, 5),
                 borderRadius: ds.radius.lg,
                 backgroundColor: ds.gray[100],
                 border: `1px solid ${ds.gray[200]}`,
@@ -189,7 +187,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
           <Divider />
           <Box>
             <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>Remediation</Typography>
-            <Box sx={{ p: '10px', borderRadius: ds.radius.lg, backgroundColor: ds.green[100], border: `1px solid ${ds.green[200]}` }}>
+            <Box sx={{ p: ds.space.mul(0, 5), borderRadius: ds.radius.lg, backgroundColor: ds.green[100], border: `1px solid ${ds.green[200]}` }}>
               <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], lineHeight: 1.6 }}>{remediation}</Typography>
               {remediationUrl && (
                 <Box
@@ -220,7 +218,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
           <Divider />
           <Box>
             <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>Compliance</Typography>
-            <Box sx={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            <Box sx={{ display: 'flex', gap: ds.space.mul(0, 3), flexWrap: 'wrap' }}>
               {details.compliances.map((c: string) => (
                 <Label key={c} size='sm' tone='neutral'>
                   {c}
@@ -269,7 +267,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
             <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>
               Linked Items
             </Typography>
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: ds.space.mul(0, 3) }}>
               {rec.ticket && (
                 <Box
                   sx={{
@@ -282,8 +280,8 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
                     gap: ds.space[2],
                   }}
                 >
-                  <ConfirmationNumberOutlinedIcon sx={{ fontSize: '16px', color: ds.blue[600] }} />
-                  <CustomTicketLink ticketURL={rec.ticket?.url} ticketID={rec.ticket?.ticket_id} />
+                  <ConfirmationNumberOutlinedIcon sx={{ fontSize: ds.text.title, color: ds.blue[600] }} />
+                  <TicketLink ticketURL={rec.ticket?.url} ticketID={rec.ticket?.ticket_id} />
                 </Box>
               )}
               {rec.resolution?.type_reference_id && (
@@ -298,7 +296,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
                     gap: ds.space[2],
                   }}
                 >
-                  <CustomPRLink prURL={rec.resolution.type_reference_id} statusMessage={rec.resolution.status_message} />
+                  <PRLink prURL={rec.resolution.type_reference_id} statusMessage={rec.resolution.status_message} />
                 </Box>
               )}
             </Box>
@@ -314,7 +312,7 @@ const DetailsPanel = ({ fullRecommendation: rec, accounts = {} }: DetailsPanelPr
           sx={{
             backgroundColor: ds.gray[100],
             borderRadius: ds.radius.lg,
-            p: '10px',
+            p: ds.space.mul(0, 5),
             border: `1px solid ${ds.gray[200]}`,
           }}
         >
@@ -364,7 +362,7 @@ const K8sRightSizingSummary = ({ recData }: { recData: any }) => {
           sx={{
             borderRadius: ds.radius.lg,
             border: `1px solid ${ds.gray[200]}`,
-            '& .MuiTableCell-root': { px: '10px', py: '7px', fontSize: ds.text.small, borderColor: ds.gray[200] },
+            '& .MuiTableCell-root': { px: ds.space.mul(0, 5), py: ds.space[2], fontSize: ds.text.small, borderColor: ds.gray[200] },
           }}
         >
           <Table size='small'>
@@ -414,11 +412,11 @@ const K8sRightSizingSummary = ({ recData }: { recData: any }) => {
 };
 
 const CloudRightSizingSummary = ({ recData }: { recData: any }) => {
-  const currentInstance = recData.current_instance_type || recData.instance_type || '';
-  const recommendedInstance = recData.recommended_instance_type || '';
+  const s = summarizeCloudRightSizing(recData);
+  if (!s) return null;
   const currentPrice = recData.current_price;
-  const recommendedPrice = recData.recommended_price;
-  if (!currentInstance && !recommendedInstance && currentPrice == null) return null;
+  const recommendedPrice = recData.recommended_price ?? s.targetPrice;
+  const targetSpec = formatCloudTargetSpec(s);
   return (
     <>
       <Divider />
@@ -426,7 +424,8 @@ const CloudRightSizingSummary = ({ recData }: { recData: any }) => {
         <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>
           Recommended Changes
         </Typography>
-        {currentInstance && recommendedInstance && (
+        {/* Instance-type comparison (alternate/generation) or single recommended target (underutilized). */}
+        {(s.currentInstance || s.targetInstance) && (
           <Box
             sx={{
               display: 'flex',
@@ -440,18 +439,20 @@ const CloudRightSizingSummary = ({ recData }: { recData: any }) => {
               justifyContent: 'center',
             }}
           >
-            <InstanceBadge label='Current' value={currentInstance} variant='error' />
-            <ArrowForwardIcon sx={{ fontSize: '18px', color: ds.blue[700] }} />
-            <InstanceBadge label='Recommended' value={recommendedInstance} variant='success' />
+            {s.currentInstance && <InstanceBadge label='Current' value={s.currentInstance} variant='error' />}
+            {s.currentInstance && s.targetInstance && <ArrowForwardIcon sx={{ fontSize: '18px', color: ds.blue[700] }} />}
+            {s.targetInstance && <InstanceBadge label='Recommended' value={s.targetInstance} variant='success' />}
           </Box>
         )}
-        {currentPrice != null && recommendedPrice != null && (
+        {targetSpec && <SummaryRow label='Target Spec' value={targetSpec} highlight />}
+        {currentPrice != null && recommendedPrice != null ? (
           <Box
             sx={{
               display: 'flex',
               alignItems: 'center',
               gap: ds.space[4],
               p: '10px',
+              mt: ds.space[2],
               backgroundColor: ds.green[100],
               borderRadius: ds.radius.lg,
               border: `1px solid ${ds.green[200]}`,
@@ -464,7 +465,7 @@ const CloudRightSizingSummary = ({ recData }: { recData: any }) => {
                 ${Number(currentPrice).toFixed(2)}/hr
               </Typography>
             </Box>
-            <ArrowForwardIcon sx={{ fontSize: '16px', color: ds.green[600] }} />
+            <ArrowForwardIcon sx={{ fontSize: ds.text.title, color: ds.green[600] }} />
             <Box sx={{ textAlign: 'center' }}>
               <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>Recommended</Typography>
               <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.semibold, color: ds.green[600] }}>
@@ -472,8 +473,9 @@ const CloudRightSizingSummary = ({ recData }: { recData: any }) => {
               </Typography>
             </Box>
           </Box>
+        ) : (
+          s.targetPrice != null && <SummaryRow label='On-Demand Rate (recommended)' value={`$${Number(s.targetPrice).toFixed(4)}/hr`} />
         )}
-        {currentInstance && !recommendedInstance && <SummaryRow label='Instance Type' value={currentInstance} />}
       </Box>
     </>
   );
@@ -501,7 +503,7 @@ const InfraUpgradeSummary = ({ recData }: { recData: any }) => {
           }}
         >
           {currentVer && <InstanceBadge label='Current' value={currentVer} variant='error' />}
-          {currentVer && recommendedVer && <ArrowForwardIcon sx={{ fontSize: '18px', color: ds.blue[700] }} />}
+          {currentVer && recommendedVer && <ArrowForwardIcon sx={{ fontSize: ds.text.title, color: ds.blue[700] }} />}
           {recommendedVer && <InstanceBadge label='Recommended' value={recommendedVer} variant='success' />}
         </Box>
         {recData.chartName && <SummaryRow label='Chart' value={recData.chartName} />}
@@ -529,7 +531,7 @@ const SecuritySummary = ({ recData }: { recData: any }) => {
           sx={{
             backgroundColor: ds.gray[100],
             borderRadius: ds.radius.lg,
-            p: '10px',
+            p: ds.space.mul(0, 5),
             border: `1px solid ${ds.gray[200]}`,
           }}
         >
@@ -549,29 +551,33 @@ const SecuritySummary = ({ recData }: { recData: any }) => {
 
 const ConfigurationSummary = ({ recData }: { recData: any }) => {
   if (Array.isArray(recData)) {
-    const categories = [...new Set(recData.map((i: any) => i.category).filter(Boolean))];
+    const summary = summarizeConfigIssues(recData);
     return (
       <>
         <Divider />
         <Box>
-          <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700], mb: ds.space[2] }}>Issue Summary</Typography>
-          <Box
-            sx={{
-              backgroundColor: ds.gray[100],
-              borderRadius: ds.radius.lg,
-              p: '10px',
-              border: `1px solid ${ds.gray[200]}`,
-            }}
-          >
-            <SummaryRow label='Total Issues' value={String(recData.length)} />
-            {categories.length > 0 && <SummaryRow label='Categories' value={categories.join(', ')} />}
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: ds.space[2], gap: ds.space[2], flexWrap: 'wrap' }}>
+            <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>Findings ({recData.length})</Typography>
+            {summary.hasLevels && (
+              <Box sx={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                {[3, 2, 1].map((lv) =>
+                  summary.levelCounts[lv] > 0 ? (
+                    <Label key={lv} size='sm' tone={LEVEL_TONE[lv]}>
+                      {summary.levelCounts[lv]} {LEVEL_NAME[lv]}
+                    </Label>
+                  ) : null
+                )}
+              </Box>
+            )}
           </Box>
+          <ConfigIssuesList items={recData} />
         </Box>
       </>
     );
   }
   const recommendedTags: string[] = Array.isArray(recData.recommended_tags) ? recData.recommended_tags : [];
-  const hasFields = recData.service_name || recData.alarm_type || recData.instance_type || recData.load_balancer_name || recommendedTags.length > 0;
+  // service_name is intentionally excluded — it's already shown as the verdict chip.
+  const hasFields = recData.alarm_type || recData.instance_type || recData.load_balancer_name || recData.region || recommendedTags.length > 0;
   if (!hasFields) return null;
   return (
     <>
@@ -584,17 +590,16 @@ const ConfigurationSummary = ({ recData }: { recData: any }) => {
           sx={{
             backgroundColor: ds.gray[100],
             borderRadius: ds.radius.lg,
-            p: '10px',
+            p: ds.space.mul(0, 5),
             border: `1px solid ${ds.gray[200]}`,
           }}
         >
-          {recData.service_name && <SummaryRow label='Service' value={recData.service_name} />}
           {recData.alarm_type && <SummaryRow label='Alarm Type' value={recData.alarm_type} />}
           {recData.instance_type && <SummaryRow label='Instance Type' value={recData.instance_type} />}
           {recData.load_balancer_name && <SummaryRow label='Load Balancer' value={recData.load_balancer_name} />}
           {recData.region && <SummaryRow label='Region' value={recData.region} />}
           {recommendedTags.length > 0 && (
-            <Box sx={{ mt: '6px' }}>
+            <Box sx={{ mt: ds.space.mul(0, 3) }}>
               <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], mb: ds.space[1] }}>Recommended Tags</Typography>
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[1] }}>
                 {recommendedTags.map((tag: string) => (
@@ -611,6 +616,23 @@ const ConfigurationSummary = ({ recData }: { recData: any }) => {
   );
 };
 
+// Fields hidden from the generic Summary fallback: prose already shown in the
+// interpretation, plus internal routing identifiers (raw UUIDs) that are noise.
+const SUMMARY_HIDDEN_FIELDS = new Set([
+  'reason',
+  'message',
+  'description',
+  'Description',
+  'Title',
+  'cloud_account_id',
+  'account_id',
+  'resource_id',
+  'tenant_id',
+  'cloud_provider',
+  'source',
+  'id',
+]);
+
 const RecommendationSummary = ({ recData, category, ruleName }: { recData: any; category: string; ruleName: string }) => {
   if (!recData || typeof recData !== 'object') return null;
 
@@ -623,7 +645,7 @@ const RecommendationSummary = ({ recData, category, ruleName }: { recData: any; 
   // Generic fallback: show key scalar fields from the JSONB
   const scalarEntries = Object.entries(recData)
     .filter(([, v]) => v != null && typeof v !== 'object')
-    .filter(([k]) => !['reason', 'message', 'description', 'Description', 'Title'].includes(k))
+    .filter(([k]) => !SUMMARY_HIDDEN_FIELDS.has(k))
     .slice(0, 6);
   if (scalarEntries.length === 0) return null;
   return (
@@ -635,7 +657,7 @@ const RecommendationSummary = ({ recData, category, ruleName }: { recData: any; 
           sx={{
             backgroundColor: ds.gray[100],
             borderRadius: ds.radius.lg,
-            p: '10px',
+            p: ds.space.mul(0, 5),
             border: `1px solid ${ds.gray[200]}`,
           }}
         >
@@ -651,7 +673,7 @@ const RecommendationSummary = ({ recData, category, ruleName }: { recData: any; 
 // ─── Summary helpers ───
 
 const SummaryRow = ({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) => (
-  <Box sx={{ display: 'flex', justifyContent: 'space-between', py: '3px' }}>
+  <Box sx={{ display: 'flex', justifyContent: 'space-between', py: ds.space[1] }}>
     <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500] }}>{label}</Typography>
     <Typography
       sx={{
@@ -688,25 +710,7 @@ const InstanceBadge = ({ label, value, variant }: { label: string; value: string
   </Box>
 );
 
-// ─── Right-sizing container data extraction ───
-
-const extractContainerData = (data: any): { containerName: string; cpu: any; memory: any }[] => {
-  if (!data) return [];
-  if (data.notifications && Array.isArray(data.notifications)) {
-    const cpu = data.notifications.find((n: any) => n.resource === 'cpu');
-    const mem = data.notifications.find((n: any) => n.resource === 'memory');
-    return [{ containerName: 'default', cpu, memory: mem }];
-  }
-  const containers: { containerName: string; cpu: any; memory: any }[] = [];
-  for (const [key, value] of Object.entries(data)) {
-    if (Array.isArray(value) && value.length > 0 && value[0]?.resource) {
-      const cpu = value.find((v: any) => v.resource === 'cpu');
-      const mem = value.find((v: any) => v.resource === 'memory');
-      containers.push({ containerName: key, cpu, memory: mem });
-    }
-  }
-  return containers;
-};
+// Right-sizing container parsing is shared with the interpretation adapter.
 
 // Memory values from the K8s collector are always in bytes
 const formatMemValue = (val: number | null | undefined): string => {
@@ -728,12 +732,12 @@ const ResourceChangeCell = ({ current, recommended, isMem }: { current: number |
   const pct = current != null && recommended != null && Math.abs(current) > 1e-10 ? Math.round(((current - recommended) / current) * 100) : null;
 
   return (
-    <Box sx={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'nowrap' }}>
+    <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space.mul(0, 3), flexWrap: 'nowrap' }}>
       <Typography sx={{ fontSize: ds.text.small, color: ds.gray[700], whiteSpace: 'nowrap' }}>{fmt(current)}</Typography>
       {isChanged ? (
-        <ArrowForwardIcon sx={{ fontSize: '14px', color: ds.green[600], flexShrink: 0 }} />
+        <ArrowForwardIcon sx={{ fontSize: ds.text.bodyLg, color: ds.green[600], flexShrink: 0 }} />
       ) : (
-        <DragHandleIcon sx={{ fontSize: '14px', color: ds.gray[500], flexShrink: 0 }} />
+        <DragHandleIcon sx={{ fontSize: ds.text.bodyLg, color: ds.gray[500], flexShrink: 0 }} />
       )}
       <Typography
         sx={{
@@ -914,7 +918,7 @@ function getSecurityInsight(ruleName: string, recData: any): string {
 
 function getRecommendationInsight(category: string, ruleName: string, recData: any, rec: any): string {
   const savings = rec.estimated_savings || 0;
-  const savingsText = savings > 0 ? ` Estimated savings: ~$${savings.toFixed(0)}/month.` : '';
+  const savingsText = Math.round(savings) >= 1 ? ` Estimated savings: ~$${savings.toFixed(0)}/month.` : '';
 
   if (category === 'RightSizing') return getRightSizingInsight(ruleName, recData, savingsText);
   if (category === 'Configuration')

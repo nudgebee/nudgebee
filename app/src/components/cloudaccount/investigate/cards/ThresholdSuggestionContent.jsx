@@ -2,7 +2,7 @@ import PropTypes from 'prop-types';
 import { Box, Typography } from '@mui/material';
 import { Chip } from '@ui/Chip';
 import { Divider } from '@ui/Divider';
-import { ds } from '@utils/colors';
+import { ds, resolveColor } from '@utils/colors';
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, PointElement, Title, Tooltip, Legend } from 'chart.js';
 import { Bar } from 'react-chartjs-2';
 
@@ -80,6 +80,7 @@ const ThresholdSuggestionContent = ({ data }) => {
   const currentThreshold = alert?.current_threshold;
   const suggestedThreshold = suggestion.suggested_threshold;
 
+  const blueHex = resolveColor(ds.blue[500]);
   const chartData = {
     labels: percentiles.map((p) => p.label),
     datasets: [
@@ -87,8 +88,8 @@ const ThresholdSuggestionContent = ({ data }) => {
         type: 'bar',
         label: 'Metric Value',
         data: percentiles.map((p) => p.value),
-        backgroundColor: 'rgba(37, 99, 235, 0.6)',
-        borderColor: 'rgba(37, 99, 235, 1)',
+        backgroundColor: `${blueHex}99`,
+        borderColor: blueHex,
         borderWidth: 1,
         borderRadius: 4,
         barPercentage: 0.5,
@@ -100,7 +101,7 @@ const ThresholdSuggestionContent = ({ data }) => {
               type: 'line',
               label: `Current Threshold (${operatorLabel} ${formatValue(currentThreshold)})`,
               data: percentiles.map(() => currentThreshold),
-              borderColor: '#DC2626',
+              borderColor: resolveColor(ds.red[500]),
               borderWidth: 2,
               borderDash: [6, 4],
               pointRadius: 0,
@@ -115,7 +116,7 @@ const ThresholdSuggestionContent = ({ data }) => {
               type: 'line',
               label: `Suggested Threshold (${operatorLabel} ${formatValue(suggestedThreshold)})`,
               data: percentiles.map(() => suggestedThreshold),
-              borderColor: '#16A34A',
+              borderColor: resolveColor(ds.green[500]),
               borderWidth: 2,
               borderDash: [6, 4],
               pointRadius: 0,
@@ -138,7 +139,7 @@ const ThresholdSuggestionContent = ({ data }) => {
       },
       y: {
         beginAtZero: true,
-        grid: { color: 'rgba(0,0,0,0.06)' },
+        grid: { color: resolveColor(ds.gray.alpha[100]) },
         ticks: {
           callback: (val) => formatValue(val),
           font: { size: 11 },
@@ -222,7 +223,7 @@ const ThresholdSuggestionContent = ({ data }) => {
 
       {/* Chart */}
       {percentiles.length > 0 && (
-        <Box sx={{ position: 'relative', width: '100%', height: 240, mb: ds.space[4] }}>
+        <Box sx={{ position: 'relative', width: '100%', height: ds.space.mul(0, 120), mb: ds.space[4] }}>
           <Bar data={chartData} options={chartOptions} />
         </Box>
       )}

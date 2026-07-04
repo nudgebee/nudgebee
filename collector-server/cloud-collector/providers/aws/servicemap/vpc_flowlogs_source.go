@@ -675,10 +675,11 @@ func (v *VPCFlowLogsSource) Name() string {
 	return "vpc-flow-logs"
 }
 
-// IsAvailable checks if VPC Flow Logs are available for querying
+// IsAvailable always reports VPC Flow Logs as available. Flow-log enablement is
+// per-VPC/ENI rather than account-wide, so there is no single cheap account-level
+// check; GetRelationships handles the absence of flow-log data gracefully (an
+// account with no flow logs simply yields no relationships).
 func (v *VPCFlowLogsSource) IsAvailable(ctx context.Context, cfg aws.Config, account providers.Account) bool {
-	// TODO: Check if VPC Flow Logs are enabled
-	// For now, always return true and handle errors gracefully in GetRelationships
 	return true
 }
 

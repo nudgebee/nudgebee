@@ -59,30 +59,43 @@ func SendRecommendationNudgeDigest(ctx *security.RequestContext) error {
 			accountNameMap[acc.Id] = acc.AccountName
 		}
 
-		// Query top recommendations by finops_score
+		// Query top recommendations by finops_score. Each rule family is capped
+		// at 3 rows so one high-scoring cohort can't fill the whole digest; the
+		// per-kind *_misconfigurations rules collapse into a single family for
+		// the cap. Savings/created_at/id tie-breakers keep selection
+		// deterministic across runs.
 		var recs []digestRecommendation
 		err = dbms.Db.Select(&recs, `
-			SELECT r.id, r.rule_name,
-				COALESCE(r.account_object_id, r.id::varchar) AS resource_name,
-				COALESCE(r.finops_score, 0) AS finops_score,
-				COALESCE(r.finops_band, 'Low') AS finops_band,
-				r.estimated_savings,
-				COALESCE(r.severity, 'Medium') AS severity,
-				r.category,
-				r.cloud_account_id::varchar AS cloud_account_id,
-				COALESCE(ca.account_name, r.cloud_account_id::varchar) AS account_name
-			FROM recommendation r
-			LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
-			WHERE r.tenant_id = $1
-				AND r.status = 'Open'
-				AND r.finops_band IN ('Act Now', 'Critical', 'High')
-				AND (
-					r.last_nudged_at IS NULL
-					OR (r.finops_band = 'Act Now' AND r.last_nudged_at < now() - interval '24 hours')
-					OR (r.finops_band = 'Critical' AND r.last_nudged_at < now() - interval '7 days')
-					OR (r.finops_band = 'High' AND r.last_nudged_at < now() - interval '30 days')
-				)
-			ORDER BY r.finops_score DESC NULLS LAST
+			SELECT id, rule_name, resource_name, finops_score, finops_band,
+				estimated_savings, severity, category, cloud_account_id, account_name
+			FROM (
+				SELECT r.id, r.rule_name,
+					COALESCE(r.account_object_id, r.id::varchar) AS resource_name,
+					COALESCE(r.finops_score, 0) AS finops_score,
+					COALESCE(r.finops_band, 'Low') AS finops_band,
+					r.estimated_savings,
+					COALESCE(r.severity, 'Medium') AS severity,
+					r.category,
+					r.cloud_account_id::varchar AS cloud_account_id,
+					COALESCE(ca.account_name, r.cloud_account_id::varchar) AS account_name,
+					ROW_NUMBER() OVER (
+						PARTITION BY regexp_replace(r.rule_name, '^.+_misconfigurations$', 'misconfigurations')
+						ORDER BY r.finops_score DESC NULLS LAST, r.estimated_savings DESC NULLS LAST, r.created_at DESC, r.id
+					) AS rule_rank
+				FROM recommendation r
+				LEFT JOIN cloud_accounts ca ON ca.id = r.cloud_account_id
+				WHERE r.tenant_id = $1
+					AND r.status = 'Open'
+					AND r.finops_band IN ('Act Now', 'Critical', 'High')
+					AND (
+						r.last_nudged_at IS NULL
+						OR (r.finops_band = 'Act Now' AND r.last_nudged_at < now() - interval '24 hours')
+						OR (r.finops_band = 'Critical' AND r.last_nudged_at < now() - interval '7 days')
+						OR (r.finops_band = 'High' AND r.last_nudged_at < now() - interval '30 days')
+					)
+			) ranked
+			WHERE rule_rank <= 3
+			ORDER BY finops_score DESC, estimated_savings DESC NULLS LAST, id
 			LIMIT 20`, t.Id)
 		if err != nil {
 			ctx.GetLogger().Error("recommendation digest: error querying recommendations", "error", err, "tenant", t.Id)

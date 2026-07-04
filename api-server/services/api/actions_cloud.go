@@ -41,6 +41,8 @@ func handleCloudAction(actionPayload *ActionRequest, c *gin.Context, tracer *tra
 		handleDatabasePerformance(actionPayload, c, ctx)
 	case "trigger_cloud_account_sync", "accounts_sync":
 		handleTriggerCloudSync(actionPayload, c, ctx)
+	case "cloud_sync_service":
+		handleSyncCloudService(actionPayload, c, ctx)
 	case "cloud_apply_command":
 		handleCloudApplyCommand(actionPayload, c, ctx)
 	case "cloud_execute_command":
@@ -253,6 +255,50 @@ func handleTriggerCloudSync(actionPayload *ActionRequest, c *gin.Context, ctx *s
 	}
 
 	resp, err := cloud.TriggerCloudAccountSync(ctx, accountId)
+	if err != nil {
+		c.JSON(500, []common.Error{
+			{
+				Message: err.Error(),
+			},
+		})
+		return
+	}
+
+	c.JSON(200, resp)
+}
+
+// handleSyncCloudService re-collects the resource inventory for a single cloud service
+func handleSyncCloudService(actionPayload *ActionRequest, c *gin.Context, ctx *security.RequestContext) {
+	accountId, ok := actionPayload.Input["account_id"].(string)
+	if !ok || accountId == "" {
+		c.JSON(400, []common.Error{
+			{
+				Message: "account_id is required",
+			},
+		})
+		return
+	}
+
+	serviceName, ok := actionPayload.Input["service_name"].(string)
+	if !ok || serviceName == "" {
+		c.JSON(400, []common.Error{
+			{
+				Message: "service_name is required",
+			},
+		})
+		return
+	}
+
+	var regions []string
+	if rawRegions, ok := actionPayload.Input["regions"].([]interface{}); ok {
+		for _, r := range rawRegions {
+			if region, ok := r.(string); ok && region != "" {
+				regions = append(regions, region)
+			}
+		}
+	}
+
+	resp, err := cloud.SyncCloudService(ctx, accountId, serviceName, regions)
 	if err != nil {
 		c.JSON(500, []common.Error{
 			{

@@ -10,7 +10,7 @@ import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
 import RecommendationJobDetails from '@components/k8s/common/RecommendationJobDetails';
 import { action } from 'src/utils/actionStyles';
 import { getLast7Days } from '@lib/datetime';
-import type { ICustomTable2Row } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/Instances';
 import OptimizeUtilization from './OptimizeUnutilized';
 import { MENU_ITEMS, CustomText } from './common';
 
@@ -70,7 +70,7 @@ const CloudAccountOptimize = (props: { accountId: string | undefined; heading: s
       .then((res: any) => {
         setLoading(false);
         const ec2ResourceData = res.data?.data?.cloud_resourses?.map((item: any) => {
-          let data: ICustomTable2Row[] = [];
+          let data: ICustomTableRow[] = [];
           data.push({
             component: <CustomText text1={item.name} />,
             drilldownQuery: {

@@ -154,6 +154,7 @@ func getDatadogEvent(sc *security.RequestContext, apiKey, appKey, site, eventId 
 	if err != nil {
 		return nil, event.EventEvidence{}, fmt.Errorf("failed to make request to datadog events api: %w", err)
 	}
+	defer func() { _ = body.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(body.Body)
 	if err != nil {
@@ -348,6 +349,7 @@ func getDatadogTraces(sc *security.RequestContext, apiKey, appKey, site string, 
 	if err != nil {
 		return nil, event.EventEvidence{}, fmt.Errorf("failed to make request to datadog traces api: %w", err)
 	}
+	defer func() { _ = body.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(body.Body)
 	if err != nil {
@@ -414,6 +416,7 @@ func getDatadogMetrics(sc *security.RequestContext, apiKey, appKey, site string,
 	if err != nil {
 		return OutputMetricQuery{}, event.EventEvidence{}, fmt.Errorf("datadog_webhook.getDatadogMetrics failed to make request to datadog metrics api for query %q: %w", logsQueryParams.MetricsQuery, err)
 	}
+	defer func() { _ = body.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(body.Body)
 	if err != nil {
@@ -537,6 +540,7 @@ func getDatadogErrorTrackingIssueDetails(sc *security.RequestContext, apiKey, ap
 		}
 
 		bodyBytes, err := io.ReadAll(body.Body)
+		_ = body.Body.Close()
 		if err != nil {
 			sc.GetLogger().Error("failed to read datadog api response body", "error", err, "api_type", s.apiType)
 			continue

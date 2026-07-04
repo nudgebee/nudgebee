@@ -4,6 +4,7 @@ import PropTypes from 'prop-types';
 import { formatDurationInTrace } from 'src/utils/common';
 import { ds } from '@utils/colors';
 import { Chip } from '@ui/Chip';
+import Tooltip from '@ui/Tooltip';
 import { MessageTokenUsage } from './TokenUsageDisplay';
 
 const formatDuration = (createdAt, updatedAt) => {
@@ -83,6 +84,87 @@ const countItem = (key, tone, count, onClick) => {
   };
 };
 
+// Per-message egressfilter signal — a single chip summarising the events
+// the outbound filter emitted on this turn. One message can produce multiple
+// FilterEvents (the planner may make several LLM calls), so we surface a
+// count and pick the strongest mode for tone:
+//   - any "enforce" hit → 'critical' (the call was blocked)
+//   - else any "audit" hit → 'warning' (call went through but secrets detected)
+//   - else nothing rendered
+// Tones must come from the design system's ChipTone union (see Chip.tsx) —
+// passing an unrecognised tone crashes the resolveColors call.
+//
+// Chip label says WHAT was caught ("secret blocked" / "secret detected"),
+// not just "flagged" — a reader shouldn't have to hover to know whether the
+// call was refused or merely noted. The tooltip then lists the rule ids that
+// fired and the audit ids so support can correlate against backend logs.
+const egressfilterItem = (events) => {
+  if (!Array.isArray(events) || events.length === 0) {
+    return null;
+  }
+  const hasEnforce = events.some((e) => e?.mode === 'enforce');
+  const hasAudit = events.some((e) => e?.mode === 'audit');
+  if (!hasEnforce && !hasAudit) {
+    return null;
+  }
+
+  const tone = hasEnforce ? 'critical' : 'warning';
+  const verb = hasEnforce ? 'blocked' : 'detected';
+
+  // hit_count may be missing on a malformed event row; min 1 so the chip
+  // never renders "0 secret blocked".
+  const totalHits = Math.max(
+    1,
+    events.reduce((n, e) => n + (Number(e?.hit_count) || 0), 0)
+  );
+  const noun = totalHits === 1 ? 'secret' : 'secrets';
+  const label = `${noun} ${verb}`;
+
+  // Distinct rule ids across all events on this message, for the tooltip.
+  // Deduped because the same rule firing on multiple LLM calls would
+  // otherwise repeat in the list.
+  const ruleSet = new Set();
+  events.forEach((e) => {
+    if (Array.isArray(e?.rule_ids)) {
+      e.rule_ids.forEach((r) => r && ruleSet.add(r));
+    }
+  });
+  const ruleList = Array.from(ruleSet).join(', ');
+
+  const auditIds = events
+    .map((e) => e?.audit_id)
+    .filter(Boolean)
+    .join(', ');
+
+  // Build the tooltip with structured periods so each fact reads as its own
+  // sentence: what fired, the cross-call scope (only when relevant), audit
+  // ids for support correlation.
+  const tooltipParts = [];
+  if (ruleList) {
+    tooltipParts.push(`${hasEnforce ? 'Blocked' : 'Detected'}: ${ruleList}`);
+  }
+  if (events.length > 1) {
+    tooltipParts.push(`${totalHits} hit${totalHits === 1 ? '' : 's'} across ${events.length} calls`);
+  }
+  if (auditIds) {
+    tooltipParts.push(`Audit: ${auditIds}`);
+  }
+  const tooltip = tooltipParts.join('. ') || label;
+
+  return {
+    key: 'egressfilter',
+    node: (
+      <Tooltip title={tooltip} placement='top'>
+        <Box component='span' sx={{ display: 'inline-flex', alignItems: 'center' }}>
+          <Chip variant='count' tone={tone} count={totalHits} aria-label={tooltip} size='xs'>
+            {label}
+          </Chip>
+        </Box>
+      </Tooltip>
+    ),
+  };
+};
+
 const buildItems = (props) => {
   const items = [];
   // Token-usage widget always renders for response messages — the widget itself shows a
@@ -98,6 +180,10 @@ const buildItems = (props) => {
   }
   if (props.memoryCount > 0 && props.onOpenMemories) {
     items.push(countItem('memories', 'savings', props.memoryCount, props.onOpenMemories));
+  }
+  const filterItem = egressfilterItem(props.egressfilterEvents);
+  if (filterItem) {
+    items.push(filterItem);
   }
   if (props.duration) {
     // `boundary: true` swaps the trailing separator from `·` to `|` — visually distinguishes
@@ -137,6 +223,7 @@ const ResponseMetaRail = ({
   messageTokenData,
   onTokenUsageHover,
   isFetchingTokenData,
+  egressfilterEvents,
 }) => {
   const duration = formatDuration(createdAt, updatedAt);
   const absoluteTime = formatAbsoluteTime(updatedAt || createdAt);
@@ -151,6 +238,7 @@ const ResponseMetaRail = ({
     messageTokenData,
     onTokenUsageHover,
     isFetchingTokenData,
+    egressfilterEvents,
     duration,
     absoluteTime,
   });
@@ -195,6 +283,16 @@ ResponseMetaRail.propTypes = {
   messageTokenData: PropTypes.any,
   onTokenUsageHover: PropTypes.func,
   isFetchingTokenData: PropTypes.bool,
+  // Parsed `metadata.egressfilter` array from the message — one entry per
+  // outbound LLM call that produced hits. Null/empty/undefined renders no chip.
+  egressfilterEvents: PropTypes.arrayOf(
+    PropTypes.shape({
+      audit_id: PropTypes.string,
+      mode: PropTypes.string,
+      hit_count: PropTypes.number,
+      rule_ids: PropTypes.arrayOf(PropTypes.string),
+    })
+  ),
 };
 
 export default ResponseMetaRail;

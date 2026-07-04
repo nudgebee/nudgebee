@@ -1,12 +1,12 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Box } from '@mui/material';
-import { Modal } from '@shared/modal';
-import { Text } from '@shared';
-import WidgetCard from '@shared/WidgetCard';
-import CustomTabs from '@shared/CustomTabs';
+import { Modal } from '@ui/Modal';
+import Text from '@shared/format/Text';
+import WidgetCard from '@ui/WidgetCard';
+import Tabs from '@shared/navigation/Tabs';
 import apiWorkflow from '@api1/workflow';
 import { useRouter } from 'next/router';
-import { colors } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 import SafeIcon from '@shared/icons/SafeIcon';
 import {
   workflowMessagingIcon,
@@ -60,16 +60,56 @@ const TEMPLATE_CATEGORIES = [
 
 // Category badge config: label, text color, border color, background
 const CATEGORY_BADGE_CONFIG: { [key: string]: { label: string; color: string; borderColor: string; bg: string } } = {
-  'incident-management': { label: 'Incident Management', color: 'var(--ds-red-500)', borderColor: '#ef444453', bg: 'rgba(239, 68, 68, 0.08)' },
-  kubernetes: { label: 'Kubernetes', color: 'var(--ds-blue-500)', borderColor: '#326ce553', bg: 'rgba(50, 108, 229, 0.08)' },
-  monitoring: { label: 'Monitoring', color: 'var(--ds-amber-400)', borderColor: '#f59e0b53', bg: 'rgba(245, 158, 11, 0.08)' },
-  deployment: { label: 'Deployment', color: 'var(--ds-teal-500)', borderColor: '#10b98153', bg: 'rgba(16, 185, 129, 0.08)' },
-  security: { label: 'Security', color: 'var(--ds-purple-400)', borderColor: '#8b5cf653', bg: 'rgba(139, 92, 246, 0.08)' },
-  'cloud-cost': { label: 'Cloud Cost', color: 'var(--ds-pink-400)', borderColor: '#ec489953', bg: 'rgba(236, 72, 153, 0.08)' },
-  automation: { label: 'Automation', color: 'var(--ds-purple-400)', borderColor: '#6366f153', bg: 'rgba(99, 102, 241, 0.08)' },
+  'incident-management': {
+    label: 'Incident Management',
+    color: 'var(--ds-red-500)',
+    borderColor: 'color-mix(in srgb, var(--ds-red-500) 33%, transparent)',
+    bg: 'color-mix(in srgb, var(--ds-red-500) 8%, transparent)',
+  },
+  kubernetes: {
+    label: 'Kubernetes',
+    color: 'var(--ds-blue-500)',
+    borderColor: 'color-mix(in srgb, var(--ds-blue-500) 33%, transparent)',
+    bg: 'color-mix(in srgb, var(--ds-blue-500) 8%, transparent)',
+  },
+  monitoring: {
+    label: 'Monitoring',
+    color: 'var(--ds-amber-400)',
+    borderColor: 'color-mix(in srgb, var(--ds-amber-400) 33%, transparent)',
+    bg: 'color-mix(in srgb, var(--ds-amber-400) 8%, transparent)',
+  },
+  deployment: {
+    label: 'Deployment',
+    color: 'var(--ds-teal-500)',
+    borderColor: 'color-mix(in srgb, var(--ds-teal-500) 33%, transparent)',
+    bg: 'color-mix(in srgb, var(--ds-teal-500) 8%, transparent)',
+  },
+  security: {
+    label: 'Security',
+    color: 'var(--ds-purple-400)',
+    borderColor: 'color-mix(in srgb, var(--ds-purple-400) 33%, transparent)',
+    bg: 'color-mix(in srgb, var(--ds-purple-400) 8%, transparent)',
+  },
+  'cloud-cost': {
+    label: 'Cloud Cost',
+    color: 'var(--ds-pink-400)',
+    borderColor: 'color-mix(in srgb, var(--ds-pink-400) 33%, transparent)',
+    bg: 'color-mix(in srgb, var(--ds-pink-400) 8%, transparent)',
+  },
+  automation: {
+    label: 'Automation',
+    color: 'var(--ds-purple-400)',
+    borderColor: 'color-mix(in srgb, var(--ds-purple-400) 33%, transparent)',
+    bg: 'color-mix(in srgb, var(--ds-purple-400) 8%, transparent)',
+  },
 };
 
-const DEFAULT_BADGE = { label: 'General', color: 'var(--ds-gray-600)', borderColor: '#6b728053', bg: 'rgba(107, 114, 128, 0.08)' };
+const DEFAULT_BADGE = {
+  label: 'General',
+  color: 'var(--ds-gray-600)',
+  borderColor: 'color-mix(in srgb, var(--ds-gray-600) 33%, transparent)',
+  bg: 'color-mix(in srgb, var(--ds-gray-600) 8%, transparent)',
+};
 
 // Function to get appropriate icon based on task type (matches ActionNode.tsx)
 const getTaskIcon = (taskType: string) => {
@@ -127,26 +167,26 @@ const getTaskIcon = (taskType: string) => {
 
 // Pastel gradient backgrounds for node icon circles
 const NODE_ICON_GRADIENTS = [
-  'linear-gradient(135deg, #FFEEF8 0%, #FFD6EC 100%)', // Pastel pink
-  'linear-gradient(135deg, #F3E8FF 0%, #E9D5FF 100%)', // Pastel lavender
-  'linear-gradient(135deg, #E0F2FE 0%, #BAE6FD 100%)', // Pastel sky blue
-  'linear-gradient(135deg, #FEF3E2 0%, #FDEDD3 100%)', // Pastel peach
+  'linear-gradient(135deg, var(--ds-pink-100) 0%, var(--ds-pink-200) 100%)',
+  'linear-gradient(135deg, var(--ds-purple-100) 0%, var(--ds-purple-200) 100%)',
+  'linear-gradient(135deg, var(--ds-blue-100) 0%, var(--ds-blue-300) 100%)',
+  'linear-gradient(135deg, var(--ds-amber-100) 0%, var(--ds-amber-200) 100%)',
 ];
 
 // Node icon component with circle background
 const NodeIconCircle = ({ icon, index }: { icon: any; index: number }) => (
   <Box
     sx={{
-      width: '28px',
-      height: '28px',
+      width: ds.space.mul(1, 7),
+      height: ds.space.mul(1, 7),
       borderRadius: '50%',
       background: NODE_ICON_GRADIENTS[index % NODE_ICON_GRADIENTS.length],
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      marginLeft: index > 0 ? '-8px' : 0,
+      marginLeft: index > 0 ? ds.space.mul(2, -1) : 0,
       zIndex: 10 - index,
-      border: '2px solid white',
+      border: `${ds.space[0]} solid ${ds.background[100]}`,
     }}
   >
     <SafeIcon src={icon} alt='node-icon' width={18} height={18} />
@@ -170,11 +210,16 @@ const TemplateCard = ({ workflow, onUseTemplate }: { workflow: any; onUseTemplat
         display: 'flex',
         flexDirection: 'column',
         justifyContent: 'space-between',
-        boxShadow: '0px 4px 18px 10px rgba(229, 229, 229, 0.18), 0px 2px 8px 0px rgb(233, 233, 233)',
-        minHeight: '100px',
+        boxShadow: `0 ${ds.space[1]} ${ds.space.mul(0, 9)} ${ds.space.mul(0, 5)} rgba(229, 229, 229, 0.18), 0 ${ds.space[0]} ${
+          ds.space[2]
+        } 0 rgb(233, 233, 233)`,
+        minHeight: ds.space.mul(0, 50),
         '&:hover': {
-          transform: 'translateY(-2px)',
-          boxShadow: '0px 4px 20px -1px rgba(229, 229, 229, 1.2 ), 0px 2px 20px 0px rgba(78, 78, 78, 0.24)',
+          transform: `translateY(${ds.space.mul(0, -1)})`,
+          boxShadow: `0 ${ds.space[1]} ${ds.space.mul(0, 10)} -1px rgba(229, 229, 229, 1.2), 0 ${ds.space[0]} ${ds.space.mul(
+            0,
+            10
+          )} 0 rgba(78, 78, 78, 0.24)`,
           border: '1px solid var(--ds-purple-300)',
         },
         transition: 'all 0.2s ease',
@@ -217,7 +262,7 @@ const TemplateCard = ({ workflow, onUseTemplate }: { workflow: any; onUseTemplat
             fontSize: 'var(--ds-text-body)',
             fontWeight: 'var(--ds-font-weight-semibold)',
             fontFamily: 'Poppins',
-            color: colors.text.secondary,
+            color: ds.gray[700],
             mt: 'var(--ds-space-3)',
             display: '-webkit-box',
             WebkitLineClamp: 2,
@@ -234,7 +279,7 @@ const TemplateCard = ({ workflow, onUseTemplate }: { workflow: any; onUseTemplat
           sx={{
             fontSize: 'var(--ds-text-small)',
             fontWeight: 'var(--ds-font-weight-regular)',
-            color: colors.text.secondaryDark,
+            color: ds.gray[400],
             mt: 'var(--ds-space-2)',
             display: '-webkit-box',
             WebkitLineClamp: 2,
@@ -276,7 +321,7 @@ const TemplateCard = ({ workflow, onUseTemplate }: { workflow: any; onUseTemplat
               sx={{
                 fontSize: 'var(--ds-text-caption)',
                 fontWeight: 'var(--ds-font-weight-regular)',
-                color: colors.text.secondaryDark,
+                color: ds.gray[400],
               }}
             />
           )}
@@ -358,7 +403,7 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
       title='Automate using pre-built templates'
       sx={{
         '& .MuiDialog-paper': {
-          maxWidth: '1100px',
+          maxWidth: ds.space.mul(0, 550),
           maxHeight: '95vh',
         },
       }}
@@ -368,15 +413,14 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
           padding: '0px',
           display: 'flex',
           flexDirection: 'column',
-          maxHeight: 'calc(85vh - 80px)',
+          maxHeight: `calc(85vh - ${ds.space.mul(2, 10)})`,
         }}
       >
         {/* Category Tabs */}
         <Box sx={{ mb: 'var(--ds-space-2)' }}>
-          <CustomTabs
+          <Tabs
             value={selectedCategory}
             onChange={setSelectedCategory}
-            variant='primary'
             showBorderBottom={true}
             behavior='filter'
             options={{
@@ -398,7 +442,7 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
                 display: 'flex',
                 justifyContent: 'center',
                 alignItems: 'center',
-                height: '300px',
+                height: ds.space.mul(3, 25),
               }}
             >
               <Loader style={{ height: '100%', width: '100%' }} />
@@ -409,10 +453,10 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
                 display: 'flex',
                 justifyContent: 'center',
                 alignItems: 'center',
-                height: '300px',
+                height: ds.space.mul(3, 25),
               }}
             >
-              <Text value='No templates available' sx={{ color: colors.text.secondaryDark }} />
+              <Text value='No templates available' sx={{ color: ds.gray[400] }} />
             </Box>
           ) : (
             <Box
@@ -443,9 +487,9 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
         <Box
           sx={{
             display: 'flex',
-            justifyContent: 'center',
+            justifyContent: 'flex-end',
             gap: 'var(--ds-space-3)',
-            py: 'var(--ds-space-4)',
+            paddingTop: 'var(--ds-space-4)',
             borderTop: '1px solid var(--ds-gray-200)',
           }}
         >
@@ -454,7 +498,7 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
               Create with AI
             </Button>
           )}
-          <Button tone='ghost' size='md' onClick={handleCreateFromScratch}>
+          <Button tone='secondary' size='md' onClick={handleCreateFromScratch}>
             Create from scratch
           </Button>
         </Box>

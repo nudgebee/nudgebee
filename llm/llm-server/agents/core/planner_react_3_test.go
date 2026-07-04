@@ -128,16 +128,20 @@ func renderReactCritiquer(t *testing.T, questionType string, hypothesisModeEnabl
 func TestReAct3CritiquerHypothesisGateFence(t *testing.T) {
 	const gateHeader = "Hypothesis Completion Gate"
 	const toolFailureCarveOut = "Tool failures are \"unchecked\", not refutation"
+	const staleMarkerCarveOut = "Stale-marker carve-out"
 
 	t.Run("hypothesis mode on: completion gate present", func(t *testing.T) {
 		out := renderReactCritiquer(t, "investigation", true)
 		assert.Contains(t, out, gateHeader)
 		assert.Contains(t, out, toolFailureCarveOut)
+		assert.Contains(t, out, staleMarkerCarveOut,
+			"(a) must carry the stale-marker carve-out so an evidence-backed answer is accepted even if an [OPEN] hypothesis was never flipped")
 	})
 
 	t.Run("investigation without hypothesis mode: no completion gate", func(t *testing.T) {
 		out := renderReactCritiquer(t, "investigation", false)
 		assert.NotContains(t, out, gateHeader)
+		assert.NotContains(t, out, staleMarkerCarveOut)
 	})
 
 	t.Run("plain query: no completion gate", func(t *testing.T) {

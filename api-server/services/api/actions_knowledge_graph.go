@@ -381,10 +381,18 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 			return
 		}
 
-		// Extract filter_type and filter_key
+		// Extract filter_type and filter_key, plus the currently-applied filters
+		// used to scope the returned values (same shape as kg_get_filter_options).
 		var input struct {
-			FilterType string `json:"filter_type"`
-			FilterKey  string `json:"filter_key"`
+			FilterType    string            `json:"filter_type"`
+			FilterKey     string            `json:"filter_key"`
+			AccountIDs    []string          `json:"account_ids,omitempty"`
+			NodeTypes     []string          `json:"node_types,omitempty"`
+			Labels        map[string]string `json:"labels,omitempty"`
+			LabelKeys     []string          `json:"label_keys,omitempty"`
+			Attributes    map[string]string `json:"attributes,omitempty"`
+			AttributeKeys []string          `json:"attribute_keys,omitempty"`
+			NodeIDs       []string          `json:"node_ids,omitempty"`
 		}
 
 		err = common.UnmarshalMapToStruct(requestData, &input)
@@ -397,6 +405,24 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 		if input.FilterType == "" || input.FilterKey == "" {
 			c.JSON(400, common.ErrorActionBadRequest("filter_type and filter_key are required"))
 			return
+		}
+
+		var graphFilters *core.GraphFilters
+		if len(input.AccountIDs) > 0 || len(input.NodeTypes) > 0 ||
+			len(input.Labels) > 0 || len(input.LabelKeys) > 0 ||
+			len(input.Attributes) > 0 || len(input.AttributeKeys) > 0 {
+			nodeTypes := make([]core.NodeType, len(input.NodeTypes))
+			for i, nt := range input.NodeTypes {
+				nodeTypes[i] = core.NodeType(nt)
+			}
+			graphFilters = &core.GraphFilters{
+				AccountIDs:    input.AccountIDs,
+				NodeTypes:     nodeTypes,
+				Labels:        input.Labels,
+				LabelKeys:     input.LabelKeys,
+				Attributes:    input.Attributes,
+				AttributeKeys: input.AttributeKeys,
+			}
 		}
 
 		// Get database manager
@@ -412,7 +438,7 @@ func handleKnowledgeGraphAction(actionPayload *ActionRequest, c *gin.Context, tr
 		kgService := core.NewService(ctx, ctx.GetLogger(), dbManager)
 
 		// Get filter values
-		filterValues, err := kgService.GetFilterValues(tenantID, input.FilterType, input.FilterKey)
+		filterValues, err := kgService.GetFilterValues(tenantID, input.FilterType, input.FilterKey, graphFilters, input.NodeIDs)
 		if err != nil {
 			common.MetricsApiRequestsFailedTotal(c.Request.Context(), "knowledge_graph", "get_filter_values_error")
 			ctx.GetLogger().Error("failed to get filter values",

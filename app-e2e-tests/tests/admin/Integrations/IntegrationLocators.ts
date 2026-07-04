@@ -117,7 +117,6 @@ export class IntegrationLocators extends CommonLocators {
   readonly rabbitmqAccountIdDropdown: Locator;
   readonly rabbitmqAccountIdOption: (name: string) => Locator;
   readonly rabbitmqAccountIdCloseBtn: Locator;
-  readonly rabbitmqHostInput!: Locator;
   readonly rabbitmqConfigNameInput!: Locator;
   readonly rabbitmqK8sSecretInput!: Locator;
   readonly rabbitmqTestConnectionBtn!: Locator;
@@ -129,9 +128,10 @@ export class IntegrationLocators extends CommonLocators {
   readonly argocdAccountIdDropdown!: Locator;
   readonly argocdAccountIdOption: (name: string) => Locator;
   readonly argocdAccountIdCloseBtn!: Locator;
-  readonly argocdServerInput!: Locator;
   readonly argocdConfigNameInput!: Locator;
   readonly argocdK8sSecretInput!: Locator;
+  readonly argocdInsecureDropdown!: Locator;
+  readonly argocdInsecureOption: (value: string) => Locator;
   readonly argocdTestConnectionBtn!: Locator;
   readonly argocdTestConnectionSuccessToast!: Locator;
   readonly argocdSuccessToast!: Locator;
@@ -156,7 +156,6 @@ export class IntegrationLocators extends CommonLocators {
   readonly sshAccountIdDropdown: Locator;
   readonly sshAccountIdOption: (name: string) => Locator;
   readonly sshAccountIdCloseBtn!: Locator;
-  readonly sshHostInput!: Locator;
   readonly sshConfigNameInput!: Locator;
   readonly sshK8sSecretInput!: Locator;
   readonly sshTestConnectionBtn: Locator;
@@ -478,7 +477,6 @@ export class IntegrationLocators extends CommonLocators {
     this.rabbitmqAccountIdCloseBtn = page.getByRole("button", {
       name: "Close",
     });
-    this.rabbitmqHostInput = page.getByRole("textbox", { name: "Host" });
     this.rabbitmqConfigNameInput = page.getByRole("textbox", {
       name: "Integration Config Name",
     });
@@ -514,10 +512,9 @@ export class IntegrationLocators extends CommonLocators {
     this.argocdK8sSecretInput = page.getByRole("textbox", {
       name: "K8s Secret",
     });
-    this.argocdServerInput = page.getByRole("textbox", {
-      name: "Server",
-      exact: true,
-    });
+    this.argocdInsecureDropdown = page.locator("#auto-complete-insecure");
+    this.argocdInsecureOption = (value: string) =>
+      page.locator('[role="option"]').filter({ hasText: new RegExp(`^${value}$`) });
     this.argocdTestConnectionBtn = page.locator("#test-connection-btn");
     this.argocdTestConnectionSuccessToast = page.getByText(
       "Argocd connection successful",
@@ -568,7 +565,6 @@ export class IntegrationLocators extends CommonLocators {
     this.sshAccountIdCloseBtn = page.getByRole("button", {
       name: "Close",
     });
-    this.sshHostInput = page.locator("#host");
     this.sshConfigNameInput = page.locator("#integration-config-name");
     this.sshK8sSecretInput = page.locator("#k8s-secret");
     this.sshTestConnectionBtn = page.locator("#test-connection-btn");

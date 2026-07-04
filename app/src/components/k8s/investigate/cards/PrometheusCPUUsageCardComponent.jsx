@@ -2,7 +2,7 @@ import { LineChart } from '@shared';
 import { useEffect, useState } from 'react';
 import { plusMinus5TimeRangePrometheusOfDate } from 'src/utils/common';
 import PropTypes from 'prop-types';
-import { colors } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 import apiKubernetes1 from '@api1/kubernetes1';
 
 export const getDataFromProemtheus = async (event) => {
@@ -68,17 +68,17 @@ function PrometheusCPUUsageCardComponent(props) {
       labels={cpuUsageData.labels}
       dataset={[
         {
-          borderColor: colors.text.cpuUsage,
+          borderColor: ds.amber[400],
           data: cpuUsageData?.data?.[0] ?? [],
           label: 'Usage',
         },
         {
-          borderColor: colors.text.cpuRequested,
+          borderColor: ds.blue[500],
           data: cpuUsageData.data?.[1] ?? [],
           label: 'Request',
         },
         {
-          borderColor: colors.text.cpuLimit,
+          borderColor: ds.red[500],
           data: cpuUsageData.data?.[2] ?? [],
           label: 'Limit',
           borderDash: [8, 2],

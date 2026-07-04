@@ -292,6 +292,7 @@ export function Comparison({
         whiteSpace: 'nowrap',
         overflow: 'hidden',
         textOverflow: 'ellipsis',
+        paddingRight: 'var(--ds-space-0)',
         maxWidth: layout === 'inline' ? '100px' : undefined,
         flex: layout === 'inline' ? '0 1 auto' : undefined,
       }}

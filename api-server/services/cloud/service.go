@@ -833,6 +833,72 @@ func TriggerCloudAccountSync(ctx *security.RequestContext, accountId string) (Tr
 	}, nil
 }
 
+// SyncCloudService re-collects the resource inventory for a single cloud service
+// (e.g. AmazonEC2, AmazonRDS) for the given account. Unlike TriggerCloudAccountSync,
+// this calls the collector's store_resources endpoint synchronously, so the
+// resource list, state, tags and resource metrics are refreshed by the time it
+// returns. Cost/usage is intentionally not touched (it stays on its daily cron).
+func SyncCloudService(ctx *security.RequestContext, accountId, serviceName string, regions []string) (CloudServiceSyncResponse, error) {
+	if accountId == "" {
+		return CloudServiceSyncResponse{}, errors.New("account_id is required")
+	}
+	if serviceName == "" {
+		return CloudServiceSyncResponse{}, errors.New("service_name is required")
+	}
+	if ctx.GetSecurityContext().GetTenantId() == "" {
+		return CloudServiceSyncResponse{}, errors.New("tenant is required")
+	}
+
+	headers := map[string]string{
+		config.Config.CloudCollectorServerTokenHeader: config.Config.CloudCollectorServerToken,
+		"x-tenant-id": ctx.GetSecurityContext().GetTenantId(),
+	}
+	if ctx.GetSecurityContext().GetUserId() != "" {
+		headers["x-user-id"] = ctx.GetSecurityContext().GetUserId()
+	}
+
+	body := map[string]any{
+		"account_id":   accountId,
+		"service_name": serviceName,
+	}
+	if len(regions) > 0 {
+		body["regions"] = regions
+	}
+
+	// store_resources runs the collection inline on the collector, so allow a
+	// generous timeout for accounts with many regions/resources.
+	resp, err := common.HttpPost(config.Config.CloudCollectorServerUrl+"/v1/cloud/store_resources",
+		common.HttpWithTimeout(300*time.Second),
+		common.HttpWithJsonBody(body),
+		common.HttpWithHeaders(headers),
+	)
+	if err != nil {
+		return CloudServiceSyncResponse{}, fmt.Errorf("store_resources: %w", err)
+	}
+	if resp.Body != nil {
+		defer func() { _ = resp.Body.Close() }()
+	}
+
+	if resp.StatusCode != 200 {
+		respBody, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return CloudServiceSyncResponse{
+				Success: false,
+				Message: fmt.Sprintf("store_resources returned %d (failed to read body: %v)", resp.StatusCode, readErr),
+			}, nil
+		}
+		return CloudServiceSyncResponse{
+			Success: false,
+			Message: fmt.Sprintf("store_resources returned %d: %s", resp.StatusCode, string(respBody)),
+		}, nil
+	}
+
+	return CloudServiceSyncResponse{
+		Success: true,
+		Message: "Refresh completed.",
+	}, nil
+}
+
 func ApplyCommand(ctx *security.RequestContext, cmdRequest ApplyCommandRequest) (ApplyCommandResponse, error) {
 	if cmdRequest.AccountId == "" {
 		return ApplyCommandResponse{}, errors.New("account_id is required")

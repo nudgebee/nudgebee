@@ -139,9 +139,11 @@ func Persist(ctx *security.RequestContext, account ScanAccount, scannerName stri
 			"finops_band":            "",
 			"finops_score_breakdown": "{}",
 		}
-		// finops_score / finops_band / finops_score_breakdown are populated by the
-		// existing recommendation.UpdateRecommendationFinopsScores batch path —
-		// keeping it out of line here avoids an import cycle with services/recommendation.
+		// finops_score / finops_band / finops_score_breakdown are inserted as zero
+		// values and filled by the 6h score-recompute cron — computing them inline
+		// would create an import cycle with services/recommendation. They are NOT
+		// in the ON CONFLICT update below: overwriting on re-scan wiped real
+		// scores back to zero until the next cron pass.
 		rows = append(rows, row)
 	}
 
@@ -160,10 +162,7 @@ func Persist(ctx *security.RequestContext, account ScanAccount, scannerName stri
 		               updated_at = EXCLUDED.updated_at,
 		               estimated_savings = EXCLUDED.estimated_savings,
 		               severity = EXCLUDED.severity,
-		               recommendation_action = EXCLUDED.recommendation_action,
-		               finops_score = EXCLUDED.finops_score,
-		               finops_band = EXCLUDED.finops_band,
-		               finops_score_breakdown = EXCLUDED.finops_score_breakdown`,
+		               recommendation_action = EXCLUDED.recommendation_action`,
 		rows,
 	)
 	if err != nil {

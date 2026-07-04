@@ -1,16 +1,23 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { Box } from '@mui/material';
 import { useForm } from 'react-hook-form';
 import { useRouter } from 'next/router';
 import PropTypes from 'prop-types';
 import apiUserManagement from '@api1/user';
 import { textValidation, emailValidation } from '@lib/validation';
+import { hasWriteAccess } from '@lib/auth';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
 import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
+import { Chip } from '@ui/Chip';
+import SafeIcon from '@shared/icons/SafeIcon';
 import { colors, ds } from 'src/utils/colors';
 import { toast as snackbar } from '@ui/Toast';
+import slackLogo from '@assets/slack_icon.icon.svg';
+import githubLogo from '@assets/github-icon.icon.svg';
+import pagerdutyLogo from '@assets/auto-pilot/pager-duty.svg';
+import zendutyLogo from '@assets/zenduty.jpeg';
 
 const ROLE_DESCRIPTIONS = {
   tenant_admin: 'Full access to manage users, integrations, and settings.',
@@ -87,6 +94,284 @@ function StatusSegmented({ value, onChange }) {
 StatusSegmented.propTypes = {
   value: PropTypes.string,
   onChange: PropTypes.func,
+};
+
+// Provider display metadata for the Integration Profiles section. Keys match the
+// integration_type values produced by the Identity Sync job.
+const PROVIDER_META = {
+  slack: { label: 'Slack', logo: slackLogo },
+  github: { label: 'GitHub', logo: githubLogo },
+  pagerduty: { label: 'PagerDuty', logo: pagerdutyLogo },
+  zenduty: { label: 'ZenDuty', logo: zendutyLogo },
+};
+const providerLabel = (t) => PROVIDER_META[t]?.label || t;
+const providerLogo = (t) => PROVIDER_META[t]?.logo;
+
+// IntegrationProfiles shows every external account (Slack/GitHub/PagerDuty/ZenDuty)
+// linked to this user — auto-matched by email or mapped manually — and lets a
+// tenant admin map an as-yet-unmatched account or unmap an existing one.
+function IntegrationProfiles({ userId, onNotify }) {
+  const [accounts, setAccounts] = useState([]);
+  const [unmapped, setUnmapped] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [selectedType, setSelectedType] = useState('');
+  const [selectedAccount, setSelectedAccount] = useState('');
+  const [selectedToMap, setSelectedToMap] = useState('');
+  const [busy, setBusy] = useState(false);
+  const canEdit = hasWriteAccess();
+
+  const load = useCallback(async () => {
+    if (!userId) return;
+    setLoading(true);
+    const [mapped, free] = await Promise.all([
+      apiUserManagement.listIntegrationAccounts(userId),
+      canEdit ? apiUserManagement.listUnmappedAccounts(null) : Promise.resolve([]),
+    ]);
+    setAccounts(Array.isArray(mapped) ? mapped : []);
+    setUnmapped(Array.isArray(free) ? free : []);
+    setLoading(false);
+  }, [userId, canEdit]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const handleMap = async () => {
+    if (!selectedToMap) return;
+    setBusy(true);
+    try {
+      const res = await apiUserManagement.createAccountMapping({ mappingId: selectedToMap, userId });
+      if (res?.id) {
+        onNotify?.({ message: 'Integration account mapped', severity: 'success' });
+        setSelectedToMap('');
+        setSelectedAccount('');
+        setSelectedType('');
+        await load();
+      } else {
+        onNotify?.({ message: 'Failed to map account', severity: 'error' });
+      }
+    } catch (err) {
+      onNotify?.({ message: err?.message || 'Failed to map account', severity: 'error' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleUnmap = async (mappingId) => {
+    setBusy(true);
+    try {
+      const res = await apiUserManagement.deleteAccountMapping({ mappingId });
+      if (res?.id) {
+        onNotify?.({ message: 'Mapping removed', severity: 'success' });
+        await load();
+      } else {
+        onNotify?.({ message: 'Failed to remove mapping', severity: 'error' });
+      }
+    } catch (err) {
+      onNotify?.({ message: err?.message || 'Failed to remove mapping', severity: 'error' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Tenant-scoped integrations (messaging/ticketing) have no account_id — show them
+  // under an "All accounts" group rather than a blank header.
+  const accountLabel = (a) => (a.account_id ? a.account_name || a.account_id : 'All accounts');
+  const hasUnmapped = unmapped.length > 0;
+
+  // Cascading filters keep the picker uncluttered: choose integration type, then
+  // account, then the specific profile. Each step is scoped to the prior choice.
+  const typeOptions = Array.from(new Set(unmapped.map((a) => a.integration_type))).map((t) => ({ value: t, label: providerLabel(t) }));
+
+  const accountsForType = unmapped.filter((a) => a.integration_type === selectedType);
+  const accountOptions = Array.from(
+    new Map(accountsForType.map((a) => [a.account_id || '', { value: a.account_id || '', label: accountLabel(a) }])).values()
+  );
+  // With a single account (the common tenant-scoped case) there's nothing to choose.
+  const showAccountStep = selectedType !== '' && accountOptions.length > 1;
+  const effectiveAccount = showAccountStep ? selectedAccount : accountOptions[0]?.value ?? '';
+
+  const profileOptions = accountsForType
+    .filter((a) => (a.account_id || '') === effectiveAccount)
+    .map((a) => ({
+      value: a.id,
+      label: `${a.display_name || a.username || a.external_user_id}${a.email ? ` (${a.email})` : ''}`,
+    }));
+
+  // Group mapped profiles by cloud account — an identity scoped to multiple
+  // accounts shows once under each account.
+  const accountGroups = [];
+  const groupIndex = new Map();
+  for (const a of accounts) {
+    const key = a.account_id || 'unknown';
+    if (!groupIndex.has(key)) {
+      const group = { key, name: accountLabel(a), items: [] };
+      groupIndex.set(key, group);
+      accountGroups.push(group);
+    }
+    groupIndex.get(key).items.push(a);
+  }
+
+  return (
+    <Box data-testid='user-modal-integration-profiles'>
+      <Box component='label' sx={{ display: 'block', font: "500 12px/1.2 'Roboto'", color: ds.gray[700], mb: 'var(--ds-space-2)' }}>
+        Integration profiles
+      </Box>
+
+      {loading ? (
+        <Box sx={{ font: "400 12px/1.4 'Roboto'", color: ds.gray[400] }}>Loading…</Box>
+      ) : accounts.length === 0 ? (
+        <Box sx={{ font: "400 12px/1.4 'Roboto'", color: ds.gray[400] }}>
+          No linked integration accounts yet. The Identity Sync maps accounts to users by email automatically.
+        </Box>
+      ) : (
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)' }}>
+          {accountGroups.map((group) => (
+            <Box key={group.key} sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
+              <Box
+                sx={{
+                  font: "600 11px/1.2 'Roboto'",
+                  letterSpacing: '0.04em',
+                  textTransform: 'uppercase',
+                  color: ds.gray[400],
+                }}
+              >
+                {group.name}
+              </Box>
+              {group.items.map((a) => (
+                <Box
+                  key={a.id}
+                  data-testid={`integration-account-${a.integration_type}`}
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 'var(--ds-space-2)',
+                    padding: 'var(--ds-space-2) var(--ds-space-3)',
+                    border: `1px solid ${ds.background[300]}`,
+                    borderRadius: 'var(--ds-radius-md)',
+                  }}
+                >
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)', width: 96, flexShrink: 0 }}>
+                    {providerLogo(a.integration_type) && (
+                      <Box
+                        sx={{
+                          width: 18,
+                          height: 18,
+                          flexShrink: 0,
+                          display: 'flex',
+                          '& img, & svg': { width: 18, height: 18, objectFit: 'contain' },
+                        }}
+                      >
+                        <SafeIcon src={providerLogo(a.integration_type)} alt={providerLabel(a.integration_type)} width={18} height={18} />
+                      </Box>
+                    )}
+                    <Box sx={{ font: "500 12px/1.2 'Roboto'", color: ds.gray[700] }}>{providerLabel(a.integration_type)}</Box>
+                  </Box>
+                  <Box sx={{ minWidth: 0, flex: 1 }}>
+                    <Box
+                      sx={{ font: "500 12px/1.3 'Roboto'", color: ds.gray[700], overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                    >
+                      {a.display_name || a.username || a.external_user_id}
+                    </Box>
+                    {(a.email || a.username) && (
+                      <Box
+                        sx={{
+                          font: "400 11px/1.3 'Roboto'",
+                          color: ds.gray[400],
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {a.email || a.username}
+                      </Box>
+                    )}
+                  </Box>
+                  <Chip variant='tag' size='2xs' hue={a.mapped_via === 'manual' ? 'blue' : 'green'}>
+                    {a.mapped_via === 'manual' ? 'Manual' : 'Auto'}
+                  </Chip>
+                  {canEdit && (
+                    <Button id={`integration-account-unmap-${a.id}`} tone='secondary' size='sm' disabled={busy} onClick={() => handleUnmap(a.id)}>
+                      Unmap
+                    </Button>
+                  )}
+                </Box>
+              ))}
+            </Box>
+          ))}
+        </Box>
+      )}
+
+      {canEdit && !loading && (
+        <Box sx={{ mt: 'var(--ds-space-3)' }}>
+          <Box component='label' sx={{ display: 'block', font: "500 12px/1.2 'Roboto'", color: ds.gray[700], mb: 'var(--ds-space-2)' }}>
+            Map an integration account
+          </Box>
+
+          {!hasUnmapped ? (
+            <Box sx={{ font: "400 11px/1.4 'Roboto'", color: ds.gray[400] }}>
+              No unmatched accounts to map. Accounts the Identity Sync discovered but couldn&apos;t match by email appear here; the sync runs every 30
+              minutes across your Slack, GitHub, PagerDuty and ZenDuty integrations.
+            </Box>
+          ) : (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-2)' }}>
+              {/* Step 1: integration type, + account when the type spans several */}
+              <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', '& > *': { flex: 1, minWidth: 0 } }}>
+                <Select
+                  id='user-modal-map-type'
+                  placeholder='Integration type'
+                  value={selectedType}
+                  options={typeOptions}
+                  onChange={(next) => {
+                    setSelectedType(next);
+                    setSelectedAccount('');
+                    setSelectedToMap('');
+                  }}
+                  minWidth='100%'
+                />
+                {showAccountStep && (
+                  <Select
+                    id='user-modal-map-account-filter'
+                    placeholder='Account'
+                    value={selectedAccount}
+                    options={accountOptions}
+                    onChange={(next) => {
+                      setSelectedAccount(next);
+                      setSelectedToMap('');
+                    }}
+                    minWidth='100%'
+                  />
+                )}
+              </Box>
+
+              {/* Step 2: the specific unmatched profile, scoped to the choices above */}
+              <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 'var(--ds-space-2)' }}>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Select
+                    id='user-modal-map-account'
+                    placeholder={selectedType ? 'Select an account' : 'Pick an integration type first'}
+                    value={selectedToMap}
+                    options={profileOptions}
+                    onChange={(next) => setSelectedToMap(next)}
+                    disabled={!selectedType || (showAccountStep && !selectedAccount)}
+                    minWidth='100%'
+                  />
+                </Box>
+                <Button id='user-modal-map-account-button' size='md' disabled={!selectedToMap || busy} loading={busy} onClick={handleMap}>
+                  Map
+                </Button>
+              </Box>
+            </Box>
+          )}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
+IntegrationProfiles.propTypes = {
+  userId: PropTypes.string,
+  onNotify: PropTypes.func,
 };
 
 function UserModal({ open, handleClose, handleSnackBarData, mode, userData }) {
@@ -526,6 +811,9 @@ function UserModal({ open, handleClose, handleSnackBarData, mode, userData }) {
             help={isAddMode ? 'Groups control which clusters and dashboards this user can access.' : undefined}
           />
         </Box>
+
+        {/* Integration profiles (edit only — requires a persisted user id) */}
+        {isEditMode && userData?.id && <IntegrationProfiles userId={userData.id} onNotify={handleSnackBarData} />}
       </Box>
     </Modal>
   );

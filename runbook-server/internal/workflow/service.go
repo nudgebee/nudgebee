@@ -1063,6 +1063,7 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 
 	ensureUpdatedByUser(wf)
 	setTriggeredByUser(wf, ctx.GetSecurityContext().GetUserId())
+	wf.RestrictToAccountConfigs = !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead)
 
 	we, err := s.temporalClient.ExecuteWorkflow(context.Background(), options, s.workflowExecutor.ExecuteWorkflowInternal, wf, inputs)
 	if err != nil {
@@ -1342,6 +1343,7 @@ func (s *Service) RetriggerWorkflowExecution(ctx *security.RequestContext, accou
 
 	ensureUpdatedByUser(&wfCopy)
 	setTriggeredByUser(&wfCopy, ctx.GetSecurityContext().GetUserId())
+	wfCopy.RestrictToAccountConfigs = !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead)
 
 	we, err := s.temporalClient.ExecuteWorkflow(ctx.GetContext(), options, s.workflowExecutor.ExecuteWorkflowInternal, &wfCopy, mergedInputs)
 	if err != nil {
@@ -1399,14 +1401,15 @@ func (s *Service) DryRunWorkflow(ctx *security.RequestContext, accountId string,
 	}
 
 	wf := model.Workflow{
-		ID:         runWorkflowID,
-		TenantID:   ctx.GetSecurityContext().GetTenantId(),
-		AccountID:  accountId,
-		Definition: request.Definition,
-		DryRun:     true,
-		Name:       dryRunWorkflowName(request.Name),
-		CreatedBy:  ctx.GetSecurityContext().GetUserId(),
-		UpdatedBy:  ctx.GetSecurityContext().GetUserId(),
+		ID:                       runWorkflowID,
+		TenantID:                 ctx.GetSecurityContext().GetTenantId(),
+		AccountID:                accountId,
+		Definition:               request.Definition,
+		DryRun:                   true,
+		Name:                     dryRunWorkflowName(request.Name),
+		CreatedBy:                ctx.GetSecurityContext().GetUserId(),
+		UpdatedBy:                ctx.GetSecurityContext().GetUserId(),
+		RestrictToAccountConfigs: !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead),
 	}
 
 	run, err := s.temporalClient.ExecuteWorkflow(context.Background(), options, s.workflowExecutor.ExecuteWorkflowInternal, &wf, request.Inputs)
@@ -1519,14 +1522,15 @@ func (s *Service) DryRunWorkflowAsync(ctx *security.RequestContext, accountId st
 	}
 
 	wf := model.Workflow{
-		ID:         runWorkflowID,
-		TenantID:   ctx.GetSecurityContext().GetTenantId(),
-		AccountID:  accountId,
-		Definition: request.Definition,
-		DryRun:     true,
-		Name:       dryRunWorkflowName(request.Name),
-		CreatedBy:  ctx.GetSecurityContext().GetUserId(),
-		UpdatedBy:  ctx.GetSecurityContext().GetUserId(),
+		ID:                       runWorkflowID,
+		TenantID:                 ctx.GetSecurityContext().GetTenantId(),
+		AccountID:                accountId,
+		Definition:               request.Definition,
+		DryRun:                   true,
+		Name:                     dryRunWorkflowName(request.Name),
+		CreatedBy:                ctx.GetSecurityContext().GetUserId(),
+		UpdatedBy:                ctx.GetSecurityContext().GetUserId(),
+		RestrictToAccountConfigs: !ctx.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead),
 	}
 
 	run, err := s.temporalClient.ExecuteWorkflow(context.Background(), options, s.workflowExecutor.ExecuteWorkflowInternal, &wf, request.Inputs)

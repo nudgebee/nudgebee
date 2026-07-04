@@ -36,6 +36,41 @@ func TestValidation(t *testing.T) {
 	})
 }
 
+// TestIntegrationDeleteAuditValidation guards #31417: integration delete audits
+// were silently dropped because EventState was nil, which fails the "required"
+// validation in validateAuditRequest (CreateAudit rejects the request before the
+// row is ever inserted). Mirrors the audit built by core.DeleteIntegrationConfig.
+func TestIntegrationDeleteAuditValidation(t *testing.T) {
+	newDeleteAudit := func(eventState any) Audit {
+		return Audit{
+			UserId:         uuid.NewString(),
+			TenantId:       uuid.NewString(),
+			EventTime:      time.Now().UTC(),
+			EventCategory:  EventCategoryIntegration,
+			EventTarget:    "integration",
+			EventType:      EventTypeIntegrationDelete,
+			EventState:     eventState,
+			EventPrevState: "my-integration",
+			EventActor:     EventActorUiService,
+			EventAction:    EventActionDelete,
+			EventStatus:    EventStatusSuccess,
+			EventAttr:      map[string]any{},
+		}
+	}
+
+	t.Run("nil EventState is rejected (reproduces the bug)", func(t *testing.T) {
+		req := AuditRequest{Audits: []Audit{newDeleteAudit(nil)}}
+		assert.Error(t, validateAuditRequest(&req))
+	})
+
+	t.Run("populated EventState passes (the fix)", func(t *testing.T) {
+		req := AuditRequest{Audits: []Audit{newDeleteAudit(
+			map[string]any{"type": "jira", "name": "my-integration", "source": "user"},
+		)}}
+		assert.NoError(t, validateAuditRequest(&req))
+	})
+}
+
 func TestPublishAuditEvent(t *testing.T) {
 	audit := Audit{
 		UserId:        uuid.NewString(),

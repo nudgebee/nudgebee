@@ -13,7 +13,7 @@ import { getBrandingAsset } from '@hooks/useTenantBranding';
 import RecommendationJobDetails from '@components/k8s/common/RecommendationJobDetails';
 import { action } from 'src/utils/actionStyles';
 import { ds } from '@utils/colors';
-import type { ICustomTable2Row } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/Instances';
 import { CustomText } from './common';
 import OptimizeSummary from './ec2/Summary';
 import { useMetricCloudFilter } from '@hooks/useCloudFilters';
@@ -77,7 +77,7 @@ const CloudAccountMetrics = (props: { accountId: string | undefined; heading: st
       .then((res: any) => {
         setLoading(false);
         const ec2ResourceData = res.data?.data?.cloud_resourses?.map((item: any) => {
-          const data: ICustomTable2Row[] = [];
+          const data: ICustomTableRow[] = [];
           const MENU_ITEMS = [
             {
               icon: TicketsIcon,

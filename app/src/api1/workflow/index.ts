@@ -138,6 +138,7 @@ query ListWorkflows($accountId:String!, $status:String, $last_execution_status:S
         display_name
       }
       id
+      created_from_session_id
       last_execution_status
       name
       status
@@ -1125,7 +1126,8 @@ const apiWorkflow = {
     config?: { llm_provider?: string; llm_model_name?: string; workflow_id?: string },
     async?: boolean,
     messageId?: string,
-    agentId?: string
+    agentId?: string,
+    source?: string
   ) {
     if (accountId === 'demo') return { data: null, errors: null };
     try {
@@ -1141,6 +1143,15 @@ const apiWorkflow = {
           agent_id: agentId,
         },
       };
+
+      // Conversation source — when set to a non-"WorkflowBuilder" source (e.g.
+      // "Automation"), the llm-server auto-saves the generated workflow server-side
+      // and returns a summary instead of raw JSON. The standalone "Create Automation"
+      // flow uses this so the workflow is persisted (shows in the Automations list)
+      // rather than handed back as an ephemeral draft.
+      if (source) {
+        variables.request.source = source;
+      }
 
       // Add config if provided
       if (config) {

@@ -20,6 +20,19 @@
     num_retries: 0
     timeout_seconds: 300
   comment: Clean up stale agent tasks every 15 minutes
+- name: Identity Sync
+  webhook: '{{SERVICE_API_SERVER_URL}}/rpc-cron'
+  schedule: '*/30 * * * *'
+  payload: {}
+  headers:
+    - name: X-ACTION-TOKEN
+      value_from_env: ACTION_API_SERVER_TOKEN
+  retry_conf:
+    num_retries: 0
+    retry_interval_seconds: 10
+    timeout_seconds: 600
+    tolerance_seconds: 3600
+  comment: Map internal users to external integration accounts (Slack/GitHub/PagerDuty/ZenDuty) by email every 30 minutes
 - name: NB Data Cleanup
   webhook: '{{SERVICE_API_SERVER_URL}}/rpc-cron'
   schedule: '0 11 * * *'

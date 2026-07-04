@@ -222,6 +222,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
   const [apiEndpoint, setApiEndpoint] = useState('');
   const [apiVersion, setApiVersion] = useState('');
   const [region, setRegion] = useState('');
+  const [contextSize, setContextSize] = useState('');
   const [accessKey, setAccessKey] = useState('');
   const [secretKey, setSecretKey] = useState('');
   const [apiType, setApiType] = useState('');
@@ -425,6 +426,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       setApiEndpoint(cfg.llm_provider_api_endpoint || '');
       setApiVersion(cfg.llm_provider_api_version || '');
       setRegion(cfg.llm_provider_region || '');
+      setContextSize(cfg.llm_model_context_size || '');
       setAccessKey('');
       setSecretKey('');
       setApiType(cfg.llm_provider_api_type || '');
@@ -577,6 +579,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
       setApiEndpoint('');
       setApiVersion('');
       setRegion('');
+      setContextSize('');
       setAccessKey('');
       setSecretKey('');
       setApiType('');
@@ -642,6 +645,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     setApiEndpoint('');
     setApiVersion('');
     setRegion('');
+    setContextSize('');
     setAccessKey('');
     setSecretKey('');
     setApiType('');
@@ -1002,6 +1006,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
     pushPlain(showsApiEndpoint, 'llm_provider_api_endpoint', apiEndpoint);
     pushPlain(showsApiVersion, 'llm_provider_api_version', apiVersion);
     pushPlain(showsRegion, 'llm_provider_region', region);
+    pushPlain(true, 'llm_model_context_size', contextSize);
     pushSecret(showsBedrockKeys, 'llm_provider_access_key', accessKey);
     pushSecret(showsBedrockKeys, 'llm_provider_secret_key', secretKey);
     pushPlain(showsApiType, 'llm_provider_api_type', apiType);
@@ -1226,7 +1231,7 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
           {/* Provider-specific credentials — visibility driven by selected provider */}
           {showsApiKey && (
             <SecretInput
-              label='API Key *'
+              label='API Key'
               value={apiKey}
               onChange={setConnField(setApiKey)}
               onBlur={trimOnBlur(apiKey, setApiKey)}
@@ -1267,6 +1272,16 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
               required
             />
           )}
+          <Input
+            label='Model context window (tokens)'
+            size='sm'
+            type='number'
+            inputMode='numeric'
+            value={contextSize}
+            onChange={setContextSize}
+            onBlur={trimOnBlur(contextSize, setContextSize)}
+            help='Total input + output window. Optional — defaults to 32,000 if blank. For self-hosted / HuggingFace models, set this to your deployment’s max-model-len.'
+          />
           {showsBedrockKeys && (
             <>
               <SecretInput
@@ -1491,6 +1506,8 @@ const AddLLMConfigModal = ({ open, onClose, editData, onSaved, accountId }) => {
                   >
                     {collapsed ? (
                       <Box
+                        role='button'
+                        tabIndex={0}
                         sx={{
                           display: 'flex',
                           alignItems: 'center',

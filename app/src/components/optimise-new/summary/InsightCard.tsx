@@ -10,7 +10,7 @@ import Tooltip from '@ui/Tooltip';
 import { Label } from '@ui/Label';
 import { Chip } from '@ui/Chip';
 import { Button } from '@ui/Button';
-import { formatAge, type InsightItem } from './insights';
+import { formatAge, secondaryLine, type InsightItem } from './insights';
 
 // Wraps a child in Tooltip only when the child's text is visually truncated.
 const TruncatedTooltip = ({
@@ -129,6 +129,7 @@ interface InsightCardProps {
 }
 
 const InsightCard = ({ item, onClickResource, onAskNubi }: InsightCardProps) => {
+  const secondary = secondaryLine(item);
   return (
     <CustomBorderCard
       borderLeftColor='transparent'
@@ -147,21 +148,38 @@ const InsightCard = ({ item, onClickResource, onAskNubi }: InsightCardProps) => 
     >
       {/* ── Left: summary + metadata ── */}
       <Box sx={{ flex: 1, minWidth: 0 }}>
-        <TruncatedTooltip title={item.summary} placement='top'>
-          <Typography
-            sx={{
-              fontSize: ds.text.small,
-              fontWeight: ds.weight.regular,
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              paddingBottom: ds.space[1],
-              color: ds.gray[700],
-            }}
-          >
-            {item.summary}
-          </Typography>
-        </TruncatedTooltip>
+        <Box sx={{ minWidth: 0, pb: ds.space[1] }}>
+          <TruncatedTooltip title={item.title || item.summary} placement='top'>
+            <Typography
+              sx={{
+                fontSize: ds.text.small,
+                fontWeight: ds.weight.medium,
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                color: ds.gray[700],
+              }}
+            >
+              {item.title || item.summary}
+            </Typography>
+          </TruncatedTooltip>
+          {secondary && (
+            <TruncatedTooltip title={item.summary || secondary} placement='top'>
+              <Typography
+                sx={{
+                  fontSize: ds.text.caption,
+                  fontWeight: ds.weight.regular,
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  color: ds.gray[500],
+                }}
+              >
+                {secondary}
+              </Typography>
+            </TruncatedTooltip>
+          )}
+        </Box>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[1], mt: 'var(--ds-space-1)', flexWrap: 'wrap' }}>
           {item.severity && <SeverityBadge severity={item.severity} />}
           {item.resourceId && (

@@ -17,7 +17,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/jmoiron/sqlx"
 	"github.com/lib/pq"
 	"github.com/samber/lo"
 	"golang.org/x/sync/errgroup"
@@ -798,16 +797,17 @@ func ProcessHourlyEventsBatchNotification(ctx *security.RequestContext) error {
 		WHERE delivery_mode = 'batch' AND is_active = true AND is_suppressed = false
 	`
 	rulesRows, err := dbManager.Query(rulesQuery)
+	defer func() {
+		if rulesRows != nil {
+			if cerr := rulesRows.Close(); cerr != nil {
+				ctx.GetLogger().Error("error closing rows", "error", cerr)
+			}
+		}
+	}()
 	if err != nil {
 		ctx.GetLogger().Error("error querying notification rules", "error", err)
 		return err
 	}
-	defer func(rulesRows *sqlx.Rows) {
-		err := rulesRows.Close()
-		if err != nil {
-			ctx.GetLogger().Error("error closing rows", "error", err)
-		}
-	}(rulesRows)
 
 	type AccountRule struct {
 		TenantID string
@@ -850,15 +850,16 @@ func ProcessHourlyEventsBatchNotification(ctx *security.RequestContext) error {
 		  AND priority NOT IN ('DEBUG', 'INFO')
 	`
 	eventRows, err := dbManager.Query(eventQuery, pq.Array(allowedAccountIDs), start, end)
+	defer func() {
+		if eventRows != nil {
+			if cerr := eventRows.Close(); cerr != nil {
+				ctx.GetLogger().Error("error closing event rows", "error", cerr)
+			}
+		}
+	}()
 	if err != nil {
 		return err
 	}
-	defer func(eventRows *sqlx.Rows) {
-		err := eventRows.Close()
-		if err != nil {
-			ctx.GetLogger().Error("error closing event rows", "error", err)
-		}
-	}(eventRows)
 
 	tenantCriticalMap := make(map[string]map[string]*BatchedFinding)
 	tenantAgg := make(map[string]map[string]map[string]int)

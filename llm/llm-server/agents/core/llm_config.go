@@ -34,6 +34,7 @@ import (
 	"nudgebee/llm/llms/huggingface"
 	"nudgebee/llm/llms/sagemaker"
 	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 	"os"
 	"strconv"
 	"strings"
@@ -182,10 +183,78 @@ func GetLLMModel(provider string, modelName string, agentName string, appendAgen
 	}
 
 	if err == nil && model != nil {
+		// Master switch gates the entire egressfilter subsystem. When off, we skip
+		// the WrapModel call entirely — no decorator, no metric emission, no
+		// payload serialization, zero overhead. Per-detector flags below only
+		// matter once the master is on. See docs/pii-secret-scrubbing.md.
+		if config.Config.LlmServerEgressFilterEnabled {
+			model = egressfilter.WrapModel(
+				model,
+				provider,
+				modelName,
+				config.Config.LlmServerEgressFilterSecretsEnabled,
+				egressfilter.ParseMode(config.Config.LlmServerEgressFilterSecretsMode),
+			)
+		}
 		llmClientCache[cacheKey] = llmCacheEntry{model: model, ts: time.Now()}
 	}
 
 	return model, err
+}
+
+// ForwardedLLMConfig is the resolved, decrypted LLM configuration that
+// llm-server forwards to the stateless code-analysis service per request, so a
+// tenant's own LLM integration (DB-backed, encrypted) is honored instead of the
+// pod's global secret-env fallback. It deliberately carries only what the
+// code-analysis llm.Client consumes.
+type ForwardedLLMConfig struct {
+	Provider    string `json:"provider,omitempty"`
+	Model       string `json:"model,omitempty"`
+	ApiKey      string `json:"api_key,omitempty"`
+	ApiEndpoint string `json:"endpoint,omitempty"`
+	ApiVersion  string `json:"api_version,omitempty"`
+	ApiType     string `json:"api_type,omitempty"`
+	Region      string `json:"region,omitempty"`
+}
+
+// ResolveLLMConfigForForwarding resolves the full, decrypted LLM config for the
+// given account/agent in one call, reusing the canonical resolvers (which apply
+// the DB-beats-ENV precedence and decrypt secrets). It returns nil (no error)
+// when there is nothing usable to forward — provider or API key unresolved — in
+// which case the caller omits the block and the pod falls back to its global
+// LLM_* secret env. The returned ApiKey is plaintext and MUST NOT be logged.
+func ResolveLLMConfigForForwarding(ctx *security.RequestContext, accountId, agentName, conversationId string) (*ForwardedLLMConfig, error) {
+	// Fail-safe: without a tenant/account scope there is nothing tenant-specific
+	// to forward (and we must never run an unscoped tenant lookup). Skip
+	// forwarding so the pod uses its global LLM_* fallback.
+	if accountId == "" {
+		return nil, nil
+	}
+	res, err := ResolveLLMConfig(ctx, accountId, agentName, conversationId)
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return nil, nil
+	}
+	provider := res.Provider
+	if provider == "" {
+		return nil, nil
+	}
+	appendAgentName := agentName != ""
+	apiKey := getLLMApiKey(accountId, provider, agentName, appendAgentName, res)
+	if apiKey == "" {
+		return nil, nil
+	}
+	return &ForwardedLLMConfig{
+		Provider:    provider,
+		Model:       res.Model,
+		ApiKey:      apiKey,
+		ApiEndpoint: getLLMApiEndpoint(accountId, provider, agentName, appendAgentName, res),
+		ApiVersion:  getLLMApiVersion(accountId, provider, agentName, appendAgentName, res),
+		ApiType:     getLLMApiType(accountId, provider, agentName, appendAgentName, res),
+		Region:      getLLMRegion(accountId, provider, agentName, appendAgentName, res),
+	}, nil
 }
 
 func InvalidateLLMClientCache(accountId string) {
@@ -292,7 +361,17 @@ func GetConversationOverride(conversationId string) (string, string, Conversatio
 		return entry.provider, entry.model, entry.tierOverrides, nil
 	}
 
-	conv, err := GetConversationDao().GetConversation(conversationId)
+	// Fail closed if the conversation DAO is unavailable (e.g. DB not reachable):
+	// return an explicit error rather than silently reporting "no override" (which
+	// could mask a conversation-level model/tier restriction) — and never deref a
+	// nil DAO, which previously panicked the whole request. Callers already treat
+	// a non-nil error as "skip the override and fall through".
+	dao := GetConversationDao()
+	if dao == nil {
+		return "", "", ConversationTierOverrides{}, fmt.Errorf("conversation DAO is unavailable")
+	}
+
+	conv, err := dao.GetConversation(conversationId)
 	if err != nil {
 		return "", "", ConversationTierOverrides{}, err
 	}
@@ -1309,8 +1388,9 @@ type LLMConfigResolution struct {
 	Source       string            `json:"source"`        // Which layer is active
 	IsOverridden bool              `json:"is_overridden"` // True if conversation has explicit override
 	AgentName    string            `json:"agent_name,omitempty"`
-	Tier         ModelTier         `json:"tier,omitempty"` // Category the call opted into (empty when no tier was selected)
-	Hierarchy    []LLMConfigLayer  `json:"hierarchy"`      // Full resolution chain
+	Tier         ModelTier         `json:"tier,omitempty"`        // Category the call opted into (empty when no tier was selected)
+	MaxContext   int               `json:"max_context,omitempty"` // User-configured context window (tokens); 0 = not set → fall back to the model map
+	Hierarchy    []LLMConfigLayer  `json:"hierarchy"`             // Full resolution chain
 	dbConfig     map[string]string // unexported cache for optimized downstream lookups
 }
 
@@ -1351,6 +1431,66 @@ func (c *LLMResolutionCache) Set(key string, res *LLMConfigResolution) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.cache[key] = res
+}
+
+// contextSizeConfigKey is the base config key for the user-set context window.
+// Per-tier uses llm_tier_context_size_<tier>; per-agent uses
+// llm_model_context_size_<agent> — mirroring the model-name key convention.
+const contextSizeConfigKey = "llm_model_context_size"
+
+// resolveContextSizeFromConfig resolves the user-configured context window
+// (tokens) through the SAME layer order as provider/model in ResolveLLMConfig:
+// ENV (global → tier → agent) then DB (global → tier → agent), with later layers
+// overwriting earlier ones (DB block above ENV, most-specific wins). Returns 0
+// when nothing is configured at any layer.
+func resolveContextSizeFromConfig(dbConfig map[string]string, agentName string, tier ModelTier) int {
+	result := 0
+	agentKey := contextSizeConfigKey + "_" + agentName
+	tierKey := "llm_tier_context_size_" + string(tier)
+
+	applyEnv := func(key string) {
+		if v := config.Config.GetInt(key, 0); v > 0 {
+			result = v
+		}
+	}
+	applyDB := func(key string) {
+		if dbConfig == nil {
+			return
+		}
+		if v, ok := dbConfig[key]; ok && v != "" {
+			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+				result = n
+			}
+		}
+	}
+
+	// ENV block (least specific first)
+	applyEnv(contextSizeConfigKey)
+	if tier != "" {
+		applyEnv(tierKey)
+	}
+	if agentName != "" {
+		applyEnv(agentKey)
+	}
+	// DB block sits above ENV (a tenant DB value beats a stale operator ENV value)
+	applyDB(contextSizeConfigKey)
+	if tier != "" {
+		applyDB(tierKey)
+	}
+	if agentName != "" {
+		applyDB(agentKey)
+	}
+	return result
+}
+
+// ResolveModelMaxContext returns the usable context window (tokens) for a model:
+// the user-configured value (UI/config) if set, else the hardcoded model map /
+// 32k default via GetLlmMaxTokenLength.
+func ResolveModelMaxContext(resolution *LLMConfigResolution, model string) int {
+	if resolution != nil && resolution.MaxContext > 0 {
+		return resolution.MaxContext
+	}
+	return GetLlmMaxTokenLength(model)
 }
 
 // ResolveLLMConfig returns the complete LLM configuration resolution showing all layers
@@ -1411,6 +1551,10 @@ func ResolveLLMConfig(ctx *security.RequestContext, accountId, agentName string,
 		slog.Debug("Fetched LLM integration config from DB", "duration", time.Since(dbFetchStart).String(), "accountId", accountId)
 	}
 	dbConfig = result.dbConfig
+
+	// User-configured context window (agent → tier → global). 0 if unset →
+	// callers fall back to the hardcoded model map.
+	result.MaxContext = resolveContextSizeFromConfig(dbConfig, agentName, tier)
 
 	appendAgentName := agentName != ""
 

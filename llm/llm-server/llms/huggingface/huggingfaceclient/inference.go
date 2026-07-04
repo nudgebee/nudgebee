@@ -15,6 +15,33 @@ import (
 
 var ErrUnexpectedStatusCode = errors.New("unexpected status code")
 
+// StatusCodeError carries the HTTP status from a non-200 inference response so
+// callers can distinguish retryable failures (5xx / 429) from terminal client
+// errors (4xx), which must not be retried.
+type StatusCodeError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *StatusCodeError) Error() string {
+	if e.Body != "" {
+		return fmt.Sprintf("%v: %d, body: %s", ErrUnexpectedStatusCode, e.StatusCode, e.Body)
+	}
+	return fmt.Sprintf("%v: %d", ErrUnexpectedStatusCode, e.StatusCode)
+}
+
+func (e *StatusCodeError) Unwrap() error { return ErrUnexpectedStatusCode }
+
+// Retryable reports whether the failure is transient. 5xx server errors, 429
+// Too Many Requests, and 408 Request Timeout are worth retrying; other 4xx
+// client errors are terminal. 408 is retryable per RFC 7231 §6.5.7 — "the
+// client MAY repeat the request without modifications at any later time".
+func (e *StatusCodeError) Retryable() bool {
+	return e.StatusCode >= 500 ||
+		e.StatusCode == http.StatusTooManyRequests ||
+		e.StatusCode == http.StatusRequestTimeout
+}
+
 // InferenceTask is the type of inference task to run.
 type InferenceTask string
 
@@ -98,12 +125,7 @@ func (c *Client) runInference(ctx context.Context, payload *inferencePayload) (i
 			return nil, fmt.Errorf("failed to read response body: %w", err)
 		}
 
-		if len(b) > 0 {
-			err = fmt.Errorf("%w: %d, body: %s", ErrUnexpectedStatusCode, r.StatusCode, string(b))
-		} else {
-			err = fmt.Errorf("%w: %d", ErrUnexpectedStatusCode, r.StatusCode)
-		}
-		return nil, err
+		return nil, &StatusCodeError{StatusCode: r.StatusCode, Body: string(b)}
 	}
 
 	// debug print the http response with httputil:
@@ -195,10 +217,7 @@ func (c *Client) runInferenceOpenAI(ctx context.Context, payload *inferencePaylo
 	}()
 	if r.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(r.Body)
-		if len(b) > 0 {
-			return nil, fmt.Errorf("%w: %d, body: %s", ErrUnexpectedStatusCode, r.StatusCode, string(b))
-		}
-		return nil, fmt.Errorf("%w: %d", ErrUnexpectedStatusCode, r.StatusCode)
+		return nil, &StatusCodeError{StatusCode: r.StatusCode, Body: string(b)}
 	}
 	var resp openAIChatResponse
 	if err := json.NewDecoder(r.Body).Decode(&resp); err != nil {

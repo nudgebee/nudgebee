@@ -11,7 +11,7 @@ import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import SyncIcon from '@mui/icons-material/Sync';
 import DescriptionIcon from '@mui/icons-material/Description';
 import TimelineIcon from '@mui/icons-material/Timeline';
-import LineChart from '@shared/charts/LineCharts';
+import Chart from '@ui/Chart';
 import { formatMemory } from '@lib/formatter';
 import { formatBytes } from 'src/utils/common';
 import { safeParseJSON } from '@components/optimise-new/utils';
@@ -94,8 +94,8 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
   const alternateInstances = rec.alternate_instances || [];
 
   return (
-    <Box sx={{ p: '14px' }}>
-      <SectionTitle title='Cloud Resource Analysis' muiIcon={<CloudIcon sx={{ fontSize: '16px' }} />} />
+    <Box sx={{ p: ds.space.mul(0, 7) }}>
+      <SectionTitle title='Cloud Resource Analysis' muiIcon={<CloudIcon sx={{ fontSize: ds.text.title }} />} />
 
       {/* Instance type comparison */}
       {currentInstance && recommendedInstance && (
@@ -104,7 +104,7 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
             display: 'flex',
             alignItems: 'center',
             gap: ds.space[4],
-            p: '14px',
+            p: ds.space.mul(0, 7),
             backgroundColor: ds.blue[100],
             borderRadius: ds.radius.lg,
             border: `1px solid ${ds.blue[200]}`,
@@ -118,7 +118,7 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
               {currentInstance}
             </Label>
           </Box>
-          <ArrowForwardIcon sx={{ fontSize: '18px', color: ds.blue[700] }} />
+          <ArrowForwardIcon sx={{ fontSize: ds.text.title, color: ds.blue[700] }} />
           <Box sx={{ textAlign: 'center' }}>
             <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], mb: ds.space[0] }}>Recommended</Typography>
             <Label size='sm' tone='success'>
@@ -134,7 +134,7 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
           sx={{
             backgroundColor: ds.gray[100],
             borderRadius: ds.radius.lg,
-            p: '10px',
+            p: ds.space.mul(0, 5),
             border: `1px solid ${ds.gray[200]}`,
             mb: ds.space[3],
           }}
@@ -150,7 +150,7 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
             display: 'flex',
             alignItems: 'center',
             gap: ds.space[4],
-            p: '10px',
+            p: ds.space.mul(0, 5),
             backgroundColor: ds.green[100],
             borderRadius: ds.radius.lg,
             border: `1px solid ${ds.green[200]}`,
@@ -164,7 +164,7 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
               ${Number(currentPrice).toFixed(2)}/hr
             </Typography>
           </Box>
-          <ArrowForwardIcon sx={{ fontSize: '16px', color: ds.green[600] }} />
+          <ArrowForwardIcon sx={{ fontSize: ds.text.title, color: ds.green[600] }} />
           <Box sx={{ textAlign: 'center' }}>
             <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>Recommended</Typography>
             <Typography sx={{ fontSize: ds.text.title, fontWeight: ds.weight.semibold, color: ds.green[600] }}>
@@ -198,7 +198,7 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
       {/* All resource details — show every available data field */}
       {(serviceName || scalarFields.length > 0) && (
         <>
-          <SectionTitle title='Resource Details' muiIcon={<DescriptionIcon sx={{ fontSize: '16px' }} />} />
+          <SectionTitle title='Resource Details' muiIcon={<DescriptionIcon sx={{ fontSize: ds.text.title }} />} />
           <Box
             sx={{
               backgroundColor: ds.gray[100],
@@ -226,7 +226,7 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
         <Box key={key}>
           <SectionTitle
             title={key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
-            muiIcon={<DescriptionIcon sx={{ fontSize: '16px' }} />}
+            muiIcon={<DescriptionIcon sx={{ fontSize: ds.text.title }} />}
           />
           <Box
             sx={{
@@ -249,7 +249,7 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
       {/* CloudWatch metrics from recommendation JSONB — rendered as line charts */}
       {metricObjects.length > 0 && (
         <>
-          <SectionTitle title='Metrics (from recommendation)' muiIcon={<TrendingUpIcon sx={{ fontSize: '16px' }} />} />
+          <SectionTitle title='Metrics (from recommendation)' muiIcon={<TrendingUpIcon sx={{ fontSize: ds.text.title }} />} />
           {metricObjects.map((metric, idx) => {
             const chartLabels = metric.timestamps.map((ts: string) => {
               const d = new Date(ts);
@@ -264,11 +264,11 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
                   mb: ds.space[3],
                   backgroundColor: ds.gray[100],
                   borderRadius: ds.radius.lg,
-                  p: '10px',
+                  p: ds.space.mul(0, 5),
                   border: `1px solid ${ds.gray[200]}`,
                 }}
               >
-                <LineChart
+                <Chart.Line
                   chartTitle={`${metric.name} (${metric.statistics})`}
                   data={[metric.values]}
                   labels={chartLabels}
@@ -299,7 +299,7 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
             sx={{
               backgroundColor: ds.gray[100],
               borderRadius: ds.radius.lg,
-              p: '10px',
+              p: ds.space.mul(0, 5),
               mb: ds.space[3],
               border: `1px solid ${ds.gray[200]}`,
             }}
@@ -311,7 +311,7 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
         )}
       {Object.keys(cloudMetrics).length > 0 && (
         <>
-          <SectionTitle title='Resource Monitoring (7d)' muiIcon={<TimelineIcon sx={{ fontSize: '16px' }} />} />
+          <SectionTitle title='Resource Monitoring (7d)' muiIcon={<TimelineIcon sx={{ fontSize: ds.text.title }} />} />
           {Object.entries(cloudMetrics).map(([metricName, dataPoints], idx) => {
             // Sort by timestamp
             const sorted = [...dataPoints].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
@@ -344,11 +344,11 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
                   mb: ds.space[3],
                   backgroundColor: ds.gray[100],
                   borderRadius: ds.radius.lg,
-                  p: '10px',
+                  p: ds.space.mul(0, 5),
                   border: `1px solid ${ds.gray[200]}`,
                 }}
               >
-                <LineChart
+                <Chart.Line
                   chartTitle={unit ? displayName + ' (' + unit + ')' : displayName}
                   data={[values]}
                   labels={labels}
@@ -366,12 +366,12 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
       {/* Alternate instances */}
       {alternateInstances.length > 0 && (
         <>
-          <SectionTitle title='Alternative Instances' muiIcon={<SyncIcon sx={{ fontSize: '16px' }} />} />
+          <SectionTitle title='Alternative Instances' muiIcon={<SyncIcon sx={{ fontSize: ds.text.title }} />} />
           <Box
             sx={{
               backgroundColor: ds.gray[100],
               borderRadius: ds.radius.lg,
-              p: '10px',
+              p: ds.space.mul(0, 5),
               border: `1px solid ${ds.gray[200]}`,
               maxHeight: '150px',
               overflow: 'auto',
@@ -386,7 +386,7 @@ const CloudRightSizingEvidence = ({ recommendation, ruleName, estimatedSavings, 
                   sx={{
                     display: 'flex',
                     justifyContent: 'space-between',
-                    py: '6px',
+                    py: ds.space.mul(0, 3),
                     borderBottom: idx < alternateInstances.length - 1 ? `1px solid ${ds.gray[200]}` : 'none',
                   }}
                 >
@@ -421,6 +421,15 @@ const KNOWN_FIELDS = new Set([
   'message',
   'service_name',
   'alternate_instances',
+  // Raw CPU series (no timestamps → can't chart); avg/max is surfaced on Details.
+  'cpu',
+  // Internal identifiers — raw UUIDs, not user-facing detail.
+  'cloud_account_id',
+  'account_id',
+  'resource_id',
+  'tenant_id',
+  'cloud_provider',
+  'source',
 ]);
 
 type MetricObj = { name: string; values: number[]; timestamps: string[]; statistics: string };
@@ -508,7 +517,7 @@ const parseRecFields = (rec: any): { metricObjects: MetricObj[]; scalarFields: S
 
 const _MetricSummaryBox = ({ label, value, color }: { label: string; value: string; color: string }) => (
   <Box sx={{ textAlign: 'center', p: ds.space[1], borderRadius: ds.radius.sm, backgroundColor: 'white' }}>
-    <Typography sx={{ fontSize: '9px', color: ds.gray[500] }}>{label}</Typography>
+    <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>{label}</Typography>
     <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold, color, fontFamily: 'monospace' }}>{value}</Typography>
   </Box>
 );

@@ -91,6 +91,12 @@ type Workflow struct {
 	// Identifies the user who triggered this run (manual/retrigger). Empty for
 	// scheduled/webhook/event-rule triggers.
 	TriggeredByUser *WorkflowUser `json:"triggered_by_user,omitempty" yaml:"triggered_by_user,omitempty"`
+	// RestrictToAccountConfigs is set when the triggering user lacks tenant read
+	// access. When true, FetchWorkflowConfigsActivity drops tenant-scoped configs
+	// from the run so a `{{ Configs.<tenant_key> }}` reference cannot resolve.
+	// Default (zero value) preserves existing behavior for scheduled / event-rule
+	// / child-workflow triggers.
+	RestrictToAccountConfigs bool `json:"-" yaml:"-"`
 	// LiveVersionID is the workflow_versions.id pointed at by
 	// workflows.live_version_id. Determines which snapshot Execute runs against;
 	// independent of Status. Null only for legacy rows without any published
@@ -235,6 +241,46 @@ const (
 	WorkflowTriggerOptimization WorkflowTrigger = "optimization"
 )
 
+// LifecyclePhase is the event-lifecycle phase an event trigger subscribes to,
+// declared via the trigger's `on` param. It is a FROZEN WIRE CONTRACT coupled
+// by value with api-server's event/lifecycle package (which stamps the phase
+// onto the event map as `lifecycle_phase`). Only ADD values — never rename, or
+// saved workflow trigger definitions stop matching.
+type LifecyclePhase string
+
+const (
+	LifecyclePhaseEventCreated           LifecyclePhase = "event.created"
+	LifecyclePhaseEventTriaged           LifecyclePhase = "event.triaged"
+	LifecyclePhaseEventUpdated           LifecyclePhase = "event.updated"
+	LifecyclePhaseInvestigationEnqueued  LifecyclePhase = "investigation.enqueued"
+	LifecyclePhaseInvestigationWaiting   LifecyclePhase = "investigation.waiting"
+	LifecyclePhaseInvestigationCompleted LifecyclePhase = "investigation.completed"
+	LifecyclePhaseInvestigationFailed    LifecyclePhase = "investigation.failed"
+	LifecyclePhaseEventResolved          LifecyclePhase = "event.resolved"
+	LifecyclePhaseEventClosed            LifecyclePhase = "event.closed"
+)
+
+// DefaultLifecyclePhase is assumed when an event trigger omits `on`, so
+// pre-lifecycle workflows keep firing at event creation (back-compat).
+const DefaultLifecyclePhase = LifecyclePhaseEventCreated
+
+var validLifecyclePhases = map[LifecyclePhase]bool{
+	LifecyclePhaseEventCreated:           true,
+	LifecyclePhaseEventTriaged:           true,
+	LifecyclePhaseEventUpdated:           true,
+	LifecyclePhaseInvestigationEnqueued:  true,
+	LifecyclePhaseInvestigationWaiting:   true,
+	LifecyclePhaseInvestigationCompleted: true,
+	LifecyclePhaseInvestigationFailed:    true,
+	LifecyclePhaseEventResolved:          true,
+	LifecyclePhaseEventClosed:            true,
+}
+
+// IsValidLifecyclePhase reports whether p is a known lifecycle phase.
+func IsValidLifecyclePhase(p string) bool {
+	return validLifecyclePhases[LifecyclePhase(p)]
+}
+
 type TriggerInternal struct {
 	Name string `json:"name,omitempty"`
 }
@@ -341,10 +387,25 @@ func (t Trigger) Validate(sl validator.StructLevel) {
 		allowedParams := map[string]struct{}{
 			"event_type": {},
 			"filter":     {},
+			"on":         {},
 		}
 		for param := range t.Params {
 			if _, exists := allowedParams[param]; !exists {
 				sl.ReportError(t.Params, "params", "Params", "unsupported_event_param", "Unsupported parameter: "+param)
+				return
+			}
+		}
+
+		// `on` is the lifecycle phase this trigger fires on (default
+		// event.created when omitted). Must be a known phase.
+		if raw, ok := t.Params["on"]; ok && raw != nil {
+			s, strOk := raw.(string)
+			if !strOk {
+				sl.ReportError(t.Params, "params", "Params", "on_invalid_type", "on must be a string lifecycle phase")
+				return
+			}
+			if s != "" && !IsValidLifecyclePhase(s) {
+				sl.ReportError(t.Params, "params", "Params", "on_invalid_phase", "Unknown lifecycle phase: "+s)
 				return
 			}
 		}
@@ -656,12 +717,13 @@ type ListWorkflowExecutionResponse struct {
 }
 
 type WorkflowEventTriggerRule struct {
-	WorkflowID  string          `db:"id"`
-	TenantID    string          `db:"tenant_id"`
-	AccountID   string          `db:"account_id"`
-	EventType   string          `db:"event_type"`
-	Filter      string          `db:"filter"`
-	TriggerType WorkflowTrigger `db:"trigger_type"`
+	WorkflowID     string          `db:"id"`
+	TenantID       string          `db:"tenant_id"`
+	AccountID      string          `db:"account_id"`
+	EventType      string          `db:"event_type"`
+	Filter         string          `db:"filter"`
+	TriggerType    WorkflowTrigger `db:"trigger_type"`
+	LifecyclePhase string          `db:"lifecycle_phase"`
 }
 
 // DryRunWorkflowRequest defines the input for a workflow dry-run.

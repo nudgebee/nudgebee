@@ -1,5 +1,5 @@
-import CustomButton from '@shared/NewCustomButton';
-import { colors } from 'src/utils/colors';
+import { Button } from '@ui/Button';
+import { ds } from 'src/utils/colors';
 import { ErrorIcon } from '@assets';
 import Image from 'next/image';
 import { useRouter } from 'next/router';
@@ -16,8 +16,8 @@ export default function Custom500() {
         alignItems: 'center',
         height: 'auto',
         textAlign: 'center',
-        marginTop: '80px',
-        gap: '40px',
+        marginTop: 'var(--ds-space-7)',
+        gap: 'var(--ds-space-6)',
       }}
     >
       <div
@@ -27,7 +27,7 @@ export default function Custom500() {
           flexDirection: 'column',
           justifyContent: 'center',
           alignItems: 'center',
-          padding: '10px 0',
+          padding: 'var(--ds-space-2) 0',
           textAlign: 'center',
           margin: '0px',
         }}
@@ -37,17 +37,17 @@ export default function Custom500() {
             fontSize: '170px',
             fontWeight: 'bold',
             margin: '0px',
-            color: colors.background.sideBar,
+            color: ds.brand[600],
           }}
         >
           500
         </h1>
         <p
           style={{
-            fontSize: '15px',
-            fontWeight: 500,
+            fontSize: 'var(--ds-text-body-lg)',
+            fontWeight: 'var(--ds-font-weight-medium)',
             margin: '0px',
-            color: colors.background.sideBar,
+            color: ds.brand[600],
           }}
         >
           Oops! Something went wrong on our end. Please try again later.
@@ -59,7 +59,7 @@ export default function Custom500() {
           flexDirection: 'column',
           justifyContent: 'center',
           alignItems: 'center',
-          gap: '24px',
+          gap: 'var(--ds-space-5)',
         }}
       >
         <Image
@@ -70,14 +70,15 @@ export default function Custom500() {
             height: 'auto',
           }}
         />
-        <CustomButton
-          variant='tertiary'
-          size='Medium'
-          text={'Go to Homepage'}
+        <Button
+          tone='secondary'
+          size='md'
           onClick={() => {
             router.push(`/home`);
           }}
-        />
+        >
+          Go to Homepage
+        </Button>
       </div>
     </div>
   );

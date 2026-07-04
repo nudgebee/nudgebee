@@ -313,6 +313,21 @@ const apiIntegrations = {
     }
   },
 
+  getGoogleChatPermissionStatus: async function () {
+    const GCHAT_PERMISSION_STATUS = `query GoogleChatPermissionStatus {
+      notifications_google_chat_permission_status {
+        status
+      }
+    }`;
+    try {
+      const response = await queryGraphQL(GCHAT_PERMISSION_STATUS, 'GoogleChatPermissionStatus', {});
+      return response?.data?.data?.notifications_google_chat_permission_status || { status: 'unknown' };
+    } catch (err) {
+      console.log('failed to get google chat permission status-', err);
+      return { status: 'unknown' };
+    }
+  },
+
   listIntegrationSchema: async function (data) {
     const LIST_INTEGRATION_SCHEMA = `
     query ListIntegrationSchema($data: IntegrationSchemaRequest!) {

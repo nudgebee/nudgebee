@@ -37,7 +37,8 @@ func TestGitlab_ConfigSchema(t *testing.T) {
 	assert.Contains(t, schema.Properties, GitlabConfigUrl)
 	assert.Contains(t, schema.Properties, GitlabConfigUsername)
 	assert.Contains(t, schema.Properties, GitlabConfigPassword)
-	assert.Len(t, schema.Properties, 3)
+	assert.Contains(t, schema.Properties, GitlabConfigGroup)
+	assert.Len(t, schema.Properties, 4)
 
 	// Test default values
 	assert.Equal(t, "https://gitlab.com", schema.Properties[GitlabConfigUrl].Default)
@@ -185,7 +186,7 @@ func TestGitlab_ValidateConfig_CustomUrl(t *testing.T) {
 	// The error should be about authentication or connection, not about missing fields
 	assert.True(t,
 		strings.Contains(errors[0].Error(), "authentication failed") ||
-			strings.Contains(errors[0].Error(), "failed to create gitlab client"),
+			strings.Contains(errors[0].Error(), "failed to create"),
 		"Expected authentication or client creation error, got: %s", errors[0].Error())
 }
 

@@ -3,7 +3,6 @@ import { Box, Typography, TextField, Chip } from '@mui/material';
 import { Button } from '@ui/Button';
 import { Add, Close, GridView } from '@mui/icons-material';
 import { Input } from '@ui/Input';
-import { colors } from 'src/utils/colors';
 import { MATRIX_PRESETS, FIELD_HELPER_TEXT } from './advancedConfigPresets';
 import { emptyStateStyles } from './advancedConfigStyles';
 import { useJsonViewMode } from '@components/workflow/hooks/useJsonViewMode';
@@ -141,9 +140,9 @@ const MatrixField: React.FC<MatrixFieldProps> = ({ value, onChange, disabled = f
               key={entryIndex}
               sx={{
                 p: 1.5,
-                border: `1px solid ${colors.lowestLight}`,
-                borderRadius: 1,
-                bgcolor: colors.background.tertiaryLightest,
+                border: `1px solid var(--ds-green-200)`,
+                borderRadius: 'var(--ds-radius-sm)',
+                bgcolor: 'var(--ds-gray-100)',
               }}
             >
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
@@ -169,7 +168,7 @@ const MatrixField: React.FC<MatrixFieldProps> = ({ value, onChange, disabled = f
               </Box>
 
               <Typography
-                sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-semibold)', color: colors.text.secondary, mb: 0.5 }}
+                sx={{ fontSize: 'var(--ds-text-caption)', fontWeight: 'var(--ds-font-weight-semibold)', color: 'var(--ds-brand-500)', mb: 0.5 }}
               >
                 Values ({entry.values.filter((v) => v.trim()).length})
               </Typography>
@@ -181,8 +180,8 @@ const MatrixField: React.FC<MatrixFieldProps> = ({ value, onChange, disabled = f
                       display: 'flex',
                       alignItems: 'center',
                       bgcolor: 'white',
-                      border: `1px solid ${colors.lowestLight}`,
-                      borderRadius: 1,
+                      border: `1px solid var(--ds-green-200)`,
+                      borderRadius: 'var(--ds-radius-sm)',
                       px: 0.5,
                     }}
                   >
@@ -205,7 +204,7 @@ const MatrixField: React.FC<MatrixFieldProps> = ({ value, onChange, disabled = f
                       tone='ghost'
                       size='xs'
                       aria-label='Delete value'
-                      icon={<Close sx={{ fontSize: 12 }} />}
+                      icon={<Close sx={{ fontSize: 'var(--ds-text-small)' }} />}
                       disabled={disabled || entry.values.length <= 1}
                       onClick={() => handleDeleteValue(entryIndex, valueIndex)}
                     />
@@ -216,7 +215,7 @@ const MatrixField: React.FC<MatrixFieldProps> = ({ value, onChange, disabled = f
                   tone='ghost'
                   size='xs'
                   aria-label='Add value'
-                  icon={<Add sx={{ fontSize: 14 }} />}
+                  icon={<Add sx={{ fontSize: 'var(--ds-text-body-lg)' }} />}
                   disabled={disabled}
                   onClick={() => handleAddValue(entryIndex)}
                 />
@@ -232,20 +231,26 @@ const MatrixField: React.FC<MatrixFieldProps> = ({ value, onChange, disabled = f
                 <br />
                 Create parallel executions with different parameter combinations.
               </Typography>
-              <Button tone='secondary' size='sm' icon={<Add sx={{ fontSize: 16 }} />} disabled={disabled} onClick={handleAddEntry}>
+              <Button
+                tone='secondary'
+                size='sm'
+                icon={<Add sx={{ fontSize: 'var(--ds-text-title)' }} />}
+                disabled={disabled}
+                onClick={handleAddEntry}
+              >
                 Add Your First Parameter
               </Button>
             </Box>
           ) : (
             <Box sx={{ alignSelf: 'flex-start' }}>
-              <Button tone='ghost' size='sm' icon={<Add sx={{ fontSize: 14 }} />} disabled={disabled} onClick={handleAddEntry}>
+              <Button tone='ghost' size='sm' icon={<Add sx={{ fontSize: 'var(--ds-text-body-lg)' }} />} disabled={disabled} onClick={handleAddEntry}>
                 Add Parameter
               </Button>
             </Box>
           )}
 
           {entries.length > 0 && (
-            <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: colors.text.secondary, mt: 0.5 }}>
+            <Typography sx={{ fontSize: 'var(--ds-text-caption)', color: 'var(--ds-brand-500)', mt: 0.5 }}>
               Access values in task params using: <code style={{ fontSize: 'var(--ds-text-caption)' }}>{'{{ Matrix.<param_name> }}'}</code>
             </Typography>
           )}

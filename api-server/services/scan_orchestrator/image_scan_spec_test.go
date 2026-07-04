@@ -10,11 +10,19 @@ import (
 // credentials (it reuses the node-local image). Lock the shape.
 func TestBuildImageScanSpec_FsScanShape(t *testing.T) {
 	spec := buildImageScanSpec(ScanAccount{
-		AccountID:   "acc",
-		TenantID:    "ten",
-		TargetImage: "registry.private.example.com/nudgebee-app:v1",
-		TargetNode:  "gke-node-abc",
+		AccountID:       "acc",
+		TenantID:        "ten",
+		TargetImage:     "registry.private.example.com/nudgebee-app:v1",
+		TargetNode:      "gke-node-abc",
+		TargetNamespace: "app",
+		TargetPodName:   "web-1",
 	}, nil)
+
+	// The agent is pointed at the workload pod so it can source the pull secret.
+	if spec.ImagePullSecretsFrom == nil ||
+		spec.ImagePullSecretsFrom.Namespace != "app" || spec.ImagePullSecretsFrom.Name != "web-1" {
+		t.Errorf("ImagePullSecretsFrom = %+v; want {app, web-1}", spec.ImagePullSecretsFrom)
+	}
 
 	// Main container is the target image itself, reused from the node.
 	if spec.Image != "registry.private.example.com/nudgebee-app:v1" {

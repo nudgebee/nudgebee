@@ -288,6 +288,7 @@ func (m *Observe) GetToken(cfg ObserveConfig) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to execute login request: %w", err)
 	}
+	defer func() { _ = res.Body.Close() }()
 
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
@@ -432,6 +433,7 @@ func (m Observe) GetObservDataSetInfo(accountId string, dataSetId string) (map[s
 	if err != nil {
 		return nil, fmt.Errorf("failed to create dataset info request: %w", err)
 	}
+	defer func() { _ = res.Body.Close() }()
 
 	body, err := io.ReadAll(res.Body)
 	if err != nil {

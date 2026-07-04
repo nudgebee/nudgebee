@@ -1,6 +1,6 @@
 import { formatNumber } from '@lib/formatter';
 import { Typography } from '@mui/material';
-import Tooltip from '@mui/material/Tooltip';
+import Tooltip from '@ui/Tooltip';
 
 export default function NumberComponent({
   value,
@@ -19,8 +19,8 @@ export default function NumberComponent({
   },
 }) {
   return (
-    <Tooltip title={value}>
-      <>
+    <Tooltip title={formatNumber(value, defaultVal, minimumFractionDigits, Math.max(6, maximumFractionDigits))}>
+      <span>
         <Typography sx={sx} display={'inline'}>
           {formatNumber(value, defaultVal, minimumFractionDigits, maximumFractionDigits)}
         </Typography>
@@ -29,7 +29,7 @@ export default function NumberComponent({
             {suffix}
           </Typography>
         )}
-      </>
+      </span>
     </Tooltip>
   );
 }

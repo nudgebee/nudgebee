@@ -10,19 +10,19 @@ import { yaml } from '@codemirror/lang-yaml';
 import Datetime from '@shared/format/Datetime';
 import { action } from 'src/utils/actionStyles';
 import { hasWriteAccess } from '@lib/auth';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
-import { Modal } from '@shared/modal';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
+import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
 import yaml1 from 'js-yaml';
 import Text from '@shared/format/Text';
 import { useData } from '@context/DataContext';
-import FilterDropdownButton from '@shared/FilterDropdownButton';
+import FilterDropdown from '@ui/FilterDropdown';
 import PropTypes from 'prop-types';
 import { DeleteIconRed as deleteIcon, PlusIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { toast as snackbar } from '@ui/Toast';
 import { compareVersions } from 'src/utils/common';
-import CustomTable from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { ds } from '@utils/colors';
 
 const KubernetesNodeClass = ({ accountId }) => {
@@ -456,7 +456,7 @@ const KubernetesNodeClass = ({ accountId }) => {
           sx={{
             p: 'var(--ds-space-4) var(--ds-space-5)',
             borderBottom: '1px solid var(--ds-blue-400)',
-            boxShadow: '0px 2px 12px 2px #00000014',
+            boxShadow: `0px ${ds.space[0]} ${ds.space[3]} ${ds.space[0]} ${ds.gray.alpha[200]}`,
             display: 'flex',
             alignItems: 'center',
             gap: 'var(--ds-space-3)',
@@ -538,7 +538,7 @@ const KubernetesNodeClass = ({ accountId }) => {
                   <Typography sx={{ marginLeft: ds.space[2], color: ds.gray[500] }}>Name of Kubernetes Cluster of this account</Typography>
                 </Box>
               ) : null}
-              <FilterDropdownButton
+              <FilterDropdown
                 id='ami-family'
                 label='AMI Family'
                 value={amiFamily}

@@ -27,7 +27,7 @@ func (s *ExecutorDryRunTestSuite) AfterTest(suiteName, testName string) {
 
 func (s *ExecutorDryRunTestSuite) TestMissingTaskType() {
 	// Register system activities mock
-	s.env.RegisterActivityWithOptions(func(ctx context.Context, tenantID, accountID string) (FetchConfigsResponse, error) {
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, tenantID, accountID string, restrictToAccount bool) (FetchConfigsResponse, error) {
 		return FetchConfigsResponse{}, nil
 	}, activity.RegisterOptions{Name: "FetchWorkflowConfigsActivity"})
 
@@ -80,7 +80,7 @@ func (s *ExecutorDryRunTestSuite) TestDryRunExecutesActivity() {
 	}, activity.RegisterOptions{Name: "core.print"})
 
 	// System activities (some are skipped in dry run, explicitly FetchWorkflowConfigsActivity IS called)
-	s.env.RegisterActivityWithOptions(func(ctx context.Context, tenantID, accountID string) (FetchConfigsResponse, error) {
+	s.env.RegisterActivityWithOptions(func(ctx context.Context, tenantID, accountID string, restrictToAccount bool) (FetchConfigsResponse, error) {
 		return FetchConfigsResponse{}, nil
 	}, activity.RegisterOptions{Name: "FetchWorkflowConfigsActivity"})
 

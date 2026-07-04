@@ -16,6 +16,9 @@ import (
 )
 
 func TestStoreEventForAccount(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	// Set up a mock server to act as the services-server/rpc endpoint
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -37,6 +40,9 @@ func TestStoreEventForAccount(t *testing.T) {
 }
 
 func TestStoreEventRulesForAccount(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreEventRules(ctx, os.Getenv("TEST_ACCOUNT"))
 	assert.Nil(t, err)
@@ -44,12 +50,18 @@ func TestStoreEventRulesForAccount(t *testing.T) {
 }
 
 func TestGetEventsInternal(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, _, err := getEventsInternal(ctx, os.Getenv("TEST_ACCOUNT"), providers.ListEventRequest{})
 	assert.Nil(t, err)
 	assert.NotEmpty(t, response)
 }
 func TestStoreMultipleEvents_DuplicateFiltering(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	// 1. Setup: DB, context, and mock server for InvestigateEvent
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	dbms, err := common.GetDatabaseManager(common.Metastore)
@@ -124,6 +136,9 @@ func TestStoreMultipleEvents_DuplicateFiltering(t *testing.T) {
 }
 
 func TestStoreMultipleEvents_ResolvedUpdatesExisting(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	// Setup: DB, context, and mock server
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	dbms, err := common.GetDatabaseManager(common.Metastore)
@@ -226,6 +241,9 @@ func TestStoreMultipleEvents_ResolvedUpdatesExisting(t *testing.T) {
 }
 
 func TestStoreEventRulesGCloud(t *testing.T) {
+	if os.Getenv("TEST_ACCOUNT") == "" {
+		t.Skip("Skipping integration test that requires a Metastore database and TEST_ACCOUNT")
+	}
 	ctx := security.NewRequestContextForTenantAdmin(os.Getenv("TEST_TENANT"))
 	response, err := StoreEventRules(ctx, os.Getenv("TEST_ACCOUNT"))
 	assert.Nil(t, err)

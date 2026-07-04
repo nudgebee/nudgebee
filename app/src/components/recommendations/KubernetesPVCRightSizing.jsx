@@ -10,18 +10,17 @@ import Datetime from '@shared/format/Datetime';
 import { hasWriteAccess } from '@lib/auth';
 import PropTypes from 'prop-types';
 import { useData } from '@context/DataContext';
-import CustomButton from '@shared/NewCustomButton';
 import { useRouter } from 'next/router';
 import { applyFiltersOnRouter } from '@lib/router';
 import apiUser from '@api1/user';
 import RecommendationResolution from '@components/k8s/common/RecommendationResolution';
-import { KubernetesPVCUtilization } from '@components/k8s/common/KubernetesTable2';
+import { KubernetesPVCUtilization } from '@components/k8s/common/KubernetesTable';
 import Text from '@shared/format/Text';
-import { colors, ds } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 import { toast as snackbar } from '@ui/Toast';
 import { Modal } from '@ui/Modal';
 import apiHome from '@api1/home';
-import CustomTicketLink from '@shared/CustomTicketLink';
+import TicketLink from '@shared/links/TicketLink';
 import { Link as CustomLink } from '@ui/Link';
 import EmptyData from '@shared/EmptyData';
 import Link from 'next/link';
@@ -37,7 +36,7 @@ import WidgetCard from '@ui/WidgetCard';
 import { ListingLayout } from '@ui/ListingLayout';
 import { Stat } from '@ui/Stat';
 import { CostCallout } from '@ui/CostCallout';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { Button as DsButton } from '@ui/Button';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import { ScanRefreshButton } from './ScanRefreshButton';
@@ -88,23 +87,37 @@ const KubernetesPVCRightSizingPopupForm = ({
       return;
     }
     setLoading(true);
-    recommendationApi.applyRecommendation(data.account_id, data.id, updatedData).then((res) => {
-      setLoading(false);
-      if (res?.errors) {
+    recommendationApi
+      .applyRecommendation(data.account_id, data.id, updatedData)
+      .then((res) => {
+        if (res?.errors) {
+          snackbar.error('Failed to update volume size');
+          onFailure(false);
+        } else {
+          snackbar.success('Volume Size Updated Successfully');
+          onSuccess(true);
+        }
+      })
+      .catch(() => {
         snackbar.error('Failed to update volume size');
         onFailure(false);
-      } else {
-        snackbar.success('Volume Size Updated Successfully');
-        onSuccess(true);
-      }
-    });
+      })
+      .finally(() => {
+        setLoading(false);
+      });
   };
 
   return (
     <>
-      <Modal open={open} handleClose={() => onClose(false)} title={title}>
+      <Modal open={open} handleClose={() => (loading ? undefined : onClose(false))} title={title} loader={loading}>
         <Box display='flex' justifyContent='end' />
-        <Box display='flex' flexDirection='column' justifyContent='space-between' alignItems='left' m='0px 12px 20px 12px'>
+        <Box
+          display='flex'
+          flexDirection='column'
+          justifyContent='space-between'
+          alignItems='left'
+          m={`0px ${ds.space[3]} ${ds.space.mul(0, 10)} ${ds.space[3]}`}
+        >
           <Box sx={{ mt: 2 }}>
             <Input
               size='sm'
@@ -116,17 +129,13 @@ const KubernetesPVCRightSizingPopupForm = ({
             />
           </Box>
         </Box>
-        <Stack spacing={1} direction='row' sx={{ float: 'right' }} mb={2} mx='20px'>
-          <CustomButton size='Medium' text={'Cancel'} variant='secondary' onClick={() => onClose(false)} sx={{ minWidth: '140px' }} />
-          <CustomButton
-            size='Medium'
-            text={'Update Resource'}
-            variant='primary'
-            onClick={() => submitRecommendation()}
-            disabled={!updatedData.recommendedSize || loading}
-            sx={{ minWidth: '140px' }}
-            loading={loading}
-          />
+        <Stack spacing={1} direction='row' sx={{ float: 'right', '& button': { minWidth: '140px' } }} mb={2} mx={ds.space.mul(0, 10)}>
+          <DsButton size='md' tone='secondary' onClick={() => onClose(false)} disabled={loading}>
+            Cancel
+          </DsButton>
+          <DsButton size='md' onClick={() => submitRecommendation()} disabled={!updatedData.recommendedSize || loading} loading={loading}>
+            Update Resource
+          </DsButton>
         </Stack>
       </Modal>
     </>
@@ -301,7 +310,7 @@ const KubernetesPVCRightSizing = ({ enabledSummary = true, enabledFilters = true
                     </CustomLink>
                   </Box>
                 )}
-                {item.ticket !== undefined ? <CustomTicketLink ticketURL={item.ticket?.url} ticketID={item.ticket?.ticket_id} /> : ''}
+                {item.ticket !== undefined ? <TicketLink ticketURL={item.ticket?.url} ticketID={item.ticket?.ticket_id} /> : ''}
               </>
             ),
             drilldownQuery: {
@@ -388,7 +397,7 @@ const KubernetesPVCRightSizing = ({ enabledSummary = true, enabledFilters = true
                     {
                       id: `pvc-action-ticket-${item.id}`,
                       label: item.ticket?.ticket_id ? `Ticket: ${item.ticket.ticket_id}` : 'Create ticket',
-                      icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: 16 }} />,
+                      icon: <ConfirmationNumberOutlinedIcon sx={{ fontSize: ds.text.title }} />,
                       disabled: !!item.ticket?.ticket_id,
                       onSelect: () => {
                         setTicketData(item);
@@ -518,9 +527,9 @@ const KubernetesPVCRightSizing = ({ enabledSummary = true, enabledFilters = true
           heading='Agent Not Connected'
           subHeading='Prometheus is not connected for this cluster. Connect an agent to start monitoring.'
         >
-          <Typography sx={{ fontSize: 'var(--ds-text-body)', color: colors.text.tertiary, mt: 'var(--ds-space-2)' }}>
+          <Typography sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[600], mt: 'var(--ds-space-2)' }}>
             Check the{' '}
-            <Link href={`/agentHealth?accountId=${selectedAccountId}#agent`} style={{ color: colors.text.primary }}>
+            <Link href={`/agentHealth?accountId=${selectedAccountId}#agent`} style={{ color: ds.blue[500] }}>
               Agent Health
             </Link>{' '}
             page for connection details.
@@ -664,7 +673,7 @@ const KubernetesPVCRightSizing = ({ enabledSummary = true, enabledFilters = true
         </ListingLayout.Toolbar>
 
         <ListingLayout.Body>
-          <CustomTable2
+          <CustomTable
             id={kubernetesPvcRightSizingTable}
             headers={tableHeaders}
             tableData={kubernetesAbandonedWorkloads}

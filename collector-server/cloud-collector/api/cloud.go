@@ -57,6 +57,11 @@ type getDeploymentDiffRequest struct {
 	Query     providers.QueryDeploymentDiffRequest `json:"query" validate:"required"`
 }
 
+type getTracesRequest struct {
+	AccountId string                       `json:"account_id" validate:"required"`
+	Query     providers.QueryTracesRequest `json:"query"`
+}
+
 type getServiceMapRequest struct {
 	AccountId string                           `json:"account_id" validate:"required"`
 	Query     providers.QueryServiceMapRequest `json:"query" validate:"required"`
@@ -439,6 +444,35 @@ func handleCloudProviderApis(r *gin.Engine, tracer *trace.Tracer, meter *metric.
 		resp, err := account.QueryDeploymentDiff(ctx, request.AccountId, request.Query)
 		if err != nil {
 			ctx.GetLogger().Error("error querying deployment diff", "error", err)
+			c.JSON(500, buildApiResponse(nil, err))
+			return
+		}
+		c.JSON(200, buildApiResponse(resp))
+	})
+
+	groupV2.POST("/query_traces", func(c *gin.Context) {
+		request := getTracesRequest{}
+		err := c.ShouldBindJSON(&request)
+		if err != nil {
+			c.JSON(400, buildApiResponse(nil, err))
+			return
+		}
+		err = common.ValidateStruct(request)
+		if err != nil {
+			slog.Error("error validating query_traces", "error", err)
+			c.JSON(400, buildApiResponse(nil, err))
+			return
+		}
+
+		ctx, cancel, err := buildContextFromGin(c, logger, tracer, meter, request.AccountId)
+		if err != nil {
+			c.JSON(400, buildApiResponse(nil, err))
+			return
+		}
+		defer cancel()
+		resp, err := account.QueryTraces(ctx, request.AccountId, request.Query)
+		if err != nil {
+			ctx.GetLogger().Error("error querying traces", "error", err)
 			c.JSON(500, buildApiResponse(nil, err))
 			return
 		}

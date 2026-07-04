@@ -425,6 +425,44 @@ type QueryDeploymentDiffResponse struct {
 	Status    string                   `json:"status"` // e.g., Complete, Failed
 }
 
+// QueryTracesRequest defines the input for querying distributed traces. Selection is
+// generic: scope by time window (+ optional service / provider-native filter), no
+// incident-type assumptions baked in.
+type QueryTracesRequest struct {
+	ServiceName string     `json:"service_name"` // optional resource scope hint
+	Filter      string     `json:"filter"`       // optional provider-native filter (generic passthrough)
+	StartTime   *time.Time `json:"start_time"`
+	EndTime     *time.Time `json:"end_time"`
+	Limit       *int64     `json:"limit"` // max traces to return
+}
+
+// TraceSpanItem is a single span, flattened across the returned traces (so the whole
+// span tree is captured, not a hand-picked subset).
+type TraceSpanItem struct {
+	TraceId      string            `json:"trace_id"`
+	SpanId       string            `json:"span_id"`
+	ParentSpanId string            `json:"parent_span_id"`
+	Name         string            `json:"name"`
+	Kind         string            `json:"kind"`
+	StartTime    int64             `json:"start_time"` // unix ms
+	DurationMs   float64           `json:"duration_ms"`
+	Labels       map[string]string `json:"labels"`
+}
+
+// QueryTracesResponse defines the output from querying traces.
+type QueryTracesResponse struct {
+	Spans      []TraceSpanItem `json:"spans"`
+	TraceCount int             `json:"trace_count"`
+	Status     string          `json:"status"`
+}
+
+// TraceProvider is an optional capability: providers that can fetch distributed traces
+// implement it. Kept separate from CloudProvider so non-supporting providers (AWS,
+// Azure, …) need no stub.
+type TraceProvider interface {
+	QueryTraces(ctx CloudProviderContext, account Account, query QueryTracesRequest) (QueryTracesResponse, error)
+}
+
 type ListResourceRequest struct {
 	ServiceName string            `json:"service_name"`
 	ResourceIds []string          `json:"resource_ids"`

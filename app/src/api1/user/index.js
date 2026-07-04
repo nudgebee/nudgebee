@@ -63,6 +63,19 @@ query UserTenant($username:String!){
 }
 `;
 
+// Cross-tenant read — lists ALL tenants in the system (super_admin only;
+// the gateway and the upstream `tenant_list_all` handler both enforce that).
+// Used by the super-admin Switch-Tenant modal to reach tenants the user
+// isn't a member of. Distinct from USER_TENANTS, which is member-scoped.
+export const LIST_ALL_TENANTS = `
+query ListAllTenants {
+  tenant_list_all {
+    id
+    name
+  }
+}
+`;
+
 export const CREATE_USER = `
 mutation CreateUser($username:String!, $firstname:String!, $lastname:String, $role:String){
   users_create(user:{firstname:$firstname, lastname:$lastname, username:$username role:$role}){
@@ -166,6 +179,56 @@ const DELETE_USER_TOKEN = `
 mutation DeleteUserToken($name: String!) {
   users_delete_token(user: {name: $name}) {
     name
+  }
+}
+`;
+
+const LIST_INTEGRATION_ACCOUNTS = `
+query ListIntegrationAccounts($user_id: String!) {
+  users_list_integration_accounts(user_id: $user_id) {
+    id
+    account_id
+    account_name
+    integration_type
+    external_user_id
+    username
+    email
+    display_name
+    mapped_user_id
+    mapped_via
+  }
+}
+`;
+
+const LIST_UNMAPPED_ACCOUNTS = `
+query ListUnmappedAccounts($integration_type: String) {
+  users_list_unmapped_accounts(integration_type: $integration_type) {
+    id
+    account_id
+    account_name
+    integration_type
+    external_user_id
+    username
+    email
+    display_name
+  }
+}
+`;
+
+const CREATE_ACCOUNT_MAPPING = `
+mutation CreateAccountMapping($mapping_id: String!, $user_id: String!) {
+  users_create_account_mapping(mapping_id: $mapping_id, user_id: $user_id) {
+    id
+    status
+  }
+}
+`;
+
+const DELETE_ACCOUNT_MAPPING = `
+mutation DeleteAccountMapping($mapping_id: String!) {
+  users_delete_account_mapping(mapping_id: $mapping_id) {
+    id
+    status
   }
 }
 `;
@@ -322,10 +385,41 @@ const apiUser = {
       data: response,
     };
   },
+  listIntegrationAccounts: async function (userId) {
+    try {
+      const response = await queryGraphQL(LIST_INTEGRATION_ACCOUNTS, 'ListIntegrationAccounts', { user_id: userId });
+      return response?.data?.data?.users_list_integration_accounts ?? [];
+    } catch {
+      return [];
+    }
+  },
+  listUnmappedAccounts: async function (integrationType) {
+    try {
+      const response = await queryGraphQL(LIST_UNMAPPED_ACCOUNTS, 'ListUnmappedAccounts', { integration_type: integrationType ?? null });
+      return response?.data?.data?.users_list_unmapped_accounts ?? [];
+    } catch {
+      return [];
+    }
+  },
+  createAccountMapping: async function ({ mappingId, userId }) {
+    const response = await queryGraphQL(CREATE_ACCOUNT_MAPPING, 'CreateAccountMapping', { mapping_id: mappingId, user_id: userId });
+    return response?.data?.data?.users_create_account_mapping;
+  },
+  deleteAccountMapping: async function ({ mappingId }) {
+    const response = await queryGraphQL(DELETE_ACCOUNT_MAPPING, 'DeleteAccountMapping', { mapping_id: mappingId });
+    return response?.data?.data?.users_delete_account_mapping;
+  },
   listUserTenants: async function (username) {
     let userResponse = await queryGraphQL(USER_TENANTS, 'UserTenant', { username: username });
     return {
       data: userResponse?.data?.data?.users_list_tenants,
+    };
+  },
+  // Super-admin only: list ALL tenants in the system (see LIST_ALL_TENANTS).
+  listAllTenants: async function () {
+    let response = await queryGraphQL(LIST_ALL_TENANTS, 'ListAllTenants', {});
+    return {
+      data: response?.data?.data?.tenant_list_all,
     };
   },
   updateUserGroup: async function (request) {

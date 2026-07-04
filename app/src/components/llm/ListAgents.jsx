@@ -4,15 +4,15 @@ import apiAskNudgebee from '@api1/ask-nudgebee';
 import apiKnowledgeBase from '@api1/knowledge-base';
 import ListingLayout from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
-import CustomSearch from '@shared/CustomSearch';
+import SearchInput from '@ui/SearchInput';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import { Button } from '@ui/Button';
-import CustomTable from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { Label } from '@ui/Label';
 import { Modal } from '@ui/Modal';
 import CreateAgentNew from './CreateAgentNew';
 import CreateAgentExtension from './CreateAgentExtension';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import Text from '@shared/format/Text';
 import { ds } from 'src/utils/colors';
 import { toast as snackbar } from '@ui/Toast';
@@ -24,9 +24,19 @@ import { PlusIcon, EditIcon, DeleteIconRed as deleteIcon, DataBaseDark, PlusIcon
 import { getIcon } from '@components/llm/common/AgentIcon';
 import Loader from '@shared/Loader';
 import SafeIcon from '@shared/icons/SafeIcon';
+import { HybridScopeChips } from '@components/llm/ScopeChip';
 
-const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }) => {
+const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents, stickyTable = false }) => {
   const { baseTitle } = useTenantBranding();
+  // Tenant-wide read-only mode: when the Settings modal is opened from the
+  // global sidebar (no current account in scope), the backend's
+  // agentListAgent routes empty account_id to ListAgentsForTenant — the
+  // system catalog + every custom agent the caller can read across the
+  // tenant. The UI hides per-account affordances (Create / Edit / Delete /
+  // KB-mapping / tool config / agent extensions) because writes all require
+  // account context, and renders an Account column so cross-account custom
+  // agents are distinguishable.
+  const isTenantWide = !accountId;
   const [data, setData] = React.useState([]);
   const [originalData, setOriginalData] = React.useState([]);
   const [createAgentModal, setCreateAgentModal] = React.useState(false);
@@ -37,6 +47,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
   const [customizeMode, setCustomizeMode] = React.useState(false);
   const [extensionMode, setExtensionMode] = React.useState(false);
   const [deleteModal, setDeleteModal] = React.useState(false);
+  const [isDeleting, setIsDeleting] = React.useState(false);
   const [agentToDelete, setAgentToDelete] = React.useState(null);
   const [agentTypeFilter, setAgentTypeFilter] = React.useState('all');
 
@@ -241,16 +252,23 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
     }
   };
   React.useEffect(() => {
+    // KB counts and agent extensions are per-account; skip both in
+    // tenant-wide mode (the API requires accountId and there's no
+    // sensible aggregate across accounts).
+    if (isTenantWide) return;
     fetchKBCounts();
     fetchAgentExtensions();
-  }, [accountId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId, isTenantWide]);
 
   React.useEffect(() => {
     // Refresh KB counts when allAgents changes (in case new agents are added)
+    if (isTenantWide) return;
     if (allAgents && allAgents.length > 0) {
       fetchKBCounts();
     }
-  }, [allAgents]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allAgents, isTenantWide]);
 
   React.useEffect(() => {
     listAgents();
@@ -318,6 +336,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
       return;
     }
 
+    setIsDeleting(true);
     try {
       const response = await apiAskNudgebee.deleteAgent(accountId, agentToDelete.name);
       if (!(response?.data?.data?.ai_delete_agent?.data?.status === 'ok')) {
@@ -336,6 +355,8 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
     } catch (error) {
       console.error('Error deleting agent:', error);
       snackbar.error('Failed to delete agent');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -513,26 +534,45 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
           {
             component: <Text value={agent.tools?.join(', ') || '-'} showAutoEllipsis requiredToolTip lineClamp={2} />,
           },
-          {
-            // KB Count Indicator Column
-            component: (
-              <Box
-                sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: ds.space[1] }}
-                onClick={() => {
-                  handleOpenKbSelectionModal(agent);
-                }}
-              >
-                <Text value={`${kbCount}`} sx={{ fontWeight: 'medium' }} />
-              </Box>
-            ),
-          },
-          {
-            component: hasWriteAccess(accountId) ? (
-              <ThreeDotsMenu menuItems={getMenuItems(agent)} onMenuClick={handleMenuAction} data={agent} sx={{ padding: ds.space[1] }} />
-            ) : (
-              <></>
-            ),
-          },
+          // Tools column is already present above; in tenant-wide mode we
+          // skip the KB-count and Actions columns and replace them with an
+          // Account column so the user can tell custom rows apart.
+          ...(isTenantWide
+            ? [
+                {
+                  component: <Text value={agent.account_name || (agent.type === 'system' ? '—' : agent.account_id || '—')} />,
+                },
+              ]
+            : [
+                {
+                  // KB Count Indicator Column
+                  component: (
+                    <Box
+                      role='button'
+                      tabIndex={0}
+                      sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: ds.space[1] }}
+                      onClick={() => {
+                        handleOpenKbSelectionModal(agent);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          handleOpenKbSelectionModal(agent);
+                        }
+                      }}
+                    >
+                      <Text value={`${kbCount}`} sx={{ fontWeight: 'medium' }} />
+                    </Box>
+                  ),
+                },
+                {
+                  component: hasWriteAccess(accountId) ? (
+                    <ThreeDotsMenu menuItems={getMenuItems(agent)} onMenuClick={handleMenuAction} data={agent} sx={{ padding: ds.space[1] }} />
+                  ) : (
+                    <></>
+                  ),
+                },
+              ]),
         ];
       });
       setOriginalData(agents);
@@ -594,7 +634,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
             <Box sx={{ pt: 2 }}>
               <ListingLayout id='kb-selection-list'>
                 <ListingLayout.Toolbar>
-                  <CustomSearch
+                  <SearchInput
                     id='kb-selection-search'
                     label='Search Knowledge Base'
                     value={kbSearchTerm}
@@ -811,17 +851,17 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
 
       <Modal
         handleClose={() => {
+          if (isDeleting) return;
           setDeleteModal(false);
           setAgentToDelete(null);
         }}
-        buttonText={agentToDelete?.overridden ? 'Revert' : 'Delete'}
         title={
           agentToDelete?.overridden
             ? `Revert Agent: ${agentToDelete?.aliases?.[0] || agentToDelete?.name}`
             : `Delete Agent: ${agentToDelete?.aliases?.[0] || agentToDelete?.name}`
         }
         open={deleteModal}
-        handleSubmit={confirmDeleteAgent}
+        loader={isDeleting}
       >
         <Typography variant='body1' sx={{ mt: 2, mb: 1 }}>
           {agentToDelete?.overridden ? (
@@ -850,10 +890,11 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
               setDeleteModal(false);
               setAgentToDelete(null);
             }}
+            disabled={isDeleting}
           >
             Cancel
           </Button>
-          <Button tone='primary' size='sm' onClick={confirmDeleteAgent}>
+          <Button tone='primary' size='sm' onClick={confirmDeleteAgent} loading={isDeleting}>
             {agentToDelete?.overridden ? 'Revert' : 'Delete'}
           </Button>
         </Box>
@@ -861,10 +902,19 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
 
       <ListingLayout id='all-agents'>
         <ListingLayout.Toolbar
+          title={
+            <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[2] }}>
+              Agents
+              {/* Hybrid: system catalog (tenant-wide) + custom agents
+                  per account. Two chips when in account mode so users
+                  see they're working against both layers. */}
+              <HybridScopeChips accountId={accountId} />
+            </Box>
+          }
           actions={
             <>
               <DownloadButton onClick={() => ({ tableId: 'agents' })} size='sm' />
-              {hasWriteAccess(accountId) && (
+              {!isTenantWide && hasWriteAccess(accountId) && (
                 <Button tone='primary' size='sm' id='create-agent' onClick={() => setCreateAgentModal(true)}>
                   <Box
                     sx={{
@@ -884,7 +934,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
             </>
           }
         >
-          <CustomSearch
+          <SearchInput
             id='agent-search'
             label='Search Agent'
             value={searchAgentByName}
@@ -905,19 +955,31 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
         </ListingLayout.Toolbar>
         <ListingLayout.Body>
           <CustomTable
-            headers={[
-              { name: 'Name', width: '15%' },
-              { name: 'Description', width: '35%' },
-              { name: 'Status', width: '10%' },
-              { name: 'Tools', width: '10%' },
-              { name: 'KB', width: '5%', info: 'Knowledge Base count - Click to view or manage knowledge bases mapped to this agent' },
-              { name: 'Action', width: '5%' },
-            ]}
+            headers={
+              isTenantWide
+                ? [
+                    { name: 'Name', width: '20%' },
+                    { name: 'Description', width: '40%' },
+                    { name: 'Status', width: '10%' },
+                    { name: 'Tools', width: '15%' },
+                    { name: 'Account', width: '15%' },
+                  ]
+                : [
+                    { name: 'Name', width: '15%' },
+                    { name: 'Description', width: '35%' },
+                    { name: 'Status', width: '10%' },
+                    { name: 'Tools', width: '10%' },
+                    { name: 'KB', width: '5%', info: 'Knowledge Base count - Click to view or manage knowledge bases mapped to this agent' },
+                    { name: 'Action', width: '5%' },
+                  ]
+            }
             tableData={data}
             rowsPerPage={data.length}
             totalRows={data.length}
             loading={loadingAgents}
             id='agents'
+            stickyHeader={stickyTable}
+            sx={stickyTable ? { maxHeight: 'calc(90vh - 300px)', overflowY: 'auto' } : undefined}
           />
         </ListingLayout.Body>
       </ListingLayout>
@@ -927,6 +989,7 @@ const ListAgents = ({ accountId, refreshAgentListing, allAgents, loadingAgents }
 
 ListAgents.propTypes = {
   accountId: PropTypes.string,
+  stickyTable: PropTypes.bool,
 };
 
 export default ListAgents;

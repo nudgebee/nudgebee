@@ -1501,7 +1501,7 @@ func AzureEventGridOnboardUrl(context *security.RequestContext, req AzureEventGr
 			if txErr == nil {
 				_ = tx.Commit()
 			} else {
-				_ = tx.Rollback()
+				database.LogRollback(tx, context.GetLogger())
 				context.GetLogger().Warn("account: failed to create azure_monitor_webhook integration (non-fatal)",
 					slog.String("account_id", req.AccountId),
 					slog.String("error", txErr.Error()),

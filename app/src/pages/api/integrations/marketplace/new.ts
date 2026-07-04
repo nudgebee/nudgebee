@@ -127,10 +127,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       console.log(responseJson);
       res.setHeader('Content-Type', 'text/html').status(200).send(getSuccessHtml());
     } else {
-      res.setHeader('Content-Type', 'text/html').status(200).send(getErrorHtml());
+      // Upstream tenant/user creation failed — surface a 5xx so marketplace
+      // fulfillment failures are visible to monitoring (the HTML body still
+      // renders a friendly page for the human in the browser). See #28583.
+      res.setHeader('Content-Type', 'text/html').status(500).send(getErrorHtml());
     }
   } catch (err) {
     console.log(err);
-    res.setHeader('Content-Type', 'text/html').status(200).send(getErrorHtml());
+    res.setHeader('Content-Type', 'text/html').status(500).send(getErrorHtml());
   }
 }

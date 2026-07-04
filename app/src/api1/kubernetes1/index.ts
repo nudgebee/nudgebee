@@ -400,7 +400,6 @@ const apiKubernetes1 = {
       });
       return response;
     } catch (error) {
-      console.log('failed to trigger anomaly execute-', error);
       return error;
     }
   },
@@ -443,7 +442,7 @@ const apiKubernetes1 = {
       }
       return response;
     } catch (error) {
-      console.log('failed to get slo report-', error);
+      console.warn('failed to get slo report-', error);
     }
   },
   async getSLOConfig(query: any) {
@@ -453,7 +452,6 @@ const apiKubernetes1 = {
       });
       return response;
     } catch (error) {
-      console.log('failed to get slo config-', error);
       return error;
     }
   },
@@ -464,7 +462,6 @@ const apiKubernetes1 = {
       });
       return response;
     } catch (error) {
-      console.log('failed to create slo config-', error);
       return error;
     }
   },
@@ -475,7 +472,6 @@ const apiKubernetes1 = {
       });
       return response;
     } catch (error) {
-      console.log('failed to update slo config-', error);
       return error;
     }
   },
@@ -520,7 +516,6 @@ const apiKubernetes1 = {
         },
       };
     } catch (error) {
-      console.log('failed to fetch event rules-', error);
       return error;
     }
   },
@@ -547,7 +542,7 @@ const apiKubernetes1 = {
           data: transformedData,
         };
       } catch (error) {
-        console.log('failed to fetch event rules-', error);
+        console.warn('failed to fetch event rules-', error);
         return [];
       }
     } else {
@@ -561,7 +556,6 @@ const apiKubernetes1 = {
         data: response?.data,
       };
     } catch (error) {
-      console.log('failed to create event rules-', error);
       return error;
     }
   },
@@ -572,7 +566,6 @@ const apiKubernetes1 = {
         data: response?.data,
       };
     } catch (error) {
-      console.log('failed to update the alert rule, ', error);
       return error;
     }
   },
@@ -598,7 +591,6 @@ const apiKubernetes1 = {
         },
       };
     } catch (error) {
-      console.log('failed to fetch distinct data- ', error);
       return error;
     }
   },
@@ -609,7 +601,6 @@ const apiKubernetes1 = {
         data: response?.data,
       };
     } catch (error) {
-      console.log('failed to disable the alert rule, ', error);
       return error;
     }
   },
@@ -639,7 +630,6 @@ const apiKubernetes1 = {
       });
       return response;
     } catch (error) {
-      console.log('failed to fetch acc-', error);
       return error;
     }
   },
@@ -658,7 +648,6 @@ const apiKubernetes1 = {
       }
       return response;
     } catch (error) {
-      console.log('failed to fetch acc agent-', error);
       return error;
     }
   },
@@ -669,7 +658,6 @@ const apiKubernetes1 = {
       });
       return response;
     } catch (error) {
-      console.log('failed to get aws cloud formation url-', error);
       return error;
     }
   },
@@ -732,7 +720,6 @@ const apiKubernetes1 = {
       }
       return response;
     } catch (error) {
-      console.log('failed to fetch aws acc-', error);
       return error;
     }
   },
@@ -747,7 +734,6 @@ const apiKubernetes1 = {
       }
       return response;
     } catch (error) {
-      console.log('failed to fetch gcp acc-', error);
       return error;
     }
   },
@@ -786,7 +772,6 @@ const apiKubernetes1 = {
       }
       return response;
     } catch (error) {
-      console.log('failed to list slo configs-', error);
       return error;
     }
   },
@@ -1034,7 +1019,6 @@ const apiKubernetes1 = {
       }
       return insights;
     } catch (error) {
-      console.log('Your Error is', error);
       return error;
     }
   },
@@ -1092,7 +1076,6 @@ const apiKubernetes1 = {
       const response = await queryGraphQL(LIST_K8s_VERSIONS, 'ListK8sVersions', {});
       return response;
     } catch (error) {
-      console.log('failed to fetch list k8s version-', error);
       return error;
     }
   },
@@ -1257,7 +1240,6 @@ const apiKubernetes1 = {
       const response = await queryGraphQL(LIST_ANOMALY_TEMPLATE, 'ListAnomalyTemplate', {});
       return response;
     } catch (error) {
-      console.log('failed to fetch list anomaly template-', error);
       return error;
     }
   },
@@ -1273,7 +1255,6 @@ const apiKubernetes1 = {
       const response = await queryGraphQL(LIST_ACTION_PLAYBOOK_ACTION.replace('__REQUEST__', gqlStringify(data)), 'ListAgentPlaybookAction', {});
       return response;
     } catch (error) {
-      console.log('failed to fetch list agent playbook action-', error);
       return error;
     }
   },
@@ -1305,7 +1286,6 @@ const apiKubernetes1 = {
       }
       return response;
     } catch (error) {
-      console.log('failed to get agent playbook for event- ', error);
       return error;
     }
   },
@@ -1447,7 +1427,6 @@ const apiKubernetes1 = {
       const response = await queryGraphQL(query, 'GenerateUpgradePlan', { accountId: accountId });
       return response.data;
     } catch (err) {
-      console.log('failed to generate upgrade ', err);
       return err;
     }
   },
@@ -1487,7 +1466,6 @@ const apiKubernetes1 = {
       });
       return response.data;
     } catch (err) {
-      console.log('failed to set upgrade plan task status ', err);
       return err;
     }
   },
@@ -1510,7 +1488,6 @@ const apiKubernetes1 = {
       });
       return response.data;
     } catch (err) {
-      console.log('failed to set upgrade plan task owner ', err);
       return err;
     }
   },
@@ -1549,7 +1526,6 @@ const apiKubernetes1 = {
       }
       return response.data;
     } catch (err) {
-      console.log('failed to get upgrade plan task audits ', err);
       return err;
     }
   },
@@ -1575,7 +1551,6 @@ const apiKubernetes1 = {
         error: response?.data?.errors,
       };
     } catch (err) {
-      console.log('failed to get cluster health ', err);
       return err;
     }
   },
@@ -1873,7 +1848,17 @@ const apiKubernetes1 = {
     };
     return await queryGraphQL(MUTATION.replace('__WHERE__', gqlStringify(request)), 'KgUpsertTenantFilter', {});
   },
-  knowledgeGraphFilterOptionLabelValues: async function (data: any) {
+  knowledgeGraphFilterOptionLabelValues: async function (data: {
+    filterType: string;
+    filterKey: string;
+    accountIds?: string[];
+    nodeTypes?: string[];
+    nodeIds?: string[];
+    labels?: Record<string, string>;
+    attributes?: Record<string, string>;
+    labelKeys?: string[];
+    attributeKeys?: string[];
+  }) {
     const KNOWLEDGE_GRAPH_FILTER_LABEL_VALUES = `
     query KgFilterOptionLabelValues {
       kg_get_filter_values(request: __WHERE__) {
@@ -1888,6 +1873,15 @@ const apiKubernetes1 = {
     const request: any = {};
     request.filter_type = data.filterType;
     request.filter_key = data.filterKey;
+    // Scope the returned values to the user's currently-applied filters so the
+    // dropdown only offers values present within the active filter context.
+    if (data.accountIds?.length) request.account_ids = data.accountIds;
+    if (data.nodeTypes?.length) request.node_types = data.nodeTypes;
+    if (data.nodeIds?.length) request.node_ids = data.nodeIds;
+    if (data.labels && Object.keys(data.labels).length) request.labels = data.labels;
+    if (data.attributes && Object.keys(data.attributes).length) request.attributes = data.attributes;
+    if (data.labelKeys?.length) request.label_keys = data.labelKeys;
+    if (data.attributeKeys?.length) request.attribute_keys = data.attributeKeys;
     try {
       return await queryGraphQL(KNOWLEDGE_GRAPH_FILTER_LABEL_VALUES.replace('__WHERE__', gqlStringify(request)), 'KgFilterOptionLabelValues', {});
     } catch (err) {
@@ -1945,13 +1939,20 @@ const apiKubernetes1 = {
     // Dashboard display filter — keep low-signal config-change records out of every
     // summary KPI. Backend triaging is unaffected. See EXCLUDED_TRIAGE_AGGREGATION_KEYS.
     const excludeKeys = { aggregation_key: { _not_in: EXCLUDED_TRIAGE_AGGREGATION_KEYS } };
+    // Scope the whole-window KPIs (Total Events, New Issues, High Severity) to FIRING so
+    // each card equals the count you land on after drilling in: the Troubleshoot Events
+    // list defaults to status=FIRING (KubernetesEvents, isTroubleshootPage). Without this
+    // the cards counted every status (FIRING + RESOLVED + …) while the list shows only
+    // FIRING — the mismatch reported in issue #32524. The *_attention blocks intentionally
+    // stay all-status: they key off nb_status (triage backlog), mirroring the Triage Inbox.
+    const firingOnly = { status: { _eq: 'FIRING' } };
     // Scope to the selected account(s) so the cards match the account-scoped
     // Events list. Omit when nothing is selected (all accounts). Mirrors the
     // shape buildEventFilterParams uses for the list.
     const accountIds = Array.isArray(data.accountId) ? data.accountId.filter(Boolean) : data.accountId ? [data.accountId] : [];
     const accountFilter = accountIds.length > 0 ? { account_id: { _in: accountIds } } : {};
-    const request: any = { _and: currentRange, ...accountFilter, ...excludeKeys };
-    const request1: any = { _and: previousRange, ...accountFilter, ...excludeKeys };
+    const request: any = { _and: currentRange, ...firingOnly, ...accountFilter, ...excludeKeys };
+    const request1: any = { _and: previousRange, ...firingOnly, ...accountFilter, ...excludeKeys };
     const requestAttn: any = { _and: currentRange, ...accountFilter, nb_status: { _in: ['OPEN', 'ACTION_REQUIRED'] }, ...excludeKeys };
     const request1Attn: any = { _and: previousRange, ...accountFilter, nb_status: { _in: ['OPEN', 'ACTION_REQUIRED'] }, ...excludeKeys };
     try {

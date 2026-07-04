@@ -3,8 +3,8 @@ import PropTypes from 'prop-types';
 import { Button } from '@ui/Button';
 import { History } from '@mui/icons-material';
 import { ListingLayout } from '@ui/ListingLayout';
-import CustomTable from '@shared/tables/CustomTable2';
-import { Modal } from '@shared/modal';
+import CustomTable from '@shared/tables/CustomTable';
+import { Modal } from '@ui/Modal';
 import apiUser from '@api1/user';
 import CopyButton from '@shared/buttons/CopyButton';
 import { Label } from '@ui/Label';
@@ -12,6 +12,7 @@ import Text from '@shared/format/Text';
 import Datetime from '@shared/format/Datetime';
 import { Box } from '@mui/material';
 import { safeJSONParse } from 'src/utils/common';
+import { ds } from '@utils/colors';
 
 export function UserHistory({ accountId, module }) {
   const headers = [{ name: 'Query', width: '70%' }, 'Executed At', 'Status'];
@@ -72,11 +73,11 @@ export function UserHistory({ accountId, module }) {
       sx={{
         alignSelf: 'stretch',
         backgroundColor: 'white',
-        minHeight: '400px',
+        minHeight: ds.space.mul(0, 200),
       }}
     >
       <ListingLayout.Body
-        padding='16px 14px 20px 14px'
+        padding={`${ds.space[4]} ${ds.space.mul(0, 7)} ${ds.space.mul(0, 10)} ${ds.space.mul(0, 7)}`}
         sx={{ '@media (max-width: 1350px)': { padding: 'var(--ds-space-4) var(--ds-space-2) var(--ds-space-4) var(--ds-space-2)' } }}
       >
         <CustomTable
@@ -114,12 +115,12 @@ export function UserHistoryPopup({ accountId, module, isOpen, onClose }) {
       title={'History'}
       sx={{
         '& .MuiPaper-root': {
-          maxWidth: '1010px',
+          maxWidth: ds.space.mul(0, 505),
           '& .MuiDialogContent-root': {
             padding: 'var(--ds-space-4) var(--ds-space-6)',
           },
         },
-        height: '700px',
+        height: ds.space.mul(0, 350),
       }}
     >
       <UserHistory accountId={accountId} module={module} />

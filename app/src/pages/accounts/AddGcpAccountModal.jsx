@@ -1,6 +1,5 @@
 import {
   Grid,
-  IconButton,
   Typography,
   Stepper,
   Step,
@@ -11,11 +10,11 @@ import {
   Box,
   Collapse,
   Alert,
-  Checkbox,
-  Chip,
   Tab,
   Tabs,
 } from '@mui/material';
+import { Chip } from '@ui/Chip';
+import { Checkbox } from '@ui/Checkbox';
 import { Input } from '@ui/Input';
 import { ContentCopy, CheckCircleOutline, Check, HelpOutline, ExpandMore, ExpandLess, InfoOutlined, Search, ErrorOutline } from '@mui/icons-material';
 import { useState, useMemo } from 'react';
@@ -23,52 +22,57 @@ import apiAccount from '@api1/account';
 import apiIntegrations from '@api1/integrations';
 // TODO: Re-enable after Pub/Sub testing
 // import apiKubernetes1 from '@api1/kubernetes1';
-import { Modal } from '@shared/modal';
+import { Modal } from '@ui/Modal';
 import { isK8sAccountNameValid, parseHttpResponseBodyMessage } from 'src/utils/common';
 import { Button } from '@ui/Button';
-import { snackbar } from '@shared/snackbarService';
+import { toast as snackbar } from '@ui/Toast';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import ValidationResultBanner from '@components/accounts/ValidationResultBanner';
+import { ds } from 'src/utils/colors';
 
 const StepConnectorStyled = styled(StepConnector)(() => ({
   [`&.${stepConnectorClasses.alternativeLabel}`]: {
-    top: 10,
-    left: 'calc(-50% + 16px)',
-    right: 'calc(50% + 16px)',
+    top: ds.space.mul(1, 5),
+    left: `calc(-50% + ${ds.space[4]})`,
+    right: `calc(50% + ${ds.space[4]})`,
   },
   [`&.${stepConnectorClasses.active}, &.${stepConnectorClasses.completed}`]: {
     [`& .${stepConnectorClasses.line}`]: {
-      borderColor: '#16A34A',
+      borderColor: ds.green[500],
       borderTopWidth: 2,
     },
   },
   [`& .${stepConnectorClasses.line}`]: {
-    borderColor: '#D0D0D0',
+    borderColor: ds.brand[200],
     borderTopWidth: 1,
-    borderRadius: 1,
+    borderRadius: ds.radius.sm,
   },
 }));
 
 const StepIconCustom = ({ active, completed, icon }) => {
   const styles = completed
-    ? { backgroundColor: '#4caf50', border: 'none', color: 'white' }
-    : { backgroundColor: 'white', border: active ? '1px solid #16A34A' : '1px solid #D0D0D0', color: active ? '#16A34A' : '#666' };
+    ? { backgroundColor: ds.green[400], border: 'none', color: ds.background[100] }
+    : {
+        backgroundColor: ds.background[100],
+        border: active ? `1px solid ${ds.green[500]}` : `1px solid ${ds.gray[300]}`,
+        color: active ? ds.green[500] : ds.gray[600],
+      };
 
   return (
     <Box
       sx={{
-        width: '24px',
-        height: '24px',
-        borderRadius: '50%',
+        width: ds.space[5],
+        height: ds.space[5],
+        borderRadius: ds.radius.pill,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        fontSize: '14px',
+        fontSize: ds.text.bodyLg,
         fontWeight: 'bold',
         ...styles,
       }}
     >
-      {completed ? <Check sx={{ fontSize: '16px' }} /> : icon}
+      {completed ? <Check sx={{ fontSize: ds.text.title }} /> : icon}
     </Box>
   );
 };
@@ -468,16 +472,16 @@ const AddGcpAccountModal = ({ open, onClose }) => {
 
   return (
     <Modal width='md' open={open} handleClose={isLoading ? () => {} : () => handleCloseModal(step === 3)} title='Add GCP Account' loader={isLoading}>
-      <Stepper activeStep={step} alternativeLabel connector={<StepConnectorStyled />} sx={{ mb: 3, mt: 2 }}>
+      <Stepper activeStep={step} alternativeLabel connector={<StepConnectorStyled />} sx={{ mb: ds.space[5], mt: ds.space[4] }}>
         {STEPS.map((label, idx) => (
           <Step key={label} completed={step > idx}>
             <StepLabel
               StepIconComponent={StepIconCustom}
               sx={{
                 '& .MuiStepLabel-label.MuiStepLabel-alternativeLabel': {
-                  fontSize: '13px',
-                  marginTop: '10px',
-                  color: step === idx ? '#374151' : 'inherit',
+                  fontSize: ds.text.body,
+                  marginTop: ds.space[2],
+                  color: step === idx ? ds.gray[700] : 'inherit',
                   fontWeight: step === idx ? 500 : 'normal',
                 },
               }}
@@ -491,21 +495,39 @@ const AddGcpAccountModal = ({ open, onClose }) => {
       {/* ──── Step 1: Service Account ──── */}
       {step === 0 && (
         <>
-          <Box sx={{ mb: 1 }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: 0.5, py: 1 }} onClick={() => setGuideExpanded(!guideExpanded)}>
-              <HelpOutline sx={{ fontSize: 18, color: '#6B7280' }} />
-              <Typography sx={{ fontSize: 13, color: '#6B7280', fontWeight: 500 }}>Setup Guide — How to create a GCP service account</Typography>
-              {guideExpanded ? <ExpandLess sx={{ fontSize: 18, color: '#6B7280' }} /> : <ExpandMore sx={{ fontSize: 18, color: '#6B7280' }} />}
+          <Box sx={{ mb: ds.space[2] }}>
+            <Box
+              role='button'
+              tabIndex={0}
+              sx={{ display: 'flex', alignItems: 'center', cursor: 'pointer', gap: ds.space[1], py: ds.space[2] }}
+              onClick={() => setGuideExpanded(!guideExpanded)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setGuideExpanded(!guideExpanded);
+                }
+              }}
+            >
+              <HelpOutline sx={{ fontSize: 18, color: ds.gray[600] }} />
+              <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600], fontWeight: ds.weight.medium }}>
+                Setup Guide — How to create a GCP service account
+              </Typography>
+              {guideExpanded ? <ExpandLess sx={{ fontSize: 18, color: ds.gray[600] }} /> : <ExpandMore sx={{ fontSize: 18, color: ds.gray[600] }} />}
             </Box>
             <Collapse in={guideExpanded}>
-              <Box sx={{ mt: 1, p: 2, bgcolor: '#f8f9fa', borderRadius: '8px', border: '1px solid #e0e0e0' }}>
-                <MarkDowns data={SETUP_GUIDE_CONTENT} sx={{ maxHeight: '300px', overflowY: 'auto', padding: '0px', borderRadius: '0px' }} />
+              <Box
+                sx={{ mt: ds.space[2], p: ds.space[4], bgcolor: ds.background[200], borderRadius: ds.radius.lg, border: `1px solid ${ds.gray[300]}` }}
+              >
+                <MarkDowns
+                  data={SETUP_GUIDE_CONTENT}
+                  sx={{ maxHeight: ds.space.mul(1, 75), overflowY: 'auto', padding: '0px', borderRadius: '0px' }}
+                />
               </Box>
             </Collapse>
           </Box>
 
           <Grid container>
-            <Box sx={{ mt: 2, width: '100%' }}>
+            <Box sx={{ mt: ds.space[4], width: '100%' }}>
               <Input
                 value={accountNameValue}
                 size='sm'
@@ -516,7 +538,7 @@ const AddGcpAccountModal = ({ open, onClose }) => {
                 error={validationError.gcpAccountName || undefined}
               />
             </Box>
-            <Box sx={{ mt: 2, width: '100%' }}>
+            <Box sx={{ mt: ds.space[4], width: '100%' }}>
               <Input
                 value={serviceAccountKey}
                 size='sm'
@@ -534,48 +556,55 @@ const AddGcpAccountModal = ({ open, onClose }) => {
 
           <ValidationResultBanner result={validationResult} />
 
-          <Grid container spacing={2} mt={1} mb={4} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
-            <Grid item>
-              <Button id='cancel-btn' size='md' tone='secondary' onClick={() => handleCloseModal(false)}>
-                Cancel
-              </Button>
-            </Grid>
-            <Grid item>
-              <Button
-                id='check-permissions-btn'
-                size='md'
-                tone='secondary'
-                disabled={!serviceAccountData || isValidating}
-                loading={isValidating}
-                onClick={handleValidateCredentials}
-              >
-                Check Permissions
-              </Button>
-            </Grid>
-            <Grid item>
-              <Button size='md' tone='primary' id='next-step1' disabled={!canProceedStep1} onClick={() => setStep(1)}>
-                Next
-              </Button>
-            </Grid>
-          </Grid>
+          <Box
+            sx={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              gap: ds.space[4],
+              mt: ds.space[2],
+              mb: ds.space[6],
+              '& button': { minWidth: ds.space.mul(1, 35) },
+            }}
+          >
+            <Button id='cancel-btn' size='md' tone='secondary' onClick={() => handleCloseModal(false)}>
+              Cancel
+            </Button>
+            <Button
+              id='check-permissions-btn'
+              size='md'
+              tone='secondary'
+              disabled={!serviceAccountData || isValidating}
+              loading={isValidating}
+              onClick={handleValidateCredentials}
+            >
+              Check Permissions
+            </Button>
+            <Button size='md' tone='primary' id='next-step1' disabled={!canProceedStep1} onClick={() => setStep(1)}>
+              Next
+            </Button>
+          </Box>
         </>
       )}
 
       {/* ──── Step 2: Projects ──── */}
       {step === 1 && (
         <>
-          <Typography sx={{ fontSize: 14, color: '#374151', mb: 2 }}>
+          <Typography sx={{ fontSize: ds.text.bodyLg, color: ds.brand[500], mb: ds.space[4] }}>
             Select which GCP projects to monitor. You can auto-discover accessible projects or enter project IDs manually.
           </Typography>
 
-          <Tabs value={projectTab} onChange={(_, v) => setProjectTab(v)} sx={{ mb: 2, minHeight: 36, '& .MuiTab-root': { minHeight: 36, py: 0.5 } }}>
+          <Tabs
+            value={projectTab}
+            onChange={(_, v) => setProjectTab(v)}
+            sx={{ mb: ds.space[4], minHeight: ds.space.mul(1, 9), '& .MuiTab-root': { minHeight: ds.space.mul(1, 9), py: ds.space[1] } }}
+          >
             <Tab label='Auto-Discover' />
             <Tab label='Manual Entry' />
           </Tabs>
 
           {projectTab === 0 && (
             <>
-              <Box sx={{ display: 'flex', gap: 1, mb: 2, alignItems: 'center' }}>
+              <Box sx={{ display: 'flex', gap: ds.space[2], mb: ds.space[4], alignItems: 'center' }}>
                 <Button
                   id='discover-projects-btn'
                   size='md'
@@ -587,58 +616,66 @@ const AddGcpAccountModal = ({ open, onClose }) => {
                   Discover Projects
                 </Button>
                 {discoveredProjects.length > 0 && (
-                  <Typography sx={{ fontSize: 13, color: '#6B7280' }}>{discoveredProjects.length} project(s) found</Typography>
+                  <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600] }}>{discoveredProjects.length} project(s) found</Typography>
                 )}
               </Box>
 
               {discoveryError && (
-                <Alert severity='warning' sx={{ mb: 2, '& .MuiAlert-message': { fontSize: '13px' } }}>
+                <Alert severity='warning' sx={{ mb: ds.space[4], '& .MuiAlert-message': { fontSize: ds.text.body } }}>
                   {discoveryError}
                 </Alert>
               )}
 
               {discoveredProjects.length > 0 && (
                 <>
-                  <Box sx={{ mb: 1 }}>
+                  <Box sx={{ mb: ds.space[2] }}>
                     <Input
                       size='sm'
                       placeholder='Search projects...'
                       value={projectSearchFilter}
                       onChange={setProjectSearchFilter}
-                      leadingIcon={<Search sx={{ fontSize: 18, color: '#9CA3AF' }} />}
+                      leadingIcon={<Search sx={{ fontSize: 18, color: ds.gray[400] }} />}
                     />
                   </Box>
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2], mb: ds.space[1] }}>
                     <Checkbox
-                      size='small'
+                      size='sm'
+                      aria-label='Select all projects'
                       checked={selectedProjectIds.size === filteredProjects.length && filteredProjects.length > 0}
                       indeterminate={selectedProjectIds.size > 0 && selectedProjectIds.size < filteredProjects.length}
                       onChange={toggleAllProjects}
                     />
-                    <Typography sx={{ fontSize: 13, fontWeight: 500 }}>
+                    <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.medium }}>
                       Select All ({selectedProjectIds.size}/{filteredProjects.length})
                     </Typography>
                   </Box>
-                  <Box sx={{ maxHeight: 250, overflowY: 'auto', border: '1px solid #E5E7EB', borderRadius: '6px' }}>
+                  <Box sx={{ maxHeight: ds.space.mul(1, 62), overflowY: 'auto', border: `1px solid ${ds.brand[150]}`, borderRadius: ds.radius.md }}>
                     {filteredProjects.map((project) => (
                       <Box
                         key={project.project_id}
                         sx={{
                           display: 'flex',
                           alignItems: 'center',
-                          px: 1,
-                          py: 0.5,
-                          borderBottom: '1px solid #F3F4F6',
-                          '&:hover': { bgcolor: '#F9FAFB' },
+                          px: ds.space[2],
+                          py: ds.space[1],
+                          borderBottom: `1px solid ${ds.background[300]}`,
+                          '&:hover': { bgcolor: ds.background[200] },
                           cursor: 'pointer',
                         }}
                         onClick={() => toggleProject(project.project_id)}
                       >
-                        <Checkbox size='small' checked={selectedProjectIds.has(project.project_id)} />
-                        <Box sx={{ ml: 0.5 }}>
-                          <Typography sx={{ fontSize: 13, fontWeight: 500 }}>{project.project_id}</Typography>
+                        <Box component='span' onClick={(e) => e.stopPropagation()}>
+                          <Checkbox
+                            size='sm'
+                            aria-label={`Select ${project.project_id}`}
+                            checked={selectedProjectIds.has(project.project_id)}
+                            onChange={() => toggleProject(project.project_id)}
+                          />
+                        </Box>
+                        <Box sx={{ ml: ds.space[1] }}>
+                          <Typography sx={{ fontSize: ds.text.body, fontWeight: ds.weight.medium }}>{project.project_id}</Typography>
                           {project.name && project.name !== project.project_id && (
-                            <Typography sx={{ fontSize: 12, color: '#6B7280' }}>{project.name}</Typography>
+                            <Typography sx={{ fontSize: ds.text.small, color: ds.gray[600] }}>{project.name}</Typography>
                           )}
                         </Box>
                       </Box>
@@ -651,7 +688,7 @@ const AddGcpAccountModal = ({ open, onClose }) => {
 
           {projectTab === 1 && (
             <>
-              <Box sx={{ mt: 2, width: '100%' }}>
+              <Box sx={{ mt: ds.space[4], width: '100%' }}>
                 <Input
                   value={manualProjectIds}
                   size='sm'
@@ -665,44 +702,55 @@ const AddGcpAccountModal = ({ open, onClose }) => {
                 />
               </Box>
               {manualProjectIds && (
-                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mt: 1 }}>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: ds.space[1], mt: ds.space[2] }}>
                   {manualProjectIds
                     .split(',')
                     .map((id) => id.trim())
                     .filter(Boolean)
                     .map((id) => (
-                      <Chip key={id} label={id} size='small' variant='outlined' />
+                      <Chip key={id} size='sm' tone='neutral'>
+                        {id}
+                      </Chip>
                     ))}
                 </Box>
               )}
             </>
           )}
 
-          <Grid container spacing={2} mt={2} mb={4} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
-            <Grid item>
-              <Button id='back-step2' size='md' tone='secondary' onClick={() => setStep(0)}>
-                Back
-              </Button>
-            </Grid>
-            <Grid item>
-              <Button size='md' tone='primary' id='next-step2' disabled={!canProceedStep2} onClick={() => setStep(2)}>
-                Next
-              </Button>
-            </Grid>
-          </Grid>
+          <Box
+            sx={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              gap: ds.space[4],
+              mt: ds.space[4],
+              mb: ds.space[6],
+              '& button': { minWidth: ds.space.mul(1, 35) },
+            }}
+          >
+            <Button id='back-step2' size='md' tone='secondary' onClick={() => setStep(0)}>
+              Back
+            </Button>
+            <Button size='md' tone='primary' id='next-step2' disabled={!canProceedStep2} onClick={() => setStep(2)}>
+              Next
+            </Button>
+          </Box>
         </>
       )}
 
       {/* ──── Step 3: Billing ──── */}
       {step === 2 && (
         <>
-          <Alert severity='info' icon={<InfoOutlined sx={{ fontSize: 18 }} />} sx={{ mb: 2, '& .MuiAlert-message': { fontSize: '13px' } }}>
+          <Alert
+            severity='info'
+            icon={<InfoOutlined sx={{ fontSize: 18 }} />}
+            sx={{ mb: ds.space[4], '& .MuiAlert-message': { fontSize: ds.text.body } }}
+          >
             Billing data is typically exported to a central BigQuery table. This may be in a different project than your resource projects. Configure
             this in GCP Console under Billing &rarr; Billing export.
           </Alert>
 
           <Grid container>
-            <Box sx={{ mt: 2, width: '100%' }}>
+            <Box sx={{ mt: ds.space[4], width: '100%' }}>
               <Input
                 value={billingProjectId}
                 size='sm'
@@ -716,7 +764,7 @@ const AddGcpAccountModal = ({ open, onClose }) => {
                 help='The GCP project containing the BigQuery billing export. Leave empty if same as service account project.'
               />
             </Box>
-            <Box sx={{ mt: 2, width: '100%' }}>
+            <Box sx={{ mt: ds.space[4], width: '100%' }}>
               <Input
                 value={billingDatasetName}
                 size='sm'
@@ -730,7 +778,7 @@ const AddGcpAccountModal = ({ open, onClose }) => {
                 placeholder='e.g., billing_export'
               />
             </Box>
-            <Box sx={{ mt: 2, width: '100%' }}>
+            <Box sx={{ mt: ds.space[4], width: '100%' }}>
               <Input
                 value={billingTableName}
                 size='sm'
@@ -750,7 +798,7 @@ const AddGcpAccountModal = ({ open, onClose }) => {
             <Alert
               severity={billingValidationResult.hasAccess ? 'success' : 'error'}
               icon={billingValidationResult.hasAccess ? <CheckCircleOutline sx={{ fontSize: 18 }} /> : <ErrorOutline sx={{ fontSize: 18 }} />}
-              sx={{ mt: 1, mb: 1, '& .MuiAlert-message': { fontSize: '13px' } }}
+              sx={{ mt: ds.space[2], mb: ds.space[2], '& .MuiAlert-message': { fontSize: ds.text.body } }}
             >
               {billingValidationResult.hasAccess
                 ? 'BigQuery billing table accessible.'
@@ -758,37 +806,40 @@ const AddGcpAccountModal = ({ open, onClose }) => {
             </Alert>
           )}
 
-          <Grid container spacing={2} mt={2} mb={4} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
-            <Grid item>
-              <Button id='back-step3' size='md' tone='secondary' onClick={() => setStep(1)}>
-                Back
-              </Button>
-            </Grid>
-            <Grid item>
-              <Button
-                id='validate-billing-btn'
-                size='md'
-                tone='secondary'
-                disabled={!billingDatasetName || !billingTableName || isValidatingBilling}
-                loading={isValidatingBilling}
-                onClick={handleValidateBilling}
-              >
-                Validate Billing
-              </Button>
-            </Grid>
-            <Grid item>
-              <Button
-                size='md'
-                tone='primary'
-                id='save-and-continue-btn'
-                disabled={isSubmitting || !billingDatasetName.trim() || !billingTableName.trim()}
-                loading={isSubmitting}
-                onClick={handleBulkOnboard}
-              >
-                Save &amp; Continue
-              </Button>
-            </Grid>
-          </Grid>
+          <Box
+            sx={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              gap: ds.space[4],
+              mt: ds.space[4],
+              mb: ds.space[6],
+              '& button': { minWidth: ds.space.mul(1, 35) },
+            }}
+          >
+            <Button id='back-step3' size='md' tone='secondary' onClick={() => setStep(1)}>
+              Back
+            </Button>
+            <Button
+              id='validate-billing-btn'
+              size='md'
+              tone='secondary'
+              disabled={!billingDatasetName || !billingTableName || isValidatingBilling}
+              loading={isValidatingBilling}
+              onClick={handleValidateBilling}
+            >
+              Validate Billing
+            </Button>
+            <Button
+              size='md'
+              tone='primary'
+              id='save-and-continue-btn'
+              disabled={isSubmitting || !billingDatasetName.trim() || !billingTableName.trim()}
+              loading={isSubmitting}
+              onClick={handleBulkOnboard}
+            >
+              Save &amp; Continue
+            </Button>
+          </Box>
         </>
       )}
 
@@ -799,24 +850,24 @@ const AddGcpAccountModal = ({ open, onClose }) => {
             sx={{
               display: 'flex',
               alignItems: 'center',
-              gap: 1.5,
-              mb: 1,
-              px: 2,
-              py: 1.5,
-              backgroundColor: '#F0FDF4',
-              borderRadius: '8px',
-              border: '1px solid #BBF7D0',
+              gap: ds.space[3],
+              mb: ds.space[2],
+              px: ds.space[4],
+              py: ds.space[3],
+              backgroundColor: ds.green[100],
+              borderRadius: ds.radius.lg,
+              border: `1px solid ${ds.green[200]}`,
             }}
           >
-            <CheckCircleOutline sx={{ color: '#16A34A', fontSize: 22 }} />
-            <Typography sx={{ fontSize: '14px', fontWeight: 500, color: '#15803D' }}>
+            <CheckCircleOutline sx={{ color: ds.green[500], fontSize: 22 }} />
+            <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.medium, color: ds.green[600] }}>
               {onboardResults?.accounts?.filter((a) => a.status === 'created').length || 0} GCP project(s) onboarded successfully.
             </Typography>
           </Box>
 
           {onboardResults?.accounts?.some((a) => a.status === 'error') && (
-            <Alert severity='warning' sx={{ mt: 1, mb: 1, '& .MuiAlert-message': { fontSize: '13px' } }}>
-              <Typography variant='body2' sx={{ fontWeight: 500, mb: 0.5 }}>
+            <Alert severity='warning' sx={{ mt: ds.space[2], mb: ds.space[2], '& .MuiAlert-message': { fontSize: ds.text.body } }}>
+              <Typography variant='body2' sx={{ fontWeight: ds.weight.medium, mb: ds.space[1] }}>
                 Some projects failed:
               </Typography>
               {onboardResults.accounts
@@ -833,14 +884,14 @@ const AddGcpAccountModal = ({ open, onClose }) => {
             <Alert
               severity='success'
               icon={<CheckCircleOutline sx={{ fontSize: 18 }} />}
-              sx={{ mt: 1, mb: 2, '& .MuiAlert-message': { fontSize: '13px' } }}
+              sx={{ mt: ds.space[2], mb: ds.space[4], '& .MuiAlert-message': { fontSize: ds.text.body } }}
             >
               Real-time alerts enabled for {webhookSetupResult.succeeded.length} project(s). Webhook notification channels have been created.
             </Alert>
           )}
 
           {webhookSetupResult?.failed?.length > 0 && (
-            <Alert severity='warning' sx={{ mt: 1, mb: 2, '& .MuiAlert-message': { fontSize: '13px' } }}>
+            <Alert severity='warning' sx={{ mt: ds.space[2], mb: ds.space[4], '& .MuiAlert-message': { fontSize: ds.text.body } }}>
               {webhookSetupResult?.succeeded?.length > 0 ? `Alerts enabled for ${webhookSetupResult.succeeded.length} project(s). ` : ''}
               Failed for {webhookSetupResult.failed.length}: {webhookSetupResult.failed.join(', ')}. You can set them up manually below or enable
               later from the account menu.
@@ -850,9 +901,9 @@ const AddGcpAccountModal = ({ open, onClose }) => {
           {!webhookSetupResult && (
             <>
               {hasMonitoringPermission && (
-                <Box sx={{ mt: 2, mb: 2 }}>
-                  <Typography sx={{ fontSize: 14, fontWeight: 500, mb: 1 }}>Auto-Setup (Recommended)</Typography>
-                  <Typography sx={{ fontSize: 13, color: '#6B7280', mb: 1.5 }}>
+                <Box sx={{ mt: ds.space[4], mb: ds.space[4] }}>
+                  <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.medium, mb: ds.space[2] }}>Auto-Setup (Recommended)</Typography>
+                  <Typography sx={{ fontSize: ds.text.body, color: ds.gray[600], mb: ds.space[3] }}>
                     Your service account has the required Cloud Monitoring permissions. Click below to automatically create a webhook notification
                     channel and attach it to all alert policies.
                   </Typography>
@@ -899,7 +950,7 @@ const AddGcpAccountModal = ({ open, onClose }) => {
                 <Alert
                   severity='info'
                   icon={<InfoOutlined sx={{ fontSize: 18 }} />}
-                  sx={{ mt: 1, mb: 2, '& .MuiAlert-message': { fontSize: '13px' } }}
+                  sx={{ mt: ds.space[2], mb: ds.space[4], '& .MuiAlert-message': { fontSize: ds.text.body } }}
                 >
                   Real-time alerts are not configured. Your account will use polling mode to detect alert changes. You can enable real-time alerts
                   later from the account settings.
@@ -909,18 +960,30 @@ const AddGcpAccountModal = ({ open, onClose }) => {
           )}
 
           {webhookUrl && (!webhookSetupResult || webhookSetupResult?.failed?.length > 0) && (
-            <Box sx={{ mt: 1 }}>
+            <Box sx={{ mt: ds.space[2] }}>
               {webhookSetupResult?.failed?.length > 0 && (
-                <Typography sx={{ fontSize: 14, fontWeight: 500, mb: 1 }}>Manual Setup for Failed Projects</Typography>
+                <Typography sx={{ fontSize: ds.text.bodyLg, fontWeight: ds.weight.medium, mb: ds.space[2] }}>
+                  Manual Setup for Failed Projects
+                </Typography>
               )}
               {!webhookSetupResult && hasMonitoringPermission && (
-                <Typography sx={{ fontSize: 14, fontWeight: 500, mb: 1, pt: 1, borderTop: '1px solid #E5E7EB' }}>Manual Setup</Typography>
+                <Typography
+                  sx={{
+                    fontSize: ds.text.bodyLg,
+                    fontWeight: ds.weight.medium,
+                    mb: ds.space[2],
+                    pt: ds.space[2],
+                    borderTop: `1px solid ${ds.brand[150]}`,
+                  }}
+                >
+                  Manual Setup
+                </Typography>
               )}
               <MarkDowns data={WEBHOOK_MANUAL_INSTRUCTIONS} sx={{ width: 'auto' }} />
 
-              <Grid container mt={1} mb={2} spacing={2}>
+              <Grid container mt={ds.space[2]} mb={ds.space[4]} spacing={ds.space[4]}>
                 <Grid item xs={12}>
-                  <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: ds.space[2] }}>
                     <Box sx={{ flex: 1 }}>
                       <Input
                         value={webhookUrl}
@@ -932,22 +995,35 @@ const AddGcpAccountModal = ({ open, onClose }) => {
                         help={copied.webhookUrl ? 'Copied!' : 'Copy this URL and create a webhook notification channel in GCP Console.'}
                       />
                     </Box>
-                    <IconButton aria-label='copy webhook url' onClick={() => handleCopyToClipboard(webhookUrl, 'webhookUrl')} sx={{ mt: '22px' }}>
-                      <ContentCopy fontSize='small' />
-                    </IconButton>
+                    <Box sx={{ mt: ds.space[5] }}>
+                      <Button
+                        tone='ghost'
+                        composition='icon-only'
+                        aria-label='copy webhook url'
+                        onClick={() => handleCopyToClipboard(webhookUrl, 'webhookUrl')}
+                        icon={<ContentCopy fontSize='small' />}
+                      />
+                    </Box>
                   </Box>
                 </Grid>
               </Grid>
             </Box>
           )}
 
-          <Grid container spacing={2} mt={1} mb={4} justifyContent='flex-end' sx={{ button: { minWidth: '140px' } }}>
-            <Grid item>
-              <Button id='close-webhook-btn' size='md' tone='primary' onClick={() => handleCloseModal(true)}>
-                {webhookSetupResult?.succeeded?.length > 0 ? 'Close' : 'Skip for now'}
-              </Button>
-            </Grid>
-          </Grid>
+          <Box
+            sx={{
+              display: 'flex',
+              justifyContent: 'flex-end',
+              gap: ds.space[4],
+              mt: ds.space[2],
+              mb: ds.space[6],
+              '& button': { minWidth: ds.space.mul(1, 35) },
+            }}
+          >
+            <Button id='close-webhook-btn' size='md' tone='primary' onClick={() => handleCloseModal(true)}>
+              {webhookSetupResult?.succeeded?.length > 0 ? 'Close' : 'Skip for now'}
+            </Button>
+          </Box>
         </>
       )}
     </Modal>

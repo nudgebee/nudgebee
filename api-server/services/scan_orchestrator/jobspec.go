@@ -54,5 +54,17 @@ type JobSpec struct {
 	Volumes      []map[string]any `json:"volumes,omitempty"`
 	VolumeMounts []map[string]any `json:"volume_mounts,omitempty"`
 
+	// ImagePullSecretsFrom names the workload pod whose image-pull secrets the
+	// agent should make available to the scan Job, so image_scanner can pull a
+	// private image. The agent honors it only when run with auto-copy enabled;
+	// otherwise it's ignored, so sending it is always safe.
+	ImagePullSecretsFrom *PodRef `json:"image_pull_secrets_from,omitempty"`
+
 	TimeoutHintSeconds int `json:"timeout_hint_seconds,omitempty"`
+}
+
+// PodRef identifies a pod by namespace+name. Mirrors the agent's scanners.PodRef.
+type PodRef struct {
+	Namespace string `json:"namespace"`
+	Name      string `json:"name"`
 }

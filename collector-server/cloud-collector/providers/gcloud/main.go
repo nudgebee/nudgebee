@@ -59,6 +59,11 @@ func (a *gcloudProvider) QueryDeploymentDiff(ctx providers.CloudProviderContext,
 	return queryGcloudDeploymentDiff(ctx, account, query)
 }
 
+// QueryTraces implements providers.TraceProvider (Cloud Trace).
+func (a *gcloudProvider) QueryTraces(ctx providers.CloudProviderContext, account providers.Account, query providers.QueryTracesRequest) (providers.QueryTracesResponse, error) {
+	return queryGcloudTraces(ctx, account, query)
+}
+
 func (a *gcloudProvider) QueryMetrices(ctx providers.CloudProviderContext, account providers.Account, filter providers.QueryMetricsRequest) (providers.QueryMetricsResponse, error) {
 	service, ok := GetGcloudService(filter.ServiceName)
 	if !ok {

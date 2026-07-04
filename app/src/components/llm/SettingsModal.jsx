@@ -65,7 +65,7 @@ const SettingsModal = ({ open, onClose, accountId, allAgents, refreshAgentListin
 
   return (
     <Modal
-      width='lg'
+      width='xl'
       title={'Settings'}
       open={open}
       handleClose={handleClose}

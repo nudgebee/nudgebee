@@ -1,5 +1,5 @@
 /**
- * FeedbackVote — DS V2. Full re-implementation of legacy ThumpsUpAndDown.
+ * FeedbackVote
  * Spec: app/design-system/primitives/agentic/feedback-vote.html
  *
  * Prop API preserved from V1, plus:
@@ -35,10 +35,10 @@ const FeedbackVote = ({ onFeedbackSubmit, sentFeedback = {}, iconOnly = false })
 
   useEffect(() => {
     setFeedbackStatus({
-      submitted: sentFeedback.submitted ?? false,
-      isPositive: sentFeedback.isPositive ?? null,
+      submitted: sentFeedback?.submitted ?? false,
+      isPositive: sentFeedback?.isPositive ?? null,
     });
-  }, [sentFeedback]);
+  }, [sentFeedback?.submitted, sentFeedback?.isPositive]);
 
   const handleThumbsUp = async () => {
     try {
@@ -66,7 +66,7 @@ const FeedbackVote = ({ onFeedbackSubmit, sentFeedback = {}, iconOnly = false })
     try {
       await onFeedbackSubmit({
         type: 'thumbs_down',
-        message: (selectedOptions.join(', ') + ' ' + feedback).trim(),
+        message: [selectedOptions.join(', '), feedback.trim()].filter(Boolean).join(' | '),
       });
       setFeedbackStatus({ submitted: true, isPositive: false });
       handleCloseDialog();

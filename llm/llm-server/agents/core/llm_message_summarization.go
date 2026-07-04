@@ -17,6 +17,37 @@ type summarizationCtxKeyType struct{}
 
 var summarizationCtxKey = summarizationCtxKeyType{}
 
+// summarizationChunkSize returns the per-chunk input size (in tokens) for
+// summarization. It fills the window minus the reserved output and a small
+// prompt/safety overhead — NOT the old maxTokens/2 (or 0.7×), which left most of
+// the window empty and inflated the chunk count (= the number of summarization
+// LLM calls). Reserving the output also keeps each summarization call itself
+// within the window, so it can't overflow and recurse.
+func summarizationChunkSize(maxTokens int, model string) int {
+	outputReserve := GetLlmMaxOutputTokens(model)
+	if outputReserve <= 0 {
+		outputReserve = 4096
+	}
+	if outputReserve >= maxTokens {
+		outputReserve = maxTokens / 2 // tiny windows: never reserve the whole thing
+	}
+	const promptOverhead = 512
+	chunk := maxTokens - outputReserve - promptOverhead
+	if chunk < 256 {
+		chunk = 256
+	}
+	// On pathologically small windows the 256 floor can exceed maxTokens, which
+	// would break the "chunk fits inside the window" invariant the recovery loop
+	// relies on. Clamp to half the window, and keep it strictly positive.
+	if chunk >= maxTokens {
+		chunk = maxTokens / 2
+	}
+	if chunk <= 0 {
+		chunk = 1
+	}
+	return chunk
+}
+
 // CalculateTotalTokens calculates the total token count across all messages
 // This gives us an accurate view of the entire conversation size
 func CalculateTotalTokens(
@@ -162,14 +193,14 @@ func SummarizeContent(ctx *security.RequestContext, llm llms.Model, content stri
 	provider := GetLLMProvider(ctx, accountId, agentId, true, conversationId)
 	modelName := GetLLMModelName(ctx, accountId, provider, agentId, true, conversationId)
 
-	// Use the model's max token length as the upper bound.
-	maxTokens := GetLlmMaxTokenLength(modelName)
+	// Use the model's context window as the upper bound — user-configured value
+	// if set, else the hardcoded model map. The resolution is per-request cached.
+	resolution, _ := ResolveLLMConfig(ctx, accountId, agentId, conversationId)
+	maxTokens := ResolveModelMaxContext(resolution, modelName)
 
-	// Use a safe chunk size, leaving room for prompt and response.
-	chunkSize := maxTokens / 2
-	if chunkSize == 0 {
-		chunkSize = 4000
-	}
+	// Fill the window (minus output reserve + overhead), not half of it — chunk
+	// count is the number of summarization LLM calls.
+	chunkSize := summarizationChunkSize(maxTokens, modelName)
 
 	tokenCount, err := CountTokens(provider, modelName, content)
 	if err != nil {
@@ -686,8 +717,9 @@ func SummarizeLargeMessageChunkedParallel(
 		"contentLength", len(content),
 		"maxTokens", maxTokens)
 
-	// Use a safe chunk size, e.g., 70% of max tokens, to leave room for prompt overhead.
-	safeChunkSize := int(float64(maxTokens) * 0.7)
+	// Fill the window (minus output reserve + overhead), not 70% of it — chunk
+	// count is the number of summarization LLM calls.
+	safeChunkSize := summarizationChunkSize(maxTokens, model)
 	chunks, err := splitTextIntoChunks(content, provider, model, safeChunkSize)
 	if err != nil {
 		ctx.GetLogger().Error("Failed to split content into chunks for parallel summarization", "error", err)

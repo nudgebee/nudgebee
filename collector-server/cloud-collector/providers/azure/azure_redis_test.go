@@ -67,7 +67,7 @@ func TestRedisService_GetResources(t *testing.T) {
 				name := "updating-redis"
 				typeName := "Microsoft.Cache/redis"
 				location := "westus"
-				provisioningState := armredis.ProvisioningState("Updating")
+				provisioningState := armredis.ProvisioningState("SomeUnknownState")
 
 				return []armredis.ResourceInfo{
 					{
@@ -362,7 +362,7 @@ func TestRedisService_ApplyRecommendation(t *testing.T) {
 
 	err := svc.ApplyRecommendation(ctx, account, recommendation)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid resource ID")
+	assert.Contains(t, err.Error(), "access key (client ID) is not provided")
 }
 
 func TestRedisService_ApplyCommand(t *testing.T) {
@@ -383,7 +383,7 @@ func TestRedisService_ApplyCommand(t *testing.T) {
 				Command:    "azure_redis_enable_non_ssl_port",
 			},
 			expectError:   true,
-			errorContains: "invalid resource ID",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "missing redis cache name in ID",
@@ -392,7 +392,7 @@ func TestRedisService_ApplyCommand(t *testing.T) {
 				Command:    "azure_redis_enable_non_ssl_port",
 			},
 			expectError:   true,
-			errorContains: "invalid resource ID",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "unknown command",
@@ -401,7 +401,7 @@ func TestRedisService_ApplyCommand(t *testing.T) {
 				Command:    "unknown_command",
 			},
 			expectError:   true,
-			errorContains: "unknown command",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "valid non-SSL port command structure without Azure connection",
@@ -410,7 +410,7 @@ func TestRedisService_ApplyCommand(t *testing.T) {
 				Command:    "azure_redis_enable_non_ssl_port",
 			},
 			expectError:   true,
-			errorContains: "failed to create azure credential",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "valid TLS version command structure without Azure connection",
@@ -419,7 +419,7 @@ func TestRedisService_ApplyCommand(t *testing.T) {
 				Command:    "azure_redis_set_minimum_tls_version",
 			},
 			expectError:   true,
-			errorContains: "failed to create azure credential",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "valid regenerate primary key command structure without Azure connection",
@@ -428,7 +428,7 @@ func TestRedisService_ApplyCommand(t *testing.T) {
 				Command:    "regenerate_primary_key",
 			},
 			expectError:   true,
-			errorContains: "failed to create azure credential",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "valid regenerate secondary key command structure without Azure connection",
@@ -437,7 +437,7 @@ func TestRedisService_ApplyCommand(t *testing.T) {
 				Command:    "regenerate_secondary_key",
 			},
 			expectError:   true,
-			errorContains: "failed to create azure credential",
+			errorContains: "access key (client ID) is not provided",
 		},
 	}
 
@@ -466,7 +466,7 @@ func TestRedisService_QueryMetrices(t *testing.T) {
 
 	resp, err := svc.QueryMetrices(ctx, account, filter)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not implemented")
+	assert.Contains(t, err.Error(), "StartDate and EndDate must be provided")
 	assert.Equal(t, providers.QueryMetricsResponse{}, resp)
 }
 

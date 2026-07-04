@@ -24,7 +24,7 @@ func TestDNSService_GetResources(t *testing.T) {
 	// Test with missing credentials should return error
 	resources, err := svc.GetResources(ctx, account, "global")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "access secret is not provided")
+	assert.Contains(t, err.Error(), "access key (client ID) is not provided")
 	assert.Nil(t, resources)
 }
 
@@ -111,7 +111,7 @@ func TestDNSService_GetRecommendations(t *testing.T) {
 			// GetRecommendations requires Azure credentials to check for CAA records
 			// In test environment without credentials, expect credential error
 			assert.Error(t, err)
-			assert.Contains(t, err.Error(), "access secret is not provided")
+			assert.Contains(t, err.Error(), "access key (client ID) is not provided")
 			assert.Nil(t, recommendations) // No recommendations returned due to error
 		})
 	}
@@ -129,7 +129,7 @@ func TestDNSService_ApplyRecommendation(t *testing.T) {
 
 	err := svc.ApplyRecommendation(ctx, account, recommendation)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "access secret is not provided") // Credential check happens first
+	assert.Contains(t, err.Error(), "access key (client ID) is not provided") // Credential check happens first
 }
 
 func TestDNSService_ApplyCommand(t *testing.T) {
@@ -150,7 +150,7 @@ func TestDNSService_ApplyCommand(t *testing.T) {
 				Command:    "azure_dns_add_caa_record",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "unknown command",
@@ -159,7 +159,7 @@ func TestDNSService_ApplyCommand(t *testing.T) {
 				Command:    "unknown_command",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "valid command structure without Azure connection",
@@ -168,7 +168,7 @@ func TestDNSService_ApplyCommand(t *testing.T) {
 				Command:    "azure_dns_add_caa_record",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "DNSSEC command should fail",
@@ -177,7 +177,7 @@ func TestDNSService_ApplyCommand(t *testing.T) {
 				Command:    "azure_dns_enable_dnssec",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 	}
 
@@ -237,6 +237,6 @@ func TestDNSService_GetLogGroupName(t *testing.T) {
 
 	logGroup, err := svc.GetLogGroupName(ctx, account, "global", resourceID)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "access secret is not provided")
+	assert.Contains(t, err.Error(), "access key (client ID) is not provided")
 	assert.Equal(t, "", logGroup)
 }

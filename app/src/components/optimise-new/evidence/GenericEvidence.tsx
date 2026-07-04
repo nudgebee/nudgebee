@@ -44,8 +44,8 @@ const GenericEvidence = ({ recommendation, category, ruleName, estimatedSavings 
   const hasContent = flatFields.length > 0 || objectFields.length > 0 || arrayFields.length > 0;
 
   return (
-    <Box sx={{ p: '14px' }}>
-      <SectionTitle title={details?.title || 'Recommendation Details'} muiIcon={<AssignmentIcon sx={{ fontSize: '16px' }} />} />
+    <Box sx={{ p: ds.space.mul(0, 7) }}>
+      <SectionTitle title={details?.title || 'Recommendation Details'} muiIcon={<AssignmentIcon sx={{ fontSize: ds.text.title }} />} />
 
       {/* Main reason/description from data */}
       {rec.reason && (
@@ -101,7 +101,7 @@ const GenericEvidence = ({ recommendation, category, ruleName, estimatedSavings 
             sx={{
               backgroundColor: ds.gray[100],
               borderRadius: ds.radius.lg,
-              p: '10px',
+              p: ds.space.mul(0, 5),
               border: `1px solid ${ds.gray[200]}`,
               mb: ds.space[2],
             }}
@@ -124,7 +124,7 @@ const GenericEvidence = ({ recommendation, category, ruleName, estimatedSavings 
             sx={{
               backgroundColor: ds.gray[100],
               borderRadius: ds.radius.lg,
-              p: '10px',
+              p: ds.space.mul(0, 5),
               border: `1px solid ${ds.gray[200]}`,
               mb: ds.space[2],
               maxHeight: '200px',

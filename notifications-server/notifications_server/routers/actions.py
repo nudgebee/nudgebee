@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from json import JSONDecodeError
@@ -116,11 +117,16 @@ async def handle_google_chat_events(request: Request, background_tasks: Backgrou
         LOG.warning(f"Google Chat event did not contain valid JSON. {e}")
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    service = GoogleChatEventsService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app)
-
-    async def execute_and_close():
+    # The handler makes blocking Google Chat API calls. Run it OFF the main event loop:
+    # as a *sync* BackgroundTask, Starlette dispatches it to the threadpool, so a stalled
+    # Google API can never freeze the loop (and thus /health). asyncio.run drives the
+    # handler's own awaits in a fresh loop confined to that worker thread. The service
+    # (and its thread-local scoped DB session) is built inside the worker so its whole
+    # lifecycle — create, use, close — stays on that one thread.
+    def execute_and_close():
+        service = GoogleChatEventsService(engine=sync_engine, slack_app=slack_app, teams_app=teams_app)
         try:
-            await service.execute_event(payload)
+            asyncio.run(service.execute_event(payload))
         finally:
             service.close()
 

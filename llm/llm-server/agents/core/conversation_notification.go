@@ -103,7 +103,12 @@ func sendReplyToNotificationServer(ctx *security.RequestContext, agentRequest NB
 	}
 
 	ctx.GetLogger().Info("notifications: sending notification request", "request_type", notificationRequest["type"], "message_id", response.MessageId, "agent_name", response.AgentName)
-	resp, err := common.HttpPost(notificationUrl, common.HttpWithJsonBody(notificationRequest), common.HttpWithContext(c))
+	postOptions := []common.HttpOption{common.HttpWithJsonBody(notificationRequest), common.HttpWithContext(c)}
+	// Attach the optional X-ACTION-TOKEN when configured.
+	if config.Config.NotificationServerToken != "" {
+		postOptions = append(postOptions, common.HttpWithHeaders(map[string]string{"X-ACTION-TOKEN": config.Config.NotificationServerToken}))
+	}
+	resp, err := common.HttpPost(notificationUrl, postOptions...)
 	if err != nil {
 		ctx.GetLogger().Error("notifications: unable to send webhook notification", "error", err)
 		return

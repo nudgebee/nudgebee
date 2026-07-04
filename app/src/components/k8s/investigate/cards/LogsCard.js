@@ -191,7 +191,7 @@ const LogsTabs = ({ logs, getTabLabel }) => {
   };
 
   const focusStyle = {
-    boxShadow: '0 0 0 2px var(--ds-blue-600)',
+    boxShadow: '0 0 0 var(--ds-space-0) var(--ds-blue-600)',
   };
 
   const tabContentStyle = {

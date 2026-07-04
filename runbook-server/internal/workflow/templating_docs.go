@@ -518,7 +518,7 @@ func GetTemplatingDocs() (filters []TemplateFunctionDoc, tests []TemplateFunctio
 		}
 
 		val := reflect.ValueOf(source)
-		if val.Kind() == reflect.Ptr {
+		if val.Kind() == reflect.Pointer {
 			val = val.Elem()
 		}
 		if val.Kind() == reflect.Struct {

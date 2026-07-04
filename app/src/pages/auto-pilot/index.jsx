@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
 import { Box } from '@mui/material';
-import AnchorComponent from '@shared/navigation/AnchorComponent';
+import AnchorComponent from '@components/common/navigation/AnchorComponent';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import { useRouter } from 'next/router';
 import { hasWriteAccess } from '@lib/auth';

@@ -1,5 +1,5 @@
 /**
- * Divider — DS V2 of legacy CustomDivider.
+ * Divider
  * Spec: app/design-system/primitives/layout/divider.html
  *
  * Visual separator. Thin. Quiet. Use sparingly — whitespace usually does the
@@ -16,9 +16,6 @@
  *   - Don't use vertical Dividers between unrelated UI clusters. Whitespace
  *     and grouping by shape.
  *
- * Migration:
- *   `import CustomDivider from '@shared/CustomDivider'`
- * → `import { Divider } from '@ui/Divider'`
  */
 import * as React from 'react';
 import { Box } from '@mui/material';

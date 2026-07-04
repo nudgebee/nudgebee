@@ -6,10 +6,10 @@ import { Banner } from '@ui/Banner';
 import { EmptyState } from '@ui/EmptyState';
 import { Button as DsButton } from '@ui/Button';
 import { Skeleton as DsSkeleton } from '@ui/Skeleton';
-import Charts from '@shared/charts/LineCharts';
+import Chart from '@ui/Chart';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import observability from '@api1/observability';
-import { ds } from '@utils/colors';
+import { ds, resolveColor } from '@utils/colors';
 import { formatMetricName } from '@utils/common';
 import { useCloudMetricsQueryPanel, type CloudMetricsQueryParams } from './CloudMetricsQueryPanel';
 
@@ -147,11 +147,11 @@ function buildScaleOptions(unit: string) {
   return {
     x: {
       type: 'category' as const,
-      grid: { display: false, color: 'rgba(0,0,0,0.1)', drawBorder: false, lineWidth: 0.2 },
+      grid: { display: false, color: resolveColor(ds.gray.alpha[300]), drawBorder: false, lineWidth: 0.2 },
       ticks: { autoSkip: true, maxTicksLimit: 4 },
     },
     y: {
-      grid: { display: true, color: 'rgba(0,0,0,0.1)', drawBorder: false, lineWidth: 0.2 },
+      grid: { display: true, color: resolveColor(ds.gray.alpha[300]), drawBorder: false, lineWidth: 0.2 },
       ticks: {
         callback: function (value: number) {
           return unit ? formatYAxisValue(value, unit) : Number.isInteger(value) ? String(value) : value.toFixed(1);
@@ -231,7 +231,7 @@ function renderCharts(charts: MetricChartData[]): React.ReactNode {
         const scaleOptions = buildScaleOptions(chart.unit);
         return (
           <WidgetCard key={chart.metricName}>
-            <Charts chartTitle={chartTitle} dataset={chart.dataset} labels={chart.labels} data={[]} loading={false} scaleOptions={scaleOptions} />
+            <Chart.Line chartTitle={chartTitle} dataset={chart.dataset} labels={chart.labels} data={[]} loading={false} scaleOptions={scaleOptions} />
           </WidgetCard>
         );
       })}

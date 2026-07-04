@@ -76,12 +76,6 @@ export interface NodeProps {
   accountId?: string;
 }
 
-export interface ExecutionPagination {
-  currentPage: number;
-  recordsPerPage: number;
-  totalCount: number;
-}
-
 // Task Definition API Types
 export interface TaskDefinitionField {
   default: any;

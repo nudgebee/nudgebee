@@ -573,6 +573,89 @@ rules:
                 {{ $serviceName := "" }}{{ range $dim := (index .Detail "configuration" "dimensions") }}{{ if eq (index $dim "name") "ServiceName" }}{{ $serviceName = (index $dim "value") | str }}{{ end }}{{ end }}{{ $serviceName }}
           max_results: 20
 
+# Rule for all ECS Task State Change events
+  - name: "ECS_Task_All_Events_EventBridge"
+    triggers:
+      source: "AWS_EventBridge"
+      alert_name: "aws.ecs"
+      event_filters:
+        - template: '{{ eq (index .Event "detailType") "ECS Task State Change" }}'
+          description: "Event detailType is 'ECS Task State Change'"
+        # Optionally add filters to exclude specific statuses if they are handled by other rules,
+        # e.g., exclude STOPPED events if other STOPPED rules are sufficient.
+        # - template: '{{ ne (index .Detail "lastStatus") "STOPPED" }}'
+        #   description: "Task lastStatus is not STOPPED"
+    event_template:
+      title:
+        template: |
+          ECS Task Event: {{ (index .Detail "lastStatus") }} for {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
+      severity: "Info" # Default severity for all events
+      description:
+        template: |
+          ECS Task {{ (index .Detail "taskArn") }} in cluster {{ (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
+          changed state to {{ (index .Detail "lastStatus") }}. Desired: {{ (index .Detail "desiredStatus") }}.
+          Event ID: {{ (index .Event "id") }}.
+          Detail: {{ toJson .Detail }}
+      status: "CLOSED" # Default status for all events
+      fingerprint:
+        # Task-level (taskArn) so each task lifecycle is one event with N
+        # state-change occurrences. Cluster-level (group + clusterArn) made
+        # every task in a cluster collapse to a single fingerprint, which
+        # produced ~99% wasted enrichment work for noisy clusters and lost
+        # per-task visibility in the UI.
+        template: "ecs-task:{{ (index .Detail \"taskArn\") }}"
+      resource_id:
+        template: |
+          {{ $taskIdentifier := "" }}
+          {{ if (index .Event "resources") }}
+            {{ $taskIdentifier = (index .Event "resources" 0) | str | default "" | splitList "/" | last }}
+          {{ else if (index .Detail "taskArn") }}
+            {{ $taskIdentifier = (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
+          {{ end }}
+          {{ $taskIdentifier | default "N/A" }}
+      resource_type:
+        value: "task"
+      resource_service_name:
+        value: "ecs"
+      resource_region:
+        template: "{{ (index .Event \"region\") }}"
+    actions:
+      - name: "get_task_details_on_any_event"
+        type: "aws_get_resource"
+        description: "Fetch details of the ECS task."
+        params:
+          service_name: "ecs"
+          resource_type: "task" # Assuming your aws_get_resource can handle this
+          resource_identifier: "{{ (index .Detail \"taskArn\") }}"
+          identifier_type: "arn"
+          region: "{{ (index .Event \"region\") }}"
+      - name: "get_task_metrics_on_any_event"
+        type: "aws_get_metric"
+        description: "Fetch CPU and Memory utilization metrics for the task."
+        params:
+          namespace: "AWS/ECS" # Or AWS/ECS/ContainerInsights
+          metric_name: "CPUUtilization" # Fetch both CPU and Memory
+          dimensions:
+            - Name: "ClusterName"
+              Value: |
+                {{ (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
+            - Name: "TaskId"
+              Value: |
+                {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
+          period_seconds: 300
+          statistic: "Average"
+          start_time_offset: "-15m"
+          end_time_offset: "+5m"
+      # NOTE: get_task_logs is intentionally NOT run here. Fetching logs requires a
+      # CloudWatch Logs Insights query (StartQuery + 3s poll loop, up to 60s) which
+      # dominates per-event processing time. Running it on EVERY task state change
+      # (the vast majority are healthy RUNNING/PENDING/clean-STOP transitions) was the
+      # primary throughput bottleneck for the EventBridge SQS consumer. Logs are only
+      # useful on FAILURE, and failing stops are already covered with richer log
+      # queries by the dedicated rules: ECS_Task_Stopped_Unexpectedly (non-zero exit),
+      # ECS_Task_Stopped_OutOfMemory, ECS_Task_Stopped_CannotPullContainerError, and
+      # the ELB-health-check stop rule.
+
   - name: "ECS_Task_Stopped_Unexpectedly_EventBridge"
     triggers:
       source: "AWS_EventBridge"
@@ -1004,89 +1087,6 @@ rules:
       # Add aws_get_cloudtrail_events for recent ECS deployments/updates.
 
 ## fallback rules
-# Rule for all ECS Task State Change events
-  - name: "ECS_Task_All_Events_EventBridge"
-    triggers:
-      source: "AWS_EventBridge"
-      alert_name: "aws.ecs"
-      event_filters:
-        - template: '{{ eq (index .Event "detailType") "ECS Task State Change" }}'
-          description: "Event detailType is 'ECS Task State Change'"
-        # Optionally add filters to exclude specific statuses if they are handled by other rules,
-        # e.g., exclude STOPPED events if other STOPPED rules are sufficient.
-        # - template: '{{ ne (index .Detail "lastStatus") "STOPPED" }}'
-        #   description: "Task lastStatus is not STOPPED"
-    event_template:
-      title:
-        template: |
-          ECS Task Event: {{ (index .Detail "lastStatus") }} for {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
-      severity: "Info" # Default severity for all events
-      description:
-        template: |
-          ECS Task {{ (index .Detail "taskArn") }} in cluster {{ (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
-          changed state to {{ (index .Detail "lastStatus") }}. Desired: {{ (index .Detail "desiredStatus") }}.
-          Event ID: {{ (index .Event "id") }}.
-          Detail: {{ toJson .Detail }}
-      status: "CLOSED" # Default status for all events
-      fingerprint:
-        # Task-level (taskArn) so each task lifecycle is one event with N
-        # state-change occurrences. Cluster-level (group + clusterArn) made
-        # every task in a cluster collapse to a single fingerprint, which
-        # produced ~99% wasted enrichment work for noisy clusters and lost
-        # per-task visibility in the UI.
-        template: "ecs-task:{{ (index .Detail \"taskArn\") }}"
-      resource_id:
-        template: |
-          {{ $taskIdentifier := "" }}
-          {{ if (index .Event "resources") }}
-            {{ $taskIdentifier = (index .Event "resources" 0) | str | default "" | splitList "/" | last }}
-          {{ else if (index .Detail "taskArn") }}
-            {{ $taskIdentifier = (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
-          {{ end }}
-          {{ $taskIdentifier | default "N/A" }}
-      resource_type:
-        value: "task"
-      resource_service_name:
-        value: "ecs"
-      resource_region:
-        template: "{{ (index .Event \"region\") }}"
-    actions:
-      - name: "get_task_details_on_any_event"
-        type: "aws_get_resource"
-        description: "Fetch details of the ECS task."
-        params:
-          service_name: "ecs"
-          resource_type: "task" # Assuming your aws_get_resource can handle this
-          resource_identifier: "{{ (index .Detail \"taskArn\") }}"
-          identifier_type: "arn"
-          region: "{{ (index .Event \"region\") }}"
-      - name: "get_task_metrics_on_any_event"
-        type: "aws_get_metric"
-        description: "Fetch CPU and Memory utilization metrics for the task."
-        params:
-          namespace: "AWS/ECS" # Or AWS/ECS/ContainerInsights
-          metric_name: "CPUUtilization" # Fetch both CPU and Memory
-          dimensions:
-            - Name: "ClusterName"
-              Value: |
-                {{ (index .Detail "clusterArn") | str | default "" | splitList "/" | last }}
-            - Name: "TaskId"
-              Value: |
-                {{ (index .Detail "taskArn") | str | default "" | splitList "/" | last }}
-          period_seconds: 300
-          statistic: "Average"
-          start_time_offset: "-15m"
-          end_time_offset: "+5m"
-      # NOTE: get_task_logs is intentionally NOT run here. Fetching logs requires a
-      # CloudWatch Logs Insights query (StartQuery + 3s poll loop, up to 60s) which
-      # dominates per-event processing time. Running it on EVERY task state change
-      # (the vast majority are healthy RUNNING/PENDING/clean-STOP transitions) was the
-      # primary throughput bottleneck for the EventBridge SQS consumer. Logs are only
-      # useful on FAILURE, and failing stops are already covered with richer log
-      # queries by the dedicated rules: ECS_Task_Stopped_Unexpectedly (non-zero exit),
-      # ECS_Task_Stopped_OutOfMemory, ECS_Task_Stopped_CannotPullContainerError, and
-      # the ELB-health-check stop rule.
-
   # Rule for all ECS Service or Deployment State Change events
   - name: "ECS_Service_All_Events_EventBridge"
     triggers:

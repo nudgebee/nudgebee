@@ -432,13 +432,7 @@ func ProcessStoredWebhook(sc *security.RequestContext, webhookRowID string) erro
 
 	mergeWebhookQueryLabels(webhookEvents, row.RequestURL)
 
-	tenantLabelMapping := loadTenantLabelMapping(sc)
-	if tenantLabelMapping != nil {
-		cache := newLabelExtractorCache(tenantLabelMapping, sc.GetLogger())
-		for i := range webhookEvents {
-			applyTenantLabelMapping(&webhookEvents[i], tenantLabelMapping, cache)
-		}
-	}
+	applyConfiguredLabelMappings(sc, webhookEvents, webhookSettings)
 
 	applyAccountMappingToEvents(webhookEvents, webhookSettings, row.AccountID, sc.GetLogger())
 	enrichEventsWithSubjectResolution(sc, webhookEvents)
@@ -569,14 +563,9 @@ func ProcessEventWebook(sc *security.RequestContext, requestUrl string, requestH
 	// without per-handler changes. Existing labels from the integration win.
 	mergeWebhookQueryLabels(webhookEvents, requestUrl)
 
-	// Apply tenant-configured label mappings before processing events
-	tenantLabelMapping := loadTenantLabelMapping(sc)
-	if tenantLabelMapping != nil {
-		cache := newLabelExtractorCache(tenantLabelMapping, sc.GetLogger())
-		for i := range webhookEvents {
-			applyTenantLabelMapping(&webhookEvents[i], tenantLabelMapping, cache)
-		}
-	}
+	// Apply declarative label mappings (per-integration override + tenant-wide
+	// default) before account routing and subject resolution.
+	applyConfiguredLabelMappings(sc, webhookEvents, webhookSettings)
 
 	applyAccountMappingToEvents(webhookEvents, webhookSettings, accountId, sc.GetLogger())
 	enrichEventsWithSubjectResolution(sc, webhookEvents)
@@ -716,9 +705,9 @@ func convertWebhookEventToEvent(e EventIncomingWebhook, tenantId, accountId, sou
 		status = eventtypes.EventStatusFiring
 	}
 
-	priority := e.Investigation.Severity
-	if priority == "" {
-		priority = eventtypes.EventPriorityLow
+	priortiy := e.Investigation.Severity
+	if priortiy == "" {
+		priortiy = eventtypes.EventPriorityLow
 	}
 
 	return eventtypes.Event{
@@ -732,7 +721,7 @@ func convertWebhookEventToEvent(e EventIncomingWebhook, tenantId, accountId, sou
 		Failure:          "",
 		FindingType:      "issue",
 		Category:         "issue",
-		Priority:         priority,
+		Priority:         priortiy,
 		SubjectType:      e.EventSubjectKind,
 		SubjectName:      e.EventSubjectName,
 		SubjectNamespace: e.EventSubjectNamespace,
@@ -889,13 +878,7 @@ func ReplayWebhookEvent(sc *security.RequestContext, webhookEventId string) erro
 
 	mergeWebhookQueryLabels(webhookEvents, webhookData.RequestURL)
 
-	tenantLabelMapping := loadTenantLabelMapping(sc)
-	if tenantLabelMapping != nil {
-		cache := newLabelExtractorCache(tenantLabelMapping, sc.GetLogger())
-		for i := range webhookEvents {
-			applyTenantLabelMapping(&webhookEvents[i], tenantLabelMapping, cache)
-		}
-	}
+	applyConfiguredLabelMappings(sc, webhookEvents, webhookSettings)
 
 	applyAccountMappingToEvents(webhookEvents, webhookSettings, webhookData.AccountID, sc.GetLogger())
 	enrichEventsWithSubjectResolution(sc, webhookEvents)
@@ -964,23 +947,36 @@ func getIntegrationSettings(dbms *database.DatabaseManager, integrationId string
 	return settings, nil
 }
 
-// TenantLabelMapping defines per-tenant label key mappings for webhook event fields.
-// Each field is an ordered list of label keys; the first non-empty match wins.
-type TenantLabelMapping struct {
+// WebhookLabelMapping declares, per field, an ordered list of label key specs
+// used to extract a webhook event's subject name, namespace, and severity from
+// its labels. The first spec that yields a non-empty value wins.
+//
+// The same shape is configured at two scopes (see applyConfiguredLabelMappings):
+//   - per-integration, via the integration_config_values "webhook_label_mapping"
+//     value (parseIntegrationLabelMapping) — an explicit, admin-declared
+//     source of truth that overrides the integration parser's heuristic.
+//   - tenant-wide, via the "webhook_label_mapping" tenant attribute
+//     (loadTenantLabelMapping) — a gap-filling default.
+//
+// Each key spec is a plain label key ("service_name"), a key with regex capture
+// ("app_id|/k8s/[^/]+/(.+)"), or a gonja template ("{{ labels.app_id | ... }}").
+type WebhookLabelMapping struct {
 	SubjectNameLabels []string `json:"subject_name_labels"`
 	NamespaceLabels   []string `json:"namespace_labels"`
 	SeverityLabels    []string `json:"severity_labels"`
 }
 
-// loadTenantLabelMapping reads the webhook_label_mapping tenant attribute.
-// Returns nil if not configured or on error (callers treat nil as no-op).
-func loadTenantLabelMapping(sc *security.RequestContext) *TenantLabelMapping {
+// loadTenantLabelMapping reads the tenant-wide webhook_label_mapping tenant
+// attribute. Returns nil if not configured or on error (callers treat nil as
+// no-op). This is the gap-filling default layer; per-integration overrides are
+// loaded by parseIntegrationLabelMapping.
+func loadTenantLabelMapping(sc *security.RequestContext) *WebhookLabelMapping {
 	attrs, err := tenant.GetTenantAttributesByName(sc, "webhook_label_mapping")
 	if err != nil || len(attrs) == 0 {
 		return nil
 	}
 
-	var mapping TenantLabelMapping
+	var mapping WebhookLabelMapping
 	if err := json.Unmarshal([]byte(attrs[0].Value), &mapping); err != nil {
 		sc.GetLogger().Warn("integrations: failed to parse webhook_label_mapping", "error", err)
 		return nil
@@ -993,6 +989,57 @@ func loadTenantLabelMapping(sc *security.RequestContext) *TenantLabelMapping {
 	return &mapping
 }
 
+// parseIntegrationLabelMapping reads the per-integration webhook_label_mapping
+// config value (stored in integration_config_values, mirroring account_mapping)
+// and returns the parsed mapping. Returns nil when the value is absent, empty,
+// unparseable, or carries no usable rules — callers treat nil as no-op.
+//
+// Unlike the tenant-wide default, an admin who sets this on a specific source
+// is declaring the authoritative field source for that source, so its rules
+// override the integration parser's heuristic (see applyConfiguredLabelMappings).
+func parseIntegrationLabelMapping(settings []IntegrationConfigValue, logger *slog.Logger) *WebhookLabelMapping {
+	raw, found := GetSettingValue(settings, "webhook_label_mapping")
+	if !found || raw == "" {
+		return nil
+	}
+	var mapping WebhookLabelMapping
+	if err := json.Unmarshal([]byte(raw), &mapping); err != nil {
+		if logger != nil {
+			logger.Warn("integrations: failed to parse per-integration webhook_label_mapping", "error", err)
+		}
+		return nil
+	}
+	if len(mapping.SubjectNameLabels) == 0 && len(mapping.NamespaceLabels) == 0 && len(mapping.SeverityLabels) == 0 {
+		return nil
+	}
+	return &mapping
+}
+
+// applyConfiguredLabelMappings fills/overrides each event's subject name,
+// namespace, and severity from the two declarative label-mapping layers, in
+// priority order:
+//
+//  1. per-integration mapping (integration_config_values "webhook_label_mapping"):
+//     applied with override semantics — an admin-declared rule wins over the
+//     integration parser's heuristic guess whenever the rule matches.
+//  2. tenant-wide mapping (tenant attr "webhook_label_mapping"): fills only the
+//     fields still empty after step 1.
+//
+// Both layers share the same key-spec syntax and a single compiled cache, so
+// there is exactly one extraction mechanism. No-op when neither is configured.
+func applyConfiguredLabelMappings(sc *security.RequestContext, events []EventIncomingWebhook, settings []IntegrationConfigValue) {
+	perSource := parseIntegrationLabelMapping(settings, sc.GetLogger())
+	tenantWide := loadTenantLabelMapping(sc)
+	if perSource == nil && tenantWide == nil {
+		return
+	}
+	cache := newLabelExtractorCache(sc.GetLogger(), perSource, tenantWide)
+	for i := range events {
+		applyLabelMapping(&events[i], perSource, cache, true)
+		applyLabelMapping(&events[i], tenantWide, cache, false)
+	}
+}
+
 // labelExtractorCache pre-compiles regex patterns and gonja templates so they
 // are compiled once per request rather than once per event × per key spec.
 type labelExtractorCache struct {
@@ -1001,49 +1048,73 @@ type labelExtractorCache struct {
 	logger    *slog.Logger
 }
 
-func newLabelExtractorCache(mapping *TenantLabelMapping, logger *slog.Logger) *labelExtractorCache {
+func newLabelExtractorCache(logger *slog.Logger, mappings ...*WebhookLabelMapping) *labelExtractorCache {
+	// sc.GetLogger() returns rc.logger verbatim and can be nil; the Warn calls below
+	// only fire on the error path (invalid template/regex), so a nil logger + a malformed
+	// spec would panic. parseIntegrationLabelMapping nil-guards for the same reason.
+	if logger == nil {
+		logger = slog.Default()
+	}
 	cache := &labelExtractorCache{
 		regexes:   make(map[string]*regexp.Regexp),
 		templates: make(map[string]*exec.Template),
 		logger:    logger,
 	}
-	allSpecs := make([]string, 0, len(mapping.SubjectNameLabels)+len(mapping.NamespaceLabels)+len(mapping.SeverityLabels))
-	allSpecs = append(allSpecs, mapping.SubjectNameLabels...)
-	allSpecs = append(allSpecs, mapping.NamespaceLabels...)
-	allSpecs = append(allSpecs, mapping.SeverityLabels...)
+	for _, mapping := range mappings {
+		if mapping == nil {
+			continue
+		}
+		allSpecs := make([]string, 0, len(mapping.SubjectNameLabels)+len(mapping.NamespaceLabels)+len(mapping.SeverityLabels))
+		allSpecs = append(allSpecs, mapping.SubjectNameLabels...)
+		allSpecs = append(allSpecs, mapping.NamespaceLabels...)
+		allSpecs = append(allSpecs, mapping.SeverityLabels...)
 
-	for _, keySpec := range allSpecs {
-		if strings.Contains(keySpec, "{{") {
-			tpl, err := gonja.FromString(keySpec)
-			if err != nil {
-				logger.Warn("integrations: invalid gonja template in webhook_label_mapping", "template", keySpec, "error", err)
-				continue
+		for _, keySpec := range allSpecs {
+			if strings.Contains(keySpec, "{{") {
+				if _, done := cache.templates[keySpec]; done {
+					continue
+				}
+				tpl, err := gonja.FromString(keySpec)
+				if err != nil {
+					logger.Warn("integrations: invalid gonja template in webhook_label_mapping", "template", keySpec, "error", err)
+					continue
+				}
+				cache.templates[keySpec] = tpl
+			} else if _, pattern, hasPattern := strings.Cut(keySpec, "|"); hasPattern && pattern != "" {
+				if _, done := cache.regexes[keySpec]; done {
+					continue
+				}
+				re, err := regexp.Compile(pattern)
+				if err != nil {
+					logger.Warn("integrations: invalid regex in webhook_label_mapping", "pattern", pattern, "error", err)
+					continue
+				}
+				cache.regexes[keySpec] = re
 			}
-			cache.templates[keySpec] = tpl
-		} else if _, pattern, hasPattern := strings.Cut(keySpec, "|"); hasPattern && pattern != "" {
-			re, err := regexp.Compile(pattern)
-			if err != nil {
-				logger.Warn("integrations: invalid regex in webhook_label_mapping", "pattern", pattern, "error", err)
-				continue
-			}
-			cache.regexes[keySpec] = re
 		}
 	}
 	return cache
 }
 
-// applyTenantLabelMapping fills empty event fields using the tenant's configured label key mappings.
-// Per-integration logic (e.g. PagerDuty's resolveSubjectFromLabels) runs first and has priority.
-// Tenant mapping only fills fields the integration processor couldn't resolve.
+// applyLabelMapping resolves an event's subject name, namespace, and severity
+// from a WebhookLabelMapping. No-op when mapping is nil.
+//
+// override controls precedence relative to whatever the integration parser
+// (e.g. PagerDuty's resolveSubjectFromLabels) already resolved:
+//   - override=false (tenant-wide default): only fields still empty are filled.
+//   - override=true  (per-integration, admin-declared source of truth): a field
+//     is overwritten whenever one of its specs yields a non-empty value, but is
+//     left untouched when no spec matches — so a rule that misses on a given
+//     alert never clobbers the parser's value.
 //
 // Each entry can be a plain label key ("service_name"), a key with regex extraction
 // ("app_id|/k8s/[^/]+/(.+)"), or a gonja/jinja2 template ("{{ labels.app_id | split(sep='/') | last }}").
-func applyTenantLabelMapping(event *EventIncomingWebhook, mapping *TenantLabelMapping, cache *labelExtractorCache) {
+func applyLabelMapping(event *EventIncomingWebhook, mapping *WebhookLabelMapping, cache *labelExtractorCache, override bool) {
 	if mapping == nil || event.Investigation.Labels == nil {
 		return
 	}
 
-	if event.EventSubjectName == "" {
+	if override || event.EventSubjectName == "" {
 		for _, keySpec := range mapping.SubjectNameLabels {
 			if v := extractLabelValue(event.Investigation.Labels, keySpec, cache); v != "" {
 				event.EventSubjectName = v
@@ -1052,7 +1123,7 @@ func applyTenantLabelMapping(event *EventIncomingWebhook, mapping *TenantLabelMa
 		}
 	}
 
-	if event.EventSubjectNamespace == "" {
+	if override || event.EventSubjectNamespace == "" {
 		for _, keySpec := range mapping.NamespaceLabels {
 			if v := extractLabelValue(event.Investigation.Labels, keySpec, cache); v != "" {
 				event.EventSubjectNamespace = v
@@ -1061,7 +1132,7 @@ func applyTenantLabelMapping(event *EventIncomingWebhook, mapping *TenantLabelMa
 		}
 	}
 
-	if event.Investigation.Severity == "" {
+	if override || event.Investigation.Severity == "" {
 		for _, keySpec := range mapping.SeverityLabels {
 			if v := extractLabelValue(event.Investigation.Labels, keySpec, cache); v != "" {
 				event.Investigation.Severity = normalizeSeverity(v)

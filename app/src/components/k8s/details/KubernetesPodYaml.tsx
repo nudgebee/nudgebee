@@ -140,7 +140,7 @@ const KubernetesPodYaml: React.FC<KubernetesPodYamlProps> = ({ accountId, query,
           extensions={[yaml1(), EditorView.lineWrapping]}
           editable={allowEdit}
           style={{
-            border: '1px solid silver',
+            border: `1px solid ${ds.gray[300]}`,
             backgroundColor: allowEdit ? ds.background[100] : ds.background[300],
             opacity: allowEdit ? 1 : 0.6,
             cursor: allowEdit ? 'text' : 'not-allowed',

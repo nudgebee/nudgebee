@@ -7,7 +7,7 @@ import Text from '@shared/format/Text';
 
 const ClusterNameWithRegion = ({
   name = '',
-  font = '13px',
+  font = 'var(--ds-text-body)',
   fontWeight = 400,
   region = <></>,
   nameOnClick = (_e) => {},
@@ -115,7 +115,9 @@ const ClusterNameWithRegion = ({
       )}
       {additionalContent ? <div>{additionalContent}</div> : null}
       {namespace && (
-        <Typography sx={{ namespaceSx, fontSize: namespaceFont || 'var(--ds-text-caption)', color: 'var(--ds-gray-400)', mt: '-2px' }}>
+        <Typography
+          sx={{ namespaceSx, fontSize: namespaceFont || 'var(--ds-text-caption)', color: 'var(--ds-gray-400)', mt: 'calc(var(--ds-space-0) * -1)' }}
+        >
           {namespace}
         </Typography>
       )}

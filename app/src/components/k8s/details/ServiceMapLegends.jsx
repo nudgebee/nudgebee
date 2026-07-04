@@ -80,7 +80,7 @@ const ServiceMapLegends = ({ mode = 'service_map' }) => {
           backgroundColor: ds.background[100],
           borderRadius: 'var(--ds-radius-lg)',
           padding: 'var(--ds-space-4)',
-          boxShadow: '0px 4px 12px rgba(0, 0, 0, 0.1)',
+          boxShadow: `0px ${ds.space[1]} ${ds.space[3]} ${ds.gray.alpha[200]}`,
           maxWidth: ds.space.mul(0, 175),
           marginTop: 'var(--ds-space-2)',
           float: 'right',

@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
 	"nudgebee/services/common"
@@ -38,6 +39,34 @@ func processEventPostProcessMessage(data []byte) error {
 
 	logger := slog.Default().With("event_id", message.EventID)
 
+	ctx, eventMap, err := loadEventMap(message.EventID, logger)
+	if err != nil {
+		return nil // Already logged; don't requeue (malformed / missing event)
+	}
+
+	// Run all event processors
+	event.PostProcessEvent(ctx, eventMap)
+
+	return nil
+}
+
+// loadEventMap fetches the event by ID, builds a tenant-scoped request context,
+// and converts the event to the map[string]any shape the event processors
+// expect (the same format as RPC event.data.new). Evidences are cleared from
+// the struct before conversion to avoid massive JSON marshal/unmarshal
+// allocations — no processor reads evidence data from the map (triage
+// re-fetches from DB, llm only checks existence, others forward metadata only);
+// has_evidences records whether they existed. Shared by the post-process
+// consumer and the investigation-completed consumer.
+func loadEventMap(eventID string, logger *slog.Logger) (*security.RequestContext, map[string]any, error) {
+	// Fail fast on an empty id rather than issuing a guaranteed-miss query.
+	// Both callers already guard this, so it is defensive belt-and-suspenders;
+	// the error is permanent (callers ACK), never requeued.
+	if eventID == "" {
+		logger.Error("event_queue: eventID is empty")
+		return nil, nil, fmt.Errorf("eventID is empty")
+	}
+
 	// Build request context (same as RPC webhook handler uses)
 	ctx := security.NewRequestContext(
 		context.Background(),
@@ -45,11 +74,10 @@ func processEventPostProcessMessage(data []byte) error {
 		logger, nil, nil,
 	)
 
-	// Fetch the full event from DB
-	eventObj, err := event.GetEvent(ctx, message.EventID)
+	eventObj, err := event.GetEvent(ctx, eventID)
 	if err != nil {
 		logger.Error("event_queue: failed to fetch event", "error", err)
-		return nil // Don't requeue — event may not exist
+		return nil, nil, err
 	}
 
 	// Rebuild context with tenant from the event so downstream queries have proper tenant scoping
@@ -61,28 +89,18 @@ func processEventPostProcessMessage(data []byte) error {
 		)
 	}
 
-	// Record whether evidences exist before clearing — llm processor uses this
-	// to gate event processing.
 	hasEvidences := eventObj.Evidences != nil
-
-	// Clear evidences before structToMap to avoid massive JSON marshal/unmarshal
-	// allocations. No processor reads evidence data from the map: triage re-fetches
-	// from DB, llm only checks existence, others forward metadata only.
 	eventObj.Evidences = nil
 
-	// Convert Event struct to map[string]any (same format as RPC event.data.new)
 	eventMap, err := structToMap(eventObj)
 	if err != nil {
 		logger.Error("event_queue: failed to convert event to map", "error", err)
-		return nil
+		return nil, nil, err
 	}
 
 	eventMap["has_evidences"] = hasEvidences
 
-	// Run all event processors
-	event.PostProcessEvent(ctx, eventMap)
-
-	return nil
+	return ctx, eventMap, nil
 }
 
 // structToMap converts a struct to map[string]any using JSON round-trip.

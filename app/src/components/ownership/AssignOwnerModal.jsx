@@ -91,7 +91,7 @@ export default function AssignOwnerModal({ open, onClose, resourceType, resource
           Remove owner
         </DsButton>
       ) : null}
-      <DsButton tone='secondary' size='md' onClick={() => finish(false)} id='owner-cancel'>
+      <DsButton tone='secondary' size='md' onClick={() => finish(false)} disabled={saving} id='owner-cancel'>
         Cancel
       </DsButton>
       <DsButton tone='primary' size='md' onClick={handleSave} disabled={!picked} loading={saving} id='owner-save'>
@@ -103,9 +103,10 @@ export default function AssignOwnerModal({ open, onClose, resourceType, resource
   return (
     <Modal
       open={open}
-      handleClose={() => finish(false)}
+      handleClose={() => (saving ? undefined : finish(false))}
       title={`Owner${resourceLabel ? ` — ${resourceLabel}` : ''}`}
       width='sm'
+      loader={saving}
       actionButtons={actionButtons}
     >
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, py: 1 }}>

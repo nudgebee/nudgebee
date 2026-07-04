@@ -6,6 +6,15 @@ metadata:
   labels:
     {{- include "benchmark-server.labels" . | nindent 4 }}
 rules:
+  # benchmark-server is an internal LLM-benchmark harness (NOT part of the
+  # deployed nudgebee product / umbrella chart). Its orchestrator runs
+  # `kubectl apply` of arbitrary scenario manifests under this ServiceAccount to
+  # stand up real cluster fixtures for the LLM to debug — and some scenarios
+  # include `kind: Secret`. So create/delete on secrets is a functional
+  # requirement here, not a misconfiguration. It is intended to run against a
+  # disposable/isolated benchmark cluster, never production. Accepted risk;
+  # see the security audit follow-up.
+  # trivy:ignore:AVD-KSV-0041
   - apiGroups: [""]
     resources: ["pods", "pods/log", "nodes", "nodes/proxy", "services", "endpoints", "events", "configmaps", "secrets", "namespaces", "serviceaccounts", "persistentvolumeclaims", "persistentvolumes"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

@@ -1,10 +1,21 @@
 package tools
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"nudgebee/llm/config"
+	"nudgebee/llm/security"
+	"nudgebee/llm/tools/core"
 )
 
 // TestUnwrapCLIWrappedQuery covers the workspace-shim unwrapping path added to
@@ -327,4 +338,120 @@ func TestGetRelayCommandResponseData_NilData(t *testing.T) {
 	_, err := getRelayCommandResponseData(relayResp)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "data1 field not found")
+}
+
+// TestClickhouseRawModeCommandRewrite verifies that ExecuteContainerJob with
+// raw=true rewrites the workspace shim's `clickhouse-client` form to the
+// `clickhouse client` subcommand form before sending to the relay.
+//
+// The relay shell image ships only the `clickhouse` multi-call binary (no
+// `clickhouse-client` symlink). Before the fix, raw mode injected flags but
+// kept the `clickhouse-client` binary name → `/tmp/script.sh: 1:
+// clickhouse-client: not found` on every workspace query. After the fix the
+// binary name is normalised to `clickhouse client`, matching what
+// buildWorkspaceAction in relay-server already does.
+func TestClickhouseRawModeCommandRewrite(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	secCtx := security.NewSecurityContextForSuperAdmin()
+	reqCtx := security.NewRequestContext(context.Background(), secCtx, logger, nil, nil)
+
+	type testCase struct {
+		name       string
+		command    string
+		toolConfig core.ToolConfig
+		wantHost   string // substring expected in the command
+		wantNoHost string // substring that must NOT appear
+	}
+	tests := []testCase{
+		{
+			// Sentinel path: host not set in tool config → $CLICKHOUSE_HOST env var.
+			name:    "hyphen form, host from k8s secret (sentinel)",
+			command: "clickhouse-client --query 'SELECT 1' --format CSVWithNames --send_logs_level=none --progress=0",
+			toolConfig: core.ToolConfig{
+				Name: "my-clickhouse",
+				Values: []core.ToolConfigValue{
+					{Name: "k8s_secret", Value: "default/clickhouse-secret"},
+				},
+			},
+			wantHost:   "--host $CLICKHOUSE_HOST",
+			wantNoHost: "--host $clickhouse",
+		},
+		{
+			// Literal host path: host set in tool config → embedded directly, not via env var.
+			// This matches relay-server's buildWorkspaceAction behaviour.
+			name:    "hyphen form, host literal from tool config",
+			command: "clickhouse-client --query 'SELECT 1' --format CSVWithNames --send_logs_level=none --progress=0",
+			toolConfig: core.ToolConfig{
+				Name: "my-clickhouse",
+				Values: []core.ToolConfigValue{
+					{Name: "k8s_secret", Value: "default/clickhouse-secret"},
+					{Name: "host", Value: "nudgebee-agent-clickhouse.nudgebee-agent.svc"},
+				},
+			},
+			wantHost:   "--host nudgebee-agent-clickhouse.nudgebee-agent.svc",
+			wantNoHost: "--host $nudgebee",
+		},
+		{
+			name:    "hyphen form with escaped single quote",
+			command: "clickhouse-client --query 'SELECT * FROM t WHERE x = '\\''val'\\''' --format CSVWithNames",
+			toolConfig: core.ToolConfig{
+				Name: "my-clickhouse",
+				Values: []core.ToolConfigValue{
+					{Name: "k8s_secret", Value: "default/clickhouse-secret"},
+				},
+			},
+			wantHost: "--host $CLICKHOUSE_HOST",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var capturedCommand string
+
+			// Mock relay: capture command param and return minimal success response.
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				var req map[string]any
+				_ = json.Unmarshal(body, &req)
+				if bodyMap, ok := req["body"].(map[string]any); ok {
+					if params, ok := bodyMap["action_params"].(map[string]any); ok {
+						if cmd, ok := params["command"].(string); ok {
+							capturedCommand = cmd
+						}
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"data": map[string]any{"response": "1", "exit_code": 0},
+				})
+			}))
+			defer srv.Close()
+
+			orig := config.Config.RelayServerEndpoint
+			config.Config.RelayServerEndpoint = srv.URL
+			defer func() { config.Config.RelayServerEndpoint = orig }()
+
+			toolCtx := core.NbToolContext{
+				AccountId:  "test-account",
+				Ctx:        reqCtx,
+				ToolConfig: tc.toolConfig,
+			}
+
+			_, _ = ExecuteContainerJob(toolCtx, RelayJobClickhouse, tc.command, "test-account", nil, true)
+
+			require.NotEmpty(t, capturedCommand, "relay received no command")
+			assert.Contains(t, capturedCommand, "clickhouse client",
+				"expected multi-call binary form; got %q", capturedCommand)
+			assert.NotContains(t, capturedCommand, "clickhouse-client",
+				"hyphen form must be rewritten; got %q", capturedCommand)
+			if tc.wantHost != "" {
+				assert.Contains(t, capturedCommand, tc.wantHost,
+					"host flag mismatch; got %q", capturedCommand)
+			}
+			if tc.wantNoHost != "" {
+				assert.NotContains(t, capturedCommand, tc.wantNoHost,
+					"broken host expansion present; got %q", capturedCommand)
+			}
+		})
+	}
 }

@@ -32,6 +32,8 @@ type ScanAccount struct {
 	K8sVersionCurrent string // optional; populated for k8s_version_upgrade
 	TargetImage       string // optional; populated for image_scanner (the image to scan)
 	TargetNode        string // optional; populated for image_scanner (node the image is pulled on)
+	TargetNamespace   string // optional; populated for image_scanner (namespace of a pod running the image)
+	TargetPodName     string // optional; populated for image_scanner (a pod running the image — source of pull secrets)
 }
 
 // Recommendation is the orchestrator's output row. Mirrors the columns the
@@ -182,7 +184,7 @@ func buildImageScanSpec(account ScanAccount, _ map[string]any) JobSpec {
 	if image == "" {
 		image = "{{IMAGE}}" // surfaces the missing-param failure clearly in logs
 	}
-	return JobSpec{
+	spec := JobSpec{
 		NamePrefix: "trivy-image-scan",
 		// Main container = the target image itself; reused from the node cache.
 		Image:           image,
@@ -224,6 +226,16 @@ func buildImageScanSpec(account ScanAccount, _ map[string]any) JobSpec {
 		},
 		TimeoutHintSeconds: 300,
 	}
+	// Point the agent at a pod running this image so it can source the registry
+	// pull credentials (opt-in, agent-gated). Without a pod ref the agent can't
+	// resolve secrets; without auto-copy enabled the agent ignores it.
+	if account.TargetNamespace != "" && account.TargetPodName != "" {
+		spec.ImagePullSecretsFrom = &PodRef{
+			Namespace: account.TargetNamespace,
+			Name:      account.TargetPodName,
+		}
+	}
+	return spec
 }
 
 func int64Ptr(v int64) *int64 { return &v }

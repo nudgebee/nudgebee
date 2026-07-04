@@ -69,6 +69,12 @@ type Knowledgebase struct {
 	// it covers llm-server-side failures that never reach the rag-server and
 	// thus leave no token-usage row. Nil for non-error KBs.
 	ErrorMessage *string `json:"error_message,omitempty" db:"error_message"`
+	// AccountName is the human-readable name of the owning cloud account,
+	// joined from cloud_accounts at read time. Populated only by the
+	// tenant-wide list path so the b-Cortex KB tab can render an Account
+	// column when no single account is in scope; per-account list calls
+	// leave it empty (the page already knows which account it's on).
+	AccountName string `json:"account_name,omitempty" db:"account_name"`
 }
 
 // KBLoadHistoryEntry represents a single load history record from rag_embedding_token_usage.
@@ -369,6 +375,80 @@ func GetKnowledgebase(sc *security.RequestContext, accountId, kbId string) (Know
 	}
 
 	return kb, nil
+}
+
+// ListKnowledgebasesForTenant returns every KB the caller can read across
+// the tenant. Used by the b-Cortex modal when launched from the global
+// sidebar — that surface has no account context, so the page falls back to
+// a tenant-wide read.
+//
+// Row-level filtering mirrors HasAccountAccess: super-admins and
+// tenant-admins see every row; scoped account-admins see only KBs whose
+// account_id is in their JWT-carried account list; users with no
+// account-scoped role see nothing. Tenant is taken from the security
+// context, never user-supplied, so there's no cross-tenant query path.
+func ListKnowledgebasesForTenant(sc *security.RequestContext) ([]Knowledgebase, error) {
+	secCtx := sc.GetSecurityContext()
+	tenantID := secCtx.GetTenantId()
+	if tenantID == "" {
+		return nil, errors.New("kb: tenant_id missing from security context")
+	}
+
+	seesAllAccountsInTenant := secCtx.IsSuperAdmin() ||
+		secCtx.IsSuperAdminReadonly() ||
+		secCtx.IsTenantAdmin() ||
+		secCtx.IsTenantReadAdmin()
+
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		slog.Error(logKBFailedDBManager, "error", err)
+		return nil, err
+	}
+
+	// Joins cloud_accounts so the tenant-wide UI can render an "Account"
+	// column without a second per-row lookup. AccountName is omitempty on
+	// the struct, so the per-account path (which doesn't JOIN) stays
+	// wire-compatible — clients that don't read account_name see nothing.
+	baseSelect := `
+		SELECT kb.id, kb.tenant_id, kb.account_id, kb.name,
+		       COALESCE(kb.description, '') as description,
+		       kb.data_format, kb.data_filename,
+		       kb.data_size_bytes, kb.status,
+		       kb.kb_type, kb.kb_source, kb.integration_id,
+		       kb.created_at, kb.updated_at,
+		       kb.document_count, kb.last_loaded_at,
+		       COALESCE(cu.display_name, '') as created_by,
+		       COALESCE(uu.display_name, '') as updated_by,
+		       kb.error_message,
+		       COALESCE(ca.account_name, '') as account_name
+		FROM llm_knowledgebases kb
+		LEFT JOIN users cu ON kb.created_by = cu.id
+		LEFT JOIN users uu ON kb.updated_by = uu.id
+		LEFT JOIN cloud_accounts ca ON kb.account_id = ca.id`
+
+	var (
+		kbs   []Knowledgebase
+		query string
+		args  []any
+	)
+	if seesAllAccountsInTenant {
+		query = baseSelect + ` WHERE kb.tenant_id = $1 ORDER BY kb.created_at DESC`
+		args = []any{tenantID}
+	} else {
+		accountIDs := secCtx.GetAccountIds()
+		if len(accountIDs) == 0 {
+			// User has no account-level access in this tenant; return empty
+			// rather than running an unfiltered scan.
+			return []Knowledgebase{}, nil
+		}
+		query = baseSelect + ` WHERE kb.tenant_id = $1 AND kb.account_id = ANY($2::uuid[]) ORDER BY kb.created_at DESC`
+		args = []any{tenantID, pq.Array(accountIDs)}
+	}
+	if err := dbms.Db.Select(&kbs, query, args...); err != nil {
+		slog.Error(logKBFailedQuery, "error", err, "tenant_id", tenantID, "sees_all", seesAllAccountsInTenant)
+		return nil, err
+	}
+	return kbs, nil
 }
 
 // ListKnowledgebases retrieves all knowledge bases for an account (without data field)

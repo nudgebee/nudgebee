@@ -8,7 +8,7 @@ import { Input } from '@ui/Input';
 import { Select } from '@ui/Select';
 import { Button as DsButton } from '@ui/Button';
 import { DeleteIconRed, PlusIcon } from '@assets';
-import TextWithBorder from '@shared/TextWithBorder';
+import Heading from '@components/common/Heading';
 import { ds } from '@utils/colors';
 import { Textarea } from '@components/k8s/common/TextArea';
 import { snakeToTitleCase } from 'src/utils/common';
@@ -419,7 +419,7 @@ const DynamicForm = ({ actionKey, onChange, errors = {}, initialValues = {}, act
                       {field.description}
                     </Typography>
                   )}
-                  <Box sx={{ pl: ds.space[4], borderLeft: '2px solid var(--ds-brand-150)', mt: ds.space[4] }}>
+                  <Box sx={{ pl: ds.space[4], borderLeft: `${ds.space[0]} solid var(--ds-brand-150)`, mt: ds.space[4] }}>
                     <Stack spacing={2}>
                       {Object.keys(field.extra_params).map((subKey) => renderFieldGroup(subKey, field.extra_params[subKey], currentPath, depth + 1))}
                     </Stack>
@@ -678,19 +678,7 @@ const DynamicForm = ({ actionKey, onChange, errors = {}, initialValues = {}, act
       {/* Parameters Section */}
       {Object.keys(enrichedParams).length > 0 && (
         <Box>
-          <TextWithBorder
-            value='Action Parameters'
-            borderColor={ds.blue[500]}
-            borderWidth='3px'
-            sx={{
-              '& p': {
-                fontSize: 'var(--ds-text-title)',
-                fontWeight: 'var(--ds-font-weight-semibold)',
-                color: ds.gray[700],
-                margin: 'var(--ds-space-5) 0px var(--ds-space-4) 0px',
-              },
-            }}
-          />
+          <Heading value='Action Parameters' borderColor={ds.blue[500]} borderWidth='md' />
           <Box sx={{ padding: '0px 0px var(--ds-space-3) var(--ds-space-4)', width: '100%' }}>
             <Stack spacing={0}>
               {Object.keys(enrichedParams).map((key, index) => (

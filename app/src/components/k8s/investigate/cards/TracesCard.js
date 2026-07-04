@@ -214,8 +214,14 @@ class TracesCard {
         duration_ns: item.Duration || item.duration_ns,
         timestamp: item.Timestamp || item.timestamp,
         status_code: item.StatusCode || item.status_code,
-        trace_source: (attrs['otel.scope.name'] || item.status_code) === 'nudgebee-node-agent' ? 'ebpf' : 'otel',
+        trace_source:
+          item.trace_source === 'gcp' ? 'gcp' : (attrs['otel.scope.name'] || item.status_code) === 'nudgebee-node-agent' ? 'ebpf' : 'otel',
         span_attributes: item.spanattributes || item.span_attributes || {},
+        // Cloud-trace context (GCP): carried through so the drilldown's Logs/Query
+        // tab can build a `trace="projects/<project>/traces/<id>"` log filter.
+        project: item.project || '',
+        region: item.region || '',
+        service_name: attrs['service.name'] || resourceAttrs['service.name'] || item.service_name || item.workload_name || '',
       };
     });
   };

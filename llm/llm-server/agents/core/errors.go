@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"nudgebee/llm/common"
+	"nudgebee/llm/security/egressfilter"
 )
 
 // User-facing LLM failure errors. Their messages are safe to surface directly
@@ -63,6 +64,14 @@ func ErrLlmUnableToGenerate(err error) error {
 		return errLlmUnableToGenerate
 	}
 	if errors.Is(err, errLlmUnableToGenerate) {
+		return err
+	}
+	// egressfilter blocks are already user-safe (audit_id + remediation hint,
+	// no value echo, no rule names). Passing through unchanged avoids the
+	// "error: agent unable to process request\n<egressfilter message>"
+	// double-prefix the end user otherwise sees in the response. Callers
+	// still detect via errors.Is(err, egressfilter.ErrSecretsBlocked).
+	if errors.Is(err, egressfilter.ErrSecretsBlocked) {
 		return err
 	}
 	return errors.Join(errLlmUnableToGenerate, err)

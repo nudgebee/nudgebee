@@ -6,12 +6,22 @@ import (
 	"sync"
 
 	"github.com/pkoukk/tiktoken-go"                        // OpenAI/GPT + fallback
+	tiktoken_loader "github.com/pkoukk/tiktoken-go-loader" // embedded BPE vocab (offline)
 	anthropic "github.com/qhenkart/anthropic-tokenizer-go" // Claude
 )
 
 var anthropicTokenizer *anthropic.Tokenizer
 var modelEncodingMap = map[string]*tiktoken.Tiktoken{}
 var modelEncodingMutex = &sync.RWMutex{}
+
+func init() {
+	// Use the offline BPE loader so tiktoken resolves encodings (e.g.
+	// cl100k_base) from vocab embedded in the binary instead of downloading it
+	// from a remote blob store on first use. This removes a runtime network
+	// dependency on cold start and makes token counting deterministic in tests
+	// and air-gapped environments.
+	tiktoken.SetBpeLoader(tiktoken_loader.NewOfflineLoader())
+}
 
 // InitTokenizers initializes expensive tokenizers once at startup
 func InitTokenizers() error {
@@ -74,7 +84,11 @@ func countAnthropicTokens(text string) (int, error) {
 }
 
 func countFallbackTokens(text string) (int, error) {
-	defaultEncodingName := "cl100k_base"
+	// o200k_base (GPT-4o / o-series vocab) is a closer approximation than the
+	// older cl100k_base for modern non-OpenAI models (Gemini, Qwen, Llama-3+),
+	// which keeps the token-budget gates that drive summarization recovery from
+	// undercounting. The vocab ships offline in tiktoken-go-loader's assets.
+	defaultEncodingName := "o200k_base"
 
 	modelEncodingMutex.RLock()
 	enc, ok := modelEncodingMap[defaultEncodingName]
@@ -191,10 +205,15 @@ func GetLlmMaxTokenLength(model string) int {
 	case strings.Contains(n, "gemma"):
 		// older gemma family (small) → fall back to 8K
 		return 8_192
+
+	// Qwen open models (self-hosted, e.g. Qwen3 on vLLM)
+	case strings.Contains(n, "qwen"):
+		// Qwen3 family supports up to a 256K token context
+		return 262_144
 	}
 
-	// final safe global default (smallest common supported window among old widely-used models)
-	return 16_000
+	// final safe global default
+	return 32_000
 }
 
 // GetLlmMaxOutputTokens returns the maximum output tokens for a given model.

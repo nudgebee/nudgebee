@@ -1,15 +1,17 @@
 /**
- * FilterDropdown — DS V2 port of legacy FilterDropdownButton.
+ * FilterDropdown
  * Spec:        app/design-system/primitives/forms/filter-dropdown.html
  * Variants:    multiple   = boolean        (single vs multi-select chips with limitTag)
  *              grouped    = boolean        (renders option groups with headers)
  *              freeSolo   = boolean        (allow values not in options list)
  *
- * Migration:   `import FilterDropdownButton from '@shared/FilterDropdownButton'`
- *           →  `import FilterDropdown from '@ui/FilterDropdown'`
+ * Option icons: an option's `icon` (svg asset src or JSX) renders as a 16px
+ * leading SafeIcon in its row. Panel width defaults to the trigger width with
+ * a 220px floor; `popoverWidth` overrides it.
+ *
  *
  *   API surface preserved verbatim from the legacy component (see the test at
- *   __tests__/components1/common/FilterDropdownButton.test.jsx — covers this
+ *   __tests__/components/common/FilterDropdownButton.test.jsx — covers this
  *   component too). Colors swapped from `colors.*` legacy palette to `--ds-*`
  *   tokens; everything else (popover, virtualized list, search, chip
  *   rendering) is structurally identical.
@@ -32,6 +34,7 @@ import PropTypes from 'prop-types';
 import { toKebabCase } from '@utils/common';
 import { OverlayCheckbox } from './internal/Overlay';
 import { Skeleton } from './Skeleton';
+import SafeIcon from '@shared/icons/SafeIcon';
 
 const VIRTUALIZATION_THRESHOLD = 200;
 const OPTION_HEIGHT = 36;
@@ -189,6 +192,7 @@ const OptionItem = React.memo(function OptionItem({ opt, selected, multiple, onT
       }}
     >
       {multiple && <OverlayCheckbox checked={selected} />}
+      {opt?.icon && <SafeIcon src={opt.icon} alt={opt?.type ?? ''} style={{ width: 16, height: 16, flexShrink: 0, objectFit: 'contain' }} />}
       <OptionLabel label={getLabel(opt)} />
       {opt?.type && (
         <Box sx={{ ml: 'auto', flexShrink: 0 }}>
@@ -757,6 +761,7 @@ function FilterDropdownButton({
   popoverWidth,
   popoverAlign = 'left',
   onSelect,
+  onOpen,
   disabled = false,
   isOptionsLoading = false,
   limitTag = 1,
@@ -958,7 +963,15 @@ function FilterDropdownButton({
         component='button'
         type='button'
         id={inputId ? `auto-complete-${inputId}` : 'auto-complete'}
-        onClick={(e) => !disabled && setAnchorEl(e.currentTarget)}
+        onClick={(e) => {
+          if (disabled) {
+            return;
+          }
+          // Lets callers lazy-load options on first open instead of eagerly on
+          // mount. Fired before opening so the loading state shows immediately.
+          onOpen?.();
+          setAnchorEl(e.currentTarget);
+        }}
         onKeyDown={handleKeyDown}
         disabled={disabled}
         sx={{
@@ -1094,7 +1107,10 @@ function FilterDropdownButton({
               borderRadius: 'var(--ds-overlay-radius)',
               border: 'none',
               boxShadow: 'var(--ds-overlay-shadow)',
-              width: popoverWidth ?? '220px',
+              // Panel is never narrower than its trigger: a full-width form
+              // trigger (e.g. workflow action sidebar fields) gets a matching
+              // full-width panel; compact toolbar triggers keep the 220px floor.
+              width: popoverWidth ?? `${Math.max(220, anchorEl?.clientWidth || 0)}px`,
               overflow: 'hidden',
               transformOrigin: 'top left',
               animation: 'filterDropdownSlideIn var(--ds-overlay-enter-duration) var(--ds-overlay-enter-easing)',
@@ -1269,6 +1285,7 @@ FilterDropdownButton.propTypes = {
   selectionWithinGroup: PropTypes.bool,
   freeSolo: PropTypes.bool,
   onSelect: PropTypes.func,
+  onOpen: PropTypes.func,
   disabled: PropTypes.bool,
   isOptionsLoading: PropTypes.bool,
   limitTag: PropTypes.number,

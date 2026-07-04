@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 )
 
 const CacheChannelToolInvalidation = "llm_tool_invalidation"
@@ -305,6 +306,12 @@ type ToolDto struct {
 	NeedsConfig  bool              `json:"needs_config"`
 	IsConfigured bool              `json:"is_configured"`
 	ConfigSchema *ToolConfigSchema `json:"config_schema,omitempty"`
+	// AccountId / AccountName are populated only by ListToolsForTenant —
+	// the per-account list path leaves them empty (the page already knows
+	// which account it's on). The b-Cortex tenant-wide view uses them to
+	// render an Account column on custom-tool rows.
+	AccountId   string `json:"account_id,omitempty" db:"account_id"`
+	AccountName string `json:"account_name,omitempty" db:"account_name"`
 }
 
 func getSystemToolDto(context *security.RequestContext, accountId string, toolName string, summary AccountConfigSummary) ToolDto {
@@ -972,7 +979,143 @@ func serializeRowToTool(rows *sqlx.Rows) (ToolDto, error) {
 	tool.IsConfigured = true
 	tool.NeedsConfig = false
 
+	// account_id / account_name are present only on rows produced by the
+	// tenant-wide list path (ListCustomToolsForTenant). Per-account paths
+	// don't JOIN them in, so the map lookup is nil and we leave the
+	// struct fields empty.
+	if raw, ok := toolMap["account_id"]; ok && raw != nil {
+		switch v := raw.(type) {
+		case []byte:
+			tool.AccountId = string(v)
+		case string:
+			tool.AccountId = v
+		}
+	}
+	if raw, ok := toolMap["account_name"]; ok && raw != nil {
+		switch v := raw.(type) {
+		case []byte:
+			tool.AccountName = string(v)
+		case string:
+			tool.AccountName = v
+		}
+	}
+
 	return tool, nil
+}
+
+// ListCustomToolsForTenant returns custom tools across every account the
+// caller can read in the tenant. Same row-level filter as the agents path
+// (HasAccountAccess ladder); each row carries account_id + account_name so
+// the b-Cortex tenant-wide view can render an Account column.
+func ListCustomToolsForTenant(context *security.RequestContext) []ToolDto {
+	secCtx := context.GetSecurityContext()
+	tenantID := secCtx.GetTenantId()
+	if tenantID == "" {
+		return []ToolDto{}
+	}
+
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		slog.Error(logFailedDBManager, "error", err)
+		return []ToolDto{}
+	}
+
+	baseSelect := `SELECT lt.*, lti.account_id::text AS account_id,
+	                      COALESCE(ca.account_name, '') AS account_name
+	                 FROM llm_tools lt
+	                 JOIN llm_tools_installation lti ON lt.id = lti.tool_id
+	            LEFT JOIN cloud_accounts ca         ON lti.account_id = ca.id
+	                WHERE lt.type = $1
+	                  AND ca.tenant = $2`
+
+	seesAllAccountsInTenant := secCtx.IsSuperAdmin() ||
+		secCtx.IsSuperAdminReadonly() ||
+		secCtx.IsTenantAdmin() ||
+		secCtx.IsTenantReadAdmin()
+
+	var (
+		rows  *sqlx.Rows
+		query string
+		args  []any
+	)
+	if seesAllAccountsInTenant {
+		query = baseSelect
+		args = []any{ToolTypeCustom, tenantID}
+	} else {
+		accountIDs := secCtx.GetAccountIds()
+		if len(accountIDs) == 0 {
+			return []ToolDto{}
+		}
+		query = baseSelect + ` AND lti.account_id = ANY($3::uuid[])`
+		args = []any{ToolTypeCustom, tenantID, pq.Array(accountIDs)}
+	}
+
+	rows, err = dbms.Db.Queryx(query, args...)
+	if err != nil {
+		slog.Error("tools: ListCustomToolsForTenant query failed", "error", err, "tenant_id", tenantID, "sees_all", seesAllAccountsInTenant)
+		return []ToolDto{}
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			slog.Error(logFailedCloseRows, "error", err)
+		}
+	}()
+	tools := make([]ToolDto, 0)
+	for rows.Next() {
+		tool, err := serializeRowToTool(rows)
+		if err != nil {
+			slog.Error(logFailedScanTool, "error", err)
+			continue
+		}
+		tools = append(tools, tool)
+	}
+	// Surface mid-iteration driver/connection errors instead of silently
+	// returning a partial list.
+	if err := rows.Err(); err != nil {
+		slog.Error("tools: ListCustomToolsForTenant rows iteration failed", "error", err, "tenant_id", tenantID)
+		return []ToolDto{}
+	}
+	return tools
+}
+
+// ListToolsForTenant returns the system-tool catalog (without per-account
+// configured/needs-config flags or config schemas) plus every custom tool
+// the caller can read across the tenant. Used by the b-Cortex sidebar
+// surface when launched without an accountId.
+//
+// Custom-agents-as-tools are intentionally omitted in this mode — those
+// rows are already visible on the b-Cortex Agents tab (also via the
+// tenant-wide path), so duplicating them here would be confusing.
+func ListToolsForTenant(context *security.RequestContext) []ToolDto {
+	tools := make([]ToolDto, 0, len(nbSystemTools)+8)
+	for toolName := range nbSystemTools {
+		nbTool, exists := GetNBTool("", toolName)
+		if !exists {
+			tools = append(tools, ToolDto{
+				Id:     toolName,
+				Name:   toolName,
+				Type:   ToolTypeSystem,
+				Status: ToolStatusDisabled,
+			})
+			continue
+		}
+		tools = append(tools, ToolDto{
+			Id:           toolName,
+			Name:         nbTool.Name(),
+			Type:         ToolTypeSystem,
+			Status:       ToolStatusEnabled,
+			Description:  nbTool.Description(),
+			ExecutorType: ToolExecutorTypeSystem,
+			Config:       map[string]any{},
+			InputSchema:  nbTool.InputSchema(),
+			NBToolType:   nbTool.GetType(),
+			// NeedsConfig / IsConfigured / ConfigSchema deliberately left
+			// at zero values — per-account config doesn't apply in the
+			// tenant-wide view.
+		})
+	}
+	tools = append(tools, ListCustomToolsForTenant(context)...)
+	return tools
 }
 
 func ListCustomTools(accountId string) []ToolDto {

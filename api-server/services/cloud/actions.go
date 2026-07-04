@@ -2,6 +2,7 @@ package cloud
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1268,6 +1269,15 @@ func (a *cloudLogAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) boo
 	// service.get) and returns nil when nothing resolves, so this is safe and covers the
 	// resource types the old per-service gating left evidence-starved (gae_app, l7_lb, gke).
 	if labels["gcp_account"] != "" || labels["gcp_project_id"] != "" {
+		// User-defined log-based metric alerts: the metric's own filter scopes the logs,
+		// even when the alert carries no monitored-resource type.
+		if strings.HasPrefix(labels["gcp_metric_type"], "logging.googleapis.com/user/") {
+			return true
+		}
+		// Native GCP log alerts — logs are the most valuable evidence for these.
+		if labels["gcp_alert_type"] == "log" {
+			return true
+		}
 		resourceType := labels["gcp_event_resource_type"]
 		if resourceType != "" && resourceType != "unknown" {
 			return true
@@ -1310,8 +1320,14 @@ func (a *cloudLogAction) AutoExecute(ctx playbooks.PlaybookActionContext) (playb
 	// from the resource (resource.labels / log-based metric / SLO service.get) and
 	// returns nil when nothing resolves, so broad firing is safe. This replaces the old
 	// per-service gating that left most resource types (gae_app, l7_lb, gke) evidence-starved.
+	// User-defined log-based metric alerts and native log alerts are also handled here even
+	// when they carry no monitored-resource type: their metric filter / log scope still
+	// yields useful evidence (kept in sync with CanAutoExecute).
 	resourceType := labels["gcp_event_resource_type"]
-	if (labels["gcp_account"] != "" || labels["gcp_project_id"] != "") && resourceType != "" && resourceType != "unknown" {
+	gcpLogMetric := strings.HasPrefix(labels["gcp_metric_type"], "logging.googleapis.com/user/")
+	gcpLogAlert := labels["gcp_alert_type"] == "log"
+	if (labels["gcp_account"] != "" || labels["gcp_project_id"] != "") &&
+		((resourceType != "" && resourceType != "unknown") || gcpLogMetric || gcpLogAlert) {
 
 		// gcp_event_instance falls back to the incident ID when the alert payload has
 		// no resource-scoped identifier. Scoping a per-service log filter by the
@@ -1845,6 +1861,25 @@ func formatDeployDelta(d time.Duration) string {
 	return fmt.Sprintf("%dd %dh", int(d.Hours())/24, int(d.Hours())%24)
 }
 
+// summarizeLogBody reduces a log body to a human-readable one-liner for the insight
+// highlight. Structured JSON payloads (common for Cloud Run / app logs) are collapsed
+// to their inner message field so the highlight reads "ERROR: <message>" instead of
+// dumping the whole JSON record. Non-JSON bodies are returned unchanged.
+func summarizeLogBody(body string) string {
+	trimmed := strings.TrimSpace(body)
+	if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
+		var parsed map[string]any
+		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
+			for _, k := range []string{"message", "msg", "body", "error", "event", "log"} {
+				if v, ok := parsed[k].(string); ok && strings.TrimSpace(v) != "" {
+					return v
+				}
+			}
+		}
+	}
+	return body
+}
+
 func actionLogExtractErrorPatterns(logs []map[string]any, maxErrors int) []playbooks.PlaybookActionResponseInsight {
 	var insights []playbooks.PlaybookActionResponseInsight
 	seenMessages := make(map[string]bool) // Track distinct log messages
@@ -1882,7 +1917,7 @@ func actionLogExtractErrorPatterns(logs []map[string]any, maxErrors int) []playb
 				}
 
 				insights = append(insights, playbooks.PlaybookActionResponseInsight{
-					Message:  fmt.Sprintf("%s:%s", severityText, body),
+					Message:  fmt.Sprintf("%s: %s", severityText, summarizeLogBody(body)),
 					Severity: "High",
 				})
 				seenMessages[body] = true

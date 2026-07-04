@@ -6,10 +6,10 @@ import CloudAccountTable from '@components/cloudaccount/CloudAccountTable';
 import Currency from '@shared/format/Currency';
 import { Label } from '@ui/Label';
 import { OptimizeSummary } from './Summary';
-import CopyableText from '@shared/CopyableText';
+import CopyButton from '@shared/buttons/CopyButton';
 import Datetime from '@shared/format/Datetime';
 import CloudAccountEvents from '@components/cloudaccount/CloudAccountEvents';
-import CustomTable2 from '@shared/tables/CustomTable2';
+import CustomTable from '@shared/tables/CustomTable';
 import { DataBlock, CustomText } from '@components/cloudaccount/common';
 import { usePagination } from '@hooks/usePagination';
 import { formatValueWithUnit, safeJSONParse } from 'src/utils/common';
@@ -24,10 +24,11 @@ import SsmCommandResultDialog, { type SsmCommandResult } from '@components/cloud
 import ResourceActionHistory from '@components/cloudaccount/ResourceActionHistory';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
-import CustomSearch from '@shared/CustomSearch';
+import SearchInput from '@ui/SearchInput';
 import { Button as DsButton } from '@ui/Button';
 import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
 import DownloadButton from '@shared/buttons/DownloadButton';
+import ServiceRefreshButton from '@components/cloudaccount/ServiceRefreshButton';
 import { ds } from '@utils/colors';
 
 const getFormattedUnitValue = (val: any, unit: string) => {
@@ -87,7 +88,7 @@ const DetailTagsEc2Table = ({ tagData }: any) => {
   const tagsTableId = 'ec2DetailTagsTable';
   if (tagData && tagData.length > 0) {
     const convertedJson2 = tagData.map((item: any) => {
-      const data: ICustomTable2Row[] = [];
+      const data: ICustomTableRow[] = [];
       data.push({
         component: <CustomText text1={item.Key} />,
       });
@@ -100,7 +101,7 @@ const DetailTagsEc2Table = ({ tagData }: any) => {
       <ListingLayout id={`${tagsTableId}-card`}>
         <ListingLayout.Toolbar title='Tags' actions={<DownloadButton id={`${tagsTableId}-download`} onClick={() => ({ tableId: tagsTableId })} />} />
         <ListingLayout.Body>
-          <CustomTable2 id={tagsTableId} headers={['Field', 'Value']} tableData={convertedJson2} rowsPerPage={convertedJson2.length} />
+          <CustomTable id={tagsTableId} headers={['Field', 'Value']} tableData={convertedJson2} rowsPerPage={convertedJson2.length} />
         </ListingLayout.Body>
       </ListingLayout>
     );
@@ -142,7 +143,7 @@ const formatStateReasonData = (stateReasonData: string): JSX.Element => {
 const AlarmEC2Table = ({ alarmDetails }: any) => {
   const alarmTableId = 'ec2AlarmDetailsTable';
   const convertedJson2 = alarmDetails.map((item: any) => {
-    const data: ICustomTable2Row[] = [];
+    const data: ICustomTableRow[] = [];
     data.push({
       component: <CustomText text1={item.alarmName || item.AlarmName} subtext1={item.comparisonOperator || item.ComparisonOperator} />,
     });
@@ -170,7 +171,7 @@ const AlarmEC2Table = ({ alarmDetails }: any) => {
         actions={<DownloadButton id={`${alarmTableId}-download`} onClick={() => ({ tableId: alarmTableId })} />}
       />
       <ListingLayout.Body>
-        <CustomTable2 id={alarmTableId} headers={EC2_HEADER} tableData={convertedJson2} rowsPerPage={convertedJson2.length} />
+        <CustomTable id={alarmTableId} headers={EC2_HEADER} tableData={convertedJson2} rowsPerPage={convertedJson2.length} />
       </ListingLayout.Body>
     </ListingLayout>
   );
@@ -205,7 +206,7 @@ const DetailBlockDeviceMappingEc2Table = ({ blockDeviceMappingData }: any) => {
           actions={<DownloadButton id={`${blockDeviceTableId}-download`} onClick={() => ({ tableId: blockDeviceTableId })} />}
         />
         <ListingLayout.Body>
-          <CustomTable2
+          <CustomTable
             id={blockDeviceTableId}
             headers={['Volume Id', 'Device Name', 'Attachment Time', 'Delete on Termination', 'Attachment Status']}
             tableData={convertedJson2}
@@ -230,7 +231,7 @@ const INSTANCE_HEADER = [
   { name: '', width: '4%' },
 ];
 
-export interface ICustomTable2Row {
+export interface ICustomTableRow {
   component?: JSX.Element;
   drilldownQuery?: {
     podName?: any;
@@ -258,7 +259,7 @@ const GCPComputeDisksTable = ({ disks }: { disks: any[] }) => {
   const tableId = 'gcpComputeDisksTable';
   const headers = ['Device Name', 'Size (GB)', 'Type', 'Mode', 'Boot', 'Auto Delete'];
   const rows = disks.map((disk: any) => {
-    const row: ICustomTable2Row[] = [];
+    const row: ICustomTableRow[] = [];
     row.push({ component: <CustomText text1={disk.device_name || '-'} /> });
     row.push({ component: <CustomText text1={disk.disk_size_gb !== undefined ? String(disk.disk_size_gb) : '-'} /> });
     row.push({ component: <CustomText text1={disk.type || '-'} /> });
@@ -271,7 +272,7 @@ const GCPComputeDisksTable = ({ disks }: { disks: any[] }) => {
     <ListingLayout id={`${tableId}-card`}>
       <ListingLayout.Toolbar title='Disks' actions={<DownloadButton id={`${tableId}-download`} onClick={() => ({ tableId })} />} />
       <ListingLayout.Body>
-        <CustomTable2 id={tableId} headers={headers} tableData={rows} rowsPerPage={rows.length} />
+        <CustomTable id={tableId} headers={headers} tableData={rows} rowsPerPage={rows.length} />
       </ListingLayout.Body>
     </ListingLayout>
   );
@@ -289,7 +290,7 @@ const GCPComputeAlertPoliciesTable = ({ alertPolicies }: { alertPolicies: any[] 
   const rows = alertPolicies.flatMap((policy: any) =>
     (policy.conditions || []).map((condition: any) => {
       const threshold = condition.conditionThreshold;
-      const row: ICustomTable2Row[] = [];
+      const row: ICustomTableRow[] = [];
       row.push({ component: <CustomText text1={policy.displayName || '-'} /> });
       row.push({ component: <CustomText text1={policy.enabled ? 'Yes' : 'No'} /> });
       row.push({ component: <CustomText text1={condition.displayName || '-'} /> });
@@ -310,7 +311,7 @@ const GCPComputeAlertPoliciesTable = ({ alertPolicies }: { alertPolicies: any[] 
     <ListingLayout id={`${tableId}-card`}>
       <ListingLayout.Toolbar title='Alert Policies' actions={<DownloadButton id={`${tableId}-download`} onClick={() => ({ tableId })} />} />
       <ListingLayout.Body>
-        <CustomTable2 id={tableId} headers={headers} tableData={rows} rowsPerPage={rows.length} />
+        <CustomTable id={tableId} headers={headers} tableData={rows} rowsPerPage={rows.length} />
       </ListingLayout.Body>
     </ListingLayout>
   );
@@ -582,7 +583,7 @@ const InstancesView = (props: {
       }
 
       const ec2ResourceData = resources.map((item: any) => {
-        const data: ICustomTable2Row[] = [];
+        const data: ICustomTableRow[] = [];
         const nativeState = getInstanceState(props?.serviceName, item?.meta);
         const state = nativeState || item?.status || '-';
         const color = getStateColor(state);
@@ -673,9 +674,20 @@ const InstancesView = (props: {
     <ListingLayout id='right-sizing'>
       <ListingLayout.Toolbar
         title={props.heading || undefined}
-        actions={<DownloadButton id={`${ec2OptimizeInstancesTable}-download`} onClick={() => ({ tableId: ec2OptimizeInstancesTable })} />}
+        actions={
+          <>
+            <ServiceRefreshButton
+              id={ec2OptimizeInstancesTable}
+              accountId={props.accountId}
+              serviceName={props.serviceName}
+              region={selectedRegion || undefined}
+              onDone={() => listEC2Instances()}
+            />
+            <DownloadButton id={`${ec2OptimizeInstancesTable}-download`} onClick={() => ({ tableId: ec2OptimizeInstancesTable })} />
+          </>
+        }
       >
-        <CustomSearch
+        <SearchInput
           id='ec2-instances-search'
           label='Search By Instance Id/Name'
           value={selectedInstanceIdName}
@@ -815,9 +827,10 @@ const InstancesView = (props: {
                             <DataBlock title={'Network Interfaces'}>
                               {azureProps.networkProfile.networkInterfaces.map((ni: any, idx: number) => (
                                 <Typography key={`${ni.id}-${idx}`} fontSize={ds.text.body}>
-                                  <CopyableText copyableText={ni.id} iconColor={undefined} onCopy={undefined}>
+                                  <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
                                     {ni.id.split('/').pop()}
-                                  </CopyableText>
+                                    <CopyButton text={ni.id} />
+                                  </Box>
                                 </Typography>
                               ))}
                             </DataBlock>
@@ -831,7 +844,7 @@ const InstancesView = (props: {
                           <ListingLayout id='azureDataDisksTable-card'>
                             <ListingLayout.Toolbar title='Data Disks' />
                             <ListingLayout.Body>
-                              <CustomTable2
+                              <CustomTable
                                 id='azureDataDisksTable'
                                 headers={['Name', 'Size (GB)', 'Caching', 'Storage Type']}
                                 tableData={azureProps.storageProfile.dataDisks.map((disk: any) => [
@@ -880,9 +893,10 @@ const InstancesView = (props: {
                           <DataBlock title={'Security Groups'}>
                             {drilldownQuery.meta.SecurityGroups.map((sg: any, idx: number) => (
                               <Typography key={`${sg.GroupId ?? sg.GroupName}-${idx}`} fontSize={ds.text.body}>
-                                <CopyableText copyableText={sg.GroupName} iconColor={undefined} onCopy={undefined}>
+                                <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
                                   {sg.GroupName}
-                                </CopyableText>
+                                  <CopyButton text={sg.GroupName} />
+                                </Box>
                               </Typography>
                             ))}
                           </DataBlock>
@@ -892,9 +906,10 @@ const InstancesView = (props: {
                           <DataBlock title={'Private IPv4 addresses'}>
                             {drilldownQuery.meta.NetworkInterfaces.map((ni: any, idx: number) => (
                               <Typography key={`${ni.NetworkInterfaceId ?? ni.PrivateIpAddress}-${idx}`} fontSize={ds.text.body}>
-                                <CopyableText copyableText={ni.PrivateIpAddress} iconColor={undefined} onCopy={undefined}>
+                                <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
                                   {ni.PrivateIpAddress}
-                                </CopyableText>
+                                  <CopyButton text={ni.PrivateIpAddress} />
+                                </Box>
                               </Typography>
                             ))}
                           </DataBlock>

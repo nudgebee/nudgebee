@@ -57,6 +57,106 @@ func handleUserAction(actionPayload *ActionRequest, c *gin.Context, tracer *trac
 			ctx.GetLogger().Error("failed to publish audit event", "error", err)
 		}
 		return
+	case "users_list_integration_accounts":
+		var request user.ListIntegrationAccountsRequest
+		if err := common.UnmarshalMapToStruct(tenantRequest, &request); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		resp, err := user.ListIntegrationAccountsForUser(ctx, request.UserId)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		c.JSON(200, resp)
+		return
+	case "users_list_unmapped_accounts":
+		var request user.ListUnmappedAccountsRequest
+		if err := common.UnmarshalMapToStruct(tenantRequest, &request); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		resp, err := user.ListUnmappedAccounts(ctx, request.IntegrationType)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		c.JSON(200, resp)
+		return
+	case "users_create_account_mapping":
+		var request user.CreateAccountMappingRequest
+		if err := common.UnmarshalMapToStruct(tenantRequest, &request); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		resp, err := user.CreateAccountMapping(ctx, request)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		c.JSON(200, resp)
+		if err := audit.PublishAuditEvent(ctx, audit.Audit{
+			TenantId:      ctx.GetSecurityContext().GetTenantId(),
+			UserId:        ctx.GetSecurityContext().GetUserId(),
+			EventTime:     time.Now(),
+			EventCategory: audit.EventCategoryUser,
+			EventType:     audit.EventTypeUserUpdate,
+			EventState:    request,
+			EventActor:    audit.EventActorApiService,
+			EventTarget:   "integration_user_accounts",
+			EventAction:   audit.EventActionUpdate,
+			EventStatus:   audit.EventStatusSuccess,
+		}); err != nil {
+			ctx.GetLogger().Error("failed to publish audit event", "error", err)
+		}
+		return
+	case "users_delete_account_mapping":
+		var request user.DeleteAccountMappingRequest
+		if err := common.UnmarshalMapToStruct(tenantRequest, &request); err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		ctx, err := buildContextFromPayload(c, actionPayload, tracer, meter, logger)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		resp, err := user.DeleteAccountMapping(ctx, request)
+		if err != nil {
+			c.JSON(400, common.ErrorActionBadRequest(err.Error()))
+			return
+		}
+		c.JSON(200, resp)
+		if err := audit.PublishAuditEvent(ctx, audit.Audit{
+			TenantId:      ctx.GetSecurityContext().GetTenantId(),
+			UserId:        ctx.GetSecurityContext().GetUserId(),
+			EventTime:     time.Now(),
+			EventCategory: audit.EventCategoryUser,
+			EventType:     audit.EventTypeUserUpdate,
+			EventState:    request,
+			EventActor:    audit.EventActorApiService,
+			EventTarget:   "integration_user_accounts",
+			EventAction:   audit.EventActionDelete,
+			EventStatus:   audit.EventStatusSuccess,
+		}); err != nil {
+			ctx.GetLogger().Error("failed to publish audit event", "error", err)
+		}
+		return
 	case "users_create_token":
 		var request user.UserTokenCreateRequest
 		var err error

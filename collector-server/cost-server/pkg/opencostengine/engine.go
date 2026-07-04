@@ -212,6 +212,9 @@ func applyClusterLabel(clusterID string, cfg *prom.OpenCostPrometheusConfig) {
 			}
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return
+	}
 	if cfg.ClusterID == "" {
 		cfg.ClusterFilter = ""
 	} else {

@@ -1389,7 +1389,7 @@ func TestBuildEnvironmentContext(t *testing.T) {
 		[]string{os.Getenv("TEST_ACCOUNT")},
 	)
 
-	ctx := agent.buildEnvironmentContext(sc)
+	ctx := agent.buildEnvironmentContext(sc, true)
 
 	t.Log("Environment context:\n", ctx)
 
@@ -1431,7 +1431,7 @@ func TestBuildEnvironmentContext_IncludesObservabilityProviders(t *testing.T) {
 		[]string{os.Getenv("TEST_ACCOUNT")},
 	)
 
-	ctx := agent.buildEnvironmentContext(sc)
+	ctx := agent.buildEnvironmentContext(sc, true)
 
 	// If the services server is running, we should get provider info.
 	// If not, the context will still contain integrations/cloud accounts.
@@ -1827,7 +1827,7 @@ func TestWorkflowBuilder_EnvContext_RealCloudAccountsExposeUUID(t *testing.T) {
 	agent := newWorkflowBuilderAgent(os.Getenv("TEST_ACCOUNT"))
 	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), os.Getenv("TEST_USER"), []string{os.Getenv("TEST_ACCOUNT")})
 
-	envContext := agent.buildEnvironmentContext(sc)
+	envContext := agent.buildEnvironmentContext(sc, true)
 
 	// Empty is acceptable only if the test account has zero configured
 	// cloud accounts and zero integrations — log so we can investigate.

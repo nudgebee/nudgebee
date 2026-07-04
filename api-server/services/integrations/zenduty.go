@@ -1,6 +1,7 @@
 package integrations
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -199,4 +200,61 @@ func GetZenDutyServices(apiKey, teamID string) ([]ZenDutyService, error) {
 	}
 
 	return services, nil
+}
+
+// zenDutyUser mirrors the /account/users/ payload shape.
+type zenDutyUser struct {
+	UniqueID string `json:"unique_id"`
+	User     struct {
+		Username  string `json:"username"`
+		Email     string `json:"email"`
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+	} `json:"user"`
+}
+
+// ListUsers enumerates ZenDuty account users (email + name) via an authenticated
+// GET (Authorization: Token). Implements core.UserLister.
+func (z ZenDuty) ListUsers(ctx context.Context, values []core.IntegrationConfigValue) ([]core.ExternalUser, error) {
+	apiKey := core.ConfigValue(values, ZenDutyConfigPassword)
+	if apiKey == "" {
+		return nil, fmt.Errorf("zenduty: missing api key")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ZenDutyDefaultURL+"/account/users/", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Token "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("zenduty: list users: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("zenduty: unexpected status %d", resp.StatusCode)
+	}
+
+	var users []zenDutyUser
+	if err := json.NewDecoder(resp.Body).Decode(&users); err != nil {
+		return nil, fmt.Errorf("zenduty: decode users: %w", err)
+	}
+
+	out := make([]core.ExternalUser, 0, len(users))
+	for _, u := range users {
+		name := fmt.Sprintf("%s %s", u.User.FirstName, u.User.LastName)
+		if name == " " {
+			name = u.User.Username
+		}
+		out = append(out, core.ExternalUser{
+			ID:          u.User.Username,
+			Username:    u.User.Username,
+			Email:       u.User.Email,
+			DisplayName: name,
+		})
+	}
+	return out, nil
 }

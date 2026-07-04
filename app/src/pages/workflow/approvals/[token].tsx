@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import type { GetServerSideProps } from 'next';
 import { Box, Paper, Typography } from '@mui/material';
-import { colors } from '@utils/colors';
+import { ds } from '@utils/colors';
 
 type Outcome = 'recorded' | 'already_processed' | 'invalid_link' | 'invalid_decision' | 'error';
 
@@ -113,41 +113,41 @@ export default function WorkflowApprovalPage({ outcome, status, detail }: Readon
       data-testid='workflow-approval-page'
       sx={{
         minHeight: '100vh',
-        bgcolor: '#F0F2F5',
+        bgcolor: 'var(--ds-brand-100)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        p: 2,
+        p: ds.space[4],
       }}
     >
       <Paper
         elevation={0}
         sx={{
-          maxWidth: 480,
+          maxWidth: ds.space.mul(4, 30),
           width: '100%',
-          p: { xs: 4, sm: 5 },
-          borderRadius: 1,
+          p: { xs: ds.space[6], sm: ds.space.mul(2, 5) },
+          borderRadius: ds.radius.sm,
           boxShadow: '0 1px 3px rgba(0,0,0,0.06), 0 4px 20px rgba(0,0,0,0.04)',
         }}
       >
         <Box
           sx={{
-            height: 4,
-            width: 56,
-            bgcolor: colors.yellow,
-            borderRadius: 1,
-            mb: 2.5,
+            height: ds.space[1],
+            width: ds.space.mul(2, 7),
+            bgcolor: ds.amber[400],
+            borderRadius: ds.radius.sm,
+            mb: ds.space.mul(1, 5),
           }}
         />
         <Typography
           variant='h5'
           component='h1'
-          sx={{ fontWeight: 600, fontSize: 22, mb: 1.5, color: colors.text.primary }}
+          sx={{ fontWeight: 'var(--ds-font-weight-semibold)', fontSize: 'var(--ds-text-heading)', mb: ds.space[3], color: ds.blue[500] }}
           data-testid='workflow-approval-heading'
         >
           {heading}
         </Typography>
-        <Typography sx={{ fontSize: 15, lineHeight: 1.6, color: colors.text.secondary }} data-testid='workflow-approval-body'>
+        <Typography sx={{ fontSize: 'var(--ds-text-body-lg)', lineHeight: 1.6, color: ds.brand[500] }} data-testid='workflow-approval-body'>
           {body}
         </Typography>
       </Paper>

@@ -40,8 +40,16 @@ type toolUpdateRequest struct {
 }
 
 func toolListTool(c *gin.Context, context *security.RequestContext, payload map[string]any) {
+	// Empty account_id means the caller is on a surface with no current
+	// account (the global b-Cortex sidebar). Fall back to a tenant-wide
+	// read; the service layer row-filters by HasAccountAccess so each
+	// caller only sees custom tools from accounts they can read. System
+	// tools are always returned. Custom-agents-as-tools are intentionally
+	// omitted from the tenant-wide view — they're already shown on the
+	// Agents tab and duplicating them here would be confusing.
 	if payload["account_id"] == nil || payload["account_id"] == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New("tools: invalid payload, account_id is required")}))
+		resp := core.ListToolsForTenant(context)
+		c.JSON(200, buildApiResponse(resp, nil))
 		return
 	}
 	accountIdPayload, ok := payload["account_id"].(string)

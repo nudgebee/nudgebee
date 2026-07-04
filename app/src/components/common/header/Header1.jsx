@@ -3,7 +3,7 @@ import { headerMenuExtras } from '@lib/authHooks';
 import Box from '@mui/material/Box';
 import { Typography } from '@mui/material';
 import DOMPurify from 'dompurify';
-import { colors, ds } from 'src/utils/colors';
+import { ds } from 'src/utils/colors';
 import { Button as DsButton } from '@ui/Button';
 import DsTooltip from '@ui/Tooltip';
 import { Divider as DsDivider } from '@ui/Divider';
@@ -44,13 +44,13 @@ import ClusterDropdown from '@shared/navigation/ClusterDropDown';
 import { useSession } from 'next-auth/react';
 import { DropdownMenu } from '@ui/DropdownMenu';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
-import K8sAccountModal from '@shared/K8sAccountModal';
-import JiraAccountModal from '@shared/JiraAccountModal';
-import GithubAccountModal from '@shared/GithubAccountModal';
-import ServiceNowAccountModal from '@shared/ServiceNowAccountModal';
+import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
+import JiraAccountModal from '@components/integrations/modal/JiraAccountModal';
+import GithubAccountModal from '@components/integrations/modal/GithubAccountModal';
+import ServiceNowAccountModal from '@components/integrations/modal/ServiceNowAccountModal';
 import { Select } from '@ui/Select';
 import apiAppGrouping from '@api1/application-groupings';
-import CustomBackButton from '@shared/CustomBackButton';
+import BackButton from '@components/common/buttons/BackButton';
 import Link from 'next/link';
 import apiAccount from '@api1/account';
 import { useTenantBranding } from '@hooks/useTenantBranding';
@@ -331,7 +331,7 @@ const Header1 = ({ showBorder = false }) => {
       {
         name: (
           <>
-            {assistantName}, <span style={{ color: colors.text.darkGray, fontWeight: 'var(--ds-font-weight-regular)' }}>your AI assistant.</span>
+            {assistantName}, <span style={{ color: ds.gray[500], fontWeight: 'var(--ds-font-weight-regular)' }}>your AI assistant.</span>
           </>
         ),
         route: '/ask-nudgebee',
@@ -343,7 +343,7 @@ const Header1 = ({ showBorder = false }) => {
       {
         name: (
           <>
-            {assistantName}, <span style={{ color: colors.text.darkGray, fontWeight: 'var(--ds-font-weight-regular)' }}>your AI assistant.</span>
+            {assistantName}, <span style={{ color: ds.gray[500], fontWeight: 'var(--ds-font-weight-regular)' }}>your AI assistant.</span>
           </>
         ),
         route: '/ask-nudgebee-v2',
@@ -649,7 +649,7 @@ const Header1 = ({ showBorder = false }) => {
                 size='sm'
                 tone='primary'
                 data-testid='demo-banner-connect-account'
-                onClick={() => router.push('/user-management#integrations')}
+                onClick={() => router.push('/user-management?integration=account#integrations')}
               >
                 Connect Account
               </DsButton>
@@ -672,7 +672,15 @@ const Header1 = ({ showBorder = false }) => {
         </Box>
       )}
 
-      <Box sx={{ zIndex: 20, boxShadow: '0px 2px 24px 2px #00000010', width: '100%', position: 'sticky', top: '0px' }}>
+      <Box
+        sx={{
+          zIndex: 20,
+          boxShadow: `0px ${ds.space[0]} ${ds.space[5]} ${ds.space[0]} ${ds.gray.alpha[100]}`,
+          width: '100%',
+          position: 'sticky',
+          top: '0px',
+        }}
+      >
         <Box
           sx={{
             width: '100%',
@@ -686,12 +694,12 @@ const Header1 = ({ showBorder = false }) => {
               background: ds.background[100],
               justifyContent: 'space-between',
               alignItems: 'center',
-              height: '56px',
+              height: ds.space.mul(0, 28),
               px: ds.space[6],
             }}
           >
             <Box sx={{ display: 'flex', alignItems: 'center', gap: ds.space[2] }}>
-              {anchorActiveTab.showBackButton && <CustomBackButton />}
+              {anchorActiveTab.showBackButton && <BackButton />}
               <Box sx={{ display: 'flex', alignItems: 'center' }}>
                 {anchorActiveTab.icon && (
                   <Box sx={{ mx: ds.space[2], display: 'flex', alignItems: 'center' }}>
@@ -782,7 +790,7 @@ const Header1 = ({ showBorder = false }) => {
                       // equivalent for this pattern).
                       background: `linear-gradient(120deg, ${ds.brand[500]} 0%, ${ds.brand[500]} 28%, ${ds.brand[500]} 85%, ${ds.brand[500]} 100%)`,
                       borderRadius: ds.radius.lg,
-                      height: '32px',
+                      height: ds.space.mul(0, 16),
                       width: 'fit-content',
                       padding: `0 0 0 ${ds.space[2]}`,
                       display: 'flex',
@@ -798,7 +806,7 @@ const Header1 = ({ showBorder = false }) => {
                         },
                         '& .nubi-text': {
                           opacity: 1,
-                          maxWidth: '200px',
+                          maxWidth: ds.space.mul(0, 100),
                           marginRight: ds.space[2],
                         },
                       },
@@ -844,7 +852,7 @@ const Header1 = ({ showBorder = false }) => {
                       display: 'flex',
                       alignItems: 'center',
                       position: 'relative',
-                      height: '32px',
+                      height: ds.space.mul(0, 16),
                       backgroundColor: ds.background[100],
                       border: `1px solid ${ds.gray[300]}`,
                       borderRadius: ds.radius.md,
@@ -866,20 +874,20 @@ const Header1 = ({ showBorder = false }) => {
                         fontSize: 'var(--ds-text-title) !important',
                       },
                       '& .MuiAutocomplete-root': {
-                        height: '32px !important',
-                        minHeight: '32px !important',
+                        height: `${ds.space.mul(0, 16)} !important`,
+                        minHeight: `${ds.space.mul(0, 16)} !important`,
                         borderRadius: 'inherit !important',
                       },
                       '& .MuiInputBase-root, & .MuiOutlinedInput-root, & .MuiOutlinedInput-root.MuiInputBase-sizeSmall': {
-                        height: '32px !important',
-                        minHeight: '32px !important',
+                        height: `${ds.space.mul(0, 16)} !important`,
+                        minHeight: `${ds.space.mul(0, 16)} !important`,
                         paddingTop: '0 !important',
                         paddingBottom: '0 !important',
                         borderRadius: 'inherit !important',
                         backgroundColor: 'transparent !important',
                       },
                       '& .MuiOutlinedInput-root input, & .MuiAutocomplete-input': {
-                        height: '32px !important',
+                        height: `${ds.space.mul(0, 16)} !important`,
                         fontSize: 'var(--ds-text-body-lg) !important',
                         paddingTop: '0 !important',
                         paddingBottom: '0 !important',
@@ -908,7 +916,7 @@ const Header1 = ({ showBorder = false }) => {
                       onChange={handleDropdownChange}
                       noLabel
                       onClusterDataLoaded={handleClusterData}
-                      minWidth={'224px'}
+                      minWidth={ds.space.mul(0, 112)}
                       groupByCloudProvider
                       showPadding={true}
                       showAutoEllipsis={true}
@@ -935,7 +943,7 @@ const Header1 = ({ showBorder = false }) => {
                 {anchorActiveTab.showGroupingDropdown && (
                   <Select
                     id='app-group'
-                    minWidth='250px'
+                    minWidth={ds.space.mul(0, 125)}
                     label=''
                     value={activeGroup.value?.trim() ? activeGroup.value : ''}
                     options={allAppGroupNames}
@@ -946,7 +954,7 @@ const Header1 = ({ showBorder = false }) => {
                   />
                 )}
               </Box>
-              <DsDivider orientation='vertical' sx={{ minHeight: '32px', marginLeft: 0, marginRight: 0 }} />
+              <DsDivider orientation='vertical' sx={{ minHeight: ds.space.mul(0, 16), marginLeft: 0, marginRight: 0 }} />
               <Box sx={{ display: 'flex', flexDirection: 'row', gap: ds.space[2] }}>
                 <DsButton
                   composition='icon-only'

@@ -81,6 +81,15 @@ mutation CloudApplyCommand(
 }
 `;
 
+export const CLOUD_SYNC_SERVICE = `
+mutation CloudSyncService($account_id: String!, $service_name: String!, $regions: [String!]) {
+  cloud_sync_service(account_id: $account_id, service_name: $service_name, regions: $regions) {
+    success
+    message
+  }
+}
+`;
+
 export const LIST_RESOURCE_ACTION_HISTORY = `
 query ListResourceActionHistory($limit: Int, $offset: Int) {
   audit_groupings_v2(where: __WHERE__) {
@@ -254,6 +263,23 @@ query cloudAccountCostTrend($dateUnit:String!){
       spend_amount  
       currency_type
     }
+  }
+}
+`;
+
+// Batched per-account spend rollup: spend_groupings_v2 groups by the dimension
+// columns requested in rows, so one query returns (account_id, currency) sums for
+// every account at once — replacing a 2-calls-per-account fan-out.
+export const CLOUD_ACCOUNTS_SPEND_SUMMARY = `
+query CloudAccountsSpendSummary {
+  mtd: spend_groupings_v2(where: __WHERE_CM__){
+    rows{ account_id spend_amount currency_type }
+  }
+  prev_month: spend_groupings_v2(where: __WHERE_LM__){
+    rows{ account_id spend_amount currency_type }
+  }
+  ytd: spend_groupings_v2(where: __WHERE_YR__){
+    rows{ account_id spend_amount currency_type }
   }
 }
 `;
@@ -646,6 +672,23 @@ export function extractGraphQLErrorMessage(response: any): string {
 }
 
 const apiCloudAccount = {
+  // Re-collect the resource inventory for a single cloud service for an account.
+  // Returns { success, message }; throws on transport errors.
+  syncCloudService: async function (accountId: string, serviceName: string, regions?: string[]): Promise<{ success: boolean; message?: string }> {
+    if (accountId === 'demo') {
+      return { success: true };
+    }
+    const response = await queryGraphQL(CLOUD_SYNC_SERVICE, 'CloudSyncService', {
+      account_id: accountId,
+      service_name: serviceName,
+      ...(regions && regions.length > 0 ? { regions } : {}),
+    });
+    const errors = response?.data?.errors;
+    if (errors && errors.length > 0) {
+      throw new Error(extractGraphQLErrorMessage(response));
+    }
+    return response?.data?.data?.cloud_sync_service ?? { success: false };
+  },
   getDistinctTagKeys: async function (
     accountId: string,
     serviceName?: string,
@@ -1405,6 +1448,46 @@ mutation CloudMetrics($request: CloudMetricsRequestInput!) {
       return error;
     }
   },
+  // One-shot MTD / previous-month / YTD spend per account (with currency), for all
+  // accounts in a single query. Used by the Optimise summary right rail instead of
+  // calling cloudAccountSummary + listCloudAccountTrend once per account.
+  listAccountsSpendSummary: async function (accountIds: string[]) {
+    if (!accountIds || accountIds.length === 0) {
+      return { mtd: [], prevMonth: [], ytd: [] };
+    }
+    const currentDate = new Date();
+    const lastMonthDate = new Date();
+    // Pin to the 1st before stepping back a month — on the 29th-31st,
+    // setMonth alone overflows (e.g. Jul 31 → "Jun 31" → Jul 1).
+    lastMonthDate.setDate(1);
+    lastMonthDate.setMonth(lastMonthDate.getMonth() - 1);
+
+    const iso = (d: Date | string) => (d instanceof Date ? d.toISOString() : d);
+    const buildWhere = (s: Date | string, e: Date | string) => ({
+      account_id: { _in: accountIds },
+      _and: [{ spend_date: { _gte: iso(s) } }, { spend_date: { _lte: iso(e) } }, { exclude_aggregate: { _eq: false } }],
+    });
+
+    const query = CLOUD_ACCOUNTS_SPEND_SUMMARY.replace(
+      '__WHERE_CM__',
+      gqlStringify(buildWhere(getStartOfMonth(currentDate), getEndOfMonth(currentDate)))
+    )
+      .replace('__WHERE_LM__', gqlStringify(buildWhere(getStartOfMonth(lastMonthDate), getEndOfMonth(lastMonthDate))))
+      .replace('__WHERE_YR__', gqlStringify(buildWhere(getStartOfYear(currentDate), getEndOfYear(currentDate))));
+
+    const response = await queryGraphQL(query, 'CloudAccountsSpendSummary', {});
+    const errors = response?.data?.errors;
+    if (Array.isArray(errors) && errors.length > 0) {
+      throw new Error(extractGraphQLErrorMessage(response));
+    }
+    const d = response?.data?.data;
+    return {
+      mtd: d?.mtd?.rows || [],
+      prevMonth: d?.prev_month?.rows || [],
+      ytd: d?.ytd?.rows || [],
+    };
+  },
+
   cloudAccountSummary: async function (accountId: string, data: any = null) {
     if (accountId === 'demo') return null;
     try {

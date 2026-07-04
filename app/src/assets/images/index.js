@@ -27,6 +27,7 @@ import ReplicaRightSizingIconComp from '@assets/kubernetes/optimize-icons/replic
 import RightSizingIconComp from '@assets/kubernetes/optimize-icons/right-sizing-icon.icon.svg';
 import SpotRecommendationIconComp from '@assets/kubernetes/optimize-icons/spot-recommendation-icon.icon.svg';
 import OptimizeSummaryIconComp from '@assets/kubernetes/optimize-icons/summary-icon.icon.svg';
+import LLMConsumptionIconComp from '@assets/ask-nudgebee/speedometer-icon.icon.svg';
 import UnusedVolumeIconComp from '@assets/kubernetes/optimize-icons/unused-volume-icon.icon.svg';
 import AutoScalerIconComp from '@assets/auto-scaler-icon.icon.svg';
 import RecommendationResolutionIconComp from '@assets/kubernetes/optimize-icons/recommendation-resolution.icon.svg';
@@ -738,7 +739,7 @@ export const TracesBlueIcon = require('@assets/ask-nudgebee/traces-blue-icon.svg
 export const AgentIcon = require('@assets/ask-nudgebee/agent-icon.svg');
 export const ToolsIcon = require('@assets/ask-nudgebee/tools-icon.svg');
 export const LLMFunctionIcon = require('@assets/ask-nudgebee/llm-function-icon.svg');
-export const LLMConsumptionIcon = require('@assets/ask-nudgebee/speedometer-icon.svg');
+export const LLMConsumptionIcon = LLMConsumptionIconComp;
 export const FollowUpBlueIcon = require('@assets/ask-nudgebee/followup-blue.svg');
 export const UploadIcon = require('@assets/upload-icon.svg');
 export const PlayCircleIcon = require('@assets/play-circle.svg');

@@ -15,9 +15,9 @@ import CloudAccountTable from './CloudAccountTable';
 import Currency from '@shared/format/Currency';
 import HelpBeeModal from '@components/helpbee';
 import { ECSInstances } from './ecs';
-import ThreeDotsMenu from '@shared/ds/ThreeDotsMenu';
+import ThreeDotsMenu from '@ui/ThreeDotsMenu';
 import { action } from 'src/utils/actionStyles';
-import type { ICustomTable2Row } from './ec2/Instances';
+import type { ICustomTableRow } from './ec2/Instances';
 import { MENU_ITEMS, DataBlock } from './common';
 import Text from '@shared/format/Text';
 import TotalCostChart from '@components/cloudaccount/CostChart';
@@ -26,12 +26,11 @@ import { usePagination } from '@hooks/usePagination';
 import ServiceRecommendations from '@components/cloudaccount/ServiceRecommendations';
 // TODO(ds-migration): Loader is a leaf-utility — replace with `ds/Skeleton` blocks for content-shaped loading.
 import Loader from '@shared/Loader';
-// TODO(ds-migration): CopyableText is a leaf-utility (text + copy button) — no DS equivalent yet.
-import CopyableText from '@shared/CopyableText';
+import CopyButton from '@shared/buttons/CopyButton';
 import TagsCell from './TagsCell';
 import apiCloudAccount from '@api1/cloud-account';
 import Datetime from '@shared/format/Datetime';
-import { parseJSONSafely } from '@utils/common';
+import { safeJSONParse } from '@utils/common';
 import Trend from '@ui/Trend';
 import Chip from '@ui/Chip';
 import { ds } from '@utils/colors';
@@ -290,9 +289,9 @@ const CloudAccountServices = (props: {
     routerReady,
   ]);
 
-  const services = useMemo<ICustomTable2Row[][]>(() => {
+  const services = useMemo<ICustomTableRow[][]>(() => {
     return rawServices.map((item: IResourceGrouping) => {
-      const data: ICustomTable2Row[] = [];
+      const data: ICustomTableRow[] = [];
 
       data.push({
         component: <Text showAutoEllipsis value={item.resource_service_name} sx={{ marginRight: ds.space[1] }} />,
@@ -494,6 +493,14 @@ interface IResourceDetail {
   // Ensure all fields accessed from 'item' below are included here
 }
 
+const parseMaybeJSON = (val: unknown): unknown => {
+  if (val == null || typeof val === 'object') return val;
+  if (typeof val !== 'string') return val;
+  return safeJSONParse(val) ?? safeJSONParse(val.replace(/'/g, '"'));
+};
+
+const isPlainObject = (val: unknown): val is Record<string, unknown> => val != null && typeof val === 'object' && !Array.isArray(val);
+
 // Component to display detailed resource information
 const ResourceDetails = (props: { resourceData: IResourceDetail }) => {
   const [detailedResource, setDetailedResource] = useState<any>(null);
@@ -511,8 +518,8 @@ const ResourceDetails = (props: { resourceData: IResourceDetail }) => {
       .then((res: any) => {
         const data = res.data;
         if (data) {
-          data.meta = parseJSONSafely(data.meta) as any;
-          data.tags = parseJSONSafely(data.tags) as any;
+          data.meta = parseMaybeJSON(data.meta);
+          data.tags = parseMaybeJSON(data.tags);
         }
         setDetailedResource(data);
         setLoading(false);
@@ -524,7 +531,7 @@ const ResourceDetails = (props: { resourceData: IResourceDetail }) => {
   }, [props.resourceData?.resource_id]);
 
   if (loading) {
-    return <Loader style={{ height: '200px', width: '100%' }} />;
+    return <Loader style={{ height: ds.space.mul(0, 100), width: '100%' }} />;
   }
 
   if (!detailedResource) {
@@ -549,9 +556,10 @@ const ResourceDetails = (props: { resourceData: IResourceDetail }) => {
           <Box>
             <Box sx={{ color: ds.gray[500], fontSize: ds.text.small, fontWeight: ds.weight.regular, mb: ds.space[1] }}>ARN</Box>
             <Box sx={{ fontSize: ds.text.body }}>
-              <CopyableText copyableText={detailedResource.arn}>
+              <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
                 <Text showAutoEllipsis value={detailedResource.arn} />
-              </CopyableText>
+                <CopyButton text={detailedResource.arn} />
+              </Box>
             </Box>
           </Box>
         )}
@@ -600,7 +608,7 @@ const ResourceDetails = (props: { resourceData: IResourceDetail }) => {
       </Box>
 
       {/* Display meta configuration if available */}
-      {detailedResource.meta && Object.keys(detailedResource.meta).length > 0 && (
+      {isPlainObject(detailedResource.meta) && Object.keys(detailedResource.meta).length > 0 && (
         <Box sx={{ mb: ds.space[5] }}>
           <Box
             sx={{
@@ -644,9 +652,10 @@ const ResourceDetails = (props: { resourceData: IResourceDetail }) => {
                     <Box sx={{ color: ds.gray[500], fontSize: ds.text.small, fontWeight: ds.weight.regular, mb: ds.space[1] }}>{formattedKey}</Box>
                     <Box sx={{ fontSize: ds.text.body }}>
                       {typeof value === 'string' && value.length > 10 ? (
-                        <CopyableText copyableText={displayValue}>
+                        <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--ds-space-1)' }}>
                           <Text showAutoEllipsis value={displayValue} />
-                        </CopyableText>
+                          <CopyButton text={displayValue} />
+                        </Box>
                       ) : (
                         <Text showAutoEllipsis value={displayValue} />
                       )}
@@ -659,7 +668,7 @@ const ResourceDetails = (props: { resourceData: IResourceDetail }) => {
       )}
 
       {/* Display tags if available */}
-      {detailedResource.tags && Object.keys(detailedResource.tags).length > 0 && (
+      {isPlainObject(detailedResource.tags) && Object.keys(detailedResource.tags).length > 0 && (
         <Box sx={{ mb: ds.space[5] }}>
           <Box
             sx={{
@@ -747,7 +756,7 @@ const CloudAccountResources = (props: {
   tagKey: string | null;
 }) => {
   const [loading, setLoading] = useState(false);
-  const [resources, setResources] = useState<ICustomTable2Row[][]>([]);
+  const [resources, setResources] = useState<ICustomTableRow[][]>([]);
   const [resourcesCount, setResourcesCount] = useState(0);
   const { page, rowsPerPage, changePage, setPage } = usePagination(10);
 
@@ -907,7 +916,7 @@ const CloudAccountResources = (props: {
       .then((res: any) => {
         setLoading(false);
         const genericResourceData = (res.data?.resource_groupings || []).map((item: IResourceDetail) => {
-          let data: ICustomTable2Row[] = [];
+          let data: ICustomTableRow[] = [];
 
           data.push({
             component: <Text showAutoEllipsis value={item.resource_name} sx={{ marginRight: ds.space[1] }} />,

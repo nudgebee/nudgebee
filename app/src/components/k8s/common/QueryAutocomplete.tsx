@@ -8,7 +8,8 @@ import QueryBuilder, { OperationBuilder, getLineOperators, IndexBuilder } from '
 import { OperatorDescriptor } from './operatorCatalog';
 import { Textarea } from './TextArea';
 import apiAskNudgebee from '@api1/ask-nudgebee';
-import CustomButton from '@shared/NewCustomButton';
+import { Button } from '@ui/Button';
+import SafeIcon from '@shared/icons/SafeIcon';
 import { ds } from 'src/utils/colors';
 import { toast as snackbar } from '@ui/Toast';
 import cache from '@lib/cache';
@@ -636,7 +637,8 @@ const QueryAutocomplete: React.FC<QueryAutocompleteProps> = ({
                     backgroundColor: 'var(--ds-background-100)',
                     borderRadius: 'var(--ds-radius-lg)',
                     border: '1px solid var(--ds-blue-500) !important',
-                    boxShadow: '0px 2px 7px 0px #3B82F60F, 0px 4px 6px -1px #3B82F61F',
+                    boxShadow:
+                      '0px 2px 7px 0px color-mix(in srgb, var(--ds-blue-500) 6%, transparent), 0px 4px 6px -1px color-mix(in srgb, var(--ds-blue-500) 12%, transparent)',
                     padding: 'var(--ds-space-4) var(--ds-space-5)',
                     width: '100%',
                     justifyContent: 'space-between',
@@ -689,19 +691,18 @@ const QueryAutocomplete: React.FC<QueryAutocompleteProps> = ({
                     {helperTextForLLM && <Typography sx={{ color: ds.red[500], fontSize: 'var(--ds-text-body-lg)' }}>{helperTextForLLM}</Typography>}
                   </Box>
 
-                  <Box>
-                    <CustomButton
+                  <Box sx={{ marginTop: 'var(--ds-space-1)' }}>
+                    <Button
                       loading={isLoadingGenerateQuestionText}
-                      sx={{ marginTop: 'var(--ds-space-1)' }}
-                      size='Medium'
+                      size='md'
                       onClick={() => {
                         handleGenerateQuery();
                       }}
-                      startIcon={ArrowRightWhiteIcon}
+                      icon={<SafeIcon src={ArrowRightWhiteIcon} alt='' width={18} height={18} />}
+                      aria-label='Generate query'
                       disabled={logProvider == 'ES' && !index}
-                      showTooltip
-                      toolTipTitle={logProvider == 'ES' && !index ? 'Please select the index first' : ''}
-                      tooltipPlacement={'right'}
+                      tooltip={logProvider == 'ES' && !index ? 'Please select the index first' : ''}
+                      tooltipPlacement='right'
                     />
                   </Box>
                 </SummaryBlock>
@@ -738,18 +739,16 @@ const QueryAutocomplete: React.FC<QueryAutocompleteProps> = ({
                 key={'code-mirror-ai'}
               />
               {logProvider == 'promql' && (
-                <CustomButton
-                  id={'submit'}
-                  text={'Submit'}
-                  size='Small'
-                  sx={{
-                    width: 'fit-content',
-                  }}
+                <Button
+                  id='submit'
+                  size='sm'
                   disabled={!query1 || loading}
                   onClick={() => {
                     handleSubmit(query1, llmQueryResponse, 'ai');
                   }}
-                />
+                >
+                  Submit
+                </Button>
               )}
             </Box>
           </>
@@ -807,18 +806,16 @@ const QueryAutocomplete: React.FC<QueryAutocompleteProps> = ({
               }}
             />
             {logProvider == 'promql' && (
-              <CustomButton
-                id={'submit'}
-                text={'Submit'}
+              <Button
+                id='submit'
                 disabled={!query1 || loading}
-                size='Small'
-                sx={{
-                  width: 'fit-content',
-                }}
+                size='sm'
                 onClick={() => {
                   handleSubmit(query1, '', 'code');
                 }}
-              />
+              >
+                Submit
+              </Button>
             )}
           </Box>
         )}
@@ -877,28 +874,31 @@ const QueryAutocomplete: React.FC<QueryAutocompleteProps> = ({
                   }}
                 />
               ))}
-              <CustomButton
-                variant={'tertiary'}
-                text={'Add Filters'}
-                onClick={(e) => {
-                  addFilterChange(e);
-                }}
-                sx={{ mt: 'var(--ds-space-2)', mr: 'var(--ds-space-2)' }}
-              />
+              <Box component='span' sx={{ display: 'inline-block', mt: 'var(--ds-space-2)', mr: 'var(--ds-space-2)' }}>
+                <Button
+                  tone='secondary'
+                  onClick={(e) => {
+                    addFilterChange(e);
+                  }}
+                >
+                  Add Filters
+                </Button>
+              </Box>
             </Box>
             {(logProvider === 'loki' || logProvider === 'newrelic') && (
               <>
                 <Box sx={{ mt: 'var(--ds-space-1)', mb: 'var(--ds-space-2)' }}>
-                  <CustomButton
-                    variant='tertiary'
-                    text={'+ OPERATIONS'}
+                  <Button
+                    tone='secondary'
                     onClick={() => {
                       const lastLC = lineContains[lineContains.length - 1];
                       if (lastLC?.value != '') {
                         setLineContains([...lineContains, { operator: getLineOperators(operatorDescriptors)[0]?.value ?? '', value: '' }]);
                       }
                     }}
-                  />
+                  >
+                    + OPERATIONS
+                  </Button>
                 </Box>
                 <Box marginTop={ds.space.mul(0, 5)}>
                   <Grid container>

@@ -14,6 +14,7 @@ const (
 
 	GoogleChatSpaceConfigDisplayName = "display_name"
 	GoogleChatSpaceConfigSpaceType   = "space_type"
+	GoogleChatSpaceConfigIsDefault   = "is_default"
 )
 
 // GoogleChatSpace binds a Google Chat space (spaces/XYZ) to a Nudgebee tenant.
@@ -45,6 +46,12 @@ func (GoogleChatSpace) ConfigSchema() core.IntegrationSchema {
 				Description: "Google Chat space type (SPACE or DIRECT_MESSAGE)",
 				Hidden:      true,
 				Default:     "SPACE",
+			},
+			GoogleChatSpaceConfigIsDefault: {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Whether this is the tenant's default space for notifications (\"true\"/\"false\")",
+				Hidden:      true,
+				Default:     "false",
 			},
 		},
 	}

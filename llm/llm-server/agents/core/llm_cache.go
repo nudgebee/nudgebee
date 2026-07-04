@@ -457,6 +457,10 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 			if err := common.CacheDelete(p.namespace, cacheKey); err != nil {
 				slog.Error("Google AI cache: Failed to delete stale cache entry", "error", err, "cacheKey", cacheKey)
 			}
+			// Not invalidating the lifecycle row here: a failed verify is ambiguous
+			// (cache may be gone, or the probe failed transiently while it's still
+			// alive). Bill to TTL (conservative) rather than risk under-counting; only
+			// a confirmed delete (content_changed below) invalidates.
 		}
 	} else if exists {
 		// Log why cache was not used and handle stale cache deletion
@@ -484,6 +488,14 @@ func (p *GoogleAICacheProvider) ApplyCache(ctx context.Context, req *CacheReques
 						"error", delErr,
 						"cacheName", cacheInfo.CacheName,
 						"conversationId", req.ConversationId)
+				} else {
+					// Provider cache is gone, so invalidate the lifecycle row too —
+					// otherwise it bills storage for its full planned TTL, overlapping
+					// the replacement below (double-counting in the Cost Analyser).
+					// Only on a successful delete: a failed delete leaves the cache
+					// alive to TTL, so billing to expires_at still matches reality.
+					// Synchronous by design (see cacheLifecycleWriteTimeout).
+					recordCacheLifecycleInvalidation(cacheInfo.CacheName)
 				}
 			} else {
 				slog.Warn("Google AI cache: failed to init helper for orphan deletion",

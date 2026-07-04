@@ -472,7 +472,7 @@ func TestAppGatewayService_ApplyRecommendation(t *testing.T) {
 
 	err := svc.ApplyRecommendation(ctx, account, recommendation)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "access secret is not provided")
+	assert.Contains(t, err.Error(), "access key (client ID) is not provided")
 }
 
 func TestAppGatewayService_ApplyCommand(t *testing.T) {
@@ -493,7 +493,7 @@ func TestAppGatewayService_ApplyCommand(t *testing.T) {
 				Command:    "azure_appgateway_waf_disabled",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "unknown command",
@@ -502,7 +502,7 @@ func TestAppGatewayService_ApplyCommand(t *testing.T) {
 				Command:    "unknown_command",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "valid command structure without Azure connection",
@@ -511,7 +511,7 @@ func TestAppGatewayService_ApplyCommand(t *testing.T) {
 				Command:    "azure_appgateway_waf_disabled",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "start_gateway command without Azure connection",
@@ -520,7 +520,7 @@ func TestAppGatewayService_ApplyCommand(t *testing.T) {
 				Command:    "start_gateway",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "stop_gateway command without Azure connection",
@@ -529,7 +529,7 @@ func TestAppGatewayService_ApplyCommand(t *testing.T) {
 				Command:    "stop_gateway",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 	}
 
@@ -589,5 +589,5 @@ func TestAppGatewayService_GetLogGroupName(t *testing.T) {
 
 	_, err := svc.GetLogGroupName(ctx, account, "eastus", resourceID)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "access secret is not provided")
+	assert.Contains(t, err.Error(), "access key (client ID) is not provided")
 }

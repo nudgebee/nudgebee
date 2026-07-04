@@ -90,19 +90,13 @@ func (s *ChronosphereMetricSaasSource) FetchMetricsLabels(ctx *security.RequestC
 	if err != nil {
 		return nil, fmt.Errorf("failed to call metric API: %w", err)
 	}
-	jsonResponseBody := resp.Body
-	defer func() {
-		err := jsonResponseBody.Close()
-		if err != nil {
-			ctx.GetLogger().Error("Error closing response body", "error", err)
-		}
-	}()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		ctx.GetLogger().Error("Failed to get chronosphere metrics list", "resp", resp)
 		return nil, fmt.Errorf("failed to get chronosphere metrics list, status code: %d", resp.StatusCode)
 	}
-	bodyBytes, err := io.ReadAll(jsonResponseBody)
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
@@ -193,19 +187,13 @@ func (s *ChronosphereMetricSaasSource) FetchMetricLabelValues(ctx *security.Requ
 	if err != nil {
 		return nil, fmt.Errorf("failed to call label values API: %w", err)
 	}
-	jsonResponseBody := resp.Body
-	defer func() {
-		err := jsonResponseBody.Close()
-		if err != nil {
-			ctx.GetLogger().Error("Error closing response body", "error", err)
-		}
-	}()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		ctx.GetLogger().Error("Failed to get chronosphere metrics list", "resp", resp)
 		return nil, fmt.Errorf("failed to get chronosphere metrics list, status code: %d", resp.StatusCode)
 	}
-	bodyBytes, err := io.ReadAll(jsonResponseBody)
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
@@ -243,19 +231,13 @@ func (s *ChronosphereMetricSaasSource) FetchMetricList(ctx *security.RequestCont
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute chronosphere metrics list: %w", err)
 	}
-	jsonResponseBody := resp.Body
-	defer func() {
-		err := jsonResponseBody.Close()
-		if err != nil {
-			ctx.GetLogger().Error("Error closing response body", "error", err)
-		}
-	}()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		ctx.GetLogger().Error("Failed to get chronosphere metrics list", "resp", resp)
 		return nil, fmt.Errorf("failed to get chronosphere metrics list, status code: %d", resp.StatusCode)
 	}
-	bodyBytes, err := io.ReadAll(jsonResponseBody)
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
@@ -330,15 +312,9 @@ func (s *ChronosphereMetricSaasSource) FetchMetricsQuery(
 		if err != nil {
 			return OutputMetricQuery{}, fmt.Errorf("failed to execute chronosphere query %q: %w", queryExpr, err)
 		}
-		jsonResponseBody := resp.Body
-		defer func() {
-			err := jsonResponseBody.Close()
-			if err != nil {
-				ctx.GetLogger().Error("Error closing response body", "error", err)
-			}
-		}()
 
-		bodyBytes, err := io.ReadAll(jsonResponseBody)
+		bodyBytes, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
 		if err != nil {
 			return OutputMetricQuery{}, fmt.Errorf("failed to read response body: %w", err)
 		}
@@ -1223,19 +1199,13 @@ func (c *ChronosphereTraceSaasSource) executeChronosphereChunk(sc *security.Requ
 	if err != nil {
 		return nil, fmt.Errorf("failed to call label values API: %w", err)
 	}
-	jsonResponseBody := resp.Body
-	defer func() {
-		err := jsonResponseBody.Close()
-		if err != nil {
-			sc.GetLogger().Error("Error closing response body", "error", err)
-		}
-	}()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != 200 {
 		sc.GetLogger().Error("Failed to get chronosphere metrics list", "resp", resp)
 		return nil, fmt.Errorf("failed to get chronosphere metrics list, status code: %d", resp.StatusCode)
 	}
-	bodyBytes, err := io.ReadAll(jsonResponseBody)
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}

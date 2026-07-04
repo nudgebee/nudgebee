@@ -104,7 +104,7 @@ func (t *TicketsAssignTask) InputSchema() *types.Schema {
 				DependsOn:   []string{"integration_id"},
 				OptionsSource: &types.OptionsSource{
 					Type:              "ticket_assignees",
-					DependencyMapping: map[string]string{"integration_id": "integration_id"},
+					DependencyMapping: map[string]string{"integration_id": "integration_id", "project_key": "project_key"},
 				},
 			},
 			"project_key": {

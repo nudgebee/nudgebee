@@ -916,6 +916,15 @@ func (s *Server) handleGetConfig(c *gin.Context, sc *security.RequestContext, ar
 		return
 	}
 
+	// Callers without tenant read access must never see tenant-scoped rows even
+	// when querying via an account scope (the service merges tenant rows into
+	// account-scoped lookups). Return 404 rather than 401 to avoid leaking key
+	// existence.
+	if config.IsTenantScoped() && !sc.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead) {
+		c.JSON(http.StatusNotFound, buildApiResponse(nil, []error{fmt.Errorf("config not found")}))
+		return
+	}
+
 	c.JSON(http.StatusOK, config)
 }
 
@@ -955,6 +964,20 @@ func (s *Server) handleListConfigs(c *gin.Context, sc *security.RequestContext, 
 		s.logger.Error("failed to list configs via RPC", "error", err)
 		c.JSON(http.StatusBadRequest, common.ErrorActionInternal("failed to list configs"))
 		return
+	}
+
+	// Callers without tenant read access must never see tenant-scoped rows.
+	// The service merges tenant rows into account-scoped lookups for tenant
+	// admins; strip them here for everyone else.
+	if !sc.GetSecurityContext().HasTenantAccess(security.SecurityAccessTypeRead) {
+		filtered := configs[:0]
+		for _, cfg := range configs {
+			if cfg.IsTenantScoped() {
+				continue
+			}
+			filtered = append(filtered, cfg)
+		}
+		configs = filtered
 	}
 
 	c.JSON(http.StatusOK, configs)

@@ -16,7 +16,6 @@ import (
 	"nudgebee/services/observability"
 	"nudgebee/services/scan_orchestrator"
 	"nudgebee/services/security"
-	"slices"
 	"strings"
 	"time"
 
@@ -61,10 +60,16 @@ func ListRecommendationResolutions(context *security.RequestContext, rescommenda
 		AND created_at > NOW() - INTERVAL '2 hours'
 		ORDER BY created_at DESC
 	`, rescommendationId, resolutionType, resolverType, resolverId)
+	defer func() {
+		if r != nil {
+			if cerr := r.Close(); cerr != nil {
+				slog.Error("recommendation: error closing rows", "error", cerr)
+			}
+		}
+	}()
 	if err != nil {
 		return []models.RecommendationResolution{}, err
 	}
-	defer func() { _ = r.Close() }()
 
 	resolutions := []models.RecommendationResolution{}
 	for r.Next() {
@@ -76,7 +81,7 @@ func ListRecommendationResolutions(context *security.RequestContext, rescommenda
 		resolutions = append(resolutions, resolution)
 	}
 	if err := r.Err(); err != nil {
-		return []models.RecommendationResolution{}, fmt.Errorf("error iterating recommendation resolution rows: %w", err)
+		return []models.RecommendationResolution{}, fmt.Errorf("recommendation: iterate recommendation_resolution rows: %w", err)
 	}
 	return resolutions, nil
 }
@@ -551,96 +556,94 @@ func ScanImage(ctx *security.RequestContext, query RecommendationScanImageReques
 	if err != nil {
 		return RecommendationApplyResponse{}, err
 	}
+	// Distinct running images of the workload, plus the node each runs on and a
+	// pod name — needed for the node-pinned fs-scan and pull-secret sourcing.
 	rows, err := dbms.Db.Queryx(`
-	select distinct container->>'image' as image, cr.cloud_account_id , cr.tenant_id , cr.name, cr.namespace, cr.workload_name
-	from k8s_pods cr, 
-		lateral jsonb_array_elements(cr.meta->'config'->'containers') as container 
-	where cr.is_active is not false 
-		and cr.status ='Running' 
-		and cr.cloud_account_id = $1 
+	select distinct container->>'image' as image, cr.tenant_id, cr.name, cr.namespace, cr.meta->>'node' as node
+	from k8s_pods cr,
+		lateral jsonb_array_elements(cr.meta->'config'->'containers') as container
+	where cr.is_active is not false
+		and cr.status ='Running'
+		and cr.cloud_account_id = $1
 		and cr.namespace = $2
 		and cr.workload_name = $3
 	limit 5`, query.AccountId, query.Namespace, query.Workload)
-
 	if err != nil {
-		ctx.GetLogger().Error("error getting image scanner recommendations", "error", err)
+		ctx.GetLogger().Error("error getting workload images for scan", "error", err)
 		return RecommendationApplyResponse{}, err
 	}
 	defer func() {
-		err := rows.Close()
-		if err != nil {
+		if err := rows.Close(); err != nil {
 			slog.Error("Failed to close rows", "error", err)
 		}
 	}()
 
-	pendingImages := make([]map[string]any, 0)
+	type pendingImage struct{ image, tenant, pod, namespace, node string }
+	seen := map[string]struct{}{}
+	pending := make([]pendingImage, 0)
 	images := make([]string, 0)
 	for rows.Next() {
 		d := make(map[string]any)
-		err = rows.MapScan(d)
-		if err != nil {
-			ctx.GetLogger().Error("error scanning image scanner recommendations", "error", err)
+		if err := rows.MapScan(d); err != nil {
+			ctx.GetLogger().Error("error scanning workload image row", "error", err)
 			return RecommendationApplyResponse{}, err
 		}
-		if slices.Contains(images, d["image"].(string)) {
+		img, _ := d["image"].(string)
+		if img == "" {
 			continue
 		}
-		pendingImages = append(pendingImages, d)
-		images = append(images, d["image"].(string))
+		if _, ok := seen[img]; ok {
+			continue
+		}
+		seen[img] = struct{}{}
+		node, _ := d["node"].(string)
+		if node == "" {
+			// fs-scan pins the Job to the node; skip images whose pod has no node.
+			ctx.GetLogger().Warn("image_scanner: skipping image with no node", "image", img)
+			continue
+		}
+		tenant, _ := d["tenant_id"].(string)
+		pod, _ := d["name"].(string)
+		ns, _ := d["namespace"].(string)
+		pending = append(pending, pendingImage{image: img, tenant: tenant, pod: pod, namespace: ns, node: node})
+		images = append(images, img)
 	}
 
-	tasks := make([]map[string]any, 0)
-	for _, image := range pendingImages {
-		payload := map[string]any{
-			"sinks":         nil,
-			"no_sinks":      false,
-			"sync_response": false,
-			"origin":        "callback",
-			"timestamp":     time.Now(),
-			"action_name":   "image_scanner",
-			"action_params": map[string]any{
-				"name":       image["name"],
-				"namespace":  image["namespace"],
-				"image_name": image["image"],
-			},
-		}
-		payloadStr, err := common.MarshalJson(payload)
-		if err != nil {
-			ctx.GetLogger().Error("error marshalling image scanner recommendations", "error", err)
-			return RecommendationApplyResponse{}, err
-		}
-		task := map[string]any{
-			"cloud_account_id": query.AccountId,
-			"tenant":           image["tenant_id"],
-			"action":           "image_scanner",
-			"payload":          string(payloadStr),
-			"status":           "TODO",
-			"source":           "recommendation",
-		}
-		tasks = append(tasks, task)
-	}
-
-	ctx.GetLogger().Info("Inserting image scanner tasks", "tasks", len(tasks))
-
-	if (len(tasks)) == 0 {
+	if len(pending) == 0 {
 		return RecommendationApplyResponse{}, common.ErrorBadRequest("no images to scan")
 	}
 
-	_, err = dbms.Db.NamedExec(`INSERT INTO agent_task (cloud_account_id, tenant, action, payload, status, source)
-		VALUES (:cloud_account_id, :tenant, :action, :payload, :status, :source)
-		ON CONFLICT (cloud_account_id, (payload->'action_params'->>'image_name')) WHERE action = 'image_scanner'
-		DO UPDATE SET status = 'TODO', payload = EXCLUDED.payload, updated_at = NOW()
-		WHERE agent_task.status NOT IN ('TODO', 'PROCESSING')`, tasks)
-	if err != nil {
-		ctx.GetLogger().Error("error inserting image scanner tasks", "error", err)
-		return RecommendationApplyResponse{}, err
-	}
+	// Server-orchestrated: schedule a trivy fs Job per image, poll, parse, UPSERT.
+	// Replaces the legacy agent_task dispatch (the current agent has no
+	// image_scanner action). Detached + bounded so the UI returns immediately;
+	// results land in the recommendation table for the Image Scan tab.
+	detachedCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.GetContext()), 30*time.Minute)
+	scanCtx := security.NewRequestContext(detachedCtx, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
+	go func() {
+		defer cancel()
+		defer func() {
+			if r := recover(); r != nil {
+				ctx.GetLogger().Error("image_scanner: manual scan panicked", "panic", r)
+			}
+		}()
+		for _, p := range pending {
+			if err := scan_orchestrator.RunOne(scanCtx, scan_orchestrator.ScanAccount{
+				AccountID:       query.AccountId,
+				TenantID:        p.tenant,
+				TargetImage:     p.image,
+				TargetNode:      p.node,
+				TargetNamespace: p.namespace,
+				TargetPodName:   p.pod,
+			}, "image_scanner", nil); err != nil {
+				ctx.GetLogger().Error("image_scanner: manual per-image scan failed", "image", p.image, "error", err)
+			}
+		}
+	}()
 
+	ctx.GetLogger().Info("image_scanner: manual scan started", "images", len(images), "account_id", query.AccountId)
 	return RecommendationApplyResponse{
 		Data: lo.Map(images, func(image string, index int) any {
-			return map[string]any{
-				"image": image,
-			}
+			return map[string]any{"image": image}
 		}),
 	}, nil
 }
@@ -661,6 +664,11 @@ var recommendationJobProviderMap = map[string]string{
 	// volume rightsizing for every metrics provider — see
 	// services/ml/service.go:TriggerVolumeRightsizing. Routed via "nb".
 	"volume_analyzer": "nb",
+	// image_scanner is server-orchestrated (per-image): the "nb" branch runs
+	// runImageScannerServerOrchestrated (schedule trivy fs Job per pending image,
+	// poll, parse, UPSERT). The legacy "agent" path dispatched an image_scanner
+	// agent_task the current agent doesn't implement ("action not registered").
+	"image_scanner": "nb",
 	// krr_scan (pod/vertical rightsizing) is owned by ml-k8s-server — see
 	// services/ml/service.go:TriggerVerticalRightsizing (also driven by the
 	// daily "Vertical Rightsizing Refresh" cron). The legacy agent_task path
@@ -669,13 +677,11 @@ var recommendationJobProviderMap = map[string]string{
 	// so on-demand refresh triggers the server-side generator directly.
 	"krr_scan": "nb",
 	// Not yet migrated — these stay on the legacy agent_task path.
-	// image_scanner: needs per-image orchestration (Phase 2b).
 	// unused_pv: ml-k8s-server owns rightsizing already; agent_task path is
 	//   dead but the entry is kept until Wave 3 cleans up.
-	// k8s_version_upgrade / certificate_scanner: not Job-based — Robusta
-	//   implemented them as in-process K8s API calls; api-server will
-	//   reimplement using existing get_resource primitives in a follow-up.
-	"image_scanner":       "agent",
+	// k8s_version_upgrade / certificate_scanner: not Job-based — the legacy agent
+	//   implemented them as in-process K8s API calls; api-server will reimplement
+	//   using existing get_resource primitives in a follow-up.
 	"unused_pv":           "agent",
 	"k8s_version_upgrade": "agent",
 	"certificate_scanner": "agent",
@@ -803,6 +809,23 @@ func CreateRecommendationJob(ctx *security.RequestContext, query RecommendationJ
 				}()
 				if err := scan_orchestrator.RunOne(ctx, account, query.JobName, nil); err != nil {
 					ctx.GetLogger().Error("scan_orchestrator: RunOne failed", "scanner", query.JobName, "error", err)
+				}
+			}()
+		case "image_scanner":
+			// Per-image: scan the account's pending images server-side. Detached
+			// from the request context (cancelled when the handler returns) but
+			// bounded so a hung run can't leak the goroutine.
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						ctx.GetLogger().Error("image_scanner: server-orchestrated run panicked", "panic", r)
+					}
+				}()
+				detachedCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.GetContext()), 30*time.Minute)
+				defer cancel()
+				taskCtx := security.NewRequestContext(detachedCtx, ctx.GetSecurityContext(), ctx.GetLogger(), ctx.GetTracer(), ctx.GetMeter())
+				if err := runImageScannerServerOrchestrated(taskCtx, query.AccountId, a.Tenant, dbms); err != nil {
+					ctx.GetLogger().Error("image_scanner: server-orchestrated run failed", "account_id", query.AccountId, "error", err)
 				}
 			}()
 		}

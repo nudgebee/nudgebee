@@ -111,9 +111,26 @@ func (m ClickhouseExecuteTool) Call(nbRequestContext core.NbToolContext, input c
 
 	if config.Config.LlmServerWorkspaceEnabled {
 		wm := workspace.NewWorkspaceManager()
-		// For workspace mode, we want raw terminal output
-		response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, query, map[string]string{
-			"CLICKHOUSE_DATABASE":             database,
+
+		// In workspace mode the command is intercepted by the clickhouse-client
+		// shim at /usr/local/bin/clickhouse-client, which calls back to
+		// /api/v1/workspace/execute on the LLM server. ExecuteContainerJob
+		// (raw=true) then injects the connection flags from the tool config and
+		// routes the job to the k8s agent with credentials from the k8s secret.
+		//
+		// Do NOT pre-inject flags here: the env vars ($CLICKHOUSE_HOST etc.)
+		// are not set in the workspace pod's shell env, so they would expand to
+		// empty strings before the shim sees them, producing an unusable command.
+		q := strings.TrimSpace(query)
+		q = strings.TrimSuffix(q, ";")
+		dbFlag := ""
+		if database != "" {
+			dbFlag = " --database " + common.ShellEscape(database)
+		}
+		command := fmt.Sprintf("clickhouse-client%s --query %s --format CSVWithNames --send_logs_level=none --progress=0",
+			dbFlag, sshShellQuote(q))
+
+		response, err := wm.ExecuteOrLazyCreate(nbRequestContext.Ctx, nbRequestContext.AccountId, nbRequestContext.ConversationId, command, map[string]string{
 			workspace.ENV_NB_TOOL_CONFIG_NAME: nbRequestContext.ToolConfig.Name,
 		})
 		if err != nil {

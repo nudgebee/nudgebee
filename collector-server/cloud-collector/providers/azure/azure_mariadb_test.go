@@ -433,7 +433,7 @@ func TestMariaDBService_ApplyRecommendation(t *testing.T) {
 
 	err := svc.ApplyRecommendation(ctx, account, recommendation)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "access secret is not provided")
+	assert.Contains(t, err.Error(), "access key (client ID) is not provided")
 }
 
 func TestMariaDBService_ApplyCommand(t *testing.T) {
@@ -454,7 +454,7 @@ func TestMariaDBService_ApplyCommand(t *testing.T) {
 				Command:    "azure_mariadb_ssl_disabled",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "unknown command",
@@ -463,7 +463,7 @@ func TestMariaDBService_ApplyCommand(t *testing.T) {
 				Command:    "unknown_command",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "valid command structure without Azure connection",
@@ -472,7 +472,7 @@ func TestMariaDBService_ApplyCommand(t *testing.T) {
 				Command:    "azure_mariadb_ssl_disabled",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "start_server command without Azure connection",
@@ -481,7 +481,7 @@ func TestMariaDBService_ApplyCommand(t *testing.T) {
 				Command:    "start_server",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "stop_server command without Azure connection",
@@ -490,7 +490,7 @@ func TestMariaDBService_ApplyCommand(t *testing.T) {
 				Command:    "stop_server",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 		{
 			name: "restart_server command without Azure connection",
@@ -499,7 +499,7 @@ func TestMariaDBService_ApplyCommand(t *testing.T) {
 				Command:    "restart_server",
 			},
 			expectError:   true,
-			errorContains: "access secret is not provided",
+			errorContains: "access key (client ID) is not provided",
 		},
 	}
 
@@ -559,5 +559,5 @@ func TestMariaDBService_GetLogGroupName(t *testing.T) {
 
 	_, err := svc.GetLogGroupName(ctx, account, "eastus", resourceID)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "access secret is not provided")
+	assert.Contains(t, err.Error(), "access key (client ID) is not provided")
 }

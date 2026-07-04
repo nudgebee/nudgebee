@@ -95,22 +95,15 @@ func TestGCPEnricherGating(t *testing.T) {
 		"gcp_event_instance": "0.o9def", "gcp_incident_id": "0.o9def",
 		"gcp_metric_type": "logging.googleapis.com/user/log4j_exploits",
 	}
-	// NOTE(oss): EE PR #33168 replaced this branch with resource-type-only gating
-	// (see cloudLogAction.CanAutoExecute above). Assertion left in place documenting
-	// the OLD contract; underlying impl no longer honors these two special cases.
-	// This assertion was never actually run on EE (Go test cache pre-dated the
-	// impl change), so the drift wasn't caught there.
-	_ = logMetric
-	// assert.True(t, logAction.CanAutoExecute(ctxWith("GCP_Metric_Alert", logMetric)),
-	// 	"cloud_logs should enrich a user-defined log-based metric alert via its filter")
+	assert.True(t, logAction.CanAutoExecute(ctxWith("GCP_Metric_Alert", logMetric)),
+		"cloud_logs should enrich a user-defined log-based metric alert via its filter")
 
 	// Native GCP log alert with no region -> enrich.
 	logAlert := map[string]string{
 		"gcp_account": "full-auth", "gcp_alert_type": "log",
 	}
-	_ = logAlert
-	// assert.True(t, logAction.CanAutoExecute(ctxWith("GCP_Metric_Alert", logAlert)),
-	// 	"cloud_logs should enrich a native GCP log alert even without region")
+	assert.True(t, logAction.CanAutoExecute(ctxWith("GCP_Metric_Alert", logAlert)),
+		"cloud_logs should enrich a native GCP log alert even without region")
 
 	// cloud_metrics: a GCP metric alert (has gcp_event_metric_type, not log-based) should
 	// fetch the metric timeseries even without region (Cloud Monitoring is global).

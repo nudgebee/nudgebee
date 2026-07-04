@@ -90,7 +90,8 @@ type appConfig struct {
 
 	MlServerUrl string `mapstructure:"ml_server_url"`
 
-	NotificationServerUrl string `mapstructure:"notification_service_url"`
+	NotificationServerUrl   string `mapstructure:"notification_service_url"`
+	NotificationServerToken string `mapstructure:"notification_server_token"`
 
 	RunbookServerRelayCommandExecutionTimeoutSeconds int `mapstructure:"runbook_server_relay_command_execution_timeout_seconds"`
 	RunbookServerRelayPodExecutionTimeoutSeconds     int `mapstructure:"runbook_server_relay_pod_execution_timeout_seconds"`
@@ -197,6 +198,7 @@ func init() {
 	viper.SetDefault("SCRIPT_EXECUTOR_POWERSHELL_IMAGE", "mcr.microsoft.com/powershell:lts-alpine-3.17")
 
 	viper.SetDefault("notification_service_url", "http://notifications:8080")
+	viper.SetDefault("notification_server_token", "")
 
 	viper.SetDefault("runbook_server_llm_retry_attempts", 180)
 	viper.SetDefault("runbook_server_llm_initial_backoff_seconds", 5)

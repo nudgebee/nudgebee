@@ -158,8 +158,20 @@ func gcList(c *gin.Context, context *security.RequestContext, payload map[string
 		return
 	}
 
+	// Empty account_id → tenant-wide read (Settings opened from the global
+	// sidebar). ListGlobalContextsForTenant applies the same HasAccountAccess
+	// ladder used elsewhere, so super/tenant admins see all rows and scoped
+	// account-admins see only their assigned accounts.
 	if request.AccountId == "" {
-		c.JSON(400, buildApiResponse(nil, []error{errors.New(errorGCAccountIDRequired)}))
+		resp, err := core.ListGlobalContextsForTenant(context)
+		if err != nil {
+			slog.Error("gc: failed to list (tenant-wide)", "error", err)
+			c.JSON(500, buildApiResponse(nil, []error{
+				common.Error{Message: err.Error()},
+			}))
+			return
+		}
+		c.JSON(200, buildApiResponse(resp, nil))
 		return
 	}
 

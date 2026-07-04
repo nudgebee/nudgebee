@@ -304,6 +304,90 @@ func (e *ElasticSaasSource) GetQuery(ctx *security.RequestContext, fetchLogReque
 	return buildESQueryFromWhere(fetchLogRequest.QueryRequest.Where)
 }
 
+// defaultESLogQuerySize bounds a log search when the request carries no limit,
+// so we never fall through to Elasticsearch's default of 10 hits.
+const defaultESLogQuerySize = 1000
+
+// esLogTimeRangeClause bounds a log search on @timestamp. Each boundary is added
+// only when supplied (> 0), so a one-sided window (e.g. "from start to now")
+// still bounds the scan instead of pinning the missing edge to epoch 0.
+func esLogTimeRangeClause(startMillis, endMillis int64) map[string]any {
+	ts := map[string]any{"format": "epoch_millis"}
+	if startMillis > 0 {
+		ts["gte"] = startMillis
+	}
+	if endMillis > 0 {
+		ts["lte"] = endMillis
+	}
+	return map[string]any{"range": map[string]any{"@timestamp": ts}}
+}
+
+// buildESLogSort renders sort_fields into an ES sort clause, defaulting to newest
+// first (@timestamp desc) when none are supplied or all are blank.
+func buildESLogSort(sortFields []SortField) []any {
+	sort := make([]any, 0, len(sortFields))
+	for _, sf := range sortFields {
+		if sf.ColumnName == "" {
+			continue
+		}
+		order := strings.ToLower(sf.Order)
+		if order != "asc" && order != "desc" {
+			order = "desc"
+		}
+		sort = append(sort, map[string]any{sf.ColumnName: map[string]any{"order": order}})
+	}
+	if len(sort) == 0 {
+		return []any{map[string]any{"@timestamp": map[string]any{"order": "desc"}}}
+	}
+	return sort
+}
+
+// finalizeESLogQueryBody parses the rendered log query (the WHERE-built
+// {"query": ...} or a raw DSL body) and applies the request's time window,
+// limit, offset and sort. Without this the builder path produced only the
+// query clause, leaving Elasticsearch to default to size 10, no time bound and
+// index order — so the start/end/limit on the request were silently ignored.
+// A size/from/sort already present in a raw DSL body is respected; whenever a
+// start or end is supplied the @timestamp range is AND-merged so scans stay bounded.
+func finalizeESLogQueryBody(queryJSON string, startMillis, endMillis int64, limit, offset int, sortFields []SortField) (map[string]any, error) {
+	body := map[string]any{}
+	if strings.TrimSpace(queryJSON) != "" {
+		if err := json.Unmarshal([]byte(queryJSON), &body); err != nil {
+			return nil, fmt.Errorf("failed to parse log query body: %w", err)
+		}
+		if body == nil {
+			body = map[string]any{}
+		}
+	}
+
+	if startMillis > 0 || endMillis > 0 {
+		userQuery, ok := body["query"].(map[string]any)
+		if !ok {
+			userQuery = map[string]any{"match_all": map[string]any{}}
+		}
+		body["query"] = map[string]any{
+			"bool": map[string]any{
+				"filter": []any{userQuery, esLogTimeRangeClause(startMillis, endMillis)},
+			},
+		}
+	}
+
+	if _, ok := body["size"]; !ok {
+		if limit > 0 {
+			body["size"] = limit
+		} else {
+			body["size"] = defaultESLogQuerySize
+		}
+	}
+	if _, ok := body["from"]; !ok && offset > 0 {
+		body["from"] = offset
+	}
+	if _, ok := body["sort"]; !ok {
+		body["sort"] = buildESLogSort(sortFields)
+	}
+	return body, nil
+}
+
 func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest FetchLogRequest) ([]OutputLog, error) {
 	cfg, err := GetElasticsearchConfig(ctx, fetchLogRequest.AccountId)
 	if err != nil {
@@ -327,10 +411,16 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 			return nil, fmt.Errorf("index is required for DSL query")
 		}
 
-		resp, err := esRequest("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, index), fetchLogRequest.Query, cfg)
+		body, berr := finalizeESLogQueryBody(fetchLogRequest.Query, fetchLogRequest.StartTime, fetchLogRequest.EndTime, fetchLogRequest.Limit, fetchLogRequest.Offset, fetchLogRequest.SortFields)
+		if berr != nil {
+			return nil, berr
+		}
+
+		resp, err := esRequestJSON("POST", fmt.Sprintf("%s/%s/_search", cfg.Url, index), body, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("failed to execute elasticsearch DSL query: %w", err)
 		}
+		defer func() { _ = resp.Body.Close() }()
 
 		bodyBytes, err := readResponse(resp, "elasticsearch DSL query")
 		if err != nil {
@@ -346,7 +436,7 @@ func (e *ElasticSaasSource) QueryLogs(ctx *security.RequestContext, fetchLogRequ
 			pplBody["fetch_size"] = 100
 		}
 
-		resp, err := esRequestJSON("POST", fmt.Sprintf("%s/_plugins/_ppl", cfg.Url), pplBody, cfg)
+		resp, err := esRequestJSON("POST", fmt.Sprintf("%s/_plugins/_ppl", cfg.Url), pplBody, cfg) //nolint:bodyclose
 		if err != nil {
 			return nil, fmt.Errorf("failed to execute elasticsearch PPL query: %w", err)
 		}
@@ -409,7 +499,7 @@ func (e *ElasticSaasSource) QueryLabels(ctx *security.RequestContext, fetchLogRe
 		return nil, err
 	}
 
-	resp, err := esRequest("GET", fmt.Sprintf("%s/_cat/indices?format=json", cfg.Url), "", cfg)
+	resp, err := esRequest("GET", fmt.Sprintf("%s/_cat/indices?format=json", cfg.Url), "", cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query elasticsearch indices: %w", err)
 	}
@@ -464,7 +554,7 @@ func (e *ElasticSaasSource) QueryLabelValues(ctx *security.RequestContext, fetch
 				},
 			},
 		}
-		resp, err := esRequestJSON("POST", searchURL, aggsQuery, cfg)
+		resp, err := esRequestJSON("POST", searchURL, aggsQuery, cfg) //nolint:bodyclose
 		if err != nil {
 			return nil, fmt.Errorf("failed to query elasticsearch field values: %w", err)
 		}
@@ -525,7 +615,7 @@ func (e *ElasticSaasSource) QueryIndexFields(ctx *security.RequestContext, fetch
 		return nil, fmt.Errorf("index is required for querying index fields")
 	}
 
-	resp, err := esRequest("GET", fmt.Sprintf("%s/%s/_mapping", cfg.Url, index), "", cfg)
+	resp, err := esRequest("GET", fmt.Sprintf("%s/%s/_mapping", cfg.Url, index), "", cfg) //nolint:bodyclose
 	if err != nil {
 		return nil, fmt.Errorf("failed to query elasticsearch mapping: %w", err)
 	}
@@ -687,7 +777,7 @@ func (e *ElasticSaasSource) QueryLogGroup(ctx *security.RequestContext, req Fetc
 	}
 
 	searchURL := fmt.Sprintf("%s/%s/_search", cfg.Url, index)
-	resp, err := esRequestJSON("POST", searchURL, queryBody, cfg)
+	resp, err := esRequestJSON("POST", searchURL, queryBody, cfg) //nolint:bodyclose
 	if err != nil {
 		return LogGroupOutput{}, fmt.Errorf("es_saas.QueryLogGroup: request failed: %w", err)
 	}

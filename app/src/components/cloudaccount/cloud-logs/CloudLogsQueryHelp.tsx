@@ -138,7 +138,7 @@ const CloudLogsQueryHelp: React.FC<CloudLogsQueryHelpProps> = ({ provider, onIns
           alignItems: 'center',
           cursor: 'pointer',
           gap: ds.space[1],
-          '&:focus-visible': { outline: `2px solid ${ds.blue[500]}`, outlineOffset: '2px', borderRadius: ds.radius.sm },
+          '&:focus-visible': { outline: `${ds.space[0]} solid ${ds.blue[500]}`, outlineOffset: ds.space[0], borderRadius: ds.radius.sm },
         }}
         onClick={toggleExpanded}
         onKeyDown={(e) => {
@@ -186,7 +186,7 @@ const CloudLogsQueryHelp: React.FC<CloudLogsQueryHelpProps> = ({ provider, onIns
                   '&:hover': { bgcolor: ds.gray[200] },
                 }}
               >
-                <Box sx={{ flexShrink: 0, minWidth: 100 }}>
+                <Box sx={{ flexShrink: 0, minWidth: ds.space.mul(0, 50) }}>
                   <DsChip variant='tag' tone='neutral' size='xs'>
                     {example.label}
                   </DsChip>

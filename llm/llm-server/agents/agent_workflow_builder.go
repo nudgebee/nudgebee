@@ -31,17 +31,79 @@ const (
 	PlanApprovalOptionApprove = "Approve and Build"
 	PlanApprovalOptionChanges = "Request Changes"
 	maxPlanAttempts           = 3
-
-	FixApprovalOptionApply   = "Apply Changes"
-	FixApprovalOptionModify  = "Request Modifications"
-	FixApprovalOptionDiscard = "Discard"
-
-	// fixNeedsMoreInfoMarker is a sentinel the diagnosis LLM emits at the start of
-	// <final_answer> when it cannot find actionable evidence and needs to ask the user.
-	// We then surface the rest of the content as a free-text followup question instead
-	// of presenting the Apply / Modify / Discard buttons.
-	fixNeedsMoreInfoMarker = "[NEEDS_MORE_INFO]"
 )
+
+// turnIntent is the result of classifyTurnIntent — what the user wants this turn.
+type turnIntent string
+
+const (
+	// turnIntentAnswer: a question/explanation/diagnosis with NO change requested → handleReadOnly.
+	turnIntentAnswer turnIntent = "ANSWER"
+	// turnIntentEdit: change an EXISTING workflow — fix a failure OR add/modify/remove a feature → handleEditEntry.
+	turnIntentEdit turnIntent = "EDIT"
+	// turnIntentCreate: build a NEW workflow → handleIntentAndPlan.
+	turnIntentCreate turnIntent = "CREATE"
+)
+
+// providerAnnotationRegex matches a parenthetical annotation that leaks the cloud
+// provider into a clarifying-question option label, e.g.
+// "(AWS - assuming this is a K8s cluster)" (#30885). The provider alternation is derived
+// from cloudAccountConfigTypes (the single source of truth) so it stays in sync as
+// providers are added — no hardcoded list to drift. The benign "(recommended)" marker
+// does not start with a provider keyword, so it is preserved.
+var providerAnnotationRegex = buildProviderAnnotationRegex()
+
+func buildProviderAnnotationRegex() *regexp.Regexp {
+	keys := make([]string, 0, len(cloudAccountConfigTypes))
+	for k := range cloudAccountConfigTypes {
+		keys = append(keys, regexp.QuoteMeta(k))
+	}
+	sort.Strings(keys) // deterministic alternation order
+	return regexp.MustCompile(`(?i)\s*\((?:` + strings.Join(keys, "|") + `)\b[^)]*\)`)
+}
+
+// idAnnotationRegex matches a stray "id=<value>" fragment (parenthesized or not) that
+// survived provider-annotation stripping, e.g. a label of the form "prod-aws id=<uuid>".
+var idAnnotationRegex = regexp.MustCompile(`(?i)\s*\(?\bid\s*=\s*[^)\s]+\)?`)
+
+// sanitizeAccountOptionLabel strips internal identifiers (provider annotations, id=
+// fragments, bare UUIDs) from an LLM-generated clarifying-question option label so the
+// user never sees them. The provider annotation (#30885) is the primary target; the
+// id=/UUID stripping is a backstop, since the UUID is now withheld from the clarification
+// context entirely (#31141) so it should not appear in the first place. It is deliberately
+// surgical: a human-readable suffix like "gcp-dev - team-alpha" is left intact because it
+// may be the only thing distinguishing two accounts, and "(recommended)" is preserved.
+// Returns the trimmed display name; may return "" if the label was nothing but an identifier.
+func sanitizeAccountOptionLabel(label string) string {
+	out := providerAnnotationRegex.ReplaceAllString(label, "")
+	out = idAnnotationRegex.ReplaceAllString(out, "")
+	out = uuidRegex.ReplaceAllString(out, "")
+	// Trim trailing separators/brackets left behind by the removals
+	// (e.g. "prod-aws (" or "prod-aws - ").
+	out = strings.TrimRight(out, " -,(")
+	return strings.TrimSpace(out)
+}
+
+// sanitizeQuestionOptions applies sanitizeAccountOptionLabel to each option, drops any
+// that collapse to empty, and dedupes labels that become identical after stripping
+// (preserving first-occurrence order). Comparison is case-insensitive.
+func sanitizeQuestionOptions(options []string) []string {
+	seen := make(map[string]struct{}, len(options))
+	out := make([]string, 0, len(options))
+	for _, opt := range options {
+		clean := sanitizeAccountOptionLabel(opt)
+		if clean == "" {
+			continue
+		}
+		key := strings.ToLower(clean)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, clean)
+	}
+	return out
+}
 
 // ClarifyingQuestion represents a single question to ask the user before planning.
 type ClarifyingQuestion struct {
@@ -132,36 +194,16 @@ func (a *WorkflowBuilderAgent) GetModelCategory() core.ModelTier {
 	return core.ModelTierReasoning
 }
 
+// PostProcessResponse is a pass-through. The builder produces its terminal output
+// deterministically: create-mode returns the raw workflow JSON, and every other
+// path returns either clean json.MarshalIndent output (toolFinalize) or a
+// purpose-built markdown summary (finalizeWithAutoSave). The build path JSON must
+// already be valid (checkMissingConfigs/resolveCloudAccountIds parse it), so it is
+// never fenced; the read-only path returns prose that may legitimately contain a
+// fenced JSON example. The old line-shape reconstruction therefore did nothing on
+// the JSON path and could mangle a prose answer — pure risk. Final-JSON extraction
+// must never pass through any further transformation here (#31499).
 func (a *WorkflowBuilderAgent) PostProcessResponse(ctx *security.RequestContext, request core.NBAgentRequest, resp core.NBAgentResponse) core.NBAgentResponse {
-	if len(resp.Response) > 0 {
-		content := resp.Response[0]
-		// Clean up markdown code blocks only if the response contains JSON (workflow definition)
-		// Text responses (investigation, debugging) are passed through as-is
-		if strings.Contains(content, "```") && strings.Contains(content, "{") {
-			lines := strings.Split(content, "\n")
-			var jsonLines []string
-			inCodeBlock := false
-			for _, line := range lines {
-				trimmed := strings.TrimSpace(line)
-				if strings.HasPrefix(trimmed, "```") {
-					inCodeBlock = !inCodeBlock
-					continue
-				}
-				if inCodeBlock || (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) {
-					jsonLines = append(jsonLines, line)
-				}
-			}
-			if len(jsonLines) > 0 {
-				content = strings.Join(jsonLines, "\n")
-			} else {
-				// Fallback: try to just strip the markers if logic above failed or simple wrapping
-				content = strings.TrimPrefix(content, "```json")
-				content = strings.TrimPrefix(content, "```")
-				content = strings.TrimSuffix(content, "```")
-			}
-			resp.Response = []string{content}
-		}
-	}
 	return resp
 }
 
@@ -279,123 +321,160 @@ func (a *WorkflowBuilderAgent) Execute(ctx *security.RequestContext, request cor
 		return a.handlePlanApproval(ctx, request)
 	case "feedback":
 		return a.handleFeedback(ctx, request)
-	case "fix_approval":
-		return a.handleFixApproval(ctx, request)
-	case "fix_feedback":
-		return a.handleFixFeedback(ctx, request)
 	default:
+		// Includes the retired "fix_approval"/"fix_feedback" stages: any conversation
+		// parked in those (pre-redesign) falls through here and is re-classified fresh.
 		return a.handleEntry(ctx, request)
 	}
 }
 
-// handleEntry detects whether this is a create or fix request and routes accordingly.
-// Workflow ID can come from QueryConfig["workflow_id"] (direct API call) or be extracted
-// from the query text (when WorkflowAgent delegates via agent-as-tool).
+// handleEntry classifies the turn's intent and routes it. The builder is reached via the forced
+// /workflow-generate path, which always carries the canvas automation's workflow_id; routing on the
+// mere presence of that id used to collapse every actionable turn into the failure-diagnosis flow
+// (so "add a feature" got "No failed runs found…"). Instead we classify intent:
+//   - ANSWER → handleReadOnly (explain/diagnose/status, never mutates)
+//   - EDIT   → handleEditEntry (fix a failure OR add/modify/remove a feature; the agent decides)
+//   - CREATE → handleIntentAndPlan (build a new workflow)
+//
+// Explicit orchestrator directives still win: the WorkflowAgent delegates as an agent-as-tool and
+// transmits its decision structurally via a JSON command ({"mode":"create"|"fix","workflow_id":...,
+// "query":...}). A "create"/"fix" directive routes deterministically without re-classifying; only the
+// canvas / no-directive path consults the intent classifier. request.Query is replaced with the inner
+// instruction text so every downstream LLM call sees clean text instead of the JSON envelope. This
+// runs only at the non-mid-stage entry; mid-stage turns are handled by their cases in Execute.
 func (a *WorkflowBuilderAgent) handleEntry(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
-	// Read-only short-circuit (issue #30825 — "automation context lost after follow-up").
-	// The builder is reached via the forced /workflow-generate path, which always carries the
-	// canvas automation's workflow_id. Previously that alone routed every turn into the fix/build
-	// flow, so an explanation/diagnostic follow-up ("explain this", "why did it fail?") got a
-	// regenerated or silently-modified automation — or crashed the fix-diagnosis loop. Classify
-	// the turn first: pure questions are ANSWERED, never built or modified. This runs only at the
-	// non-mid-stage entry; mid-stage turns are stage responses handled by their cases in Execute.
-	// The WorkflowAgent delegates as an agent-as-tool and already knows whether this is a create or a
-	// fix (and which workflow). It transmits that decision structurally via a JSON command
-	// ({"mode":"create"|"fix","workflow_id":"...","query":"..."}) so the builder routes on explicit
-	// fields rather than re-deriving mode by scanning prose. Unwrap it up front: `directiveMode` /
-	// `directiveWorkflowId` drive deterministic routing below, and request.Query is replaced with the
-	// inner instruction text so every downstream LLM call (read-only classifier, intent, plan) sees
-	// clean text instead of the JSON envelope.
 	directiveMode, directiveWorkflowId, commandText := parseDelegationCommand(request.Query)
 	request.Query = commandText
 
-	if a.isReadOnlyTurn(ctx, request) {
-		return a.handleReadOnly(ctx, request)
-	}
-
-	// Deterministic routing — explicit signals only, no text inference. An account UUID embedded in a
-	// create payload can never be read as a workflow id here (we only consult explicit fields).
-	//  1. UI-canvas / direct API path stamps QueryConfig.WorkflowId.
-	//  2. Chat delegation stamps mode + workflow_id in the JSON command.
-	if request.QueryConfig.WorkflowId != "" {
-		return a.handleFixEntry(ctx, request, request.QueryConfig.WorkflowId)
-	}
-	if directiveMode == "fix" && directiveWorkflowId != "" {
-		ctx.GetLogger().Info("workflow_builder: routing to fix via delegation directive", "workflow_id", directiveWorkflowId)
-		return a.handleFixEntry(ctx, request, directiveWorkflowId)
-	}
+	// Explicit orchestrator directives win — no inference, no classification.
 	if directiveMode == "create" {
-		// Explicit create — never fall through to text inference.
 		return a.handleIntentAndPlan(ctx, request)
 	}
-
-	// Backstop for legacy/unstructured delegations that carry no directive: infer the workflow id from
-	// text, excluding account UUIDs that legitimately appear in create payloads (avoids fix-mode misroute).
-	if workflowId := extractWorkflowIdFromQuery(request.Query, a.knownAccountIds(ctx)); workflowId != "" {
-		ctx.GetLogger().Info("workflow_builder: detected workflow ID in query text (no directive)", "workflow_id", workflowId)
-		return a.handleFixEntry(ctx, request, workflowId)
+	if directiveMode == "fix" && directiveWorkflowId != "" {
+		ctx.GetLogger().Info("workflow_builder: routing to edit via delegation directive", "workflow_id", directiveWorkflowId)
+		return a.handleEditEntry(ctx, request, directiveWorkflowId)
 	}
 
-	return a.handleIntentAndPlan(ctx, request)
+	// Canvas / direct API path (QueryConfig.WorkflowId) or a legacy delegation that embeds the id in
+	// text (account UUIDs excluded so a create payload isn't mistaken for a fix). Classify the turn.
+	workflowId := request.QueryConfig.WorkflowId
+	if workflowId == "" {
+		workflowId = extractWorkflowIdFromQuery(request.Query, a.knownAccountIds(ctx))
+	}
+	hasWorkflow := workflowId != ""
+
+	switch a.classifyTurnIntent(ctx, request, hasWorkflow) {
+	case turnIntentAnswer:
+		return a.handleReadOnly(ctx, request)
+	case turnIntentEdit:
+		return a.handleEditEntry(ctx, request, workflowId)
+	default: // turnIntentCreate
+		return a.handleIntentAndPlan(ctx, request)
+	}
 }
 
-// turnIntentReadOnly is the token the intent classifier emits for a read-only turn.
-const turnIntentReadOnly = "READ_ONLY"
+// classifyTurnIntent classifies the current turn into ANSWER / EDIT / CREATE with a single
+// lightweight LLM call (retrieval tier, same pattern as generateClarifyingQuestions). It replaces
+// the old binary read-only check plus the "workflow_id ⇒ fix" hardcoding, so feature changes to an
+// existing workflow ("also fetch comments and summarise") are recognised as edits rather than being
+// funnelled into failure diagnosis.
+//
+// Conservative defaults: on classifier error or an unparseable answer it returns EDIT when a
+// workflow is loaded (the safe non-create choice for the canvas) and CREATE otherwise. It never
+// returns EDIT when no workflow exists — a stray "edit" with nothing to edit becomes CREATE.
+func (a *WorkflowBuilderAgent) classifyTurnIntent(ctx *security.RequestContext, request core.NBAgentRequest, hasWorkflow bool) turnIntent {
+	fallback := turnIntentCreate
+	if hasWorkflow {
+		fallback = turnIntentEdit
+	}
 
-// isReadOnlyTurn classifies whether the current turn is a read-only question about the automation
-// (explain, summarize, "why did it fail", capability/greeting) versus an actionable build/modify
-// request. It is deliberately conservative: on classifier error or any ambiguity it returns false,
-// so the turn falls through to the existing build/fix flow (non-destructive when followups are
-// enabled). Diagnostic "why is it failing" questions are intentionally classified read-only so they
-// get an explanation, not a (possibly silent) modification.
-func (a *WorkflowBuilderAgent) isReadOnlyTurn(ctx *security.RequestContext, request core.NBAgentRequest) bool {
-	systemPrompt := `You classify a user's message in an automation-builder chat into exactly one of two intents.
+	systemPrompt := fmt.Sprintf(`You classify a user's message in an automation-builder chat into exactly one of three intents. There %s currently an automation open in the editor.
 
-READ_ONLY — the user wants information or an explanation, NOT a change. Examples:
+ANSWER — the user wants information, an explanation, or a diagnosis with NO change requested. Examples:
 - "explain this workflow", "what does this automation do?", "summarize it"
 - "why did it fail?", "why is this failing?", "what's the reason for this error?"
 - "what can you do?", "help", greetings
 - any question seeking understanding, diagnosis, or status WITHOUT asking to change anything
 
-ACTION — the user wants to create, build, modify, fix, add, remove, or change an automation. Examples:
-- "create an automation that ...", "build a workflow to ..."
-- "fix it", "apply the fix", "change the timeout to 5m", "add a Slack alert", "remove task X"
+EDIT — the user wants to change the EXISTING automation. This covers BOTH debugging a failure AND
+adding/modifying/removing functionality. Examples:
+- "fix it", "fix the error in step 2", "apply the fix", "it's failing, repair it"
+- "change the timeout to 5m", "add a Slack alert", "remove the email task", "rename task X"
+- "can we update to also fetch their comments and summarise the story?"
+- polite / question-form requests that still ask for a change:
+  "can you replace the Slack step with print?", "could you add a retry?", "can we swap X for Y?"
+
+CREATE — the user wants to build a NEW automation from scratch. Examples:
+- "create a workflow to fetch top 5 hackernews", "build an automation that ..."
 
 Rules:
-- If the user only asks to understand or diagnose (even an error or failure), it is READ_ONLY.
-- If the user asks to change / fix / apply / build anything, it is ACTION.
-- If genuinely ambiguous, answer ACTION.
+- Classify by the underlying request, NOT politeness or grammar. A change asked as a question
+  ("can you ...?", "could you ...?", "would you ...?") is still EDIT (or CREATE for a brand-new one).
+- Verbs that signal a change to the open automation — add, remove, delete, replace, swap, rename,
+  change, update, set, fix, apply, repair — mean EDIT, even when phrased as a question.
+- "create"/"build"/"make a new" a fresh automation is CREATE. If something is already open and the
+  user asks to change it, that is EDIT, not CREATE.
+- If the user only asks to understand or diagnose (even an error or failure) and requests NO change,
+  it is ANSWER.
+- If genuinely ambiguous between ANSWER and a change, prefer the change (EDIT if an automation is
+  open, otherwise CREATE).
 
-Respond with ONLY one word: READ_ONLY or ACTION.`
+Respond with ONLY one word: ANSWER, EDIT, or CREATE.`, map[bool]string{true: "IS", false: "is NOT"}[hasWorkflow])
 
 	messageContent := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt),
 		llms.TextParts(llms.ChatMessageTypeHuman, request.Query),
 	}
-	completion, err := core.GenerateAndTrackLLMContent(ctx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
+
+	// Lite/fast model — this is a one-word classification.
+	classifyCtx := security.NewRequestContext(
+		context.WithValue(ctx.GetContext(), core.ContextKeyModelTier, core.ModelTierRetrieval),
+		ctx.GetSecurityContext(),
+		ctx.GetLogger(),
+		ctx.GetTracer(),
+		ctx.GetMeter(),
+	)
+
+	completion, err := core.GenerateAndTrackLLMContent(classifyCtx, request.UserId, request.AccountId, request.ConversationId, request.MessageId, request.AgentId, true, messageContent, false, llms.WithTemperature(0.0))
 	if err != nil {
-		ctx.GetLogger().Warn("workflow_builder: read-only intent classification failed, treating as action", "error", err)
-		return false
+		ctx.GetLogger().Warn("workflow_builder: turn intent classification failed, using fallback", "error", err, "fallback", fallback)
+		return fallback
 	}
 	if completion == nil || len(completion.Choices) == 0 {
-		return false
+		return fallback
 	}
-	return isReadOnlyClassification(completion.Choices[0].Content)
+	return parseTurnIntent(completion.Choices[0].Content, hasWorkflow)
 }
 
-// isReadOnlyClassification interprets the intent classifier's raw answer. It returns true only when
-// the answer names READ_ONLY and does NOT also name ACTION — defaulting to ACTION on ambiguity so a
-// conversational response that mentions both words is treated as actionable, not read-only.
-func isReadOnlyClassification(answer string) bool {
-	a := strings.ToUpper(strings.TrimSpace(answer))
-	return strings.Contains(a, turnIntentReadOnly) && !strings.Contains(a, "ACTION")
+// parseTurnIntent interprets the classifier's raw answer into a turnIntent. It checks for EDIT/CREATE
+// before ANSWER so a verbose reply naming a change wins over an incidental "answer" mention, and it
+// downgrades EDIT to CREATE when no workflow is loaded (nothing to edit). On no match it returns the
+// hasWorkflow-aware fallback (EDIT when a workflow is open, else CREATE) — never silently ANSWER.
+func parseTurnIntent(answer string, hasWorkflow bool) turnIntent {
+	up := strings.ToUpper(strings.TrimSpace(answer))
+	switch {
+	case strings.Contains(up, string(turnIntentEdit)):
+		if !hasWorkflow {
+			return turnIntentCreate
+		}
+		return turnIntentEdit
+	case strings.Contains(up, string(turnIntentCreate)):
+		return turnIntentCreate
+	case strings.Contains(up, string(turnIntentAnswer)):
+		return turnIntentAnswer
+	default:
+		if hasWorkflow {
+			return turnIntentEdit
+		}
+		return turnIntentCreate
+	}
 }
 
 // handleReadOnly answers a question about the automation (explain / summarize / why-did-it-fail /
 // capability) WITHOUT building or modifying anything. It reuses the agentic tool loop with a
 // narration prompt and read-only tools, returning prose. It never persists: the loop's finalize
-// only returns JSON in-memory and this handler issues no save (saves happen only on explicit
-// approval in handleFixApproval / handlePlanApproval).
+// only returns JSON in-memory and this handler issues no save (edits persist via handleEditEntry,
+// new builds via handlePlanApproval → buildAndValidate).
 func (a *WorkflowBuilderAgent) handleReadOnly(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
 	workflowId := request.QueryConfig.WorkflowId
 	if workflowId == "" {
@@ -490,20 +569,9 @@ func parseDelegationCommand(query string) (mode, workflowId, text string) {
 // excluded UUID is returned, so a genuine fix delegation ("Fix automation <wf-id> in account <acct-id>")
 // still resolves to the workflow ID even when an account UUID precedes it in the text.
 func extractWorkflowIdFromQuery(query string, excludeIds map[string]bool) string {
-	lowerQuery := strings.ToLower(query)
-	// Only extract if the query looks like a fix/debug request (not a new workflow creation)
-	fixKeywords := []string{"fix", "debug", "error", "failed", "failing", "broken", "issue", "wrong", "update", "modify", "change", "repair"}
-	isFix := false
-	for _, kw := range fixKeywords {
-		if strings.Contains(lowerQuery, kw) {
-			isFix = true
-			break
-		}
-	}
-	if !isFix {
-		return ""
-	}
-
+	// Intent (edit vs create vs answer) is decided by classifyTurnIntent, so this no longer gates on
+	// keywords — it returns the first non-excluded UUID (account UUIDs that legitimately appear in
+	// create payloads are skipped so they're never mistaken for a workflow id).
 	for _, match := range uuidRegex.FindAllString(query, -1) {
 		if !excludeIds[strings.ToLower(match)] {
 			return match
@@ -726,6 +794,7 @@ QUESTION STYLE:
 - If an integration is needed but not configured: explain the situation and offer concrete alternatives from what IS configured, or suggest adding a placeholder.
 - If the user said "A or B?" — recommend one and explain why.
 - Each option must be a concrete, actionable value — not a generic label.
+- Option labels are the plain display NAME only. NEVER put a UUID, an "id=..." value, or a provider annotation like "(AWS ...)" or "(k8s, id=...)" in a label — the "id=" and provider shown in the ACCOUNT ENVIRONMENT context are for your internal account_id mapping only and must never be shown to the user. The ONLY parenthetical allowed in a label is the "(recommended)" marker.
 
 DO NOT INVENT RESOURCE VALUES:
 - Specific resource names (Slack channels, k8s namespaces, S3 buckets, DB tables, repo names, etc.) MUST come from the context above. Never guess or fabricate them.
@@ -752,7 +821,10 @@ Maximum 3 questions.`, envContext, configsContext, intent)
 }
 
 func (a *WorkflowBuilderAgent) generateClarifyingQuestions(ctx *security.RequestContext, request core.NBAgentRequest, intent string) ([]ClarifyingQuestion, error) {
-	envContext := a.buildEnvironmentContext(ctx)
+	// includeAccountIDs=false: clarification options are user-facing, so the id= UUID
+	// must never enter this context (#31141). The account_id→UUID mapping happens later
+	// in the plan prompt and resolveCloudAccountIds.
+	envContext := a.buildEnvironmentContext(ctx, false)
 	configsContext := fetchConfigsContext(ctx, a.accountId)
 
 	systemPrompt := getClarificationSystemPrompt(envContext, configsContext, intent)
@@ -798,6 +870,14 @@ func (a *WorkflowBuilderAgent) generateClarifyingQuestions(ctx *security.Request
 	// Cap at 3 questions
 	if len(result.Questions) > 3 {
 		result.Questions = result.Questions[:3]
+	}
+
+	// Strip internal identifiers (provider annotations, id=<uuid>, bare UUIDs) that the
+	// LLM copies from the ACCOUNT ENVIRONMENT context into user-facing option labels
+	// (#30885, #31141). The id is needed by the LLM for account_id mapping but must
+	// never be shown to the user.
+	for i := range result.Questions {
+		result.Questions[i].Options = sanitizeQuestionOptions(result.Questions[i].Options)
 	}
 
 	// Ensure every question has "Skip" as last option
@@ -982,6 +1062,7 @@ TASK DEPENDENCIES (depends_on) — CRITICAL:
 - This applies EVERYWHERE: top-level tasks, tasks inside core.foreach loop bodies, tasks inside core.group.
 - EVERY task that uses {{ Tasks['X'].output... }} or {{ Tasks['X'].output... }} in params, if, or env MUST list X in its depends_on.
 - Inside core.foreach loop bodies: subtasks reference each other by their original IDs (not prefixed). Add depends_on between subtasks the same way.
+- Transitive dependencies count: if X is already reachable through an ancestor in the depends_on chain, the referencing task need not also list X directly — the validator accepts transitive reachability. An explicit direct edge is always valid too.
 
 core.foreach — ITEM VARIABLE:
 - The "item" param sets the loop variable name (default: "item"). ALWAYS set it explicitly.
@@ -1005,75 +1086,73 @@ CLOUD ACCOUNT IDs (account_id parameter):
 - For k8s.cli, cloud.aws.cli, cloud.gcp.cli, cloud.azure.cli: the params.account_id MUST be the UUID shown as id=<uuid> in the ACCOUNT ENVIRONMENT block above. NEVER use the display name. The runbook server validates account_id as a UUID and will reject the save with "invalid input syntax for type uuid" otherwise.`, intent, planSection, schema)
 }
 
-// getFixSystemPrompt returns the system prompt for the agentic fix mode.
-func getFixSystemPrompt(errorContext string, schema string) string {
-	return fmt.Sprintf(`You are a Nudgebee automation debugger. Fix the automation issue using tools.
+// getEditSystemPrompt returns the system prompt for the unified agentic edit loop. It covers BOTH
+// debugging a failure and changing/extending the automation; the agent decides which from the user's
+// request. It generalizes the former fix prompt (evidence-first debugging) and folds in the build
+// rules needed when adding/modifying tasks.
+func getEditSystemPrompt(errorContext, targetExecutionId, schema string) string {
+	var targetSection string
+	if targetExecutionId != "" {
+		targetSection = fmt.Sprintf(`
+TARGET EXECUTION ID: %s
+If the user is debugging a failure, call get_execution(execution_id="%s") directly to read this run.
+`, targetExecutionId, targetExecutionId)
+	}
 
-ERROR CONTEXT:
+	var errorSection string
+	if strings.TrimSpace(errorContext) != "" {
+		errorSection = fmt.Sprintf(`
+ERROR CONTEXT (provided by user / UI):
 %s
+`, errorContext)
+	}
 
+	return fmt.Sprintf(`You are a Nudgebee automation editor. You modify an EXISTING automation that is already loaded. The user's request may be either (A) DEBUG a failure or (B) CHANGE/EXTEND the automation. Decide which from the request, then act.
+%s%s
 AUTOMATION SCHEMA REFERENCE:
 %s
 
-INSTRUCTIONS:
-1. Call list_tasks to understand the current automation structure.
-2. Identify which task(s) are related to the error.
-3. Call get_task for the affected task(s) to see their full definition.
-4. Call get_task_schema to understand the correct parameters for the task type.
-5. Call modify_task to apply the fix.
-6. Call validate to verify the fix works.
-7. If validation still fails, repeat steps 2-6 for the new error.
-8. Once validation passes, call finalize to return the corrected automation JSON.
+FIRST, DECIDE THE INTENT:
+- DEBUG signals: "fix", "it's failing", "error", "why broken", an ERROR CONTEXT or TARGET EXECUTION ID above.
+- CHANGE signals: "add", "also", "include", "remove", "rename", "change", "update", "instead", "as well", a new capability.
+- If the request is purely a question with no change asked, briefly answer in <final_answer> and make no modifications.
 
-If you need additional evidence about the failed run while applying the fix, you may
-also call list_executions / get_execution to read the actual workflow-level error,
-per-task errors, rendered_params, and outputs from a specific execution.
+IF DEBUGGING (gather evidence FIRST, then fix):
+1. If a TARGET EXECUTION ID is given, get_execution on it. Otherwise list_executions(status="FAILED", limit=10) and pick the most recent failed run, then get_execution on it.
+2. Read the real error: workflow-level "error", per-task "error"/"status", and the failing task's "rendered_params" + "output". Quote it.
+3. list_tasks, then get_task on the failing task and its upstream dependencies.
+4. Apply the MINIMAL change that addresses the observed error via modify_task (or add_task/delete_task if required). Do not change unrelated tasks.
+5. If there are genuinely no failed runs and no error context, the user likely wants a behavior change — treat the request as a CHANGE instead of dead-ending.
+
+IF CHANGING/EXTENDING:
+1. list_tasks to understand the current structure; get_task on tasks you will touch.
+2. For each new or changed task: get_task_schema for its type to confirm params and the correct output field names, then add_task / modify_task / delete_task.
+3. Preserve unrelated tasks, their IDs, and dependencies.
+
+THEN, ALWAYS:
+- Call validate. If it fails, read the error, fix the specific task, and validate again (try a different approach if the same error recurs).
+- Once validation passes, call finalize to return the complete updated automation JSON.
 
 RULES:
-- Only change what's NECESSARY — minimize modifications.
-- Preserve existing task IDs, dependencies, and logic.
+- Change only what is NECESSARY. Preserve existing task IDs, dependencies, and logic that the request does not touch.
 - Jinja2 references: {{ Tasks['task-id'].output.<field> }} — check get_task_schema output_schema for the correct field name.
-- TEMPLATES ARE JINJA2 ONLY: a parse error like invalid expression ... near "*" means a JMESPath/JSONPath construct ([*], [?...], .., @) was used inside {{ }}. Jinja2 has NO list projection. Do NOT just tweak the [*] expression — add an upstream scripting.run_script (python) task that produces the derived scalar, then reference {{ Tasks['<that-task>'].output.data }}.
-- Integration IDs: {{ Configs.<type>_integration_id }}
-- Integer values: use 5, NOT 5.0
-- SCRIPTING DATA INJECTION: If a script task injects data via inline {{ }} in the script string (e.g., triple-quoted Jinja), refactor to use the "env" parameter instead. Inline templates break when data contains quotes or special characters.
-  Fix pattern: add env: { "VAR": "{{ Tasks['x'].output.data | to_json }}" }, then read via os.environ['VAR'] in the script.
-- scripting.run_script: Always set "language" explicitly. Missing language defaults to bash.
+- TEMPLATES ARE JINJA2 ONLY: a parse error like invalid expression ... near "*" means a JMESPath/JSONPath construct ([*], [?...], .., @) was used inside {{ }}. Jinja2 has NO list projection. Add an upstream scripting.run_script (python) task that produces the derived scalar, then reference {{ Tasks['<that-task>'].output.data }}.
+- Integration IDs: {{ Configs.<type>_integration_id }}. Integer values: use 5, NOT 5.0.
+- SCRIPTING DATA INJECTION: pass task output to scripts via the "env" parameter — never embed {{ }} inside the script string. Read it via os.environ in the script. Always set "language" explicitly (omitting it defaults to bash).
+- scripting.run_script with parser_type "json": stdout MUST be valid JSON — wrap Python in try/except and print JSON on error.
 - Template filters use underscores: "to_json" (NOT "tojson"), "from_json" (NOT "fromjson").
 
 OUTPUT FIELDS — DO NOT GUESS:
-- ALWAYS call get_task_schema and read "output_schema" for the correct output field name.
-- Different task types use different field names. Using the wrong field causes silent failures.
+- ALWAYS call get_task_schema and read "output_schema" for the correct output field name. Different task types use different field names; the wrong field causes silent failures.
 
 TASK DEPENDENCIES (depends_on) — CRITICAL:
-- The executor runs tasks in PARALLEL unless constrained by depends_on.
-- If task B references {{ Tasks['A'].output... }}, B MUST have depends_on: ["A"]. Otherwise B launches before A completes and gets None.
-- This applies everywhere: top-level, inside foreach loop bodies, inside groups.
-- Common error: "Can't use Getitem on None" means a referenced task hasn't completed — check depends_on.
+- The executor runs tasks in PARALLEL unless constrained by depends_on. If task B references {{ Tasks['A'].output... }}, B MUST have depends_on: ["A"] — otherwise B launches before A completes and gets None. This applies top-level, inside foreach loop bodies, and inside groups. A transitively-reachable dep (already implied by an ancestor chain) need not be duplicated — the validator accepts transitive reachability. "Can't use Getitem on None" usually means a missing depends_on or a skipped upstream ("if" false, or an unselected core.switch branch) — use {{ Tasks['x'].output.data | default('') }} for optional upstreams.
 
 core.foreach — ITEM VARIABLE:
-- The "item" param sets the loop variable name (default: "item"). ALWAYS set it explicitly.
-- Variable names are CASE-SENSITIVE: if item="issue", use {{ issue.title }}, NOT {{ Issue.title }}.
-
-DEBUGGING METHODOLOGY:
-- Read the validation error message carefully — it tells you what's wrong and often which field.
-- Call get_task on the affected task to see its current definition.
-- Call get_task_schema for that task's type — check BOTH input_schema and output_schema.
-- Apply the minimal fix via modify_task, then call validate again.
-- If the same error persists after a fix, do NOT repeat the same approach — try a fundamentally different solution.
-
-FAILURE RESILIENCE:
-- "Can't use Getitem on None" usually means: (a) missing depends_on, or (b) the upstream task was skipped (if condition was false).
-- For skipped-task cascading: use {{ Tasks['x'].output.data | default('') }} when the upstream task has an "if" condition.
-- For external service failures: consider adding failure_policy: { action: "continue" } if the task is non-critical.
-
-REGRESSION PREVENTION:
-- After modifying a task, call get_task to verify. Also check tasks that reference its output.
-- Before calling finalize, call list_tasks to do a full consistency check.
-- NEVER modify a task not mentioned in the error unless it directly depends on the broken task.
+- The "item" param sets the loop variable name (default: "item"). ALWAYS set it explicitly. Variable names are CASE-SENSITIVE: if item="issue", use {{ issue.title }}, NOT {{ Issue.title }}.
 
 CLOUD ACCOUNT IDs (account_id parameter):
-- For k8s.cli, cloud.aws.cli, cloud.gcp.cli, cloud.azure.cli: params.account_id MUST be the UUID. If you see a non-UUID value (e.g., a display name like "my-cluster-dev") in account_id, that's a bug — replace it with the matching UUID from the account environment. The runbook server rejects non-UUID account_id values.`, errorContext, schema)
+- For k8s.cli, cloud.aws.cli, cloud.gcp.cli, cloud.azure.cli: params.account_id MUST be a UUID. If you see a non-UUID value (e.g. a display name), replace it with the matching UUID from the account environment. The runbook server rejects non-UUID account_id values.`, errorSection, targetSection, schema)
 }
 
 // buildAndValidate builds the workflow JSON from the approved plan using the agentic tool loop.
@@ -1695,7 +1774,7 @@ func extractWorkflowId(resp []byte, fallback string) string {
 
 // extractIntent analyzes the user's request and extracts workflow requirements.
 func (a *WorkflowBuilderAgent) extractIntent(ctx *security.RequestContext, request core.NBAgentRequest) (string, error) {
-	envContext := a.buildEnvironmentContext(ctx)
+	envContext := a.buildEnvironmentContext(ctx, true)
 	taskTypeNames := a.fetchTaskTypeNames(ctx)
 
 	systemPrompt := fmt.Sprintf(`You are an automation intent analyzer for Nudgebee.
@@ -1763,7 +1842,14 @@ Return ONLY the JSON object.`, taskTypeNames, envContext)
 // buildEnvironmentContext fetches the account's configured integrations, cloud accounts,
 // and observability providers to give the LLM awareness of what is actually available.
 // Uses cached APIs (ListAllToolConfigs: 30min, GetAccountConfigSummary: 30min).
-func (a *WorkflowBuilderAgent) buildEnvironmentContext(ctx *security.RequestContext) string {
+//
+// includeAccountIDs controls whether each cloud account is rendered with its internal
+// UUID ("name (aws, id=<uuid>)") or by display name only ("name (aws)"). Plan/build
+// prompts need the UUID because they emit workflow JSON whose `account_id` must be a
+// UUID. The clarification prompt must NOT receive it: its output is user-facing option
+// labels, and the LLM was copying the id straight into them (#31141). Withholding the
+// id there fixes that at the source — there is simply nothing to leak.
+func (a *WorkflowBuilderAgent) buildEnvironmentContext(ctx *security.RequestContext, includeAccountIDs bool) string {
 	var parts []string
 
 	// 1. Named integrations + cloud accounts (cached 30 min)
@@ -1780,8 +1866,12 @@ func (a *WorkflowBuilderAgent) buildEnvironmentContext(ctx *security.RequestCont
 				continue
 			}
 			lowerType := strings.ToLower(configType)
-			if lowerType == "aws" || lowerType == "gcp" || lowerType == "azure" || lowerType == "k8s" {
-				cloudAccounts = append(cloudAccounts, fmt.Sprintf("%s (%s, id=%s)", cfg.Name, configType, cloudAccountId(cfg)))
+			if cloudAccountConfigTypes[lowerType] {
+				if includeAccountIDs {
+					cloudAccounts = append(cloudAccounts, fmt.Sprintf("%s (%s, id=%s)", cfg.Name, configType, cloudAccountId(cfg)))
+				} else {
+					cloudAccounts = append(cloudAccounts, fmt.Sprintf("%s (%s)", cfg.Name, configType))
+				}
 			} else {
 				integrationsByType[lowerType] = append(integrationsByType[lowerType], cfg.Name)
 			}
@@ -1820,9 +1910,16 @@ func (a *WorkflowBuilderAgent) buildEnvironmentContext(ctx *security.RequestCont
 		return currentContext
 	}
 
+	accountIDRule := ""
+	if includeAccountIDs {
+		// Only meaningful when the id= UUID is actually rendered above.
+		accountIDRule = "\nWhen a task requires `account_id` (k8s.cli, cloud.aws.cli, cloud.gcp.cli, cloud.azure.cli, etc.), use the UUID `id=` value shown for that cloud account above — NEVER the display name. The runbook server validates `account_id` as a UUID and rejects names." +
+			"\nThe `id=` UUID shown above is INTERNAL — use it only to populate `account_id`. Never display it to the user in a question or option label; refer to a cloud account by its display name only."
+	}
+
 	return "\nACCOUNT ENVIRONMENT (configured integrations and cloud accounts on this account):\n" + strings.Join(parts, "\n") +
 		"\n\nWhen the user references an integration by name (e.g., 'query dev-pg'), match it to the configured integration above and use {{ Configs.<name>_integration_id }} to reference it." +
-		"\nWhen a task requires `account_id` (k8s.cli, cloud.aws.cli, cloud.gcp.cli, cloud.azure.cli, etc.), use the UUID `id=` value shown for that cloud account above — NEVER the display name. The runbook server validates `account_id` as a UUID and rejects names." +
+		accountIDRule +
 		"\nIf a task REQUIRES an integration NOT listed above, warn the user that it is not currently configured." +
 		currentContext
 }
@@ -1962,7 +2059,7 @@ HTTP & NETWORKING:
 
 FLOW CONTROL:
 - core.foreach → Iterate over list. Params: items, tasks[], item (var name), concurrency (int). Output: { results[] }
-- core.switch → Branch based on value. Params: value, branches{}. Output: matched branch result
+- core.switch → Branch based on value. Params: value, branches{}. Output: matched branch result. Tasks in UNSELECTED branches (and tasks that depend only on them) are stamped SKIPPED at run time — see SWITCH FAN-IN below before joining branch outputs.
 - core.group → Group sub-tasks. Params: tasks[]. Output: { workflowId, runId }
 - core.wait → Pause execution. Params: duration (e.g. "5m"). Output: { waited }
 - core.approval → Request human approval. Params: message, timeout. Output: approval response
@@ -2028,6 +2125,7 @@ CRITICAL TEMPLATE GOTCHAS:
 - SAFE OUTPUT ACCESS: When a task is SKIPPED, its output.data is null. Accessing nested properties will fail with "Can't use Getitem on None".
   BAD:  {{ Tasks['x'].output.data.field == true }}
   GOOD: {{ ((Tasks['x'].output.data | default({})).field | default(false)) == true }}
+- SWITCH FAN-IN (SKIPPED propagation): Unselected core.switch branches are stamped SKIPPED, and so is any task that depends ONLY on skipped tasks. A fan-in/join task still RUNS as long as at least one of its depends_on tasks was selected — but it is itself SKIPPED if EVERY dep is skipped, OR if it depends on any plain (non-switch) skipped task. So: (1) read unselected-branch outputs with default() — {{ Tasks['branch-a'].output.data | default('') }}; (2) for a task that must run after the switch regardless of which branch fired, depend on the switch task (or on every branch), not on a single branch that may be skipped; (3) do NOT add an optional/skippable non-switch task to a join's depends_on unless you intend the join to skip when that task skips.
 - OPERATOR PRECEDENCE: The | default() filter has lower precedence than comparison operators. Without explicit parentheses, the expression may be parsed incorrectly.
   BAD:  {{ value | default(false) == true }}
   GOOD: {{ (value | default(false)) == true }}
@@ -2035,6 +2133,7 @@ CRITICAL TEMPLATE GOTCHAS:
   BAD (will fail):  "if": "{{ ':green_circle:' in Tasks['llm'].output.data }}"
   GOOD: Use data.transform with expression: { "is_go": $contains($, ":green_circle:") }, then check Tasks['check'].output.data.is_go == true
 - AVOID data.transform FOR COMPLEX LOGIC: JSONata does NOT support Python-style slicing ($[0:3]), has quirky object construction syntax, and many other pitfalls. For ANY non-trivial transformation (slicing, filtering, mapping, object building), use scripting.run_script with language "python" and parser_type "json" instead. Only use data.transform for trivial single-field extraction.
+- WHOLE-VALUE TEMPLATES FOR NON-STRING PARAMS: You may set the ENTIRE value of an object/array/number/boolean param to a single {{ ... }} template (e.g. MCP task args/headers, integrations.http body/headers, a map- or list-typed param). It passes save-time validation and resolves to the correct shape at run time. Only WHOLE-value templates work — you cannot template just part of a map (build the derived map in an upstream scripting.run_script task and reference its scalar output instead).
 - CRON IS UTC: IST 9 AM = "30 3 * * 1-5" UTC.
 - DATE-NAMESPACED STATE KEYS: For automations needing fresh state per day/week, include date in key:
   "if": "{{ State['check_' ~ (now() | date_format('2006-01-02')) ~ '_ts'] == null }}"
@@ -2066,7 +2165,7 @@ func (a *WorkflowBuilderAgent) generatePlan(ctx *security.RequestContext, reques
 
 	configsInfo := fetchConfigsContext(ctx, a.accountId)
 	planningContext := getWorkflowPlanningContext()
-	envContext := a.buildEnvironmentContext(ctx)
+	envContext := a.buildEnvironmentContext(ctx, true)
 
 	systemPrompt := fmt.Sprintf(`You are a world-class automation planner for Nudgebee. Your job is to create a precise, actionable plan that a user can review BEFORE we build the actual automation JSON. A great plan means the automation builds correctly on the first attempt.
 
@@ -2207,7 +2306,7 @@ func (a *WorkflowBuilderAgent) regeneratePlan(ctx *security.RequestContext, requ
 
 	configsInfo := fetchConfigsContext(ctx, a.accountId)
 	planningContext := getWorkflowPlanningContext()
-	envContext := a.buildEnvironmentContext(ctx)
+	envContext := a.buildEnvironmentContext(ctx, true)
 
 	systemPrompt := fmt.Sprintf(`You are a world-class automation planner for Nudgebee. The user has reviewed your previous plan and requested changes.
 
@@ -3057,7 +3156,7 @@ func (a *WorkflowBuilderAgent) toolFinalize() string {
 }
 
 // toolListExecutions lists recent runs of the current workflow. Fix mode only —
-// requires a.state.WorkflowId to be set by handleFixEntry.
+// requires a.state.WorkflowId to be set by handleEditEntry.
 func (a *WorkflowBuilderAgent) toolListExecutions(ctx *security.RequestContext, args map[string]interface{}) string {
 	if a.state.WorkflowId == "" {
 		return "Error: no workflow id in context. This tool is only usable when debugging an existing automation."
@@ -3253,6 +3352,13 @@ RULES:
 		llms.TextParts(llms.ChatMessageTypeHuman, userMessage),
 	}
 
+	// Anti-thrash tracking: weaker models can loop on read-only inspection tools (e.g. repeated
+	// get_task_schema) and burn every iteration without ever committing a mutation or finishing.
+	// Track exact-duplicate calls and the length of the current read-only streak so we can nudge
+	// the model decisively toward acting (mutate → validate → finalize) or finishing.
+	toolCallSeen := map[string]int{}
+	readOnlyToolStreak := 0
+
 	const maxIterations = 20
 	for i := 0; i < maxIterations; i++ {
 		// Use </thought_action> and </final_answer> as stop words so the LLM stops
@@ -3326,6 +3432,25 @@ RULES:
 		observation := a.executeWorkflowTool(ctx, toolName, toolInput, cachedTaskTypes)
 		a.persistBuildToolCall(ctx, request, toolName, toolInput, thought, observation)
 
+		// Anti-thrash: detect an exact-duplicate call or a long run of read-only inspection with no
+		// progress, and append a decisive nudge so weak models stop exploring and either apply the
+		// change (mutate → validate → finalize) or emit their <final_answer>.
+		sig := toolName + "|" + strings.TrimSpace(toolInput)
+		toolCallSeen[sig]++
+		switch toolName {
+		case "get_task_schema", "get_task", "list_tasks", "list_executions", "get_execution":
+			readOnlyToolStreak++
+		default:
+			readOnlyToolStreak = 0
+		}
+		nudge := ""
+		switch {
+		case toolCallSeen[sig] >= 2:
+			nudge = "\nNOTE: you already ran this exact tool call — the result is unchanged. Do NOT repeat it. Take the next concrete step now: apply the requested change (add_task / modify_task / delete_task), then validate, then finalize. If no change is needed, emit your <final_answer>."
+		case readOnlyToolStreak >= 4:
+			nudge = "\nNOTE: you have gathered enough information. Stop inspecting and act now: apply the requested change (add_task / modify_task / delete_task), then validate, then finalize. If no change is needed, emit your <final_answer>."
+		}
+
 		// Trim content to just the tool call XML before appending to message history.
 		// This prevents context bloat from any extra content the LLM may have generated.
 		trimmedContent := content
@@ -3336,7 +3461,7 @@ RULES:
 		// Append assistant response + observation to message history
 		messages = append(messages,
 			llms.TextParts(llms.ChatMessageTypeAI, trimmedContent),
-			llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf("<observation>%s</observation>", observation)),
+			llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf("<observation>%s</observation>%s", observation, nudge)),
 		)
 	}
 
@@ -3351,304 +3476,61 @@ RULES:
 	return "", fmt.Errorf("agentic tool loop exceeded %d iterations without completing", maxIterations)
 }
 
-// ==================== FIX MODE (AGENTIC) ====================
+// ==================== EDIT MODE (AGENTIC) ====================
 
-// handleFixEntry fetches the existing workflow, loads it into workingWorkflow, and uses the
-// agentic tool loop to diagnose and fix the issue.
-func (a *WorkflowBuilderAgent) handleFixEntry(ctx *security.RequestContext, request core.NBAgentRequest, workflowId string) (core.NBAgentResponse, error) {
+// handleEditEntry handles any change to an EXISTING automation — whether debugging a failure or
+// adding/modifying/removing functionality. It fetches the current definition, loads it into the
+// working workflow, and runs ONE agentic tool loop. The agent itself decides, from the user's
+// request, whether to gather execution evidence (debug) or design a feature change (enhance) — there
+// is no hardcoded "find the failed run" gate, so an enhancement request is never dead-ended with
+// "No failed runs found". The edited definition is funnelled through the same checkMissingConfigs →
+// finalizeWithAutoSave path as a build, so it auto-saves and the canvas refreshes; the user reviews
+// the result on the canvas and Publishes.
+func (a *WorkflowBuilderAgent) handleEditEntry(ctx *security.RequestContext, request core.NBAgentRequest, workflowId string) (core.NBAgentResponse, error) {
+	// Fail fast at the boundary before any tenant-scoped fetch/write: a malformed workflow id would
+	// only 404 later, and an empty tenant id would issue an unscoped runbook request. Reject both up
+	// front (fail-closed) so a caller without proper tenant context can't reach edit logic.
+	if _, err := uuid.Parse(workflowId); err != nil {
+		return core.NBAgentResponse{}, fmt.Errorf("handleEditEntry: invalid workflow id %q: %w", workflowId, err)
+	}
+	tenantId := ctx.GetSecurityContext().GetTenantId()
+	if tenantId == "" {
+		return core.NBAgentResponse{}, fmt.Errorf("handleEditEntry: empty tenant id; refusing tenant-scoped workflow fetch")
+	}
+
 	// Fetch existing workflow definition
-	workflowResp, err := tools.DoRunbookRequest("GET", fmt.Sprintf("workflows/%s", workflowId), nil, a.accountId, ctx.GetSecurityContext().GetTenantId(), ctx.GetSecurityContext().GetUserId())
+	workflowResp, err := tools.DoRunbookRequest("GET", fmt.Sprintf("workflows/%s", workflowId), nil, a.accountId, tenantId, ctx.GetSecurityContext().GetUserId())
 	if err != nil {
 		return core.NBAgentResponse{}, fmt.Errorf("failed to fetch workflow %s: %w", workflowId, err)
 	}
 
-	// Load into workingWorkflow
+	// Load into workingWorkflow so the loop's read/mutate tools operate on the current definition.
 	var workflow map[string]interface{}
 	if err := json.Unmarshal(workflowResp, &workflow); err != nil {
 		return core.NBAgentResponse{}, fmt.Errorf("failed to parse workflow JSON: %w", err)
 	}
 	a.state.WorkingWorkflow = workflow
 	a.state.WorkflowId = workflowId
+	// Mode "fix" keeps autoSaveWorkflow on the PUT-update path (vs POST-create) and makes
+	// finalizeWithAutoSave persist the edit server-side so the canvas can refresh.
 	a.state.Mode = "fix"
 	a.state.OriginalQuery = request.Query
 
-	// Error context can come from QueryContext (string) or via a specific execution_id
-	// the agent will fetch itself in the diagnosis loop.
+	// errorContext (from the UI) and a targeted execution id let the agent jump straight to the
+	// relevant run when the user is debugging a specific failure; both are optional.
 	errorContext := request.QueryContext
 	targetExecutionId := request.QueryConfig.ExecutionId
 	a.state.ExecutionId = targetExecutionId
 
-	// If followup is not enabled, apply fix directly via tool loop
-	if !core.IsAgentsFollowupEnabled() {
-		schema := getWorkflowSchema()
-		systemPrompt := getFixSystemPrompt(errorContext, schema)
-		workflowJSON, err := a.runToolLoop(ctx, request, systemPrompt, fmt.Sprintf("Fix this automation. User request: %s", request.Query))
-		if err != nil {
-			return core.NBAgentResponse{}, fmt.Errorf("agentic fix failed: %w", err)
-		}
-		return core.NBAgentResponse{Response: []string{workflowJSON}, IsTerminal: true}, nil
-	}
+	schema := getWorkflowSchema()
+	systemPrompt := getEditSystemPrompt(errorContext, targetExecutionId, schema)
+	userMessage := fmt.Sprintf("Apply the user's request to the existing automation: %s", request.Query)
 
-	// With followup enabled: do an evidence-grounded diagnosis first, then ask for approval
-	diagnosisPrompt := buildFixDiagnosisPrompt(request.Query, errorContext, targetExecutionId)
-
-	diagnosisResult, err := a.runToolLoop(ctx, request, diagnosisPrompt, "Diagnose the automation issue.")
+	workflowJSON, err := a.runToolLoop(ctx, request, systemPrompt, userMessage)
 	if err != nil {
-		return core.NBAgentResponse{}, fmt.Errorf("diagnosis failed: %w", err)
+		return core.NBAgentResponse{}, fmt.Errorf("agentic edit failed: %w", err)
 	}
 
-	agentId := uuid.Nil
-	if request.AgentId != "" {
-		agentId = uuid.MustParse(request.AgentId)
-	}
-
-	// If the agent couldn't find actionable evidence, surface as a free-text followup
-	// instead of presenting Apply / Modify / Discard against a guess.
-	if question, isAsk := parseDiagnosisForFollowup(diagnosisResult); isAsk {
-		a.state.Stage = "fix_feedback"
-		a.state.ExistingDefinition = string(workflowResp)
-		a.state.ExecutionError = errorContext
-		a.state.ProposedDiff = ""
-		return core.NBAgentResponse{
-			Status: core.ConversationStatusWaiting,
-			FollowupRequest: core.FollowupRequest{
-				Question:     question,
-				FollowupType: core.FollowupTypeText,
-				AgentName:    a.GetName(),
-				AgentId:      agentId,
-			},
-		}, nil
-	}
-
-	// Store state for resume
-	a.state.Stage = "fix_approval"
-	a.state.ExistingDefinition = string(workflowResp)
-	a.state.ExecutionError = errorContext
-	a.state.ProposedDiff = diagnosisResult
-
-	responseText := fmt.Sprintf("**Diagnosis:**\n\n%s\n\nWould you like to apply these changes?", diagnosisResult)
-
-	resp := core.NBAgentResponse{
-		Status: core.ConversationStatusWaiting,
-		FollowupRequest: core.FollowupRequest{
-			Question:        responseText,
-			FollowupType:    core.FollowupTypeSingleSelect,
-			FollowupOptions: []string{FixApprovalOptionApply, FixApprovalOptionModify, FixApprovalOptionDiscard},
-			AgentName:       a.GetName(),
-			AgentId:         agentId,
-		},
-	}
-	return resp, nil
-}
-
-// parseDiagnosisForFollowup recognises the [NEEDS_MORE_INFO] sentinel the LLM emits
-// when it cannot find actionable evidence and needs to ask the user. Returns the
-// remaining question text and true if the marker is present.
-func parseDiagnosisForFollowup(result string) (string, bool) {
-	trimmed := strings.TrimSpace(result)
-	if !strings.HasPrefix(trimmed, fixNeedsMoreInfoMarker) {
-		return "", false
-	}
-	return strings.TrimSpace(strings.TrimPrefix(trimmed, fixNeedsMoreInfoMarker)), true
-}
-
-// buildFixDiagnosisPrompt constructs the diagnosis system prompt for a fresh fix
-// request. It REQUIRES the LLM to fetch real execution evidence before theorizing,
-// and instructs it to emit [NEEDS_MORE_INFO] when no actionable evidence is found.
-func buildFixDiagnosisPrompt(userQuery, errorContext, targetExecutionId string) string {
-	var targetSection string
-	if targetExecutionId != "" {
-		targetSection = fmt.Sprintf(`
-TARGET EXECUTION ID: %s
-The user has pointed at a specific run. Skip list_executions and call:
-    get_execution(execution_id="%s")
-`, targetExecutionId, targetExecutionId)
-	}
-
-	var errorSection string
-	if strings.TrimSpace(errorContext) != "" {
-		errorSection = fmt.Sprintf(`
-ERROR CONTEXT (provided by user / UI):
-%s
-`, errorContext)
-	}
-
-	return fmt.Sprintf(`You are a Nudgebee automation debugger. Diagnose the user's failure with EVIDENCE, not speculation.
-
-USER REQUEST:
-%s
-%s%s
-INSTRUCTIONS (evidence-first — do these in order):
-
-1. FIND THE FAILED RUN.
-   - If a TARGET EXECUTION ID is given above, call get_execution on it directly.
-   - Otherwise, call list_executions(status="FAILED", limit=10). Pick the most recent failed run.
-
-2. READ THE ACTUAL ERROR.
-   - Call get_execution(execution_id) on the chosen run.
-   - Examine: workflow-level "error", per-task "error" / "status", and the failing task's "rendered_params" + "output".
-
-3. INSPECT THE RELEVANT TASKS.
-   - Call list_tasks to see the automation structure.
-   - Call get_task on the failing task and any upstream dependencies it consumes.
-
-4. DIAGNOSE WITH CITATIONS.
-   - Quote the actual error string in your diagnosis.
-   - Identify the failing task by id.
-   - Propose a minimal change that addresses the error you observed.
-   - DO NOT speculate about issues unrelated to the error you read.
-
-5. IF YOU CANNOT FIND ACTIONABLE EVIDENCE
-   (no failed runs found, error is opaque/generic, or multiple failures with different errors)
-   emit a <final_answer> whose <content> begins on the first line with the literal marker:
-       %s
-   followed by a specific question for the user. Examples:
-   - "%s\nNo failed runs found in the last 10 runs. What behavior are you trying to debug?"
-   - "%s\nFound 3 failed runs with different errors. Which one should I focus on? IDs: <id1>, <id2>, <id3>"
-
-6. WHEN YOU HAVE EVIDENCE, emit a <final_answer> with your diagnosis (no marker), describing:
-   - What the problem is (with the quoted error)
-   - Which task(s) need to change
-   - What specific changes you propose
-
-Do NOT apply changes — just diagnose. Do NOT theorize without evidence.`,
-		userQuery, errorSection, targetSection,
-		fixNeedsMoreInfoMarker, fixNeedsMoreInfoMarker, fixNeedsMoreInfoMarker)
-}
-
-// handleFixApproval processes the user's response to the fix approval prompt.
-// Uses the agentic tool loop to apply approved fixes.
-func (a *WorkflowBuilderAgent) handleFixApproval(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
-	userChoice := strings.TrimSpace(request.Query)
-
-	switch {
-	case strings.EqualFold(userChoice, FixApprovalOptionApply):
-		// Reload workflow into workingWorkflow from stored state
-		var workflow map[string]interface{}
-		if err := json.Unmarshal([]byte(a.state.ExistingDefinition), &workflow); err != nil {
-			return core.NBAgentResponse{}, fmt.Errorf("failed to parse stored workflow: %w", err)
-		}
-		a.state.WorkingWorkflow = workflow
-
-		// Run the full fix tool loop with the diagnosis as context
-		schema := getWorkflowSchema()
-		systemPrompt := getFixSystemPrompt(a.state.ExecutionError, schema)
-		userMessage := fmt.Sprintf("Apply the following approved changes to the automation:\n\n%s\n\nOriginal request: %s", a.state.ProposedDiff, a.state.OriginalQuery)
-
-		workflowJSON, err := a.runToolLoop(ctx, request, systemPrompt, userMessage)
-		if err != nil {
-			return core.NBAgentResponse{}, fmt.Errorf("agentic fix failed: %w", err)
-		}
-
-		// Run the same missing-config detection as the create path: an agentic fix
-		// may introduce new {{ Configs.x }} references that don't exist on the
-		// server, which would otherwise trip the workflow-server's save validation.
-		return a.checkMissingConfigs(ctx, request, workflowJSON)
-
-	case strings.EqualFold(userChoice, FixApprovalOptionDiscard):
-		return core.NBAgentResponse{
-			Response: []string{"Changes discarded. No modifications were made to the automation."},
-			Status:   core.ConversationStatusCompleted,
-		}, nil
-
-	default:
-		// Request modifications — ask for feedback
-		a.state.Stage = "fix_feedback"
-
-		agentId := uuid.Nil
-		if request.AgentId != "" {
-			agentId = uuid.MustParse(request.AgentId)
-		}
-
-		resp := core.NBAgentResponse{
-			Status: core.ConversationStatusWaiting,
-			FollowupRequest: core.FollowupRequest{
-				Question:     "What modifications would you like me to make to the proposed changes?",
-				FollowupType: core.FollowupTypeText,
-				AgentName:    a.GetName(),
-				AgentId:      agentId,
-			},
-		}
-		return resp, nil
-	}
-}
-
-// handleFixFeedback incorporates user feedback and re-diagnoses using the tool loop.
-func (a *WorkflowBuilderAgent) handleFixFeedback(ctx *security.RequestContext, request core.NBAgentRequest) (core.NBAgentResponse, error) {
-	feedback := strings.TrimSpace(request.Query)
-
-	// Reload workflow into workingWorkflow
-	var workflow map[string]interface{}
-	if err := json.Unmarshal([]byte(a.state.ExistingDefinition), &workflow); err != nil {
-		return core.NBAgentResponse{}, fmt.Errorf("failed to parse stored workflow: %w", err)
-	}
-	a.state.WorkingWorkflow = workflow
-
-	// Re-diagnose with user feedback via the same evidence-first prompt, threading the
-	// previous diagnosis (if any) and the user's clarification/feedback into the prompt.
-	diagnosisPrompt := buildFixDiagnosisFeedbackPrompt(a.state.OriginalQuery, a.state.ExecutionError, a.state.ExecutionId, a.state.ProposedDiff, feedback)
-
-	diagnosisResult, err := a.runToolLoop(ctx, request, diagnosisPrompt, fmt.Sprintf("Re-diagnose incorporating this feedback: %s", feedback))
-	if err != nil {
-		return core.NBAgentResponse{}, fmt.Errorf("re-diagnosis failed: %w", err)
-	}
-
-	agentId := uuid.Nil
-	if request.AgentId != "" {
-		agentId = uuid.MustParse(request.AgentId)
-	}
-
-	// The LLM may still need more info after a clarification round (e.g. user's clarification
-	// pointed at a run we couldn't find). Keep the followup loop open in that case.
-	if question, isAsk := parseDiagnosisForFollowup(diagnosisResult); isAsk {
-		a.state.ProposedDiff = ""
-		a.state.Stage = "fix_feedback"
-		return core.NBAgentResponse{
-			Status: core.ConversationStatusWaiting,
-			FollowupRequest: core.FollowupRequest{
-				Question:     question,
-				FollowupType: core.FollowupTypeText,
-				AgentName:    a.GetName(),
-				AgentId:      agentId,
-			},
-		}, nil
-	}
-
-	// Update state
-	a.state.ProposedDiff = diagnosisResult
-	a.state.Stage = "fix_approval"
-
-	responseText := fmt.Sprintf("**Updated Diagnosis:**\n\n%s\n\nWould you like to apply these changes?", diagnosisResult)
-
-	resp := core.NBAgentResponse{
-		Status: core.ConversationStatusWaiting,
-		FollowupRequest: core.FollowupRequest{
-			Question:        responseText,
-			FollowupType:    core.FollowupTypeSingleSelect,
-			FollowupOptions: []string{FixApprovalOptionApply, FixApprovalOptionModify, FixApprovalOptionDiscard},
-			AgentName:       a.GetName(),
-			AgentId:         agentId,
-		},
-	}
-	return resp, nil
-}
-
-// buildFixDiagnosisFeedbackPrompt builds the diagnosis prompt for a re-run after the
-// user provides feedback or a clarification. It reuses the evidence-first contract
-// from buildFixDiagnosisPrompt, threading in the previous diagnosis (if any) and the
-// new user input.
-func buildFixDiagnosisFeedbackPrompt(originalQuery, errorContext, targetExecutionId, previousDiagnosis, feedback string) string {
-	var prevSection string
-	if strings.TrimSpace(previousDiagnosis) != "" {
-		prevSection = fmt.Sprintf(`
-PREVIOUS DIAGNOSIS:
-%s
-`, previousDiagnosis)
-	}
-	augmentedQuery := fmt.Sprintf(`%s
-
-USER FEEDBACK / CLARIFICATION:
-%s%s`, originalQuery, feedback, prevSection)
-
-	return buildFixDiagnosisPrompt(augmentedQuery, errorContext, targetExecutionId)
+	// Same missing-config detection + cloud-account-id resolution + auto-save as the build path.
+	return a.checkMissingConfigs(ctx, request, workflowJSON)
 }

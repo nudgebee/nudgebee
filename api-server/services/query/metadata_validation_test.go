@@ -12,7 +12,6 @@ import (
 var knownSecurityColumnMissing = map[string]bool{
 	"traces_heatmap_v2": true, // NamespaceColumnName "workload_namespace" missing from Columns
 	"k8s_workloads_cloud_account_monitoring_recommendations_v2": true, // security columns missing
-	"slo_report_observation_v2":                                 true, // AccountIdColumnName missing
 	"autooptimize_aggregate_approvals":                          true, // AccountIdColumnName missing
 }
 

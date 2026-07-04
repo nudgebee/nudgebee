@@ -1,22 +1,27 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import { Box, Typography, CircularProgress, Grid } from '@mui/material';
-import { Modal } from '@shared/modal';
+import { Modal } from '@ui/Modal';
 import AutoPilotHeaderCard from '@components/autopilot/card/AutoPilotHeaderCard';
 import AutoOptimizeForm from '@components/autopilot/form/AutoOptimizeVerticalRightSizingForm';
 import { formatMemory } from '@lib/formatter';
 import { ds } from 'src/utils/colors';
-import { snackbar } from '@ui/Toast';
+import { toast as snackbar } from '@ui/Toast';
 import { ANNOTATIONS, CI_PREFIX } from '@lib/annotationKeys';
 import recommendationApi from '@api1/recommendation';
 import apiIntegrations from '@api1/integrations';
 import k8sApi from '@api1/kubernetes';
+import apiAccount from '@api1/account';
 import TicketCreatePopupForm from '@components/tickets/TicketCreatePopupForm';
+import AutoOptimizeScheduledConfiguration from '@components/autopilot/form/AutoOptimizeVerticalRightSizingSingleConfiguration';
+import AutoOptimizeContinuousConfiguration from '@components/autopilot/form/AutoOptimizeContinuousVerticalRightSizingSingleConfiguration';
 import { Select } from '@ui/Select';
+import { Switch } from '@ui/Switch';
+import Tooltip from '@ui/Tooltip';
 import { Button } from '@ui/Button';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { BetaIcon } from '@assets';
 
-const betaBadge = <SafeIcon src={BetaIcon} alt='Beta Icon' width={25} height={20} style={{ marginLeft: '1px' }} />;
+const betaBadge = <SafeIcon src={BetaIcon} alt='Beta Icon' width={25} height={20} style={{ marginLeft: ds.space[0] }} />;
 
 interface ResolveModalProps {
   open: boolean;
@@ -48,11 +53,26 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
   const [prLoading, setPRLoading] = useState(false);
   const [allGitIntegrations, setAllGitIntegrations] = useState<any[]>([]);
   const [selectedGitIntegration, setSelectedGitIntegration] = useState('');
+  // In-place resize policy written into the PR (KEP-1287). Applied only on
+  // Kubernetes 1.35+ clusters; older clusters fall back to a rollout on deploy.
+  const [resizePolicyMode, setResizePolicyMode] = useState<string>('in-place');
+  // Deploy Fix: apply in place (no restart) when the cluster supports it
+  // (Kubernetes 1.35+); otherwise it auto-falls back to a rolling restart.
+  const [inPlace, setInPlace] = useState<boolean>(true);
   const [selectedWorkloadAnnotations, setSelectedWorkloadAnnotations] = useState<Record<string, string>>({});
   const [isGitReposLoading, setIsGitReposLoading] = useState(false);
 
   // Ticket state
   const [isTicketFormOpen, setIsTicketFormOpen] = useState(false);
+
+  // Auto-optimize config modal state (in-app, no redirect)
+  const [isAutoPilotScheduledFormOpen, setIsAutoPilotScheduledFormOpen] = useState(false);
+  const [isAutoPilotContinuousFormOpen, setIsAutoPilotContinuousFormOpen] = useState(false);
+  const [autoOptimizeLoading, setAutoOptimizeLoading] = useState(false);
+  const [msTeamsData, setMsTeamsData] = useState<any[]>([]);
+  const [googleChannelList, setGoogleChannelList] = useState<any[]>([]);
+  const [isMsTeamsLoading, setIsMsTeamsLoading] = useState(false);
+  const [isGoogleChannelsLoading, setIsGoogleChannelsLoading] = useState(false);
 
   // Build data structures from recommendation JSONB when modal opens
   const initializeData = useCallback(() => {
@@ -425,7 +445,7 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
       const dataToSubmit = getDataWithMemorySuffix();
       const accountId = recommendation.account_id || '';
       const recommendationId = recommendation.id;
-      const result = await recommendationApi.applyRecommendation(accountId, recommendationId, dataToSubmit);
+      const result = await recommendationApi.applyRecommendation(accountId, recommendationId, dataToSubmit, undefined, { in_place: inPlace });
 
       if (result?.errors) {
         snackbar.error('An error occurred while deploying');
@@ -482,7 +502,7 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
     const data = getDataWithMemorySuffix();
     const accountId = recommendation.account_id || '';
     recommendationApi
-      .applyRecommendation(accountId, recommendation.id, data, integrationType, { name: integrationName })
+      .applyRecommendation(accountId, recommendation.id, data, integrationType, { name: integrationName, resize_policy: resizePolicyMode })
       .then((res: any) => {
         if (res?.errors?.length > 0) {
           snackbar.error('Failed to create Pull Request');
@@ -535,20 +555,49 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
     return description;
   };
 
-  // ── Auto-optimize links ──
+  // ── Auto-optimize config (in-app modal, no redirect / new tab) ──
+  // Channel options for the notification step of the config forms; Slack is
+  // fetched by the forms themselves.
+  const getChannelsListSlackMsTeams = async () => {
+    setIsMsTeamsLoading(true);
+    setIsGoogleChannelsLoading(true);
+    try {
+      const [resMsTeams, resGoogle]: any[] = await Promise.all([
+        apiAccount.getNotificationChannelList('ms_teams'),
+        apiAccount.getNotificationChannelList('google_chat'),
+      ]);
+      setMsTeamsData(resMsTeams?.data?.data?.map((item: any) => ({ label: item.name, value: item.id, channels: item.channels })) || []);
+      setGoogleChannelList(resGoogle?.data?.data?.map((item: any) => ({ label: item.name, value: item.id })) || []);
+    } catch (error) {
+      console.error('Failed to fetch notification channels:', error);
+    } finally {
+      setIsMsTeamsLoading(false);
+      setIsGoogleChannelsLoading(false);
+    }
+  };
+
   const handleScheduleAutoOptimize = () => {
-    const accountId = recommendation.account_id || '';
-    window.open(`/auto-pilot/task/new?accountId=${accountId}&category=vertical_rightsize`, '_blank');
+    getChannelsListSlackMsTeams();
+    setIsAutoPilotScheduledFormOpen(true);
   };
 
   const handleContinuousAutoOptimize = () => {
-    const accountId = recommendation.account_id || '';
-    const continuousId = recommendation.continuousAutoPilotId;
-    if (continuousId) {
-      window.open(`/auto-pilot/task/${continuousId}?accountId=${accountId}`, '_blank');
-    } else {
-      window.open(`/auto-pilot/task/new?accountId=${accountId}&category=continuous_rightsize`, '_blank');
-    }
+    getChannelsListSlackMsTeams();
+    setIsAutoPilotContinuousFormOpen(true);
+  };
+
+  const closeAutoPilotScheduledConfigModal = (success?: boolean) => {
+    setIsAutoPilotScheduledFormOpen(false);
+    setMsTeamsData([]);
+    setGoogleChannelList([]);
+    if (success) onSuccess?.();
+  };
+
+  const closeAutoPilotContinuousConfigModal = (success?: boolean) => {
+    setIsAutoPilotContinuousFormOpen(false);
+    setMsTeamsData([]);
+    setGoogleChannelList([]);
+    if (success) onSuccess?.();
   };
 
   // ── Build autoPilotData shape expected by AutoPilotHeaderCard ──
@@ -575,6 +624,10 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
     recommendationId: recommendation?.id,
   };
 
+  // Same shape as autoPilotData but without a truthy id, so the config forms take
+  // the "create new rule" path (a present id makes them issue an update instead).
+  const autoOptimizeData = { ...autoPilotData, id: undefined };
+
   // ── Action buttons (footer) ──
   const ticketExists = !!recommendation?.ticket;
   const actionButtons = (
@@ -584,17 +637,30 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
         height: '56px',
         justifyContent: 'space-between',
         alignItems: 'center',
-        gap: '10px',
+        gap: ds.space.mul(0, 5),
         flexShrink: 0,
-        paddingX: '10px',
+        paddingX: ds.space.mul(0, 5),
       }}
     >
-      <Box sx={{ display: 'flex', alignItems: 'center' }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
         <Button tone='secondary' size='md' onClick={handleClose} disabled={deploying} id='resolve-modal-cancel'>
           Cancel
         </Button>
+        <Tooltip title='Resize running pods without a restart on Kubernetes 1.35+. Older clusters automatically fall back to a rolling restart.'>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Switch
+              checked={inPlace}
+              onChange={(e: any) => setInPlace(e.target.checked)}
+              size='sm'
+              disabled={deploying}
+              aria-label='Apply in place (no restart)'
+              id='resolve-modal-inplace'
+            />
+            <Typography sx={{ color: ds.gray[600], fontSize: 'var(--ds-text-small)' }}>No-restart (in-place)</Typography>
+          </Box>
+        </Tooltip>
       </Box>
-      <Box sx={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+      <Box sx={{ display: 'flex', gap: ds.space.mul(0, 3), alignItems: 'center' }}>
         <Button tone='secondary' size='md' onClick={openTicketForm} disabled={ticketExists} id='resolve-modal-ticket'>
           Create Ticket
         </Button>
@@ -638,7 +704,7 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
           },
         }}
       >
-        <Box sx={{ pb: '30px' }}>
+        <Box sx={{ pb: ds.space.mul(0, 15) }}>
           <AutoPilotHeaderCard header='' data={autoPilotData} />
           {Object.keys(updatedData).length > 0
             ? Object.keys(updatedData).map((containerName) => (
@@ -679,7 +745,7 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
       {/* ── Create PR Modal ── */}
       <Modal width='md' open={showPRModal} handleClose={closePRModal} title='Create Pull Request' loader={prLoading}>
         {prLoading && (
-          <Box sx={{ display: 'flex', justifyContent: 'center', py: '20px' }}>
+          <Box sx={{ display: 'flex', justifyContent: 'center', py: ds.space.mul(0, 10) }}>
             <CircularProgress size={24} />
           </Box>
         )}
@@ -696,6 +762,23 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
                     disabled={isGitReposLoading}
                   />
                 </Grid>
+                <Grid container gap={3} sx={{ mt: 2 }}>
+                  <Select
+                    label='In-place resize policy'
+                    value={resizePolicyMode}
+                    options={[
+                      { value: 'in-place', label: 'In-place — resize without restart (CPU & memory)' },
+                      { value: 'restart-memory', label: 'Restart container on memory change' },
+                      { value: 'disabled', label: "Don't configure (apply on next rollout)" },
+                    ]}
+                    onChange={(v: string) => setResizePolicyMode(v)}
+                    disabled={prLoading}
+                  />
+                </Grid>
+                <Typography variant='body2' sx={{ mt: 1, color: ds.gray[500] }} data-testid='resize-policy-hint'>
+                  Adds a <strong>resizePolicy</strong> to the workload so future pods resize without a restart on Kubernetes 1.35+. Older clusters
+                  ignore it and apply on the next rollout.
+                </Typography>
                 <Typography sx={{ mt: 2, mb: 1, color: ds.green[600], fontWeight: ds.weight.medium }}>Source configuration detected</Typography>
                 <ul>
                   {Object.entries(selectedWorkloadAnnotations).map(([key, value]) => (
@@ -757,7 +840,7 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
             </Grid>
           </>
         ) : (
-          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: ds.space[4], py: '30px' }}>
+          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: ds.space[4], py: ds.space.mul(0, 15) }}>
             <Typography sx={{ color: ds.gray[700], fontSize: ds.text.bodyLg, textAlign: 'center' }}>
               No GitHub or GitLab integrations configured. Connect a repository to enable pull request creation.
             </Typography>
@@ -766,6 +849,63 @@ const ResolveModal = ({ open, onClose, recommendation, clusterName, onSuccess }:
             </Button>
           </Box>
         )}
+      </Modal>
+
+      {/* ── Schedule Auto Optimize Config Modal ── */}
+      <Modal
+        width='lg'
+        open={isAutoPilotScheduledFormOpen}
+        handleClose={() => closeAutoPilotScheduledConfigModal(false)}
+        title='Scheduled Auto Optimize Configuration'
+        loader={autoOptimizeLoading}
+        sx={{
+          '& .MuiPaper-root': {
+            maxWidth: ds.space.mul(0, 505),
+            '& .MuiDialogContent-root': {
+              padding: 'var(--ds-space-4) var(--ds-space-6)',
+            },
+          },
+        }}
+      >
+        <AutoOptimizeScheduledConfiguration
+          autoOptimizeData={autoOptimizeData}
+          closeAutoPilotSingleConfigModal={closeAutoPilotScheduledConfigModal}
+          msTeamsData={msTeamsData}
+          googleChannelList={googleChannelList}
+          isMsTeamsLoading={isMsTeamsLoading}
+          isGoogleChannelsLoading={isGoogleChannelsLoading}
+          data={updatedData}
+          currentData={allocatedData}
+          additionalInfoCPUAndMem={{ cpuInfo: additionalCpuInfo, memInfo: additionalMemInfo }}
+          setIsLoading={setAutoOptimizeLoading}
+        />
+      </Modal>
+
+      {/* ── Continuous Auto Optimize Config Modal ── */}
+      <Modal
+        width='lg'
+        open={isAutoPilotContinuousFormOpen}
+        handleClose={() => closeAutoPilotContinuousConfigModal(false)}
+        title='Continuous Auto Optimize Configuration'
+        loader={autoOptimizeLoading}
+        sx={{
+          '& .MuiPaper-root': {
+            maxWidth: ds.space.mul(0, 505),
+            '& .MuiDialogContent-root': {
+              padding: 'var(--ds-space-4) var(--ds-space-6)',
+            },
+          },
+        }}
+      >
+        <AutoOptimizeContinuousConfiguration
+          autoOptimizeData={autoOptimizeData}
+          closeAutoPilotSingleConfigModal={closeAutoPilotContinuousConfigModal}
+          msTeamsData={msTeamsData}
+          googleChannelList={googleChannelList}
+          isMsTeamsLoading={isMsTeamsLoading}
+          isGoogleChannelsLoading={isGoogleChannelsLoading}
+          setIsLoading={setAutoOptimizeLoading}
+        />
       </Modal>
 
       {/* ── Ticket Create Form Modal ── */}

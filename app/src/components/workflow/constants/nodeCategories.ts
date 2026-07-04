@@ -78,22 +78,22 @@ const staticTriggers = {
 // Function to get a color from a predefined palette for new categories
 const getCategoryColor = (prefix: string): string => {
   const colors = [
-    '#3b82f6', // Blue
-    '#8b5cf6', // Purple
-    '#f59e0b', // Amber
-    '#06b6d4', // Cyan
-    '#10b981', // Green
-    '#f97316', // Orange
-    '#ef4444', // Red
-    '#ec4899', // Pink
-    '#6366f1', // Indigo
-    '#84cc16', // Lime
-    '#f43f5e', // Rose
-    '#0ea5e9', // Sky
-    '#a855f7', // Violet
-    '#059669', // Emerald
-    '#dc2626', // Red
-    '#7c3aed', // Violet
+    'var(--ds-blue-500)',
+    'var(--ds-purple-400)',
+    'var(--ds-amber-400)',
+    'var(--ds-teal-400)',
+    'var(--ds-green-300)',
+    'var(--ds-amber-500)',
+    'var(--ds-red-500)',
+    'var(--ds-pink-500)',
+    'var(--ds-purple-600)',
+    'var(--ds-green-400)',
+    'var(--ds-red-400)',
+    'var(--ds-blue-400)',
+    'var(--ds-purple-300)',
+    'var(--ds-green-500)',
+    'var(--ds-red-600)',
+    'var(--ds-purple-500)',
   ];
 
   // Use the prefix to deterministically pick a color

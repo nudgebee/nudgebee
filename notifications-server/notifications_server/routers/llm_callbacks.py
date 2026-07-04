@@ -2,11 +2,12 @@ import asyncio
 import json
 import logging
 from typing import Optional, Dict, Any
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.orm import Session
 
 from notifications_server import sync_engine, slack_app, teams_app
+from notifications_server.routers.common import verify_action_token
 from notifications_server.services.common import CommonService
 from notifications_server.services.events import Events
 from notifications_server.services.cache import Cache
@@ -142,7 +143,7 @@ def _validate_platform(cached_entry: dict, thread_ts: str):
     # Google Chat and MS Teams don't require team_id
 
 
-@router.post("/response")
+@router.post("/response", dependencies=[Depends(verify_action_token)])
 async def handle_llm_response(request: Request, background_tasks: BackgroundTasks):
     body = await request.body()
     try:

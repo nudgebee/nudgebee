@@ -183,7 +183,19 @@ func (s *bigQueryService) tableToResource(datasetId, tableId string, metadata *b
 		createdAt = metadata.CreationTime
 	}
 
-	// Convert metadata to map for Meta field
+	// Drop the heavyweight table Schema (column definitions) before serialization.
+	// A single wide or deeply-nested table can carry hundreds of KB of column
+	// metadata; structToMap JSON-round-trips it into a map[string]interface{}
+	// (several times larger), and accumulating that across every table of a large
+	// project OOM-killed the collector in production. Nothing downstream reads the
+	// column schema — the recommendation engine keys off size/partitioning/
+	// clustering/expiration, all of which are preserved. ExternalDataConfig can
+	// embed an equally large schema for external tables and is likewise unread, so
+	// drop it too. metadata is a fresh, locally-owned value, so mutating it is safe.
+	metadata.Schema = nil
+	metadata.ExternalDataConfig = nil
+
+	// Convert (trimmed) metadata to map for Meta field
 	meta := structToMap(metadata)
 
 	// Determine table type
@@ -406,7 +418,6 @@ func (s *bigQueryService) GetRecommendations(ctx providers.CloudProviderContext,
 		// Tables that haven't been queried in the lookback period are considered unused
 		// IMPORTANT: Skip this check if we failed to fetch query activity data to avoid false positives
 		if resource.Type == "bigquery.googleapis.com/Table" && !skipUnusedTableDetection {
-			// TODO: Make lookback period configurable via environment variable or account settings
 			lookbackDays := bigQueryUnusedTableLookbackDays
 
 			// Check if table was queried recently
@@ -577,7 +588,6 @@ func (s *bigQueryService) getQueriedTablesFromJobs(ctx providers.CloudProviderCo
 		}
 	}()
 
-	// TODO: Make lookback period configurable via environment variable or account settings
 	lookbackDays := bigQueryUnusedTableLookbackDays
 
 	queriedTables := make(map[string]time.Time)

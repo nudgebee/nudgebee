@@ -17,7 +17,7 @@ const IOSSlider = styled(Slider)(({ theme }) => ({
     height: ds.space.mul(0, 9),
     width: ds.space.mul(0, 9),
     backgroundColor: ds.background[100],
-    boxShadow: '0 0 2px 0px rgba(0, 0, 0, 0.1)',
+    boxShadow: '0 0 var(--ds-space-0) 0px var(--ds-gray-alpha-200)',
     border: `1px solid ${ds.blue[500]}`,
     '&:focus, &:hover, &.Mui-active': {
       boxShadow: '0px 0px 3px 1px rgba(0, 0, 0, 0.2) inset',
@@ -55,7 +55,7 @@ const IOSSlider = styled(Slider)(({ theme }) => ({
   },
   '& .MuiSlider-rail': {
     opacity: 0.5,
-    boxShadow: 'inset 0px 0px 4px -2px var(--ds-gray-700)',
+    boxShadow: 'inset 0px 0px var(--ds-space-1) calc(var(--ds-space-0) * -1) var(--ds-gray-700)',
     backgroundColor: ds.gray[300],
     height: ds.space.mul(0, 3),
   },

@@ -1,0 +1,97 @@
+# AUTOMATION SCHEMA (from runbook-server/internal/model/workflow.go)
+
+## TOP LEVEL STRUCTURE:
+{
+  "name": "string (required)",
+  "definition": { ... },  // AutomationDefinition (required)
+  "tags": {},             // map[string]any (optional)
+  "status": "ACTIVE"      // AutomationStatus (optional): "ACTIVE", "INACTIVE", "PAUSED" (no DRAFT). New automations default to PAUSED.
+}
+
+## DEFINITION STRUCTURE (inside "definition"):
+{
+  "version": "v1",                    // string (optional, usually "v1")
+  "inputs": [...],                    // []Input (optional)
+  "triggers": [...],                  // []Trigger (required, min=1)
+  "tasks": [...],                     // []Task (required, min=1)
+  "hooks": {...},                     // *Hooks (optional)
+  "output": {},                       // map[string]any (optional)
+  "set_execution_tags": [],           // []string (optional)
+  "retry_policy": {...},              // *AutomationRetryPolicy (optional)
+  "timeout": "30m"                    // string duration (optional, e.g., "30m", "1h")
+}
+
+## TASK STRUCTURE:
+{
+  "id": "string (required)",          // Validated as taskid
+  "type": "string (required)",        // Task type from available types
+  "params": {},                       // map[string]any (optional)
+  "tasks": [],                        // []Task (optional, for nested tasks)
+  "set_vars": {},                     // map[string]any (optional)
+  "set_state": {},                    // map[string]any (optional)
+  "depends_on": [],                   // []string (optional)
+  "if": "string (optional)",          // Jinja2 condition
+  "matrix": {},                       // map[string]any (optional)
+  "failure_policy": {...},            // *FailurePolicy (optional)
+  "timeout": "5m",                    // string duration (optional)
+  "hooks": {...}                      // *Hooks (optional)
+}
+
+## TRIGGER TYPES:
+- "manual" - No params required (params must be empty or omitted). User-supplied inputs available as {{ Inputs.<key> }} in tasks.
+- "schedule" - Requires params: {"cron": "0 * * * *" (5-field UTC), "overlap_policy": "Skip|BufferOne|BufferAll|AllowAll|CancelOther|TerminateOther" (optional, default "Skip"), "catchup_window": Go time.ParseDuration string using units ns|us|ms|s|m|h ONLY — day/week units ("7d", "1w") are NOT supported; use hours instead ("168h" = 7 days). Compound durations are allowed ("1h30m", "90m15s"). Examples: "60s", "10m", "1h", "1h30m", "168h"; default "60s"}. Auto-injected: {{ Inputs.workflow_scheduled_time }}, {{ Inputs.workflow_execution_time }}.
+- "webhook" - Requires params: {"integration_name": "string (a workflow_webhook integration name)", "secret": "string (optional)", "filter": "jinja2 (optional, must render to literal \"true\" or \"1\")"}. Filter sees {{ webhook_payload }} at root. Tasks read request body via {{ Inputs.webhook_payload }}.
+- "event" - Requires AT LEAST ONE of: event_type OR filter (both is fine; rejecting both empty). Params: {"event_type": "string or [string,...]", "filter": "jinja2"}. Filter sees {{ event.<field> }} at root — fields: event_type, source, cluster, subject_namespace, subject_name, priority (HIGH|MEDIUM|LOW|INFO|DEBUG), status, labels. Tasks read the event via {{ Inputs.event.<field> }}.
+- "optimization" - All params optional (empty = match every recommendation). Params: {"categories": ["PodRightSizing"|"RightSizing"|"K8sInstanceRecommendation"|"K8sSpotRecommendation"|"Configuration"|"Security"|"K8sMissingAttribute"], "rule_names": ["vertical_rightsize"|"horizontal_rightsize"|"pvc_rightsize"|"continuous_rightsize"|"replica_right_sizing"|"Spot instance recommendation"|"Abandoned resource"], "clusters": ["string",...], "filter": "jinja2 (optional)"}. Filter and tasks see the recommendation event — fields: category, rule_name, cluster, resource_id, estimated_savings, severity, recommendation_id. Tasks read it via {{ Inputs.event.<field> }}.
+
+## INPUT STRUCTURE:
+{
+  "id": "string (required)",
+  "description": "string (optional)",
+  "type": "string (optional)",        // e.g., "string", "json", "number", "boolean"
+  "default": any (optional),
+  "required": bool (optional)
+}
+
+## FAILURE POLICY:
+{
+  "retry": {
+    "initial_interval": "1s",
+    "backoff_coefficient": 2.0,
+    "maximum_interval": "1m",
+    "maximum_attempts": 3,
+    "non_retryable_error_types": []
+  },
+  "action": "continue|fail"            // "continue" or "fail" (default)
+}
+
+## HOOKS:
+{
+  "success": [{"type": "string", "params": {}}],
+  "failure": [{"type": "string", "params": {}}],
+  "always": [{"type": "string", "params": {}}]
+}
+
+## TASK STATUS VALUES (for {{ Tasks['id'].status }}):
+- COMPLETED
+- FAILED
+- SKIPPED
+- STARTED
+- SCHEDULED
+- TIMED_OUT
+- CANCELED
+
+## VALIDATION RULES:
+1. "name" is required at top level
+2. "definition" is required at top level
+3. "definition.triggers" is required and must have at least 1 trigger
+4. "definition.tasks" is required and must have at least 1 task
+5. Each task must have "id" and "type"
+6. "depends_on" task IDs must exist in automation
+7. Jinja2 templates in "if", "params", "set_state", "output" are parsed and validated. Templates are Jinja2 ONLY — JMESPath/JSONPath constructs ([*], [?...], .., @) are NOT supported and fail validation with: invalid expression ... near "*". Map list fields in an upstream scripting.run_script task, not in the template
+8. Duration fields ("timeout") must be valid durations (e.g., "30s", "5m", "1h")
+9. Manual trigger must NOT have params (or empty params)
+10. Schedule trigger MUST have "cron" param. Optional "overlap_policy" must be one of Skip|BufferOne|BufferAll|AllowAll|CancelOther|TerminateOther. Optional "catchup_window" MUST use Go time.ParseDuration units (ns|us|ms|s|m|h) — day units like "7d" are NOT supported (use "168h" for 7 days); compound durations like "1h30m" ARE allowed
+11. Webhook trigger MUST have "integration_name" param
+12. Event trigger MUST have AT LEAST ONE of "event_type" OR "filter". "event_type" may be a string or array of strings
+13. Optimization trigger: all params are optional (categories[], rule_names[], clusters[], filter). Empty params means "match every recommendation". Array params must contain strings only

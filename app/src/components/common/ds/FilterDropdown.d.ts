@@ -15,6 +15,7 @@ interface FilterDropdownProps {
   groupIcon?: (groupKey: string) => React.ReactNode;
   freeSolo?: boolean;
   onSelect?: (event: any, value: any) => void;
+  onOpen?: () => void;
   disabled?: boolean;
   isOptionsLoading?: boolean;
   limitTag?: number;

@@ -36,6 +36,10 @@ class SlackClient(WebClient):
             **kwargs,
         )
 
+    def conversations_create(self, *, token, name, is_private=False, team_id=None, **kwargs):
+        client = WebClient(token=token)
+        return client.conversations_create(name=name, is_private=is_private, team_id=team_id, **kwargs)
+
     def views_open(self, *, token, channel_id=None, trigger_id=None, view=None, **kwargs):
         client = WebClient(token=token)
         return client.views_open(trigger_id=trigger_id, view=view, **kwargs)

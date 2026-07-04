@@ -72,8 +72,8 @@ const PVRightSizingEvidence = ({ recommendation, estimatedSavings, cloudResource
   }
 
   return (
-    <Box sx={{ p: '14px' }}>
-      <SectionTitle title='Persistent Volume Right-Sizing' muiIcon={<StorageIcon sx={{ fontSize: '16px' }} />} />
+    <Box sx={{ p: ds.space.mul(0, 7) }}>
+      <SectionTitle title='Persistent Volume Right-Sizing' muiIcon={<StorageIcon sx={{ fontSize: ds.text.title }} />} />
 
       {/* Size comparison */}
       {capacityStr !== '—' && recommendedStr && (
@@ -94,7 +94,7 @@ const PVRightSizingEvidence = ({ recommendation, estimatedSavings, cloudResource
             <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], mb: ds.space[0] }}>Current</Typography>
             <Typography sx={{ fontSize: ds.text.heading, fontWeight: ds.weight.semibold, color: ds.red[600] }}>{capacityStr}</Typography>
           </Box>
-          <ArrowForwardIcon sx={{ fontSize: '20px', color: ds.blue[700] }} />
+          <ArrowForwardIcon sx={{ fontSize: ds.text.heading, color: ds.blue[700] }} />
           <Box sx={{ textAlign: 'center' }}>
             <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500], mb: ds.space[0] }}>Recommended</Typography>
             <Typography sx={{ fontSize: ds.text.heading, fontWeight: ds.weight.semibold, color: ds.green[600] }}>{recommendedStr}</Typography>

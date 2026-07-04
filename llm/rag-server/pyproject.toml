@@ -14,10 +14,10 @@ authors = [{ name = "Nudgebee", email = "dev@nudgebee.com" }]
 requires-python = ">=3.10,<=3.14"
 dependencies = [
     # --- Core framework ---
-    "aiofiles==24.1.0",
+    "aiofiles==25.1.0",
     "fastapi==0.135.3",
     "uvicorn[standard]==0.44.0",
-    "python-multipart==0.0.29",
+    "python-multipart==0.0.31",
     "python-dotenv==1.2.2",
     "asgiref==3.11.1",
 
@@ -69,13 +69,13 @@ dependencies = [
     "pydantic-settings>=2.10.1",
     "orjson==3.11.8",
     "validators==0.34.0",
-    "cryptography==46.0.7",
+    "cryptography==48.0.1",
     "certifi==2026.2.25",
     "charset-normalizer==3.4.1",
     "click==8.2.1",
     "durationpy==0.10",
     "frozenlist==1.5.0",
-    "fsspec==2024.12.0",
+    "fsspec==2026.4.0",
     "httpx-sse==0.4.1",
     "monotonic==1.6",
     "msal==1.34.0",
@@ -83,7 +83,7 @@ dependencies = [
     "mypy-extensions==1.1.0",
     "propcache==0.3.1",
     "pydantic-core==2.33.1",
-    "pygments==2.19.2",
+    "pygments==2.20.0",
     "rsa==4.9",
     "simsimd==6.2.1",
     "soupsieve==2.8.3",

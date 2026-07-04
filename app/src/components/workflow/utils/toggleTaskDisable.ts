@@ -174,5 +174,3 @@ export const enableTask = (nodeId: string, nodes: Node[], edges: Edge[]): { node
 
   return { nodes: nextNodes, edges: merged };
 };
-
-export const countDirectDependents = (nodeId: string, edges: Edge[]): number => edges.filter((e) => e.source === nodeId).length;

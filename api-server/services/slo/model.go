@@ -15,9 +15,6 @@ type DBSLOConfig struct {
 	Expression      *string    `json:"expression,omitempty" db:"histogram_query,omitempty"`
 	FilterGood      string     `json:"filter_good,omitempty" db:"filter_good_query,omitempty"`
 	FilterBad       string     `json:"filter_bad,omitempty" db:"filter_bad_query,omitempty"`
-	FilterValid     string     `json:"filter_valid,omitempty" db:"filter_valid_query,omitempty"`
-	StartTime       string     `json:"start_time,omitempty" db:"start_time,omitempty"`
-	EndTime         string     `json:"end_time,omitempty" db:"end_time,omitempty"`
 	ThresholdBucket float64    `json:"error_budget_burn_rate_threshold,omitempty" db:"threshold,omitempty"`
 	CreatedAt       *time.Time `json:"created_at,omitempty" db:"created_at,omitempty"`
 	UpdatedAt       *time.Time `json:"updated_at,omitempty" db:"updated_at,omitempty"`
@@ -26,7 +23,6 @@ type DBSLOConfig struct {
 	Enabled         bool       `json:"enabled,omitempty" db:"enabled,omitempty"`
 	WorkloadName    string     `json:"workload_name" db:"workload_name,omitempty"`
 	Namespace       string     `json:"workload_namespace" db:"workload_namespace,omitempty"`
-	WorkloadId      string     `json:"workload_id" db:"workload_id,omitempty"`
 }
 
 type SLOConfig struct {

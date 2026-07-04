@@ -1,7 +1,7 @@
-import { LineChart } from '@shared';
+import Chart from '@ui/Chart';
 import { Box, Typography, Grid } from '@mui/material';
 import PropTypes from 'prop-types';
-import { ds } from '@utils/colors';
+import { ds, resolveColor, resolveColors } from '@utils/colors';
 
 const InvestigationCharts = ({
   data, // Container memory usage
@@ -29,7 +29,7 @@ const InvestigationCharts = ({
           pointRadius: 0,
           label: 'Limit',
           borderDash: [8, 2],
-          borderColor: '#e5484d', // Dark blue color
+          borderColor: resolveColor(ds.red[500]),
           borderWidth: 1,
           fill: false,
           data: Array(labels.length).fill(memLimit) || [],
@@ -38,7 +38,7 @@ const InvestigationCharts = ({
           type: 'line',
           tension: 0.4,
           pointRadius: 0,
-          borderColor: '#f5b400',
+          borderColor: resolveColor(ds.amber[500]),
           borderWidth: 1,
           fill: false,
           data: data !== null && data !== undefined ? data : [],
@@ -48,7 +48,7 @@ const InvestigationCharts = ({
           type: 'line',
           tension: 0.4,
           pointRadius: 0,
-          borderColor: '#2f7af0',
+          borderColor: resolveColor(ds.blue[500]),
           borderWidth: 1,
           fill: false,
           data: dataRequest || [],
@@ -64,7 +64,7 @@ const InvestigationCharts = ({
     containerData.datasets.push({
       type: 'bar',
       label: 'Occurred At',
-      colors: '#2ca84c',
+      colors: resolveColor(ds.green[500]),
       data: values || [],
       fill: true,
       borderWidth: 1,
@@ -83,7 +83,7 @@ const InvestigationCharts = ({
         {
           type: 'line',
           tension: 0.4,
-          borderColor: '#f5b400',
+          borderColor: resolveColor(ds.amber[500]),
           pointRadius: 0,
           borderWidth: 1,
           fill: false,
@@ -103,7 +103,7 @@ const InvestigationCharts = ({
       type: 'line',
       tension: 0.4,
       pointRadius: 0,
-      borderColor: '#2f7af0',
+      borderColor: resolveColor(ds.blue[500]),
       borderWidth: 1,
       fill: false,
       data: dataRequestN !== null && dataRequestN !== undefined ? dataRequestN : [],
@@ -119,7 +119,7 @@ const InvestigationCharts = ({
         {
           type: 'line',
           tension: 0.4,
-          borderColor: '#f5b400',
+          borderColor: resolveColor(ds.amber[500]),
           pointRadius: 0,
           borderWidth: 1,
           fill: false,
@@ -134,7 +134,7 @@ const InvestigationCharts = ({
         tension: 0.3,
         pointRadius: 0,
         label: 'Limit',
-        borderColor: '#e5484d', // Dark blue color
+        borderColor: resolveColor(ds.red[500]),
         borderDash: [8, 2],
         borderWidth: 1,
         fill: false,
@@ -146,7 +146,7 @@ const InvestigationCharts = ({
         type: 'line',
         tension: 0.4,
         pointRadius: 0,
-        borderColor: '#2f7af0',
+        borderColor: resolveColor(ds.blue[500]),
         borderWidth: 1,
         fill: false,
         data: Array(labelsP.length).fill(podLimitRequest?.request / (1024 * 1024)) || [],
@@ -159,7 +159,7 @@ const InvestigationCharts = ({
         tension: 0.3,
         pointRadius: 0,
         label: 'Limit',
-        borderColor: '#e5484d', // Dark blue color
+        borderColor: resolveColor(ds.red[500]),
         borderDash: [8, 2],
         borderWidth: 1,
         fill: false,
@@ -171,7 +171,7 @@ const InvestigationCharts = ({
         type: 'line',
         tension: 0.4,
         pointRadius: 0,
-        borderColor: '#2f7af0',
+        borderColor: resolveColor(ds.blue[500]),
         borderWidth: 1,
         fill: false,
         data: Array(labelsP.length).fill(podLimitRequest?.cpu_request * 1000) || [],
@@ -186,11 +186,11 @@ const InvestigationCharts = ({
     podData.datasets.push({
       type: 'bar',
       label: 'Occurred At',
-      colors: '#2ca84c',
+      colors: resolveColor(ds.green[500]),
 
       data: values || [],
       fill: true,
-      borderColor: 'red',
+      borderColor: resolveColor(ds.red[500]),
       borderWidth: 1,
       barThickness: 1,
     });
@@ -234,8 +234,8 @@ const InvestigationCharts = ({
             <Typography fontSize={ds.text.bodyLg} fontWeight={500} color={ds.gray[700]}>
               {`Container ${resourceType}` + `${resourceType == 'memory' ? ' (MB)' : ''}`}
             </Typography>
-            <LineChart
-              colors={['#f5b400', '#2f7af0', '#e5484d']}
+            <Chart.Line
+              colors={resolveColors([ds.amber[500], ds.blue[500], ds.red[500]])}
               dataset={containerData.datasets ?? []}
               labels={containerData.labels}
               scaleOptions={options.scales}
@@ -262,7 +262,7 @@ const InvestigationCharts = ({
             <Typography fontSize={ds.text.bodyLg} fontWeight={500} color={ds.gray[700]}>
               {`Node ${resourceType}` + `${resourceType == 'memory' ? ' (GB)' : ''}`}
             </Typography>
-            <LineChart dataset={nodeData.datasets ?? []} labels={nodeData.labels} scaleOptions={options.scales} />
+            <Chart.Line dataset={nodeData.datasets ?? []} labels={nodeData.labels} scaleOptions={options.scales} />
           </Box>
         </Grid>
       ) : null}
@@ -284,7 +284,7 @@ const InvestigationCharts = ({
             <Typography fontSize={ds.text.bodyLg} fontWeight={600} color={ds.gray[700]}>
               {`Pod ${resourceType}` + `${resourceType == 'memory' ? ' (MB)' : ''}`}
             </Typography>
-            <LineChart dataset={podData.datasets ?? []} labels={podData.labels} scaleOptions={options.scales} />
+            <Chart.Line dataset={podData.datasets ?? []} labels={podData.labels} scaleOptions={options.scales} />
           </Box>
         </Grid>
       ) : null}

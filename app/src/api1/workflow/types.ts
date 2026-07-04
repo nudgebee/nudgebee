@@ -205,6 +205,7 @@ export interface WorkflowDryRunRequest {
 
 export interface WorkflowDryRunTaskResult {
   id: string;
+  type?: string;
   status: string;
   output?: any;
   error?: string;

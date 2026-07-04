@@ -43,6 +43,7 @@ test("Add Clickhouse Account Integration", async ({ page }) => {
     operationNames: ["AddIntegrations"],
     ignoreErrorMessages: [
       `account '${process.env.CLUSTER}' already has a 'clickhouse' integration ('clickhouse-test'); only one 'clickhouse' integration per account is supported — edit the existing one or remove it before adding another`,
+      `integration config name '${process.env.CLICKHOUSE_INTEGRATION_CONFIG_NAME}' already exists for this integration type`,
     ],
   });
 });

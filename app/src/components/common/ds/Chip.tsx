@@ -2,9 +2,7 @@
  * Chip — DS V2.
  * Spec: app/design-system/primitives/action/chip.html
  *
- * Canonical port of @components1/common/Chip (V1) into the DS token system.
- * Every V1 variant, slot, state, and behavior is preserved; the colour source
- * is DS CSS variables (--ds-*) throughout. Categorical `hue` values map to the
+ * The colour source is DS CSS variables (--ds-*) throughout. Categorical `hue` values map to the
  * 8 DS color families (distinct from semantic tones) rather than raw hex.
  *
  * When to use (Chip vs Label/CustomLabels):
@@ -24,9 +22,11 @@
  *                    micro is the *secondary-signal* tier (9px / 14px) — used
  *                    inside dense cells (Comparison delta etc.). Don't use it
  *                    for the primary label of a row.
- *   tone           = 'neutral' | 'info' | 'success' | 'warning' | 'critical' | 'savings' | 'waste' | 'agent'
- *                    V1's `danger` → use `critical`; V1's `pending` → use `neutral`
- *                    with `dotVariant='hollow'` (auto-hollow when omitted).
+ *   tone           = 'neutral' | 'subtle' | 'info' | 'success' | 'warning' | 'critical' | 'savings' | 'waste' | 'agent'
+ *                    `subtle` is a lighter, lower-emphasis neutral (background-200
+ *                    surface + gray-600 text) for dense, repeated tags that should
+ *                    recede. V1's `danger` → use `critical`; V1's `pending` → use
+ *                    `neutral` with `dotVariant='hollow'` (auto-hollow when omitted).
  *   shape          = 'pill' | 'rect'
  *   hue            = 'slate' | 'green' | 'amber' | 'red' | 'blue' | 'violet' | 'pink' | 'teal'
  *                    Categorical, tag chips only. Use `hashHue(key)` for stable mapping.
@@ -49,7 +49,7 @@ import Tooltip from '@ui/Tooltip';
 
 export type ChipSize = 'micro' | '2xs' | 'xs' | 'sm' | 'md';
 export type ChipVariant = 'filter' | 'tag' | 'status' | 'input' | 'action' | 'count' | 'avatar';
-export type ChipTone = 'neutral' | 'info' | 'success' | 'warning' | 'critical' | 'savings' | 'waste' | 'agent';
+export type ChipTone = 'neutral' | 'subtle' | 'info' | 'success' | 'warning' | 'critical' | 'savings' | 'waste' | 'agent';
 export type ChipShape = 'pill' | 'rect';
 /** 8 categorical hues for tag chips. */
 export type ChipHue = 'slate' | 'green' | 'amber' | 'red' | 'blue' | 'violet' | 'pink' | 'teal';
@@ -130,6 +130,13 @@ const TONE_PALETTE: Record<ChipTone, TonePalette> = {
     bg: 'var(--ds-gray-100)',
     bgHover: 'var(--ds-gray-200)',
     text: 'var(--ds-gray-700)',
+    border: 'var(--ds-gray-200)',
+    dot: 'var(--ds-gray-500)',
+  },
+  subtle: {
+    bg: 'var(--ds-background-200)',
+    bgHover: 'var(--ds-gray-200)',
+    text: 'var(--ds-gray-600)',
     border: 'var(--ds-gray-200)',
     dot: 'var(--ds-gray-500)',
   },
@@ -307,7 +314,7 @@ const SIZE_TOKENS: Record<ChipSize, SizeTokens> = {
     pillRadius: 'var(--ds-radius-pill)',
     rectRadius: 'var(--ds-radius-sm)',
   },
-  // sm + md mirror V1's @components1/common/Chip tokens so the redesigned
+  // sm + md mirror V1's @components/common/Chip tokens so the redesigned
   // chip renders at the same proportions as the legacy primitive — same
   // padding, same dot/font ratios. Do not drift from V1 without coordinating.
   sm: {
@@ -659,7 +666,7 @@ export function Chip(props: ChipProps) {
   const hasChildren = children !== undefined && children !== null && children !== '';
   const isIconOnly = !!icon && !hasChildren && count === undefined && !dot && !leadingAvatar;
   const isSelected = selected ?? pressed ?? false;
-  const isInteractive = (behavior.interactive || !!onClick || !!onDismiss) && !disabled && !loading;
+  const isInteractive = (behavior.interactive || !!onClick) && !disabled && !loading;
   const isPressable = behavior.pressable && isInteractive;
   const isToggleable = pressed !== undefined || selected !== undefined;
 

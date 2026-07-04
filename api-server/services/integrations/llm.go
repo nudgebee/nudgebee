@@ -167,6 +167,11 @@ func (m LLM) ConfigSchema() core.IntegrationSchema {
 					"llm_provider": []string{"bedrock", "sagemaker"},
 				},
 			},
+			"llm_model_context_size": {
+				Type:        core.ToolSchemaTypeString,
+				Description: "Model context window in tokens (total input + output). Optional — defaults to 32,000 if not set. For self-hosted / HuggingFace models, set this to your deployment's --max-model-len (the model's known max is used otherwise).",
+				Priority:    14,
+			},
 			"llm_provider_access_key": {
 				Type:        core.ToolSchemaTypeString,
 				Description: "AWS Access Key ID for the Bedrock service.",
@@ -862,6 +867,7 @@ func (m LLM) AllowsDynamicKey(name string) bool {
 		"llm_provider_",
 		"llm_model_name_",
 		"llm_model_fallbacks_",
+		"llm_model_context_size_",
 	}
 	for _, p := range overridePrefixes {
 		if strings.HasPrefix(name, p) && len(name) > len(p) {

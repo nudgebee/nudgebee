@@ -66,14 +66,15 @@ func handleBudgetStatusApi(r *gin.Engine, tracer trace.Tracer, meter metric.Mete
 			return
 		}
 
-		if request.AccountID == "" {
-			actionError(c, 400, "api: account_id is required")
-			return
-		}
-
-		if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountID, security.SecurityAccessTypeRead) {
-			actionError(c, 403, errorUserAccessMessage)
-			return
+		// Empty account_id → tenant-wide read (Settings opened from the
+		// global sidebar). RBAC then degrades to tenant-level: a valid
+		// session is enough since the service skips the per-account
+		// branch and returns only tenant-scope data.
+		if request.AccountID != "" {
+			if !agentContext.GetSecurityContext().HasAccountAccess(request.AccountID, security.SecurityAccessTypeRead) {
+				actionError(c, 403, errorUserAccessMessage)
+				return
+			}
 		}
 
 		tenantId := agentContext.GetSecurityContext().GetTenantId()

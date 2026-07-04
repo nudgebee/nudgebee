@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import KubernetesTable2 from '@components/k8s/common/KubernetesTable2';
+import KubernetesTable from '@components/k8s/common/KubernetesTable';
 import { Box, Typography, ToggleButtonGroup, ToggleButton } from '@mui/material';
 import { Switch } from '@ui/Switch';
 import { Divider } from '@ui/Divider';
@@ -9,9 +9,9 @@ import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker
 import DownloadButton from '@shared/buttons/DownloadButton';
 import { convertNumberToTimestamp, isAtMost70PercentDifferent } from 'src/utils/common';
 import { useRouter } from 'next/router';
-import LineChart from '@shared/charts/LineCharts';
+import Chart from '@ui/Chart';
 import Text from '@shared/format/Text';
-import Title from '@shared/Title';
+import Heading from '@components/common/Heading';
 import Grid from '@mui/material/Grid';
 import UserHistoryButton from '@shared/widgets/UserHistory';
 import apiKubernetes1 from '@api1/kubernetes1';
@@ -202,7 +202,7 @@ const KubernetesPrometheus: React.FC<KubernetesPrometheusProps> = ({
           });
           headers = [...headersWithWidth, { name: '', width: '' }];
           metricKeys.push('Count');
-        } else if (evidenceData[g]?.series_list_result?.[0]?.timestamps?.length > 0) {
+        } else if (evidenceData[g]?.series_list_result[0].timestamps.length > 0) {
           fromMetric = false;
           headers = [
             { name: 'timestamps', width: '', component: <Text value='timestamp' /> },
@@ -609,7 +609,7 @@ const KubernetesPrometheus: React.FC<KubernetesPrometheusProps> = ({
                   Query: {cd.query}
                   {cd.helperText && <Typography sx={{ color: 'var(--ds-red-500)' }}>{cd.helperText}</Typography>}
                 </Typography>
-                <LineChart
+                <Chart.Line
                   id={`k8sPromChart-${cd.id || index}`}
                   dataset={cd.data.data}
                   labels={cd.data.labels}
@@ -635,7 +635,7 @@ const KubernetesPrometheus: React.FC<KubernetesPrometheusProps> = ({
                   Query: {cd.query}
                   {cd.helperText && <Typography sx={{ color: 'var(--ds-red-500)' }}>{cd.helperText}</Typography>}
                 </Typography>
-                <KubernetesTable2
+                <KubernetesTable
                   id={k8sProm}
                   totalRows={cd.data.length}
                   data={cd.data}
@@ -654,7 +654,7 @@ const KubernetesPrometheus: React.FC<KubernetesPrometheusProps> = ({
                             <div>
                               {Object.keys(query).length > 0 ? (
                                 <>
-                                  <Title title={'Labels'} />
+                                  <Heading value={'Labels'} borderWidth='md' borderColor='var(--ds-blue-500)' />
                                   <Grid container spacing={2}>
                                     {Object.keys(query?.metric).map((key) => {
                                       return (
@@ -665,8 +665,8 @@ const KubernetesPrometheus: React.FC<KubernetesPrometheusProps> = ({
                                     })}
                                   </Grid>
                                   <br />
-                                  <Title title={'Trend'} />
-                                  <LineChart
+                                  <Heading value={'Trend'} borderWidth='md' borderColor='var(--ds-blue-500)' />
+                                  <Chart.Line
                                     data={instant ? [query.value[1]] : query?.values.map((e: string) => parseFloat(e))}
                                     labels={
                                       instant

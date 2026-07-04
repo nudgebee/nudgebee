@@ -42,12 +42,18 @@ type prMetadata struct {
 }
 
 // CheckAndFollowupOpenPRs polls resolution tables for open agent PRs and triggers followup
-// via llm-server. Called from the RPC cron job every 15 minutes.
+// via llm-server. Called from the RPC cron job hourly (cron_triggers.yaml: '0 * * * *');
+// it is a backstop behind the GitHub webhook, which fans out to ProcessOpenPRResolution
+// within seconds.
 func CheckAndFollowupOpenPRs(ctx *security.RequestContext) error {
 	dbms, err := database.GetDatabaseManager(database.Metastore)
 	if err != nil {
 		return fmt.Errorf("failed to get database connection: %w", err)
 	}
+
+	// Retire stale auto-PRs before querying followup candidates so they drop out
+	// of this sweep and stop churning no-op followups.
+	markStaleResolutions(ctx, dbms)
 
 	rows, err := queryOpenPRResolutions(dbms)
 	if err != nil {
@@ -86,6 +92,15 @@ const (
 	followupCooldown          = "60 minutes"
 	followupRecoveryInterval  = "6 hours"
 	followupRecoveryHardLimit = 20
+	// followupStaleAfter retires a followup that has been open this long while
+	// still unmerged after at least followupIterationCap attempts. These are
+	// auto-generated PRs nobody reviewed or merged; without a stale exit they
+	// churn no-op followups on the 6h recovery loop up to the hard limit for
+	// days. The window is far beyond the ">2h late reviewer" case the no_op-free
+	// counter design guards against. Stale is "stop following up" only — the PR
+	// is left open on GitHub, and a real webhook signal resurrects it (see
+	// ProcessOpenPRResolution).
+	followupStaleAfter = "3 days"
 	// maxRedispatchChain bounds how many times a single completion can chain a
 	// re-dispatch for signals that arrived mid-run (pr_followup_pending). Each
 	// link is a fresh full run, so this caps a worst-case "signal during every
@@ -137,11 +152,25 @@ func queryOpenPRResolutions(dbms *database.DatabaseManager) ([]prResolutionRow, 
 	}
 	defer func() { _ = eventRows.Close() }()
 
+	// Dedup admitted rows by PR URL so the cron follows each PR up at most once
+	// per sweep. The same PR URL can appear more than once — across both tables (an
+	// event-driven apply and an AutoOptimize recommendation apply converging on one
+	// PR) AND within one table (observed duplicate event_resolution rows for one
+	// URL). event_resolution is scanned first, so it wins any tie — matching
+	// FindOpenPRResolutionByURL, which is event-first.
+	seenURLs := make(map[string]bool)
+
 	for eventRows.Next() {
 		var row prResolutionRow
 		row.TableName = "event_resolution"
 		if err := eventRows.StructScan(&row); err != nil {
 			return nil, fmt.Errorf("failed to scan event_resolution row: %w", err)
+		}
+		if u := prURLFromRow(row); u != "" {
+			if seenURLs[u] {
+				continue
+			}
+			seenURLs[u] = true
 		}
 		results = append(results, row)
 	}
@@ -182,10 +211,72 @@ func queryOpenPRResolutions(dbms *database.DatabaseManager) ([]prResolutionRow, 
 		if err := recRows.StructScan(&row); err != nil {
 			return nil, fmt.Errorf("failed to scan recommendation_resolution row: %w", err)
 		}
+		if u := prURLFromRow(row); u != "" {
+			if seenURLs[u] {
+				continue
+			}
+			seenURLs[u] = true
+		}
 		results = append(results, row)
 	}
 
 	return results, nil
+}
+
+// prURLFromRow extracts the PR URL from a resolution row's data blob. Returns
+// "" when the blob is absent or has no pr_url (such rows are never deduped).
+func prURLFromRow(row prResolutionRow) string {
+	var meta prMetadata
+	if err := json.Unmarshal(row.Data, &meta); err != nil {
+		return ""
+	}
+	return meta.PRURL
+}
+
+// markStaleResolutions retires followups that have stayed open past
+// followupStaleAfter with no merge despite reaching the iteration cap. This is
+// the terminal exit the lifecycle otherwise lacks: capped rows are re-admitted
+// on the 6h recovery clause up to the hard limit, so without this an unmerged
+// auto-PR churns no-op followups for days. 'addressing' rows are left alone so a
+// mid-flight run is never yanked. Best-effort — a failure here must not stop the
+// sweep, so the error is logged, not returned.
+func markStaleResolutions(ctx *security.RequestContext, dbms *database.DatabaseManager) {
+	markStaleResolutionsInTables(ctx, dbms, prResolutionTables)
+}
+
+// markStaleResolutionsInTables is the table-parameterized core of
+// markStaleResolutions, split out so the SQL can be exercised against throwaway
+// tables in tests (the real tables carry FKs/fixtures). Returns the number of
+// rows retired.
+func markStaleResolutionsInTables(ctx *security.RequestContext, dbms *database.DatabaseManager, tables []string) int64 {
+	msg := fmt.Sprintf("retired: unmerged after %s and %d followup attempts", followupStaleAfter, followupIterationCap)
+	now := time.Now()
+	var total int64
+	for _, tbl := range tables {
+		res, err := dbms.Db.ExecContext(ctx.GetContext(),
+			fmt.Sprintf(`UPDATE %s SET
+				pr_lifecycle_state = 'stale',
+				status_message = $1,
+				pr_followup_pending = false,
+				last_pr_check_at = $2
+				WHERE type = 'PullRequest'
+				  AND status = 'InProgress'
+				  AND pr_lifecycle_state IN ('created', 'needs_followup')
+				  AND pr_iteration_count >= $3
+				  AND created_at < now() - $4::interval`, tbl),
+			msg, now, followupIterationCap, followupStaleAfter)
+		if err != nil {
+			ctx.GetLogger().Error("pr_lifecycle: failed to mark stale resolutions", "table", tbl, "error", err)
+			continue
+		}
+		if n, err := res.RowsAffected(); err == nil {
+			total += n
+		}
+	}
+	if total > 0 {
+		ctx.GetLogger().Info("pr_lifecycle: retired stale followups", "count", total, "stale_after", followupStaleAfter)
+	}
+	return total
 }
 
 // FindOpenPRResolutionByURL looks up a PR resolution row across both
@@ -209,12 +300,14 @@ func FindOpenPRResolutionByURL(prURL string) (resolutionID, tableName string, er
 	// and to dispatch a followup. Terminal retirement must instead hit every
 	// matching row, so PR close/merge goes through MarkAllPRResolutionsTerminalByURL,
 	// not this single-row lookup. event_resolution is checked first only to make
-	// the lookup order deterministic.
+	// the lookup order deterministic. 'stale' rows are included so a genuine
+	// webhook signal can resurrect a cron-retired PR (see ProcessOpenPRResolution);
+	// the cron query never selects 'stale', so only real PR activity revives one.
 	eventQuery := `
 		SELECT id FROM event_resolution
 		WHERE type = 'PullRequest'
 		  AND status = 'InProgress'
-		  AND pr_lifecycle_state IN ('created', 'needs_followup', 'addressing')
+		  AND pr_lifecycle_state IN ('created', 'needs_followup', 'addressing', 'stale')
 		  AND data->>'pr_url' = $1
 		ORDER BY id
 		LIMIT 1
@@ -227,7 +320,7 @@ func FindOpenPRResolutionByURL(prURL string) (resolutionID, tableName string, er
 		SELECT id FROM recommendation_resolution
 		WHERE type = 'PullRequest'
 		  AND status = 'InProgress'
-		  AND pr_lifecycle_state IN ('created', 'needs_followup', 'addressing')
+		  AND pr_lifecycle_state IN ('created', 'needs_followup', 'addressing', 'stale')
 		  AND data->>'pr_url' = $1
 		ORDER BY id
 		LIMIT 1
@@ -257,6 +350,24 @@ func ProcessOpenPRResolution(ctx *security.RequestContext, resolutionID, tableNa
 	row, err := fetchResolutionRow(dbms, resolutionID, tableName)
 	if err != nil {
 		return fmt.Errorf("failed to fetch %s row %s: %w", tableName, resolutionID, err)
+	}
+
+	// Webhook-only resurrection: a real PR signal (this path is reached only from
+	// the GitHub webhook, never the cron) overrides the cron's staleness. Reset a
+	// stale row to needs_followup with a fresh iteration budget so the claim below
+	// will run it. The cron never resurrects — it only re-stales — so blind hourly
+	// polling stays suppressed while genuine activity always gets a followup.
+	if row.PRLifecycleState == "stale" {
+		// Fail hard on a resurrection error rather than proceeding: a still-'stale'
+		// row would silently fail to claim below (claimOrMarkResolution only claims
+		// created/needs_followup), masking the real DB error as a no-op skip.
+		if rerr := resurrectStaleResolution(ctx, dbms, resolutionID, tableName); rerr != nil {
+			return fmt.Errorf("failed to resurrect stale resolution %s in %s: %w", resolutionID, tableName, rerr)
+		}
+		ctx.GetLogger().Info("pr_lifecycle: resurrected stale resolution on webhook signal",
+			"id", resolutionID, "table", tableName)
+		row.PRLifecycleState = "needs_followup"
+		row.PRIterationCount = 0
 	}
 
 	// State / cap / race gating is no longer a read-then-check here: the atomic
@@ -352,7 +463,7 @@ func markPRResolutionsTerminalByURL(ctx *security.RequestContext, dbms *database
 		res, execErr := dbms.Db.ExecContext(dbCtx,
 			fmt.Sprintf(`UPDATE %s SET pr_lifecycle_state = $1, status = $2, status_message = $3,
 				pr_followup_pending = false, last_pr_check_at = $4
-				WHERE data->>'pr_url' = $5 AND pr_lifecycle_state IN ('created', 'needs_followup', 'addressing')`, tableName),
+				WHERE data->>'pr_url' = $5 AND pr_lifecycle_state IN ('created', 'needs_followup', 'addressing', 'stale')`, tableName),
 			state, status, msg, time.Now(), prURL)
 		cancel()
 		if execErr != nil {
@@ -365,6 +476,25 @@ func markPRResolutionsTerminalByURL(ctx *security.RequestContext, dbms *database
 	ctx.GetLogger().Info("pr_lifecycle: marked PR resolutions terminal",
 		"pr_url", prURL, "merged", merged, "state", state, "status", status, "rows", total)
 	return total, nil
+}
+
+// resurrectStaleResolution returns a cron-retired ('stale') row to active
+// followup with a fresh iteration budget. Called only from the webhook path
+// (ProcessOpenPRResolution): a genuine PR signal overrides the age/iteration
+// staleness the cron applied. Guarded on the current state still being 'stale'
+// so a concurrent terminal (merge/close) is never overwritten back to active.
+func resurrectStaleResolution(ctx *security.RequestContext, dbms *database.DatabaseManager, id, tableName string) error {
+	// Detached-but-traced: WithoutCancel keeps the request's trace/span and logger
+	// values while decoupling from request cancellation, and the timeout still
+	// bounds the write so a hung DB can't leak the goroutine.
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.GetContext()), prDBOpTimeout)
+	defer cancel()
+	_, err := dbms.Db.ExecContext(dbCtx,
+		fmt.Sprintf(`UPDATE %s SET pr_lifecycle_state = 'needs_followup',
+			pr_iteration_count = 0, pr_followup_pending = false
+			WHERE id = $1 AND pr_lifecycle_state = 'stale'`, tableName),
+		id)
+	return err
 }
 
 // claimOrMarkResolution performs the atomic claim-or-mark and returns the row's
@@ -675,7 +805,7 @@ func classifyFollowupOutcome(responses []string) followupOutcome {
 // markFollowupUnresolvable retires a resolution row that the cron has no way
 // to recover (no tenant, no token, missing metadata). Without this the row
 // would stay at pr_lifecycle_state='created' / iteration_count=0 and the
-// cron would re-attempt every 15 minutes forever.
+// cron would re-attempt it on every hourly sweep forever.
 func markFollowupUnresolvable(ctx *security.RequestContext, dbms *database.DatabaseManager, row prResolutionRow, reason string) {
 	_, err := dbms.Db.ExecContext(ctx.GetContext(),
 		fmt.Sprintf(`UPDATE %s SET pr_lifecycle_state = $1, pr_iteration_count = $2, status_message = $3, last_pr_check_at = $4 WHERE id = $5`, row.TableName),

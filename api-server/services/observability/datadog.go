@@ -369,6 +369,7 @@ func (s *DatadogSource) QueryLogs(ctx *security.RequestContext, fetchLogRequest 
 	if err != nil {
 		return nil, fmt.Errorf("failed to make request to datadog logs api: %w", err)
 	}
+	defer func() { _ = body.Body.Close() }()
 
 	bodyBytes, err := io.ReadAll(body.Body)
 	if err != nil {

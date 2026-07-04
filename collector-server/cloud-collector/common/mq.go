@@ -27,6 +27,47 @@ var (
 	reconnectTimeDelay = 5 * time.Second
 )
 
+// Channel-leak recovery. go-rabbitmq v0.15.0's ChannelManager.reconnectLoop has no
+// stop signal: once a channel closes with a non-nil error the manager goroutine keeps
+// opening channels on the shared connection and cannot be reaped by Consumer.Close().
+// Repeatedly recreating a consumer (the MqConsume outer loop) therefore orphans channel
+// managers that leak channels until the connection's channel-id space is exhausted
+// (504 "channel id space exhausted"), permanently killing every consumer and publisher.
+// To bound this, on a connection-level failure we tear down and rebuild the whole shared
+// connection — closing it force-closes every channel at once and yields a fresh
+// channel-id space.
+const (
+	rbmqMaxConsecutiveFailures = 3
+	rbmqHealthyRunThreshold    = 30 * time.Second
+	rbmqResetDebounce          = 30 * time.Second
+	rbmqConsumerWedgeTimeout   = 5 * time.Minute
+)
+
+// rbmqLastResetNanos is the unix-nano timestamp of the last shared-connection rebuild,
+// used to debounce concurrent resets from the handful of consumer goroutines that all
+// observe the same failure.
+var rbmqLastResetNanos atomic.Int64
+
+// consumerHealth tracks whether a given MqConsume goroutine currently has a live,
+// running consumer. MqHealthy (and thus /livez) goes unhealthy when any consumer has
+// been failing to (re)establish for longer than rbmqConsumerWedgeTimeout — closing the
+// gap where the connection-level heartbeat stays green (its own long-lived channel
+// survives) while individual sync consumers are dead.
+type consumerHealth struct {
+	healthy      bool
+	failingSince time.Time
+	lastError    string
+	// session identifies the current consumer run (its startedAt). markConsumerHealthy
+	// only takes effect for the active session, so a healthy-timer left over from an
+	// already-exited run cannot resurrect a dead consumer.
+	session time.Time
+}
+
+var (
+	rbmqConsumerHealth    = make(map[string]*consumerHealth)
+	rbmqConsumerHealthMux sync.Mutex
+)
+
 // MQ heartbeat: a message is round-tripped through the shared RabbitMQ connection
 // on a fixed interval. If the round-trip stops (e.g. the go-rabbitmq consumer
 // wedges after a broker restart — it can silently stop reconnecting on a nil-error
@@ -142,7 +183,8 @@ func isRabbitMQConnectionError(err error) bool {
 		return false
 	}
 	errStr := strings.ToLower(err.Error())
-	return strings.Contains(errStr, "channel/connection is not open") ||
+	return strings.Contains(errStr, "channel id space exhausted") ||
+		strings.Contains(errStr, "channel/connection is not open") ||
 		strings.Contains(errStr, "connection is not open") ||
 		strings.Contains(errStr, "channel is not open") ||
 		strings.Contains(errStr, "eof") ||
@@ -189,6 +231,29 @@ func deleteQueueForMigration(queue string) error {
 	return err
 }
 
+// migrateQueueDurabilityIfMismatch deletes a legacy non-durable queue when a durable
+// re-declare was rejected with PRECONDITION_FAILED, so the next attempt recreates it as
+// durable. The queue declaration happens inside Consumer.Run() (startGoroutines), so
+// this error surfaces from Run(), not from NewConsumer — it must be handled in both
+// places. Returns true if a mismatch was detected and a migration was attempted.
+func migrateQueueDurabilityIfMismatch(queue string, err error) bool {
+	if !isQueueDurabilityMismatch(err) {
+		return false
+	}
+	// The queue is non-durable, so it (and any messages in it) would be lost on the next
+	// broker restart anyway; deleting it to recreate as durable is safe.
+	slog.Warn("rbmq: queue durability mismatch, deleting legacy non-durable queue for migration", "queue", queue, "error", err)
+	if delErr := deleteQueueForMigration(queue); delErr != nil {
+		// Deletion failed, so the mismatch still exists. Report not-migrated so the caller
+		// treats it as a real failure (marks the consumer failing and counts it toward the
+		// budget) rather than resetting and retrying forever in a silent green loop.
+		slog.Error("rbmq: failed to delete legacy queue during durability migration", "queue", queue, "error", delErr)
+		return false
+	}
+	slog.Info("rbmq: deleted legacy non-durable queue, will recreate as durable", "queue", queue)
+	return true
+}
+
 func MqClose() {
 	rbmqConsumersMux.Lock()
 	for _, consumer := range rbmqConsumers {
@@ -218,6 +283,108 @@ func MqClose() {
 	slog.Info("rbmq: all connections, consumers, and publishers closed")
 }
 
+// resetSharedConnection tears down the shared RabbitMQ connection (and cached
+// publishers) so the next getConnection() builds a brand-new connection with a fresh
+// channel-id space. Closing the connection force-closes every channel on it at once,
+// reclaiming channels leaked by orphaned go-rabbitmq channel-manager reconnect
+// goroutines. Debounced (rbmqResetDebounce) so the handful of consumer goroutines that
+// observe the same failure don't thrash the connection.
+func resetSharedConnection(reason string) {
+	rbmqConnMux.Lock()
+	last := rbmqLastResetNanos.Load()
+	if last != 0 && time.Since(time.Unix(0, last)) < rbmqResetDebounce {
+		rbmqConnMux.Unlock()
+		return
+	}
+	rbmqLastResetNanos.Store(time.Now().UnixNano())
+	old := rbmqConn
+	rbmqConn = nil
+	rbmqConnMux.Unlock()
+
+	if old != nil {
+		slog.Warn("rbmq: rebuilding shared connection to reclaim leaked channels", "reason", reason)
+		if err := old.Close(); err != nil {
+			slog.Error("rbmq: error closing shared connection during reset", "error", err)
+		}
+	}
+
+	// Cached publishers are bound to the now-closed connection; drop them so the next
+	// publish builds a fresh publisher on the rebuilt connection. Swap the map out under
+	// the lock and close the old publishers outside it — publisher.Close() can block on
+	// network flushes, so holding rbmqPublishersMux across it would stall publishers.
+	rbmqPublishersMux.Lock()
+	oldPublishers := rbmqPublishers
+	rbmqPublishers = make(map[string]*rabbitmq.Publisher)
+	rbmqPublishersMux.Unlock()
+	for _, publisher := range oldPublishers {
+		publisher.Close()
+	}
+}
+
+// markConsumerRunning records the start of a new consumer run as the active session.
+// markConsumerHealthy only takes effect for this session, so a healthy-timer from an
+// already-exited run can't resurrect a dead consumer.
+func markConsumerRunning(queue string, startedAt time.Time) {
+	rbmqConsumerHealthMux.Lock()
+	defer rbmqConsumerHealthMux.Unlock()
+	h, ok := rbmqConsumerHealth[queue]
+	if !ok {
+		h = &consumerHealth{}
+		rbmqConsumerHealth[queue] = h
+	}
+	h.session = startedAt
+}
+
+// markConsumerHealthy records that a consumer is up and running (survived the healthy
+// run threshold). It is a no-op unless startedAt is still the active session — the run
+// that armed the timer may already have exited.
+func markConsumerHealthy(queue string, startedAt time.Time) {
+	rbmqConsumerHealthMux.Lock()
+	defer rbmqConsumerHealthMux.Unlock()
+	h, ok := rbmqConsumerHealth[queue]
+	if !ok || !h.session.Equal(startedAt) {
+		return
+	}
+	h.healthy = true
+	h.failingSince = time.Time{}
+	h.lastError = ""
+}
+
+// markConsumerFailing records that a consumer failed to (re)establish. failingSince is
+// stamped on the first failing transition and preserved until the consumer recovers, so
+// MqHealthy can measure how long a consumer has been wedged. It also clears the active
+// session so an in-flight healthy-timer for the exited run cannot re-mark it healthy.
+func markConsumerFailing(queue string, err error) {
+	rbmqConsumerHealthMux.Lock()
+	defer rbmqConsumerHealthMux.Unlock()
+	h, ok := rbmqConsumerHealth[queue]
+	if !ok {
+		h = &consumerHealth{}
+		rbmqConsumerHealth[queue] = h
+	}
+	if h.healthy || h.failingSince.IsZero() {
+		h.failingSince = time.Now()
+	}
+	h.healthy = false
+	h.session = time.Time{}
+	if err != nil {
+		h.lastError = err.Error()
+	}
+}
+
+// anyConsumerWedged reports the first consumer that has been failing to (re)establish
+// for longer than rbmqConsumerWedgeTimeout, if any.
+func anyConsumerWedged() (string, bool) {
+	rbmqConsumerHealthMux.Lock()
+	defer rbmqConsumerHealthMux.Unlock()
+	for queue, h := range rbmqConsumerHealth {
+		if !h.healthy && !h.failingSince.IsZero() && time.Since(h.failingSince) >= rbmqConsumerWedgeTimeout {
+			return queue, true
+		}
+	}
+	return "", false
+}
+
 func MqConsume(exchangeName string, routingKey string, queue string, concurrency int, processor func(data []byte) error) error {
 	conn := getConnection()
 	if conn == nil {
@@ -243,7 +410,10 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 			slog.Info("rbmq: consumer goroutine shut down", "queue", queue, "exchange", exchangeName)
 		}()
 
-		// Loop indefinitely to manage consumer lifecycle
+		// Loop indefinitely to manage consumer lifecycle. consecutiveFailures counts
+		// create/run failures that did not stay up past rbmqHealthyRunThreshold; once it
+		// crosses the budget we rebuild the shared connection to reclaim leaked channels.
+		consecutiveFailures := 0
 		for attempt := 0; ; attempt++ {
 			if attempt > 0 {
 				slog.Info("rbmq: delaying consumer reconnect attempt", "queue", queue, "delay", reconnectTimeDelay)
@@ -273,20 +443,20 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 				rabbitmq.WithConsumerOptionsConsumerName(config.Config.OtelServiceName+"/"+routingKey+"/"+config.SERVICE_NAME),
 			)
 			if err != nil {
-				// One-time migration: a queue that already exists as non-durable (from
-				// before this change) cannot be re-declared as durable — RabbitMQ rejects
-				// it with PRECONDITION_FAILED. Delete the legacy queue so the next attempt
-				// recreates it as durable. The queue is non-durable, so it (and any
-				// messages in it) would be lost on the next broker restart anyway.
-				if isQueueDurabilityMismatch(err) {
-					slog.Warn("rbmq: queue durability mismatch, deleting legacy non-durable queue for migration", "queue", queue, "error", err)
-					if delErr := deleteQueueForMigration(queue); delErr != nil {
-						slog.Error("rbmq: failed to delete legacy queue during durability migration", "queue", queue, "error", delErr)
-					} else {
-						slog.Info("rbmq: deleted legacy non-durable queue, will recreate as durable", "queue", queue)
-					}
+				// A pre-existing non-durable queue makes the durable re-declare fail with
+				// PRECONDITION_FAILED. Migrate it (delete so it recreates durable) and retry
+				// without counting it as a failure.
+				if migrateQueueDurabilityIfMismatch(queue, err) {
+					consecutiveFailures = 0
+					continue
 				}
 				slog.Error("rbmq: error creating consumer", "error", err, "queue", queue, "attempt", attempt+1)
+				markConsumerFailing(queue, err)
+				consecutiveFailures++
+				if isRabbitMQConnectionError(err) || consecutiveFailures >= rbmqMaxConsecutiveFailures {
+					resetSharedConnection(fmt.Sprintf("consumer %q create failed: %v", queue, err))
+					consecutiveFailures = 0
+				}
 				continue
 			}
 
@@ -294,6 +464,15 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 			rbmqConsumers[consumerKey] = currentConsumer
 			rbmqConsumersMux.Unlock()
 			slog.Info("rbmq: consumer created and started", "queue", queue, "exchange", exchangeName, "concurrency", concurrency)
+
+			// Mark the consumer healthy once it has stayed up past the threshold. Run()
+			// blocks for the consumer's whole lifetime, so this is reported from a timer
+			// that is stopped if Run() exits early (a sub-threshold run is not healthy).
+			startedAt := time.Now()
+			markConsumerRunning(queue, startedAt)
+			healthyTimer := time.AfterFunc(rbmqHealthyRunThreshold, func() {
+				markConsumerHealthy(queue, startedAt)
+			})
 
 			runErr := func() (runPanicErr error) {
 				defer func() {
@@ -308,6 +487,7 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 				}
 				return currentConsumer.Run(handlerFunc)
 			}()
+			healthyTimer.Stop()
 
 			// Handle consumer.Run exit (error or panic)
 			if runErr != nil {
@@ -315,6 +495,30 @@ func MqConsume(exchangeName string, routingKey string, queue string, concurrency
 			} else {
 				// consumer.Run exited cleanly, possibly due to connection closure not handled by library's auto-reconnect
 				slog.Info("rbmq: consumer.Run exited cleanly, will attempt to restart", "queue", queue, "exchange", exchangeName, "attempt", attempt+1)
+			}
+
+			// The durable-queue declaration happens inside Run() (startGoroutines), so a
+			// PRECONDITION_FAILED from a pre-existing non-durable queue surfaces here, not
+			// from NewConsumer. Migrate it and retry without counting toward the
+			// connection-rebuild budget — a rebuild would not fix a durability mismatch and
+			// the churn would disrupt the heartbeat that backs /livez.
+			migratedDurability := migrateQueueDurabilityIfMismatch(queue, runErr)
+
+			// Always mark the consumer failing when Run() exits — it is no longer running.
+			// A healthy reconnect re-marks it healthy after rbmqHealthyRunThreshold; until
+			// then a persistent post-exit failure (e.g. getConnection() returning nil) stays
+			// visible to the liveness probe. The threshold only governs the failure budget:
+			// a consumer that stayed up past it is a transient blip and resets the budget;
+			// one that exits almost immediately counts toward the connection rebuild.
+			markConsumerFailing(queue, runErr)
+			if migratedDurability || time.Since(startedAt) >= rbmqHealthyRunThreshold {
+				consecutiveFailures = 0
+			} else {
+				consecutiveFailures++
+			}
+			if !migratedDurability && ((runErr != nil && isRabbitMQConnectionError(runErr)) || consecutiveFailures >= rbmqMaxConsecutiveFailures) {
+				resetSharedConnection(fmt.Sprintf("consumer %q run exited: %v", queue, runErr))
+				consecutiveFailures = 0
 			}
 
 			// Clean up current consumer before retrying
@@ -783,11 +987,21 @@ func MqPublish(exchangeName string, routingKey string, message any, opts ...MqPu
 // Once heartbeats have started, a stale heartbeat (older than mqHeartbeatTimeout)
 // means a consumer or the connection has wedged and the pod should be restarted.
 func MqHealthy() bool {
+	// Connection-level check: the heartbeat round-trip must be recent once it has
+	// started. last == 0 is the boot grace period (heartbeat not started yet).
 	last := mqLastHeartbeatNanos.Load()
-	if last == 0 {
-		return true
+	if last != 0 && time.Since(time.Unix(0, last)) >= mqHeartbeatTimeout {
+		return false
 	}
-	return time.Since(time.Unix(0, last)) < mqHeartbeatTimeout
+	// Consumer-level check: the heartbeat rides the shared connection's own long-lived
+	// channel, which can survive while individual sync consumers are wedged. Report
+	// unhealthy if any consumer has been unable to (re)establish past the wedge timeout
+	// so the liveness probe restarts the pod.
+	if queue, wedged := anyConsumerWedged(); wedged {
+		slog.Warn("rbmq: consumer wedged beyond timeout, reporting unhealthy for liveness probe", "queue", queue)
+		return false
+	}
+	return true
 }
 
 // StartMqHeartbeat starts the heartbeat consumer and publisher. It is safe to call

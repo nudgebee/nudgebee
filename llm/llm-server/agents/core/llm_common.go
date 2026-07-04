@@ -13,6 +13,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
+	"nudgebee/llm/security/egressfilter"
 	toolcore "nudgebee/llm/tools/core"
 	"regexp"
 	"strings"
@@ -1292,7 +1293,12 @@ func handleTokenLimitError(rc *retryContext) (*llms.ContentResponse, *LLMCallMet
 		"model", rc.currentModel,
 		"provider", rc.currentProvider)
 
-	maxTokens := GetLlmMaxTokenLength(rc.currentModel)
+	maxTokens := ResolveModelMaxContext(rc.resolution, rc.currentModel)
+	// budget reserves room for the model's output: the recovered prompt + the
+	// generation must BOTH fit the window (total-window semantics). Targeting the
+	// full window would let the resend (input + output) overflow again. This is
+	// the same usable-input budget the summarizer chunks to.
+	budget := summarizationChunkSize(maxTokens, rc.currentModel)
 
 	// Calculate initial token distribution before summarization
 	totalTokens, err := CalculateTotalTokens(ctx, rc.promptMessages, rc.currentProvider, rc.currentModel)
@@ -1363,6 +1369,9 @@ func handleTokenLimitError(rc *retryContext) (*llms.ContentResponse, *LLMCallMet
 			msgTokens := msgTokenCounts[i]
 
 			if msgTokens > safeMessageLimit {
+				// Track whether this message was actually changed this iteration;
+				// if not, the total is unchanged and we skip the expensive recount.
+				changedThisMsg := false
 				ctx.GetLogger().Warn("Individual message exceeds safe limit, attempting to downsample or summarize",
 					"messageIndex", i,
 					"iteration", iteration,
@@ -1407,6 +1416,7 @@ func handleTokenLimitError(rc *retryContext) (*llms.ContentResponse, *LLMCallMet
 									llms.TextContent{Text: truncated + "\n[message hard-truncated: content exceeded summarization capacity]"},
 								},
 							}
+							changedThisMsg = true
 							summarizedAnyMessage = true
 						} else {
 							ctx.GetLogger().Warn("Summarization returned empty string and message already at safe byte limit, keeping original",
@@ -1419,7 +1429,21 @@ func handleTokenLimitError(rc *retryContext) (*llms.ContentResponse, *LLMCallMet
 								llms.TextContent{Text: summarizedText},
 							},
 						}
+						changedThisMsg = true
 						summarizedAnyMessage = true
+					}
+				}
+
+				// Stop-at-budget: once the prompt fits the window, skip the
+				// remaining over-limit messages instead of summarizing them too
+				// (avoids extra summarization LLM calls). Only recount when this
+				// message actually changed — tokenization is CPU-heavy and an
+				// unchanged message leaves the total unchanged.
+				if changedThisMsg {
+					if t, terr := CalculateTotalTokens(ctx, rc.promptMessages, rc.currentProvider, rc.currentModel); terr == nil && t <= budget {
+						ctx.GetLogger().Info("plannerexecutor: token-limit recovery now under budget, stopping summarization early",
+							"totalTokens", t, "budget", budget, "maxTokens", maxTokens, "iteration", iteration)
+						break
 					}
 				}
 			}
@@ -1446,11 +1470,12 @@ func handleTokenLimitError(rc *retryContext) (*llms.ContentResponse, *LLMCallMet
 			"maxTokens", maxTokens,
 			"summarizedAnyMessage", summarizedAnyMessage)
 
-		// Check if total is within limit
-		if totalTokens <= maxTokens {
-			ctx.GetLogger().Info("Total tokens now within limit, trying LLM call",
+		// Check if total is within budget (leaves room for the output)
+		if totalTokens <= budget {
+			ctx.GetLogger().Info("Total tokens now within budget, trying LLM call",
 				"iteration", iteration,
 				"totalTokens", totalTokens,
+				"budget", budget,
 				"maxTokens", maxTokens)
 
 			// Try LLM call
@@ -2266,6 +2291,16 @@ func isProgramError(err error) bool {
 // Returns true for token limits, quota errors, transient errors, cache errors, and program errors
 func isRetryableError(err error) bool {
 	if err == nil {
+		return false
+	}
+
+	// egressfilter blocks are by definition non-retryable: the same payload
+	// produces the same block deterministically, and the wrapper short-
+	// circuits before the provider is contacted so there is no transient
+	// state worth retrying. Early-out keeps future heuristics added below
+	// from accidentally reclassifying these as retryable (e.g. a string
+	// matcher catching "blocked" in the message).
+	if errors.Is(err, egressfilter.ErrSecretsBlocked) {
 		return false
 	}
 

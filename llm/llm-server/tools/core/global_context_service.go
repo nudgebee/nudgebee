@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 )
 
 // GlobalContext represents an account-scoped global context file
@@ -33,6 +34,9 @@ type GlobalContext struct {
 	UpdatedBy     string    `json:"updated_by,omitempty" db:"updated_by"` // Display name, not UUID
 	CreatedAt     time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at" db:"updated_at"`
+	// Populated only by ListGlobalContextsForTenant; omitempty keeps the
+	// per-account list/get path wire-compatible.
+	AccountName string `json:"account_name,omitempty" db:"account_name"`
 }
 
 // GlobalContextStatus represents the processing status
@@ -373,6 +377,71 @@ func GetGlobalContext(sc *security.RequestContext, accountId, gcId string) (Glob
 	}
 
 	return gc, nil
+}
+
+// ListGlobalContextsForTenant returns every global context the caller can
+// read across the tenant. Used by Settings → Global Context when launched
+// from the global sidebar (no account in scope) — matches the KB
+// tenant-wide read pattern.
+//
+// Row-level filtering mirrors HasAccountAccess: super-admins and
+// tenant-admins see every row; scoped account-admins see only contexts
+// whose account_id is in their JWT-carried account list; users with no
+// account-scoped role see nothing. Tenant is taken from the security
+// context, never user-supplied.
+func ListGlobalContextsForTenant(sc *security.RequestContext) ([]GlobalContext, error) {
+	secCtx := sc.GetSecurityContext()
+	tenantID := secCtx.GetTenantId()
+	if tenantID == "" {
+		return nil, errors.New(errGCTenantIDRequired)
+	}
+
+	seesAllAccountsInTenant := secCtx.IsSuperAdmin() ||
+		secCtx.IsSuperAdminReadonly() ||
+		secCtx.IsTenantAdmin() ||
+		secCtx.IsTenantReadAdmin()
+
+	dbms, err := common.GetDatabaseManager(common.Metastore)
+	if err != nil {
+		slog.Error(logGCFailedDBManager, "error", err)
+		return nil, err
+	}
+
+	baseSelect := `
+		SELECT gc.id, gc.tenant_id, gc.account_id, gc.name,
+		       COALESCE(gc.description, '') as description,
+		       gc.data_format, gc.data_filename,
+		       gc.data_size_bytes, gc.status,
+		       COALESCE(cu.display_name, '') as created_by,
+		       COALESCE(uu.display_name, '') as updated_by,
+		       gc.created_at, gc.updated_at,
+		       COALESCE(ca.account_name, '') as account_name
+		FROM llm_global_contexts gc
+		LEFT JOIN users cu ON gc.created_by = cu.id
+		LEFT JOIN users uu ON gc.updated_by = uu.id
+		LEFT JOIN cloud_accounts ca ON gc.account_id = ca.id`
+
+	var (
+		gcs   []GlobalContext
+		query string
+		args  []any
+	)
+	if seesAllAccountsInTenant {
+		query = baseSelect + ` WHERE gc.tenant_id = $1 ORDER BY gc.created_at DESC`
+		args = []any{tenantID}
+	} else {
+		accountIDs := secCtx.GetAccountIds()
+		if len(accountIDs) == 0 {
+			return []GlobalContext{}, nil
+		}
+		query = baseSelect + ` WHERE gc.tenant_id = $1 AND gc.account_id = ANY($2::uuid[]) ORDER BY gc.created_at DESC`
+		args = []any{tenantID, pq.Array(accountIDs)}
+	}
+	if err := dbms.Db.Select(&gcs, query, args...); err != nil {
+		slog.Error(logGCFailedQuery, "error", err, "tenant_id", tenantID, "sees_all", seesAllAccountsInTenant)
+		return nil, err
+	}
+	return gcs, nil
 }
 
 // ListGlobalContexts retrieves all global contexts for an account (without data).

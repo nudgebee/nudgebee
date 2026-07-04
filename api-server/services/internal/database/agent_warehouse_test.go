@@ -74,6 +74,11 @@ func TestAgentDriver(t *testing.T) {
 	sqlxDb := sqlx.NewDb(sql.OpenDB(connector), "clickhouse")
 	dummyAccountId := "dummy"
 	rows, err := sqlxDb.Query("SELECT 1", dummyAccountId, "agent_warehouse_clickhouse")
+	defer func() {
+		if rows != nil {
+			assert.NoError(t, rows.Close())
+		}
+	}()
 	assert.Nil(t, err)
 	assert.NotNil(t, rows)
 	assert.Nil(t, rows.Err())

@@ -1,13 +1,12 @@
 import functools
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timedelta
-from urllib.parse import urlparse, unquote
 
-import psycopg2
 from tornado.ioloop import IOLoop
 
-from config import Configs
+from db import database
 from utils.datetime_utils import utc_now
 
 tp_executor = ThreadPoolExecutor(30)
@@ -19,22 +18,42 @@ class BaseController(object):
     def __init__(self):
         self._clickhouse_client = None
 
-    @property
-    def postgres_client(self):
-        parsed_url = urlparse(Configs.COLLECTOR_DB_URL)
-        conn = psycopg2.connect(
-            database=parsed_url.path[1:],
-            user=unquote(parsed_url.username) if parsed_url.username else None,
-            password=unquote(parsed_url.password) if parsed_url.password else None,
-            host=parsed_url.hostname,
-            port=parsed_url.port,
-        )
-        return conn
+    @contextmanager
+    def postgres_connection(self):
+        """Borrow a connection from the shared pool and always return it.
+
+        The previous ``postgres_client`` property opened a fresh, unmanaged
+        ``psycopg2.connect()`` on every access that no caller ever closed, so
+        each auth-cache miss / sync leaked a connection until PostgreSQL hit
+        ``max_connections``. Routing through the shared ThreadedConnectionPool
+        bounds usage and guarantees the connection is returned (rolled back on
+        error so it isn't handed back to the pool in an aborted-transaction
+        state).
+        """
+        conn = database.create_db_connection_pool().getconn()
+        try:
+            yield conn
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            try:
+                database.create_db_connection_pool().putconn(conn)
+            except Exception:
+                logger.exception("Failed to return connection to pool, closing it directly")
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     def get_agent_last_synced_from_db(self, account_id) -> datetime:
-        cursor = self.postgres_client.cursor()
-        cursor.execute("select last_synced_at from agent where cloud_account_id = %s", (account_id,))
-        resp = cursor.fetchone()
+        with self.postgres_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("select last_synced_at from agent where cloud_account_id = %s", (account_id,))
+                resp = cursor.fetchone()
         if resp and resp[0]:
             last_date = resp[0] + timedelta(minutes=1)
         else:
@@ -45,14 +64,14 @@ class BaseController(object):
         return last_date
 
     def update_agent_last_synced_in_db(self, account_id: str, new_date: datetime) -> None:
-        conn = self.postgres_client
-        cursor = conn.cursor()
-        logger.info(f"Updating last sync to {new_date}, for account id {account_id}")
-        cursor.execute(
-            "update agent set last_synced_at = %s where cloud_account_id = %s",
-            (new_date, account_id),
-        )
-        conn.commit()
+        with self.postgres_connection() as conn:
+            with conn.cursor() as cursor:
+                logger.info(f"Updating last sync to {new_date}, for account id {account_id}")
+                cursor.execute(
+                    "update agent set last_synced_at = %s where cloud_account_id = %s",
+                    (new_date, account_id),
+                )
+            conn.commit()
 
 
 class BaseAsyncControllerWrapper(object):

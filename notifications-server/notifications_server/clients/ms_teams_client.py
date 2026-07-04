@@ -297,6 +297,71 @@ class MsTeamsClient:
         return None
 
     @staticmethod
+    def create_channel(
+        access_token: str,
+        team_id: str,
+        display_name: str,
+        description: Optional[str] = None,
+        is_private: bool = False,
+        max_retries: int = settings.ms_teams.max_rate_limit_retries,
+    ) -> Dict[str, Any]:
+        """
+        Create a channel within an existing team via MS Graph API.
+
+        Args:
+            access_token: MS Graph access token
+            team_id: The team the channel is created under
+            display_name: Display name for the new channel
+            description: Optional channel description
+            is_private: Create a private channel when True (else standard)
+            max_retries: Maximum retry attempts for rate limiting
+
+        Returns:
+            Dict with success status and channel details
+        """
+        validate_graph_api_id(team_id, "team_id")
+
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": CONTENT_TYPE_JSON}
+        create_channel_url = f"{GRAPH_API_BASE_URL}/v1.0/teams/{team_id}/channels"
+        payload: Dict[str, Any] = {
+            "displayName": display_name,
+            "membershipType": "private" if is_private else "standard",
+        }
+        if description:
+            payload["description"] = description
+
+        for attempt in range(max_retries + 1):
+            response = requests.post(create_channel_url, headers=headers, json=payload)
+
+            if response.status_code == 429:
+                if attempt < max_retries:
+                    try:
+                        retry_after = int(response.headers.get("Retry-After", 15))
+                    except (ValueError, TypeError):
+                        retry_after = 15
+                    LOG.warning("MS Teams rate limited creating channel. Retrying after %ss...", retry_after)
+                    time.sleep(retry_after)
+                    continue
+                break
+
+            if response.status_code in (200, 201):
+                data = response.json()
+                return {
+                    "success": True,
+                    "channel_id": data.get("id"),
+                    "name": data.get("displayName", display_name),
+                    "url": data.get("webUrl"),
+                }
+
+            LOG.warning("Failed to create channel: %s - %s", response.status_code, response.text)
+            return {
+                "success": False,
+                "error": f"Failed to create channel: {response.status_code} - {response.text}",
+            }
+
+        return {"success": False, "error": "Rate limit exceeded creating channel"}
+
+    @staticmethod
     def set_reaction(
         access_token: str,
         team_id: str,

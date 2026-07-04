@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 
@@ -128,4 +129,42 @@ func (g GithubIssues) ValidateConfig(ctx *security.SecurityContext, values []cor
 	}
 
 	return nil
+}
+
+// githubRepoUsers mirrors one entry of the GitHub integration's "users" config:
+// a repository and the collaborator logins on it, as populated by the metadata sync.
+type githubRepoUsers struct {
+	Repository string   `json:"repository"`
+	Users      []string `json:"users"`
+}
+
+// ListUsers enumerates GitHub collaborator logins from the integration's
+// already-synced "users" config (one entry per repo). GitHub exposes no email, so
+// these are login-only (Email empty). Reading the config — rather than calling the
+// GitHub API — sidesteps PAT-vs-App auth, the org-vs-personal-account distinction,
+// and the /orgs/{user}/members 404 that personal-account integrations otherwise hit.
+// Implements core.UserLister.
+func (g GithubIssues) ListUsers(_ context.Context, values []core.IntegrationConfigValue) ([]core.ExternalUser, error) {
+	raw := core.ConfigValue(values, GithubConfigUsers)
+	if raw == "" {
+		return nil, nil
+	}
+
+	var repos []githubRepoUsers
+	if err := json.Unmarshal([]byte(raw), &repos); err != nil {
+		return nil, fmt.Errorf("github: parse users config: %w", err)
+	}
+
+	seen := make(map[string]bool)
+	var out []core.ExternalUser
+	for _, r := range repos {
+		for _, login := range r.Users {
+			if login == "" || seen[login] {
+				continue
+			}
+			seen[login] = true
+			out = append(out, core.ExternalUser{ID: login, Username: login, DisplayName: login})
+		}
+	}
+	return out, nil
 }

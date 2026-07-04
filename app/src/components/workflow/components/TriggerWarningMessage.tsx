@@ -10,10 +10,10 @@ const TriggerWarningMessage: React.FC<TriggerWarningMessageProps> = ({ onAddTrig
     <Box
       sx={{
         position: 'absolute',
-        top: '100px',
+        top: 'calc(var(--ds-space-0) * 50)',
         left: '50%',
         transform: 'translateX(-50%)',
-        backgroundColor: 'rgba(255, 193, 7, 0.1)',
+        backgroundColor: 'color-mix(in srgb, var(--ds-amber-500) 10%, transparent)',
         border: '1px solid var(--ds-amber-400)',
         borderRadius: 'var(--ds-radius-xl)',
         padding: 'var(--ds-space-3) var(--ds-space-4)',
@@ -21,7 +21,7 @@ const TriggerWarningMessage: React.FC<TriggerWarningMessageProps> = ({ onAddTrig
         alignItems: 'center',
         gap: 'var(--ds-space-3)',
         zIndex: 10,
-        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
+        boxShadow: '0 var(--ds-space-0) var(--ds-space-2) var(--ds-gray-alpha-300)',
       }}
     >
       <Typography variant='body2' sx={{ fontWeight: 'var(--ds-font-weight-medium)', color: 'var(--ds-amber-500)' }}>

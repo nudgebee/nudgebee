@@ -173,6 +173,9 @@ var scratchpadContextSummarizer string
 //go:embed agent_kg_usage.txt
 var agentKgUsage string
 
+//go:embed cost_optimization_analysis.txt
+var costOptimizationAnalysis string
+
 const PromptPlannerRewoo2Base = "planner_rewoo_2_base"
 const PromptPlannerRewooSolver = "planner_rewoo_solver"
 const PromptPlannerRewoo2Classifier = "planner_rewoo_2_classifier"
@@ -234,6 +237,7 @@ const PromptScratchpadSummarizer = "scratchpad_summarizer"
 
 // PromptAgentKgUsage is the KG-tool usage guidance for the KG-only V2 service_dependency_graph agent.
 const PromptAgentKgUsage = "agent_kg_usage"
+const PromptCostOptimization = "cost_optimization_analysis"
 
 func GetPrompt(module string, args ...any) string {
 	data := ""
@@ -335,6 +339,8 @@ func GetPrompt(module string, args ...any) string {
 		data = agentFinops
 	case PromptAgentKgUsage:
 		data = agentKgUsage
+	case PromptCostOptimization:
+		data = costOptimizationAnalysis
 	}
 	if len(args) > 0 {
 		data = fmt.Sprintf(data, args...)

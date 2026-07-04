@@ -43,7 +43,6 @@ class BaseModel:
 
 class MessagingPlatform(Base):
     __tablename__ = "messaging_platforms"
-    __table_args__ = (UniqueConstraint("tenant_id", "platform", name="uq_messaging_platforms_tenant_platform"),)
 
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=gen_id)
     created_at = Column(DateTime, default=utc_now)
@@ -95,6 +94,15 @@ class MessagingPlatform(Base):
                 else None
             ),
             "bot_id": self.bot_id,
+            # Origin + integration id must survive the cache round-trip: a refreshed
+            # token is re-encrypted into integration_config_values only when these are
+            # present; without them persist falls back to the legacy plaintext path.
+            "_origin": getattr(self, "_origin", None),
+            "_integration_id": (
+                str(self._integration_id)
+                if isinstance(getattr(self, "_integration_id", None), UUID)
+                else getattr(self, "_integration_id", None)
+            ),
         }
         return {**standard_values}
 
@@ -129,6 +137,17 @@ class MessagingPlatform(Base):
 
         instance.token_expires_at = parse_datetime(data.get("token_expires_at"))
         instance.refresh_token_expires_at = parse_datetime(data.get("refresh_token_expires_at"))
+        instance._origin = data.get("_origin")
+        # Re-hydrate the integration id as a UUID so the encrypted-token write path
+        # filters on the correct type regardless of strict DB-driver coercion.
+        _integration_id = data.get("_integration_id")
+        if isinstance(_integration_id, str):
+            try:
+                instance._integration_id = UUID(_integration_id)
+            except ValueError:
+                instance._integration_id = _integration_id
+        else:
+            instance._integration_id = _integration_id
 
         return instance
 

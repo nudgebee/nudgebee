@@ -27,4 +27,7 @@ RUN apk update && apk upgrade --no-cache && apk add --no-cache openssl && apk ad
     ca-certificates \
     libstdc++
 
-RUN pip install uv
+# Upgrade pip alongside installing uv — the python:3.12-alpine tag lags pip
+# security releases (e.g. pip 25.0.1 carries fixable MEDIUM CVEs that surface in
+# every consumer image). --upgrade keeps subsequent rebuilds on the latest pip.
+RUN pip install --no-cache-dir --upgrade pip uv

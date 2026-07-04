@@ -229,7 +229,10 @@ func GetBudgetStatus(tenantId, accountId string, logger *slog.Logger) (*BudgetSt
 	return response, nil
 }
 
-// getModuleBudgetStatus retrieves budget status for a specific module at both tenant and account levels
+// getModuleBudgetStatus retrieves budget status for a specific module at both
+// tenant and account levels. When accountId is empty (tenant-wide read from
+// the global sidebar), the account branch is skipped and info.Account stays
+// at its zero value — the UI hides the account row in that mode.
 func getModuleBudgetStatus(dbManager *common.DatabaseManager, tenantId, accountId, module string, logger *slog.Logger) (*ModuleBudgetStatus, error) {
 	info := &ModuleBudgetStatus{}
 
@@ -239,11 +242,13 @@ func getModuleBudgetStatus(dbManager *common.DatabaseManager, tenantId, accountI
 	}
 	info.Tenant = *tenantStatus
 
-	accountStatus, err := getEntityBudgetStatus(dbManager, EntityTypeAccount, accountId, module, logger)
-	if err != nil {
-		return nil, fmt.Errorf("getModuleBudgetStatus: account: %w", err)
+	if accountId != "" {
+		accountStatus, err := getEntityBudgetStatus(dbManager, EntityTypeAccount, accountId, module, logger)
+		if err != nil {
+			return nil, fmt.Errorf("getModuleBudgetStatus: account: %w", err)
+		}
+		info.Account = *accountStatus
 	}
-	info.Account = *accountStatus
 
 	return info, nil
 }

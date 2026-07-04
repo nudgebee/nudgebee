@@ -97,6 +97,7 @@ func NewInitializedTaskRegistry() *TaskRegistry {
 	tr.RegisterTask(&integrations.HttpTask{})
 	tr.RegisterTask(&integrations.SSHTask{})
 	tr.RegisterTask(&notifications.ImSendTask{})
+	tr.RegisterTask(&notifications.CreateChannelTask{})
 	tr.RegisterTask(&notifications.ReadThreadTask{})
 	tr.RegisterTask(&notifications.AddReactionTask{})
 	tr.RegisterTask(&notifications.EmailTask{})

@@ -58,6 +58,12 @@ type GetEventFilterValuesRequest struct {
 	// IncludeCount includes event counts per filter value (default: false)
 	// When false, queries use SELECT DISTINCT which is faster
 	IncludeCount *bool `json:"include_count,omitempty" mapstructure:"include_count"`
+
+	// Cross-filter fields: when set, the complementary filter is scoped to events
+	// matching this value. SubjectNamespace filters the workload list; SubjectName
+	// filters the namespace list. Both are optional.
+	SubjectNamespace *string `json:"subject_namespace,omitempty" mapstructure:"subject_namespace"`
+	SubjectName      *string `json:"subject_name,omitempty" mapstructure:"subject_name"`
 }
 
 // FilterValueItem represents a single filter value with optional count

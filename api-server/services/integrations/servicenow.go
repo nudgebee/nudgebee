@@ -1,8 +1,11 @@
 package integrations
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 	"strings"
+	"time"
 
 	servicenowsdkgo "github.com/michaeldcanady/servicenow-sdk-go"
 	"github.com/michaeldcanady/servicenow-sdk-go/credentials"
@@ -105,10 +108,9 @@ func (s ServiceNow) ValidateConfig(ctx *security.SecurityContext, values []core.
 	}
 
 	// Create ServiceNow client
-	cred := credentials.NewUsernamePasswordCredential(username, password)
-	client, err := servicenowsdkgo.NewServiceNowClient2(cred, url)
+	client, err := newServiceNowClient(url, username, password)
 	if err != nil {
-		return []error{fmt.Errorf("failed to create servicenow client: %w", err)}
+		return []error{err}
 	}
 
 	// Test connection by querying incident table
@@ -123,6 +125,99 @@ func (s ServiceNow) ValidateConfig(ctx *security.SecurityContext, values []core.
 	}
 
 	return nil
+}
+
+const (
+	serviceNowUserPageSize = 200
+	serviceNowMaxPages     = 200 // safety cap → up to 40k users
+)
+
+// newServiceNowClient builds a username/password ServiceNow client for the given
+// instance. Shared by ValidateConfig and ListUsers. The SDK's default HTTP session
+// has no timeout and its Get() ignores the context, so an unreachable instance
+// would otherwise stall the caller — bind a hard per-request timeout here.
+func newServiceNowClient(url, username, password string) (*servicenowsdkgo.ServiceNowClient, error) {
+	cred := credentials.NewUsernamePasswordCredential(username, password)
+	client, err := servicenowsdkgo.NewServiceNowClient2(cred, url)
+	if err != nil {
+		return nil, fmt.Errorf("servicenow: failed to create client: %w", err)
+	}
+	client.Session = &http.Client{Timeout: 20 * time.Second}
+	return client, nil
+}
+
+// ListUsers enumerates ServiceNow users (sys_user table) for identity sync. Active
+// users only; sys_user always carries an email, so accounts auto-match by email.
+// Implements core.UserLister.
+func (s ServiceNow) ListUsers(ctx context.Context, values []core.IntegrationConfigValue) ([]core.ExternalUser, error) {
+	url := core.ConfigValue(values, ServiceNowConfigUrl)
+	username := core.ConfigValue(values, ServiceNowConfigUsername)
+	password := core.ConfigValue(values, ServiceNowConfigPassword)
+	if url == "" || username == "" || password == "" {
+		return nil, fmt.Errorf("servicenow: url, username and password are required")
+	}
+
+	client, err := newServiceNowClient(url, username, password)
+	if err != nil {
+		return nil, err
+	}
+	baseURL := fmt.Sprintf("https://%s/api/now", strings.TrimPrefix(url, "https://"))
+	rb := tableapi.NewTableRequestBuilder(client, map[string]string{"baseurl": baseURL, "table": "sys_user"})
+
+	var out []core.ExternalUser
+	for page := 0; page < serviceNowMaxPages; page++ {
+		if err := ctx.Err(); err != nil {
+			return out, err
+		}
+		resp, err := rb.Get(&tableapi.TableRequestBuilderGetQueryParameters{
+			Fields: []string{"sys_id", "user_name", "name", "email"},
+			Query:  "active=true",
+			Limit:  serviceNowUserPageSize,
+			Offset: page * serviceNowUserPageSize,
+		})
+		if err != nil {
+			return nil, interpretServiceNowError(err)
+		}
+		if resp == nil || len(resp.Result) == 0 {
+			break
+		}
+		for _, e := range resp.Result {
+			if e == nil {
+				continue
+			}
+			if u := mapServiceNowUser(e); u.ID != "" {
+				out = append(out, u)
+			}
+		}
+		if len(resp.Result) < serviceNowUserPageSize {
+			break
+		}
+	}
+	return out, nil
+}
+
+// mapServiceNowUser converts one sys_user row to an ExternalUser. Pure (no I/O) so
+// it's unit-testable without live credentials.
+func mapServiceNowUser(e *tableapi.TableEntry) core.ExternalUser {
+	return core.ExternalUser{
+		ID:          serviceNowField(e, "sys_id"),
+		Username:    serviceNowField(e, "user_name"),
+		Email:       serviceNowField(e, "email"),
+		DisplayName: serviceNowField(e, "name"),
+	}
+}
+
+// serviceNowField reads a string field from a sys_user row, "" when absent.
+func serviceNowField(e *tableapi.TableEntry, key string) string {
+	v := e.Value(key)
+	if v == nil {
+		return ""
+	}
+	s, err := v.String()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(s)
 }
 
 // interpretServiceNowError translates the SDK's terse "no error factory is

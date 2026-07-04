@@ -1,5 +1,5 @@
 /**
- * Tooltip — DS rename of legacy CustomTooltip (deferred MVP wrapper per Q1).
+ * Tooltip
  * Spec: app/design-system/primitives/overlays/tooltip.html
  *
  * V1 API preserved verbatim. Per v2 plan §3.3 W9 / §13 Q1, Tooltip ships as a
@@ -341,7 +341,7 @@ const CustomTooltip = React.forwardRef<HTMLDivElement, CustomTooltipProps>(
     return (
       <StyledTooltip title={tooltipContent} {...tooltipProps}>
         {React.cloneElement(children as ReactElement<any>, {
-          ref,
+          ...(ref != null && { ref }),
           ...(isInteractive && {
             onMouseEnter: handleOpen,
             onMouseLeave: handleClose,

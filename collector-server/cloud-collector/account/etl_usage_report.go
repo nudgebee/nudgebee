@@ -476,35 +476,65 @@ func publishPostReportJob(ctx *security.RequestContext, accountId string, month 
 	}
 }
 
-func sendDailySpendNotification(ctx *security.RequestContext, accountId, accountName string, usageReportResponse providers.GetUsageReportResponse) error {
-	// get data for current data
-	todayItem := make([]providers.UsageReportItem, 0, 100)
-	monthlyServices := map[string]float64{}
-	// its for previous day as we get data for last date
-	yesterdayDate := time.Now().AddDate(0, 0, -1)
-	totalSpendOfDay := 0.0
-	totalSpendOfMonth := 0.0
-	// Determine the account's currency from the report items.
-	// A single cloud account uses one currency; detect mismatches defensively.
-	costCurrency := ""
-	mixedCurrencies := false
-	for _, r := range usageReportResponse.Items {
+// dailySpendSummary holds the aggregated figures sendDailySpendNotification reports.
+type dailySpendSummary struct {
+	totalDay        float64
+	totalMonth      float64
+	monthlyServices map[string]float64
+	todayItems      []providers.UsageReportItem
+	currency        string
+	mixedCurrencies bool
+}
+
+// summarizeDailySpend aggregates usage-report items into the daily and month-to-date
+// figures shown in the cost notification, anchored on yesterdayDate (the latest day for
+// which billing data exists). Credit/Refund line items carry negative costs; they are
+// excluded so the reported spend is gross rather than net-of-credits — matching the
+// exclude_aggregate filter applied everywhere spends are aggregated for display (see
+// buildSpendMap). Without this, accounts whose credits meet or exceed usage show zero or
+// negative totals (issue #29455).
+func summarizeDailySpend(items []providers.UsageReportItem, yesterdayDate time.Time) dailySpendSummary {
+	summary := dailySpendSummary{
+		monthlyServices: map[string]float64{},
+		todayItems:      make([]providers.UsageReportItem, 0, 100),
+	}
+	for _, r := range items {
+		if r.CostCategory == "Credit" || r.CostCategory == "Refund" {
+			continue
+		}
+		// Determine the account's currency from the report items.
+		// A single cloud account uses one currency; detect mismatches defensively.
 		if r.CostCurrency != "" {
-			if costCurrency == "" {
-				costCurrency = r.CostCurrency
-			} else if r.CostCurrency != costCurrency {
-				mixedCurrencies = true
+			if summary.currency == "" {
+				summary.currency = r.CostCurrency
+			} else if r.CostCurrency != summary.currency {
+				summary.mixedCurrencies = true
 			}
 		}
 		if r.EndDate.Day() == yesterdayDate.Day() && r.EndDate.Month() == yesterdayDate.Month() && r.EndDate.Year() == yesterdayDate.Year() {
-			todayItem = append(todayItem, r)
-			totalSpendOfDay += r.Cost
+			summary.todayItems = append(summary.todayItems, r)
+			summary.totalDay += r.Cost
 		}
 		if r.EndDate.Month() == yesterdayDate.Month() && r.EndDate.Year() == yesterdayDate.Year() {
-			totalSpendOfMonth += r.Cost
-			monthlyServices[r.ProductCode] += r.Cost
+			summary.totalMonth += r.Cost
+			summary.monthlyServices[r.ProductCode] += r.Cost
 		}
 	}
+	return summary
+}
+
+func sendDailySpendNotification(ctx *security.RequestContext, accountId, accountName string, usageReportResponse providers.GetUsageReportResponse) error {
+	// its for previous day as we get data for last date.
+	// Anchor in UTC to match the UTC EndDate on billing items, so the day/month
+	// comparison can't drift when the server runs in a non-UTC timezone.
+	yesterdayDate := time.Now().UTC().AddDate(0, 0, -1)
+	summary := summarizeDailySpend(usageReportResponse.Items, yesterdayDate)
+	todayItem := summary.todayItems
+	monthlyServices := summary.monthlyServices
+	totalSpendOfDay := summary.totalDay
+	totalSpendOfMonth := summary.totalMonth
+	costCurrency := summary.currency
+	mixedCurrencies := summary.mixedCurrencies
 	if costCurrency == "" {
 		costCurrency = "USD"
 	}

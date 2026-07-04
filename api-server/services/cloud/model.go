@@ -84,6 +84,17 @@ type QueryResourceResponse struct {
 	Items []Resource `json:"items"`
 }
 
+type CloudServiceSyncRequest struct {
+	AccountId   string   `json:"account_id" validate:"required"`
+	ServiceName string   `json:"service_name" validate:"required"`
+	Regions     []string `json:"regions"`
+}
+
+type CloudServiceSyncResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
 type ResourceStatus string
 
 const (

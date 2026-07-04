@@ -7,7 +7,7 @@ import { DataBlock, CustomText } from '../common';
 import { usePagination } from '@hooks/usePagination';
 import TagsCell from '../TagsCell';
 import CloudAccountEvents from '../CloudAccountEvents';
-import type { ICustomTable2Row } from '../ec2/Instances';
+import type { ICustomTableRow } from '../ec2/Instances';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import CustomSearch from '@shared/CustomSearch';
@@ -55,8 +55,8 @@ type AppEnrichment = {
 };
 
 // --- Row mappers per resource type ---
-const mapOrganizationRow = (item: any, enrichment?: AppEnrichment): ICustomTable2Row[] => {
-  const data: ICustomTable2Row[] = [];
+const mapOrganizationRow = (item: any, enrichment?: AppEnrichment): ICustomTableRow[] => {
+  const data: ICustomTableRow[] = [];
   const orgName = item.name || '-';
   const orgStats = enrichment?.orgApps?.[orgName] || { count: 0, instances: 0, memoryMB: 0 };
   data.push({ component: <CustomText text1={orgName} />, drilldownQuery: item });
@@ -69,8 +69,8 @@ const mapOrganizationRow = (item: any, enrichment?: AppEnrichment): ICustomTable
   return data;
 };
 
-const mapSpaceRow = (item: any, enrichment?: AppEnrichment): ICustomTable2Row[] => {
-  const data: ICustomTable2Row[] = [];
+const mapSpaceRow = (item: any, enrichment?: AppEnrichment): ICustomTableRow[] => {
+  const data: ICustomTableRow[] = [];
   const orgTag = item.tags?.org;
   const org = Array.isArray(orgTag) ? orgTag[0] : orgTag || item.region || '-';
   const spaceName = item.name || '-';
@@ -85,8 +85,8 @@ const mapSpaceRow = (item: any, enrichment?: AppEnrichment): ICustomTable2Row[] 
   return data;
 };
 
-const mapRouteRow = (item: any, enrichment?: AppEnrichment): ICustomTable2Row[] => {
-  const data: ICustomTable2Row[] = [];
+const mapRouteRow = (item: any, enrichment?: AppEnrichment): ICustomTableRow[] => {
+  const data: ICustomTableRow[] = [];
   const url = item.meta?.url || item.name || '-';
   const host = item.meta?.host;
   const spaceTag = item.tags?.space;
@@ -117,7 +117,7 @@ const mapRouteRow = (item: any, enrichment?: AppEnrichment): ICustomTable2Row[] 
   return data;
 };
 
-const ROW_MAPPERS: Record<string, (item: any, enrichment?: AppEnrichment) => ICustomTable2Row[]> = {
+const ROW_MAPPERS: Record<string, (item: any, enrichment?: AppEnrichment) => ICustomTableRow[]> = {
   organizations: mapOrganizationRow,
   spaces: mapSpaceRow,
   routes: mapRouteRow,

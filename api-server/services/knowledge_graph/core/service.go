@@ -1326,13 +1326,11 @@ func (s *Service) SaveEdges(edges []*DbEdge, nodes []*DbNode, syncVersion int64)
 		edge.SourceNodeID = sourceID
 		edge.DestinationNodeID = destID
 
-		// Create composite key for deduplication. RelationshipType must be part
-		// of the key — the canonical edge dedup constraint is
-		// (source, destination, relationship_type, account, tenant). Two edges
-		// between the same nodes with different relationship types are distinct;
-		// omitting the type here merged them and silently dropped one before the
-		// upsert. (account is already encoded in the source/dest node UUIDs.)
-		compositeKey := edge.SourceNodeID + ":" + edge.DestinationNodeID + ":" + string(edge.RelationshipType) + ":" + edge.TenantID
+		// Create composite key for deduplication
+		compositeKey := fmt.Sprintf("%s:%s:%s",
+			edge.SourceNodeID,
+			edge.DestinationNodeID,
+			edge.TenantID)
 
 		if existing, exists := edgeMap[compositeKey]; exists {
 			// Merge properties if the edge already exists
@@ -2795,19 +2793,29 @@ func includesPod(nodeTypes []NodeType) bool {
 	return false
 }
 
-// fanOutPodsForNodesAndWorkloads scans the discovered set for k8s_source
-// Node and Workload entities and asks the synthesizer to materialise
-// their Pod neighbors and the corresponding RUNS_ON / MANAGES edges.
+// fanOutPodsForNodesAndWorkloads materialises Pod neighbors (and the
+// corresponding RUNS_ON / MANAGES edges) for the k8s_source Node and
+// Workload entities the caller explicitly seeded.
+//
+// Pods are attached only to nodes whose ID is in seedIDs — i.e. nodes the
+// user expanded directly — NOT to every Node/Workload the BFS happened to
+// reach. Without this restriction, seeding a Namespace pulls in every
+// Workload under it at depth 1 and then every Pod of every Workload,
+// swamping the graph. Restricting to seeds keeps the multi-node and
+// directional-traverse paths consistent with the single-node
+// GetNodeNeighbors path, which only ever fans out from its target node.
+// An empty/nil seedIDs therefore yields no pods.
+//
 // Errors per parent are logged and skipped — one bad parent shouldn't
 // drop the rest of the result.
 //
 // Dedups both nodes and edges by ID: a Deployment-owned Pod whose
-// parent Node AND parent Workload are both in the discovered set would
-// otherwise be emitted twice (once from each parent's fan-out). Synth
-// IDs are deterministic (cloud_resource_id / GenerateEdgeID) so a map
-// keyed on ID is sufficient.
-func (s *Service) fanOutPodsForNodesAndWorkloads(allNodes []*DbNode) ([]*DbNode, []*DbEdge) {
-	if s.podSynth == nil {
+// parent Node AND parent Workload are both seeded would otherwise be
+// emitted twice (once from each parent's fan-out). Synth IDs are
+// deterministic (cloud_resource_id / GenerateEdgeID) so a map keyed on
+// ID is sufficient.
+func (s *Service) fanOutPodsForNodesAndWorkloads(allNodes []*DbNode, seedIDs map[string]struct{}) ([]*DbNode, []*DbEdge) {
+	if s.podSynth == nil || len(seedIDs) == 0 {
 		return nil, nil
 	}
 	var synthPods []*DbNode
@@ -2831,6 +2839,10 @@ func (s *Service) fanOutPodsForNodesAndWorkloads(allNodes []*DbNode) ([]*DbNode,
 		}
 	}
 	for _, n := range allNodes {
+		// Only fan out pods for explicitly-seeded nodes — see doc comment.
+		if _, ok := seedIDs[n.ID]; !ok {
+			continue
+		}
 		switch n.NodeType {
 		case NodeTypeNode:
 			pods, podEdges, err := s.podSynth.PodsForNode(n, 0)
@@ -3040,7 +3052,14 @@ func (s *Service) GetMultipleNodeNeighbors(reqCtx *security.RequestContext, node
 	// nodes + RUNS_ON / MANAGES edges. Honoured only when the caller's
 	// nodeTypes filter is empty or explicitly includes Pod.
 	if s.podSynth != nil && includesPod(nodeTypes) {
-		synthPods, synthEdges := s.fanOutPodsForNodesAndWorkloads(allNodes)
+		// Only the explicitly-requested nodeIDs seed the pod fan-out, so
+		// expanding a Namespace shows its Workloads/Nodes but not every pod
+		// beneath them; the user expands a Workload/Node to see its pods.
+		seedSet := make(map[string]struct{}, len(nodeIDs))
+		for _, id := range nodeIDs {
+			seedSet[id] = struct{}{}
+		}
+		synthPods, synthEdges := s.fanOutPodsForNodesAndWorkloads(allNodes, seedSet)
 		allNodes = append(allNodes, synthPods...)
 		edges = append(edges, synthEdges...)
 	}
@@ -3550,6 +3569,65 @@ type FilterValuesResponse struct {
 	Values     []string `json:"values"`      // Available values for this key
 }
 
+// excludeFilterKey returns a shallow copy of filters with the given key removed
+// from the maps/slices of the matching filter type. This is used when fetching
+// the candidate values for a key the user is editing: keeping that key's own
+// equality/existence filter would restrict the result to the already-selected
+// value, hiding the alternatives the dropdown is meant to offer.
+// The original filters value is left untouched.
+func excludeFilterKey(filters *GraphFilters, filterType, filterKey string) *GraphFilters {
+	if filters == nil {
+		return nil
+	}
+	out := *filters // shallow copy; maps/slices replaced below where needed
+	switch filterType {
+	case "label":
+		out.Labels = removeMapKey(out.Labels, filterKey)
+		out.LabelKeys = removeStringValue(out.LabelKeys, filterKey)
+	case "attribute":
+		out.Attributes = removeMapKey(out.Attributes, filterKey)
+		out.AttributeKeys = removeStringValue(out.AttributeKeys, filterKey)
+	}
+	return &out
+}
+
+// removeMapKey returns a copy of m without target. Returns the input unchanged
+// when target is absent to avoid needless allocation.
+func removeMapKey(m map[string]string, target string) map[string]string {
+	if _, ok := m[target]; !ok {
+		return m
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		if k != target {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// removeStringValue returns a new slice with all occurrences of target removed.
+// Returns the input unchanged when target is absent to avoid needless allocation.
+func removeStringValue(in []string, target string) []string {
+	found := false
+	for _, v := range in {
+		if v == target {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return in
+	}
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		if v != target {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // buildNodeFilterSQL builds SQL WHERE additions and args for graph filters.
 // startArgCounter is the next $N placeholder index; the caller already has (startArgCounter-1) args.
 // Returns ("", nil, nil) when no filters are active.
@@ -3853,10 +3931,21 @@ func (s *Service) GetFilterOptions(tenantID string, filters *GraphFilters, nodeI
 	}, nil
 }
 
-// GetFilterValues retrieves values for a specific filter key (label or attribute)
-func (s *Service) GetFilterValues(tenantID, filterType, filterKey string) (*FilterValuesResponse, error) {
+// GetFilterValues retrieves values for a specific filter key (label or attribute).
+// When filters/nodeIDs are supplied, the value list is scoped to nodes matching
+// those already-applied filters (same semantics as GetFilterOptions), so the UI
+// dropdown only offers values that exist within the current filter context.
+// The key being edited is stripped from the matching-type filters so the user
+// always sees all alternative values for it, not just the currently selected one.
+func (s *Service) GetFilterValues(tenantID, filterType, filterKey string, filters *GraphFilters, nodeIDs []string) (*FilterValuesResponse, error) {
 	if s.dbManager == nil {
 		return nil, fmt.Errorf("database manager not initialized")
+	}
+
+	// Fail fast on an empty tenant: every query is tenant-scoped, so an empty
+	// tenantID would only ever scan for blank rows — reject it explicitly.
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant ID cannot be empty")
 	}
 
 	// Validate filter type
@@ -3873,35 +3962,38 @@ func (s *Service) GetFilterValues(tenantID, filterType, filterKey string) (*Filt
 		"filter_type", filterType,
 		"filter_key", filterKey)
 
-	var query string
-	if filterType == "label" {
-		query = `
-			SELECT DISTINCT labels->>$2 as value
-			FROM knowledge_graph_node
-			WHERE tenant_id = $1
-			  AND level = 'Tenant'
-			  AND jsonb_exists(labels, $2)
-			  AND labels->>$2 IS NOT NULL
-			  AND labels->>$2 != ''
-			  AND level = 'Tenant'
-			ORDER BY value
-			LIMIT 1000
-		`
-	} else { // attribute
-		query = `
-			SELECT DISTINCT query_attributes->>$2 as value
-			FROM knowledge_graph_node
-			WHERE tenant_id = $1
-			  AND level = 'Tenant'
-			  AND jsonb_exists(query_attributes, $2)
-			  AND query_attributes->>$2 IS NOT NULL
-			  AND query_attributes->>$2 != ''
-			ORDER BY value
-			LIMIT 1000
-		`
+	// Strip the key under edit from the matching-type filters (on a copy) so the
+	// dropdown surfaces every possible value for that key rather than only the
+	// value the user may have already picked for it.
+	filters = excludeFilterKey(filters, filterType, filterKey)
+
+	// $1 = tenantID, $2 = filterKey, so scoping filter args start at $3.
+	filterSQL, filterArgs, err := buildNodeFilterSQL(filters, nodeIDs, 3)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build node filter SQL: %w", err)
 	}
 
-	rows, err := s.dbManager.Query(query, tenantID, filterKey)
+	var jsonbColumn string
+	if filterType == "label" {
+		jsonbColumn = "labels"
+	} else { // attribute
+		jsonbColumn = "query_attributes"
+	}
+
+	query := fmt.Sprintf(`
+		SELECT DISTINCT %[1]s->>$2 as value
+		FROM knowledge_graph_node
+		WHERE tenant_id = $1
+		  AND level = 'Tenant'
+		  AND jsonb_exists(%[1]s, $2)
+		  AND %[1]s->>$2 IS NOT NULL
+		  AND %[1]s->>$2 != ''%[2]s
+		ORDER BY value
+		LIMIT 1000
+	`, jsonbColumn, filterSQL)
+
+	args := append([]interface{}{tenantID, filterKey}, filterArgs...)
+	rows, err := s.dbManager.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query filter values: %w", err)
 	}
@@ -4259,7 +4351,14 @@ func (s *Service) TraverseDirectional(tenantID string, params TraverseParams) (*
 	// fan-out would push us past the cap, truncate and flag the
 	// response accordingly.
 	if s.podSynth != nil && includesPod(params.NodeTypes) {
-		synthPods, synthEdges := s.fanOutPodsForNodesAndWorkloads(preFilterNodes)
+		// Restrict the fan-out to the traversal's seed nodes (explicit
+		// node_ids, or the inline-search matches). Workloads/Nodes merely
+		// reached during BFS don't drag in their pods.
+		seedSet := make(map[string]struct{}, len(seedNodeIDs))
+		for _, id := range seedNodeIDs {
+			seedSet[id] = struct{}{}
+		}
+		synthPods, synthEdges := s.fanOutPodsForNodesAndWorkloads(preFilterNodes, seedSet)
 		if len(synthPods) > 0 {
 			remaining := params.MaxNodes - len(dbNodes)
 			if remaining < 0 {

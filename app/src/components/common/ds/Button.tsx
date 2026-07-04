@@ -25,20 +25,6 @@
  *   Reserved for *the* page CTA. Don't combine with composition='icon-only'
  *   or tone='link'. Don't use for ambient secondary actions.
  *
- * Migration:
- *   `import CustomButton from '@shared/NewCustomButton'`        → `import { Button } from '@ui/Button'`
- *   `import CustomIconButton from '@components/CustomIconButton'`
- *                                                               → `<Button composition="icon-only" />`
- *   `import CopyButton from '@shared/buttons/CopyButton'`               → `<Button tone="ghost" composition="icon-only" icon={<ContentCopy/>} aria-label="Copy" />`
- *   `import ShareButton from '@shared/ShareButton'`             → `<Button tone="ghost" composition="icon-only" icon={<Share/>} aria-label="Share" />`
- *   `import InvestigateButton from '@shared/InvestigateButton'` → `<Button tone="ghost" composition="icon-only" icon={<Search/>} aria-label="Investigate" />`
- *   `import ResolveButton from '@shared/ResolveButton'`         → `<Button tone="ghost" composition="icon-only" icon={<CheckCircle/>} aria-label="Resolve" />`
- *   `import EditButton from '@k8s/common/EditButton'`           → `<Button tone="ghost" composition="icon-only" icon={<Edit/>} aria-label="Edit" />`
- *   `import DisableButton from '@k8s/common/DisableButton'`     → `<Button tone="danger" composition="icon-only" icon={<Block/>} aria-label="Disable" />`
- *   `import CreateTicketButton from '@shared/CreateTicketButton'` → `<Button tone="secondary" icon={<Add/>}>Create ticket</Button>`
- *   `import DownloadButton from '@shared/buttons/DownloadButton'`       → `<Button tone="ghost" composition="icon-only" icon={<Download/>} aria-label="Download" />`
- *   `import CustomBackButton from '@shared/CustomBackButton'`   → `<Button tone="link" icon={<ArrowBack/>}>Back</Button>`
- *
  * Don't (per spec):
  *   - Don't put two primary buttons in the same form/dialog. One primary per surface.
  *   - Don't use `danger` for cancel. Cancel is `secondary` or `ghost`.

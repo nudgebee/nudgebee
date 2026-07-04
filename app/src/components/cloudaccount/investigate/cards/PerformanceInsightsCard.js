@@ -1,9 +1,9 @@
 import CubeIcon from '@assets/kubernetes/cube-icon.svg';
 import { Box, Typography } from '@mui/material';
-import CustomTable2 from '@shared/tables/CustomTable2';
-import { LineChart } from '@shared';
+import CustomTable from '@shared/tables/CustomTable';
+import Chart from '@ui/Chart';
 import Text from '@shared/format/Text';
-import { ds } from '@utils/colors';
+import { ds, resolveColor } from '@utils/colors';
 
 class PerformanceInsightsCard {
   constructor(evidenceData, index) {
@@ -111,7 +111,7 @@ class PerformanceInsightsCard {
     });
 
     return (
-      <CustomTable2
+      <CustomTable
         headers={['SQL Query', 'DB Load']}
         tableData={tableRows}
         rowsPerPage={Math.min(this.performanceData.top_sql.length, 10)}
@@ -138,7 +138,7 @@ class PerformanceInsightsCard {
       });
 
     return (
-      <CustomTable2
+      <CustomTable
         headers={['Event Type', 'DB Load', 'Percentage']}
         tableData={tableRows}
         rowsPerPage={Math.min(this.performanceData.wait_events.length, 10)}
@@ -159,10 +159,11 @@ class PerformanceInsightsCard {
       return date.toLocaleTimeString();
     });
 
+    const blueHex = resolveColor(ds.blue[500]);
     const dataset = [
       {
-        borderColor: '#2563EB',
-        backgroundColor: 'rgba(37, 99, 235, 0.1)',
+        borderColor: blueHex,
+        backgroundColor: `${blueHex}1A`,
         data: metric.values.map((val) => parseFloat(val?.toFixed(2) || 0)),
         label: `${metric.name} (${metric.unit})`,
         fill: true,
@@ -170,8 +171,8 @@ class PerformanceInsightsCard {
     ];
 
     return (
-      <Box sx={{ height: '300px', width: '100%' }}>
-        <LineChart labels={labels} dataset={dataset} />
+      <Box sx={{ height: ds.space.mul(0, 150), width: '100%' }}>
+        <Chart.Line labels={labels} dataset={dataset} />
       </Box>
     );
   };

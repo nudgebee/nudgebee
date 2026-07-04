@@ -25,7 +25,7 @@ const RCAInProgress = () => {
           p: 'var(--ds-space-4)',
           borderRadius: 'var(--ds-radius-lg)',
           backgroundColor: ds.blue[100],
-          border: `1px solid #2563EB15`,
+          border: `1px solid color-mix(in srgb, ${ds.blue[600]} 8%, transparent)`,
         }}
       >
         {/* Spinner icon */}
@@ -91,7 +91,7 @@ const RCAFailed = () => {
           p: 'var(--ds-space-4)',
           borderRadius: 'var(--ds-radius-lg)',
           backgroundColor: ds.red[100],
-          border: `1px solid #DC262614`,
+          border: `1px solid color-mix(in srgb, ${ds.red[600]} 8%, transparent)`,
         }}
       >
         <Box
@@ -100,7 +100,7 @@ const RCAFailed = () => {
             height: ds.space.mul(0, 18),
             flexShrink: 0,
             borderRadius: 'var(--ds-radius-lg)',
-            backgroundColor: `#DC262612`,
+            backgroundColor: `color-mix(in srgb, ${ds.red[600]} 7%, transparent)`,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',

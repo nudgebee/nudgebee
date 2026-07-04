@@ -119,3 +119,32 @@ func (p PagerDuty) ValidateConfig(ctx *security.SecurityContext, values []core.I
 
 	return nil
 }
+
+// ListUsers enumerates PagerDuty users (email + name). Implements core.UserLister.
+func (p PagerDuty) ListUsers(ctx context.Context, values []core.IntegrationConfigValue) ([]core.ExternalUser, error) {
+	apiKey := core.ConfigValue(values, PagerDutyConfigPassword)
+	if apiKey == "" {
+		return nil, fmt.Errorf("pagerduty: missing api key")
+	}
+	client := pagerduty.NewClient(apiKey)
+
+	var out []core.ExternalUser
+	var offset uint
+	for {
+		resp, err := client.ListUsersWithContext(ctx, pagerduty.ListUsersOptions{Limit: 100, Offset: offset})
+		if err != nil {
+			return out, fmt.Errorf("pagerduty: list users: %w", err)
+		}
+		for _, u := range resp.Users {
+			out = append(out, core.ExternalUser{ID: u.ID, Username: u.Email, Email: u.Email, DisplayName: u.Name})
+		}
+		if !resp.More {
+			break
+		}
+		offset += 100
+		if offset > 10000 { // safety cap
+			break
+		}
+	}
+	return out, nil
+}

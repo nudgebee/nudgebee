@@ -492,3 +492,96 @@ func TestGetQuery_MatchesHelperOutput_BuilderMode(t *testing.T) {
 		t.Fatalf("parity mismatch:\n  GetQuery: %s\n  helper:   %s", gotA, string(gotBBytes))
 	}
 }
+
+func TestIsOTelKeywordField(t *testing.T) {
+	for _, f := range []string{"resource.attributes.k8s.namespace.name", "scope.name", "metrics.k8s.pod.cpu.usage"} {
+		if !isOTelKeywordField(f) {
+			t.Fatalf("expected %q to be an OTel keyword field", f)
+		}
+	}
+	for _, f := range []string{"serviceName", "name", "attributes.metric.attributes.service@name"} {
+		if isOTelKeywordField(f) {
+			t.Fatalf("did not expect %q to be an OTel keyword field", f)
+		}
+	}
+}
+
+// OTel-native resource attributes are already keyword — normalizeESMetricsWhere
+// must not append .keyword (the subfield does not exist -> matches nothing).
+func TestNormalizeESMetricsWhere_OTelFieldNoKeyword(t *testing.T) {
+	wc := query.QueryWhereClause{
+		Binary: query.BinaryWhereClause{
+			"resource.attributes.k8s.namespace.name": {query.Eq: "nudgebee"},
+		},
+	}
+	got := normalizeESMetricsWhere(wc)
+	if _, ok := got.Binary["resource.attributes.k8s.namespace.name"]; !ok || len(got.Binary) != 1 {
+		t.Fatalf("expected bare OTel field, got: %v", mapKeys(got.Binary))
+	}
+}
+
+// findMetricSeries returns the Result whose __name__ matches, or fails.
+func findMetricSeries(t *testing.T, results []Result, name string) Result {
+	t.Helper()
+	for _, r := range results {
+		if r.Metric["__name__"] == name {
+			return r
+		}
+	}
+	t.Fatalf("no series with __name__=%q in %d results", name, len(results))
+	return Result{}
+}
+
+// OTel-native mapping: metric name is a key under "metrics", dimensions under
+// resource.attributes — value/labels must be extracted from there.
+func TestParseESMetricsHits_OTelShape(t *testing.T) {
+	body := `{"hits":{"hits":[
+		{"_source":{"@timestamp":"2026-06-17T17:38:46.817Z","metrics":{"k8s.pod.cpu.usage":0.00121},
+		 "resource":{"attributes":{"k8s.namespace.name":"nudgebee","k8s.pod.name":"notifications-x"}}}}
+	]}}`
+	results, err := parseESMetricsHits([]byte(body))
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	s := findMetricSeries(t, results, "k8s.pod.cpu.usage")
+	if s.Metric["k8s.namespace.name"] != "nudgebee" || s.Metric["k8s.pod.name"] != "notifications-x" {
+		t.Fatalf("labels not flattened from resource.attributes: %v", s.Metric)
+	}
+	if len(s.Values) != 1 || s.Values[0] != 0.00121 {
+		t.Fatalf("expected value 0.00121, got %v", s.Values)
+	}
+}
+
+// One OTel doc can carry several metrics sharing labels+timestamp -> one series each.
+func TestParseESMetricsHits_OTelMultipleMetricsPerDoc(t *testing.T) {
+	body := `{"hits":{"hits":[
+		{"_source":{"@timestamp":"2026-06-17T17:38:46.817Z",
+		 "metrics":{"k8s.pod.cpu.usage":0.5,"k8s.pod.memory.usage":123456},
+		 "resource":{"attributes":{"k8s.pod.name":"p"}}}}
+	]}}`
+	results, err := parseESMetricsHits([]byte(body))
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 series, got %d", len(results))
+	}
+	if v := findMetricSeries(t, results, "k8s.pod.memory.usage").Values; len(v) != 1 || v[0] != 123456 {
+		t.Fatalf("memory series value wrong: %v", v)
+	}
+}
+
+// Legacy flat shape ({name,value,attributes}) must still parse unchanged.
+func TestParseESMetricsHits_LegacyFlatShape(t *testing.T) {
+	body := `{"hits":{"hits":[
+		{"_source":{"@timestamp":"2026-06-17T17:38:46.817Z","name":"cpu","value":5,"attributes":{"pod":"p"}}}
+	]}}`
+	results, err := parseESMetricsHits([]byte(body))
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	s := findMetricSeries(t, results, "cpu")
+	if s.Metric["pod"] != "p" || len(s.Values) != 1 || s.Values[0] != 5 {
+		t.Fatalf("legacy flat parse wrong: metric=%v values=%v", s.Metric, s.Values)
+	}
+}

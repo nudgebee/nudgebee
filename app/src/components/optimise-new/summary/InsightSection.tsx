@@ -18,8 +18,8 @@ import {
 } from './insights';
 import InsightCard from './InsightCard';
 
-const overflowLabel = (overflow: { count: number; dollars: number }): string => {
-  const suffix = overflow.dollars > 0 ? ` · ${formatDollars(overflow.dollars)}/mo` : '';
+const overflowLabel = (overflow: { count: number; dollars: number }, symbol: string): string => {
+  const suffix = overflow.dollars > 0 ? ` · ${formatDollars(overflow.dollars, symbol)}/mo` : '';
   return `+${overflow.count} more${suffix}`;
 };
 
@@ -29,11 +29,12 @@ interface SubCategoryGroupProps {
   meta: SubCategoryMeta;
   items: InsightItem[];
   sortBy: SortKey;
+  currencySymbol: string;
   onClickResource: (id: string) => void;
   onAskNubi?: (item: InsightItem) => void;
 }
 
-const SubCategoryGroup = ({ meta, items, sortBy, onClickResource, onAskNubi }: SubCategoryGroupProps) => {
+const SubCategoryGroup = ({ meta, items, sortBy, currencySymbol, onClickResource, onAskNubi }: SubCategoryGroupProps) => {
   const allItems = sortInsights(
     items.filter((i) => i.subCategory === meta.key),
     sortBy
@@ -46,7 +47,7 @@ const SubCategoryGroup = ({ meta, items, sortBy, onClickResource, onAskNubi }: S
   const overflow = overflowSummary(allItems, meta.maxShown);
   const groupDollars = subtotal(allItems);
   const hasOverflow = overflow.count > 0;
-  const summaryLine = subCategorySummaryLine(allItems);
+  const summaryLine = subCategorySummaryLine(allItems, currencySymbol);
 
   return (
     <Box sx={{ mb: ds.space[3], pl: ds.space[6] }}>
@@ -55,7 +56,7 @@ const SubCategoryGroup = ({ meta, items, sortBy, onClickResource, onAskNubi }: S
           <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold, color: ds.gray[700] }}>{meta.label}</Typography>
           {groupDollars > 0 && (
             <Typography sx={{ fontSize: ds.text.small, fontWeight: ds.weight.semibold, color: ds.blue[600] }}>
-              {formatDollars(groupDollars)}/mo
+              {formatDollars(groupDollars, currencySymbol)}/mo
             </Typography>
           )}
           <Typography sx={{ fontSize: ds.text.caption, color: ds.gray[500] }}>
@@ -80,7 +81,7 @@ const SubCategoryGroup = ({ meta, items, sortBy, onClickResource, onAskNubi }: S
             iconPlacement='start'
             onClick={() => setExpanded(!expanded)}
           >
-            {expanded ? 'Show fewer' : overflowLabel(overflow)}
+            {expanded ? 'Show fewer' : overflowLabel(overflow, currencySymbol)}
           </Button>
         </Box>
       )}
@@ -98,6 +99,7 @@ interface CategorySectionProps {
   subCategories: SubCategoryMeta[];
   items: InsightItem[];
   sortBy: SortKey;
+  currencySymbol: string;
   onClickResource: (id: string) => void;
   onAskNubi?: (item: InsightItem) => void;
 }
@@ -110,6 +112,7 @@ const CategorySection = ({
   subCategories,
   items,
   sortBy,
+  currencySymbol,
   onClickResource,
   onAskNubi,
 }: CategorySectionProps) => {
@@ -140,7 +143,15 @@ const CategorySection = ({
     >
       <Box sx={{ pt: ds.space[3] }}>
         {subCategories.map((sub) => (
-          <SubCategoryGroup key={sub.key} meta={sub} items={items} sortBy={sortBy} onClickResource={onClickResource} onAskNubi={onAskNubi} />
+          <SubCategoryGroup
+            key={sub.key}
+            meta={sub}
+            items={items}
+            sortBy={sortBy}
+            currencySymbol={currencySymbol}
+            onClickResource={onClickResource}
+            onAskNubi={onAskNubi}
+          />
         ))}
       </Box>
     </CollapsableCard>
