@@ -559,7 +559,7 @@ func ScanImage(ctx *security.RequestContext, query RecommendationScanImageReques
 	// Distinct running images of the workload, plus the node each runs on and a
 	// pod name — needed for the node-pinned fs-scan and pull-secret sourcing.
 	rows, err := dbms.Db.Queryx(`
-	select distinct container->>'image' as image, cr.tenant_id, cr.name, cr.namespace, cr.meta->>'node' as node
+	select distinct container->>'image' as image, cr.name, cr.namespace, cr.meta->>'node' as node
 	from k8s_pods cr,
 		lateral jsonb_array_elements(cr.meta->'config'->'containers') as container
 	where cr.is_active is not false
@@ -578,7 +578,7 @@ func ScanImage(ctx *security.RequestContext, query RecommendationScanImageReques
 		}
 	}()
 
-	type pendingImage struct{ image, tenant, pod, namespace, node string }
+	type pendingImage struct{ image, pod, namespace, node string }
 	seen := map[string]struct{}{}
 	pending := make([]pendingImage, 0)
 	images := make([]string, 0)
@@ -602,10 +602,9 @@ func ScanImage(ctx *security.RequestContext, query RecommendationScanImageReques
 			ctx.GetLogger().Warn("image_scanner: skipping image with no node", "image", img)
 			continue
 		}
-		tenant, _ := d["tenant_id"].(string)
 		pod, _ := d["name"].(string)
 		ns, _ := d["namespace"].(string)
-		pending = append(pending, pendingImage{image: img, tenant: tenant, pod: pod, namespace: ns, node: node})
+		pending = append(pending, pendingImage{image: img, pod: pod, namespace: ns, node: node})
 		images = append(images, img)
 	}
 
@@ -628,8 +627,14 @@ func ScanImage(ctx *security.RequestContext, query RecommendationScanImageReques
 		}()
 		for _, p := range pending {
 			if err := scan_orchestrator.RunOne(scanCtx, scan_orchestrator.ScanAccount{
-				AccountID:       query.AccountId,
-				TenantID:        p.tenant,
+				AccountID: query.AccountId,
+				// Use the account's tenant (already fetched + validated against the
+				// caller's tenant above). Scanning it from the per-pod k8s_pods row
+				// failed: tenant_id is a uuid column, so MapScan hands back a
+				// non-string value and the `.(string)` assertion yielded "" — which
+				// tripped scan_orchestrator's "TenantID is required" guard and made
+				// every manual "Scan Image" no-op before a Job was ever scheduled.
+				TenantID:        a.Tenant,
 				TargetImage:     p.image,
 				TargetNode:      p.node,
 				TargetNamespace: p.namespace,
