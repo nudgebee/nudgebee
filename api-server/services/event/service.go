@@ -915,20 +915,32 @@ func ApplyEventResolution(ctx *security.RequestContext, query EventRecommendatio
 		}
 
 		containerValues := []any{}
-		resourceMeta := cr.Meta.Object().(map[string]any)
-		resourceConfigs := resourceMeta["config"].(map[string]any)
-		resourceContainers := resourceConfigs["containers"].([]any)
+		// Guard every assertion: cr.Meta is empty when the event's workload isn't
+		// linked/synced yet, and reading it as map[string]any (or the nested
+		// config/containers) with an unchecked assertion panics -> gin.Recovery
+		// returns a bodyless 500 (surfaced as "Failed to apply recommendation: """).
+		// Turn that into a clear, actionable 400 instead.
+		resourceMeta, metaOk := cr.Meta.Object().(map[string]any)
+		resourceConfigs, _ := resourceMeta["config"].(map[string]any)
+		resourceContainers, _ := resourceConfigs["containers"].([]any)
+		if !metaOk || len(resourceContainers) == 0 {
+			ctx.GetLogger().Error("error applying recommendation", "error", "workload resource details unavailable", "container_name", containerName, "resource_id", cr.Id)
+			return EventRecommendationApplyResponse{}, common.ErrorBadRequest("resource details for this workload are not available yet; trigger a sync for the account and retry")
+		}
 		for _, containerAny := range resourceContainers {
-			container := containerAny.(map[string]any)
+			container, ok := containerAny.(map[string]any)
+			if !ok {
+				continue
+			}
 			if container["name"] == containerName {
-				containerResources := container["resources"].(map[string]any)
+				containerResources, _ := container["resources"].(map[string]any)
 				containerLimits := map[string]any{}
 				containerRequests := map[string]any{}
-				if containerResources["limits"] != nil {
-					containerLimits = containerResources["limits"].(map[string]any)
+				if lim, ok := containerResources["limits"].(map[string]any); ok {
+					containerLimits = lim
 				}
-				if containerResources["requests"] != nil {
-					containerRequests = containerResources["requests"].(map[string]any)
+				if req, ok := containerResources["requests"].(map[string]any); ok {
+					containerRequests = req
 				}
 				cpuResource := map[string]any{
 					"resource":  "cpu",
