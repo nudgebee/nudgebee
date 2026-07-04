@@ -119,6 +119,7 @@ const getRandomDelay = () => Math.floor(Math.random() * (10000 - 4000 + 1)) + 40
 const ConversationLoader = ({ query }) => {
   const [currentWordIndex, setCurrentWordIndex] = useState(0);
   const [dotCount, setDotCount] = useState(1);
+  const [elapsedSec, setElapsedSec] = useState(0);
   const timeoutRef = useRef(null);
 
   const pool = useMemo(() => {
@@ -149,7 +150,16 @@ const ConversationLoader = ({ query }) => {
     return () => clearInterval(id);
   }, []);
 
+  // Live elapsed timer. The rotating words cycle randomly and can read as a loop;
+  // a monotonically increasing clock is honest proof that work is still progressing
+  // during a long single step, so a stalled-looking screen still says "working".
+  useEffect(() => {
+    const id = setInterval(() => setElapsedSec((prev) => prev + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+
   const dots = ' .'.repeat(dotCount);
+  const elapsedLabel = `${Math.floor(elapsedSec / 60)}:${String(elapsedSec % 60).padStart(2, '0')}`;
 
   return (
     <Box
@@ -264,6 +274,25 @@ const ConversationLoader = ({ query }) => {
         >
           {dots}
         </Box>
+        {/* Elapsed timer — appears after a few seconds so quick replies stay clean. */}
+        {elapsedSec >= 3 && (
+          <Box
+            component='span'
+            role='timer'
+            aria-live='off'
+            sx={{
+              fontFamily: 'var(--ds-font-display)',
+              fontSize: 'var(--ds-text-caption)',
+              fontWeight: 'var(--ds-font-weight-regular)',
+              color: 'var(--ds-gray-500)',
+              lineHeight: 1,
+              ml: 'var(--ds-space-1)',
+              fontVariantNumeric: 'tabular-nums',
+            }}
+          >
+            {elapsedLabel}
+          </Box>
+        )}
       </Box>
     </Box>
   );
