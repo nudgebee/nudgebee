@@ -5,6 +5,7 @@ import { Divider } from '@ui/Divider';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import CloseIcon from '@mui/icons-material/Close';
 import { Modal } from '@ui/Modal';
+import { Link } from '@ui/Link';
 import React, { useEffect, useState } from 'react';
 import SafeIcon from '@shared/icons/SafeIcon';
 import apiUser from '@api1/user';
@@ -1906,9 +1907,12 @@ const NotificationRuleModal: React.FC<NotificationRuleModalProps> = ({
 
           {/* Empty state */}
           {!activeChannel && visibleConfigured.length === 0 && (
-            <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[600], pl: ds.space[1] }}>
-              Click a channel badge above to configure it
-            </Typography>
+            <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: ds.space[1], pl: ds.space[1] }}>
+              <Typography sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[600] }}>Click a channel badge above to configure it, or</Typography>
+              <Link href='/accounts/account-form?cloudProvider=SLACK' openInNew secondaryText>
+                integrate a notification tool
+              </Link>
+            </Box>
           )}
 
           {errors.general && (
