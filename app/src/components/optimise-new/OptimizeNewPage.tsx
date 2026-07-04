@@ -324,6 +324,15 @@ const OptimizeNewPage = () => {
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailInitialTab, setDetailInitialTab] = useState(0);
 
+  // Close the detail panel when the user navigates away (e.g. via the left nav).
+  // The drawer is non-modal with no backdrop, so nothing else dismisses it on a
+  // route change and it would otherwise linger over the next page.
+  useEffect(() => {
+    const closeDetail = () => setDetailOpen(false);
+    router.events.on('routeChangeStart', closeDetail);
+    return () => router.events.off('routeChangeStart', closeDetail);
+  }, [router.events]);
+
   // Direct action modal state
   const [ticketModalRec, setTicketModalRec] = useState<any>(null);
   const [resolveModalRec, setResolveModalRec] = useState<any>(null);
