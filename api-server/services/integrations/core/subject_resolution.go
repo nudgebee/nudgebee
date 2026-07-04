@@ -7,6 +7,8 @@ import (
 	"nudgebee/services/security"
 	"nudgebee/services/tenant"
 	"strings"
+
+	"github.com/prometheus/prometheus/promql/parser"
 )
 
 // MatchWorkloadAndEnrich validates EventSubjectName against the k8s_workloads
@@ -156,6 +158,190 @@ const (
 	webhookSubjectAgentNotFound = "Not Found"
 )
 
+// clusterScopePromQLParser is a shared, stateless PromQL parser used to classify
+// an alert's scope from its rule expression. ParseExpr builds a fresh internal
+// parser per call, so one package-level instance is concurrency-safe.
+var clusterScopePromQLParser = parser.NewParser(parser.Options{})
+
+// objectDimensionLabels are the Prometheus label names that identify a concrete
+// k8s/cloud object an alert is about. When an alert's PromQL references any of
+// these (as a selector matcher, an aggregation `by (…)` grouping label, or an
+// `on (…)` matching label), it has a per-object subject — so it is NOT cluster
+// scoped. `job`, `cluster`, `resource`, `severity`, etc. are intentionally absent:
+// `job` is the scrape target, not the alert's subject.
+var objectDimensionLabels = map[string]bool{
+	"namespace": true, "pod": true, "pod_name": true, "node": true, "instance": true,
+	"container": true, "container_name": true, "deployment": true, "statefulset": true,
+	"daemonset": true, "replicaset": true, "cronjob": true, "job_name": true,
+	"persistentvolumeclaim": true, "horizontalpodautoscaler": true, "hpa": true,
+	"service": true, "workload": true, "destination_workload_name": true,
+	"source_workload_name": true, "ingress": true, "endpoint": true,
+}
+
+// clusterScopedAlertNames is a guaranteed floor of well-known kube-prometheus /
+// kubernetes-mixin alerts that are cluster- or control-plane-scoped and name NO
+// object. It is the fallback for when the alert's rule expression isn't available
+// in event_rules (e.g. the rule sync hasn't run for the tenant, or the very first
+// occurrence races rule creation) — the primary, data-driven classifier is
+// isClusterScopedByExpr, which reads event_rules.expr. Their PromQL aggregates
+// `by (cluster)` or uses `absent(up{job="…"})`, so the firing series carries no
+// object-identifying label — there is nothing for the subject extractor to
+// resolve. Sending them to the LLM wastes a call and, worse, invites a
+// hallucinated subject (observed in prod: KubeSchedulerDown →
+// "newrelic-bundle-nrk8s-controlplane", KubeVersionMismatch →
+// "prometheus-…-kube-prometheus-prometheus").
+//
+// Deliberately CONSERVATIVE: only alerts with genuinely no object dimension are
+// listed. Alerts that carry a resolvable subject are intentionally excluded even
+// when they are "infrastructure" — e.g. TargetDown (job/instance), KubeClientErrors
+// (instance), KubeAggregatedAPIDown (name/namespace), AlertmanagerClusterDown
+// (namespace/service), etcd* (instance) — because a false skip would HIDE a real
+// subject, which is worse than a wasted LLM call.
+var clusterScopedAlertNames = map[string]bool{
+	// Cluster capacity / quota overcommit — aggregate `by (cluster)`.
+	"KubeCPUOvercommit":         true,
+	"KubeMemoryOvercommit":      true,
+	"KubeCPUQuotaOvercommit":    true,
+	"KubeMemoryQuotaOvercommit": true,
+	// Control-plane component down — `absent(up{job="…"})`, no object label.
+	"KubeSchedulerDown":         true,
+	"KubeControllerManagerDown": true,
+	"KubeAPIDown":               true,
+	"KubeProxyDown":             true,
+	"KubeletDown":               true,
+	// Cluster-wide apiserver / version / cert health — no object dimension.
+	"KubeVersionMismatch":             true,
+	"KubeAPIErrorBudgetBurn":          true,
+	"KubeAPITerminatedRequests":       true,
+	"KubeClientCertificateExpiration": true,
+	// Always-firing watchdog — no subject by construction.
+	"Watchdog": true,
+}
+
+// alertNameFromLabels returns the canonical alert name for an event, using the
+// same precedence the playbook lookup uses: `nb_alert_name` (set during webhook
+// enrichment, e.g. the real prometheus alert name extracted from a PagerDuty
+// title) then the raw `alertname` label. This is path-independent — it survives
+// Prometheus → PagerDuty/Datadog relays that flatten the original labels.
+func alertNameFromLabels(labels map[string]string) string {
+	if labels == nil {
+		return ""
+	}
+	if n := labels["nb_alert_name"]; n != "" {
+		return n
+	}
+	return labels["alertname"]
+}
+
+// classifyPromExprClusterScoped parses a Prometheus rule expression and reports
+// whether the alert it defines is cluster-scoped — i.e. it produces a series with
+// no object-identifying label, so there is nothing to resolve a subject to.
+//
+// An alert is cluster-scoped iff (a) there is a positive cluster signal — an
+// aggregation grouped `by (cluster)` / `by ()` (collapsing to the cluster or a
+// global scalar), or an `absent()` — AND (b) no object-dimension label appears
+// anywhere in the expression (selector matchers, `by (…)` groupings, or `on (…)`
+// matching labels). Requiring the positive signal is what makes this safe: a bare
+// per-instance alert like `up{job="x"} == 0` carries a natural `instance` label
+// that isn't in any matcher, so it has no cluster signal and is NOT skipped.
+//
+// The AST is used deliberately: recording-rule metric NAMES such as
+// `namespace_cpu:kube_pod_container_resource_requests:sum` contain "namespace" as
+// a substring but expose it as `__name__`, not a label — a text scan would
+// misclassify; the parser does not. `parsed` is false when expr is not valid
+// PromQL (e.g. a Datadog/chronosphere expression), so the caller falls through.
+func classifyPromExprClusterScoped(expr string) (isCluster bool, parsed bool) {
+	node, err := clusterScopePromQLParser.ParseExpr(expr)
+	if err != nil {
+		return false, false
+	}
+	objectSeen := false
+	clusterSignal := false
+	parser.Inspect(node, func(n parser.Node, _ []parser.Node) error {
+		switch e := n.(type) {
+		case *parser.VectorSelector:
+			for _, m := range e.LabelMatchers {
+				if m.Name != "__name__" && objectDimensionLabels[m.Name] {
+					objectSeen = true
+				}
+			}
+		case *parser.AggregateExpr:
+			// `without (…)` keeps the unlisted labels (unknown, possibly object) and
+			// gives no cluster collapse — no signal either way.
+			if !e.Without {
+				onlyCluster := true
+				for _, g := range e.Grouping {
+					if objectDimensionLabels[g] {
+						objectSeen = true
+					}
+					if g != "cluster" {
+						onlyCluster = false
+					}
+				}
+				if onlyCluster {
+					clusterSignal = true
+				}
+			}
+		case *parser.Call:
+			if e.Func != nil && (e.Func.Name == "absent" || e.Func.Name == "absent_over_time") {
+				clusterSignal = true
+			}
+		case *parser.BinaryExpr:
+			// Only `on (…)` matching labels are carried into the result; `ignoring (…)`
+			// labels are dropped, so they don't indicate an object subject.
+			if e.VectorMatching != nil && e.VectorMatching.On {
+				for _, l := range e.VectorMatching.MatchingLabels {
+					if objectDimensionLabels[l] {
+						objectSeen = true
+					}
+				}
+			}
+		}
+		return nil
+	})
+	return clusterSignal && !objectSeen, true
+}
+
+// fetchEventRuleExpr returns the Prometheus rule expression for an alert from the
+// event_rules catalog (the per-tenant source of truth, synced from the cluster's
+// PrometheusRule CRDs). Returns "" on any miss/error so the caller falls back to
+// the curated set.
+func fetchEventRuleExpr(sc *security.RequestContext, accountId, alert string) string {
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return ""
+	}
+	var expr string
+	err = dbms.Db.Get(&expr,
+		`SELECT expr FROM event_rules WHERE alert = $1 AND tenant_id = $2 AND account_id = $3 AND enabled = true AND expr IS NOT NULL AND expr != '' LIMIT 1`,
+		alert, sc.GetSecurityContext().GetTenantId(), accountId)
+	if err != nil {
+		return ""
+	}
+	return expr
+}
+
+// isClusterScopedAlert reports whether an alert is cluster-/control-plane-scoped
+// with no object subject, so the LLM subject extractor can only return not_found
+// or hallucinate. Primary signal is data-driven — the alert's PromQL from
+// event_rules (covers custom cluster rules for prometheus/grafana). The curated
+// clusterScopedAlertNames set is a floor for when the expression isn't available.
+func isClusterScopedAlert(sc *security.RequestContext, accountId string, labels map[string]string) bool {
+	alert := alertNameFromLabels(labels)
+	if alert == "" {
+		return false
+	}
+	if clusterScopedAlertNames[alert] {
+		return true
+	}
+	if expr := fetchEventRuleExpr(sc, accountId, alert); expr != "" {
+		if isCluster, parsed := classifyPromExprClusterScoped(expr); parsed && isCluster {
+			return true
+		}
+	}
+	return false
+}
+
 // ResolveSubjectNameViaAgent asks the webhook_subject_name_extractor agent to map
 // an alert to a single running-service name. The agent owns the running-services
 // inventory and the historical title→service patterns (fetched and cached
@@ -167,6 +353,18 @@ const (
 func ResolveSubjectNameViaAgent(sc *security.RequestContext, accountId, title, description, sourceURL string, labels map[string]string) string {
 	if labels == nil {
 		labels = map[string]string{}
+	}
+
+	// Skip the LLM for cluster-/control-plane-scoped alerts that carry no object
+	// subject: the extractor has nothing to resolve and would only waste a call or
+	// hallucinate. Scope is classified from the alert's PromQL in event_rules (with a
+	// curated floor). Deterministic resolution has already run and come up empty by
+	// the time we reach here, so nothing is lost. Runs at this single choke point so
+	// it covers every ingestion path (prometheus, pagerduty, datadog, zenduty, …).
+	if isClusterScopedAlert(sc, accountId, labels) {
+		labels["nb_llm_match"] = "skipped_cluster_scoped"
+		labels["nb_subject_resolution"] = "cluster-scoped"
+		return ""
 	}
 
 	payload, _ := json.Marshal(map[string]any{
