@@ -107,7 +107,7 @@ Analyze the diff and the files you read against these dimensions:
 - **TypeScript:** oxlint + prettier compliance
 - PR title format: `type(scope): subject` (per `.github/semantic.yml`)
   - Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `revert`, `ci`, `infra`, `release`
-  - Scopes: `autopilot`, `ml`, `notifications`, `ui`, `tickets`, `relay`, `collector`, `deps`, `#\d+`
+  - Scopes: `autopilot`, `ml`, `notifications`, `ui`, `tickets`, `relay`, `collector`, `deps`, `NB-\d+`
 
 ### Testing
 - Are new features covered by tests?

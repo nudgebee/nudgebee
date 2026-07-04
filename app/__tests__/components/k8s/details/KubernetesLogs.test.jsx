@@ -5,6 +5,15 @@ import { useData } from '@context/DataContext';
 import apiAccount from '@api1/account';
 import observability from '@api1/observability';
 
+jest.mock('@shared/buttons/DownloadButton', () => ({
+  __esModule: true,
+  default: ({ onClick }) => (
+    <button data-testid='download-btn' onClick={onClick}>
+      Download
+    </button>
+  ),
+}));
+
 jest.mock('@assets/loki.png', () => ({
   default: { src: 'loki.png' },
 }));
@@ -19,6 +28,21 @@ jest.mock('@assets/SignozIcon.png', () => ({
 
 jest.mock('@assets/NubiIcon.png', () => ({
   default: { src: 'nubi.png' },
+}));
+
+// Source uses ds/ToggleGroup which renders custom DOM (not plain <button>).
+// Mock it as a simple button group so the test's `getByRole('button', { name: ... })`
+// queries match.
+jest.mock('@ui/ToggleGroup', () => ({
+  ToggleGroup: ({ options = [], onChange, value: activeValue }) => (
+    <div role='group'>
+      {options.map((opt) => (
+        <button key={opt.value} type='button' onClick={() => onChange?.(opt.value)} aria-pressed={activeValue === opt.value}>
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  ),
 }));
 
 // Mock useData

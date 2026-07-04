@@ -16,21 +16,46 @@ jest.mock('@api1/user', () => ({
   },
 }));
 
-jest.mock('src/utils/colors', () => ({
-  colors: { text: { primary: '#000' }, background: { white: '#fff' } },
-}));
+jest.mock('@utils/colors');
 
-jest.mock('@components/optimise/SummaryWidget', () => ({
+// Old SummaryWidget → new ds/Stat (named export) with `label` + `value` props.
+// Keep the same testid format the assertions use.
+jest.mock('@ui/Stat', () => ({
   __esModule: true,
-  default: ({ title, value }) => <div data-testid={`summary-${title}`}>{value}</div>,
+  Stat: ({ label, value }) => <div data-testid={`summary-${label}`}>{value}</div>,
 }));
 
-jest.mock('@shared/BoxLayout2', () => ({
+jest.mock('@ui/WidgetCard', () => ({
   __esModule: true,
-  default: ({ children }) => <div data-testid='box-layout'>{children}</div>,
+  default: ({ children }) => <div data-testid='widget-card'>{children}</div>,
 }));
 
-jest.mock('@shared/tables/CustomTable2', () => ({
+jest.mock('@shared/buttons/DownloadButton', () => ({
+  __esModule: true,
+  default: ({ onClick }) => (
+    <button data-testid='download-btn' onClick={onClick}>
+      DL
+    </button>
+  ),
+}));
+
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout = ({ children, id }) => (
+    <div data-testid='listing-layout' id={id}>
+      {children}
+    </div>
+  );
+  ListingLayout.Toolbar = ({ children, actions }) => (
+    <div data-testid='toolbar'>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout };
+});
+
+jest.mock('@shared/tables/CustomTable', () => ({
   __esModule: true,
   default: ({ id, tableData, totalRows, loading, pageNumber, onPageChange, headers }) => (
     <div data-testid='custom-table' id={id}>
@@ -100,7 +125,6 @@ describe('KubernetesKubeVersionRecommendation (integration)', () => {
     render(<KubernetesKubeVersionRecommendation accountId='acc-1' />);
 
     await waitFor(() => expect(recommendationApi.getK8sRecommendation.mock.calls.length).toBeGreaterThanOrEqual(2));
-    // First call is summary (limit: 1)
     const summaryCall = recommendationApi.getK8sRecommendation.mock.calls.find((c) => c[0].limit === 1);
     expect(summaryCall[0]).toMatchObject({
       accountId: 'acc-1',
@@ -109,7 +133,6 @@ describe('KubernetesKubeVersionRecommendation (integration)', () => {
       limit: 1,
       offset: 0,
     });
-    // List call has status + fetchTicket
     const listCall = recommendationApi.getK8sRecommendation.mock.calls.find((c) => c[0].fetchTicket === true);
     expect(listCall[0]).toMatchObject({
       accountId: 'acc-1',
@@ -122,7 +145,7 @@ describe('KubernetesKubeVersionRecommendation (integration)', () => {
     });
   });
 
-  it('renders SummaryWidget with total count from summary fetch', async () => {
+  it('renders Stat with total count from summary fetch', async () => {
     recommendationApi.getK8sRecommendation.mockImplementation((params) => {
       if (params.limit === 1) {
         return Promise.resolve(mockResponse([], 42));

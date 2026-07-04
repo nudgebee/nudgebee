@@ -80,6 +80,7 @@ describe('useRcaPolling', () => {
 
   it('keeps polling on API exception (retries with backoff)', async () => {
     mockGenerateRCA.mockRejectedValue(new Error('Network error'));
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     const { result } = renderHook(() => useRcaPolling('event-1', 'acc-1'));
 
     await act(async () => {
@@ -87,8 +88,10 @@ describe('useRcaPolling', () => {
       await jest.advanceTimersByTimeAsync(5000);
     });
 
+    expect(errorSpy).toHaveBeenCalledWith('Error polling RCA status:', expect.any(Error));
     expect(result.current.isPolling).toBe(true);
     expect(mockGenerateRCA).toHaveBeenCalled();
+    errorSpy.mockRestore();
   });
 
   it('polls on interval every 5 seconds', async () => {

@@ -80,11 +80,14 @@ describe('useRecommendationExport', () => {
 
   it('shows error snackbar on API exception', async () => {
     mockExport.mockRejectedValue(new Error('Connection refused'));
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     const { result } = renderHook(() => useRecommendationExport(defaultOptions));
     await act(async () => {
       await result.current.handleExportDownload('csv');
     });
+    expect(errorSpy).toHaveBeenCalledWith('Export error:', expect.any(Error));
     expect(snackbar.error).toHaveBeenCalledWith('Export failed: Connection refused');
+    errorSpy.mockRestore();
   });
 
   it('passes optional filters (namespace, workloadType, status) to API', async () => {

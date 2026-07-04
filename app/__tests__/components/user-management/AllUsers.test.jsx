@@ -24,20 +24,15 @@ jest.mock('@lib/UserService', () => ({
   getUsersByTenant: jest.fn(),
 }));
 
-jest.mock('@shared/snackbarService', () => ({
-  snackbar: { success: jest.fn(), error: jest.fn() },
+jest.mock('@ui/Toast', () => ({
+  toast: { success: jest.fn(), error: jest.fn() },
 }));
 
 jest.mock('@assets', () => ({
   writeIcon: { default: { src: '/write-icon.svg' } },
 }));
 
-jest.mock('src/utils/colors', () => ({
-  colors: {
-    background: { white: '#fff' },
-    text: { primary: '#000' },
-  },
-}));
+jest.mock('@utils/colors');
 
 jest.mock('src/utils/actionStyles', () => ({
   action: { primary: {} },
@@ -55,49 +50,9 @@ jest.mock('src/utils/common', () => ({
   snakeToTitleCase: (s) => s,
 }));
 
-jest.mock('@shared/BoxLayout2', () => ({
+jest.mock('@shared/format/Text', () => ({
   __esModule: true,
-  default: ({ children, modalButton, filterOptions = [], searchOption }) => (
-    <div data-testid='box-layout'>
-      {modalButton?.enabled && (
-        <button data-testid='add-user-btn' onClick={modalButton.onClick}>
-          {modalButton.text}
-        </button>
-      )}
-      {filterOptions.map((f, i) =>
-        f.type === 'dropdown' ? (
-          <select key={i} data-testid={`filter-${f.label}`} value={f.value || ''} onChange={f.onSelect}>
-            <option value=''>--</option>
-            {(f.options || []).map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        ) : null
-      )}
-      {searchOption?.enabled && (
-        <input
-          data-testid='search-name'
-          value={searchOption.value || ''}
-          onChange={searchOption.onChange}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && searchOption.onEnter) searchOption.onEnter();
-          }}
-        />
-      )}
-      {children}
-    </div>
-  ),
-}));
-
-jest.mock('@shared', () => ({
-  Text: ({ value }) => <span>{value}</span>,
-}));
-
-jest.mock('@shared/widgets/CustomLabels', () => ({
-  __esModule: true,
-  default: ({ text }) => <span data-testid='status-label'>{text}</span>,
+  default: ({ value }) => <span>{value}</span>,
 }));
 
 jest.mock('@shared/format/Datetime', () => ({
@@ -105,7 +60,85 @@ jest.mock('@shared/format/Datetime', () => ({
   default: ({ value }) => <span data-testid='datetime'>{value || '-'}</span>,
 }));
 
-jest.mock('@shared/tables/CustomTable2', () => ({
+jest.mock('@ui/Label', () => {
+  const TONE_TO_COLOR = { success: 'green', critical: 'red', warning: 'yellow', neutral: 'grey' };
+  return {
+    Label: ({ text, children, tone, variant }) => {
+      const color = variant || TONE_TO_COLOR[tone] || 'plain';
+      return <span data-testid={`label-${color}`}>{children || text}</span>;
+    },
+  };
+});
+
+jest.mock('@shared/icons/SafeIcon', () => ({
+  __esModule: true,
+  default: ({ alt }) => <span data-testid={`icon-${alt}`}>icon</span>,
+}));
+
+jest.mock('@ui/Button', () => ({
+  Button: ({ children, onClick, id, disabled, loading }) => (
+    <button data-testid={id || `btn-${children}`} onClick={onClick} disabled={disabled || loading}>
+      {children}
+    </button>
+  ),
+}));
+
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout = ({ children, id }) => (
+    <div data-testid='listing-layout' id={id}>
+      {children}
+    </div>
+  );
+  ListingLayout.Toolbar = ({ children, actions }) => (
+    <div data-testid='toolbar'>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout, default: ListingLayout };
+});
+
+jest.mock('@ui/FilterDropdown', () => ({
+  __esModule: true,
+  default: ({ label, options = [], value, onSelect }) => {
+    const currentValue = typeof value === 'object' && value !== null ? value.value : value;
+    return (
+      <select
+        data-testid={`filter-${label}`}
+        value={currentValue || ''}
+        onChange={(e) => onSelect?.({ target: { value: e.target.value } }, { value: e.target.value, label: e.target.value })}
+      >
+        <option value=''>--</option>
+        {(options || []).map((opt, idx) => {
+          const v = typeof opt === 'string' ? opt : opt.value;
+          const l = typeof opt === 'string' ? opt : opt.label;
+          return (
+            <option key={(v || '_') + '-' + idx} value={v}>
+              {l}
+            </option>
+          );
+        })}
+      </select>
+    );
+  },
+}));
+
+jest.mock('@ui/SearchInput', () => ({
+  __esModule: true,
+  default: ({ label, value, onChange, onEnterPress }) => (
+    <input
+      data-testid={`search-${label}`}
+      value={value || ''}
+      onChange={(e) => onChange?.(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && onEnterPress) onEnterPress();
+      }}
+    />
+  ),
+}));
+
+jest.mock('@shared/tables/CustomTable', () => ({
   __esModule: true,
   default: ({ tableData, loading, totalRows, onSortChange, sort, pageNumber }) => (
     <div data-testid='table'>
@@ -131,7 +164,7 @@ jest.mock('@shared/tables/CustomTable2', () => ({
   ),
 }));
 
-jest.mock('./../../../src/components/user-management/modal/UserModal', () => ({
+jest.mock('@components/user-management/modal/UserModal', () => ({
   __esModule: true,
   default: ({ open, handleClose, mode, userData }) =>
     open ? (
@@ -147,7 +180,7 @@ jest.mock('./../../../src/components/user-management/modal/UserModal', () => ({
     ) : null,
 }));
 
-jest.mock('./../../../src/components/user-management/UserGroup', () => ({
+jest.mock('@components/user-management/UserGroup', () => ({
   __esModule: true,
   default: () => <div data-testid='user-group'>user-group</div>,
 }));
@@ -178,15 +211,15 @@ const sampleUsers = [
 
 const mockUsersResponse = (rows = sampleUsers, count = rows.length) => ({
   users_list_by_tenant: { rows },
-  admin_get_users_grouping_by_tenant_v2: { rows: [{ count }] },
+  // Source reads `users_aggregate_by_tenant.rows[0].count` for the total — old key
+  // `admin_get_users_grouping_by_tenant_v2` was renamed.
+  users_aggregate_by_tenant: { rows: [{ count }] },
 });
 
 describe('AllUsers (integration)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockUseSession.mockReturnValue({
-      data: { user: { email: 'me@example.com' } },
-    });
+    mockUseSession.mockReturnValue({ data: { user: { email: 'me@example.com' } } });
     mockHasWriteAccess.mockReturnValue(true);
     apiUserManagement.getAllStatuses.mockResolvedValue({
       data: { user_status_type: [{ value: 'active' }, { value: 'inactive' }] },
@@ -216,9 +249,7 @@ describe('AllUsers (integration)', () => {
   it('renders user rows with parsed groups and roles', async () => {
     render(<AllUsers />);
 
-    await waitFor(() => {
-      expect(screen.getByText('Alice')).toBeInTheDocument();
-    });
+    await waitFor(() => expect(screen.getByText('Alice')).toBeInTheDocument());
     expect(screen.getByText('Bob')).toBeInTheDocument();
     expect(screen.getByText('Tenant Admin')).toBeInTheDocument();
     expect(screen.getByText('readonly')).toBeInTheDocument();
@@ -228,28 +259,19 @@ describe('AllUsers (integration)', () => {
   it('populates status dropdown from getAllStatuses', async () => {
     render(<AllUsers />);
 
-    await waitFor(() => {
-      const dropdown = screen.getByTestId('filter-By Status');
-      expect(dropdown).toBeInTheDocument();
-    });
+    await waitFor(() => expect(screen.getByTestId('filter-Status')).toBeInTheDocument());
     expect(screen.getByRole('option', { name: 'Active' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'Inactive' })).toBeInTheDocument();
   });
 
   it('refetches with new statusSearch when status filter changes', async () => {
     render(<AllUsers />);
-    await waitFor(() => {
-      expect(getUsersByTenant).toHaveBeenCalled();
-    });
+    await waitFor(() => expect(getUsersByTenant).toHaveBeenCalled());
     getUsersByTenant.mockClear();
 
-    fireEvent.change(screen.getByTestId('filter-By Status'), {
-      target: { value: 'inactive' },
-    });
+    fireEvent.change(screen.getByTestId('filter-Status'), { target: { value: 'inactive' } });
 
-    await waitFor(() => {
-      expect(getUsersByTenant).toHaveBeenCalled();
-    });
+    await waitFor(() => expect(getUsersByTenant).toHaveBeenCalled());
     const call = getUsersByTenant.mock.calls[0][0];
     expect(call.statusSearch).toBe('inactive');
     expect(call.offset).toBe(0);
@@ -272,20 +294,18 @@ describe('AllUsers (integration)', () => {
     mockHasWriteAccess.mockReturnValue(false);
     const { rerender } = render(<AllUsers />);
     await waitFor(() => expect(getUsersByTenant).toHaveBeenCalled());
-    expect(screen.queryByTestId('add-user-btn')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('new-user')).not.toBeInTheDocument();
 
     mockHasWriteAccess.mockReturnValue(true);
     rerender(<AllUsers key='re' />);
-    await waitFor(() => {
-      expect(screen.getByTestId('add-user-btn')).toBeInTheDocument();
-    });
+    await waitFor(() => expect(screen.getByTestId('new-user')).toBeInTheDocument());
   });
 
   it('opens Add User modal when Add button clicked', async () => {
     render(<AllUsers />);
-    await waitFor(() => expect(screen.getByTestId('add-user-btn')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('new-user')).toBeInTheDocument());
 
-    fireEvent.click(screen.getByTestId('add-user-btn'));
+    fireEvent.click(screen.getByTestId('new-user'));
 
     expect(screen.getByTestId('user-modal-add')).toBeInTheDocument();
   });
@@ -293,7 +313,7 @@ describe('AllUsers (integration)', () => {
   it('closes Add modal without refetching when no update', async () => {
     render(<AllUsers />);
     await waitFor(() => expect(getUsersByTenant).toHaveBeenCalled());
-    fireEvent.click(screen.getByTestId('add-user-btn'));
+    fireEvent.click(screen.getByTestId('new-user'));
     getUsersByTenant.mockClear();
 
     fireEvent.click(screen.getByTestId('close-modal-add'));
@@ -305,7 +325,7 @@ describe('AllUsers (integration)', () => {
   it('refetches after Add modal saves successfully', async () => {
     render(<AllUsers />);
     await waitFor(() => expect(getUsersByTenant).toHaveBeenCalled());
-    fireEvent.click(screen.getByTestId('add-user-btn'));
+    fireEvent.click(screen.getByTestId('new-user'));
     getUsersByTenant.mockClear();
 
     fireEvent.click(screen.getByTestId('save-modal-add'));
@@ -318,7 +338,7 @@ describe('AllUsers (integration)', () => {
     await waitFor(() => expect(getUsersByTenant).toHaveBeenCalled());
     getUsersByTenant.mockClear();
 
-    const search = screen.getByTestId('search-name');
+    const search = screen.getByTestId('search-Enter Name');
     fireEvent.change(search, { target: { value: 'alice' } });
     fireEvent.keyDown(search, { key: 'Enter' });
 
@@ -343,9 +363,7 @@ describe('AllUsers (integration)', () => {
       resolveFn(mockUsersResponse());
     });
 
-    await waitFor(() => {
-      expect(screen.queryByTestId('loading')).not.toBeInTheDocument();
-    });
+    await waitFor(() => expect(screen.queryByTestId('loading')).not.toBeInTheDocument());
     expect(screen.getByTestId('total')).toHaveTextContent('2');
   });
 

@@ -65,6 +65,7 @@ describe('useTriggerAnomaly', () => {
   });
 
   it('shows error snackbar and resets isLoading on exception', async () => {
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     mockTrigger.mockRejectedValue(new Error('Network timeout'));
     const { result } = renderHook(() => useTriggerAnomaly('acc-1'));
     await act(async () => {
@@ -72,6 +73,7 @@ describe('useTriggerAnomaly', () => {
     });
     expect(snackbar.error).toHaveBeenCalledWith('Failed to trigger anomaly detection');
     expect(result.current.isLoading).toBe(false);
+    consoleErrorSpy.mockRestore();
   });
 
   it('calls triggerAnomalyExecute with the accountId', async () => {

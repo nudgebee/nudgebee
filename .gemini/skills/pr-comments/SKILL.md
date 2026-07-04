@@ -75,7 +75,7 @@ If the user invoked `/pr-comments fix` or asks to fix the comments:
 
 3. **After all fixes:**
    - Run the appropriate validation for affected services (see service map below)
-   - Commit the changes with message: `fix(scope): address PR review feedback` (derive `scope` from the modified file paths using the scope map in the create-pr skill — e.g., `api-server/services/` → `#xxx`, `app/` → `ui`)
+   - Commit the changes with message: `fix(scope): address PR review feedback` (derive `scope` from the modified file paths using the scope map in the create-pr skill — e.g., `api-server/services/` → `NB-xxx`, `app/` → `ui`)
    - Push to the branch
 
 4. **Post a reply** on each addressed comment:

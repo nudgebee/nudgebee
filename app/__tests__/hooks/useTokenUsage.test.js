@@ -134,11 +134,14 @@ describe('useTokenUsage', () => {
 
   it('does not throw when API call fails', async () => {
     mockGetMetrics.mockRejectedValue(new Error('API error'));
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     const { result } = renderHook(() => useTokenUsage('acc-1'));
     await expect(
       act(async () => {
         await result.current.fetchTokenUsage('session-1');
       })
     ).resolves.not.toThrow();
+    expect(errorSpy).toHaveBeenCalledWith('Error fetching token usage metrics:', expect.any(Error));
+    errorSpy.mockRestore();
   });
 });

@@ -134,9 +134,9 @@ Based on the commits and diff, generate:
 | `relay` | `collector-server/k8s-collector/relay-server/` |
 | `collector` | `collector-server/cloud-collector/`, `collector-server/k8s-collector/app/` |
 | `deps` | Dependency updates |
-| `#xxx` | Issue number — use for `api-server/services/`, `api-server/migrations/`, `deploy/`, `.github/`, or any cross-service change |
+| `NB-xxx` | Ticket number — use for `api-server/services/`, `api-server/migrations/`, `deploy/`, `.github/`, or any cross-service change |
 
-**Examples:** `fix(ui): handle null state in settings`, `feat(#123): add Azure onboarding flow`
+**Examples:** `fix(ui): handle null state in settings`, `feat(NB-1234): add Azure onboarding flow`
 
 **Semantic type → PR "Type of change" mapping:**
 | Semantic type | PR checkbox |

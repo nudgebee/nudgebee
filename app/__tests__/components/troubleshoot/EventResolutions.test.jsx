@@ -48,51 +48,127 @@ jest.mock('src/utils/common', () => ({
       .toLowerCase()
       .replace(/_./g, (m) => ' ' + m[1].toUpperCase())
       .replace(/^./, (c) => c.toUpperCase()),
+  toSeverityLevel: (s) => String(s || '').toLowerCase(),
 }));
 
-jest.mock('src/utils/colors', () => ({
-  colors: { text: { primary: '#000', secondary: '#666' }, background: { white: '#fff' } },
+jest.mock('@utils/colors');
+
+jest.mock('@shared/format/Text', () => ({
+  __esModule: true,
+  default: ({ value }) => <span>{value}</span>,
 }));
 
-jest.mock('@shared', () => ({
-  BoxLayout2: ({ children, filterOptions = [] }) => (
-    <div data-testid='box-layout'>
-      {filterOptions.map((f, i) => {
-        if (f.type === 'dropdown') {
-          return (
-            <select key={i} data-testid={`filter-${f.label}`} value={f.value || ''} onChange={f.onSelect}>
-              <option value=''>--</option>
-              {(f.options || []).map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-          );
-        }
-        if (f.type === 'multi-dropdown') {
-          return (
-            <button
-              key={i}
-              data-testid={`multi-${f.label}`}
-              onClick={() => {
-                const first = (f.options || [])[0];
-                if (first) f.onSelect({}, [first]);
-              }}
-            >
-              {f.label}
-            </button>
-          );
-        }
-        return null;
-      })}
+jest.mock('@shared/format/Datetime', () => ({
+  __esModule: true,
+  default: ({ value }) => <span data-testid='datetime'>{value}</span>,
+}));
+
+// DS Label takes `tone` (success/critical/warning/neutral) — map back to the
+// legacy variant color for testid stability so existing label-{color} queries pass.
+jest.mock('@ui/Label', () => {
+  const TONE_TO_COLOR = { success: 'green', critical: 'red', warning: 'yellow', neutral: 'grey', info: 'blue' };
+  return {
+    Label: ({ text, children, tone, variant }) => {
+      const color = variant || TONE_TO_COLOR[tone] || 'plain';
+      return <span data-testid={`label-${color}`}>{children || text}</span>;
+    },
+  };
+});
+
+jest.mock('@ui/SeverityIcon', () => {
+  const SeverityIcon = ({ level }) => <span data-testid={`severity-${level || 'none'}`}>sev</span>;
+  return { __esModule: true, default: SeverityIcon, SeverityIcon };
+});
+
+jest.mock('@ui/Link', () => ({
+  Link: ({ href, children }) => (
+    <a data-testid='custom-link' href={href}>
       {children}
+    </a>
+  ),
+}));
+
+// Source passes `before` and `after` as objects like `{ value: 100 }`.
+// Render the inner `.value` to avoid React "object as child" errors.
+jest.mock('@ui/Comparison', () => ({
+  Comparison: ({ before, after, label }) => (
+    <div data-testid='comparison'>
+      <span>{label}: </span>
+      <span>{before?.value ?? String(before)}</span>→<span>{after?.value ?? String(after)}</span>
     </div>
   ),
-  Text: ({ value }) => <span>{value}</span>,
+  ComparisonGroup: ({ children }) => <div data-testid='comparison-group'>{children}</div>,
 }));
 
-jest.mock('@shared/tables/CustomTable2', () => ({
+jest.mock('@ui/Button', () => ({
+  Button: React.forwardRef(({ children, onClick, id, disabled, ...rest }, ref) => (
+    <button ref={ref} data-testid={id || `btn-${children}`} onClick={onClick} disabled={disabled} {...rest}>
+      {children}
+    </button>
+  )),
+}));
+
+jest.mock('@ui/Toast', () => ({
+  toast: { success: jest.fn(), error: jest.fn() },
+}));
+
+jest.mock('@shared/icons/CloudIcon', () => ({
+  __esModule: true,
+  default: ({ cloud_provider }) => <span>{cloud_provider}</span>,
+}));
+
+// Source line 17: `import ListingLayout from '@ui/ListingLayout';` — uses default
+// import, while other files use named. Expose BOTH default and named to keep
+// this mock reusable across files.
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout = ({ children, id }) => (
+    <div data-testid='listing-layout' id={id}>
+      {children}
+    </div>
+  );
+  ListingLayout.Toolbar = ({ children, actions }) => (
+    <div data-testid='toolbar'>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, default: ListingLayout, ListingLayout };
+});
+
+jest.mock('@ui/FilterDropdown', () => ({
+  __esModule: true,
+  default: ({ label, options = [], value, onSelect, multiple }) => {
+    if (multiple) {
+      return (
+        <button data-testid={`multi-${label}`} onClick={() => onSelect?.(null, (options || []).slice(0, 1))}>
+          {label}
+        </button>
+      );
+    }
+    const currentValue = typeof value === 'object' && value !== null ? value.value : value;
+    return (
+      <select
+        data-testid={`filter-${label}`}
+        value={currentValue || ''}
+        onChange={(e) => onSelect?.({ target: { value: e.target.value } }, { value: e.target.value, label: e.target.value })}
+      >
+        <option value=''>--</option>
+        {(options || []).map((opt, idx) => {
+          const v = typeof opt === 'string' ? opt : opt.value;
+          const l = typeof opt === 'string' ? opt : opt.label;
+          return (
+            <option key={(v || '_') + '-' + idx} value={v}>
+              {l}
+            </option>
+          );
+        })}
+      </select>
+    );
+  },
+}));
+
+jest.mock('@shared/tables/CustomTable', () => ({
   __esModule: true,
   default: ({ id, tableData, totalRows, loading, pageNumber, onPageChange }) => (
     <div data-testid='custom-table' id={id}>
@@ -113,35 +189,6 @@ jest.mock('@shared/tables/CustomTable2', () => ({
       </button>
     </div>
   ),
-}));
-
-jest.mock('@shared/widgets/CustomLabels', () => ({
-  __esModule: true,
-  default: ({ text, variant }) => <span data-testid={`label-${variant || 'plain'}`}>{text}</span>,
-}));
-
-jest.mock('@shared/widgets/SeverityIcon', () => ({
-  __esModule: true,
-  default: ({ severityType }) => <span data-testid={`severity-${severityType || 'none'}`}>sev</span>,
-}));
-
-jest.mock('@shared/format/Datetime', () => ({
-  __esModule: true,
-  default: ({ value }) => <span data-testid='datetime'>{value}</span>,
-}));
-
-jest.mock('@shared/CustomLink', () => ({
-  __esModule: true,
-  default: ({ href, children }) => (
-    <a data-testid='custom-link' href={href}>
-      {children}
-    </a>
-  ),
-}));
-
-jest.mock('@shared/icons/CloudIcon', () => ({
-  __esModule: true,
-  default: ({ cloud_provider }) => <span>{cloud_provider}</span>,
 }));
 
 import EventResolutions from '@components/troubleshoot/EventResolutions';
@@ -243,9 +290,7 @@ describe('EventResolutions (integration)', () => {
   it('renders status badges with correct variants per status', async () => {
     render(<EventResolutions />);
 
-    await waitFor(() => {
-      expect(screen.getByTestId('label-green')).toHaveTextContent('Success');
-    });
+    await waitFor(() => expect(screen.getByTestId('label-green')).toHaveTextContent('Success'));
     expect(screen.getByTestId('label-red')).toHaveTextContent('Failed');
     expect(screen.getByTestId('label-yellow')).toHaveTextContent('InProgress');
     expect(screen.getByText('kubectl apply failed')).toBeInTheDocument();

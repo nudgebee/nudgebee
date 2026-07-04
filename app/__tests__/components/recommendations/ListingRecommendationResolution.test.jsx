@@ -23,9 +23,7 @@ jest.mock('@hooks/useCurrencySymbol', () => ({
   default: (...args) => mockUseCurrencySymbol(...args),
 }));
 
-jest.mock('src/utils/colors', () => ({
-  colors: { text: { primary: '#000', secondary: '#666' }, background: { white: '#fff' } },
-}));
+jest.mock('@utils/colors');
 
 jest.mock('src/utils/common', () => ({
   containsLink: (val) => typeof val === 'string' && /^https?:\/\//.test(val),
@@ -38,30 +36,6 @@ jest.mock('next/link', () => ({
     <a data-testid='ext-link' href={href}>
       {children}
     </a>
-  ),
-}));
-
-jest.mock('@shared', () => ({
-  BoxLayout2: ({ children, filterOptions = [] }) => (
-    <div data-testid='box-layout'>
-      {filterOptions.map((f, i) =>
-        f.type === 'dropdown' ? (
-          <select key={i} data-testid={`filter-${f.label}`} value={f.value || ''} onChange={f.onSelect}>
-            <option value=''>--</option>
-            {(f.options || []).map((opt, idx) => {
-              const v = typeof opt === 'string' ? opt : opt.value;
-              const l = typeof opt === 'string' ? opt : opt.label;
-              return (
-                <option key={(v || '_') + '-' + idx} value={v}>
-                  {l}
-                </option>
-              );
-            })}
-          </select>
-        ) : null
-      )}
-      {children}
-    </div>
   ),
 }));
 
@@ -85,19 +59,79 @@ jest.mock('@shared/format/Text', () => ({
   default: ({ value }) => <span>{value}</span>,
 }));
 
-jest.mock('@shared/widgets/CustomLabels', () => ({
+jest.mock('@ui/Label', () => ({
   __esModule: true,
-  default: ({ text }) => <span data-testid='label'>{text}</span>,
+  Label: ({ children, text }) => <span data-testid='label'>{children || text}</span>,
 }));
 
-jest.mock('@components/k8s/common/KubernetesTable2', () => ({
+jest.mock('@ui/SeverityIcon', () => ({
   __esModule: true,
-  default: ({ id, data, totalRows, loading, pageNumber, onPageChange }) => (
+  SeverityIcon: ({ level }) => <span data-testid={`severity-icon-${level}`}>sev</span>,
+}));
+
+jest.mock('@shared/buttons/DownloadButton', () => ({
+  __esModule: true,
+  default: ({ onClick }) => (
+    <button data-testid='download-btn' onClick={onClick}>
+      DL
+    </button>
+  ),
+}));
+
+jest.mock('@components/cloudaccount/CommandExecutionHistory', () => ({
+  __esModule: true,
+  default: () => <div data-testid='cmd-history' />,
+}));
+
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout = ({ children, id }) => (
+    <div data-testid='listing-layout' id={id}>
+      {children}
+    </div>
+  );
+  ListingLayout.Toolbar = ({ children, actions }) => (
+    <div data-testid='toolbar'>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout };
+});
+
+jest.mock('@ui/FilterDropdown', () => ({
+  __esModule: true,
+  default: ({ label, options = [], value, onSelect }) => {
+    const currentValue = typeof value === 'object' && value !== null ? value.value : value;
+    return (
+      <select
+        data-testid={`filter-${label}`}
+        value={currentValue || ''}
+        onChange={(e) => onSelect?.({ target: { value: e.target.value } }, { value: e.target.value, label: e.target.value })}
+      >
+        <option value=''>--</option>
+        {(options || []).map((opt, idx) => {
+          const v = typeof opt === 'string' ? opt : opt.value;
+          const l = typeof opt === 'string' ? opt : opt.label;
+          return (
+            <option key={(v || '_') + '-' + idx} value={v}>
+              {l}
+            </option>
+          );
+        })}
+      </select>
+    );
+  },
+}));
+
+jest.mock('@shared/tables/CustomTable', () => ({
+  __esModule: true,
+  default: ({ id, tableData, totalRows, loading, pageNumber, onPageChange }) => (
     <div data-testid='k8s-table' id={id}>
       {loading && <div data-testid='loading'>loading</div>}
       <div data-testid='total'>{totalRows}</div>
       <div data-testid='page'>{pageNumber}</div>
-      {(data || []).map((row, i) => (
+      {(tableData || []).map((row, i) => (
         <div key={i} data-testid={`row-${i}`}>
           {row.map((cell, j) => (
             <span key={j} data-testid={`cell-${i}-${j}`}>

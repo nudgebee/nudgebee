@@ -52,8 +52,11 @@ describe('useCurrencySymbol', () => {
 
   it('returns default "$" when API call fails', async () => {
     mockList.mockRejectedValue(new Error('Network error'));
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     const { result } = renderHook(() => useCurrencySymbol('acc-1'));
     await waitFor(() => expect(result.current).toBe('$'));
+    expect(errorSpy).toHaveBeenCalledWith('Failed to fetch currency type:', expect.any(Error));
+    errorSpy.mockRestore();
   });
 
   it('resets to undefined when accountId changes', async () => {

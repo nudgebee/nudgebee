@@ -44,13 +44,11 @@ jest.mock('@api1/recommendation', () => ({
   ],
 }));
 
-jest.mock('src/utils/colors', () => ({
-  colors: { text: { primary: '#000' }, background: { white: '#fff' } },
-}));
+jest.mock('@utils/colors');
 
 const lastChildProps = { Apps: null, Details: null, Images: null, CVE: null };
 
-jest.mock('./../../../src/components/recommendations/security/KubernetesSecurityApps', () => ({
+jest.mock('@components/recommendations/security/KubernetesSecurityApps', () => ({
   __esModule: true,
   default: (props) => {
     lastChildProps.Apps = props;
@@ -58,7 +56,7 @@ jest.mock('./../../../src/components/recommendations/security/KubernetesSecurity
   },
 }));
 
-jest.mock('./../../../src/components/recommendations/security/KubernetesSecurityImages', () => ({
+jest.mock('@components/recommendations/security/KubernetesSecurityImages', () => ({
   __esModule: true,
   default: (props) => {
     lastChildProps.Images = props;
@@ -66,7 +64,7 @@ jest.mock('./../../../src/components/recommendations/security/KubernetesSecurity
   },
 }));
 
-jest.mock('./../../../src/components/recommendations/security/KubernetesSecurityCVE', () => ({
+jest.mock('@components/recommendations/security/KubernetesSecurityCVE', () => ({
   __esModule: true,
   default: (props) => {
     lastChildProps.CVE = props;
@@ -74,7 +72,7 @@ jest.mock('./../../../src/components/recommendations/security/KubernetesSecurity
   },
 }));
 
-jest.mock('./../../../src/components/recommendations/security/KubernetesSecurityDetails', () => ({
+jest.mock('@components/recommendations/security/KubernetesSecurityDetails', () => ({
   __esModule: true,
   default: (props) => {
     lastChildProps.Details = props;
@@ -82,61 +80,91 @@ jest.mock('./../../../src/components/recommendations/security/KubernetesSecurity
   },
 }));
 
-jest.mock('@shared/BoxLayout2', () => ({
+jest.mock('@shared/buttons/DownloadButton', () => ({
   __esModule: true,
-  default: ({ children, heading, filterOptions = [], toggleButtons }) => (
-    <div data-testid='box-layout'>
-      <h2 data-testid='box-heading'>{heading}</h2>
-      <div data-testid='toggle-buttons'>
-        {(toggleButtons?.options || []).map((opt) => (
-          <button key={opt.id} data-testid={`toggle-${opt.id}`} onClick={() => toggleButtons.handleSelectToggle({ target: { value: opt.id } })}>
-            {opt.text}
-          </button>
-        ))}
-        <div data-testid='active-toggle'>{toggleButtons?.activeButton}</div>
-      </div>
-      {filterOptions.map((f, i) => {
-        if (!f.enabled) return null;
-        if (f.type === 'dropdown') {
-          return (
-            <select key={i} data-testid={`filter-${f.label}`} value={f.value || ''} onChange={f.onSelect}>
-              <option value=''>--</option>
-              {(f.options || []).map((opt, idx) => {
-                const v = typeof opt === 'string' ? opt : opt.value;
-                const l = typeof opt === 'string' ? opt : opt.label;
-                return (
-                  <option key={(v || '_') + '-' + idx} value={v}>
-                    {l}
-                  </option>
-                );
-              })}
-            </select>
-          );
-        }
-        if (f.type === 'multi-dropdown') {
-          return (
-            <button key={i} data-testid={`multi-${f.label}`} onClick={() => f.onSelect({ target: { value: (f.options || []).slice(0, 1) } })}>
-              {f.label}
-            </button>
-          );
-        }
-        if (f.type === 'search') {
-          return (
-            <input
-              key={i}
-              data-testid={`search-${f.label}`}
-              defaultValue={f.value || ''}
-              onChange={(e) => f.onSelect(e)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && f.onEnter) f.onEnter();
-              }}
-            />
-          );
-        }
-        return null;
-      })}
+  default: ({ onClick }) => (
+    <button data-testid='download-btn' onClick={onClick}>
+      DL
+    </button>
+  ),
+}));
+
+// ds/ToggleGroup replaces the old BoxLayout2.toggleButtons API. Renders buttons
+// keyed by option.value (not the old `id`). Tests still query `toggle-{value}`.
+jest.mock('@ui/ToggleGroup', () => ({
+  __esModule: true,
+  ToggleGroup: ({ options = [], onChange, value: activeValue }) => (
+    <div data-testid='toggle-buttons'>
+      {options.map((opt) => (
+        <button key={opt.value} data-testid={`toggle-${opt.value}`} onClick={() => onChange?.(opt.value)}>
+          {opt.label}
+        </button>
+      ))}
+      <div data-testid='active-toggle'>{activeValue}</div>
+    </div>
+  ),
+}));
+
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout = ({ children, id }) => (
+    <div data-testid='listing-layout' id={id}>
       {children}
     </div>
+  );
+  ListingLayout.Toolbar = ({ children, actions }) => (
+    <div data-testid='toolbar'>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout };
+});
+
+jest.mock('@ui/FilterDropdown', () => ({
+  __esModule: true,
+  default: ({ label, options = [], value, onSelect, multiple }) => {
+    if (multiple) {
+      // Multi-select: severity in source expects `e.target.value` to be the array.
+      return (
+        <button data-testid={`multi-${label}`} onClick={() => onSelect?.({ target: { value: (options || []).slice(0, 1) } })}>
+          {label}
+        </button>
+      );
+    }
+    const currentValue = typeof value === 'object' && value !== null ? value.value : value;
+    return (
+      <select
+        data-testid={`filter-${label}`}
+        value={currentValue || ''}
+        onChange={(e) => onSelect?.({ target: { value: e.target.value } }, { value: e.target.value, label: e.target.value })}
+      >
+        <option value=''>--</option>
+        {(options || []).map((opt, idx) => {
+          const v = typeof opt === 'string' ? opt : opt.value;
+          const l = typeof opt === 'string' ? opt : opt.label;
+          return (
+            <option key={(v || '_') + '-' + idx} value={v}>
+              {l}
+            </option>
+          );
+        })}
+      </select>
+    );
+  },
+}));
+
+jest.mock('@ui/SearchInput', () => ({
+  __esModule: true,
+  default: ({ label, value, onChange, onEnterPress }) => (
+    <input
+      data-testid={`search-${label}`}
+      defaultValue={value || ''}
+      onChange={(e) => onChange?.(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' && onEnterPress) onEnterPress();
+      }}
+    />
   ),
 }));
 
@@ -158,6 +186,18 @@ describe('KubernetesSecurity (integration)', () => {
       { label: 'web', value: 'web' },
       { label: 'api', value: 'api' },
     ]);
+  });
+
+  // Flush pending mount-effect fetches (namespaces / workloads) so their
+  // setState calls don't leak past the test boundary. Run multiple flushes
+  // because the chain is: API resolve → setState → effect re-run → another
+  // resolve.
+  afterEach(async () => {
+    for (let i = 0; i < 5; i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+    }
   });
 
   it('renders Apps child by default with default Open status', async () => {
@@ -224,6 +264,7 @@ describe('KubernetesSecurity (integration)', () => {
 
   it('switches to CVE child when CVE toggle clicked', async () => {
     render(<KubernetesSecurity kubernetes={{ id: 'acc-1' }} />);
+    await act(async () => {});
 
     fireEvent.click(screen.getByTestId('toggle-cve'));
 
@@ -233,6 +274,7 @@ describe('KubernetesSecurity (integration)', () => {
 
   it('switches to Details child when Details toggle clicked', async () => {
     render(<KubernetesSecurity kubernetes={{ id: 'acc-1' }} />);
+    await act(async () => {});
 
     fireEvent.click(screen.getByTestId('toggle-details'));
 
@@ -242,7 +284,6 @@ describe('KubernetesSecurity (integration)', () => {
   it('shows Image search filter only for Images + Details tabs', async () => {
     render(<KubernetesSecurity kubernetes={{ id: 'acc-1' }} />);
 
-    // Default Apps tab: no image filter
     await waitFor(() => expect(screen.getByTestId('child-Apps')).toBeInTheDocument());
     expect(screen.queryByTestId('search-Image')).not.toBeInTheDocument();
 
@@ -297,6 +338,9 @@ describe('KubernetesSecurity (integration)', () => {
 
   it('image search Enter propagates to children only on Images/Details tab', async () => {
     render(<KubernetesSecurity kubernetes={{ id: 'acc-1' }} />);
+    // Wait for mount-effect namespace fetch to settle before firing further events,
+    // otherwise the late setNamespaces leaks past the test boundary.
+    await waitFor(() => expect(recommendationApi.listRecommendationNamesapces).toHaveBeenCalled());
 
     fireEvent.click(screen.getByTestId('toggle-images'));
     const input = screen.getByTestId('search-Image');
@@ -311,14 +355,6 @@ describe('KubernetesSecurity (integration)', () => {
     await waitFor(() => expect(screen.getByTestId('filter-Status')).toBeInTheDocument());
     expect(screen.queryByTestId('filter-Namespace')).not.toBeInTheDocument();
     expect(screen.queryByTestId('filter-Workload')).not.toBeInTheDocument();
-  });
-
-  it('uses heading prop when provided, defaults to Security when undefined', async () => {
-    const { rerender } = render(<KubernetesSecurity kubernetes={{ id: 'acc-1' }} heading='K8s Sec' />);
-    await waitFor(() => expect(screen.getByTestId('box-heading')).toHaveTextContent('K8s Sec'));
-
-    rerender(<KubernetesSecurity kubernetes={{ id: 'acc-1' }} heading={undefined} />);
-    await waitFor(() => expect(screen.getByTestId('box-heading')).toHaveTextContent('Security'));
   });
 
   it('initializes activeToggleButton from prop', async () => {

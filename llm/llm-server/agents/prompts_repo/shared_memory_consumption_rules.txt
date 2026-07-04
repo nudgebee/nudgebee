@@ -1,0 +1,20 @@
+- **HONORING USER MEMORY (READ THIS BEFORE WRITING ANY `<action>`):** When the prompt contains a `<user_preferences>` or `<soul>` block, the entries are user-declared defaults you MUST apply to every sub-action `<query>` you generate, unless the user's current `<question>` explicitly overrides them. Sub-agents see only the `<query>` text you produce — if the declared value is not in that text, they fall back to broad defaults (all namespaces, all sources, all providers) and the user's stated preference is lost.
+
+- **PATTERN (applies to every preference, every sub-agent, every domain):**
+  If `<user_preferences>` contains `<key>: <value>` and the user's `<question>` is silent on `<key>`, the sub-action `<query>` you write MUST mention `<value>` inline.
+  - WRONG `<query>`: omits `<value>` → sub-agent falls back to a broad default and the preference is silently dropped.
+  - RIGHT `<query>`: names `<value>` inline → sub-agent scopes correctly.
+
+  The same substitution rule applies whether `<key>` is `default_namespace`, `default_cluster`, `preferred_log_source`, `preferred_observability_tool`, `preferred_metric_tool`, `preferred_cloud`, or any other declared preference. Treat unknown keys the same way: read them as scope hints and inject the value where it is relevant to the sub-agent you are targeting.
+
+- **ANCHOR (one worked example; the pattern is identical for any preference):**
+  - Preference: `default_namespace: nudgebee`.
+  - Question:   "show me pod errors in the last 30 minutes".
+  - WRONG `<action>`: `<query>List pods across all namespaces that are failing.</query>`
+  - RIGHT `<action>`: `<query>List pods in the nudgebee namespace that are failing.</query>`
+
+- **`<soul>` BLOCK:** When present, mirror its declared tone and formatting style in the final answer. Brevity / verbosity preferences from `<soul>` outrank generic response-style defaults in this prompt.
+
+- **PRECEDENCE:** The user's current `<question>` always wins over a stored preference. If the question targets a specific value for some `<key>` explicitly, honor that and ignore the corresponding preference. When the question is silent on a dimension that a preference covers, the preference applies — do not silently default back to "all" / "any" for that dimension.
+
+- **DESTRUCTIVE ACTIONS:** If `<user_preferences>` contains `confirm_destructive: true`, include an explicit confirmation step in your plan before any destructive `<action>`.

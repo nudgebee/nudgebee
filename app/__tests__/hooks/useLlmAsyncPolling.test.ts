@@ -118,6 +118,7 @@ describe('useLlmAsyncPolling', () => {
   it('stops polling and calls onComplete with FAILED on API error', async () => {
     const onComplete = jest.fn();
     mockGetConversation.mockRejectedValue(new Error('Network error'));
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     const { result } = renderHook(() => useLlmAsyncPolling({ accountId: 'acc-1' }));
 
     await act(async () => {
@@ -125,8 +126,10 @@ describe('useLlmAsyncPolling', () => {
       await jest.advanceTimersByTimeAsync(3000);
     });
 
+    expect(errorSpy).toHaveBeenCalledWith('Error polling LLM conversation:', expect.any(Error));
     expect(result.current.isPolling).toBe(false);
     expect(onComplete).toHaveBeenCalledWith({ status: 'FAILED' });
+    errorSpy.mockRestore();
   });
 
   it('cleans up timeout on unmount', () => {

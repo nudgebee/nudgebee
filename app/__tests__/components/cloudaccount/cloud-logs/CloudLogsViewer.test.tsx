@@ -9,19 +9,19 @@ jest.mock('@api1/observability', () => ({
   },
 }));
 
+// Source consumes `useCloudLogsQueryPanel` (a hook) instead of the old QueryPanel component.
+// We mock the hook to: (a) stash the `onChange` callback into JSX buttons so tests can
+// simulate user picking valid / empty params, and (b) expose `provider` via testid.
 jest.mock('@components/cloudaccount/cloud-logs/CloudLogsQueryPanel', () => ({
   __esModule: true,
-  default: React.forwardRef((props: any, ref: any) => {
-    React.useImperativeHandle(ref, () => ({
-      setQuery: jest.fn(),
-    }));
-    return (
-      <div data-testid='query-panel'>
-        <div data-testid='qp-provider'>{props.provider}</div>
+  useCloudLogsQueryPanel: ({ provider, onChange }: any) => ({
+    filters: (
+      <>
+        <div data-testid='qp-provider'>{provider}</div>
         <button
           data-testid='qp-emit-valid'
           onClick={() =>
-            props.onChange({
+            onChange({
               query: 'fields @timestamp',
               region: 'us-east-1',
               logGroup: '/aws/lambda/x',
@@ -34,7 +34,7 @@ jest.mock('@components/cloudaccount/cloud-logs/CloudLogsQueryPanel', () => ({
         <button
           data-testid='qp-emit-empty'
           onClick={() =>
-            props.onChange({
+            onChange({
               query: '',
               region: '',
             })
@@ -42,8 +42,11 @@ jest.mock('@components/cloudaccount/cloud-logs/CloudLogsQueryPanel', () => ({
         >
           Emit Empty
         </button>
-      </div>
-    );
+      </>
+    ),
+    textarea: <div data-testid='query-panel'>panel</div>,
+    regionHint: '',
+    setQuery: jest.fn(),
   }),
 }));
 
@@ -52,81 +55,113 @@ jest.mock('@components/cloudaccount/cloud-logs/CloudLogsQueryHelp', () => ({
   default: () => <div data-testid='query-help'>help</div>,
 }));
 
-jest.mock('@shared/BoxLayout2', () => ({
-  __esModule: true,
-  default: ({ children, extraOptions = [], dateTimeRange, heading }: any) => (
-    <div data-testid='box-layout'>
-      <h2>{heading}</h2>
-      <div data-testid='extras'>{extraOptions}</div>
-      {dateTimeRange?.enabled && (
-        <button
-          data-testid='date-range-shortcut'
-          onClick={() =>
-            dateTimeRange.onChange({
-              startTime: 1000,
-              endTime: 2000,
-              shortcutClickTime: 60_000,
-            })
-          }
-        >
-          1m
-        </button>
-      )}
-      {dateTimeRange?.enabled && (
-        <button
-          data-testid='date-range-absolute'
-          onClick={() =>
-            dateTimeRange.onChange({
-              startTime: 1000,
-              endTime: 2000,
-              shortcutClickTime: 0,
-            })
-          }
-        >
-          Absolute
-        </button>
-      )}
-      {children}
-    </div>
-  ),
-}));
-
-jest.mock('@shared/CustomDropdown', () => ({
-  __esModule: true,
-  default: ({ label, value, options, onChange }: any) => (
-    <select data-testid={`dropdown-${label}`} value={value || ''} onChange={(e) => onChange(e, e.target.value)}>
-      {(options || []).map((opt: any) => {
-        const v = typeof opt === 'string' ? opt : opt.value;
-        const l = typeof opt === 'string' ? opt : opt.label;
-        return (
-          <option key={v} value={v}>
-            {l}
-          </option>
-        );
-      })}
-    </select>
-  ),
-}));
-
-jest.mock('@shared/NewCustomButton', () => ({
-  __esModule: true,
-  default: ({ text, onClick, disabled }: any) => (
-    <button data-testid={`btn-${text}`} onClick={onClick} disabled={disabled}>
-      {text}
-    </button>
-  ),
-}));
+jest.mock('@utils/colors');
 
 jest.mock('@shared/format/Datetime', () => ({
   __esModule: true,
   default: ({ value }: any) => <span data-testid='datetime'>{value || '—'}</span>,
 }));
 
-jest.mock('@shared/tables/CustomTable2', () => ({
+jest.mock('@shared/buttons/DownloadButton', () => ({
+  __esModule: true,
+  default: ({ onClick }: any) => (
+    <button data-testid='download-btn' onClick={onClick}>
+      DL
+    </button>
+  ),
+}));
+
+jest.mock('@shared/widgets/CustomDateTimeRangePicker', () => ({
+  __esModule: true,
+  default: ({ onChange }: any) => (
+    <>
+      <button
+        data-testid='date-range-shortcut'
+        onClick={() => onChange({ selection: { startTime: 1000, endTime: 2000, shortcutClickTime: 60_000 } })}
+      >
+        1m
+      </button>
+      <button data-testid='date-range-absolute' onClick={() => onChange({ selection: { startTime: 1000, endTime: 2000, shortcutClickTime: 0 } })}>
+        Absolute
+      </button>
+    </>
+  ),
+}));
+
+jest.mock('@ui/Button', () => ({
+  __esModule: true,
+  Button: ({ children, onClick, disabled }: any) => (
+    <button data-testid={`btn-${typeof children === 'string' ? children : 'icon'}`} onClick={onClick} disabled={disabled}>
+      {children}
+    </button>
+  ),
+}));
+
+jest.mock('@ui/Banner', () => ({
+  __esModule: true,
+  Banner: ({ message }: any) => <div data-testid='banner'>{message}</div>,
+}));
+
+jest.mock('@ui/EmptyState', () => ({
+  __esModule: true,
+  EmptyState: ({ title, description }: any) => (
+    <div data-testid='empty-state'>
+      <div>{title}</div>
+      <div>{description}</div>
+    </div>
+  ),
+}));
+
+jest.mock('@ui/Chip', () => ({
+  __esModule: true,
+  Chip: ({ children }: any) => <span data-testid='chip'>{children}</span>,
+}));
+
+jest.mock('@ui/ListingLayout', () => {
+  const ListingLayout: any = ({ children, id }: any) => (
+    <div data-testid='listing-layout' id={id}>
+      {children}
+    </div>
+  );
+  ListingLayout.Toolbar = ({ children, actions }: any) => (
+    <div data-testid='toolbar'>
+      <div data-testid='toolbar-actions'>{actions}</div>
+      {children}
+    </div>
+  );
+  ListingLayout.Body = ({ children }: any) => <div data-testid='body'>{children}</div>;
+  return { __esModule: true, ListingLayout };
+});
+
+jest.mock('@ui/FilterDropdown', () => ({
+  __esModule: true,
+  default: ({ label, options = [], value, onSelect }: any) => {
+    const currentValue = typeof value === 'object' && value !== null ? value.value : value;
+    return (
+      <select
+        data-testid={`dropdown-${label}`}
+        value={currentValue || ''}
+        onChange={(e) => onSelect?.(e, { value: e.target.value, label: e.target.value })}
+      >
+        {(options || []).map((opt: any, idx: number) => {
+          const v = typeof opt === 'string' ? opt : opt.value;
+          const l = typeof opt === 'string' ? opt : opt.label;
+          return (
+            <option key={(v || '_') + '-' + idx} value={v}>
+              {l}
+            </option>
+          );
+        })}
+      </select>
+    );
+  },
+}));
+
+jest.mock('@shared/tables/CustomTable', () => ({
   __esModule: true,
   default: ({ id, headers, tableData, showExpandable }: any) => (
     <div data-testid='custom-table' id={id}>
-      <div data-testid='headers'>{headers.map((h: any) => h.name).join('|')}</div>
+      <div data-testid='headers'>{(headers || []).map((h: any) => h.name).join('|')}</div>
       <div data-testid='expandable-enabled'>{String(!!showExpandable)}</div>
       {(tableData || []).map((row: any, i: number) => (
         <div key={i} data-testid={`row-${i}`}>
@@ -171,17 +206,17 @@ describe('CloudLogsViewer (integration)', () => {
     expect(observability.fetchLogs).not.toHaveBeenCalled();
   });
 
-  it('shows initial info Alert when AWS and no logGroup selected', async () => {
+  it('shows initial empty state when AWS and no logGroup selected', async () => {
     render(<CloudLogsViewer accountId='acc-1' provider='AWS' />);
     await waitFor(() => expect(screen.getByText(/Select a region and log group/)).toBeInTheDocument());
   });
 
-  it('shows initial info Alert when Azure and no resourceId selected', async () => {
+  it('shows initial empty state when Azure and no resourceId selected', async () => {
     render(<CloudLogsViewer accountId='acc-1' provider='Azure' />);
     await waitFor(() => expect(screen.getByText(/Select a Log Analytics Workspace/)).toBeInTheDocument());
   });
 
-  it('shows error Alert when Run Query pressed without AWS log group', async () => {
+  it('shows error Banner when Run Query pressed without AWS log group', async () => {
     render(<CloudLogsViewer accountId='acc-1' provider='AWS' />);
     await waitFor(() => expect(screen.getByTestId('qp-emit-empty')).toBeInTheDocument());
 
@@ -192,7 +227,7 @@ describe('CloudLogsViewer (integration)', () => {
     expect(observability.fetchLogs).not.toHaveBeenCalled();
   });
 
-  it('shows error Alert when Run Query pressed without Azure resourceId', async () => {
+  it('shows error Banner when Run Query pressed without Azure resourceId', async () => {
     render(<CloudLogsViewer accountId='acc-1' provider='Azure' />);
     await waitFor(() => expect(screen.getByTestId('qp-emit-empty')).toBeInTheDocument());
 
@@ -276,7 +311,6 @@ describe('CloudLogsViewer (integration)', () => {
     await waitFor(() => expect(screen.getByTestId('custom-table')).toBeInTheDocument());
     const headers = screen.getByTestId('headers').textContent;
     expect(headers).toMatch(/Timestamp/);
-    // dynamic label keys present
     expect(headers).toMatch(/region/);
     expect(headers).toMatch(/pod/);
     expect(headers).toMatch(/container/);
@@ -333,11 +367,10 @@ describe('CloudLogsViewer (integration)', () => {
 
     await waitFor(() => expect(observability.fetchLogs).toHaveBeenCalled());
     const payload = observability.fetchLogs.mock.calls[0][0];
-    // shortcutClickTime=60_000 → start_time = now - 60_000, end_time = now
     expect(payload.end_time - payload.start_time).toBe(60_000);
   });
 
-  it('shows error Alert when fetchLogs rejects', async () => {
+  it('shows error Banner when fetchLogs rejects', async () => {
     observability.fetchLogs.mockRejectedValue({
       response: { data: { errors: [{ message: 'Quota exceeded' }] } },
     });
@@ -361,7 +394,7 @@ describe('CloudLogsViewer (integration)', () => {
     await waitFor(() => expect(screen.getByText('Network down')).toBeInTheDocument());
   });
 
-  it('shows "No log entries found" Alert when empty result + provider params present', async () => {
+  it('shows "No log entries" empty state when empty result + provider params present', async () => {
     observability.fetchLogs.mockResolvedValue(mockLogsResponse([]));
 
     render(<CloudLogsViewer accountId='acc-1' provider='AWS' />);
