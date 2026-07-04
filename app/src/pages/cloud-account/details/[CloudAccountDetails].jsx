@@ -11,6 +11,7 @@ import CloudAccountEvents from '@components/cloudaccount/CloudAccountEvents';
 import CloudAccountMetrices from '@components/cloudaccount/CloudAccountMetrices';
 import { CloudLogsViewer } from '@components/cloudaccount/cloud-logs';
 import { CloudMetricsViewer } from '@components/cloudaccount/cloud-metrics';
+import KubernetesTracesListing from '@components/k8s/details/KubernetesTracesListing';
 import CloudAccountSecurity from '@components/cloudaccount/CloudAccountSecurity';
 import CloudAccountTools from '@components/cloudaccount/CloudAccountTools';
 import CloudAccountAlertManager from '@components/cloudaccount/CloudAccountAlertManager';
@@ -51,6 +52,7 @@ import {
   GCPCloudStorageIcon,
   CloudFoundryIcon,
   NodesIcon,
+  LogsTracesIcon,
 } from '@assets';
 import apiCloudAccount from '@api1/cloud-account';
 import { useRouter } from 'next/router';
@@ -188,6 +190,11 @@ const CloudAccounts = () => {
           { id: 'alert-manager', text: 'Alert Manager', value: 0, fragment: 'alert-manager', icon: AlertManagerIcon },
           { id: 'logs', text: 'Cloud Logs', value: 1, fragment: 'cloud-logs', icon: QueryLogIcon },
           { id: 'metrics', text: 'Cloud Metrics', value: 2, fragment: 'metrics', icon: NodesIcon },
+          // GCP-only for now: distributed traces come from Cloud Trace (other
+          // providers will be wired in later).
+          ...(selectedCluster?.cloud_provider === 'GCP'
+            ? [{ id: 'traces', text: 'Traces', value: 3, fragment: 'traces', icon: LogsTracesIcon }]
+            : []),
         ],
       },
       {
@@ -636,6 +643,11 @@ const CloudAccounts = () => {
                 {selectedSubTab === 0 && <CloudAccountAlertManager accountId={accountId} />}
                 {selectedSubTab === 1 && <CloudLogsViewer accountId={accountId} provider={selectedCluster?.cloud_provider || 'AWS'} />}
                 {selectedSubTab === 2 && <CloudMetricsViewer accountId={accountId} provider={selectedCluster?.cloud_provider || 'AWS'} />}
+                {selectedSubTab === 3 && selectedCluster?.cloud_provider === 'GCP' && (
+                  <Box sx={{ width: '100%', overflowX: 'auto' }}>
+                    <KubernetesTracesListing accountId={accountId} />
+                  </Box>
+                )}
               </>
             ) : (
               <Loader />

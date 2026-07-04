@@ -56,6 +56,29 @@ func queryGcloudTraces(ctx providers.CloudProviderContext, account providers.Acc
 		}
 	}()
 
+	// Single-trace fetch (heatmap/gantt drilldown): Cloud Trace's GetTrace returns the
+	// full span tree for one trace id, which the window-scoped ListTraces can't target.
+	if query.TraceId != "" {
+		tr, err := client.GetTrace(ctx.GetContext(), &tracepb.GetTraceRequest{
+			ProjectId: session.ProjectId,
+			TraceId:   query.TraceId,
+		})
+		if err != nil {
+			RecordGCPPermissionError(ctx, err)
+			logger.Error("failed to get cloud trace", "error", err, "projectId", session.ProjectId, "traceId", query.TraceId)
+			return providers.QueryTracesResponse{}, fmt.Errorf("failed to get trace %s: %w", query.TraceId, err)
+		}
+		single := make([]providers.TraceSpanItem, 0, len(tr.GetSpans()))
+		for _, s := range tr.GetSpans() {
+			if len(single) >= maxTraceSpans {
+				break
+			}
+			single = append(single, traceSpanToItem(tr.GetTraceId(), s))
+		}
+		logger.Info("GCP single-trace fetch complete", "projectId", session.ProjectId, "traceId", query.TraceId, "spans", len(single))
+		return providers.QueryTracesResponse{Spans: single, TraceCount: 1, Status: "Complete"}, nil
+	}
+
 	end := time.Now()
 	if query.EndTime != nil {
 		end = *query.EndTime
@@ -73,13 +96,31 @@ func queryGcloudTraces(ctx providers.CloudProviderContext, account providers.Acc
 		limit = maxTraceLimit
 	}
 
+	// Order at the source so a limited query returns the correct page of traces.
+	// Cloud Trace's default is trace_id order, which would page in arbitrary
+	// (oldest-by-id) traces regardless of the window; "start desc" surfaces the
+	// most recent traces first.
+	orderBy := query.OrderBy
+	if orderBy == "" {
+		orderBy = "start desc"
+	}
+
+	// "By Traces" view wants one representative (root) span per trace. ROOTSPAN
+	// returns exactly that from the source, so PageSize bounds traces (not spans)
+	// and there's no in-memory root reduction. Otherwise COMPLETE for full trees.
+	view := tracepb.ListTracesRequest_COMPLETE
+	if query.RootsOnly {
+		view = tracepb.ListTracesRequest_ROOTSPAN
+	}
+
 	req := &tracepb.ListTracesRequest{
 		ProjectId: session.ProjectId,
-		View:      tracepb.ListTracesRequest_COMPLETE, // include spans
+		View:      view,
 		PageSize:  int32(limit),
 		StartTime: timestamppb.New(start.UTC()),
 		EndTime:   timestamppb.New(end.UTC()),
 		Filter:    query.Filter, // generic passthrough; empty = all in-window traces
+		OrderBy:   orderBy,
 	}
 
 	logger.Info("querying GCP traces", "projectId", session.ProjectId,

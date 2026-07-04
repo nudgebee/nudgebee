@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math"
 	"nudgebee/services/account"
+	"nudgebee/services/cloud"
 	"nudgebee/services/common"
 	"nudgebee/services/integrations/core"
 	"nudgebee/services/internal/database"
@@ -366,6 +367,10 @@ func getTraceSource(provider, integrationSource string) (TraceSource, error) {
 		return &DynatraceTraceSource{}, nil
 	case provider == "solarwinds" && integrationSource == "user":
 		return &SolarWindsTraceSource{}, nil
+	case provider == "gcp":
+		// GCP cloud accounts have no agent/integration row; the provider is synthesized
+		// by the resolver, so match on provider alone regardless of source.
+		return &GcpTraceSource{}, nil
 	default:
 		return nil, fmt.Errorf(
 			"unsupported traces provider/source combination: provider=%s, integrationSource=%s",
@@ -466,6 +471,14 @@ func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, a
 		} else {
 			agentDetails, err := account.GetAgentConnectionDetails(accountId)
 			if err != nil {
+				// GCP cloud accounts have no agent; their traces come from Cloud Trace.
+				// Resolve them to the gcp trace source before treating the missing agent
+				// as an error — this is the only trace path for a GCP cloud account.
+				if providerType == "traces" {
+					if cp, cErr := cloud.GetCloudAccountProvider(accountId, ctx.GetSecurityContext().GetTenantId()); cErr == nil && strings.EqualFold(cp, "gcp") {
+						return "gcp", "user", nil, nil
+					}
+				}
 				ctx.GetLogger().Error(fmt.Sprintf("unable to get agent details, for account %s", accountId), "error", err)
 				return "", "", nil, err
 			}
@@ -498,6 +511,16 @@ func getLogsMetricsTracesProviderWithIntegration(ctx *security.RequestContext, a
 			matchedIntegration = integrationDto
 		} else {
 			defaultSource = "agent"
+		}
+	}
+	// GCP cloud accounts register a type=GCP agent row (the cloud-collector
+	// connection), so GetAgentConnectionDetails succeeds but carries no trace
+	// provider — the err-path synthesis above is never reached. Fall back to the
+	// Cloud Trace source for any GCP cloud account still left without a traces
+	// provider, so the account's Traces tab resolves instead of returning empty.
+	if providerType == "traces" && defaultProvider == "" {
+		if cp, cErr := cloud.GetCloudAccountProvider(accountId, ctx.GetSecurityContext().GetTenantId()); cErr == nil && strings.EqualFold(cp, "gcp") {
+			return "gcp", "user", nil, nil
 		}
 	}
 	return defaultProvider, defaultSource, matchedIntegration, nil

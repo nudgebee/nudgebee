@@ -7,9 +7,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+
+	"github.com/google/uuid"
+
 	"nudgebee/services/common"
 	"nudgebee/services/config"
 	"nudgebee/services/eventrule/playbooks"
+	"nudgebee/services/internal/database"
 	"nudgebee/services/security"
 	"strconv"
 	"strings"
@@ -21,9 +25,12 @@ import (
 type TracesQuery struct {
 	ServiceName string     `json:"service_name"`
 	Filter      string     `json:"filter"`
+	TraceId     string     `json:"trace_id"` // when set, fetch this single trace's spans (heatmap/gantt drilldown)
 	StartTime   *time.Time `json:"start_time"`
 	EndTime     *time.Time `json:"end_time"`
 	Limit       *int64     `json:"limit"`
+	OrderBy     string     `json:"order_by"`   // Cloud Trace ListTraces order_by, e.g. "start desc"; empty = provider default
+	RootsOnly   bool       `json:"roots_only"` // "By Traces" view: request only root spans (ListTraces View=ROOTSPAN) instead of reducing in memory
 }
 
 type QueryTracesRequest struct {
@@ -102,6 +109,94 @@ func QueryTraces(ctx *security.RequestContext, req QueryTracesRequest) (QueryTra
 		return out, err
 	}
 	return wrap.Data, nil
+}
+
+// getCloudAccountNumberById resolves a cloud account's provider account number from its
+// internal id. For GCP this number is the project id (the collector sets
+// session.ProjectId = account.AccountNumber), which the per-span Cloud Logging drilldown
+// filter (trace="projects/<project>/traces/<id>") needs.
+func getCloudAccountNumberById(accountId, tenantId string) (string, error) {
+	if tenantId == "" {
+		return "", errors.New("tenantId cannot be empty")
+	}
+	// accountId may be a non-UUID sentinel (e.g. "demo"); the id column is uuid, so a
+	// non-UUID value would make Postgres error ("invalid input syntax for type uuid").
+	// Treat it as a normal miss instead of a wasted, erroring round-trip.
+	if _, err := uuid.Parse(accountId); err != nil {
+		return "", sql.ErrNoRows
+	}
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return "", err
+	}
+	var accountNumber string
+	err = dbms.Db.QueryRowx(
+		"SELECT account_number FROM cloud_accounts WHERE id = $1 AND tenant = $2 AND status = 'active'",
+		accountId, tenantId,
+	).Scan(&accountNumber)
+	return accountNumber, err
+}
+
+// GetCloudAccountProvider returns the cloud provider (e.g. "GCP", "AWS", "Azure") for an
+// active cloud account, or sql.ErrNoRows when the id is not an active cloud account. The
+// observability trace-provider resolver uses it to route GCP cloud accounts to the Cloud
+// Trace source.
+func GetCloudAccountProvider(accountId, tenantId string) (string, error) {
+	if tenantId == "" {
+		return "", errors.New("tenantId cannot be empty")
+	}
+	// accountId may be a non-UUID sentinel (e.g. "demo"); the id column is uuid, so a
+	// non-UUID value would make Postgres error. Treat it as "not a cloud account".
+	if _, err := uuid.Parse(accountId); err != nil {
+		return "", sql.ErrNoRows
+	}
+	dbms, err := database.GetDatabaseManager(database.Metastore)
+	if err != nil {
+		return "", err
+	}
+	var provider string
+	err = dbms.Db.QueryRowx(
+		"SELECT cloud_provider FROM cloud_accounts WHERE id = $1 AND tenant = $2 AND status = 'active'",
+		accountId, tenantId,
+	).Scan(&provider)
+	return provider, err
+}
+
+// QueryTracesList fetches GCP Cloud Trace spans for a cloud account and maps them into the
+// snake_case span shape the frontend trace UI (KubernetesTracesListing) renders. It powers
+// the cloud-account Monitoring > Traces tab, reusing the exact same projection as the
+// playbook evidence path. Scope: all in-window project traces, optionally narrowed to a
+// single Cloud Run service.
+func QueryTracesList(ctx *security.RequestContext, req QueryTracesRequest) ([]map[string]any, error) {
+	if req.AccountId == "" {
+		return nil, errors.New("account_id is required")
+	}
+
+	// Resolve the GCP project (= account number) so each span carries it for the per-trace
+	// Cloud Logging drilldown. Non-fatal: an empty project only disables that drilldown.
+	project, err := getCloudAccountNumberById(req.AccountId, ctx.GetSecurityContext().GetTenantId())
+	if err != nil {
+		// A missing/inactive account is an expected miss (the drilldown just degrades);
+		// only surface genuinely unexpected lookup failures.
+		if !errors.Is(err, sql.ErrNoRows) {
+			ctx.GetLogger().Warn("QueryTracesList: could not resolve account project", "account_id", req.AccountId, "error", err)
+		}
+		project = ""
+	}
+
+	// Narrow to a service when requested and no explicit provider-native filter was
+	// supplied. Filter on the OTel span label service.name — this is generic (any
+	// GCP-hosted, OTel-instrumented service), unlike resource.type="cloud_run_revision"
+	// which returns nothing for non-Cloud-Run traces (Cloud SQL, GKE, App Engine, …).
+	if req.Query.Filter == "" && req.Query.ServiceName != "" {
+		req.Query.Filter = fmt.Sprintf(`service.name:%s`, req.Query.ServiceName)
+	}
+
+	resp, err := QueryTraces(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return MapCloudTraceSpans(resp.Spans, req.Query.ServiceName, project, ""), nil
 }
 
 // ---- enricher ----
@@ -229,7 +324,7 @@ func (a *cloudTracesAction) Execute(ctx playbooks.PlaybookActionContext, rawPara
 	scopedSpans := filterSpansByService(resp.Spans, serviceName)
 	traceCount := distinctTraceCount(scopedSpans)
 
-	spans := mapCloudTraceSpans(scopedSpans, serviceName, project, region)
+	spans := MapCloudTraceSpans(scopedSpans, serviceName, project, region)
 	return cloudTracesResponse{
 		Data:           map[string]any{"data": spans},
 		AdditionalInfo: map[string]any{"action_name": "cloud_traces", "title": "Traces"},
@@ -366,18 +461,34 @@ func distinctTraceCount(spans []collectorTraceSpan) int {
 	return len(seen)
 }
 
-// mapCloudTraceSpans translates the collector's span shape into the snake_case shape
+// MapCloudTraceSpans translates the collector's span shape into the snake_case shape
 // the TracesCard renders (timestamp ISO8601, duration in ns, HTTP fields from the
-// Cloud Trace "/http/*" labels, all labels preserved in span_attributes).
-func mapCloudTraceSpans(spans []collectorTraceSpan, serviceName, project, region string) []map[string]any {
+// Cloud Trace "/http/*" labels, all labels preserved in span_attributes). Exported so the
+// observability GcpTraceSource and the playbook evidence path share the exact same projection.
+func MapCloudTraceSpans(spans []collectorTraceSpan, serviceName, project, region string) []map[string]any {
 	out := make([]map[string]any, 0, len(spans))
 	for _, s := range spans {
 		labels := s.Labels
 		if labels == nil {
 			labels = map[string]string{}
 		}
-		httpStatus := firstNonEmpty(labels["/http/status_code"], labels["http.status_code"])
-		resource := firstNonEmpty(labels["/http/url"], labels["/http/route"], labels["/http/path"], labels["http.url"])
+		// Cloud Trace spans carry two label conventions: the Cloud Trace agent's
+		// "/http/*" keys (Cloud Run root spans) and OTel semantic conventions
+		// (OTel-instrumented child spans: http.*, url.*, service.name). Read both,
+		// and fall back to Cloud SQL query-plan labels so a single column set works
+		// across HTTP-service and database traces.
+		httpStatus := firstNonEmpty(labels["/http/status_code"], labels["http.response.status_code"], labels["http.status_code"])
+		resource := firstNonEmpty(
+			labels["/http/url"], labels["/http/route"], labels["/http/path"],
+			labels["http.url"], labels["http.target"], labels["url.path"],
+			labels["normalized_query"], labels["Relation Name"], labels["Index Name"],
+		)
+		// Service identity: OTel service.name, else the requested Cloud Run service,
+		// else the Cloud SQL database/instance, else the HTTP host (Cloud Trace agent
+		// root spans carry no service.name but do carry /http/host, so "By Traces"
+		// rows still get a meaningful Service value).
+		svc := firstNonEmpty(labels["service.name"], serviceName, labels["database"], labels["instance"],
+			labels["server.address"], labels["/http/host"], labels["http.host"])
 
 		// span_attributes/resource_attributes are JSON strings — the canonical trace
 		// shape every consumer (the gantt chart, the server-side gateway) parses. The
@@ -395,8 +506,8 @@ func mapCloudTraceSpans(spans []collectorTraceSpan, serviceName, project, region
 			"status_code":         traceStatusFromHTTP(httpStatus),
 			"http_status_code":    httpStatus,
 			"resource":            resource,
-			"service_name":        serviceName,
-			"workload_name":       serviceName,
+			"service_name":        svc,
+			"workload_name":       svc,
 			"span_attributes":     string(attrsJSON),
 			"resource_attributes": "{}",
 			// Marks these as Cloud Trace spans so the frontend renders the gantt from

@@ -431,9 +431,12 @@ type QueryDeploymentDiffResponse struct {
 type QueryTracesRequest struct {
 	ServiceName string     `json:"service_name"` // optional resource scope hint
 	Filter      string     `json:"filter"`       // optional provider-native filter (generic passthrough)
+	TraceId     string     `json:"trace_id"`     // when set, fetch this single trace's spans (heatmap/gantt drilldown)
 	StartTime   *time.Time `json:"start_time"`
 	EndTime     *time.Time `json:"end_time"`
-	Limit       *int64     `json:"limit"` // max traces to return
+	Limit       *int64     `json:"limit"`      // max traces to return
+	OrderBy     string     `json:"order_by"`   // Cloud Trace ListTraces order_by (trace_id|name|duration|start [desc]); empty = "start desc"
+	RootsOnly   bool       `json:"roots_only"` // "By Traces" view: return only root spans (ListTraces View=ROOTSPAN)
 }
 
 // TraceSpanItem is a single span, flattened across the returned traces (so the whole
