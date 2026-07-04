@@ -211,6 +211,25 @@ jest.mock('@shared/tables/CustomTable', () => ({
 
 jest.mock('@components/k8s/common/KubernetesTable', () => ({
   __esModule: true,
+  // TriageRulesManager renders this module's default export as its table (it receives
+  // rows via the `data` prop). The named TriageRuleEventsTable powers the expandable row.
+  default: ({ id, data, headers, totalRows, loading, pageNumber }: any) => (
+    <div data-testid='k8s-table' id={id}>
+      {loading && <div data-testid='loading'>loading</div>}
+      <div data-testid='total'>{totalRows}</div>
+      <div data-testid='page'>{pageNumber}</div>
+      <div data-testid='headers'>{(headers || []).map((h: any) => h.name).join('|')}</div>
+      {(data || []).map((row: any, i: number) => (
+        <div key={i} data-testid={`row-${i}`}>
+          {row.map((cell: any, j: number) => (
+            <span key={j} data-testid={`cell-${i}-${j}`}>
+              {cell.component}
+            </span>
+          ))}
+        </div>
+      ))}
+    </div>
+  ),
   TriageRuleEventsTable: () => <div data-testid='triage-rule-events-table' />,
 }));
 
@@ -307,8 +326,9 @@ describe('TriageRulesManager (integration)', () => {
       cloud_account_id: 'acc-1',
       cloud_account_ids: undefined,
       rule_type: undefined,
-      enabled: undefined,
     });
+    // Status is filtered client-side now, so `enabled` is never sent to the server.
+    expect(call).not.toHaveProperty('enabled');
   });
 
   it('renders Account column in multi-account view, hidden in single', async () => {
@@ -342,26 +362,50 @@ describe('TriageRulesManager (integration)', () => {
     expect(apiTriage.getTriageRules.mock.calls[0][0].rule_type).toBe('suppression');
   });
 
-  it('refetches with enabled=true on Status=Enabled', async () => {
+  // A system rule disabled for the current account keeps enabled=true and is disabled
+  // only via the per-account override (is_overridden). Status filtering must use this
+  // effective status client-side, never the raw `enabled` column on the server.
+  const overrideDisabledSystemRule = {
+    id: 'sys-2',
+    name: 'System Rule Disabled Here',
+    rule_type: 'suppression',
+    action: 'drop',
+    priority: 2,
+    enabled: true, // column stays true; disabled only via the account override
+    match_count: 3,
+    created_at: '2026-05-02T10:00:00Z',
+    account_id: null,
+    is_editable: false,
+    is_system_rule: true,
+    is_overridden: true,
+  };
+
+  it('filters to effective-enabled rules client-side (no server enabled filter) on Status=Enabled', async () => {
+    apiTriage.getTriageRules.mockResolvedValue({ rules: [...sampleRules, overrideDisabledSystemRule] });
     render(<TriageRulesManager accountId='acc-1' />);
     await waitFor(() => expect(apiTriage.getTriageRules).toHaveBeenCalled());
     apiTriage.getTriageRules.mockClear();
 
     fireEvent.change(screen.getByTestId('filter-Status'), { target: { value: 'Enabled' } });
 
-    await waitFor(() => expect(apiTriage.getTriageRules).toHaveBeenCalled());
-    expect(apiTriage.getTriageRules.mock.calls[0][0].enabled).toBe(true);
+    // rule-1 (custom, enabled) + sys-1 (system, not overridden) = 2 effective-enabled.
+    // rule-2 (custom, disabled) and sys-2 (override-disabled) are excluded.
+    await waitFor(() => expect(screen.getByTestId('total')).toHaveTextContent('2'));
+    // Status is client-side now: no refetch and `enabled` is never sent upstream.
+    expect(apiTriage.getTriageRules).not.toHaveBeenCalled();
   });
 
-  it('refetches with enabled=false on Status=Disabled', async () => {
+  it('treats override-disabled system rules as Disabled on Status=Disabled', async () => {
+    apiTriage.getTriageRules.mockResolvedValue({ rules: [...sampleRules, overrideDisabledSystemRule] });
     render(<TriageRulesManager accountId='acc-1' />);
     await waitFor(() => expect(apiTriage.getTriageRules).toHaveBeenCalled());
     apiTriage.getTriageRules.mockClear();
 
     fireEvent.change(screen.getByTestId('filter-Status'), { target: { value: 'Disabled' } });
 
-    await waitFor(() => expect(apiTriage.getTriageRules).toHaveBeenCalled());
-    expect(apiTriage.getTriageRules.mock.calls[0][0].enabled).toBe(false);
+    // rule-2 (custom, disabled) + sys-2 (system, override-disabled, enabled=true) = 2.
+    await waitFor(() => expect(screen.getByTestId('total')).toHaveTextContent('2'));
+    expect(apiTriage.getTriageRules).not.toHaveBeenCalled();
   });
 
   it('initializes account filter from router query in multi-account view', async () => {

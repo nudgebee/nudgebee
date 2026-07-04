@@ -80,8 +80,21 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
     return raw ? raw.split(',').filter(Boolean) : [];
   });
 
-  // System rules are filtered client-side - the list API has no server-side toggle for them.
-  const filteredRules = useMemo(() => (includeSystemRules ? rules : rules.filter((r) => !r.is_system_rule)), [rules, includeSystemRules]);
+  // System-rule visibility and Status are both filtered client-side. Status uses each
+  // rule's *effective* status (a system rule disabled for this account via an override
+  // keeps enabled=true), matching the badge in getStatusDisplay — filtering on the raw
+  // `enabled` column alone would mismatch override-disabled system rules.
+  const filteredRules = useMemo(() => {
+    let out = includeSystemRules ? rules : rules.filter((r) => !r.is_system_rule);
+    if (selectedStatus === 'Enabled' || selectedStatus === 'Disabled') {
+      const wantEnabled = selectedStatus === 'Enabled';
+      out = out.filter((r) => {
+        const effectiveEnabled = r.enabled && !(r.is_system_rule && r.is_overridden);
+        return effectiveEnabled === wantEnabled;
+      });
+    }
+    return out;
+  }, [rules, includeSystemRules, selectedStatus]);
   const totalCount = filteredRules.length;
 
   useEffect(() => {
@@ -232,13 +245,14 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
   const fetchRules = useCallback(async () => {
     setLoading(true);
     try {
-      const enabled = selectedStatus === 'Enabled' ? true : selectedStatus === 'Disabled' ? false : undefined;
-      // Use selectedAccountFilter when in multi-account view, otherwise use accountId prop
+      // Status is filtered client-side (see filteredRules): a system rule disabled
+      // for this account keeps enabled=true and is only disabled via a per-account
+      // override, so a server-side `enabled` filter would drop those rows before the
+      // client can classify them by their effective (displayed) status.
       const result = await apiTriage.getTriageRules({
         cloud_account_id: !isMultiAccountView ? accountId : undefined,
         cloud_account_ids: isMultiAccountView && selectedAccountFilter.length ? selectedAccountFilter : undefined,
         rule_type: selectedRuleType || undefined,
-        enabled,
       });
 
       const rulesData = result?.rules || [];
@@ -249,7 +263,7 @@ const TriageRulesManager: React.FC<TriageRulesManagerProps> = ({ accountId }) =>
     } finally {
       setLoading(false);
     }
-  }, [accountId, selectedRuleType, selectedStatus, isMultiAccountView, selectedAccountFilter]);
+  }, [accountId, selectedRuleType, isMultiAccountView, selectedAccountFilter]);
 
   useEffect(() => {
     fetchRules();
