@@ -1,31 +1,35 @@
 import { Page, Locator } from "@playwright/test";
 
+const pagesWithTourHandler = new WeakSet<Page>();
+
 /**
- * Dismiss the "Welcome to Nudgebee" first-login tour dialog (TourWelcomeDialog)
- * if it appears. Best-effort and non-blocking: clicks Snooze, falling back to
- * the header close (x) button. Safe to call when no popup is present — it
- * simply returns after a short wait.
+ * Register a page-wide auto-dismiss for the "Welcome to <brand>" first-login
+ * tour dialog (TourWelcomeDialog). Hooks Playwright's page.addLocatorHandler so
+ * the tour is snoozed automatically WHENEVER it pops up — the tour re-appears on
+ * route changes even after being snoozed, and its modal overlay intercepts
+ * pointer events on whatever is behind it (e.g. the automation listing's row
+ * menus). Register once per page, before login; it stays active for the page's
+ * lifetime and is safe when the tour never shows. Idempotent per page, so
+ * repeated calls (retries, multiple logins) never stack duplicate handlers.
  */
-export async function dismissWelcomeTour(page: Page, timeout = 4000): Promise<boolean> {
+export async function registerWelcomeTourAutoDismiss(page: Page): Promise<void> {
+  if (pagesWithTourHandler.has(page)) return;
+  pagesWithTourHandler.add(page);
+
   const snoozeBtn = page.locator("#tour-welcome-snooze");
-  const closeBtn = page.locator("#close-modal-btn");
-
-  const appeared = await snoozeBtn
-    .waitFor({ state: "visible", timeout })
-    .then(() => true)
-    .catch(() => false);
-
-  if (!appeared) return false;
-
-  try {
-    await snoozeBtn.click();
-  } catch {
-    await closeBtn.click().catch(() => {});
-  }
-
-  await snoozeBtn.waitFor({ state: "hidden", timeout: 5000 }).catch(() => {});
-  console.log("Dismissed Welcome to Nudgebee tour popup");
-  return true;
+  await page.addLocatorHandler(snoozeBtn, async () => {
+    try {
+      await snoozeBtn.click({ timeout: 5000 });
+      console.log("Auto-dismissed Welcome tour popup via Snooze");
+    } catch {
+      try {
+        await page.locator("#close-modal-btn").click({ timeout: 5000 });
+        console.log("Auto-dismissed Welcome tour popup via Close");
+      } catch (err) {
+        console.error("Failed to auto-dismiss Welcome tour popup:", err);
+      }
+    }
+  });
 }
 
 export async function ensureSwitchEnabled(

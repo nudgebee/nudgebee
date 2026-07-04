@@ -3,7 +3,7 @@ import { writeFileSync, mkdirSync } from "fs";
 import { PLAYWRIGHT_REPORT_DIR, TENANT_FILE_PATH } from "../tests/utils/paths";
 import { doDevLogin } from "./devLogin";
 import { doCredentialsLogin } from "./ossLoginHelper";
-import { dismissWelcomeTour } from "../tests/utils/helpers";
+import { registerWelcomeTourAutoDismiss } from "../tests/utils/helpers";
 
 export class LoginPage {
   readonly page: Page;
@@ -234,6 +234,8 @@ export class LoginPage {
   }
 
   async doFullLogin() {
+    await registerWelcomeTourAutoDismiss(this.page);
+
     if (process.env.E2E_ENVIRONMENT === "oss") {
       await doCredentialsLogin(this.page);
       await this.waitForLoaderToDisappear();
@@ -269,7 +271,6 @@ export class LoginPage {
     }
 
     await this.page.waitForURL(`${process.env.BASE_URL}/**`, { timeout: 30000 });
-    await dismissWelcomeTour(this.page);
     await this.switchTenant();
     await this.waitForLoaderToDisappear();
     const explicitCluster = process.env.CLUSTER_NAME || process.env.CLUSTER;
