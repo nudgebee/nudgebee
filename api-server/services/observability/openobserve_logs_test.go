@@ -51,7 +51,7 @@ func TestOpenObserveLogSource_QueryLogs(t *testing.T) {
 		{Name: "openobserve_password", Value: "pass", IsEncrypted: false},
 	}
 	_ = configs
-	
+
 	// Temporarily mock GetOpenObserveConfigs by pushing the integration list
 	// In a real test suite, you'd mock core.ListIntegrationConfigs or use a db fixture.
 	// Since we are mocking network, we need to mock DB fetch or bypass it.
@@ -60,7 +60,7 @@ func TestOpenObserveLogSource_QueryLogs(t *testing.T) {
 
 	// Let's test the SQL builder logic directly since DB mocking varies
 	s := &OpenObserveLogSource{}
-	
+
 	req := FetchLogRequest{
 		QueryRequest: LogsQueryBuilderRequest{
 			Where: query.QueryWhereClause{

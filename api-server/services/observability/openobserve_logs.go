@@ -158,7 +158,7 @@ func (s *OpenObserveLogSource) buildSQL(req FetchLogRequest) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	
+
 	limit := req.Limit
 	if limit == 0 {
 		limit = 100
@@ -166,14 +166,14 @@ func (s *OpenObserveLogSource) buildSQL(req FetchLogRequest) (string, error) {
 	if limit > 10000 {
 		limit = 10000
 	}
-	
+
 	sql := `SELECT * FROM "default"`
 	if whereClause != "" {
 		sql += " WHERE " + whereClause
 	}
-	
+
 	sql += fmt.Sprintf(" ORDER BY _timestamp DESC LIMIT %d", limit)
-	
+
 	return sql, nil
 }
 
@@ -238,7 +238,7 @@ func (s *OpenObserveLogSource) QueryLogs(ctx *security.RequestContext, req Fetch
 		out := OutputLog{
 			Labels: make(map[string]any),
 		}
-		
+
 		for k, v := range hit {
 			if k == "_timestamp" {
 				if tVal, ok := v.(float64); ok {
@@ -263,7 +263,7 @@ func (s *OpenObserveLogSource) QueryLogs(ctx *security.RequestContext, req Fetch
 				out.Labels[k] = v
 			}
 		}
-		
+
 		outputs = append(outputs, out)
 	}
 
@@ -280,16 +280,16 @@ func (s *OpenObserveLogSource) QueryLabels(ctx *security.RequestContext, req Fet
 		EndTime:           req.EndTime,
 		Limit:             1,
 	}
-	
+
 	logs, err := s.QueryLogs(ctx, fetchReq)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	if len(logs) == 0 {
 		return []OutputLogLabel{}, nil
 	}
-	
+
 	var labels []OutputLogLabel
 	for k := range logs[0].Labels {
 		labels = append(labels, OutputLogLabel{
@@ -297,7 +297,7 @@ func (s *OpenObserveLogSource) QueryLabels(ctx *security.RequestContext, req Fet
 			Attributes: make(map[string]any),
 		})
 	}
-	
+
 	return labels, nil
 }
 

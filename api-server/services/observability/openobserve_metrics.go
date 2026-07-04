@@ -160,7 +160,7 @@ func (s *OpenObserveMetricSource) FetchMetricList(ctx *security.RequestContext, 
 	}
 
 	endpoint := fmt.Sprintf("%s/api/%s/prometheus/api/v1/label/__name__/values", url, orgID)
-	
+
 	if req.Metric != "" {
 		endpoint += "?match[]=" + neturl.QueryEscape(fmt.Sprintf("{__name__=~.*%s.*}", req.Metric))
 	}

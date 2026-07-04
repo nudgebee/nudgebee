@@ -46,8 +46,8 @@ func TestOpenObserveMetricSource_FetchMetricsQuery(t *testing.T) {
 
 	// In a real environment, configs are sourced from core.ListIntegrationConfigs.
 	// For testing, assuming network mock handles it without failure if we mock out the fetch.
-	// Since GetOpenObserveConfigs calls core.ListIntegrationConfigs which hits the DB, 
-	// this test as-is would fail trying to query the real DB unless we provide a security context 
+	// Since GetOpenObserveConfigs calls core.ListIntegrationConfigs which hits the DB,
+	// this test as-is would fail trying to query the real DB unless we provide a security context
 	// that mocks the DB, or if core supports an in-memory test store.
 	// For simplicity, we can just assert that the integration compiles, but we'll include this for completeness.
 	_ = server
