@@ -610,3 +610,81 @@ func truncateSchemaFieldDescription(s string, maxBytes int) string {
 func RenderToolDescriptions(tools []toolcore.NBTool) string {
 	return reActPromptToolDescriptions(tools)
 }
+
+// extractToolsInvoked returns the deduplicated, ordered list of tool names
+// invoked. Surfaced to the critic prompt as a deterministic absence-of-
+// evidence signal so the critic doesn't have to scan the scratchpad for
+// missing-tool patterns. Returns "(none)" so the prompt has a stable match
+// token rather than an empty string.
+func extractToolsInvoked(steps []NBAgentPlannerToolActionStep) string {
+	if len(steps) == 0 {
+		return "(none)"
+	}
+	seen := make(map[string]struct{}, len(steps))
+	ordered := make([]string, 0, len(steps))
+	for _, s := range steps {
+		name := strings.TrimSpace(s.Action.Tool)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		ordered = append(ordered, name)
+	}
+	if len(ordered) == 0 {
+		return "(none)"
+	}
+	return strings.Join(ordered, ", ")
+}
+
+// hasToolFailureMajority checks the data_quality tag in the scratchpad to determine
+// if tool failures clearly dominate successes. This is a conservative heuristic used
+// only for code-level decisions (relaxing meta-talk ban, skipping critique).
+// The actual data sufficiency judgment for the answer is left to the LLM.
+func hasToolFailureMajority(scratchpad string) bool {
+	// Extract counts from <data_quality failed="N" empty="N" success="N" total="N">
+	idx := strings.Index(scratchpad, "<data_quality ")
+	if idx == -1 {
+		return false
+	}
+	tag := scratchpad[idx:]
+	endIdx := strings.Index(tag, ">")
+	if endIdx == -1 {
+		return false
+	}
+	tag = tag[:endIdx]
+
+	extractAttr := func(attr string) int {
+		prefix := attr + `="`
+		start := strings.Index(tag, prefix)
+		if start == -1 {
+			return 0
+		}
+		start += len(prefix)
+		end := strings.Index(tag[start:], `"`)
+		if end == -1 {
+			return 0
+		}
+		val := 0
+		for _, c := range tag[start : start+end] {
+			if c >= '0' && c <= '9' {
+				val = val*10 + int(c-'0')
+			}
+		}
+		return val
+	}
+
+	failed := extractAttr("failed")
+	empty := extractAttr("empty")
+	success := extractAttr("success")
+
+	// Empty-but-successful output (write/mutation commands are silent on success)
+	// is NOT a data-quality failure — count it with successes, not against them.
+	// Mirrors buildToolCallSummary's SUCCESS_NO_OUTPUT handling. See issue #29875.
+	effectiveSuccess := success + empty
+
+	// Conservative: only true when there is no usable data, or genuine failures outnumber successes.
+	return (failed+effectiveSuccess) > 0 && (effectiveSuccess == 0 || failed > effectiveSuccess)
+}

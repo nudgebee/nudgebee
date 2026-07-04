@@ -509,13 +509,10 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		}
 	}
 
-	// Compute the effective planner type for prompt rendering. When a ReWOO agent
-	// is upgraded to react_3 via config, the prompt template must use react-style
-	// formatting (e.g. FINAL ANSWER REQUIREMENTS, <examples>) instead of ReWOO style.
+	// Compute the effective planner type for prompt rendering. Orchestrating and
+	// ReAct agents always run as react_3 at runtime, so their prompt uses react-style formatting.
 	effectivePlannerType := agent.GetPlannerType()
-	if effectivePlannerType == AgentPlannerTypeReWoo && config.Config.LlmServerRewooToReact3Enabled {
-		effectivePlannerType = AgentPlannerTypeReAct3
-	} else if effectivePlannerType == AgentPlannerTypeReAct && config.Config.LlmServerReAct3Enabled {
+	if effectivePlannerType == AgentPlannerTypeOrchestrating || effectivePlannerType == AgentPlannerTypeReAct {
 		effectivePlannerType = AgentPlannerTypeReAct3
 	}
 	systemMessage, sysFmtErr := GetPromptTemplate(basePrompt, request, effectivePlannerType).Format(map[string]any{"history": messageFormatterToString(messageHistoryFomatter)})
@@ -806,22 +803,20 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 
 	// use response formatting only when there are multiple agents involved
 	if agentResponse.Status == ConversationStatusCompleted && (request.ParentAgentId == "" || request.ParentAgentId == request.AgentId || request.ParentAgentId == uuid.Nil.String()) {
-		if agent.GetPlannerType() == AgentPlannerTypeReWoo || agent.GetPlannerType() == AgentPlannerTypeReAct3 || config.Config.LlmServerRewooToReact3Enabled {
-			distinctAgents := make(map[string]bool)
-			for _, invocation := range agentResponse.AgentStepResponse {
-				if invocation.Call.FunctionCall != nil && invocation.Call.FunctionCall.Name != "" && !strings.EqualFold(invocation.Call.FunctionCall.Name, "llm") && !strings.EqualFold(invocation.Call.FunctionCall.Name, "planner") && !strings.Contains(invocation.Call.FunctionCall.Name, "debug") {
-					if _, ok := GetNBAgent(ctx, invocation.Call.FunctionCall.Name, request.AccountId, AgentStatusEnabled); ok {
-						distinctAgents[strings.ToLower(invocation.Call.FunctionCall.Name)] = true
-					}
-					if len(distinctAgents) > 1 {
-						break
-					}
+		distinctAgents := make(map[string]bool)
+		for _, invocation := range agentResponse.AgentStepResponse {
+			if invocation.Call.FunctionCall != nil && invocation.Call.FunctionCall.Name != "" && !strings.EqualFold(invocation.Call.FunctionCall.Name, "llm") && !strings.EqualFold(invocation.Call.FunctionCall.Name, "planner") && !strings.Contains(invocation.Call.FunctionCall.Name, "debug") {
+				if _, ok := GetNBAgent(ctx, invocation.Call.FunctionCall.Name, request.AccountId, AgentStatusEnabled); ok {
+					distinctAgents[strings.ToLower(invocation.Call.FunctionCall.Name)] = true
+				}
+				if len(distinctAgents) > 1 {
+					break
 				}
 			}
+		}
 
-			if len(distinctAgents) > 1 {
-				agentResponse = FormatAgentResponse(ctx, request, agentResponse, agent.GetPlannerType())
-			}
+		if len(distinctAgents) > 1 {
+			agentResponse = FormatAgentResponse(ctx, request, agentResponse, agent.GetPlannerType())
 		}
 	}
 
@@ -1024,24 +1019,9 @@ func createAgentPlanner(ctx *security.RequestContext, agent NBAgent, request NBA
 
 	if agent.GetPlannerType() == AgentPlannerTypeTool {
 		nbAgentPlanner, err = NewPromptAgent(ctx, request, agent, systemMessage, messageHistoryFomatter)
-	} else if agent.GetPlannerType() == AgentPlannerTypeReAct || agent.GetPlannerType() == AgentPlannerTypeReAct3 {
-		// Upgrade react → react_3 when the config flag is enabled, so agents
-		// don't need to be changed individually.  Agents that already declare
-		// react_3 always use it regardless of the flag.
-		useReAct3 := agent.GetPlannerType() == AgentPlannerTypeReAct3 || config.Config.LlmServerReAct3Enabled
-		if useReAct3 {
-			nbAgentPlanner, err = NewReActAgent3(ctx, request, agent, systemMessage, messageHistoryFomatter, initialNotebook)
-		} else {
-			nbAgentPlanner, err = NewReActAgent2(ctx, request, agent, systemMessage, messageHistoryFomatter, initialNotebook)
-		}
-	} else if agent.GetPlannerType() == AgentPlannerTypeReWoo {
-		// Upgrade rewoo → react_3 when the config flag is enabled, so agents
-		// don't need to be changed individually.
-		if config.Config.LlmServerRewooToReact3Enabled {
-			nbAgentPlanner, err = NewReActAgent3(ctx, request, agent, systemMessage, messageHistoryFomatter, initialNotebook)
-		} else {
-			nbAgentPlanner, err = NewReWooAgent2(ctx, request, agent, systemMessage, messageHistoryFomatter, initialNotebook)
-		}
+	} else if agent.GetPlannerType() == AgentPlannerTypeReAct || agent.GetPlannerType() == AgentPlannerTypeReAct3 || agent.GetPlannerType() == AgentPlannerTypeOrchestrating {
+		// Orchestrating, ReAct and ReAct3 all execute as react_3.
+		nbAgentPlanner, err = NewReActAgent3(ctx, request, agent, systemMessage, messageHistoryFomatter, initialNotebook)
 	} else if agent.GetPlannerType() == AgentPlannerTypeClassification {
 		classificationAgent, ok := agent.(NBClassificationAgent)
 		if !ok {
@@ -1330,12 +1310,7 @@ func injectKBContext(ctx *security.RequestContext, accountId string, agentNames 
 
 	// Build skill-lists context with planner-type-aware guidance
 	var skillList []string
-	var guidance string
-	if plannerType == AgentPlannerTypeReWoo && !config.Config.LlmServerRewooToReact3Enabled {
-		guidance = "The following skills are available. If any skill is relevant to the user's question, include a load_skills step as the FIRST step in your plan (E1, no dependencies) to load it — skills contain expert guidance that improves analysis quality."
-	} else {
-		guidance = "The following skills are available. If any skill is relevant to the current task, load it using the load_skills tool BEFORE running other tools — skills contain expert guidance that improves your analysis."
-	}
+	guidance := "The following skills are available. If any skill is relevant to the current task, load it using the load_skills tool BEFORE running other tools — skills contain expert guidance that improves your analysis."
 	skillList = append(skillList,
 		"<skill-lists>",
 		guidance,

@@ -30,13 +30,12 @@ Domain terms used across the Nudgebee codebase and docs. If you see a word in co
 
 - **Agent** — An LLM-driven worker that handles a domain (e.g., `k8s_debug`, `aws_debug`, `tickets`). Each agent has a system prompt, a planner type, and a tool set. Lives in `llm/llm-server/agents/`.
 - **Tool** — A capability an agent can invoke (e.g., `kubectl`, `aws_execute`, `prometheus_query`, `search_logs`). Implements the `NBTool` interface. Lives in `llm/llm-server/tools/`.
-- **ReWOO** — *Reasoning Without Observation.* A plan-then-execute planner: the LLM generates a complete plan up front (a DAG of steps), then executes it. Used for top-level orchestration. See `llm/llm-server/agents/core/planner_rewoo_2.go`.
-- **ReAct** — *Reason-Act-Observe.* An iterative planner: think → call a tool → observe the result → think again → … Used by sub-agents for task execution. See `llm/llm-server/agents/core/planner_react_2.go`.
-- **Tier (LLM tier)** — A category of model use: `reasoning` / `retrieval` / `summary` (and a "blanket" default). Lets the platform route the heavyweight reasoning model to plan generation while using a cheaper one for summarization.
+- **Orchestrating agent** — An agent that declares `AgentPlannerTypeOrchestrating` — a top-level "manager" agent (e.g. `k8s_debug`, `aws_debug`) whose job is to coordinate sub-agents across multi-tool investigations. Runs under the ReAct3 planner at runtime. Persisted string value is still `"rewoo"` for historical reasons.
+- **ReAct / ReAct3** — *Reason-Act-Observe.* The iterative planner: think → call one or more tools (in parallel when independent) → observe → think again → … The single runtime planner for every non-tool / non-custom / non-classification agent, in `llm/llm-server/agents/core/planner_react_3.go`.
+- **Tier (LLM tier)** — A category of model use: `reasoning` / `retrieval` / `summary` (and a "blanket" default). Lets the platform route the heavyweight reasoning model to hard reasoning steps while using a cheaper one for summarization.
 - **RAG (Retrieval-Augmented Generation)** — Pulling relevant context from a vector store (Qdrant) into the LLM prompt at runtime. Implemented in `llm/rag-server/`.
 - **Embedding** — A numeric vector representation of text used by RAG to find semantically similar prior context.
-- **Solver** — The ReWOO stage that compiles plan-step observations into a final answer.
-- **Critiquer** — A quality gate that rejects shallow / incomplete LLM answers and forces a regenerate.
+- **Critiquer** — A quality gate that reviews an agent's final answer for top-level investigation queries and rejects shallow / status-only / evidence-free responses, forcing a regenerate.
 
 ## Operations & automation
 
@@ -60,5 +59,5 @@ Domain terms used across the Nudgebee codebase and docs. If you see a word in co
 ## Where to find more
 
 - **Architecture deep-dive:** [`docs/ARCHITECTURE.md`](./ARCHITECTURE.md) → links to per-service CLAUDE.md files.
-- **AI execution flow (ReWOO → ReAct → tools → solver):** [`llm/llm-server/CLAUDE.md` → AI Agent Execution Flow](../llm/llm-server/CLAUDE.md#ai-agent-execution-flow).
+- **AI execution flow (agent → ReAct3 → tools → critique → response):** [`llm/llm-server/CLAUDE.md` → AI Agent Execution Flow](../llm/llm-server/CLAUDE.md#ai-agent-execution-flow).
 - **RPC actions reference:** [`docs/API.md`](./API.md) and the source-of-truth file [`app/src/lib/actions.yaml`](../app/src/lib/actions.yaml).

@@ -8,21 +8,6 @@ import (
 	"nudgebee/llm/config"
 )
 
-//go:embed planner_rewoo_2_base.txt
-var plannerRewoo2Base string
-
-//go:embed planner_rewoo_solver.txt
-var plannerRewooSolver string
-
-//go:embed planner_rewoo_2_classifier.txt
-var plannerRewoo2Classifier string
-
-//go:embed planner_rewoo_2_reviewer.txt
-var plannerRewoo2Reviewer string
-
-//go:embed prompt_rewoo_critiquer.txt
-var promptRewooCritiquer string
-
 //go:embed title_generation_agent.txt
 var titleGenerationAgent string
 
@@ -49,9 +34,6 @@ var plannerReactBase3 string
 
 //go:embed suggestions_base.txt
 var suggestionBase string
-
-//go:embed prompt_rewoo_plan_critiquer.txt
-var promptRewooPlanCritiquer string
 
 //go:embed planner_react_critiquer.txt
 var plannerReactCritiquer string
@@ -189,13 +171,6 @@ var agentKgUsage string
 //go:embed cost_optimization_analysis.txt
 var costOptimizationAnalysis string
 
-const PromptPlannerRewoo2Base = "planner_rewoo_2_base"
-const PromptPlannerRewooSolver = "planner_rewoo_solver"
-const PromptPlannerRewoo2Classifier = "planner_rewoo_2_classifier"
-const PromptPlannerRewoo2Reviewer = "planner_rewoo_2_reviewer"
-const PromptPlannerRewooCritiquer = "planner_rewoo_critiquer"
-const PromptPlannerRewooPlanCritiquer = "prompt_rewoo_plan_critiquer"
-
 const PromptExecutor_response_formatter = "executor_response_formatter"
 const PromptEventAnalyzerBase = "event_analyzer_base"
 const PromptTitleGeneration = "title-generation-agent"
@@ -261,18 +236,6 @@ const PromptCostOptimization = "cost_optimization_analysis"
 func GetPrompt(module string, args ...any) string {
 	data := ""
 	switch module {
-	case PromptPlannerRewoo2Base:
-		data = plannerRewoo2Base
-	case PromptPlannerRewooSolver:
-		data = plannerRewooSolver
-	case PromptPlannerRewoo2Classifier:
-		data = plannerRewoo2Classifier
-	case PromptPlannerRewoo2Reviewer:
-		data = plannerRewoo2Reviewer
-	case PromptPlannerRewooCritiquer:
-		data = promptRewooCritiquer
-	case PromptPlannerRewooPlanCritiquer:
-		data = promptRewooPlanCritiquer
 	case PromptPlannerReActBaseFollowup:
 		data = plannerReActBaseFollowup
 

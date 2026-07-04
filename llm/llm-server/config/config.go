@@ -406,8 +406,6 @@ type appConfig struct {
 	// DistillationRedistillInterval defines how many conversation turns occur between redistillation of context.
 	DistillationRedistillInterval int  `mapstructure:"distillation_redistill_interval"`
 	LlmServerReActCritiqueEnabled bool `mapstructure:"llm_server_react_critique_enabled"`
-	LlmServerReAct3Enabled        bool `mapstructure:"llm_server_react3_enabled"`
-	LlmServerRewooToReact3Enabled bool `mapstructure:"llm_server_rewoo_to_react3_enabled"`
 	// LlmServerThinkToolEnabled gates injection of the `think` tool into the
 	// six orchestrator agents (k8s / aws / azure / gcp / datadog / finops).
 	// Default flipped to false 2026-07-12 after 30d prod data showed the
@@ -703,7 +701,9 @@ func init() {
 	viper.SetDefault("llm_server_db_max_connection", 150)
 	viper.SetDefault("llm_server_db_min_connection", 1)
 	viper.SetDefault("llm_server_db_idle_minutes", 10)
-	viper.SetDefault("llm_server_agent_react_max_iterations", 10)
+	// 50 (up from 10) is the value the deleted ReWoo→ReAct3 upgrade used to set;
+	// baking it in preserves that behavior now that orchestrating agents always run as ReAct3.
+	viper.SetDefault("llm_server_agent_react_max_iterations", 50)
 	viper.SetDefault("llm_server_agent_react_sub_agent_max_iterations", 10)
 	viper.SetDefault("llm_server_agent_rewoo_max_iterations", 10)
 	viper.SetDefault("llm_server_agent_rewoo_max_parallel", 4)
@@ -912,9 +912,9 @@ func init() {
 	viper.SetDefault("distillation_redistill_interval", 6)
 	viper.SetDefault("enable_llm_reference_title_generation", false)
 	viper.SetDefault("llm_server_slack_compact_response", false)
-	viper.SetDefault("llm_server_react_critique_enabled", false)
-	viper.SetDefault("llm_server_react3_enabled", true)
-	viper.SetDefault("llm_server_rewoo_to_react3_enabled", true)
+	// react_critique defaults to true: the ReWoo→ReAct3 upgrade (now permanent)
+	// used to flip this on at boot; baking it in preserves that behavior.
+	viper.SetDefault("llm_server_react_critique_enabled", true)
 	// Flipped false 2026-07-12 — see LlmServerThinkToolEnabled docstring.
 	// Any env that wants the tool back sets LLM_SERVER_THINK_TOOL_ENABLED=true
 	// (env override still wins over SetDefault).
@@ -1120,14 +1120,6 @@ func init() {
 		if namespace != "" {
 			Config.LlmServerCodeAgentNamespace = namespace
 		}
-	}
-	// if max iteractions are default && react3 is enabled then use 50 as max iteractions
-	if Config.LlmServerRewooToReact3Enabled && Config.LLMServerAgentReActMaxIterations <= 10 {
-		Config.LLMServerAgentReActMaxIterations = 50
-	}
-
-	if Config.LlmServerRewooToReact3Enabled {
-		Config.LlmServerReActCritiqueEnabled = true
 	}
 }
 

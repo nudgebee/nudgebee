@@ -386,7 +386,7 @@ func handleMemoryUpdate(ctx *security.RequestContext, request NBAgentRequest, fa
 func retrieveAndBuildMemoryNotebook(ctx *security.RequestContext, request NBAgentRequest, agent NBAgent, convFacts []string) string {
 	isRetrievalTask := IsDataRetrievalOrActionRequest(request.Query)
 	isInvestigationTask := IsInvestigationRequestTask(request.Query) || request.ConversationSource == ConversationSourceInvestigation
-	isSupportedPlanner := agent.GetPlannerType() == AgentPlannerTypeReWoo || isReActStylePlanner(agent.GetPlannerType())
+	isSupportedPlanner := agent.GetPlannerType() == AgentPlannerTypeOrchestrating || isReActStylePlanner(agent.GetPlannerType())
 
 	if isSupportedPlanner && (isInvestigationTask || isRetrievalTask) {
 		// Use FindSimilarMemories (not RetrieveRelevantMemories) so use_count is only

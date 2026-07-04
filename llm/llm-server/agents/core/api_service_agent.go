@@ -107,7 +107,7 @@ func GetAgent(context *security.RequestContext, accountId string, name string) (
 		if exists1 {
 			tools := []string{}
 			// skip tools for planner as they check across the tools and also take significant tme to load (fix why)
-			if nbAgent.GetPlannerType() != AgentPlannerTypeReWoo {
+			if nbAgent.GetPlannerType() != AgentPlannerTypeOrchestrating {
 				tools = lo.Map(nbAgent.GetSupportedTools(context), func(tool toolcore.NBTool, idx int) string { return tool.Name() })
 			}
 			return AgentDto{
@@ -150,7 +150,7 @@ func ListAgents(context *security.RequestContext, accountId string, allowOnlyEna
 		if err == nil {
 			tools := []string{}
 			// skip tools for planner as they check across the tools and also take significant tme to load (fix why)
-			if nbAgent.GetPlannerType() != AgentPlannerTypeReWoo {
+			if nbAgent.GetPlannerType() != AgentPlannerTypeOrchestrating {
 				tools = lo.Map(nbAgent.GetSupportedTools(context), func(tool toolcore.NBTool, idx int) string { return tool.Name() })
 			}
 			agents = append(agents, AgentDto{
@@ -232,10 +232,10 @@ func CreateCustomAgent(context *security.RequestContext, accountId string, agent
 				if !existAgent {
 					return AgentDto{}, fmt.Errorf("agent.tools contains tool %s which does not exist", tool)
 				}
-				agent.ExecutorType = AgentPlannerTypeReWoo
+				agent.ExecutorType = AgentPlannerTypeOrchestrating
 			} else {
 				if nbTool.GetType() == toolcore.NBToolTypeAgent {
-					agent.ExecutorType = AgentPlannerTypeReWoo
+					agent.ExecutorType = AgentPlannerTypeOrchestrating
 				}
 			}
 		}
@@ -559,9 +559,9 @@ func UpdateCustomAgent(context *security.RequestContext, accountId string, agent
 				if !existAgent {
 					return AgentUpdateDto{}, fmt.Errorf("agent.tools contains tool %s which does not exist", tool)
 				}
-				executorType = AgentPlannerTypeReWoo
+				executorType = AgentPlannerTypeOrchestrating
 			} else if nbTool.GetType() == toolcore.NBToolTypeAgent {
-				executorType = AgentPlannerTypeReWoo
+				executorType = AgentPlannerTypeOrchestrating
 			}
 		}
 		agent.ExecutorType = &executorType

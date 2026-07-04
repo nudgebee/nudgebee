@@ -46,19 +46,10 @@ import (
 	"time"
 
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// hypothesisModeActive reports whether react_3 (which carries the hypothesis
-// notebook discipline) is enabled for this process. The hypothesis tree only
-// renders / is exercised under react_3, so the process-tier assertions below
-// are meaningless otherwise.
-func hypothesisModeActive() bool {
-	return config.Config.LlmServerReAct3Enabled || config.Config.LlmServerRewooToReact3Enabled
-}
 
 // pollNotebookForMessage returns the model-authored react_3 notebook for a
 // message. The notebook is persisted to llm_conversation_agent (agent_name=
@@ -105,10 +96,6 @@ func containsAnyFold(s string, needles ...string) bool {
 func TestK8sAgent_Fixture_HypothesisDrivenRCA(t *testing.T) {
 	skipIfNoFixtureEnv(t)
 	skipIfNoKubectl(t)
-	if !hypothesisModeActive() {
-		t.Skip("skipping: hypothesis mode requires react_3 " +
-			"(set LLM_SERVER_REWOO_TO_REACT3_ENABLED=true or LLM_SERVER_REACT3_ENABLED=true)")
-	}
 
 	f := LoadFixture(t, fixturePath("nubi", "68_cascading_failures"))
 	f.Setup(t)

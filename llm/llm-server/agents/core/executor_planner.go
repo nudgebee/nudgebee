@@ -785,13 +785,10 @@ func (e *plannerExecutor) doIteration(
 		return nil, finish, nil
 	}
 
-	// Enable parallel execution when multiple actions are returned by a planner
-	// that supports it (ReWOO or ReAct3) and parallel execution is enabled in config.
-	// Check the actual planner instance (not the agent's declared type) because
-	// react agents may be upgraded to react_3 via LlmServerReAct3Enabled config.
+	// Enable parallel execution when multiple actions are returned by a react_3
+	// planner and parallel execution is enabled in config.
 	_, isReAct3Planner := e.agentPlanner.(*NBReActPlanner3)
-	if len(actions) > 1 && config.Config.PlannerRewooParallelExecEnabled &&
-		(e.IsReWOOPlanner() || isReAct3Planner) {
+	if len(actions) > 1 && config.Config.PlannerRewooParallelExecEnabled && isReAct3Planner {
 		// Pre-flight check: detect actions that might trigger followups (write approval
 		// or config resolution). Only one followup can be active at a time, so if any
 		// action in the batch could trigger one, fall back to sequential execution.
@@ -3726,10 +3723,6 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 	}
 
 	return plannerResponse, nil
-}
-
-func (e *plannerExecutor) IsReWOOPlanner() bool {
-	return e.agent.GetPlannerType() == AgentPlannerTypeReWoo
 }
 
 func (e *plannerExecutor) rewriteToolInput(action NBAgentPlannerToolAction, queryContext string) (string, error) {

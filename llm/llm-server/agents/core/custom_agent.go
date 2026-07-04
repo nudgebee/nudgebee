@@ -3,7 +3,6 @@ package core
 import (
 	"log/slog"
 	"nudgebee/llm/common"
-	"nudgebee/llm/config"
 	"nudgebee/llm/security"
 	toolcore "nudgebee/llm/tools/core"
 	"strings"
@@ -301,12 +300,11 @@ func (a *nbCustomAgent) GetSystemPrompt(ctx *security.RequestContext, query NBAg
 		}
 	}
 
-	// When the global config promotes a ReWoo agent to ReAct3, the user's prompt may contain
-	// ReWoo-specific format instructions (XML plan steps) that would conflict with the
+	// Orchestrating agents run as ReAct3. The user's prompt may contain
+	// ReWoo-era XML plan format instructions that would conflict with the
 	// thought/action/observation loop. Append a corrective note so the planner's base
 	// prompt format takes precedence over any stale format instructions in the user prompt.
-	if a.agent.ExecutorType == AgentPlannerTypeReWoo &&
-		(config.Config.LlmServerRewooToReact3Enabled || config.Config.LlmServerReAct3Enabled) {
+	if a.agent.ExecutorType == AgentPlannerTypeOrchestrating {
 		prompt.Instructions = append(prompt.Instructions,
 			"Use the ReAct thought/action/observation format. Do not generate an XML step plan.")
 	}

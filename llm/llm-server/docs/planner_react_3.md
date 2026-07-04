@@ -2,9 +2,9 @@
 
 ## Overview
 
-ReAct3 is a hybrid iterative planner that combines the reasoning-acting loop of ReAct with parallel action execution. It serves as the upgrade path from both ReAct2 (single-action iterative) and ReWoo (plan-then-execute) planners, offering iterative replanning with multi-action parallelism.
+ReAct3 is the single runtime planner. It combines the reasoning-acting loop of ReAct with parallel action execution and iterative replanning with multi-action parallelism. Every agent that declares `AgentPlannerTypeOrchestrating` or `AgentPlannerTypeReAct` runs under ReAct3 — the declared type expresses *intent*, the executor picks ReAct3 as the *implementation*.
 
-ReAct3 is designed to be activated via config flags without requiring agent code changes, making it a drop-in replacement for domain agents.
+Historically this was gated by two config flags (`LlmServerRewooToReact3Enabled`, `LlmServerReAct3Enabled`) that promoted the older ReWoo and ReAct2 planners to ReAct3 in prod. Both flags were on in every environment and have since been deleted; ReAct3 is now unconditional.
 
 ```
 User Query
@@ -23,7 +23,7 @@ User Query
 | File | Purpose |
 |------|---------|
 | `agents/core/planner_react_3.go` | Main planner: plan generation, output parsing, parallel actions, critique |
-| `agents/core/planner_react_2.go` | Predecessor: single-action ReAct (for comparison) |
+| `agents/core/planner_react_2.go` | Predecessor: single-action ReAct (legacy — no runtime callers, kept for tests) |
 | `agents/core/executor_planner.go` | Execution engine: iteration loop, parallel/sequential routing, write pre-flight |
 | `agents/core/executor.go` | Agent executor: effective planner type, config-driven upgrade, response formatting |
 | `agents/prompts_repo/planner_react_3_base.txt` | Base system prompt with parallel action format |
@@ -38,7 +38,7 @@ User Query
 | Parallel execution | Not supported | Via executor worker pool + dependency graph |
 | Write safety | N/A | Pre-flight check falls back to sequential |
 | Scratchpad grouping | Flat list | Groups parallel actions under shared thought |
-| Config-driven upgrade | N/A | Replaces ReAct and ReWoo via flags |
+| Config-driven upgrade | N/A | Was gated by flags; now the unconditional runtime for ReAct and Orchestrating agents |
 
 ## Core Data Structures
 
@@ -108,34 +108,24 @@ The system prompt enforces:
 - Only read/query operations should be parallelized
 - First step: prefer a single discovery action before parallelizing
 
-## Config-Driven Upgrade Mechanism
-
-### Feature Flags
-
-| Flag | Effect |
-|------|--------|
-| `LlmServerReAct3Enabled` | All ReAct agents → ReAct3 |
-| `LlmServerRewooToReact3Enabled` | All ReWoo agents → ReAct3 (hybrid mode) |
-
-### Effective Planner Type Resolution
+## Effective Planner Type Resolution
 
 In `executor.go`:
 
 ```go
 effectivePlannerType := agent.GetPlannerType()
 
-if effectivePlannerType == AgentPlannerTypeReWoo && config.Config.LlmServerRewooToReact3Enabled {
-    effectivePlannerType = AgentPlannerTypeReAct3
-} else if effectivePlannerType == AgentPlannerTypeReAct && config.Config.LlmServerReAct3Enabled {
+if effectivePlannerType == AgentPlannerTypeOrchestrating ||
+   effectivePlannerType == AgentPlannerTypeReAct {
     effectivePlannerType = AgentPlannerTypeReAct3
 }
 ```
 
 This affects:
-1. **Prompt template selection**: Upgraded ReWoo agents use ReAct-style prompts (iterative, not plan-upfront)
-2. **Planner instantiation**: `NewReActAgent3()` instead of `NewReActAgent2()` or `NewReWooAgent2()`
-3. **Execution routing**: Parallel execution enabled for ReAct3 instances
-4. **Response formatting**: ReAct3 included in the multi-agent response formatter gate
+1. **Prompt template selection**: agents get ReAct-style prompts (iterative, not plan-upfront)
+2. **Planner instantiation**: `NewReActAgent3()` for every ReAct / ReAct3 / Orchestrating agent
+3. **Execution routing**: parallel execution enabled for the resulting ReAct3 planner instance
+4. **Response formatting**: multi-agent response formatter runs on every completed top-level turn
 
 ### Instance Detection at Runtime
 
@@ -143,7 +133,7 @@ This affects:
 _, isReAct3Planner := e.agentPlanner.(*NBReActPlanner3)
 ```
 
-Used in executor to route to parallel execution logic regardless of the agent's declared planner type.
+Used in `executor_planner.go` to gate parallel execution.
 
 ## Execution Flow
 
@@ -191,7 +181,7 @@ for attempt 0..5:
 In `executor_planner.go`, the decision point:
 
 ```
-if len(actions) > 1 && PlannerRewooParallelExecEnabled && (isReWOO || isReAct3) {
+if len(actions) > 1 && PlannerRewooParallelExecEnabled && isReAct3 {
     // Pre-flight write detection
     for each action:
         if tool implements ToolRequestInference:
@@ -419,28 +409,26 @@ Executor tracks iterations with zero valid actions:
 - Prevents duplicate tool executions when the LLM re-emits the same action
 - Cache hits/misses logged at executor termination
 
-## Relationship to ReWoo
+## Historical Comparison — What ReAct3 Replaced
 
-ReAct3 can replace ReWoo as a hybrid upgrade via `LlmServerRewooToReact3Enabled`:
+ReAct3 replaced two earlier planners that used to coexist behind config flags:
 
-| Aspect | ReWoo | ReAct3 (Hybrid) |
-|--------|-------|-----------------|
-| Planning | Full plan upfront, then execute | Iterative: reason → act → observe → reason |
-| Replanning | Mid-execution review on failure | Every iteration (inherent in loop) |
-| Parallel | DAG-based dependency resolution | `<actions>` blocks with pre-flight write check |
-| Solver | Dedicated solver LLM pass | LLM emits `<final_answer>` directly in loop |
-| Critique | Plan critique + Answer critique | Answer critique only |
-| Adaptability | Fixed plan, review on failure | Naturally adaptive each iteration |
-| Token cost | Lower (one plan call + solver) | Higher (LLM call per iteration) |
-| Recovery | Skip propagation + replanning | Reflect on failure → try alternative next |
+| Aspect | ReWoo (deleted) | ReAct2 (legacy) | ReAct3 (current) |
+|--------|-----------------|-----------------|------------------|
+| Planning | Full plan upfront, then execute | Iterative single-action | Iterative, single or parallel actions |
+| Replanning | Mid-execution review on failure | Inherent in loop | Inherent in loop |
+| Parallel | DAG-based dependency resolution | None | `<actions>` blocks with pre-flight write check |
+| Solver | Dedicated solver LLM pass | LLM emits `<final_answer>` in loop | Same |
+| Critique | Plan critique + Answer critique | Answer critique only | Answer critique only |
+| Adaptability | Fixed plan, review on failure | Adaptive per iteration | Adaptive per iteration |
+| Recovery | Skip propagation + replanning | Reflect on failure → alternative | Reflect on failure → alternative |
 
-### Upgrade Benefits
+### Migration Outcome
 
-- **No agent code changes**: Config flag flips planner for all domain agents
-- **Better error recovery**: Iterative loop naturally adapts to failures
-- **Parallel reads**: Independent queries grouped by LLM in `<actions>` blocks
-- **Write safety**: Pre-flight check prevents parallel approval collisions
-- **Gradual rollout**: Flag per environment (dev → test → prod)
+- The ReWoo planner and its flag (`LlmServerRewooToReact3Enabled`) have been deleted.
+- The ReAct2 → ReAct3 flag (`LlmServerReAct3Enabled`) has been deleted.
+- `planner_react_2.go` remains for its test coverage but has no runtime callers.
+- Orchestrating and ReAct agents run under ReAct3 unconditionally.
 
 ## Test Coverage
 

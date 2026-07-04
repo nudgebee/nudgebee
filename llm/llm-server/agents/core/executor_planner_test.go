@@ -61,7 +61,7 @@ func (m *MockAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.N
 func (m *MockAgent) GetSystemPrompt(ctx *security.RequestContext, query NBAgentRequest) NBAgentPrompt {
 	return NBAgentPrompt{}
 }
-func (m *MockAgent) GetPlannerType() AgentPlannerType { return AgentPlannerTypeReWoo }
+func (m *MockAgent) GetPlannerType() AgentPlannerType { return AgentPlannerTypeOrchestrating }
 
 // --- New Tests ---
 

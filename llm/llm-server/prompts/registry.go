@@ -16,7 +16,6 @@ const PromptAgentK8sDebugReact = "agent_k8s_debug_react"
 const PromptResponseFormatter = "executor_response_formatter"
 const PromptResponseFormatterSlack = "executor_response_formatter_slack"
 const PromptAgentLlm = "agent_llm"
-const PromptRewooSolver = "planner_rewoo_solver"
 const PromptReactBase = "planner_react_base"
 const PromptReact3Base = "planner_react_3_base"
 
@@ -31,7 +30,6 @@ var promptMapping = map[string]struct {
 	PromptResponseFormatter:      {"response_formatter", CategoryUtilities},
 	PromptResponseFormatterSlack: {"response_formatter_slack", CategoryUtilities},
 	PromptAgentLlm:               {"agent_llm", CategoryUtilities},
-	PromptRewooSolver:            {"rewoo_solver", CategoryUtilities},
 	PromptReactBase:              {"react_base", CategoryUtilities},
 	PromptReact3Base:             {"react_3_base", CategoryUtilities},
 }

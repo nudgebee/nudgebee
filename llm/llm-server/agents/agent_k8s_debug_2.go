@@ -70,14 +70,8 @@ func (l *K8sDebugAgent2) GetSupportedTools(ctx *security.RequestContext) []toolc
 }
 
 func (l *K8sDebugAgent2) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
-	// Select prompt based on effective planner: react_3 uses a react-optimised prompt
-	// that avoids ReWOO plan-oriented language and includes parallel action examples.
-	promptKey := prompts.PromptAgentK8sDebug
-	promptRepoKey := prompts_repo.PromptAgentK8sDebug
-	if config.Config.LlmServerReAct3Enabled || config.Config.LlmServerRewooToReact3Enabled {
-		promptKey = prompts.PromptAgentK8sDebugReact
-		promptRepoKey = prompts_repo.PromptAgentK8sDebugReact
-	}
+	promptKey := prompts.PromptAgentK8sDebugReact
+	promptRepoKey := prompts_repo.PromptAgentK8sDebugReact
 
 	// The versioned prompt system (prompts pkg) is tried first; legacy repo is the fallback.
 	promptText := prompts.GetPrompt(ctx.GetContext(), promptKey, query.AccountId)
@@ -138,7 +132,7 @@ func (l *K8sDebugAgent2) GetSystemPrompt(ctx *security.RequestContext, query cor
 }
 
 func (l *K8sDebugAgent2) GetPlannerType() core.AgentPlannerType {
-	return core.AgentPlannerTypeReWoo
+	return core.AgentPlannerTypeOrchestrating
 }
 
 func (l *K8sDebugAgent2) GetModelCategory() core.ModelTier {

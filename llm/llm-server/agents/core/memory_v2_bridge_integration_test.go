@@ -46,7 +46,7 @@ func (a *stubAgent) GetSupportedTools(_ *security.RequestContext) []toolcore.NBT
 func (a *stubAgent) GetSystemPrompt(_ *security.RequestContext, _ NBAgentRequest) NBAgentPrompt {
 	return NBAgentPrompt{}
 }
-func (a *stubAgent) GetPlannerType() AgentPlannerType { return AgentPlannerTypeReWoo }
+func (a *stubAgent) GetPlannerType() AgentPlannerType { return AgentPlannerTypeOrchestrating }
 
 // skipIfNoIntegration gates the test on RUN_MEMORY_INTEGRATION=true and a
 // reachable metastore.

@@ -323,7 +323,7 @@ type AgentPlannerType string
 const (
 	AgentPlannerTypeTool           AgentPlannerType = "tools"
 	AgentPlannerTypeReAct          AgentPlannerType = "react"
-	AgentPlannerTypeReWoo          AgentPlannerType = "rewoo"
+	AgentPlannerTypeOrchestrating  AgentPlannerType = "rewoo"
 	AgentPlannerTypeCustom         AgentPlannerType = "custom"
 	AgentPlannerTypeConversational AgentPlannerType = "conversation"
 	AgentPlannerTypeClassification AgentPlannerType = "classification"

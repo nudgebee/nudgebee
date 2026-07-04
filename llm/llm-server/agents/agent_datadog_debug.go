@@ -45,7 +45,7 @@ func (a *DatadogDebugAgent) GetSupportedTools(ctx *security.RequestContext) []to
 }
 
 func (a *DatadogDebugAgent) GetPlannerType() core.AgentPlannerType {
-	return core.AgentPlannerTypeReWoo
+	return core.AgentPlannerTypeOrchestrating
 }
 
 func (a *DatadogDebugAgent) GetModelCategory() core.ModelTier {

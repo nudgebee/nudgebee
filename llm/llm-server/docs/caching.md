@@ -1,6 +1,6 @@
 # Planner Prompt Structure & LLM Caching
 
-Both planners split their prompts into **system messages** (stable, cacheable) and a final **human message** (dynamic, per-request). This is critical for LLM prompt caching — providers cache the message prefix by byte-matching, so all stable content must come first as system messages, and all dynamic content must be in the final human message.
+The ReAct3 planner splits its prompt into **system messages** (stable, cacheable) and a final **human message** (dynamic, per-request). This is critical for LLM prompt caching — providers cache the message prefix by byte-matching, so all stable content must come first as system messages, and all dynamic content must be in the final human message.
 
 ## Cache Scopes
 
@@ -23,81 +23,21 @@ This means:
 - The order of system messages is preserved (parts are appended in order)
 - Non-system messages (human, AI) go into `contents` as separate entries
 
-## ReWOO Planner Message Layout
+## ReAct3 Planner Message Layout
 
-Built in `reWooCreatePrompt2()` in `agents/core/planner_rewoo_2.go`:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ SYSTEM MESSAGES (stable — cached at Account/Global scope)   │
-├─────────────────────────────────────────────────────────────┤
-│ 1. Base planner prompt (planner_rewoo_2_base.txt)           │
-│    Template vars: tool_names, tool_descriptions,            │
-│    max_plan_steps, workspace_enabled, shell_tool_enabled,   │
-│    context_management_rules, time_handling_rules,           │
-│    code_analysis_rules                                      │
-├─────────────────────────────────────────────────────────────┤
-│ 2. <task_instructions>{agentPrompt}</task_instructions>     │
-│    Agent's domain-specific prompt                           │
-│    (e.g., agent_k8s_debug.txt content)                     │
-├─────────────────────────────────────────────────────────────┤
-│ 3. <task_preferences>{additionalPrompt}</task_preferences>  │
-│    Per-agent config overrides from DB (optional)            │
-├─────────────────────────────────────────────────────────────┤
-│ 4. Client tools priority instruction (if ClientTools exist) │
-├─────────────────────────────────────────────────────────────┤
-│ 5. <global_preferences>{AccountPrompt}</global_preferences> │
-│    Account-level prompt customization (optional)            │
-├─────────────────────────────────────────────────────────────┤
-│ 6. <critical_rules>                                         │
-│    SKILL LISTS + User Request Adherence Protocol            │
-│    + Output Format rules                                    │
-│    </critical_rules>                                        │
-├─────────────────────────────────────────────────────────────┤
-│ HUMAN MESSAGE (dynamic — changes every request)             │
-├─────────────────────────────────────────────────────────────┤
-│ 7. <task_context>                                           │
-│      today, task_context, conversation_context, history     │
-│    </task_context>                                          │
-│    <notebook_content>{notebook}</notebook_content>          │
-│    <question_type>{investigation|query}</question_type>     │
-│    <task>{input}</task>                                     │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### ReWOO Reviewer Message Layout
-
-Built in `reviewAndRefinePlan()` in `agents/core/planner_rewoo_2.go`:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ SYSTEM MESSAGE (stable — cacheable across iterations)       │
-├─────────────────────────────────────────────────────────────┤
-│ 1. Reviewer rules (planner_rewoo_2_reviewer.txt)            │
-│    Template vars: tool_names, time_handling_rules           │
-│    Contains: 5-Whys, recovery protocol, output format       │
-├─────────────────────────────────────────────────────────────┤
-│ HUMAN MESSAGE (dynamic — changes every review iteration)    │
-├─────────────────────────────────────────────────────────────┤
-│ 2. <task_input>, <question_type>, <current_progress>,       │
-│    <remaining_plan>, <notebook_content>                     │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## ReAct Planner Message Layout
-
-Built in `reActCreatePrompt2()` in `agents/core/planner_react_2.go`:
+Built in `planner_react_3.go`. Base template: `planner_react_3_base.txt`.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │ SYSTEM MESSAGES (stable — cached at Account/Global scope)   │
 ├─────────────────────────────────────────────────────────────┤
-│ 1. Base react prompt (planner_react_base_2.txt)             │
+│ 1. Base react_3 prompt (planner_react_3_base.txt)           │
 │    Template vars: tool_names, tool_descriptions, today,     │
 │    workspace_enabled, shell_tool_enabled,                   │
 │    context_management_rules, time_handling_rules,           │
 │    data_protection_rules, code_analysis_rules               │
-│    Note: includes SKILL LISTS instruction already           │
+│    Includes: hypothesis notebook discipline, parallel       │
+│    action rules, SKILL LISTS instruction                    │
 ├─────────────────────────────────────────────────────────────┤
 │ 2. Client tools priority instruction (if ClientTools exist) │
 ├─────────────────────────────────────────────────────────────┤
@@ -108,15 +48,36 @@ Built in `reActCreatePrompt2()` in `agents/core/planner_react_2.go`:
 │    </additional_agent_prompt> (optional, from DB config)    │
 ├─────────────────────────────────────────────────────────────┤
 │ 5. Agent prompt (agentPrompt — full agent system prompt,    │
-│    e.g., kubectl agent instructions)                        │
+│    e.g., k8s_debug orchestrator instructions)               │
 ├─────────────────────────────────────────────────────────────┤
 │ HUMAN MESSAGE (dynamic — changes every iteration)           │
 ├─────────────────────────────────────────────────────────────┤
 │ 6. <task_context>                                           │
 │      conversation_context, history                          │
 │    </task_context>                                          │
+│    <notebook_content>{notebook}</notebook_content>          │
 │    <question>{input}</question>                             │
-│    {scratchpad}  <- grows each ReAct iteration              │
+│    {scratchpad}  <- grows each ReAct3 iteration             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Critique Message Layout (Top-Level Investigation Answers Only)
+
+Fires when `LlmServerReActCritiqueEnabled=true` (default), the agent is top-level (not a sub-agent), and the query is an investigation task. Uses `planner_react_critiquer.txt`.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ SYSTEM MESSAGE (cacheable)                                  │
+├─────────────────────────────────────────────────────────────┤
+│ Critiquer rules (planner_react_critiquer.txt)               │
+│  Template vars: tool_names, time_handling_rules             │
+│  Enforces: 5-Whys causality, evidence-based findings,       │
+│  no status-only / manual-CLI answers                        │
+├─────────────────────────────────────────────────────────────┤
+│ HUMAN MESSAGE (per attempt)                                 │
+├─────────────────────────────────────────────────────────────┤
+│  <task_input>, <question_type>, <tools_invoked>,            │
+│  <final_answer>, <scratchpad>                               │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -129,7 +90,7 @@ Built in `reActCreatePrompt2()` in `agents/core/planner_react_2.go`:
 | Account-level customizations | System message (`AccountPrompt` / `additionalPrompt`) | Stable per account = cacheable |
 | User query, conversation history, scratchpad | Human message | Changes every request = must not pollute cache |
 | Date/time (`today`) | System message is OK | Rotates daily; acceptable for 12h TTL |
-| Previous tool observations, iteration state | Human message (`scratchpad`) | Changes every ReAct iteration |
+| Previous tool observations, iteration state | Human message (`scratchpad`) | Changes every ReAct3 iteration |
 
 > **Key rule:** Never add dynamic per-request content (history, user input, scratchpad) to system messages. This breaks cache byte-matching and forces cache misses on every request, wasting the entire cached prefix.
 
