@@ -62,6 +62,13 @@ func authHandlerMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		if config.Config.CloudCollectorServerToken == "" {
+			logger.Error("Service token is not configured", "path", c.Request.URL.Path, "method", c.Request.Method)
+			c.Writer.WriteHeader(http.StatusServiceUnavailable)
+			c.Abort()
+			return
+		}
+
 		authHeader := c.Request.Header.Get(config.Config.CloudCollectorServerTokenHeader)
 
 		if authHeader == config.Config.CloudCollectorServerToken {
@@ -87,6 +94,9 @@ func traceResponseHeaderMiddleware() gin.HandlerFunc {
 
 func main() {
 	slog.SetDefault(logger)
+	if config.Config.CloudCollectorServerToken == "" {
+		slog.Warn("CLOUD_COLLECTOR_SERVER_TOKEN is empty — protected cloud-collector routes will reject requests until a shared token is configured.")
+	}
 	tp, mp, err := initOtel()
 	if err != nil {
 		slog.Error(err.Error())

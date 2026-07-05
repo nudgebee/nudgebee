@@ -53,6 +53,12 @@ func authHandlerMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		if config.Config.ServiceApiServerToken == "" {
+			logger.Error("Service token is not configured", "path", c.Request.URL.Path, "method", c.Request.Method)
+			c.AbortWithStatus(http.StatusServiceUnavailable)
+			return
+		}
+
 		authHeader := c.Request.Header.Get(config.Config.ServiceApiServerTokenHeader)
 
 		if authHeader == config.Config.ServiceApiServerToken {
@@ -108,6 +114,10 @@ func main() {
 		slog.Warn("ACTION_API_SERVER_TOKEN is empty — auth middleware will accept any request. " +
 			"Set ACTION_API_SERVER_TOKEN (and the matching value in app/.env / chart nudgebee_secret) for any non-throwaway deployment. " +
 			"Generate with: openssl rand -hex 32.")
+	}
+
+	if config.Config.ServiceApiServerToken == "" {
+		slog.Warn("ACTION_API_SERVER_TOKEN is empty — protected api-server routes will reject requests. Set ACTION_API_SERVER_TOKEN (and the matching value in app/.env / chart nudgebee_secret) for any non-throwaway deployment. Generate with: openssl rand -hex 32.")
 	}
 
 	tp, mp, err := initOtel()
