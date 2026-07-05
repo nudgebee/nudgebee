@@ -101,7 +101,7 @@ func (g *GoogleAI) GenerateContent(
 	// Apply cached content name so Gemini prepends the cached system instruction.
 	// Without this, the caching layer strips the system message from the request but
 	// never tells Gemini which cached content to use, resulting in a bare human message
-	// that triggers MALFORMED_FUNCTION_CALL on XML-heavy ReAct/ReWoo prompts.
+	// that triggers MALFORMED_FUNCTION_CALL on XML-heavy ReAct prompts.
 	if val, ok := opts.Metadata["CachedContentName"]; ok {
 		if name, ok := val.(string); ok && name != "" {
 			cfg.CachedContent = name

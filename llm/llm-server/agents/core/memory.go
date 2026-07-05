@@ -375,7 +375,7 @@ func handleMemoryUpdate(ctx *security.RequestContext, request NBAgentRequest, fa
 }
 
 // retrieveAndBuildMemoryNotebook retrieves relevant memories and builds a structured notebook.
-// For ReWoo/ReAct planners on investigation/retrieval tasks the full memory set is returned.
+// For ReAct planners on investigation/retrieval tasks the full memory set is returned.
 // For all other planners only user_preference memories are injected so agents can respect
 // known user preferences (e.g. output format, namespace choices) without the overhead of
 // a full knowledge-base lookup.

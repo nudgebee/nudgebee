@@ -91,7 +91,7 @@ type NBAgentRequest struct {
 	// for agents whose planner type is AgentPlannerTypeCustom AND whose Execute()
 	// makes direct LLM calls (loganalysis, logs_default.generateFinalResponse,
 	// resource_search, websearch). These agents bypass the executor's systemMessage
-	// path so the lazy `load_skills` tool flow used by ReAct/ReWoo planners does not
+	// path so the lazy `load_skills` tool flow used by ReAct planners does not
 	// reach them. The executor populates this field eagerly with the bodies of every
 	// active KB mapped to (agent.GetName() ∪ InheritSkillsFromAgents), narrowed to
 	// SelectedSkillIds when question-aware selection is enabled. The custom Execute()
@@ -177,10 +177,10 @@ type NBAgentPlannerToolAction struct {
 	ToolInput string `json:"tool_input"`
 	Log       string `json:"log"`
 	ToolID    string `json:"tool_id"`
-	// DisplayID is a human-readable sequential identifier assigned by the planner
-	// (e.g. "E1", "E2", "E3") for use in citations and the response formatter.
-	// For React_3 this is assigned as steps are generated; for ReWoo it remains
-	// empty because the solver already produces correctly-numbered citations.
+	// DisplayID is a human-readable sequential identifier (e.g. "E1", "E2", "E3")
+	// assigned by the ReAct3 planner as steps are generated, for use in citations
+	// and the response formatter. Empty for planner types that do not run react_3
+	// (tool / classification agents).
 	DisplayID  string                            `json:"display_id,omitempty"`
 	Dependency []string                          `json:"dependency"`
 	Condition  NBAgentPlannerToolActionCondition `json:"condition"`

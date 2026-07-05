@@ -788,7 +788,7 @@ func (e *plannerExecutor) doIteration(
 	// Enable parallel execution when multiple actions are returned by a react_3
 	// planner and parallel execution is enabled in config.
 	_, isReAct3Planner := e.agentPlanner.(*NBReActPlanner3)
-	if len(actions) > 1 && config.Config.PlannerRewooParallelExecEnabled && isReAct3Planner {
+	if len(actions) > 1 && config.Config.PlannerParallelExecEnabled && isReAct3Planner {
 		// Pre-flight check: detect actions that might trigger followups (write approval
 		// or config resolution). Only one followup can be active at a time, so if any
 		// action in the batch could trigger one, fall back to sequential execution.
@@ -1085,7 +1085,14 @@ func (e *plannerExecutor) doIterationParallel(
 
 	var mu sync.Mutex
 	newStepsThisIteration := []NBAgentPlannerToolActionStep{}
-	e.semaphore = make(chan struct{}, config.Config.LLMServerAgentReWooMaxParallel)
+	// Clamp to a minimum of 1: a misconfigured value ≤ 0 would otherwise panic
+	// (negative → makechan out of range) or deadlock the acquire below (0 →
+	// unbuffered channel, no permit ever granted).
+	maxParallel := config.Config.LLMServerAgentMaxParallel
+	if maxParallel < 1 {
+		maxParallel = 1
+	}
+	e.semaphore = make(chan struct{}, maxParallel)
 	resultsChan := make(chan *ActionNode, len(nodes))
 	var followupFinish *NBAgentPlannerFinishAction     // retained for terminal/client-tool single followup
 	var waitingFollowups []*NBAgentPlannerFinishAction // collects ALL waiting followups from parallel goroutines (#28141)
@@ -1655,10 +1662,9 @@ func formatToolMetadataFooter(metadata *toolcore.NBToolResponseMetadata) string 
 }
 
 // renderObservationWithMetadata is the single entry point the prompt-assembly
-// seams (ConstructScratchPad, planner_react_2.resolveToolResponse,
-// planner_react_3.resolveToolResponse) use to materialize the planner-visible
-// observation text. Centralizing it keeps the three sites from drifting on
-// footer format.
+// seams (ConstructScratchPad, planner_react_3.resolveToolResponse) use to
+// materialize the planner-visible observation text. Centralizing it keeps the
+// sites from drifting on footer format.
 func renderObservationWithMetadata(observation string, metadata *toolcore.NBToolResponseMetadata) string {
 	return observation + formatToolMetadataFooter(metadata)
 }

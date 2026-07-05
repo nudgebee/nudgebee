@@ -81,7 +81,7 @@ func (p *ClassificationPlanner) Plan(
 		}
 	})
 
-	// Honour the agent's declared cache scope, mirroring the ReAct/ReWOO planners.
+	// Honour the agent's declared cache scope, mirroring the ReAct planners.
 	// GenerateAndTrackLLMContent reads ContextKeyCacheScope from the context and
 	// defaults to Conversation scope when it is absent, so without this an agent's
 	// GetCacheScope() would have no effect on the classification path.

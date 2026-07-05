@@ -23,7 +23,7 @@ User Query
 | File | Purpose |
 |------|---------|
 | `agents/core/planner_react_3.go` | Main planner: plan generation, output parsing, parallel actions, critique |
-| `agents/core/planner_react_2.go` | Predecessor: single-action ReAct (legacy — no runtime callers, kept for tests) |
+| `agents/core/planner_react_shared.go` | Symbols shared across ReAct-family planners (`generateToolId`, `RetryConfig`, `ErrParseFailure`, critique/summary interfaces), extracted when `planner_react_2.go` was deleted |
 | `agents/core/executor_planner.go` | Execution engine: iteration loop, parallel/sequential routing, write pre-flight |
 | `agents/core/executor.go` | Agent executor: effective planner type, config-driven upgrade, response formatting |
 | `agents/prompts_repo/planner_react_3_base.txt` | Base system prompt with parallel action format |
@@ -427,7 +427,7 @@ ReAct3 replaced two earlier planners that used to coexist behind config flags:
 
 - The ReWoo planner and its flag (`LlmServerRewooToReact3Enabled`) have been deleted.
 - The ReAct2 → ReAct3 flag (`LlmServerReAct3Enabled`) has been deleted.
-- `planner_react_2.go` remains for its test coverage but has no runtime callers.
+- `planner_react_2.go` and `planner_rewoo_2.go` have been deleted; symbols ReAct3 still needs were extracted to `planner_react_shared.go`.
 - Orchestrating and ReAct agents run under ReAct3 unconditionally.
 
 ## Test Coverage

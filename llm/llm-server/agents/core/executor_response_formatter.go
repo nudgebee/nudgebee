@@ -84,23 +84,13 @@ func convertMarkdownToSlackMarkdown(response string) string {
 	return response
 }
 
-// FormatAgentResponse reformats the raw agent answer into a polished markdown
-// response.  plannerType is used to decide whether to inject a Step Reference
-// Guide: for ReAct3 the planner assigns sequential DisplayIDs (E1, E2, …) to
-// every action and the guide anchors those IDs for the formatter LLM.  For
-// ReWoo the solver already produces correctly-numbered citations so the guide
-// is skipped — injecting it would risk the formatter LLM re-numbering
-// citations that are already correct.
-func FormatAgentResponse(ctx *security.RequestContext, request NBAgentRequest, response NBAgentResponse, plannerType AgentPlannerType) NBAgentResponse {
-	systemPrompt := prompts.GetPrompt(ctx.GetContext(), prompts.PromptResponseFormatter, request.AccountId)
-	if systemPrompt == "" {
-		systemPrompt = prompts_repo.GetPrompt(prompts_repo.PromptExecutor_response_formatter)
-	}
-
-	// Build a step reference guide only for React_3 where the planner assigns
-	// sequential DisplayIDs. For ReWoo the solver already produces correctly-
-	// numbered citations ([Tool - E1](#task-E1)) so we must not inject a guide
-	// that could cause the formatter to re-number those correct references.
+// buildStepReferenceParts renders the per-step supporting-data block and, for
+// ReAct3-executed responses, a Step Reference Guide that maps each step's
+// sequential ID (E1, E2, …) to its tool so the formatter LLM cites real IDs.
+// plannerType must be the effective (runtime) type: orchestrating and react
+// agents run as react_3 and assign DisplayIDs, so they get the guide too.
+// Returns the guide block (empty when not applicable) and the joined supporting data.
+func buildStepReferenceParts(response NBAgentResponse, plannerType AgentPlannerType) (guide string, supportingData string) {
 	buildGuide := plannerType == AgentPlannerTypeReAct3
 	var refGuideLines []string
 	var supportingParts []string
@@ -124,13 +114,25 @@ func FormatAgentResponse(ctx *security.RequestContext, request NBAgentRequest, r
 		}
 	}
 
-	stepReferenceGuide := ""
 	if len(refGuideLines) > 0 {
-		stepReferenceGuide = "**Step Reference Guide** (use these IDs for citations — do NOT invent new ones):\n" +
+		guide = "**Step Reference Guide** (use these IDs for citations — do NOT invent new ones):\n" +
 			strings.Join(refGuideLines, "\n") + "\n\n"
 	}
+	return guide, strings.Join(supportingParts, "\n\n")
+}
 
-	supportingDataSteps := strings.Join(supportingParts, "\n\n")
+// FormatAgentResponse reformats the raw agent answer into a polished markdown
+// response.  plannerType must be the *effective* (runtime) planner type — see
+// resolveEffectivePlannerType. When it is ReAct3 the planner assigned sequential
+// DisplayIDs (E1, E2, …) to every action, and the guide anchors those IDs for the
+// formatter LLM so it cites real step IDs instead of inventing new ones.
+func FormatAgentResponse(ctx *security.RequestContext, request NBAgentRequest, response NBAgentResponse, plannerType AgentPlannerType) NBAgentResponse {
+	systemPrompt := prompts.GetPrompt(ctx.GetContext(), prompts.PromptResponseFormatter, request.AccountId)
+	if systemPrompt == "" {
+		systemPrompt = prompts_repo.GetPrompt(prompts_repo.PromptExecutor_response_formatter)
+	}
+
+	stepReferenceGuide, supportingDataSteps := buildStepReferenceParts(response, plannerType)
 
 	questionType := lo.Ternary(IsInvestigationRequestTask(request.Query), "investigation", "query")
 

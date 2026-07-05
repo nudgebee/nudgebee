@@ -235,19 +235,19 @@ See [docs/caching.md](docs/caching.md) for the ReAct3 planner message layout, ca
 
 ## The `_2` and `_3` Suffixes on Planners
 
-Historically `_2` meant v2. `planner_react_2.go` still exists as a legacy file with no runtime callers — all agents now execute via **`planner_react_3.go`** (the ReAct3 planner with iterative reasoning and parallel action execution). The executor routes every non-tool/non-custom/non-classification agent to `NewReActAgent3()`.
+The runtime has exactly one planner: **`planner_react_3.go`** (the ReAct3 planner — iterative reasoning with parallel action execution). The executor routes every non-tool/non-custom/non-classification agent to `NewReActAgent3()`. The older `planner_react_2.go` and `planner_rewoo_2.go` have been deleted; symbols they hosted that ReAct3 still needs live in `planner_react_shared.go`.
 
-For agent files, both versions may coexist:
+For agent files, `_2` / `V2` suffixes still mark versioned agents, and both versions may coexist:
 
 | Component | v1 | v2 | Active? |
 |-----------|----|----|---------|
-| Planner runtime | — | `planner_react_3.go` | Only version used at runtime |
+| Planner runtime | — | `planner_react_3.go` | Only planner at runtime |
 | AWS | `agent_aws.go` (direct CLI) | `agent_aws_debug_2.go` (orchestrator) | Both active |
 | K8s | None | `agent_k8s_debug_2.go` | v2 only |
 | GCP/Azure | None | `agent_gcp_debug_2.go`, `agent_azure_debug_2.go` | v2 only |
 | Tickets | `agent_tickets.go` | `agent_tickets_V2.go` | Both; v2 opt-in via `TicketV2Enabled` |
 
-**Rule: new code targets ReAct3. `planner_react_2.go` and `NewReActAgent2()` are legacy and slated for removal.**
+**Rule: new code targets ReAct3. There is no v1/v2 planner choice to make.**
 
 ### Deprecated Patterns
 
@@ -267,7 +267,7 @@ ExecutePlannerWorkerPool = common.NewWorkerPool("execute_planner", config.Config
 
 ### Parallel Plan Execution
 
-Controlled by `PlannerRewooParallelExecEnabled` + `LLMServerAgentReWooMaxParallel` (config field names are historical — they gate ReAct3's parallel action batches now). Implementation in `executor_planner.go:737-1050`: builds dependency graph → semaphore limits concurrency → submits nodes with zero pending deps → results via channel → early termination on terminal responses.
+Controlled by `PlannerParallelExecEnabled` + `LLMServerAgentMaxParallel` (they gate ReAct3's parallel action batches). Implementation in `executor_planner.go:737-1050`: builds dependency graph → semaphore limits concurrency → submits nodes with zero pending deps → results via channel → early termination on terminal responses.
 
 ### Memory Thresholds
 
@@ -341,7 +341,7 @@ Two parts combined: agent-specific prompt (domain expertise, investigation metho
 
 ### 4. ReAct3 Loop
 
-The planner iterates: think → emit one or more `<action>` calls → observe results → think again → … until it emits `<finish>` or hits the iteration cap. Independent actions in the same iteration execute in parallel (gated by `PlannerRewooParallelExecEnabled` — historical name).
+The planner iterates: think → emit one or more `<action>` calls → observe results → think again → … until it emits `<finish>` or hits the iteration cap. Independent actions in the same iteration execute in parallel (gated by `PlannerParallelExecEnabled`).
 
 ### 5. Notebook Discipline
 
@@ -383,7 +383,7 @@ All configuration in `config/config.go` via environment variables.
 **LLM Provider:** `LLM_PROVIDER`, `LLM_MODEL_NAME`, `LLM_PROVIDER_REGION`, `LLM_PROVIDER_API_KEY`, `LLM_PROVIDER_API_ENDPOINT`
 **Database:** `LLM_SERVER_DB_URL` (PostgreSQL)
 **RabbitMQ:** `RABBIT_MQ_HOST`, `RABBIT_MQ_USERNAME`, `RABBIT_MQ_PASSWORD`, `RABBIT_MQ_TROUBLESHOOT_EXCHANGE`
-**Agent Behavior:** `LLM_SERVER_AGENT_REACT_MAX_ITERATIONS` (default 50), `LLM_SERVER_REACT_CRITIQUE_ENABLED` (default true), `LLM_SERVER_AGENT_MAX_LOGLINES`, `PLANNER_REWOO_PARALLEL_EXEC_ENABLED` (historical name; gates ReAct3 parallel action batches)
+**Agent Behavior:** `LLM_SERVER_AGENT_REACT_MAX_ITERATIONS` (default 50), `LLM_SERVER_REACT_CRITIQUE_ENABLED` (default true), `LLM_SERVER_AGENT_MAX_LOGLINES`, `LLM_SERVER_PLANNER_PARALLEL_EXEC_ENABLED` (gates ReAct3 parallel action batches), `LLM_SERVER_AGENT_MAX_PARALLEL` (parallel action concurrency limit)
 **External Services:** `SERVICE_API_SERVER_URL`, `RAG_SERVER_URL`, `CLOUD_COLLECTOR_SERVER_URL`, `RELAY_SERVER_ENDPOINT`
 
 ## Key Integrations

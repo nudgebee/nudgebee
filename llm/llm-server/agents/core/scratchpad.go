@@ -333,8 +333,8 @@ func ConstructScratchPad(intermediateSteps []NBAgentPlannerToolActionStep, sctx 
 	}
 
 	// Stash whether this pass crossed the activation threshold so the visibility
-	// card can be honest about why compression fired. ReWOO has no refinement
-	// path (postRefinementToolIndex=0), so any compression here is window-pressure.
+	// card can be honest about why compression fired. With no refinement
+	// (postRefinementToolIndex=0), any compression here is window-pressure.
 	windowPressureActive := total > activationChars
 	if scratchpadCtx != nil {
 		scratchpadCtx.Tracker.SetCompressionContext(windowPressureActive, 0)

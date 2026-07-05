@@ -169,8 +169,7 @@ type appConfig struct {
 	LlmModelLite string `mapstructure:"llm_model_lite_name"`
 
 	// Agent specific configs
-	LLMServerAgentReWooMaxIterations          int `mapstructure:"llm_server_agent_rewoo_max_iterations"`
-	LLMServerAgentReWooMaxParallel            int `mapstructure:"llm_server_agent_rewoo_max_parallel"`
+	LLMServerAgentMaxParallel                 int `mapstructure:"llm_server_agent_max_parallel"`
 	LLMServerAgentReActMaxIterations          int `mapstructure:"llm_server_agent_react_max_iterations"`
 	LLMServerAgentReActSubAgentMaxIterations  int `mapstructure:"llm_server_agent_react_sub_agent_max_iterations"`
 	LLMServerAgentPromqlMaxIterations         int `mapstructure:"llm_server_agent_promql_max_iterations"`
@@ -296,12 +295,10 @@ type appConfig struct {
 	// AsyncApiTimeoutSeconds caps the time allowed for asynchronous API requests.
 	AsyncApiTimeoutSeconds int `mapstructure:"llm_server_async_api_timeout_seconds"`
 	// AsyncOperationTimeoutSeconds caps the time allowed for individual asynchronous background operations.
-	AsyncOperationTimeoutSeconds      int  `mapstructure:"llm_server_async_operation_timeout_seconds"`
-	AsyncPlanExecutionWorkerCount     int  `mapstructure:"llm_server_async_plan_execution_worker_count"`
-	AsyncRefWorkerCount               int  `mapstructure:"llm_server_async_ref_worker_count"`
-	PlannerRewooParallelExecEnabled   bool `mapstructure:"llm_server_planner_rewoo_parallel_exec_enabled"`
-	PlannerRewooInvestigationMaxSteps int  `mapstructure:"llm_server_planner_rewoo_investigation_max_steps"`
-	PlannerRewooInfoMaxSteps          int  `mapstructure:"llm_server_planner_rewoo_info_max_steps"`
+	AsyncOperationTimeoutSeconds  int  `mapstructure:"llm_server_async_operation_timeout_seconds"`
+	AsyncPlanExecutionWorkerCount int  `mapstructure:"llm_server_async_plan_execution_worker_count"`
+	AsyncRefWorkerCount           int  `mapstructure:"llm_server_async_ref_worker_count"`
+	PlannerParallelExecEnabled    bool `mapstructure:"llm_server_planner_parallel_exec_enabled"`
 
 	LlmServerCodeAgentImage           string `mapstructure:"llm_server_agent_codeagent_image"`
 	LlmServerCodeAgentNamespace       string `mapstructure:"llm_server_agent_codeagent_namespace"`
@@ -450,7 +447,7 @@ type appConfig struct {
 	// At top-level entry the executor scores every active KB mapped to the agent
 	// (or any inherited ancestor) against the user's question and keeps only the top
 	// K. Both the eager-inline path used by custom-planner agents and the lazy
-	// <skill-lists> + load_skills path used by ReAct/ReWoo planners are narrowed to
+	// <skill-lists> + load_skills path used by ReAct planners are narrowed to
 	// the same selection, which propagates unchanged through delegated sub-agents.
 	// 0 (default) preserves the legacy "show every mapped skill" behaviour.
 	LlmServerSkillSelectionTopK int `mapstructure:"llm_server_skill_selection_top_k"`
@@ -719,8 +716,7 @@ func init() {
 	// baking it in preserves that behavior now that orchestrating agents always run as ReAct3.
 	viper.SetDefault("llm_server_agent_react_max_iterations", 50)
 	viper.SetDefault("llm_server_agent_react_sub_agent_max_iterations", 10)
-	viper.SetDefault("llm_server_agent_rewoo_max_iterations", 10)
-	viper.SetDefault("llm_server_agent_rewoo_max_parallel", 4)
+	viper.SetDefault("llm_server_agent_max_parallel", 4)
 	viper.SetDefault("llm_server_agent_promql_max_iterations", 4)
 	viper.SetDefault("llm_server_agent_observability_max_iterations", 7)
 	viper.SetDefault("llm_server_agent_observability_timeout_seconds", 180)
@@ -728,8 +724,6 @@ func init() {
 	viper.SetDefault("llm_server_agent_series_match_cache_ttl_minutes", 30)
 	viper.SetDefault("llm_server_agent_promql_max_tool_response_chars", 4000)
 	viper.SetDefault("llm_server_agent_prometheus_max_inline_data_points", 5) // reduced from 10; above this threshold raw values are replaced with a stats summary to avoid context bloat
-	viper.SetDefault("llm_server_planner_rewoo_investigation_max_steps", 6)
-	viper.SetDefault("llm_server_planner_rewoo_info_max_steps", 1)
 
 	viper.SetDefault("llm_server_agent_max_loglines", 100)
 	viper.SetDefault("llm_server_log_provider_override", "")
@@ -838,7 +832,7 @@ func init() {
 	viper.SetDefault("llm_server_sync_dead_worker_count", 3)
 	viper.SetDefault("llm_server_sync_dead_queue_size", 50)
 
-	viper.SetDefault("llm_server_planner_rewoo_parallel_exec_enabled", true)
+	viper.SetDefault("llm_server_planner_parallel_exec_enabled", true)
 
 	viper.SetDefault("CLOUD_COLLECTOR_SERVER_URL", "http://127.0.0.1:8000")
 	viper.SetDefault("CLOUD_COLLECTOR_SERVER_TOKEN", "")

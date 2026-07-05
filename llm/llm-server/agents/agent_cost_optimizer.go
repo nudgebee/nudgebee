@@ -12,7 +12,7 @@ import (
 
 // agent_cost_optimizer.go is the cost_optimizer agent — the "export & analyze"
 // action behind the Cost Analyser button. It is a CUSTOM-planner agent (like
-// events_rca_report): no ReWOO/ReAct pipeline. Execute() does the deterministic
+// events_rca_report): no ReAct pipeline. Execute() does the deterministic
 // work first (profile the conversation's cost/flow + compute retry/failure waste
 // in Go), then makes a single grounded LLM call for the judgment findings
 // (model downgrades, redundant agents), with every dollar recomputed server-side.

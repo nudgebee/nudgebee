@@ -80,8 +80,7 @@ type NBReActPlanner3 struct {
 	notebookStaleWarningsLog int // count of stale-notebook warnings emitted
 
 	// notebookAgentID is the llm_conversation_agent row id used to
-	// persist the notebook to the DB (mirrors how rewoo stores its
-	// generated plan). Created lazily on the first update; subsequent
+	// persist the notebook to the DB. Created lazily on the first update; subsequent
 	// updates patch the same row so the UI sees a single notebook
 	// entry that evolves over the course of the investigation.
 	notebookAgentID string
@@ -109,11 +108,9 @@ type NBReActPlanner3 struct {
 }
 
 // notebookDummyAgent is the agent name used when persisting the
-// react_3 notebook to llm_conversation_agent. It mirrors how rewoo
-// uses plannerDummyTool ("planner") for its generated plan record.
-// This row is written via the DAO only — it never enters the
-// action queue or scratchpad, so there is no risk of the executor
-// trying to invoke it as a real tool.
+// react_3 notebook to llm_conversation_agent. This row is written
+// via the DAO only — it never enters the action queue or scratchpad,
+// so there is no risk of the executor trying to invoke it as a real tool.
 const notebookDummyAgent = "notebook"
 
 // isNotebookToolName returns true when toolName is a hallucinated variant
@@ -1031,8 +1028,7 @@ func (o *NBReActPlanner3) processNotebookUpdate(output string, turnIdx int) {
 		stats := analyzeNotebook(notebookContent)
 
 		// Persist the notebook to the DB so the UI can render it as
-		// a dedicated agent entry that evolves each turn — same
-		// pattern as rewoo's plan record.
+		// a dedicated agent entry that evolves each turn.
 		o.persistNotebook(notebookContent, turnIdx, stats)
 
 		if logger != nil {

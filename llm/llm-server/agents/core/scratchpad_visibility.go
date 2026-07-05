@@ -59,7 +59,7 @@ func NewCompressionTracker() *CompressionTracker {
 
 // SetCompressionContext records the gating signals from the most recent
 // buildScratchpad pass so SaveCompressionVisibility can classify each event.
-// Safe on a nil receiver (no-op) for ReWOO/test callers that may pass nil.
+// Safe on a nil receiver (no-op) for test callers that may pass nil.
 func (t *CompressionTracker) SetCompressionContext(windowPressureActive bool, postRefinementToolIndex int) {
 	if t == nil {
 		return

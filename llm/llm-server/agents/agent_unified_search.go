@@ -535,7 +535,7 @@ func (a UnifiedSearchAgent) synthesizeAnswer(ctx *security.RequestContext, reque
 
 	// websearch is AgentPlannerTypeCustom and bypasses the executor's basePrompt →
 	// systemMessage path, so the lazy <skill-lists> + load_skills flow that
-	// ReAct/ReWoo planners use cannot reach this synthesis call. The executor
+	// ReAct planners use cannot reach this synthesis call. The executor
 	// eagerly loads the active mapped skills (own ∪ inherited, narrowed to the
 	// question-aware selection when LlmServerSkillSelectionTopK is enabled) into
 	// request.SkillsContext — surface it as a system message so any expert

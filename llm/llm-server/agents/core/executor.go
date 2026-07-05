@@ -320,8 +320,8 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 	var kbResult kbAssemblyResult
 
 	// Inject a `<skill-lists>` block (names + descriptions only — no bodies, so the
-	// prompt overhead is minimal) into the agent's system prompt. ReAct/ReWoo
-	// planners read it via the lazy load_skills tool: the LLM picks which skills
+	// prompt overhead is minimal) into the agent's system prompt. ReAct planners
+	// read it via the lazy load_skills tool: the LLM picks which skills
 	// to actually fetch based on the question.
 	//
 	// skillAgentNames is the union of the agent's own name and any inherited
@@ -402,7 +402,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 			return
 		}
 		// Legacy path: skill-lists injected into the cacheable system prompt.
-		kbChan <- kbAssemblyResult{prompt: injectKBContext(ctx, request.AccountId, skillAgentNames, selected, agent.GetPlannerType(), prompt, userQuery)}
+		kbChan <- kbAssemblyResult{prompt: injectKBContext(ctx, request.AccountId, skillAgentNames, selected, prompt, userQuery)}
 	}(basePrompt, request.SelectedSkillIds)
 
 	// When the Memory Module is enabled for this tenant, it is the sole memory
@@ -511,10 +511,7 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 
 	// Compute the effective planner type for prompt rendering. Orchestrating and
 	// ReAct agents always run as react_3 at runtime, so their prompt uses react-style formatting.
-	effectivePlannerType := agent.GetPlannerType()
-	if effectivePlannerType == AgentPlannerTypeOrchestrating || effectivePlannerType == AgentPlannerTypeReAct {
-		effectivePlannerType = AgentPlannerTypeReAct3
-	}
+	effectivePlannerType := resolveEffectivePlannerType(agent.GetPlannerType())
 	systemMessage, sysFmtErr := GetPromptTemplate(basePrompt, request, effectivePlannerType).Format(map[string]any{"history": messageFormatterToString(messageHistoryFomatter)})
 	// Surface template-render failures: a Format error here yields an empty system prompt, which Bedrock Converse rejects with a 400 (issue #30120).
 	if sysFmtErr != nil {
@@ -816,7 +813,10 @@ func executeAgent(ctx *security.RequestContext, agent NBAgent, request NBAgentRe
 		}
 
 		if len(distinctAgents) > 1 {
-			agentResponse = FormatAgentResponse(ctx, request, agentResponse, agent.GetPlannerType())
+			// Pass the effective (runtime) planner type: orchestrating/react agents
+			// run as react_3 and assign sequential DisplayIDs, so the formatter must
+			// build the step-reference guide for them too — not just declared-react_3 agents.
+			agentResponse = FormatAgentResponse(ctx, request, agentResponse, resolveEffectivePlannerType(agent.GetPlannerType()))
 		}
 	}
 
@@ -1013,6 +1013,19 @@ type NBClassificationAgent interface {
 	GetOptions() []string
 }
 
+// resolveEffectivePlannerType maps an agent's *declared* planner type to the
+// planner that actually runs it. Orchestrating and ReAct agents both execute
+// via the ReAct3 planner (see createAgentPlanner), so they resolve to
+// AgentPlannerTypeReAct3; every other type runs as declared. Callers that need
+// to reason about runtime behavior (prompt style, DisplayID assignment, response
+// formatting) must use this rather than GetPlannerType() directly.
+func resolveEffectivePlannerType(declared AgentPlannerType) AgentPlannerType {
+	if declared == AgentPlannerTypeOrchestrating || declared == AgentPlannerTypeReAct {
+		return AgentPlannerTypeReAct3
+	}
+	return declared
+}
+
 func createAgentPlanner(ctx *security.RequestContext, agent NBAgent, request NBAgentRequest, systemMessage string, messageHistoryFomatter []prompts.MessageFormatter, initialNotebook string) (NBAgentPlanner, error) {
 	var nbAgentPlanner NBAgentPlanner
 	var err error
@@ -1102,7 +1115,6 @@ func getNameToTool(t []toolcore.NBTool) map[string]toolcore.NBTool {
 		nameToTool[strings.ToUpper(tool.Name())] = tool
 		// Include aliases so the planner can resolve tools by either their
 		// canonical name or any registered alias (e.g., "kubectl" → "kubectl_execute").
-		// Mirrors the alias-aware lookup in planner_rewoo_2.go.
 		if aliased, ok := tool.(interface{ GetNameAliases() []string }); ok {
 			for _, alias := range aliased.GetNameAliases() {
 				if alias == "" {
@@ -1230,7 +1242,7 @@ func limitStringLength(s string, maxLength int) string {
 // non-nil it filters KBs inherited from ancestor agents to only those IDs; KBs mapped
 // directly to the sub-agent's own name (agentNames[0]) are ALWAYS retained — they are
 // scoped to that agent's specific job and shouldn't be hidden by an upstream filter.
-func injectKBContext(ctx *security.RequestContext, accountId string, agentNames []string, selectedIds []string, plannerType AgentPlannerType, prompt NBAgentPrompt, userQuery string) NBAgentPrompt {
+func injectKBContext(ctx *security.RequestContext, accountId string, agentNames []string, selectedIds []string, prompt NBAgentPrompt, userQuery string) NBAgentPrompt {
 	if accountId == "" || len(agentNames) == 0 {
 		return prompt
 	}

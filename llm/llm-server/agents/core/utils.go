@@ -29,8 +29,8 @@ var watchToolNames = []string{
 // WatchAsyncCompletionRulesPrompt returns the shared async-completion
 // rule body for injection into a planner's system prompt — or the empty
 // string when the watch feature flag is off. Centralising the gate here
-// keeps planner_react_2 / planner_react_3 / planner_rewoo_2 from each
-// having to know about config.Config.WatchEnabled; they just call this
+// keeps the planner (planner_react_3) from having to know about
+// config.Config.WatchEnabled; it just calls this
 // helper at template-var fill time and pay zero prompt-tokens when the
 // feature is disabled.
 func WatchAsyncCompletionRulesPrompt() string {

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/tmc/langchaingo/llms"
 )
 
 func TestIsSlackReqest(t *testing.T) {
@@ -156,4 +157,72 @@ func TestConvertMarkdownToSlackMarkdown(t *testing.T) {
 			assert.Equal(t, tc.expected, actual)
 		})
 	}
+}
+
+// TestResolveEffectivePlannerType pins the declared→runtime planner mapping:
+// Orchestrating and ReAct agents both execute via ReAct3; everything else runs
+// as declared. Callers that reason about runtime behavior (prompt style,
+// DisplayID assignment, response formatting) depend on this.
+func TestResolveEffectivePlannerType(t *testing.T) {
+	cases := []struct {
+		declared AgentPlannerType
+		want     AgentPlannerType
+	}{
+		{AgentPlannerTypeOrchestrating, AgentPlannerTypeReAct3},
+		{AgentPlannerTypeReAct, AgentPlannerTypeReAct3},
+		{AgentPlannerTypeReAct3, AgentPlannerTypeReAct3},
+		{AgentPlannerTypeTool, AgentPlannerTypeTool},
+		{AgentPlannerTypeCustom, AgentPlannerTypeCustom},
+		{AgentPlannerTypeClassification, AgentPlannerTypeClassification},
+		{AgentPlannerTypeConversational, AgentPlannerTypeConversational},
+	}
+	for _, c := range cases {
+		t.Run(string(c.declared), func(t *testing.T) {
+			assert.Equal(t, c.want, resolveEffectivePlannerType(c.declared))
+		})
+	}
+}
+
+func toolStep(name, content string) ToolInvocation {
+	return ToolInvocation{
+		Call:     llms.ToolCall{FunctionCall: &llms.FunctionCall{Name: name}},
+		Response: llms.ToolCallResponse{Content: content},
+	}
+}
+
+// TestBuildStepReferenceParts_GuideForReAct3ExecutedAgents is the regression
+// guard for the bug where orchestrating agents skipped the Step Reference Guide.
+// An orchestrating agent resolves to the effective ReAct3 type and MUST get the
+// guide (it assigns sequential DisplayIDs); a tool agent must NOT.
+func TestBuildStepReferenceParts_GuideForReAct3ExecutedAgents(t *testing.T) {
+	resp := NBAgentResponse{
+		AgentStepResponse: []ToolInvocation{
+			toolStep("aws", "region us-east-1"),
+			toolStep("cloudwatch", "5xx spike at 10:00"),
+		},
+	}
+
+	t.Run("orchestrating agent → effective react_3 → guide built", func(t *testing.T) {
+		effective := resolveEffectivePlannerType(AgentPlannerTypeOrchestrating)
+		guide, supporting := buildStepReferenceParts(resp, effective)
+
+		assert.Contains(t, guide, "Step Reference Guide")
+		assert.Contains(t, guide, "E1 = aws")
+		assert.Contains(t, guide, "E2 = cloudwatch")
+		// Supporting data is labeled with the same IDs so citations line up.
+		assert.Contains(t, supporting, "[E1 (aws)]")
+		assert.Contains(t, supporting, "[E2 (cloudwatch)]")
+	})
+
+	t.Run("react_3 agent → guide built", func(t *testing.T) {
+		guide, _ := buildStepReferenceParts(resp, AgentPlannerTypeReAct3)
+		assert.Contains(t, guide, "E1 = aws")
+	})
+
+	t.Run("tool agent → no guide, raw supporting data", func(t *testing.T) {
+		guide, supporting := buildStepReferenceParts(resp, AgentPlannerTypeTool)
+		assert.Empty(t, guide)
+		assert.NotContains(t, supporting, "[E1")
+		assert.Contains(t, supporting, "region us-east-1")
+	})
 }

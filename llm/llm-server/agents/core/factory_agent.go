@@ -320,7 +320,7 @@ func ExecuteAgentToolCall(nbRequestContext toolcore.NbToolContext, agent NBAgent
 		// metrics, traces, logs, and logs_default append their own name to this
 		// list so the sub-agent's executor can union it with its own KB lookups
 		// — feeding the existing lazy <skill-lists> + load_skills flow inside
-		// ReAct/ReWoo planners rather than reinventing skill injection.
+		// ReAct planners rather than reinventing skill injection.
 		InheritSkillsFromAgents: nbRequestContext.InheritSkillsFromAgents,
 		// Propagate the top-level question and the question-aware skill selection
 		// computed once at top-level entry. Sub-agents must trust the parent's
