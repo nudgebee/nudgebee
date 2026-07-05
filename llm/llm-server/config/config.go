@@ -423,6 +423,20 @@ type appConfig struct {
 	// PR deletes the tool + all injection sites entirely.
 	// Rollback: set LLM_SERVER_THINK_TOOL_ENABLED=true in the env.
 	LlmServerThinkToolEnabled bool `mapstructure:"llm_server_think_tool_enabled"`
+	// LlmServerReact3OrchestratorModeEnabled gates the react_3 role-split prompt
+	// overlays: top-level planner instances get the orchestrator overlay (answer
+	// contract, deliberate first-iteration thought, completion self-check) while
+	// sub-agents get the executor overlay (stay in brief, surface anomalies as
+	// notes). Off = both overlays absent, prompt identical to pre-split behavior.
+	LlmServerReact3OrchestratorModeEnabled bool `mapstructure:"llm_server_react3_orchestrator_mode_enabled"`
+	// LlmServerReact3OrchestratorThinkingLevel is the thinking level applied to
+	// the orchestrator's direction-setting LLM calls (first plan call of a turn
+	// and post-critique refinement passes). Elevate-only: thinking level is
+	// otherwise resolved dynamically per model/tier, and this override applies
+	// only when it is above that baseline — it never lowers thinking. Executor
+	// sub-agents and mid-loop iterations always keep the dynamic resolution.
+	// Empty disables the override.
+	LlmServerReact3OrchestratorThinkingLevel string `mapstructure:"llm_server_react3_orchestrator_thinking_level"`
 	// KGToolsEnabled gates Knowledge Graph tools (kg_list_nodes, kg_list_path) on
 	// the service_dependency_graph agent, enabling static topology + CALLS queries
 	// alongside runtime metrics. Defaults to false — enable per-tenant for canary first.
@@ -915,6 +929,8 @@ func init() {
 	// react_critique defaults to true: the ReWoo→ReAct3 upgrade (now permanent)
 	// used to flip this on at boot; baking it in preserves that behavior.
 	viper.SetDefault("llm_server_react_critique_enabled", true)
+	viper.SetDefault("llm_server_react3_orchestrator_mode_enabled", false)
+	viper.SetDefault("llm_server_react3_orchestrator_thinking_level", "medium")
 	// Flipped false 2026-07-12 — see LlmServerThinkToolEnabled docstring.
 	// Any env that wants the tool back sets LLM_SERVER_THINK_TOOL_ENABLED=true
 	// (env override still wins over SetDefault).

@@ -56,6 +56,13 @@ type NBReActPlanner3 struct {
 	// scope the system prompt uses, without recomputing the gate inline.
 	hypothesisModeEnabled bool
 
+	// planCallCount counts Plan() invocations on this in-memory instance. A
+	// fresh instance is built (and prior state unmarshalled) per user message,
+	// so 0 identifies the direction-setting first reasoning call of the turn —
+	// intermediateSteps can't be used for this, since resumed conversations
+	// carry prior turns' steps. Deliberately NOT serialized.
+	planCallCount int
+
 	// Notebook telemetry — for visibility into whether the agent is
 	// actually exercising the notebook discipline the prompt asks for.
 	// These are NOT part of planner correctness; they exist so operators
@@ -168,6 +175,50 @@ const notebookStaleTurnThreshold = 2
 // top-level agents either have it empty or self-referencing.
 func (o *NBReActPlanner3) isTopLevelAgent() bool {
 	return o.request.ParentAgentId == "" || o.request.ParentAgentId == o.request.AgentId
+}
+
+// orchestratorDeepThinking reports whether the current LLM call is one of the
+// orchestrator's direction-setting calls that warrants the elevated thinking
+// level: the first reasoning call of a turn (where the answer contract and
+// investigation plan are laid down) or a post-critique refinement pass.
+// Always false for executor sub-agents, when orchestrator mode is disabled,
+// or when no override level is configured.
+func (o *NBReActPlanner3) orchestratorDeepThinking(firstPlanCallOfTurn bool) bool {
+	if !config.Config.LlmServerReact3OrchestratorModeEnabled ||
+		config.Config.LlmServerReact3OrchestratorThinkingLevel == "" ||
+		!o.isTopLevelAgent() {
+		return false
+	}
+	return firstPlanCallOfTurn || o.refinementAttempts > 0
+}
+
+// thinkingLevelRank orders thinking levels for elevate-only comparisons.
+// Unknown/empty levels rank 0 (below every real level).
+var thinkingLevelRank = map[string]int{"minimal": 1, "low": 2, "medium": 3, "high": 4}
+
+// resolveOrchestratorThinkingLevel returns the thinking level to apply to an
+// orchestrator direction-setting call, or "" to leave the call on the standard
+// resolution path. Elevate-only: thinking level is otherwise resolved
+// dynamically per model/tier (GetLlmDefaultThinkingLevel, optionally overridden
+// globally by LlmProviderThinkingLevel), so the orchestrator override applies
+// only when it is strictly ABOVE that baseline — it must never lower thinking
+// on deployments whose resolution already lands higher. Model-compatibility
+// clamping still happens centrally in GenerateAndTrackLLMContent, and the
+// provider layer ignores ThinkingLevel on models that don't accept it.
+func resolveOrchestratorThinkingLevel(model string) string {
+	orch := strings.ToLower(config.Config.LlmServerReact3OrchestratorThinkingLevel)
+	orchRank, ok := thinkingLevelRank[orch]
+	if !ok {
+		return ""
+	}
+	baseline := GetLlmDefaultThinkingLevel(model)
+	if config.Config.LlmProviderThinkingLevel != "" {
+		baseline = config.Config.LlmProviderThinkingLevel
+	}
+	if thinkingLevelRank[strings.ToLower(baseline)] >= orchRank {
+		return ""
+	}
+	return orch
 }
 
 // notebookStaleInfo returns whether the notebook is stale and how many
@@ -1466,6 +1517,9 @@ func (o *NBReActPlanner3) Plan(
 	o.refinementAttempts = 0
 	o.refinementData = nil
 
+	firstPlanCallOfTurn := o.planCallCount == 0
+	o.planCallCount++
+
 	var lastErr error
 	isSummaryToolUsed := len(intermediateSteps) > 0 && strings.EqualFold(intermediateSteps[len(intermediateSteps)-1].Action.Tool, o.summaryToolName)
 
@@ -1570,6 +1624,18 @@ func (o *NBReActPlanner3) Plan(
 			callOptions := []llms.CallOption{llms.WithTemperature(0.0)}
 			provider := GetLLMProvider(o.ctx, o.request.AccountId, o.nbAgent.GetName(), true, o.request.ConversationId)
 			model := GetLLMModelName(o.ctx, o.request.AccountId, provider, o.nbAgent.GetName(), true, o.request.ConversationId)
+
+			// Depth is bought once per turn, where the plan is decided: the
+			// orchestrator's direction-setting calls (first reasoning call of
+			// the turn, and post-critique refinement passes) get an elevated
+			// thinking level — elevate-only, so the dynamic per-model/tier
+			// resolution stays in charge whenever it already thinks harder.
+			// Executor sub-agents and mid-loop iterations keep the default.
+			if o.orchestratorDeepThinking(firstPlanCallOfTurn) {
+				if lvl := resolveOrchestratorThinkingLevel(model); lvl != "" {
+					callOptions = append(callOptions, WithThinkingLevel(lvl))
+				}
+			}
 
 			if !IsOpenAIModelWithoutStopSupport(provider, model) {
 				callOptions = append(callOptions, llms.WithStopWords([]string{"<observation>"}))
@@ -1960,6 +2026,23 @@ func resolveHypothesisModeEnabled(request NBAgentRequest, agent NBAgent) bool {
 	return ResolveAgentNotebookEnabled(agent) && isTopLevel
 }
 
+// resolveReact3RoleModes returns the role prompt-overlay gates for the react_3
+// planner. The same planner (and base prompt) serves two opposite jobs: the
+// top-level orchestrator, which owns the completeness of the final answer, and
+// executor sub-agents, which run a scoped brief fast. The orchestrator overlay
+// adds the answer contract + completion self-check; the executor overlay adds
+// the stay-in-brief / surface-anomalies reporting rule. At most one of the two
+// returns true; both are false when the feature flag is off, rendering the
+// prompt byte-identical to the pre-split behavior. Role is stable for a given
+// agent instance, so the cached system prefix is not busted per request.
+func resolveReact3RoleModes(request NBAgentRequest) (orchestratorMode, executorMode bool) {
+	if !config.Config.LlmServerReact3OrchestratorModeEnabled {
+		return false, false
+	}
+	isTopLevel := request.ParentAgentId == "" || request.ParentAgentId == request.AgentId
+	return isTopLevel, !isTopLevel
+}
+
 // reActCreatePrompt3 builds the chat prompt template for the react_3 planner.
 func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsIn []toolcore.NBTool, conversationContext string, previousMessages []prompts.MessageFormatter, request NBAgentRequest, agent NBAgent) (prompts.ChatPromptTemplate, []toolcore.NBTool) {
 	tools := make([]toolcore.NBTool, len(toolsIn))
@@ -1978,6 +2061,7 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 	// agent role, so the cached system prefix is not busted per request.
 	notebookEnabled := ResolveAgentNotebookEnabled(agent)
 	hypothesisModeEnabled := resolveHypothesisModeEnabled(request, agent)
+	orchestratorMode, executorMode := resolveReact3RoleModes(request)
 
 	// Only declare template variables actually referenced in planner_react_3_base.txt.
 	// Dynamic vars (history, conversation_context, input, scratchpad) are in the human
@@ -1994,6 +2078,8 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 				"delegate_agent_enabled",
 				"notebook_enabled",
 				"hypothesis_mode_enabled",
+				"orchestrator_mode",
+				"executor_mode",
 				"conversation_context_enabled",
 				"context_management_rules",
 				"time_handling_rules",
@@ -2118,6 +2204,8 @@ func reActCreatePrompt3(ctx *security.RequestContext, agentPrompt string, toolsI
 		"delegate_agent_enabled":       HasDelegateAgentTool(tools),
 		"notebook_enabled":             notebookEnabled,
 		"hypothesis_mode_enabled":      hypothesisModeEnabled,
+		"orchestrator_mode":            orchestratorMode,
+		"executor_mode":                executorMode,
 		"conversation_context_enabled": config.Config.ConversationContextEnabled,
 		"context_management_rules":     prompts_repo.GetPrompt(prompts_repo.PromptContextContinuity),
 		"time_handling_rules":          prompts_repo.GetPrompt(prompts_repo.PromptSharedTimeHandlingRules),

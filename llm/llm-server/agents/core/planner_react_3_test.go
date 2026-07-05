@@ -21,12 +21,20 @@ import (
 // template variable that was never declared (both would fail Format).
 func renderReact3Base(t *testing.T, notebookEnabled, hypothesisModeEnabled bool) string {
 	t.Helper()
+	return renderReact3BaseWithRoles(t, notebookEnabled, hypothesisModeEnabled, false, false)
+}
+
+// renderReact3BaseWithRoles is renderReact3Base with the orchestrator/executor
+// role-overlay gates exposed, mirroring resolveReact3RoleModes outputs.
+func renderReact3BaseWithRoles(t *testing.T, notebookEnabled, hypothesisModeEnabled, orchestratorMode, executorMode bool) string {
+	t.Helper()
 	base := prompts_repo.GetPrompt(prompts_repo.PromptPlannerReactBase3)
 	assert.NotEmpty(t, base, "embedded react_3 base prompt must load")
 
 	vars := []string{
 		"tool_names", "tool_descriptions", "workspace_enabled", "shell_tool_enabled",
 		"delegate_agent_enabled", "notebook_enabled", "hypothesis_mode_enabled",
+		"orchestrator_mode", "executor_mode",
 		"conversation_context_enabled", "context_management_rules", "time_handling_rules",
 		"data_protection_rules", "code_analysis_rules", "security_rules",
 		"memory_consumption_rules", "async_completion_rules",
@@ -40,6 +48,8 @@ func renderReact3Base(t *testing.T, notebookEnabled, hypothesisModeEnabled bool)
 		"delegate_agent_enabled":       false,
 		"notebook_enabled":             notebookEnabled,
 		"hypothesis_mode_enabled":      hypothesisModeEnabled,
+		"orchestrator_mode":            orchestratorMode,
+		"executor_mode":                executorMode,
 		"conversation_context_enabled": false,
 		"context_management_rules":     "",
 		"time_handling_rules":          "",
@@ -92,6 +102,139 @@ func TestReAct3HypothesisModeFence(t *testing.T) {
 		assert.NotContains(t, out, notebookHeader)
 		assert.NotContains(t, out, hypothesisHeader)
 	})
+}
+
+// TestReAct3RoleOverlayFence verifies the orchestrator/executor role overlays
+// are mutually exclusive and both absent when the feature is off, so the
+// legacy prompt is unchanged for deployments that haven't opted in.
+func TestReAct3RoleOverlayFence(t *testing.T) {
+	const contractHeader = "ANSWER CONTRACT — DEFINE \"DONE\" BEFORE ACTING"
+	const executorHeader = "SCOPED SUB-TASK REPORTING"
+	const thoughtException = "Exception: on the FIRST step of a task"
+
+	t.Run("orchestrator: answer contract + thought exception, no executor block", func(t *testing.T) {
+		out := renderReact3BaseWithRoles(t, true, true, true, false)
+		assert.Contains(t, out, contractHeader)
+		assert.Contains(t, out, thoughtException)
+		assert.Contains(t, out, "## Answer Contract", "notebook-enabled orchestrator records the contract in the notebook")
+		assert.Contains(t, out, "hypothesis completion gate below", "hypothesis-mode orchestrator links contract to the hypothesis gate")
+		assert.NotContains(t, out, executorHeader)
+	})
+
+	t.Run("orchestrator without notebook: contract present, no notebook reference", func(t *testing.T) {
+		out := renderReact3BaseWithRoles(t, false, false, true, false)
+		assert.Contains(t, out, contractHeader)
+		assert.NotContains(t, out, "## Answer Contract")
+		assert.NotContains(t, out, "hypothesis completion gate below")
+	})
+
+	t.Run("executor: reporting block only, no contract or thought exception", func(t *testing.T) {
+		out := renderReact3BaseWithRoles(t, true, false, false, true)
+		assert.Contains(t, out, executorHeader)
+		assert.NotContains(t, out, contractHeader)
+		assert.NotContains(t, out, thoughtException)
+	})
+
+	t.Run("feature off: neither overlay renders (legacy prompt)", func(t *testing.T) {
+		out := renderReact3BaseWithRoles(t, true, true, false, false)
+		assert.NotContains(t, out, contractHeader)
+		assert.NotContains(t, out, executorHeader)
+		assert.NotContains(t, out, thoughtException)
+	})
+}
+
+// TestResolveReact3RoleModes verifies the role gates: mutually exclusive by
+// ParentAgentId, and both false when the feature flag is off.
+func TestResolveReact3RoleModes(t *testing.T) {
+	prev := config.Config.LlmServerReact3OrchestratorModeEnabled
+	defer func() { config.Config.LlmServerReact3OrchestratorModeEnabled = prev }()
+
+	topLevel := NBAgentRequest{AgentId: "a1", ParentAgentId: ""}
+	selfParent := NBAgentRequest{AgentId: "a1", ParentAgentId: "a1"}
+	subAgent := NBAgentRequest{AgentId: "a2", ParentAgentId: "a1"}
+
+	config.Config.LlmServerReact3OrchestratorModeEnabled = true
+	for name, req := range map[string]NBAgentRequest{"empty parent": topLevel, "self parent": selfParent} {
+		orch, exec := resolveReact3RoleModes(req)
+		assert.True(t, orch, "%s must resolve as orchestrator", name)
+		assert.False(t, exec, "%s must not resolve as executor", name)
+	}
+	orch, exec := resolveReact3RoleModes(subAgent)
+	assert.False(t, orch, "sub-agent must not resolve as orchestrator")
+	assert.True(t, exec, "sub-agent must resolve as executor")
+
+	config.Config.LlmServerReact3OrchestratorModeEnabled = false
+	for name, req := range map[string]NBAgentRequest{"top-level": topLevel, "sub-agent": subAgent} {
+		orch, exec := resolveReact3RoleModes(req)
+		assert.False(t, orch, "%s: orchestrator overlay must be off when feature disabled", name)
+		assert.False(t, exec, "%s: executor overlay must be off when feature disabled", name)
+	}
+}
+
+// TestOrchestratorDeepThinking verifies the elevated thinking level is scoped
+// to the orchestrator's direction-setting calls: first plan call of a turn and
+// post-critique refinement passes — never sub-agents or mid-loop iterations.
+func TestOrchestratorDeepThinking(t *testing.T) {
+	prevEnabled := config.Config.LlmServerReact3OrchestratorModeEnabled
+	prevLevel := config.Config.LlmServerReact3OrchestratorThinkingLevel
+	defer func() {
+		config.Config.LlmServerReact3OrchestratorModeEnabled = prevEnabled
+		config.Config.LlmServerReact3OrchestratorThinkingLevel = prevLevel
+	}()
+	config.Config.LlmServerReact3OrchestratorModeEnabled = true
+	config.Config.LlmServerReact3OrchestratorThinkingLevel = "medium"
+
+	orchestrator := &NBReActPlanner3{request: NBAgentRequest{AgentId: "a1", ParentAgentId: ""}}
+	subAgent := &NBReActPlanner3{request: NBAgentRequest{AgentId: "a2", ParentAgentId: "a1"}}
+
+	assert.True(t, orchestrator.orchestratorDeepThinking(true), "orchestrator first plan call of the turn")
+	assert.False(t, orchestrator.orchestratorDeepThinking(false), "orchestrator mid-loop iteration")
+	orchestrator.refinementAttempts = 1
+	assert.True(t, orchestrator.orchestratorDeepThinking(false), "orchestrator post-critique refinement pass")
+
+	assert.False(t, subAgent.orchestratorDeepThinking(true), "executor sub-agent never gets the override")
+
+	config.Config.LlmServerReact3OrchestratorThinkingLevel = ""
+	orchestrator.refinementAttempts = 0
+	assert.False(t, orchestrator.orchestratorDeepThinking(true), "empty level disables the override")
+
+	config.Config.LlmServerReact3OrchestratorThinkingLevel = "medium"
+	config.Config.LlmServerReact3OrchestratorModeEnabled = false
+	assert.False(t, orchestrator.orchestratorDeepThinking(true), "feature flag off disables the override")
+}
+
+// TestResolveOrchestratorThinkingLevel verifies the override is elevate-only:
+// it applies only when configured above the model's dynamic default (or the
+// global LlmProviderThinkingLevel override), and never lowers thinking.
+func TestResolveOrchestratorThinkingLevel(t *testing.T) {
+	prevOrch := config.Config.LlmServerReact3OrchestratorThinkingLevel
+	prevGlobal := config.Config.LlmProviderThinkingLevel
+	defer func() {
+		config.Config.LlmServerReact3OrchestratorThinkingLevel = prevOrch
+		config.Config.LlmProviderThinkingLevel = prevGlobal
+	}()
+	config.Config.LlmProviderThinkingLevel = ""
+	config.Config.LlmServerReact3OrchestratorThinkingLevel = "medium"
+
+	// gemini-3 pro defaults to "low" → medium elevates.
+	assert.Equal(t, "medium", resolveOrchestratorThinkingLevel("gemini-3-pro-preview"))
+	// gemini-3 flash defaults to "medium" → override is not an elevation, skip.
+	assert.Equal(t, "", resolveOrchestratorThinkingLevel("gemini-3-flash-preview"))
+	// No dynamic default (non-thinking-level model) → override applies; the
+	// central clamp + provider layer ignore it where unsupported.
+	assert.Equal(t, "medium", resolveOrchestratorThinkingLevel("claude-sonnet-4"))
+
+	// Global override already at/above the orchestrator level → never lower.
+	config.Config.LlmProviderThinkingLevel = "high"
+	assert.Equal(t, "", resolveOrchestratorThinkingLevel("gemini-3-pro-preview"))
+	// Global override below the orchestrator level → elevate past it.
+	config.Config.LlmProviderThinkingLevel = "low"
+	assert.Equal(t, "medium", resolveOrchestratorThinkingLevel("gemini-3-pro-preview"))
+
+	// Invalid configured level → disabled.
+	config.Config.LlmProviderThinkingLevel = ""
+	config.Config.LlmServerReact3OrchestratorThinkingLevel = "turbo"
+	assert.Equal(t, "", resolveOrchestratorThinkingLevel("gemini-3-pro-preview"))
 }
 
 // renderReactCritiquer renders the embedded react critiquer prompt with the
