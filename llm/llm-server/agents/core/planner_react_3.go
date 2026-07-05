@@ -63,6 +63,13 @@ type NBReActPlanner3 struct {
 	// carry prior turns' steps. Deliberately NOT serialized.
 	planCallCount int
 
+	// turnStartStepIndex is len(intermediateSteps) at the first Plan() call of
+	// the current user message. Resumed conversations carry prior turns' steps,
+	// so per-turn counters (e.g. the answer-contract nudge's non-triviality
+	// threshold) must subtract this baseline instead of using the raw step
+	// count. Transient like planCallCount — NOT serialized.
+	turnStartStepIndex int
+
 	// Notebook telemetry — for visibility into whether the agent is
 	// actually exercising the notebook discipline the prompt asks for.
 	// These are NOT part of planner correctness; they exist so operators
@@ -168,6 +175,14 @@ func (o *NBReActPlanner3) notebookSectionEnabled() bool {
 // system nudge / logs a warning. Centralised here so the threshold is
 // consistent across buildScratchpad and processNotebookUpdate.
 const notebookStaleTurnThreshold = 2
+
+// answerContractHeader is the notebook section the orchestrator overlay
+// requires for non-trivial asks; buildScratchpad nudges when it is missing.
+const answerContractHeader = "## Answer Contract"
+
+// answerContractNudgeMinSteps is the tool-action count at which a turn
+// counts as non-trivial by evidence for answer-contract enforcement.
+const answerContractNudgeMinSteps = 2
 
 // isTopLevelAgent returns true when this planner instance is the
 // top-level orchestrator (not a sub-agent like postgres or gcp).
@@ -442,6 +457,29 @@ func (o *NBReActPlanner3) buildScratchpad(intermediateSteps []NBAgentPlannerTool
 			history.WriteString("Record what you found, what it means, and update your plan status markers ([DONE]/[DOING]/[NEXT]).")
 			history.WriteString("</system_nudge>\n")
 		}
+	}
+
+	// Deterministic answer-contract enforcement (orchestrator mode): once the
+	// CURRENT turn has run 2+ tool actions it is non-trivial by evidence, so a
+	// missing `## Answer Contract` notebook section means the overlay's
+	// contract instruction was skipped. Same lesson as the stale-notebook
+	// nudge above — prompt-only guidance proved insufficient (dev A/B
+	// 2026-07-05: k8s_debug ran a 4-step "cross validate everything" review
+	// and finalized with no contract recorded, then declared a config-only
+	// state "safe"). The count is per-turn (steps since turnStartStepIndex),
+	// NOT the raw conversation-wide step total — resumed conversations carry
+	// prior turns' steps, and nudging a trivial follow-up would contradict the
+	// prompt's "simple lookups skip the contract" carve-out.
+	turnSteps := totalSteps - o.turnStartStepIndex
+	if orchestratorMode, _ := resolveReact3RoleModes(o.request); orchestratorMode &&
+		o.notebookSectionEnabled() && turnSteps >= answerContractNudgeMinSteps &&
+		!strings.Contains(strings.ToLower(o.Notebook), strings.ToLower(answerContractHeader)) {
+		history.WriteString("\n<system_nudge>")
+		fmt.Fprintf(&history, "⚠ ANSWER CONTRACT MISSING — This request has already taken %d tool actions, so it is non-trivial, ", turnSteps)
+		fmt.Fprintf(&history, "but your notebook has no `%s` section. ", answerContractHeader)
+		history.WriteString("In your NEXT <update_notebook>, add it: decompose the user's CURRENT request into sub-questions and note the evidence that closes each. ")
+		history.WriteString("Do NOT emit <final_answer> while a sub-question is unresolved, and never declare the operation safe/complete on declared-state evidence alone — cite behavioral evidence (logs, metrics, live probes).")
+		history.WriteString("</system_nudge>\n")
 	}
 
 	scratchpad := ""
@@ -1519,6 +1557,9 @@ func (o *NBReActPlanner3) Plan(
 
 	firstPlanCallOfTurn := o.planCallCount == 0
 	o.planCallCount++
+	if firstPlanCallOfTurn {
+		o.turnStartStepIndex = len(intermediateSteps)
+	}
 
 	var lastErr error
 	isSummaryToolUsed := len(intermediateSteps) > 0 && strings.EqualFold(intermediateSteps[len(intermediateSteps)-1].Action.Tool, o.summaryToolName)

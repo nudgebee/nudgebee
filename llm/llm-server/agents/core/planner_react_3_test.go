@@ -111,6 +111,8 @@ func TestReAct3RoleOverlayFence(t *testing.T) {
 	const contractHeader = "ANSWER CONTRACT — DEFINE \"DONE\" BEFORE ACTING"
 	const executorHeader = "SCOPED SUB-TASK REPORTING"
 	const thoughtException = "Exception: on the FIRST step of a task"
+	const safetyClaimsHeader = "SAFETY & COMPLETION CLAIMS"
+	const perMessageContract = "EVERY qualifying user message"
 
 	t.Run("orchestrator: answer contract + thought exception, no executor block", func(t *testing.T) {
 		out := renderReact3BaseWithRoles(t, true, true, true, false)
@@ -118,12 +120,15 @@ func TestReAct3RoleOverlayFence(t *testing.T) {
 		assert.Contains(t, out, thoughtException)
 		assert.Contains(t, out, "## Answer Contract", "notebook-enabled orchestrator records the contract in the notebook")
 		assert.Contains(t, out, "hypothesis completion gate below", "hypothesis-mode orchestrator links contract to the hypothesis gate")
+		assert.Contains(t, out, safetyClaimsHeader, "unconditional safety-claims rule must render for orchestrators")
+		assert.Contains(t, out, perMessageContract, "contract must be framed per user message, not per conversation")
 		assert.NotContains(t, out, executorHeader)
 	})
 
 	t.Run("orchestrator without notebook: contract present, no notebook reference", func(t *testing.T) {
 		out := renderReact3BaseWithRoles(t, false, false, true, false)
 		assert.Contains(t, out, contractHeader)
+		assert.Contains(t, out, safetyClaimsHeader)
 		assert.NotContains(t, out, "## Answer Contract")
 		assert.NotContains(t, out, "hypothesis completion gate below")
 	})
@@ -133,6 +138,7 @@ func TestReAct3RoleOverlayFence(t *testing.T) {
 		assert.Contains(t, out, executorHeader)
 		assert.NotContains(t, out, contractHeader)
 		assert.NotContains(t, out, thoughtException)
+		assert.NotContains(t, out, safetyClaimsHeader)
 	})
 
 	t.Run("feature off: neither overlay renders (legacy prompt)", func(t *testing.T) {
@@ -140,6 +146,84 @@ func TestReAct3RoleOverlayFence(t *testing.T) {
 		assert.NotContains(t, out, contractHeader)
 		assert.NotContains(t, out, executorHeader)
 		assert.NotContains(t, out, thoughtException)
+		assert.NotContains(t, out, safetyClaimsHeader)
+	})
+}
+
+// TestReAct3AnswerContractNudge verifies the deterministic contract
+// enforcement in buildScratchpad: with orchestrator mode on, a turn that has
+// run 2+ tool actions while the notebook lacks an `## Answer Contract`
+// section gets a system nudge; trivial turns, sub-agents, contract-carrying
+// notebooks, and flag-off deployments do not.
+func TestReAct3AnswerContractNudge(t *testing.T) {
+	prev := config.Config.LlmServerReact3OrchestratorModeEnabled
+	defer func() { config.Config.LlmServerReact3OrchestratorModeEnabled = prev }()
+
+	step := func(id string) NBAgentPlannerToolActionStep {
+		return NBAgentPlannerToolActionStep{
+			Action:      NBAgentPlannerToolAction{Tool: "kubectl", ToolInput: "get pods", Log: "checking", ToolID: id},
+			Observation: "ok",
+			Status:      ToolStatusSuccess,
+		}
+	}
+	twoSteps := []NBAgentPlannerToolActionStep{step("t1"), step("t2")}
+	const nudgeMarker = "ANSWER CONTRACT MISSING"
+
+	config.Config.LlmServerReact3OrchestratorModeEnabled = true
+
+	t.Run("orchestrator, 2+ steps, no contract: nudge fires", func(t *testing.T) {
+		planner := &NBReActPlanner3{request: NBAgentRequest{AgentId: "a1", ParentAgentId: ""}}
+		assert.Contains(t, planner.buildScratchpad(twoSteps), nudgeMarker)
+	})
+
+	t.Run("contract present in notebook: no nudge", func(t *testing.T) {
+		planner := &NBReActPlanner3{
+			request:  NBAgentRequest{AgentId: "a1", ParentAgentId: ""},
+			Notebook: "## Answer Contract\n- [ ] sub-question 1\n\n## Scope\n...",
+		}
+		assert.NotContains(t, planner.buildScratchpad(twoSteps), nudgeMarker)
+	})
+
+	t.Run("contract header with different casing: no nudge", func(t *testing.T) {
+		// LLM outputs vary casing; the check is case-insensitive, matching
+		// analyzeNotebook's section scans.
+		planner := &NBReActPlanner3{
+			request:  NBAgentRequest{AgentId: "a1", ParentAgentId: ""},
+			Notebook: "## ANSWER CONTRACT\n- [ ] sub-question 1",
+		}
+		assert.NotContains(t, planner.buildScratchpad(twoSteps), nudgeMarker)
+	})
+
+	t.Run("single step (trivial turn): no nudge", func(t *testing.T) {
+		planner := &NBReActPlanner3{request: NBAgentRequest{AgentId: "a1", ParentAgentId: ""}}
+		assert.NotContains(t, planner.buildScratchpad([]NBAgentPlannerToolActionStep{step("t1")}), nudgeMarker)
+	})
+
+	t.Run("resumed conversation: prior turns' steps don't count toward the threshold", func(t *testing.T) {
+		// Two historical steps from earlier turns, none yet this turn — a
+		// trivial follow-up must not be nudged for a contract.
+		planner := &NBReActPlanner3{
+			request:            NBAgentRequest{AgentId: "a1", ParentAgentId: ""},
+			turnStartStepIndex: 2,
+		}
+		assert.NotContains(t, planner.buildScratchpad(twoSteps), nudgeMarker)
+
+		// Once the CURRENT turn accumulates 2+ steps on top of the history,
+		// the nudge fires again.
+		fourSteps := append(append([]NBAgentPlannerToolActionStep{}, twoSteps...), step("t3"), step("t4"))
+		assert.Contains(t, planner.buildScratchpad(fourSteps), nudgeMarker)
+	})
+
+	t.Run("sub-agent: no nudge", func(t *testing.T) {
+		planner := &NBReActPlanner3{request: NBAgentRequest{AgentId: "a2", ParentAgentId: "a1"}}
+		assert.NotContains(t, planner.buildScratchpad(twoSteps), nudgeMarker)
+	})
+
+	t.Run("feature off: no nudge", func(t *testing.T) {
+		config.Config.LlmServerReact3OrchestratorModeEnabled = false
+		defer func() { config.Config.LlmServerReact3OrchestratorModeEnabled = true }()
+		planner := &NBReActPlanner3{request: NBAgentRequest{AgentId: "a1", ParentAgentId: ""}}
+		assert.NotContains(t, planner.buildScratchpad(twoSteps), nudgeMarker)
 	})
 }
 
