@@ -948,12 +948,8 @@ func (e *plannerExecutor) doIterationSequential(
 
 		shouldExecute, errEval := e.evaluateConditions(action, allAvailableStepsForCondition)
 		if errEval != nil {
-			e.ctx.GetLogger().Error("plannerexecutor: error evaluating conditions for action, stopping iteration", "toolId", action.ToolID, "error", errEval)
-			_, err := GetConversationDao().SaveCompletedConversationAgentCall(uuid.Nil, e.agentRequest.ConversationId, e.agentRequest.MessageId, e.agentRequest.AccountId, e.agentRequest.UserId, action.Tool, e.agentRequest.ParentAgentId, action.ToolInput, action.Log, "error evaluating conditions for action: "+errEval.Error(), e.agentRequest.QueryContext, e.agentRequest.QueryConfig, AgentExecutionStatusFail, "unable to evaluate condition")
-			if err != nil {
-				e.ctx.GetLogger().Error(logErrSaveAgentCall, "error", err.Error())
-			}
-			return newStepsThisIteration, nil, errEval
+			newStepsThisIteration = append(newStepsThisIteration, e.recordFailedActionStep(action, "condition evaluation failed", errEval))
+			continue
 		}
 		if !shouldExecute {
 			e.ctx.GetLogger().Info("plannerexecutor: action skipped due to conditions not met", "toolId", action.ToolID, "tool", action.Tool)
@@ -1029,7 +1025,11 @@ func (e *plannerExecutor) doIterationSequential(
 			return newStepsThisIteration, finishAct, nil
 		}
 		if errAct != nil {
-			return newStepsThisIteration, nil, errAct
+			// Do not abort the iteration: record the failure as an observation
+			// so the planner can reflect ([TOOL-FAILED]) instead of the raw
+			// error surfacing as the final chat response.
+			newStepsThisIteration = append(newStepsThisIteration, e.recordFailedActionStep(action, "action execution failed", errAct))
+			continue
 		}
 		newStepsThisIteration = append(newStepsThisIteration, stepResponse)
 
@@ -1306,7 +1306,9 @@ func (e *plannerExecutor) doIterationParallel(
 					mu.Unlock()
 					shouldExecute, evalErr := e.evaluateConditions(n.Action, allAvailableStepsForCondition)
 					if evalErr != nil {
+						failedStep := e.recordFailedActionStep(n.Action, "condition evaluation failed", evalErr)
 						mu.Lock()
+						n.Result = failedStep
 						n.Status = "failed"
 						mu.Unlock()
 						resultsChan <- n
@@ -1327,7 +1329,9 @@ func (e *plannerExecutor) doIterationParallel(
 					}
 					step, finish, actErr := e.doAction(nameToTool, n.Action, previousContext)
 					if actErr != nil {
+						failedStep := e.recordFailedActionStep(n.Action, "action execution failed", actErr)
 						mu.Lock()
+						n.Result = failedStep
 						n.Status = "failed"
 						mu.Unlock()
 						resultsChan <- n
@@ -1449,10 +1453,13 @@ func (e *plannerExecutor) doIterationParallel(
 		case n := <-resultsChan:
 			completed++
 			e.ctx.GetLogger().Info("plannerexecutor: parallel tool result received", "tool", n.Action.Tool, "toolId", n.Action.ToolID, "status", n.Status)
-			if n.Status == "failed" {
-				cleanup()
-				return newStepsThisIteration, nil, fmt.Errorf("action %s failed", n.Action.ToolID)
-			}
+			// A "failed" node (auth rejection, condition-evaluation error,
+			// input parsing, panic) carries a ToolStatusFailure step in
+			// n.Result and flows through the normal handling below. It must
+			// NOT abort the iteration: doing so discarded sibling results,
+			// surfaced a bare "action <id> failed" error verbatim as the chat
+			// response, and bypassed the ReAct [TOOL-FAILED] reflection path.
+			// Call()'s consecutive-failed-iterations guard still bounds retries.
 			newStepsThisIteration = append(newStepsThisIteration, n.Result)
 
 			// CRITICAL: If the tool returned a terminal response, return early
@@ -1704,6 +1711,29 @@ func writeConfirmationRequired(requestType *toolcore.ToolRequestType, toolName s
 		return !strings.EqualFold(toolName, tools.ToolWatchResource)
 	default:
 		return false
+	}
+}
+
+// recordFailedActionStep converts an action-level error (auth rejection,
+// condition-evaluation failure, input parsing, panic recovery) into a
+// ToolStatusFailure step instead of an iteration-aborting error. The error
+// text becomes the step observation so it reaches the planner scratchpad
+// ([TOOL-FAILED]) for reflection, and the failed call is persisted so the
+// cause is visible in the conversation tool-call history rather than being
+// silently discarded.
+func (e *plannerExecutor) recordFailedActionStep(action NBAgentPlannerToolAction, reason string, actionErr error) NBAgentPlannerToolActionStep {
+	// %v instead of .Error(): nil-safe without a defensive branch — a panic
+	// here would strand the parallel receiver loop waiting on resultsChan.
+	observation := fmt.Sprintf("%s: %v", reason, actionErr)
+	e.ctx.GetLogger().Error("plannerexecutor: action failed, recording failure observation", "tool", action.Tool, "toolId", action.ToolID, "reason", reason, "error", actionErr)
+	_, err := GetConversationDao().SaveCompletedConversationAgentCall(uuid.Nil, e.agentRequest.ConversationId, e.agentRequest.MessageId, e.agentRequest.AccountId, e.agentRequest.UserId, action.Tool, e.agentRequest.ParentAgentId, action.ToolInput, action.Log, observation, e.agentRequest.QueryContext, e.agentRequest.QueryConfig, AgentExecutionStatusFail, reason)
+	if err != nil {
+		e.ctx.GetLogger().Error(logErrSaveAgentCall, "error", err.Error())
+	}
+	return NBAgentPlannerToolActionStep{
+		Action:      action,
+		Observation: observation,
+		Status:      ToolStatusFailure,
 	}
 }
 
