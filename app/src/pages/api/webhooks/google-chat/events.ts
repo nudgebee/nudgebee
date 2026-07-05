@@ -100,7 +100,7 @@ export default async function trigger(req: NextApiRequest, res: NextApiResponse)
   } catch (err: any) {
     console.error('Google Chat webhook error:', err);
     if (!res.headersSent) {
-      return res.status(500).json({ error: err.toString() });
+      return res.status(500).json({ error: 'Internal server error' });
     }
   }
 }
