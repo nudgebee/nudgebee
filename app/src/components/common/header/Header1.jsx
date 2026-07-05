@@ -45,6 +45,7 @@ import IconButton from '@mui/material/IconButton';
 import ClusterDropdown from '@shared/navigation/ClusterDropDown';
 import { useSession } from 'next-auth/react';
 import { DropdownMenu } from '@ui/DropdownMenu';
+import GuidesMenu from '@components/onboarding/GuidesMenu';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 // All four modals are click-gated inside the "Connect Account" dropdown, which
 // is only exposed on admin pages. But this Header is rendered by the global
@@ -96,6 +97,7 @@ const Header1 = ({ showBorder = false }) => {
   const [showReloadNotification, setShowReloadNotification] = useState(false);
   const [reloadMsg, setReloadMsg] = useState('');
   const [showK8sAccountModal, setShowK8sAccountModal] = useState(false);
+  const [guidesOpen, setGuidesOpen] = useState(false);
   const [showJiraAccountModal, setShowJiraAccountModal] = useState(false);
   const [showGitHubAccountModal, setShowGitHubAccountModal] = useState(false);
   const [showServiceNowAccountModal, setShowServiceNowAccountModal] = useState(false);
@@ -200,6 +202,11 @@ const Header1 = ({ showBorder = false }) => {
   const buildHelpMenuItems = () => {
     const close = () => {};
     const items = [
+      {
+        label: 'Browse guides',
+        icon: <SafeIcon src={HelpOutlineDarkIcon} alt='Guides' />,
+        onSelect: () => setGuidesOpen(true),
+      },
       {
         label: 'Documentation',
         icon: <SafeIcon src={DocumentationIcon} alt='Documentation' />,
@@ -1094,6 +1101,7 @@ const Header1 = ({ showBorder = false }) => {
           seenAt={updatesSeenSnapshot}
         />
       </CustomDrawer>
+      <GuidesMenu open={guidesOpen} onClose={() => setGuidesOpen(false)} />
     </>
   );
 };

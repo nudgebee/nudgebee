@@ -19,9 +19,7 @@ import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import CustomSearch from '@shared/CustomSearch';
 import { Button as DsButton } from '@ui/Button';
-import SafeIcon from '@shared/icons/SafeIcon';
-import { HelpOutlineDarkIcon } from '@assets';
-import { useTour } from '@components/common/tour';
+import { TourLauncher } from '@components/common/tour';
 import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { action } from 'src/utils/actionStyles';
 import { getFeatures, updateFeatureFlagForAccount } from '@lib/UserService';
@@ -37,7 +35,6 @@ const AGENT_POLL_MS = 30000;
 
 const K8sIntegrationTile = () => {
   const router = useRouter();
-  const { start: startTour } = useTour();
   const headers = [
     'Name',
     { name: 'Status', width: '10%' },
@@ -914,15 +911,7 @@ const K8sIntegrationTile = () => {
           actions={
             hasWriteAccess() ? (
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <DsButton
-                  tone='ghost'
-                  size='md'
-                  icon={<SafeIcon src={HelpOutlineDarkIcon} alt='' width={16} height={16} />}
-                  onClick={() => startTour('connect-cluster')}
-                  id='tour-connect-cluster'
-                >
-                  How to connect a cluster
-                </DsButton>
+                <TourLauncher tourId='connect-cluster' label='How to connect a cluster' />
                 <DsButton id='add-k8s-account' tone='primary' size='md' onClick={() => setOpenModal(true)} aria-label='Add K8s Account'>
                   Add K8s Account
                 </DsButton>

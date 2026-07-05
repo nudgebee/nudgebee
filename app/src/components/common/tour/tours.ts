@@ -38,9 +38,17 @@ export interface TourStepDef {
 
 export interface TourDef {
   id: string;
-  /** Human label for the tour, used by launchers. */
+  /** Human label for the tour, used by launchers and the catalog. */
   title: string;
   steps: TourStepDef[];
+  /**
+   * Catalog metadata. When `module` is set, the guide appears in the central
+   * Guides menu grouped under it. `route` is where the guide's anchors live —
+   * `useLaunchGuide` navigates there before starting when launched off-page.
+   */
+  module?: string;
+  description?: string;
+  route?: string;
   /**
    * Optional intro card shown before the first step. Rendered by the launcher
    * (a centered dialog), not the engine. When present, the engine counts it as
@@ -65,6 +73,9 @@ export interface TourDef {
 const createUserTour: TourDef = {
   id: 'create-user',
   title: 'Add a user',
+  module: 'Users',
+  description: 'Add a teammate and set their role and group access, step by step.',
+  route: '/user-management',
   steps: [
     {
       element: '#new-user',
@@ -140,6 +151,9 @@ const createUserTour: TourDef = {
 const connectClusterTour: TourDef = {
   id: 'connect-cluster',
   title: 'Connect a cluster',
+  module: 'Clusters',
+  description: 'Add a Kubernetes cluster and install the Nudgebee agent.',
+  route: '/accounts/account-form?cloudProvider=K8S',
   steps: [
     {
       element: '#add-k8s-account',
@@ -198,7 +212,10 @@ const connectClusterTour: TourDef = {
  */
 const appOverviewTour: TourDef = {
   id: 'app-overview',
-  title: 'Welcome to Nudgebee',
+  title: 'App overview',
+  module: 'Getting started',
+  description: 'A quick tour of the app — the sidebar and the header controls.',
+  route: '/home',
   welcome: {
     title: '🎉 Welcome to Nudgebee 🎉',
     description:

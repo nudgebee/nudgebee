@@ -7,7 +7,7 @@ import { Button } from '@ui/Button';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { HelpOutlineDarkIcon } from '@assets';
 import { getBrandingAsset } from '@hooks/useTenantBranding';
-import { useTour } from '@components/common/tour';
+import { useLaunchGuide } from '@components/common/tour';
 import { ds } from 'src/utils/colors';
 
 // Canonical route to the Kubernetes connect page (renders K8sIntegrationTile,
@@ -28,7 +28,7 @@ const K8S_CONNECT_ROUTE = '/accounts/account-form?cloudProvider=K8S';
 const ConnectClusterHelp = ({ size = 18 }) => {
   const [open, setOpen] = useState(false);
   const router = useRouter();
-  const { start } = useTour();
+  const launch = useLaunchGuide();
 
   // getBrandingAsset returns an object only when the tenant set the configKey;
   // the default (no override) returns a plain string, which we treat as "no GIF"
@@ -43,10 +43,9 @@ const ConnectClusterHelp = ({ size = 18 }) => {
 
   const showWalkthrough = () => {
     setOpen(false);
-    // Navigate to the connect page, then start the tour. The tour's first step
-    // waits for #add-k8s-account to mount after navigation (TourProvider is
-    // global, so start() survives the route change).
-    router.push(K8S_CONNECT_ROUTE).then(() => start('connect-cluster'));
+    // Navigate (if needed) and start the tour — useLaunchGuide reads the tour's
+    // `route` and waits for the anchor to mount after navigation.
+    launch('connect-cluster');
   };
 
   return (

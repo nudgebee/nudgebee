@@ -6,7 +6,7 @@ import KubernetesIssuesOverView from '@components/k8s/common/KubernetesIssuesOve
 import KubernetesSaving from '@components/k8s/common/KubernetesSaving';
 import K8sClusterInsights from '@components/k8s/common/k8sClusterInsights';
 import { Grid, Box, Typography, Stack } from '@mui/material';
-import { K8sIcon, HelpOutlineDarkIcon } from '@assets';
+import { K8sIcon } from '@assets';
 import KubernetesDashboardIssues from '@components/k8s/dashboard/KubernetesDashboardIssues';
 import KubernetesDashboardPodExceptions from '@components/k8s/dashboard/KubernetesDashboardPodExceptions';
 import KubernetesDashboardNodeExceptions from '@components/k8s/dashboard/KubernetesDashboardNodeExceptions';
@@ -15,8 +15,7 @@ import { Skeleton } from '@ui/Skeleton';
 import { toast as snackbar } from '@ui/Toast';
 import K8sAccountModal from '@components/integrations/modal/K8sAccountModal';
 import { Button as DsButton } from '@ui/Button';
-import SafeIcon from '@shared/icons/SafeIcon';
-import { useTour } from '@components/common/tour';
+import { TourLauncher } from '@components/common/tour';
 import { hasWriteAccess } from '@lib/auth';
 import { ds } from '@utils/colors';
 
@@ -56,7 +55,6 @@ const ClusterCardSkeleton = ({ cardStyle }) => (
 );
 
 const KubernetesClusterOverview = () => {
-  const { start: startTour } = useTour();
   const [allClusters, setAllClusters] = useState([]);
   const [clusterOption, setClusterOption] = useState([]);
   const [allNameSpaces, setAllNameSpaces] = useState([]);
@@ -363,15 +361,7 @@ const KubernetesClusterOverview = () => {
 
             {hasWriteAccess() ? (
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <DsButton
-                  tone='ghost'
-                  size='lg'
-                  icon={<SafeIcon src={HelpOutlineDarkIcon} alt='' width={16} height={16} />}
-                  onClick={() => startTour('connect-cluster')}
-                  id='tour-connect-cluster-k8s'
-                >
-                  Show me how
-                </DsButton>
+                <TourLauncher tourId='connect-cluster' label='Show me how' size='lg' />
                 {/* id='add-k8s-account' anchors the connect-cluster tour's first step (same id the
                     Accounts-page button uses; only one route renders at a time, so no duplicate). */}
                 <DsButton id='add-k8s-account' tone='primary' size='lg' onClick={() => setShowAddClusterModal(true)}>

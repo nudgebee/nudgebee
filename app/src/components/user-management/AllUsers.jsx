@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Box } from '@mui/material';
-import { writeIcon, HelpOutlineDarkIcon } from '@assets';
-import { useTour } from '@components/common/tour';
+import { writeIcon } from '@assets';
+import { TourLauncher } from '@components/common/tour';
 import apiUserManagement from '@api1/user';
 import { useSession } from 'next-auth/react';
 import { hasWriteAccess } from '@lib/auth';
@@ -39,7 +39,6 @@ const AllUsers = () => {
   const [userNameInput, setUserNameInput] = useState('');
   const [perPage, setPerPage] = useState(apiUserManagement.getUserPreferencesTablePageSize());
 
-  const { start: startTour } = useTour();
   const { data: currentUser } = useSession({
     required: true,
   });
@@ -225,15 +224,7 @@ const AllUsers = () => {
           actions={
             hasWriteAccess() ? (
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <DsButton
-                  tone='ghost'
-                  size='md'
-                  icon={<SafeIcon src={HelpOutlineDarkIcon} alt='' width={16} height={16} />}
-                  onClick={() => startTour('create-user')}
-                  id='tour-create-user'
-                >
-                  How to add a user
-                </DsButton>
+                <TourLauncher tourId='create-user' label='How to add a user' />
                 <DsButton id='new-user' tone='primary' size='md' onClick={() => setAddUserModalVisible(true)}>
                   Add New User
                 </DsButton>
