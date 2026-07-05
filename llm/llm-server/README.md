@@ -57,7 +57,7 @@ The server employs a sophisticated hierarchical agent architecture, allowing for
 *   **Orchestrating Agents** (`AgentPlannerTypeOrchestrating`):
     *   Top-level coordinators — `k8s_debug`, `aws_debug`, `gcp_debug`, `azure_debug`, `datadog_debug`.
     *   Delegate to specialized sub-agents via ReAct3.
-    *   Persisted string value is `"rewoo"` for historical reasons (planned rename).
+    *   Persisted as `"orchestrating"` in `llm_agents.executor_type` (migration V777). The legacy `"rewoo"` value is still dual-read via `ParseExecutorType` for rows written before the migration.
 
 *   **ReAct Agents** (`AgentPlannerTypeReAct`):
     *   Task-focused executors — `prometheus`, `postgres`, `promql`, `traces`, `elastic`, etc.

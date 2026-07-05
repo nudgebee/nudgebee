@@ -318,17 +318,48 @@ const (
 	MemoryTypeWorkflow            MemoryType = "workflow"
 )
 
+// AgentPlannerType names either a DECLARED intent — what an agent's
+// GetPlannerType() returns to describe the kind of work it does — or the runtime
+// ENGINE the executor resolves that intent to. Agents only ever declare an intent
+// type; the engine type (AgentPlannerTypeReAct3) is produced by
+// resolveEffectivePlannerType and must never be returned by GetPlannerType().
 type AgentPlannerType string
 
+// Declared intent types — an agent's GetPlannerType() returns exactly one of these.
+// Several resolve to the same runtime engine (see resolveEffectivePlannerType):
+// ReAct and Orchestrating both run as ReAct3. The distinction is intent, not
+// implementation (e.g. Orchestrating = coordinates sub-agents; ReAct = leaf task
+// executor), and it still drives tool-loading, prompt hints, and memory behavior.
 const (
 	AgentPlannerTypeTool           AgentPlannerType = "tools"
 	AgentPlannerTypeReAct          AgentPlannerType = "react"
-	AgentPlannerTypeOrchestrating  AgentPlannerType = "rewoo"
+	AgentPlannerTypeOrchestrating  AgentPlannerType = "orchestrating"
 	AgentPlannerTypeCustom         AgentPlannerType = "custom"
 	AgentPlannerTypeConversational AgentPlannerType = "conversation"
 	AgentPlannerTypeClassification AgentPlannerType = "classification"
-	AgentPlannerTypeReAct3         AgentPlannerType = "react_3"
 )
+
+// AgentPlannerTypeReAct3 is the runtime ENGINE, not a declared type: no agent's
+// GetPlannerType() returns it. resolveEffectivePlannerType maps the ReAct and
+// Orchestrating intents to it. It exists as a value (rather than only the
+// *NBReActPlanner3 concrete type) because prompt assembly and response formatting
+// must select react-style behavior before the planner instance is created.
+const AgentPlannerTypeReAct3 AgentPlannerType = "react_3"
+
+// legacyExecutorTypeRewoo is the pre-#33515 persisted value for
+// AgentPlannerTypeOrchestrating. Rows written before the V777 migration — or by
+// an old pod during a rolling deploy — may still carry it, so reads normalize it.
+const legacyExecutorTypeRewoo = "rewoo"
+
+// ParseExecutorType converts a persisted llm_agents.executor_type string into an
+// AgentPlannerType, dual-mapping the legacy "rewoo" value to Orchestrating. Use
+// this at every DB read boundary instead of a bare AgentPlannerType(s) cast.
+func ParseExecutorType(s string) AgentPlannerType {
+	if s == legacyExecutorTypeRewoo {
+		return AgentPlannerTypeOrchestrating
+	}
+	return AgentPlannerType(s)
+}
 
 type NBAgentPromptRagFormat string
 

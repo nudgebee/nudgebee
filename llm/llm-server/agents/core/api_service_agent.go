@@ -846,7 +846,7 @@ func serializeRowToAgent(context *security.RequestContext, rows *sqlx.Rows) (Age
 	agent.Description = agentMap["description"].(string)
 	agent.Type = AgentType(agentMap["type"].(string))
 	agent.Status = AgentStatus(agentMap["status"].(string))
-	agent.ExecutorType = AgentPlannerType(agentMap["executor_type"].(string))
+	agent.ExecutorType = ParseExecutorType(agentMap["executor_type"].(string))
 
 	if agentMap["created_by"] != nil {
 		agent.CreatedBy = string(agentMap["created_by"].([]byte))
