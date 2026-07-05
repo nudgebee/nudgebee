@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import CustomTable from '@shared/tables/CustomTable';
 import { Box, Typography, Grid } from '@mui/material';
 import { Card } from '@ui/Card';
@@ -2651,6 +2651,13 @@ const KubernetesTable = ({
     setRequiredTabs({ tabs });
   };
 
+  // Stable reference: checkForTabsWithData closes over expandedComponentFn/accountId/expandable
+  // which change rarely, but without stabilization the new function reference on every render
+  // defeats React.memo on ExpandableTableRow (areRowPropsEqual compares by ===).
+  const checkForTabsRef = useRef(checkForTabsWithData);
+  checkForTabsRef.current = checkForTabsWithData;
+  const stableCheckForTabsWithData = useCallback((rowData) => checkForTabsRef.current(rowData), []);
+
   return (
     <>
       <CustomTable
@@ -2664,7 +2671,7 @@ const KubernetesTable = ({
         sort={sort}
         onSortChange={onSortChange}
         totalRows={totalRows || data?.length}
-        checkForTabsWithData={onRowClick ? undefined : checkForTabsWithData}
+        checkForTabsWithData={onRowClick ? undefined : stableCheckForTabsWithData}
         showExpandable={showExpandable}
         loading={loading}
         errorMessage={errorMessage}
