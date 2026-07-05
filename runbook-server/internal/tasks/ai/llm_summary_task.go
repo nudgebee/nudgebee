@@ -34,8 +34,12 @@ func (t *LLMSummaryTask) Execute(taskCtx types.TaskContext, params map[string]an
 	if err != nil {
 		return nil, err
 	}
+	sessionScope, err := parseSessionScopeParam(params[sessionScopeParamFieldName])
+	if err != nil {
+		return nil, err
+	}
 	requestContext := taskCtx.GetNewRequestContext()
-	resp, err := llm.ProcessRequest(requestContext, applyWorkflowTrace(taskCtx, llm.LLMRequest{
+	resp, err := llm.ProcessRequest(requestContext, applyWorkflowTrace(taskCtx, sessionScope, llm.LLMRequest{
 		Message:      "@llm " + params["message"].(string),
 		AccountId:    taskCtx.GetAccountID(),
 		LlmProvider:  modelProvider,
@@ -64,7 +68,8 @@ func (t *LLMSummaryTask) InputSchema() *types.Schema {
 				SubType:     "textarea",
 				Order:       1,
 			},
-			modelParamFieldName: modelInputSchemaProperty(2),
+			modelParamFieldName:        modelInputSchemaProperty(2),
+			sessionScopeParamFieldName: sessionScopeInputSchemaProperty(3),
 		},
 	}
 }
