@@ -109,3 +109,34 @@ func TestListMetricsAzure(t *testing.T) {
 	assert.NotNil(t, response)
 
 }
+
+func TestIsMetriclessService(t *testing.T) {
+	// Control-plane / governance types → skipped (no metrics).
+	metricless := []string{
+		"microsoft.authorization/policyassignments",
+		"microsoft.authorization/roleassignments",
+		"microsoft.security/pricings",
+		"microsoft.insights/metricalerts",
+		"microsoft.network/networkwatchers",
+		"Microsoft.Authorization/PolicyAssignments", // case-insensitive
+		"  microsoft.security/pricings  ",           // trimmed
+	}
+	for _, s := range metricless {
+		assert.Truef(t, isMetriclessService(s), "expected %q to be metricless", s)
+	}
+
+	// Types that DO expose metrics must never be skipped — including the two
+	// known missing-mapping gaps we explicitly chose not to denylist.
+	withMetrics := []string{
+		"microsoft.compute/virtualmachines",
+		"microsoft.sql/servers/databases",
+		"microsoft.storage/storageaccounts",
+		"microsoft.insights/components",      // App Insights — has metrics
+		"microsoft.network/privateendpoints", // has PEBytesIn/Out
+		"aws/ec2",
+		"",
+	}
+	for _, s := range withMetrics {
+		assert.Falsef(t, isMetriclessService(s), "expected %q to NOT be metricless", s)
+	}
+}
