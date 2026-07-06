@@ -31,7 +31,6 @@ const FEATURE_RBACK_K8S_ACCESS = "RBAC_K8S"
 const FEATURE_EVENT_AUTO_AI_SUMMARY = "EVENT_AUTO_AI_SUMMARY"
 const FEATURE_ANOMALY_DETECTION = "ANOMALY_DETECTION"
 const FEATURE_ANOMALY_DETECTION_ERROR_RATE = "ANOMALY_DETECTION_ERROR_RATE"
-const FEATURE_TRACES_KNOWLEDGE_GRAPH = "TRACES_SERVICE_MAP_KNOWLEDGE_GRAPH"
 const FEATURE_TICKETS_ADD_EVENT_COMMENTS = "TICKETS_ADD_EVENT_COMMENTS"
 const FEATURE_VERTICAL_RIGHTSIZING = "VERTICAL_RIGHTSIZING"
 const FEATURE_WEBHOOK_LLM_RESOLUTION = "WEBHOOK_LLM_RESOLUTION"
@@ -446,50 +445,6 @@ func ListTenantWithFeature(context *security.RequestContext, feature string) ([]
 		return []string{}, err
 	}
 	rows, err := databaseManager.Db.Queryx("SELECT distinct tenant_id FROM feature_flag WHERE feature_id = $1 and status = 'enabled' ", feature)
-	if err != nil {
-		return []string{}, err
-	}
-	defer func() {
-		err := rows.Close()
-		if err != nil {
-			context.GetLogger().Error("Error closing rows", "error", err)
-		}
-	}()
-
-	rowsMap := make([]string, 0)
-	for rows.Next() {
-		var row string
-		err = rows.Scan(&row)
-		if err != nil {
-			return nil, err
-		}
-		rowsMap = append(rowsMap, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return rowsMap, nil
-}
-
-// ListTenantsWithFeatureEnabledByDefault returns every tenant whose feature is
-// enabled-by-default — i.e. all tenants EXCEPT those with an explicit
-// feature_flag row (account_id IS NULL) of status='disabled' for the feature.
-// Mirror of ListTenantWithFeature for the opposite default — use this for
-// features that should be on for every tenant unless explicitly opted out.
-func ListTenantsWithFeatureEnabledByDefault(context *security.RequestContext, feature string) ([]string, error) {
-	databaseManager, err := database.GetDatabaseManager(database.Metastore)
-	if err != nil {
-		return []string{}, err
-	}
-	rows, err := databaseManager.Db.Queryx(
-		`SELECT t.id::text FROM tenant t
-		 WHERE NOT EXISTS (
-		   SELECT 1 FROM feature_flag ff
-		   WHERE ff.feature_id = $1
-		     AND ff.tenant_id = t.id
-		     AND ff.account_id IS NULL
-		     AND ff.status = 'disabled'
-		 )`, feature)
 	if err != nil {
 		return []string{}, err
 	}

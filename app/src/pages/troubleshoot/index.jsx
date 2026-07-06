@@ -25,7 +25,6 @@ import {
 import TriageRulesManager from '@components/triage/TriageRulesManager';
 import ThresholdSuggestionsManager from '@components/triage/ThresholdSuggestionsManager';
 import { useRouter } from 'next/router';
-import { hasFeatureAccess } from '@lib/auth';
 import { clearPersistedFilters } from '@hooks/usePersistedFilters';
 import { getLast24Hrs } from '@lib/datetime';
 
@@ -54,7 +53,6 @@ const TroubleshootPage = () => {
   const [activeToggleGroupedEvents, setActiveToggleGroupedEvents] = useState('fingerprint');
   const [activeTab, setActiveTab] = useState('events');
   const [investigationTab, setInvestigationTab] = useState('auto');
-  const [showKnowledgeGraphTab, setShowKnowledgeGraphTab] = useState(true);
   // Bumped on each summary-widget click so the Events tab remounts and re-reads
   // the URL filters even when it is already the active tab. Kept separate from
   // the grouped tabs' own router writes so their internal filtering never forces
@@ -113,22 +111,6 @@ const TroubleshootPage = () => {
     });
   };
 
-  // Check feature flag to conditionally show/hide Knowledge Graph tab
-  useEffect(() => {
-    const checkKnowledgeGraphFeatureFlag = async () => {
-      try {
-        const isKgCacheEnabled = await hasFeatureAccess('TRACES_SERVICE_MAP_KNOWLEDGE_GRAPH');
-        // Show Knowledge Graph tab when the feature flag is enabled
-        setShowKnowledgeGraphTab(isKgCacheEnabled);
-      } catch (error) {
-        console.error('Error checking TRACES_SERVICE_MAP_KNOWLEDGE_GRAPH feature flag:', error);
-        // Default to hiding the tab on error
-        setShowKnowledgeGraphTab(false);
-      }
-    };
-    checkKnowledgeGraphFeatureFlag();
-  }, []);
-
   const baseFilterOptions = [
     {
       name: 'All Events',
@@ -140,21 +122,21 @@ const TroubleshootPage = () => {
     },
   ];
 
-  // Conditionally add Knowledge Graph tab based on feature flag
-  const filterOptions = showKnowledgeGraphTab
-    ? [
-        ...baseFilterOptions,
-        {
-          name: 'Knowledge Graph',
-          fragment: 'kg',
-          value: 1,
-          disabled: false,
-          betaIcon: false,
-          icon: ServiceMapsIcon,
-          iconSize: 16,
-        },
-      ]
-    : baseFilterOptions;
+  // Knowledge Graph is enabled by default for every tenant (opt-out via the
+  // TRACES_SERVICE_MAP_KNOWLEDGE_GRAPH feature flag is enforced server-side by
+  // the nightly build cron), so the tab is always shown here.
+  const filterOptions = [
+    ...baseFilterOptions,
+    {
+      name: 'Knowledge Graph',
+      fragment: 'kg',
+      value: 1,
+      disabled: false,
+      betaIcon: false,
+      icon: ServiceMapsIcon,
+      iconSize: 16,
+    },
+  ];
 
   const tabOptions = [
     { value: 'fingerprint', text: 'Triage Inbox', fragment: 'fingerprint', icon: PodErrorsIcon },
@@ -206,7 +188,7 @@ const TroubleshootPage = () => {
         }
       }
     }
-  }, [router.asPath, showKnowledgeGraphTab]);
+  }, [router.asPath]);
   // Need to handle toggleGroupedEvents' fragment with router.asPath
 
   const toggleOptions = [
