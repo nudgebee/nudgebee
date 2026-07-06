@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"nudgebee/services/internal/database/models"
 
 	"github.com/jmoiron/sqlx"
+	"github.com/lib/pq"
 )
 
 // ProcessEvent performs immediate triage on a new event
@@ -262,8 +264,10 @@ func detectAndRecordDuplicate(ctx context.Context, db *sqlx.DB, event *models.Ev
 	return occurrenceNumber, nil
 }
 
-// detectAndRecordCorrelations finds and records correlated events
-func detectAndRecordCorrelations(ctx context.Context, db *sqlx.DB, event *models.Event) (string, float64, error) {
+// detectAndRecordCorrelations finds and records correlated events.
+// db is sqlx.ExtContext (satisfied by both *sqlx.DB and *sqlx.Tx) so the full
+// path can run inside a rolled-back transaction in integration tests.
+func detectAndRecordCorrelations(ctx context.Context, db sqlx.ExtContext, event *models.Event) (string, float64, error) {
 	// Check for required fields
 	if event.CloudAccountId == nil || event.Fingerprint == nil || event.StartsAt == nil || event.Tenant == nil || *event.Tenant == "" {
 		return "", 0, fmt.Errorf("event missing required fields (cloud_account_id, fingerprint, starts_at, or tenant)")
@@ -308,7 +312,7 @@ func detectAndRecordCorrelations(ctx context.Context, db *sqlx.DB, event *models
 	endWindow := event.StartsAt.Add(MaxTimeWindowMinutes * time.Minute)
 
 	var recentEvents []models.Event
-	err = db.SelectContext(ctx, &recentEvents, query,
+	err = sqlx.SelectContext(ctx, db, &recentEvents, query,
 		*event.CloudAccountId,
 		*event.Fingerprint,
 		startWindow,
@@ -327,11 +331,15 @@ func detectAndRecordCorrelations(ctx context.Context, db *sqlx.DB, event *models
 		"trace_service_count", len(traceServices),
 	)
 
-	correlationCount := 0
 	highestScore := 0.0
 	highestType := ""
 
-	// Calculate correlation score for each recent event
+	// First pass: score every candidate, track the strongest correlation (used by
+	// ComputeScore), and collect the correlated ones. The existence check and the
+	// insert are then batched (one query each) rather than run per candidate — the
+	// old per-candidate COUNT(*) + 2 INSERT was an N+1 that dominated triage
+	// latency (avg ~22 correlations/event, p95 ~103).
+	var correlated []correlatedCandidate
 	for i := range recentEvents {
 		recentEvent := &recentEvents[i]
 
@@ -341,33 +349,40 @@ func detectAndRecordCorrelations(ctx context.Context, db *sqlx.DB, event *models
 		// (event2.After(event1)) correctly fire when the candidate is older
 		// — the common case during live triage.
 		result := calculateCorrelationScore(recentEvent, event, serviceMap, traceServices)
+		if !result.IsCorrelated {
+			continue
+		}
+		if result.CorrelationScore > highestScore {
+			highestScore = result.CorrelationScore
+			highestType = result.CorrelationType
+		}
+		correlated = append(correlated, correlatedCandidate{event: recentEvent, result: result})
+	}
 
-		if result.IsCorrelated {
-			if result.CorrelationScore > highestScore {
-				highestScore = result.CorrelationScore
-				highestType = result.CorrelationType
+	correlationCount := 0
+	if len(correlated) > 0 {
+		// Batch the per-pair dedup that insertCorrelation used to do per candidate:
+		// drop candidates whose fingerprint pair already has a correlation from a
+		// prior triage run. recentEvents is already DISTINCT ON (fingerprint), so
+		// candidate fingerprints are unique within this run.
+		candidateFps := make([]string, 0, len(correlated))
+		for _, c := range correlated {
+			if c.event.Fingerprint != nil {
+				candidateFps = append(candidateFps, *c.event.Fingerprint)
 			}
+		}
 
-			// Insert bidirectional correlation
-			err := insertCorrelation(ctx, db, event, recentEvent, &result)
-			if err != nil {
-				slog.ErrorContext(ctx, "Failed to insert correlation",
-					"event_id_1", event.Id,
-					"event_id_2", recentEvent.Id,
-					"error", err,
-				)
-				continue
+		existing, err := existingCorrelatedFingerprints(ctx, db, *event.Fingerprint, candidateFps, *event.CloudAccountId)
+		if err != nil {
+			return "", 0, fmt.Errorf("failed to batch-check existing correlations: %w", err)
+		}
+
+		toInsert := filterNewCorrelations(correlated, existing)
+		if len(toInsert) > 0 {
+			if err := batchInsertCorrelations(ctx, db, event, toInsert); err != nil {
+				return "", 0, fmt.Errorf("failed to batch-insert correlations: %w", err)
 			}
-
-			correlationCount++
-
-			slog.InfoContext(ctx, "Correlation detected",
-				"event_id", event.Id,
-				"correlated_event_id", recentEvent.Id,
-				"correlation_type", result.CorrelationType,
-				"correlation_score", result.CorrelationScore,
-				"correlation_reason", result.CorrelationReason,
-			)
+			correlationCount = len(toInsert)
 		}
 	}
 
@@ -379,75 +394,125 @@ func detectAndRecordCorrelations(ctx context.Context, db *sqlx.DB, event *models
 	return highestType, highestScore, nil
 }
 
-// insertCorrelation inserts a bidirectional correlation record
-func insertCorrelation(ctx context.Context, db *sqlx.DB, event1, event2 *models.Event, result *CorrelationResult) error {
-	// Check if correlation already exists between these fingerprints
-	var existingCount int
-	checkQuery := `
-		SELECT COUNT(*)
+// correlatedCandidate pairs a recent event that correlated with the triaged
+// event with its computed correlation result, so the dedup check and insert can
+// be batched after the scoring pass.
+type correlatedCandidate struct {
+	event  *models.Event
+	result CorrelationResult
+}
+
+// existingCorrelatedFingerprints returns the subset of candidateFingerprints
+// that already have a correlation with the triaged event's fingerprint in this
+// account. This replaces the per-candidate COUNT(*) existence check with a
+// single ANY() lookup, preserving the original per-pair dedup semantic
+// (correlations are kept at fingerprint-pair granularity, not event-pair).
+func existingCorrelatedFingerprints(ctx context.Context, db sqlx.ExtContext, triagedFingerprint string, candidateFingerprints []string, cloudAccountID string) (map[string]bool, error) {
+	out := make(map[string]bool)
+	if len(candidateFingerprints) == 0 {
+		return out, nil
+	}
+
+	// Mirrors the old check's direction: e1 = triaged (event_id side),
+	// e2 = candidate (related_event_id side).
+	query := `
+		SELECT DISTINCT e2.fingerprint
 		FROM event_correlations ec
 		JOIN events e1 ON e1.id = ec.event_id
 		JOIN events e2 ON e2.id = ec.related_event_id
 		WHERE e1.fingerprint = $1
-		  AND e2.fingerprint = $2
+		  AND e2.fingerprint = ANY($2)
 		  AND ec.cloud_account_id = $3
 	`
-	err := db.GetContext(ctx, &existingCount, checkQuery,
-		*event1.Fingerprint, *event2.Fingerprint, *event1.CloudAccountId)
-	if err != nil {
-		return fmt.Errorf("failed to check existing correlation: %w", err)
+
+	var fps []string
+	if err := sqlx.SelectContext(ctx, db, &fps, query, triagedFingerprint, pq.Array(candidateFingerprints), cloudAccountID); err != nil {
+		return nil, err
+	}
+	for _, fp := range fps {
+		out[fp] = true
+	}
+	return out, nil
+}
+
+// filterNewCorrelations drops candidates whose fingerprint pair already has a
+// correlation (present in existing), preserving the original per-pair dedup.
+// Candidates with a nil fingerprint are kept (they can't be in existing).
+func filterNewCorrelations(correlated []correlatedCandidate, existing map[string]bool) []correlatedCandidate {
+	out := make([]correlatedCandidate, 0, len(correlated))
+	for _, c := range correlated {
+		if c.event.Fingerprint != nil && existing[*c.event.Fingerprint] {
+			continue // fingerprint pair already correlated
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+// correlationInsertCols is the number of columns per event_correlations row,
+// used to number placeholders in the batched multi-row INSERT.
+const correlationInsertCols = 9
+
+// buildCorrelationInsert builds the multi-row INSERT statement and its argument
+// list for all candidates. Each candidate contributes two rows (both
+// directions), mirroring exactly what the old per-candidate insertCorrelation
+// wrote: direction 1 (triaged -> candidate) with the forward offset, direction 2
+// (candidate -> triaged) with the negated offset. Kept pure (no DB) so the
+// placeholder numbering and per-direction argument binding are unit-testable —
+// that is where a batched-insert bug would hide. Returns ("", nil) for no
+// candidates.
+func buildCorrelationInsert(triaged *models.Event, candidates []correlatedCandidate) (string, []interface{}) {
+	if len(candidates) == 0 {
+		return "", nil
 	}
 
-	if existingCount > 0 {
-		// Correlation already exists for this fingerprint pair, skip
-		slog.DebugContext(ctx, "Correlation already exists for fingerprint pair, skipping",
-			"fingerprint1", *event1.Fingerprint,
-			"fingerprint2", *event2.Fingerprint,
+	valueClauses := make([]string, 0, len(candidates)*2)
+	args := make([]interface{}, 0, len(candidates)*2*correlationInsertCols)
+
+	appendRow := func(eventID, relatedID string, timeOffset, depDist int, res *CorrelationResult) {
+		base := len(args)
+		ph := make([]string, correlationInsertCols)
+		for j := 0; j < correlationInsertCols; j++ {
+			ph[j] = fmt.Sprintf("$%d", base+j+1)
+		}
+		valueClauses = append(valueClauses, "("+strings.Join(ph, ", ")+")")
+		args = append(args,
+			eventID, relatedID, *triaged.CloudAccountId, triaged.Tenant,
+			res.CorrelationType, res.CorrelationScore, res.CorrelationReason,
+			timeOffset, depDist,
 		)
-		return nil
 	}
 
-	insertQuery := `
+	for i := range candidates {
+		c := &candidates[i]
+		// Direction 1: triaged -> candidate.
+		appendRow(triaged.Id, c.event.Id, c.result.TimeOffsetMinutes, c.result.DependencyDistance, &c.result)
+		// Direction 2: candidate -> triaged (negated offset), for efficient reverse queries.
+		appendRow(c.event.Id, triaged.Id, -c.result.TimeOffsetMinutes, c.result.DependencyDistance, &c.result)
+	}
+
+	query := `
 		INSERT INTO event_correlations (
 			event_id, related_event_id, cloud_account_id, tenant_id,
 			correlation_type, correlation_score, correlation_reason,
 			time_offset_minutes, dependency_distance
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		ON CONFLICT (related_event_id, event_id, cloud_account_id) DO NOTHING
-	`
+		) VALUES ` + strings.Join(valueClauses, ", ") + `
+		ON CONFLICT (related_event_id, event_id, cloud_account_id) DO NOTHING`
 
-	// Insert both directions for efficient querying
-	// Direction 1: event1 -> event2
-	_, err = db.ExecContext(ctx, insertQuery,
-		event1.Id,
-		event2.Id,
-		*event1.CloudAccountId,
-		event1.Tenant,
-		result.CorrelationType,
-		result.CorrelationScore,
-		result.CorrelationReason,
-		result.TimeOffsetMinutes,
-		result.DependencyDistance,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to insert correlation (1->2): %w", err)
+	return query, args
+}
+
+// batchInsertCorrelations inserts bidirectional correlation rows for every
+// candidate in a single multi-row INSERT, replacing the per-candidate pair of
+// INSERTs. ON CONFLICT DO NOTHING keeps it idempotent across concurrent triage
+// runs (same guarantee the single-row insert had).
+func batchInsertCorrelations(ctx context.Context, db sqlx.ExtContext, triaged *models.Event, candidates []correlatedCandidate) error {
+	query, args := buildCorrelationInsert(triaged, candidates)
+	if query == "" {
+		return nil
 	}
-
-	// Direction 2: event2 -> event1
-	_, err = db.ExecContext(ctx, insertQuery,
-		event2.Id,
-		event1.Id,
-		*event1.CloudAccountId,
-		event1.Tenant,
-		result.CorrelationType,
-		result.CorrelationScore,
-		result.CorrelationReason,
-		-result.TimeOffsetMinutes, // Negative offset for reverse direction
-		result.DependencyDistance,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to insert correlation (2->1): %w", err)
+	if _, err := db.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("failed to batch-insert %d correlations: %w", len(candidates), err)
 	}
-
 	return nil
 }
