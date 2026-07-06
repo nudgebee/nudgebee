@@ -1206,10 +1206,6 @@ func analyzeEventRCAUsingAgentsAndUpdateDb(ctx *security.RequestContext, request
 			return EventAnalysisResponse{}, err
 		}
 		response.Summary = rcaResponse
-
-		// Best-effort: notify api-server so it can post the RCA back onto the
-		// source incident (e.g. ZenDuty). Never fails the RCA save.
-		postRCAWritebackSignal(ctx, response.EventId, request.AccountId, rcaResponse)
 	} else {
 		return EventAnalysisResponse{}, errors.New("failed to get RCA response")
 	}

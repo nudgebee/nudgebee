@@ -2513,6 +2513,12 @@ func init() {
 	lifecycle.RegisterLifecycleHook(lifecycle.PhaseEventCreated, "pagerduty_comment", pagerdutyCommentIfNotInvestigated)
 	lifecycle.RegisterLifecycleHook(lifecycle.PhaseInvestigationCompleted, "pagerduty_comment", processPagerDutyComment)
 
+	// rca_writeback posts the completed investigation analysis back onto the
+	// source incident (ZenDuty / PagerDuty). Like pagerduty_comment it fires at
+	// investigation.completed — this is the api-server-side trigger that replaced
+	// llm-server's former post-RCA signal. It self-gates on source/tenant/severity.
+	lifecycle.RegisterLifecycleHook(lifecycle.PhaseInvestigationCompleted, "rca_writeback", rcaWritebackHook)
+
 	// workflow is intentionally NOT an in-process hook: lifecycle.Emit publishes
 	// the event to the runbook event exchange for every workflow-eligible phase
 	// (exactly what the old workflow processor did). Workflows subscribe to a

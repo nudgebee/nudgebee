@@ -5,6 +5,8 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"nudgebee/services/security"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -57,6 +59,57 @@ func TestRCAContentHashStableAndDistinct(t *testing.T) {
 	c := rcaContentHash("different text")
 	assert.Equal(t, a, b, "same input must hash identically (idempotency depends on this)")
 	assert.NotEqual(t, a, c, "different RCA versions must hash differently (revision -> new note)")
+}
+
+// TestRCAWritebackHook pins the investigation.completed hook's field mapping:
+// it pulls the event id / account off the event map, prefers analysis_summary as
+// the note body and falls back to analysis_investigation, and never attempts a
+// writeback for an event map missing an id.
+func TestRCAWritebackHook(t *testing.T) {
+	orig := processRCAWritebackFn
+	t.Cleanup(func() { processRCAWritebackFn = orig })
+
+	var got RCAWritebackRequest
+	var called bool
+	processRCAWritebackFn = func(_ *security.RequestContext, req RCAWritebackRequest) error {
+		called = true
+		got = req
+		return nil
+	}
+
+	t.Run("prefers analysis_summary and pulls ids off the event map", func(t *testing.T) {
+		called, got = false, RCAWritebackRequest{}
+		err := rcaWritebackHook(nil, map[string]any{
+			"id":                     "evt-1",
+			"cloud_account_id":       "acct-1",
+			"analysis_summary":       "the summary",
+			"analysis_investigation": "the investigation",
+		})
+		assert.NoError(t, err)
+		assert.True(t, called)
+		assert.Equal(t, "evt-1", got.EventId)
+		assert.Equal(t, "acct-1", got.AccountId)
+		assert.Equal(t, "the summary", got.RCAText)
+	})
+
+	t.Run("falls back to analysis_investigation when summary is blank", func(t *testing.T) {
+		called, got = false, RCAWritebackRequest{}
+		err := rcaWritebackHook(nil, map[string]any{
+			"id":                     "evt-2",
+			"analysis_summary":       "   ",
+			"analysis_investigation": "the investigation",
+		})
+		assert.NoError(t, err)
+		assert.True(t, called)
+		assert.Equal(t, "the investigation", got.RCAText)
+	})
+
+	t.Run("no-ops without calling writeback when event id is missing", func(t *testing.T) {
+		called, got = false, RCAWritebackRequest{}
+		err := rcaWritebackHook(nil, map[string]any{"analysis_summary": "x"})
+		assert.NoError(t, err)
+		assert.False(t, called, "must not attempt writeback without an event id")
+	})
 }
 
 // TestRCAWritebackSourceSeam pins the source seam: each registered event source
