@@ -5,17 +5,15 @@ import {
   loginAndNavigateToNewWorkflow,
   pasteAndApplyWorkflowJson,
   saveNewWorkflow,
-  setWorkflowActiveAndSave,
   runWorkflowWithGraphQLValidation,
-  selectCluster,
-  dryRunAction,
+  waitForExecutionToComplete,
+  deleteCreatedWorkflow,
   closeActionPanel,
   configureNotificationsImSlack,
 } from "../workflowHelper";
 
-const SLACK_CHANNEL = process.env["SLACK-CHANNEL"]!;
+const SLACK_CHANNEL = process.env.SLACK_CHANNEL!;
 const KUBECTL_NAMESPACE = process.env.KUBECTL_NAMESPACE!;
-const CLUSTER = (process.env.CLUSTER ?? process.env.CLUSTER_NAME)!;
 
 const WORKFLOW_JSON_TEMPLATE = {
   definition: {
@@ -75,8 +73,7 @@ test("Automation workflow LLM Summary", async ({ page }) => {
   await pasteAndApplyWorkflowJson(page, locators, workflowJson);
 
   await locators.action_k8s_cli.click();
-  await selectCluster(page, locators, CLUSTER);
-  await dryRunAction(page, locators);
+  await locators.dialog.waitFor({ state: "visible", timeout: 15000 });
   await closeActionPanel(page, locators);
 
   await locators.action_notifications_im.click();
@@ -84,6 +81,8 @@ test("Automation workflow LLM Summary", async ({ page }) => {
   await closeActionPanel(page, locators);
 
   await saveNewWorkflow(page, locators, workflowName);
-  await setWorkflowActiveAndSave(page, locators);
   await runWorkflowWithGraphQLValidation(page, locators, "Automation workflow LLM Summary");
+  await waitForExecutionToComplete(page, locators);
+
+  await deleteCreatedWorkflow(page, locators, workflowName);
 });

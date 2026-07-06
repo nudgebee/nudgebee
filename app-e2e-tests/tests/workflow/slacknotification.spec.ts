@@ -11,7 +11,7 @@ import {
   closeActionPanel,
 } from "./workflowHelper";
 
-const SLACK_CHANNEL = process.env["SLACK-CHANNEL"]!;
+const SLACK_CHANNEL = process.env.SLACK_CHANNEL!;
 
 const WORKFLOW_JSON_TEMPLATE = {
   definition: {

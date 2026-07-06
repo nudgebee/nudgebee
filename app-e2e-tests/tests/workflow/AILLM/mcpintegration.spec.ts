@@ -5,15 +5,15 @@ import {
   loginAndNavigateToNewWorkflow,
   pasteAndApplyWorkflowJson,
   saveNewWorkflow,
-  setWorkflowActiveAndSave,
   runWorkflowWithGraphQLValidation,
+  waitForExecutionToComplete,
+  deleteCreatedWorkflow,
   configureMcpIntegrationAction,
-  dryRunAction,
   closeActionPanel,
   configureNotificationsImSlack,
 } from "../workflowHelper";
 
-const SLACK_CHANNEL = process.env["SLACK-CHANNEL"]!;
+const SLACK_CHANNEL = process.env.SLACK_CHANNEL!;
 const MCP_INTEGRATION = process.env.MCP_INTEGRATION_CONFIG_NAME!;
 
 const WORKFLOW_JSON_TEMPLATE = {
@@ -73,7 +73,6 @@ test("Automation workflow MCP Integration", async ({ page }) => {
 
   await locators.action_llm_mcp_call.click();
   await configureMcpIntegrationAction(page, MCP_INTEGRATION);
-  await dryRunAction(page, locators);
   await closeActionPanel(page, locators);
 
   await locators.action_notifications_im.click();
@@ -81,6 +80,8 @@ test("Automation workflow MCP Integration", async ({ page }) => {
   await closeActionPanel(page, locators);
 
   await saveNewWorkflow(page, locators, workflowName);
-  await setWorkflowActiveAndSave(page, locators);
   await runWorkflowWithGraphQLValidation(page, locators, "Automation workflow MCP Integration");
+  await waitForExecutionToComplete(page, locators);
+
+  await deleteCreatedWorkflow(page, locators, workflowName);
 });

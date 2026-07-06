@@ -5,14 +5,14 @@ import {
   loginAndNavigateToNewWorkflow,
   pasteAndApplyWorkflowJson,
   saveNewWorkflow,
-  setWorkflowActiveAndSave,
   runWorkflowWithGraphQLValidation,
-  dryRunAction,
+  waitForExecutionToComplete,
+  deleteCreatedWorkflow,
   closeActionPanel,
   configureNotificationsImSlack,
 } from "../workflowHelper";
 
-const SLACK_CHANNEL = process.env["SLACK-CHANNEL"]!;
+const SLACK_CHANNEL = process.env.SLACK_CHANNEL!;
 
 const WORKFLOW_JSON_TEMPLATE = {
   definition: {
@@ -71,7 +71,6 @@ test("Automation workflow MCP Direct", async ({ page }) => {
 
   await locators.action_llm_mcp_call.click();
   await page.locator("div.MuiDialog-container").waitFor({ state: "visible", timeout: 15000 });
-  await dryRunAction(page, locators);
   await closeActionPanel(page, locators);
 
   await locators.action_notifications_im.click();
@@ -79,6 +78,8 @@ test("Automation workflow MCP Direct", async ({ page }) => {
   await closeActionPanel(page, locators);
 
   await saveNewWorkflow(page, locators, workflowName);
-  await setWorkflowActiveAndSave(page, locators);
   await runWorkflowWithGraphQLValidation(page, locators, "Automation workflow MCP Direct");
+  await waitForExecutionToComplete(page, locators);
+
+  await deleteCreatedWorkflow(page, locators, workflowName);
 });

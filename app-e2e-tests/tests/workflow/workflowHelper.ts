@@ -368,6 +368,40 @@ export async function runWorkflowWithGraphQLValidation(
   console.log("GraphQL validation passed: triggerWorkflow fired and returned 200");
 }
 
+/**
+ * Blocks until the manual run kicked off by `runWorkflowWithGraphQLValidation`
+ * reaches a terminal state, so callers don't delete a still-executing workflow.
+ *
+ * Completion signal: the "Run current" button is labelled "Running..." while the
+ * run is in flight (`isTestRunning`) and returns to "Run current" at every
+ * terminal status — so waiting for that text passes immediately if the run
+ * already finished, or blocks until it does. The app fires an outcome snackbar
+ * together with that flip; we read whichever toast appears and fail on a
+ * non-success outcome.
+ */
+export async function waitForExecutionToComplete(
+  page: Page,
+  locators: WorkflowLocators,
+  timeoutMs = 240000
+): Promise<void> {
+  await expect(locators.runBtn).toContainText("Run current", { timeout: timeoutMs });
+  console.log("Workflow execution reached a terminal state");
+
+  // The outcome snackbar fires alongside the button flip. Wait for whichever
+  // one appears (no fixed delay — resolves as soon as it renders) and fail on a
+  // non-success outcome. If it already dismissed (very fast run) the GraphQL
+  // validation in runWorkflowWithGraphQLValidation covers that path.
+  const outcomeToast = page
+    .getByText(/Automation execution (completed successfully|failed|was terminated|timed out|completed with errors)/i)
+    .first();
+  await outcomeToast.waitFor({ state: "visible", timeout: 10000 }).catch(() => {});
+  const outcomeText = ((await outcomeToast.textContent().catch(() => "")) ?? "").trim();
+  if (/failed|terminated|timed out|completed with errors/i.test(outcomeText)) {
+    throw new Error(`Workflow execution did not complete successfully: ${outcomeText}`);
+  }
+  console.log("Workflow execution completed successfully");
+}
+
 export async function configureMcpIntegrationAction(
   page: Page,
   integrationName: string,
