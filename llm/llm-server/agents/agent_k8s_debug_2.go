@@ -90,15 +90,12 @@ func (l *K8sDebugAgent2) GetSystemPrompt(ctx *security.RequestContext, query cor
 	// reference older keys (e.g. {{.time_handling_rules}}) render correctly instead of causing
 	// a template execution failure and falling back to a minimal prompt.
 	tmplData := map[string]any{
-		"remediation_enabled":      config.Config.RemediationAgentEnabled,
-		"shell_tool_enabled":       config.Config.LlmServerShellToolEnabled,
-		"watch_enabled":            config.Config.WatchEnabled,
-		"data_protection_rules":    prompts_repo.GetPrompt(prompts_repo.PromptSharedDataProtectionRules),
-		"code_analysis_rules":      prompts_repo.GetPrompt(prompts_repo.PromptSharedCodeAnalysisRules),
-		"time_handling_rules":      prompts_repo.GetPrompt(prompts_repo.PromptSharedTimeHandlingRules),
-		"security_rules":           prompts_repo.GetPrompt(prompts_repo.PromptSharedSecurityRules),
-		"memory_consumption_rules": prompts_repo.GetPrompt(prompts_repo.PromptSharedMemoryConsumptionRules),
-		"async_completion_rules":   prompts_repo.GetPrompt(prompts_repo.PromptSharedAsyncCompletionRules),
+		"remediation_enabled":   config.Config.RemediationAgentEnabled,
+		"shell_tool_enabled":    config.Config.LlmServerShellToolEnabled,
+		"watch_enabled":         config.Config.WatchEnabled,
+		"data_protection_rules": prompts_repo.GetPrompt(prompts_repo.PromptSharedDataProtectionRules),
+		"code_analysis_rules":   prompts_repo.GetPrompt(prompts_repo.PromptSharedCodeAnalysisRules),
+		"time_handling_rules":   prompts_repo.GetPrompt(prompts_repo.PromptSharedTimeHandlingRules),
 	}
 	// Render conditional blocks ({{if .remediation_enabled}}, {{.data_protection_rules}}, etc.).
 	// Two-pass strategy:
