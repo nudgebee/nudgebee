@@ -58,7 +58,7 @@ def get_teams_recommendation_resolution_template(
 
     body.append({"type": "FactSet", "facts": facts})
 
-    cta_url = f"{base_url}/optimise?id={params.recommendation_id}#summary"
+    cta_url = f"{base_url}/optimise?id={params.recommendation_id}#resolutions"
 
     return {
         "$schema": "https://adaptivecards.io/schemas/adaptive-card.json",

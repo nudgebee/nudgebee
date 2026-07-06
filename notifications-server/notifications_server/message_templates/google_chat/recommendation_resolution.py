@@ -46,7 +46,7 @@ def get_gchat_recommendation_resolution_template(
             lines.append(f"Message: {params.resolution.status_message}")
 
     lines.append("")
-    cta_url = f"{base_url}/optimise?id={params.recommendation_id}#summary"
+    cta_url = f"{base_url}/optimise?id={params.recommendation_id}#resolutions"
     lines.append(f"View Details: {cta_url}")
 
     return {"text": "\n".join(lines)}

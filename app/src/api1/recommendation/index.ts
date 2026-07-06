@@ -2073,6 +2073,11 @@ const apiRecommendations = {
       where.resolver_type = { _eq: data.resolverType };
       whereAgg.resolver_type = { _eq: data.resolverType };
     }
+
+    if (data.recommendationId) {
+      where.recommendation_id = { _eq: data.recommendationId };
+      whereAgg.recommendation_id = { _eq: data.recommendationId };
+    }
     const response = await queryGraphQL(GET_RECOMMENDATION_RESOLUTION, 'RecommendationResolution', {
       where,
       whereAgg,
