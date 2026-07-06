@@ -33,6 +33,7 @@ import { ConversationTokenUsage } from './common/TokenUsageDisplay';
 import ConversationList from './ConversationListV2';
 import DynamicGreeting from './DynamicGreeting';
 import JumpToLatestPill from './common/JumpToLatestPill';
+import QuestionNavigator from './common/QuestionNavigator';
 import FollowupSheet from './common/FollowupSheet';
 import MessageStream from './MessageStream';
 import TroubleshootList from './TroubleshootList';
@@ -234,6 +235,15 @@ const KubernetesLLMResponseGenerator = ({
   const isChatScreen = useMemo(
     () => Boolean(router.query.session_id || router.query.conversation_id || currentlyProcessingQuestion),
     [router.query.session_id, router.query.conversation_id, currentlyProcessingQuestion]
+  );
+
+  const navigatorQuestions = useMemo(
+    () =>
+      messages
+        .map((m, index) => ({ m, index }))
+        .filter(({ m }) => (m.tool ?? m.type) === 'question')
+        .map(({ m, index }) => ({ id: `task-card-${index}`, text: (m.text || '').trim() })),
+    [messages]
   );
 
   // Backend holds the parent conversationMessage in WAITING between a followup answer
@@ -1699,6 +1709,7 @@ const KubernetesLLMResponseGenerator = ({
               );
             })()}
           </Box>
+          <QuestionNavigator questions={navigatorQuestions} scrollContainerRef={scrollContainerRef} popup={popup} jumpOffset={popup ? 16 : 72} />
           {(selectedSessionId != '' || selectedConversationId != '' || !!currentlyProcessingQuestion) &&
           (conversationStatus !== 'NOT_FOUND' || queryPrefix) ? (
             <Box
