@@ -231,37 +231,62 @@ const KubernetesAlertManager: React.FC<KubernetesAlertManagerProps> = ({ account
 
   const handleCloseAlertPopUp = () => {
     setDisableAlert(false);
-    setAlertManagerObject(null);
+  };
+
+  const updateAlertEnabledInPlace = (alertName: string, updatedItem: any) => {
+    setData((prevData: any) =>
+      prevData.map((row: any) => {
+        if (row[0]?.drilldownQuery?.name !== alertName) {
+          return row;
+        }
+        const newRow = [...row];
+        newRow[4] = { component: <Label margin='auto' text={updatedItem.enabled ? 'Enabled' : 'Disabled'} /> };
+        newRow[6] = {
+          component: <ThreeDotsMenu sx={{ ...action.primary }} onMenuClick={onMenuClick} data={updatedItem} menuItems={getMenuItems(updatedItem)} />,
+        };
+        return newRow;
+      })
+    );
   };
 
   const handleSubmit = () => {
+    const previousItem = alertManagerObject;
+    const wasEnabled = alertManagerObject.enabled;
     const request: any = {
       accountId: accountId,
       alert: alertManagerObject.alert,
-      enable: !alertManagerObject?.enabled,
+      enable: !wasEnabled,
       id: alertManagerObject?.id,
       namespace: alertManagerObject?.namespace || '',
       group: alertManagerObject?.group || '',
     };
+
+    updateAlertEnabledInPlace(alertManagerObject.alert, { ...alertManagerObject, enabled: !wasEnabled });
+    handleCloseAlertPopUp();
+    snackbar.success(`Rule ${alertManagerObject.alert} ${!wasEnabled ? 'Enabled' : 'Disabled'} Successful`);
+
     k8sApi
       .disableAlertManager(request)
       .then((res: any) => {
         if (res?.data.errors || res?.data.errors?.length > 0 || res?.data?.data?.errors) {
-          snackbar.error(`Failed to ${alertManagerObject.enabled ? 'Disable' : 'Enable'} Alert Rule`);
-        } else {
-          snackbar.success(`Rule ${alertManagerObject.alert} ${!alertManagerObject.enabled ? 'Enabled' : 'Disabled'} Successful`);
-          handleCloseAlertPopUp();
-          listAlertManager();
+          snackbar.error(`Failed to ${wasEnabled ? 'Disable' : 'Enable'} Alert Rule`);
+          updateAlertEnabledInPlace(previousItem.alert, previousItem);
         }
       })
       .catch(() => {
-        snackbar.error(`Failed to ${alertManagerObject.enabled ? 'Disable' : 'Enable'} Alert Rule`);
+        snackbar.error(`Failed to ${wasEnabled ? 'Disable' : 'Enable'} Alert Rule`);
+        updateAlertEnabledInPlace(previousItem.alert, previousItem);
       });
   };
 
   const onClickLoader = (loaderStatus: boolean) => {
     setLoading(loaderStatus);
   };
+
+  const linkedPlaybook = agentPlaybookOnEvents?.find((f) => f.alert_name === alertManagerObject?.alert);
+  const linkedPlaybookActions =
+    typeof linkedPlaybook?.action_params === 'string' ? safeJSONParse(linkedPlaybook.action_params) : linkedPlaybook?.action_params;
+  const linkedActionsCount = Array.isArray(linkedPlaybookActions) ? linkedPlaybookActions.length : 0;
 
   return (
     <div>
@@ -271,7 +296,15 @@ const KubernetesAlertManager: React.FC<KubernetesAlertManagerProps> = ({ account
         dialogTitle={`${alertManagerObject?.enabled ? 'Disable' : 'Enable'} the alert "${alertManagerObject?.alert}"`}
         handleSubmit={handleSubmit}
         open={disableAlert}
-        dialogContent={''}
+        dialogContent={
+          alertManagerObject?.enabled
+            ? linkedActionsCount > 0
+              ? `This alert will stop triggering until it's re-enabled, and the ${linkedActionsCount} action${
+                  linkedActionsCount > 1 ? 's' : ''
+                } configured on it will no longer run.`
+              : "This alert will stop triggering until it's re-enabled."
+            : 'This alert will resume triggering as configured.'
+        }
         additionalComponent={undefined}
       />
       <Modal
@@ -300,7 +333,14 @@ const KubernetesAlertManager: React.FC<KubernetesAlertManagerProps> = ({ account
             <>
               <DownloadButton onClick={() => ({ tableId: k8sAlertManager })} />
               {hasWriteAccess(accountId) && (
-                <DsButton tone='primary' size='md' onClick={() => setOpenCreateNewAlertModal(true)}>
+                <DsButton
+                  tone='primary'
+                  size='md'
+                  onClick={() => {
+                    setAlertManagerObject(null);
+                    setOpenCreateNewAlertModal(true);
+                  }}
+                >
                   Create New Alert
                 </DsButton>
               )}
