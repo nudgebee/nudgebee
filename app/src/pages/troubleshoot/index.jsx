@@ -259,7 +259,7 @@ const TroubleshootPage = () => {
               <Box sx={{ display: 'flex', gap: 'var(--ds-space-2)', alignItems: 'center' }}>
                 <TroubleshootSummary range={summaryRange} onWidgetFilter={applyWidgetFilter} />
               </Box>
-              <Box sx={{ marginBottom: '8px' }}>
+              <Box id='troubleshoot-event-tabs' sx={{ marginBottom: '8px' }}>
                 <CustomTabs
                   value={activeToggleGroupedEvents}
                   onChange={(newValue) => setActiveToggleGroupedEvents(newValue)}

@@ -1998,6 +1998,7 @@ const ServiceMapContent = () => {
         {/* Left Sidebar - Filters */}
         {!isFilterCollapsed && (
           <WidgetCard
+            id='kg-filter-panel'
             sx={{
               mt: 0,
               p: 'var(--ds-space-4)',
@@ -2249,7 +2250,7 @@ const ServiceMapContent = () => {
             />
           )}
 
-          <Box ref={graphWrapperRef} sx={{ flex: 1, position: 'relative' }}>
+          <Box id='kg-canvas' ref={graphWrapperRef} sx={{ flex: 1, position: 'relative' }}>
             {/* Focus mode banner */}
             {focusedNodeId && (
               <Box

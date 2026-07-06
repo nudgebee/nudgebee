@@ -14,6 +14,17 @@
 export type TourSide = 'top' | 'right' | 'bottom' | 'left';
 export type TourAlign = 'start' | 'center' | 'end';
 
+/**
+ * Access capability a guide requires. A guide walks the user through *doing*
+ * something, so it should only be offered to users who can actually do it —
+ * otherwise the tour dead-ends on a role-gated button that isn't rendered.
+ *   'write' → the acting user needs write access (mirrors the `hasWriteAccess()`
+ *             gate on the action button the guide drives, e.g. "Add New User").
+ * Omit `requires` for guides everyone can run (e.g. the app overview).
+ * Resolved by `canAccessTour` in ./tourAccess.
+ */
+export type TourCapability = 'write';
+
 export interface TourStepDef {
   /** CSS selector for the element to spotlight. */
   element: string;
@@ -57,6 +68,12 @@ export interface TourDef {
   welcome?: { title: string; description: string };
   /** Show a "Restart" button in the popover footer (jumps back to step 1). */
   showRestart?: boolean;
+  /**
+   * Role capability required to run this guide. When set, the guide is hidden
+   * from the central Guides catalog (and any `TourLauncher`) for users who lack
+   * it. Omit to offer the guide to everyone. See `canAccessTour`.
+   */
+  requires?: TourCapability;
 }
 
 /**
@@ -76,6 +93,9 @@ const createUserTour: TourDef = {
   module: 'Users',
   description: 'Add a teammate and set their role and group access, step by step.',
   route: '/user-management',
+  // Adding a user is a write action; the "Add New User" button this guide
+  // drives is gated on hasWriteAccess() (account_admins don't see it).
+  requires: 'write',
   steps: [
     {
       element: '#new-user',
@@ -154,6 +174,8 @@ const connectClusterTour: TourDef = {
   module: 'Clusters',
   description: 'Add a Kubernetes cluster and install the Nudgebee agent.',
   route: '/accounts/account-form?cloudProvider=K8S',
+  // Same as create-user: the "Add K8s Account" button is gated on hasWriteAccess().
+  requires: 'write',
   steps: [
     {
       element: '#add-k8s-account',
@@ -303,8 +325,164 @@ const appOverviewTour: TourDef = {
   ],
 };
 
+/**
+ * "Explore Troubleshoot" orientation. Unlike the create-* walkthroughs this is a
+ * read-only tour: it explains the three top-level views and points at the event
+ * columns' built-in ⓘ tooltips rather than re-documenting each column (which are
+ * user-configurable, so a per-column spotlight would be brittle). Anchors:
+ *   [id="anchor-tab-All Events"] → the All Events top tab (AnchorComponent renders
+ *                                  id=`anchor-tab-<name>`; the bar is absolutely
+ *                                  positioned so we can't wrap it without breaking
+ *                                  layout — anchor the tab itself)
+ *   #troubleshoot-event-tabs → the event-grouping sub-tabs (All Events view)
+ *   #tab-all                 → the "Events" sub-tab (Tabs renders id=`tab-<value>`)
+ *   #all-events              → the flat Events list (KubernetesEvents ListingLayout)
+ *   #auto-complete-filter-sort-by → the Sort By control in the Events toolbar
+ *                                   (FilterDropdown prefixes its id; optional)
+ *   #all-events thead        → the Events table header row (holds the ⓘ tooltips)
+ * Step 1 re-asserts the All Events top tab so the tour is robust when launched
+ * from another sub-tab; step 2 opens the flat Events list for the columns step.
+ */
+const troubleshootTour: TourDef = {
+  id: 'troubleshoot-overview',
+  title: 'Explore Troubleshoot',
+  module: 'Troubleshoot',
+  description: 'Tour the Troubleshoot views and see what each event column means.',
+  route: '/troubleshoot',
+  steps: [
+    {
+      element: '[id="anchor-tab-All Events"]',
+      title: 'Three ways to troubleshoot',
+      description:
+        'All Events triages what’s happening now, Investigations holds the auto & manual root-cause analyses, and Knowledge Graph is your live service map. You’re on All Events.',
+      side: 'bottom',
+      align: 'start',
+      // Make sure we're on the All Events view before pointing at its sub-tabs,
+      // in case the tour was launched from Investigations or Knowledge Graph.
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('[id="anchor-tab-All Events"]')?.click();
+      },
+    },
+    {
+      element: '#troubleshoot-event-tabs',
+      title: 'Organise your events',
+      description:
+        'Switch how events are shown — the Triage Inbox, a flat Events list, or grouped by type or app — plus Triage Rules, Alert Tuning, and Event Resolutions. We’ll open the Events list next.',
+      side: 'bottom',
+      align: 'start',
+      // Open the flat Events list so the column step lands on the rich table.
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#tab-all')?.click();
+      },
+    },
+    {
+      element: '#all-events',
+      title: 'The Events list',
+      description: 'Each row is one alert or event. Click a row to open a full investigation with logs, metrics, and the service map.',
+      side: 'top',
+      align: 'center',
+    },
+    {
+      // FilterDropdown re-emits its `id` as `auto-complete-<kebab(id)>`, so the
+      // DOM id of the Sort By control is not the raw `filter-sort-by`.
+      element: '#auto-complete-filter-sort-by',
+      title: 'Filter & sort',
+      description: 'Narrow the list by severity, status, source, namespace and more, and change the sort order to surface what matters first.',
+      side: 'bottom',
+      align: 'end',
+      optional: true,
+    },
+    {
+      element: '#all-events thead',
+      title: 'What does each column mean?',
+      description:
+        'Not sure what a column shows? Hover the ⓘ next to any header — Severity, Triage Score, Alert Status and more each explain themselves. Use the column menu to add or remove columns.',
+      side: 'bottom',
+      align: 'center',
+    },
+  ],
+};
+
+/**
+ * "Explore the Knowledge Graph" orientation. Knowledge Graph is the third
+ * Troubleshoot view (feature-flagged) — a live ReactFlow service map, not a
+ * table — so this tour teaches how to read and drive the graph. Anchors:
+ *   [id="anchor-tab-Knowledge Graph"] → the KG top tab (opens selectedFilter=2)
+ *   #kg-canvas              → the graph canvas (graphWrapperRef Box)
+ *   #kg-filter-panel        → the left filter sidebar (WidgetCard; gone when collapsed)
+ *   #auto-complete-kg-node-search → node search in the top-right toolbar
+ *                                   (FilterDropdown prefixes its id — see step 4)
+ *   #relationship-types-btn → the Relationships legend button (hover shows legend)
+ *   #kg-settings-btn        → the Settings button (tenant admins only)
+ * Step 1 opens the KG tab so the rest can anchor its elements; if the KG feature
+ * flag is off that tab is absent and the tour ends there (KG isn't available).
+ */
+const knowledgeGraphTour: TourDef = {
+  id: 'knowledge-graph',
+  title: 'Explore the Knowledge Graph',
+  module: 'Troubleshoot',
+  description: 'Read your live service map — nodes, dependencies, filters, and search.',
+  route: '/troubleshoot',
+  steps: [
+    {
+      element: '[id="anchor-tab-Knowledge Graph"]',
+      title: 'Open the Knowledge Graph',
+      description: 'The Knowledge Graph is your live service map. Let’s open it.',
+      side: 'bottom',
+      align: 'start',
+      // Switch to the KG view so the following steps can anchor its elements.
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('[id="anchor-tab-Knowledge Graph"]')?.click();
+      },
+    },
+    {
+      element: '#kg-canvas',
+      title: 'Your live service map',
+      description:
+        'Every node is a service, workload, or cloud resource; every edge is a real dependency Nudgebee discovered between them. Drag to pan, scroll to zoom.',
+      side: 'top',
+      align: 'center',
+    },
+    {
+      element: '#kg-filter-panel',
+      title: 'Scope the map',
+      description: 'Narrow the graph by account, node type, and label or attribute — set how many hops to expand from a node, then Apply.',
+      side: 'right',
+      align: 'start',
+      optional: true,
+    },
+    {
+      // FilterDropdown re-emits its `id` prop as `auto-complete-<kebab(id)>` on
+      // the trigger button, so the DOM id is not the raw `kg-node-search`.
+      element: '#auto-complete-kg-node-search',
+      title: 'Find a service',
+      description: 'Jump straight to any service — search by name and the graph focuses on it and its immediate neighbours.',
+      side: 'bottom',
+      align: 'end',
+    },
+    {
+      element: '#relationship-types-btn',
+      title: 'Read the graph',
+      description:
+        'Hover Relationships for the legend — what each node colour and edge type means. Click any node’s ⓘ for full details, or an edge to inspect the dependency.',
+      side: 'bottom',
+      align: 'end',
+    },
+    {
+      element: '#kg-settings-btn',
+      title: 'Graph settings',
+      description: 'Admins can tune what the graph ingests and how it’s built here.',
+      side: 'bottom',
+      align: 'end',
+      optional: true,
+    },
+  ],
+};
+
 export const TOURS: Record<string, TourDef> = {
   [createUserTour.id]: createUserTour,
   [connectClusterTour.id]: connectClusterTour,
   [appOverviewTour.id]: appOverviewTour,
+  [troubleshootTour.id]: troubleshootTour,
+  [knowledgeGraphTour.id]: knowledgeGraphTour,
 };

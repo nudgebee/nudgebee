@@ -3,6 +3,7 @@ import { Button } from '@ui/Button';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { HelpOutlineDarkIcon } from '@assets';
 import { useLaunchGuide } from './useLaunchGuide';
+import { canAccessTour } from './tourAccess';
 import { TOURS } from './tours';
 
 /**
@@ -14,7 +15,9 @@ import { TOURS } from './tours';
 const TourLauncher = ({ tourId, label, tone = 'ghost', size = 'md', showIcon = true }) => {
   const launch = useLaunchGuide();
   const tour = TOURS[tourId];
-  if (!tour) {
+  // Don't offer a guide the user can't complete — even if a caller drops this
+  // launcher outside the action's own role gate.
+  if (!tour || !canAccessTour(tour)) {
     return null;
   }
 

@@ -5,7 +5,7 @@ import { Modal } from '@ui/Modal';
 import SearchInput from '@ui/SearchInput';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { HelpOutlineDarkIcon } from '@assets';
-import { TOURS, useLaunchGuide } from '@components/common/tour';
+import { TOURS, canAccessTour, useLaunchGuide } from '@components/common/tour';
 import { ds } from 'src/utils/colors';
 
 /**
@@ -22,6 +22,11 @@ const GuidesMenu = ({ open, onClose }) => {
     const q = query.trim().toLowerCase();
     const visible = Object.values(TOURS).filter((t) => {
       if (!t.module) {
+        return false;
+      }
+      // Hide guides the current user can't complete (e.g. "Add a user" for a
+      // non-write account_admin) — the tour would dead-end on a gated button.
+      if (!canAccessTour(t)) {
         return false;
       }
       if (!q) {
