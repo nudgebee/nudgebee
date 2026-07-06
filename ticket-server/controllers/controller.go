@@ -51,7 +51,7 @@ func AddTicketConfiguration(ctx *gin.Context) {
 	// and never sends auth_type. Rehydrate whatever the request left blank from
 	// the stored integration so auth validation runs against the real config —
 	// auth_type in particular selects the GitHub App vs user-token branch.
-	if configuration.Password == "" || configuration.AuthType == "" {
+	if services.ShouldRehydrateCredentials(configuration.ID, configuration.Password, configuration.AuthType) {
 		existing, err := services.LoadExistingConfig(configuration.ID, configuration.Tenant, configuration.Name, configuration.Tool)
 		if err != nil {
 			slog.Error("Failed to load existing integration", "tool", configuration.Tool, "name", configuration.Name, "error", err)
@@ -627,7 +627,7 @@ func TestConnectionByConfig(ctx *gin.Context) {
 	// sends auth_type. Rehydrate both from the stored integration so the test
 	// validates the real config — without auth_type a GitHub App integration is
 	// checked as a user token (its installation ID sent as a PAT) and 401s.
-	if configuration.Password == "" || configuration.AuthType == "" {
+	if services.ShouldRehydrateCredentials(configuration.ID, configuration.Password, configuration.AuthType) {
 		existing, err := services.LoadExistingConfig(configuration.ID, configuration.Tenant, configuration.Name, configuration.Tool)
 		if err != nil {
 			slog.Error("TestConnectionByConfig: failed to load existing integration", "tool", configuration.Tool, "name", configuration.Name, "error", err)
