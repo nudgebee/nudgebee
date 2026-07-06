@@ -3,6 +3,11 @@ body {
   font-family: var(--nb-font-primary, 'Roboto', sans-serif) !important;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* html { scrollbar-gutter: stable } already reserves the scrollbar's width, so
+     MUI's own scroll-lock padding-right compensation (added inline on body when a
+     Popover/Modal opens) is redundant and double-compensates, shifting content by
+     an extra, visible amount. Force it back to 0. */
+  padding-right: 0 !important;
 }
 .input-labels {
   font-size: 12px !important;
