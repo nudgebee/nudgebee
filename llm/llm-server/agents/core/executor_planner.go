@@ -12,6 +12,7 @@ import (
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"nudgebee/llm/security"
+	"nudgebee/llm/tools"
 	toolcore "nudgebee/llm/tools/core"
 	"reflect"
 	"runtime/debug"
@@ -1667,6 +1668,20 @@ func truncateToolResponse(ctx *security.RequestContext, data string, status Tool
 	return truncated, originalLen
 }
 
+// writeConfirmationRequired reports whether a write (create/update/delete) tool needs user confirmation.
+// watch_resource is exempt: it's Create only for the access gate and mutates nothing (source is read-only).
+func writeConfirmationRequired(requestType *toolcore.ToolRequestType, toolName string) bool {
+	if requestType == nil {
+		return false
+	}
+	switch *requestType {
+	case toolcore.ToolRequestTypeCreate, toolcore.ToolRequestTypeUpdate, toolcore.ToolRequestTypeDelete:
+		return !strings.EqualFold(toolName, tools.ToolWatchResource)
+	default:
+		return false
+	}
+}
+
 func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action NBAgentPlannerToolAction, queryContext string) (NBAgentPlannerToolActionStep, *NBAgentPlannerFinishAction, error) {
 	// Normalize tool name: trim whitespace that XML parsing may leave
 	action.Tool = strings.TrimSpace(action.Tool)
@@ -1878,7 +1893,7 @@ func (e *plannerExecutor) doAction(nameToTool map[string]toolcore.NBTool, action
 
 	// confirmation if tehre is write operation
 	if tool.GetType() == toolcore.NBToolTypeTool {
-		if requestType != nil && *requestType != "" && (*requestType == toolcore.ToolRequestTypeCreate || *requestType == toolcore.ToolRequestTypeUpdate || *requestType == toolcore.ToolRequestTypeDelete) {
+		if writeConfirmationRequired(requestType, action.Tool) {
 			isFollowupFound := false
 			if e.agentRequest.QueryConfig.ToolConfirmations != nil {
 				if previousData, exists := e.agentRequest.QueryConfig.ToolConfirmations[action.Tool]; exists {
