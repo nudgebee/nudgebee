@@ -709,7 +709,9 @@ const FormattedToolResponse = ({ responseText, toolName, toolCall, accountId }) 
             {logsArray && logsArray.length > 0 ? (
               <CustomTable tableData={tableData} headers={headers} renderVertical={tableData.length <= 1} />
             ) : typeof results?.logs === 'string' && results.logs ? (
-              <pre style={preStyle}>{results.logs.replace(/\\n/g, '\n')}</pre>
+              <Box sx={{ backgroundColor: 'var(--ds-brand-500)', borderRadius: ds.radius.lg, p: ds.space[3], overflowX: 'auto' }}>
+                <pre style={preStyle}>{results.logs.replace(/\\n/g, '\n')}</pre>
+              </Box>
             ) : null}
           </Box>
         );
