@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import recommendationApi, { RECOMMENDATION_SERVERITY, RECOMMENDATION_STATUS } from '@api1/recommendation';
+import recommendationApi, { RECOMMENDATION_SERVERITY } from '@api1/recommendation';
 import { ListingLayout } from '@ui/ListingLayout';
 import FilterDropdown from '@ui/FilterDropdown';
 import CustomSearch from '@shared/CustomSearch';
@@ -13,6 +13,13 @@ import KubernetesSecurityCVE from './security/KubernetesSecurityCVE';
 import { useRouter } from 'next/router';
 import { applyFiltersOnRouter } from '@lib/router';
 import { syncFilterFromQuery } from '@utils/common';
+
+// Aggregate views (Apps/Images/CVE) show security posture — findings are only ever Open (active) or
+// Archive (stale on re-scan). The Details view additionally lets users raise a PR on a finding
+// (applyRecommendation), which moves it through InProgress → Closed/Dismissed, so those stay
+// filterable there. 'Assigned' is omitted everywhere — it's never written to any recommendation.
+const SECURITY_RECOMMENDATION_STATUS = ['Open', 'Archive'];
+const SECURITY_DETAILS_RECOMMENDATION_STATUS = ['Open', 'Archive', 'InProgress', 'Closed', 'Dismissed'];
 
 const KubernetesSecurity = (props) => {
   const router = useRouter();
@@ -72,8 +79,7 @@ const KubernetesSecurity = (props) => {
       type: 'dropdown',
       label: 'Status',
       width: '140px',
-      // InProgress is intentionally excluded — security findings are acted on via ticket, not tracked as in-progress here
-      options: RECOMMENDATION_STATUS.filter((s) => s !== 'InProgress'),
+      options: activeToggleButton === 'details' ? SECURITY_DETAILS_RECOMMENDATION_STATUS : SECURITY_RECOMMENDATION_STATUS,
       value: recommendationStatus,
       enabled: props?.enableFilters?.includes('status') ?? true,
       onSelect: function (e, _rule) {
@@ -132,7 +138,16 @@ const KubernetesSecurity = (props) => {
             <ToggleGroup
               selection='single'
               value={activeToggleButton}
-              onChange={(next) => setActiveToggleButton(next)}
+              onChange={(next) => {
+                setActiveToggleButton(next);
+                // Aggregate views only support Open/Archive; if leaving Details with a PR-lifecycle
+                // status selected, reset to Open so the aggregate query isn't run with an unsupported
+                // status (which returns a confusing empty table).
+                if (next !== 'details' && !SECURITY_RECOMMENDATION_STATUS.includes(recommendationStatus)) {
+                  setRecommendationStatus('Open');
+                  setResetPage('status-Open');
+                }
+              }}
               ariaLabel='Security view'
               options={[
                 { value: 'apps', label: 'Apps' },
