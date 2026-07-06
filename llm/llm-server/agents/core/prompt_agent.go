@@ -234,7 +234,22 @@ func formatRAGDocument(ragConfig NBAgentPromptRag, rawDocument string) string {
 
 		if val, ok := mappedDoc[questionKey]; ok {
 			var sb strings.Builder
-			sb.WriteString("Question: " + val.(string) + "\n")
+			switch v := val.(type) {
+			case string:
+				sb.WriteString("Question: " + v + "\n")
+			default:
+				// A malformed RAG document may carry a null or non-string
+				// question. Mirror the answer/explanation handling below and
+				// serialize it instead of asserting `.(string)`, which would
+				// panic ("interface conversion: interface {} is nil, not string")
+				// and abort the whole agent run during prompt assembly.
+				marshalledData, e := json.Marshal(v)
+				if e != nil {
+					slog.Error("unable to serialize rag question", "error", e, "data", slog.AnyValue(v))
+				} else {
+					sb.WriteString("Question: " + string(marshalledData) + "\n")
+				}
+			}
 			if val, ok := mappedDoc[answerKey]; ok {
 				switch v := val.(type) {
 				case string:
