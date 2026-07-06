@@ -35,6 +35,7 @@ import WidgetCard from '@ui/WidgetCard';
 import Loader from '@shared/Loader';
 import apiKubernetes1 from '@api1/kubernetes1';
 import LangTypeIcon from '@shared/icons/LangTypeIcon';
+import CloudProviderIcon from '@shared/icons/CloudIcon';
 import { toast as snackbar } from '@ui/Toast';
 import apiHome from '@api1/home';
 import { safeJSONParse, snakeToTitleCase } from 'src/utils/common';
@@ -638,6 +639,54 @@ const useGraphBuilder = (rawData, onInfoClick, accMap, onFocusClick) => {
       }));
     return { initialNodes, initialEdges };
   }, [rawData, onInfoClick, accMap]);
+};
+
+// Cloud providers we render a real logo for. `external` (and anything else)
+// deliberately gets no icon — CloudProviderIcon falls back to the AWS logo for
+// unknown providers, which would be misleading on an ExternalService row.
+const KNOWN_CLOUD_PROVIDERS = new Set(['aws', 'k8s', 'gcp', 'azure']);
+
+// Parse a canonical 6-part KG unique key into its components.
+// Format: {cloud_provider}:{account}:{location}:{NodeType}:{hierarchy}:{name}
+// (see api-server/services/knowledge_graph/core/unique_key_builder.go). `name` is
+// guaranteed colon-free server-side, so a positional split is safe. Returns null
+// for non-canonical keys (e.g. legacy 3-part flow-source keys) so callers fall
+// back to the raw string.
+const parseUniqueKey = (key) => {
+  if (typeof key !== 'string') return null;
+  const parts = key.split(':');
+  if (parts.length !== 6) return null;
+  const [provider, account, location, nodeType, hierarchy, name] = parts;
+  return { provider, account, location, nodeType, hierarchy, name };
+};
+
+// PascalCase NodeType → spaced label ("ServiceIdentity" → "Service Identity").
+// snakeToTitleCase only splits on '_', so it would leave these un-spaced.
+const humanizeNodeType = (nodeType) => (nodeType || '').replace(/([a-z])([A-Z])/g, '$1 $2');
+
+// Build a Node-dropdown option from a unique key + node id. Shapes the row as
+// [provider icon] <name>  <location · hierarchy | humanized NodeType chip> — see
+// FilterDropdown OptionItem (icon / label / type slots). The full key is kept in
+// `searchText` so search still matches namespace/region/type, and `displayLabel`
+// mirrors the legacy value for any consumer that reads it.
+const buildNodeOption = (uniqueKey, id) => {
+  const parsed = parseUniqueKey(uniqueKey);
+  if (!parsed) {
+    return { label: uniqueKey, displayLabel: uniqueKey, value: id, searchText: uniqueKey };
+  }
+  const { provider, location, nodeType, hierarchy, name } = parsed;
+  const chip = [location, hierarchy].filter(Boolean).join(' · ') || humanizeNodeType(nodeType);
+  const option = {
+    label: name || uniqueKey,
+    displayLabel: uniqueKey,
+    value: id,
+    type: chip,
+    searchText: uniqueKey,
+  };
+  if (KNOWN_CLOUD_PROVIDERS.has(provider)) {
+    option.icon = <CloudProviderIcon cloud_provider={provider} width='16px' height='16px' />;
+  }
+  return option;
 };
 
 const ServiceMapContent = () => {
@@ -1599,7 +1648,8 @@ const ServiceMapContent = () => {
       neighborIds.forEach((id) => {
         const node = uniqueServiceKeysMap.get(id);
         if (node) {
-          neighborOptions.push({ label: node.label, displayLabel: node.displayLabel, value: node.value });
+          // node.uniqueKey / node.label both hold the canonical unique key.
+          neighborOptions.push(buildNodeOption(node.uniqueKey || node.label, node.value));
         }
       });
       return [...neighborOptions, ...draftNodes];
@@ -1608,11 +1658,7 @@ const ServiceMapContent = () => {
     // Default: full list from Stage-1 filter data.
     // Always include currently drafted nodes even if not returned by the filtered API response.
     const map = kgFilterOptions?.nodeIdMap || {};
-    const options = Object.entries(map).map(([uniqueKey, id]) => ({
-      label: uniqueKey,
-      displayLabel: uniqueKey,
-      value: id,
-    }));
+    const options = Object.entries(map).map(([uniqueKey, id]) => buildNodeOption(uniqueKey, id));
     const optionValues = new Set(Object.values(map));
     const selectedNotInMap = (draftNodes || []).filter((sel) => !optionValues.has(sel.value));
     return [...options, ...selectedNotInMap];

@@ -9,6 +9,11 @@
  * leading SafeIcon in its row. Panel width defaults to the trigger width with
  * a 220px floor; `popoverWidth` overrides it.
  *
+ * Option search: search matches an option's visible label plus an optional
+ * `searchText` field. Set `searchText` when the label is intentionally short but
+ * you still want the full text to be searchable (e.g. a row showing a node name
+ * while remaining searchable by its namespace/region).
+ *
  *
  *   API surface preserved verbatim from the legacy component (see the test at
  *   __tests__/components/common/FilterDropdownButton.test.jsx — covers this
@@ -821,9 +826,16 @@ function FilterDropdownButton({
   // Supports glob wildcards `*` (any sequence) and `?` (single char) — useful
   // for long index/label lists like `fluentk8s-prod-2026.04.03`. Plain queries
   // keep their existing case-insensitive substring semantics.
+  // Matches against the visible label plus an optional `opt.searchText`, so a
+  // caller can show a short label yet keep the full text searchable (e.g. a KG
+  // node row showing just the name while still matching on namespace/region).
   const filteredOptions = useMemo(() => {
     const q = search.trim();
     if (!q) return options;
+    const haystack = (opt) => {
+      const extra = typeof opt === 'object' && opt?.searchText ? ` ${opt.searchText}` : '';
+      return `${getLabel(opt)}${extra}`;
+    };
     const hasWildcard = /[*?]/.test(q);
     if (hasWildcard) {
       // Escape regex specials, then translate glob → regex.
@@ -833,13 +845,13 @@ function FilterDropdownButton({
         .replace(/\?/g, '.');
       try {
         const re = new RegExp(escaped, 'i');
-        return options.filter((opt) => re.test(getLabel(opt)));
+        return options.filter((opt) => re.test(haystack(opt)));
       } catch {
         // Fall through to substring match on regex compile failure.
       }
     }
     const lower = q.toLowerCase();
-    return options.filter((opt) => getLabel(opt).toLowerCase().includes(lower));
+    return options.filter((opt) => haystack(opt).toLowerCase().includes(lower));
   }, [options, search]);
 
   // Check if an option is selected
