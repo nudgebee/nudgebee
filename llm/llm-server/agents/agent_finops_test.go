@@ -11,11 +11,11 @@ import (
 
 // TestFinOpsAgent_RoutesThroughSpecialistAgents pins the fix that moved FinOps off
 // the raw prometheus_execute, kubectl_execute, and cloud_resource_search_execute
-// tools and onto their specialist agents-as-tools (PrometheusAgentName,
+// tools and onto their specialist agents-as-tools (MetricsAgentName,
 // KubectlAgentName, ResourceSearchAgentName). Each specialist agent carries
-// guardrails (PromQL construction, kubectl safety rules, multi-platform resource
-// fan-out + relevance filtering) that live only in that agent's own system prompt
-// and were invisible to FinOps when it called the raw tool directly.
+// guardrails (metrics provider routing, kubectl safety rules, multi-platform
+// resource fan-out + relevance filtering) that live only in that agent's own
+// system prompt and were invisible to FinOps when it called the raw tool directly.
 func TestFinOpsAgent_RoutesThroughSpecialistAgents(t *testing.T) {
 	sc := security.NewRequestContextForSuperAdmin()
 	accountId := os.Getenv("TEST_ACCOUNT")
@@ -27,8 +27,8 @@ func TestFinOpsAgent_RoutesThroughSpecialistAgents(t *testing.T) {
 		toolNames[i] = tool.Name()
 	}
 
-	assert.Contains(t, toolNames, PrometheusAgentName,
-		"FinOps must route metrics questions through the prometheus agent, not call it as a raw tool")
+	assert.Contains(t, toolNames, MetricsAgentName,
+		"FinOps must route metrics questions through the provider-agnostic metrics agent, not call prometheus_execute as a raw tool")
 	assert.Contains(t, toolNames, KubectlAgentName,
 		"FinOps must route kubectl questions through the kubectl agent, not call it as a raw tool")
 	assert.Contains(t, toolNames, ResourceSearchAgentName,

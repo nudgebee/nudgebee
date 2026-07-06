@@ -98,8 +98,8 @@ func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 	constraints := []string{
 		"This agent is READ-ONLY. Never execute infrastructure changes or modify cloud resources. To help a user act on a recommendation, hand them off to the optimise UI with the propose_recommendation_apply tool.",
 		"Every cost answer MUST include a dollar figure. If data is unavailable, state that explicitly.",
-		"Always cite which tool provided the data (spend_summary, recommendations, prometheus, etc.).",
-		"The prometheus, kubectl, and resource_search tools are full investigators, not raw query executors: give each a specific, self-contained question (e.g. \"p95 CPU and memory usage for pod X in namespace Y over the last 7 days, with absolute values\", \"find the deployment matching service X\") and they return a synthesized answer with concrete values already extracted -- read the data directly from their response for your tables/charts, do not expect raw JSON or kubectl output back.",
+		"Always cite which tool provided the data (spend_summary, recommendations, metrics, etc.).",
+		"The metrics, kubectl, and resource_search tools are full investigators, not raw query executors: give each a specific, self-contained question (e.g. \"p95 CPU and memory usage for pod X in namespace Y over the last 7 days, with absolute values\", \"find the deployment matching service X\") and they return a synthesized answer with concrete values already extracted -- read the data directly from their response for your tables/charts, do not expect raw JSON or kubectl output back.",
 		"Do not expose internal SQL queries, table names, or database structure to the user.",
 		"When comparing periods, always state the exact date ranges being compared.",
 		"If recommendations reference a cloud resource, verify the resource exists before advising action.",
@@ -134,7 +134,7 @@ func (a *FinOpsAgent) GetSystemPrompt(ctx *security.RequestContext, query core.N
 4. **Always show the absolute, not just the delta.** For any sizing/capacity finding show the current allocated amount (provisioned), observed usage (with percentile), utilization %, and a concrete recommended target — e.g. "150Gi provisioned, 34Gi used (23%), resize to 50Gi"; never just "116Gi unused" or a bare "downsize". Gather absolute provisioned AND used, not only their difference.
 5. **One short paragraph after the table** — headline finding + top 1-2 next steps. No bullet lists restating rows.
 6. **Surface data quality.** Null or clearly-wrong values render as "—"/"⚠" with a footnote; never present corrupt data as fact, never silently drop it.
-7. **Cite inline.** Append the source tool in the cell or header: [spend_summary], [recommendations], [anomaly_execute], [prometheus], [kubectl].
+7. **Cite inline.** Append the source tool in the cell or header: [spend_summary], [recommendations], [anomaly_execute], [metrics], [kubectl].
 8. **Make rows clickable.** For optimization/rightsizing/recommendation tables, the Action cell is a Markdown link [<label>](<url>): <label> is a DYNAMIC, intent-aware next step for that row (e.g. "Resize to 10Gi ▸", "Delete unused PVC ▸" — derive it, don't use a fixed string); <url> is the optimize deep-link base from your account context with <Category> and <workload_name> filled in for that row. <workload_name> MUST be the workload/controller name (the row's 'name'), NEVER a pod name (pod_name) — the optimise recommendations table is keyed by workload, so a pod name with a ReplicaSet hash suffix (e.g. 'web-7d9f8b6c5-abcde') matches zero recommendations. If a row is a pod, use its owning workload's name. One click takes the user into the optimise workflow filtered to that resource. Omit the link for purely informational rows.
 9. **Chart when it helps.** When a visual makes the finding land faster, embed ONE ` + "```nb-chart" + ` fenced JSON block right after the table, choosing type and data DYNAMICALLY: bar (compare a measure across resources, e.g. provisioned vs used), doughnut/pie (share of a total, e.g. spend by service), line/area (trend over time). Spec: {"type":"bar","title":"...","labels":[...],"series":[{"key":"Provisioned","data":[...]},{"key":"Used","data":[...]}],"format":"gi|usd|percent|number"} — doughnut/pie use "values":[...] instead of series. Keep it ≤12 labels / ≤4 series and reuse the table's own numbers (never raw time-series). Skip the chart for single-row, clarification, or pure-text answers.
 
@@ -326,8 +326,10 @@ func (a *FinOpsAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore
 		// wrapping agent carries guardrails (PromQL construction, kubectl safety
 		// rules, multi-platform resource fan-out) that live only in that agent's
 		// system prompt and are invisible to FinOps when calling the raw tool
-		// directly. See agent_prometheus.go, agent_kubectl.go, agent_resource_search.go.
-		PrometheusAgentName,
+		// directly. See agent_metrics.go, agent_kubectl.go, agent_resource_search.go.
+		// MetricsAgentName routes to the account's configured metrics provider
+		// (Prometheus/Datadog/Elasticsearch) instead of hardcoding Prometheus.
+		MetricsAgentName,
 		KubectlAgentName,
 		ResourceSearchAgentName,
 
