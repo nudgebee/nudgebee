@@ -104,10 +104,15 @@ const AutoOptimizeTasks = ({ enableFilters = true, title, actions }) => {
   const [recordsPerPage, setRecordsPerPage] = useState(apiUser.getUserPreferencesTablePageSize());
 
   useEffect(() => {
+    if (!router?.query?.TaskDetails) {
+      return;
+    }
     let query = {
-      accountId: router?.query?.TaskDetails,
+      autoPilotId: router?.query?.TaskDetails,
+      accountId: router?.query?.accountId,
       status: selectedStatus,
     };
+    setData([]);
     setLoading(true);
     apiAutoPilot
       .listAutoPilotTask(recordsPerPage, currentPage * recordsPerPage, query)
@@ -214,7 +219,7 @@ const AutoOptimizeTasks = ({ enableFilters = true, title, actions }) => {
       .catch(() => {
         setLoading(false);
       });
-  }, [currentPage, recordsPerPage, selectedStatus, router?.query?.TaskDetails]);
+  }, [currentPage, recordsPerPage, selectedStatus, router?.query?.TaskDetails, router?.query?.accountId]);
 
   const onPageChange = (page, limit) => {
     setCurrentPage(page - 1);

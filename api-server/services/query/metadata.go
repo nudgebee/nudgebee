@@ -4462,6 +4462,16 @@ var table_metadata = map[string]TableDefinition{
 		DefGenerator: func(ctx *security.RequestContext, accountId string, request QueryRequest) (string, QueryRequest, error) {
 			pushdownFilters := extractFilterSQL(&request, "account_id", "r.cloud_account_id")
 			pushdownFilters += extractFilterSQL(&request, "status", "r.status")
+			// id is not part of PARTITION BY, so pushing it pre-window would narrow
+			// the sibling set is_primary_recommendation is ranked against — a caller
+			// that filters by id AND reads that column would see rank computed only
+			// among the requested ids, not the full history. Only take the shortcut
+			// when the request provably doesn't touch that column (mirrors the
+			// joinRequiringCols guard in recommendation_groupings_v2 above); otherwise
+			// fall back to the correct-but-slower outer-filter path.
+			if !requestReferencesColumns(request, map[string]bool{"is_primary_recommendation": true}) {
+				pushdownFilters += extractFilterSQL(&request, "id", "r.id")
+			}
 			// Push tenant_id and category into the CTE WHERE so the ROW_NUMBER()
 			// window is computed over only the relevant slice. The window's
 			// PARTITION BY does NOT include tenant_id, so the planner cannot push

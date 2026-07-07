@@ -308,7 +308,8 @@ const apiAutoPilot = {
     limit = 10,
     offset = 0,
     query: {
-      accountId: string;
+      autoPilotId: string;
+      accountId?: string;
       status: string;
     }
   ) {
@@ -322,9 +323,9 @@ const apiAutoPilot = {
       where.push({ status: { _eq: query.status } });
       whereAgg.push({ status: { _eq: query.status } });
     }
-    if (query.accountId) {
-      where.push({ auto_pilot_id: { _eq: query.accountId } });
-      whereAgg.push({ auto_pilot_id: { _eq: query.accountId } });
+    if (query.autoPilotId) {
+      where.push({ auto_pilot_id: { _eq: query.autoPilotId } });
+      whereAgg.push({ auto_pilot_id: { _eq: query.autoPilotId } });
     }
     const response = await queryGraphQL(AUTO_PILOT_TASK_LISTING, 'autopilotTaskListing', {
       where: { _and: where },
@@ -347,8 +348,17 @@ const apiAutoPilot = {
     }));
     const recommendationIds = [...new Set(data.map((task: any) => task.recommendation_id).filter((id: any) => id != null))];
 
-    const recQuery = RECOMMENDATION_DATA.replace('__WHERE__', gqlStringify({ id: { _in: recommendationIds } }));
-    const recommendationsResponse = await queryGraphQL(recQuery, 'recommendationData', {});
+    let recommendationsResponse = null;
+    if (recommendationIds.length > 0) {
+      const recQuery = RECOMMENDATION_DATA.replace(
+        '__WHERE__',
+        gqlStringify({
+          id: { _in: recommendationIds },
+          ...(query.accountId ? { account_id: { _eq: query.accountId } } : {}),
+        })
+      );
+      recommendationsResponse = await queryGraphQL(recQuery, 'recommendationData', {});
+    }
 
     const recommendationsMap = (recommendationsResponse?.data?.data?.recommendation?.rows || []).reduce((acc: any, rec: any) => {
       acc[rec.id] = { name: rec.resource_name, type: rec.resource_type, meta: rec.resource_meta };
