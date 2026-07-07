@@ -393,7 +393,7 @@ var serviceCloudwatchNamespaceMap = map[string]serviceNamespace{
 					finalResourceIDs = append(finalResourceIDs, serviceArn)
 				}
 			case "task": // Assumes Container Insights metrics
-				targetNamespace = "AWS/ECS/ContainerInsights"
+				targetNamespace = "ECS/ContainerInsights"
 				// Group task ARNs by cluster for efficient DescribeTasks calls
 				tasksByCluster := lo.GroupBy(resourceIdentifiers, func(arn string) string {
 					// arn:aws:ecs:region:account-id:task/cluster-name/task-id
@@ -507,7 +507,7 @@ var serviceCloudwatchNamespaceMap = map[string]serviceNamespace{
 					finalResourceIDs = append(finalResourceIDs, serviceArn)
 				}
 			case "task":
-				targetNamespace = "AWS/ECS/ContainerInsights"
+				targetNamespace = "ECS/ContainerInsights"
 				tasksByCluster := lo.GroupBy(resourceIdentifiers, func(arn string) string {
 					parts := strings.Split(arn, "/") // Expected format: arn:partition:service:region:account-id:task/cluster-name/task-id
 					if len(parts) >= 3 {             // Need at least 3 parts to extract cluster-name

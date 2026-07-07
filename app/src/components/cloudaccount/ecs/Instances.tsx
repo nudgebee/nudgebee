@@ -300,12 +300,7 @@ export const ECSTasks = (props: {
                 key: 'ecs-monitoring',
                 componentFn: function (opt: any, drilldownQuery: any) {
                   return (
-                    <ECSSummary
-                      accountId={props?.accountId}
-                      resourceId={drilldownQuery?.meta?.TaskArn || drilldownQuery?.resourse_id}
-                      serviceName={'AmazonECS'}
-                      resourceType='task'
-                    />
+                    <ECSSummary accountId={props?.accountId} resourceId={drilldownQuery?.resourse_id} serviceName={'AmazonECS'} resourceType='task' />
                   );
                 },
               },
@@ -563,7 +558,7 @@ export const ECSServices = (props: {
                   return (
                     <ECSSummary
                       accountId={props?.accountId}
-                      resourceId={drilldownQuery.meta.ServiceArn}
+                      resourceId={drilldownQuery?.resourse_id}
                       serviceName={'AmazonECS'}
                       resourceType='service'
                     />
@@ -930,7 +925,7 @@ const CLUSTER_HEADER = ['Cluster Name', 'Status', 'Services', 'Tasks', 'Containe
 const clusterInfoComponentFn = (_opt: any, dq: any) => <ECSClusterInfo clusterDetails={dq} />;
 
 const createClusterMonitoringComponentFn = (accountId: string | undefined) => (_opt: any, drilldownQuery: any) =>
-  <ECSSummary accountId={accountId} resourceId={drilldownQuery.meta.ClusterArn} serviceName={'AmazonECS'} resourceType='cluster' />;
+  <ECSSummary accountId={accountId} resourceId={drilldownQuery?.resourse_id} serviceName={'AmazonECS'} resourceType='cluster' />;
 
 const clusterCapacityComponentFn = (_opt: any, dq: any) => <ECSClusterCapacityProviders clusterDetails={dq} />;
 
@@ -1357,6 +1352,16 @@ const ECSTaskInfo = ({ taskDetails }: ECSTaskDetailsProps) => {
     return <Typography sx={{ p: 2 }}>No task information available.</Typography>;
   }
 
+  // Task-level Cpu/Memory (from DescribeTasks) are empty for EC2 launch-type tasks,
+  // where sizing lives per-container. Fall back to the sum of container-level values
+  // so the panel shows an allocation instead of a bare "N/A".
+  const containers: any[] = Array.isArray((meta as any).Containers) ? (meta as any).Containers : [];
+  const sumContainerField = (field: string) => containers.reduce((sum, c) => sum + (Number(c?.[field]) || 0), 0);
+  const containerCpu = sumContainerField('Cpu');
+  const containerMemory = sumContainerField('Memory');
+  const cpuValue = meta.Cpu ? `${meta.Cpu} units` : containerCpu ? `${containerCpu} units (sum of containers)` : 'N/A';
+  const memoryValue = meta.Memory ? `${meta.Memory} MiB` : containerMemory ? `${containerMemory} MiB (sum of containers)` : 'N/A';
+
   const infoSections = [
     { label: 'Task ARN', value: meta.TaskArn?.split('/').pop() },
     { label: 'Task ARN (Full)', value: meta.TaskArn },
@@ -1368,8 +1373,8 @@ const ECSTaskInfo = ({ taskDetails }: ECSTaskDetailsProps) => {
     { label: 'Desired Status', value: meta.DesiredStatus },
     { label: 'Launch Type', value: meta.LaunchType },
     { label: 'Capacity Provider', value: meta.CapacityProviderName || 'N/A' },
-    { label: 'CPU (Task)', value: meta.Cpu ? `${meta.Cpu} units` : 'N/A' },
-    { label: 'Memory (Task)', value: meta.Memory ? `${meta.Memory} MiB` : 'N/A' },
+    { label: 'CPU (Task)', value: cpuValue },
+    { label: 'Memory (Task)', value: memoryValue },
     { label: 'Ephemeral Storage', value: `${meta.EphemeralStorage?.SizeInGiB || meta.FargateEphemeralStorage?.SizeInGiB || 'N/A'} GiB` },
     { label: 'Version', value: meta.Version?.toString() },
     { label: 'Platform', value: `${meta.PlatformFamily || 'N/A'} (${meta.PlatformVersion || 'N/A'})` },

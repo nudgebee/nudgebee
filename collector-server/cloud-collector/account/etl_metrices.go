@@ -64,6 +64,25 @@ func isMetriclessService(serviceName string) bool {
 	return ok
 }
 
+// metricIdentifierFor picks the identifier used to query CloudWatch metrics for a
+// resource. For ECS/Fargate tasks and services, dimension building needs the full
+// ARN (to derive ClusterName/ServiceName/TaskId), whereas resourse_id holds only the
+// bare id/name — so return the ARN when available. Every other resource keeps using
+// the bare resourse_id, unchanged.
+func metricIdentifierFor(serviceName, resourceType, resourseId, arn string) string {
+	if arn == "" {
+		return resourseId
+	}
+	switch strings.ToLower(serviceName) {
+	case "amazonecs", "awsfargate":
+		switch strings.ToLower(resourceType) {
+		case "task", "service":
+			return arn
+		}
+	}
+	return resourseId
+}
+
 func StoreMetricesForAllAccounts(ctx *security.RequestContext, targetAccountId string) {
 	t0 := time.Now()
 	ctx.GetLogger().Info("metrics: starting metrics job enqueuing for accounts", "targetAccountId", lo.Ternary(targetAccountId != "", targetAccountId, "all"))
@@ -320,7 +339,7 @@ func StoreMetrices(ctx *security.RequestContext, accountId string, query StoreMe
 
 	queryResponse := []map[string]any{}
 
-	err = dbms.QueryAndScan(&queryResponse, `select cr.region, cr.service_name, cr.resourse_id::text, cr.type, cr.id::text, cr.meta::text
+	err = dbms.QueryAndScan(&queryResponse, `select cr.region, cr.service_name, cr.resourse_id::text, cr.type, cr.id::text, cr.meta::text, coalesce(cr.arn, '') as arn
 	from cloud_resourses cr
 	join cloud_accounts ca on cr.account = ca.id and ca.status = 'active' and cr.is_active = true
 	where cr.account = $1 and lower(cr.service_name) = $2 and cr.resourse_id is not null and cr.resourse_id != ''
@@ -340,6 +359,10 @@ func StoreMetrices(ctx *security.RequestContext, accountId string, query StoreMe
 		resourceId := qr["resourse_id"].(string)
 		resourceType := qr["type"].(string)
 		id := qr["id"].(string)
+		arn := ""
+		if a, ok := qr["arn"].(string); ok {
+			arn = a
+		}
 
 		// Parse metadata JSON
 		var meta map[string]any
@@ -351,12 +374,22 @@ func StoreMetrices(ctx *security.RequestContext, accountId string, query StoreMe
 			}
 		}
 
+		// For ECS/Fargate tasks & services, CloudWatch dimension building requires the
+		// full ARN (to derive ClusterName/ServiceName/TaskId), whereas resourse_id holds
+		// only the bare id/name. Query metrics by ARN for those, but keep the DB join
+		// keyed on both the ARN and the bare resourse_id so the provider's echoed
+		// ResourceId maps back to the internal cloud_resource_id either way.
+		identifier := metricIdentifierFor(serviceName, resourceType, resourceId, arn)
+
 		key := serviceName + "::" + region + "::" + resourceType
 		if _, ok := serviceResourceMap[key]; !ok {
 			serviceResourceMap[key] = []string{}
 		}
-		serviceResourceMap[key] = append(serviceResourceMap[key], resourceId)
+		serviceResourceMap[key] = append(serviceResourceMap[key], identifier)
 		resourceIdMap[resourceId] = id
+		if arn != "" {
+			resourceIdMap[arn] = id
+		}
 	}
 
 	currentDate := time.Now().UTC()
