@@ -287,11 +287,17 @@ const OptimizeNewPage = () => {
   // Accounts state: id → { name, cloud_provider }
   const [accounts, setAccounts] = useState<Record<string, { name: string; cloud_provider: string }>>({});
 
-  // Summary state
+  // Summary state — split into two independent fetches so the summary cards
+  // (Total Recommendations, per-category counts) stay a static overview,
+  // unaffected by the category/search filters applied to the table below.
+  // Cards: all categories, no search — scoped only by account.
+  const [cardRows, setCardRows] = useState<any[]>([]);
+  const [cardsLoading, setCardsLoading] = useState(true);
+  // Severity chips + Top Issues: scoped by account, category and search —
+  // matches the table below exactly.
   const [summaryData, setSummaryData] = useState<SeveritySummaryData[]>([]);
   const [perSeverityRules, setPerSeverityRules] = useState<Record<string, { rule_name: string; count: number }[]>>({});
-  const [categoryCounts, setCategoryCounts] = useState<Record<string, { count: number; savings: number }>>({});
-  const [summaryLoading, setSummaryLoading] = useState(true);
+  const [severityLoading, setSeverityLoading] = useState(true);
 
   // Table state
   const [recommendations, setRecommendations] = useState<any[]>([]);
@@ -373,6 +379,7 @@ const OptimizeNewPage = () => {
     (newFilters: FilterState) => {
       setFilters(newFilters);
       setPage(0);
+      setTopIssuesActive(false);
       setActiveRuleName(null);
       updateUrl(newFilters);
     },
@@ -456,54 +463,97 @@ const OptimizeNewPage = () => {
     return { summaryItems, sevRules };
   }, []);
 
-  // Fetch severity summary — re-fetches when account or category filters change
+  // Fetch summary cards — re-fetches only when the account filter changes.
+  // Always requests ALL categories and no search term: the summary cards
+  // (Total Recommendations, per-category counts) must stay a static
+  // overview, unaffected by the category/search filters applied below.
   useEffect(() => {
     let cancelled = false;
-    setSummaryLoading(true);
+    setCardsLoading(true);
 
     const accountId = filters.account.length > 0 ? filters.account : '';
-    const activeCategories = filters.category.length > 0 ? filters.category : NON_SECURITY_CATEGORIES;
 
-    const fetchSummary = async () => {
+    const fetchCardRows = async () => {
       try {
         const allRows = await recommendationApi.getK8sRecommendationSummaryByRuleName({
           accountId,
-          category: activeCategories as any,
+          category: NON_SECURITY_CATEGORIES as any,
           status: DEFAULT_STATUS,
           severity: [...SEVERITY_ORDER],
         });
         if (cancelled) {
           return;
         }
-
-        const rows = Array.isArray(allRows) ? allRows : [];
-        const { summaryItems, sevRules } = processSummaryResults(rows);
-        setSummaryData(summaryItems);
-        setPerSeverityRules(sevRules);
-
-        // Derive category counts from the same response
-        const catData: Record<string, { count: number; savings: number }> = {};
-        for (const cat of WIDGET_CATEGORIES) {
-          const catRows = rows.filter((r: any) => r.category === cat);
-          catData[cat] = sumCategoryRows(catRows);
-        }
-        setCategoryCounts(catData);
+        setCardRows(Array.isArray(allRows) ? allRows : []);
       } catch {
         if (!cancelled) {
           snackbar.error('Failed to load recommendation summary. Try refreshing.');
         }
       } finally {
         if (!cancelled) {
-          setSummaryLoading(false);
+          setCardsLoading(false);
         }
       }
     };
 
-    fetchSummary();
+    fetchCardRows();
     return () => {
       cancelled = true;
     };
-  }, [processSummaryResults, filters.account, filters.category]);
+  }, [filters.account]);
+
+  // Per-category card counts: always derived from the full (unfiltered) rows above.
+  const categoryCounts = useMemo(() => {
+    const catData: Record<string, { count: number; savings: number }> = {};
+    for (const cat of WIDGET_CATEGORIES) {
+      const catRows = cardRows.filter((r: any) => r.category === cat);
+      catData[cat] = sumCategoryRows(catRows);
+    }
+    return catData;
+  }, [cardRows]);
+
+  // Fetch severity chips + Top Issues — scoped by account, category and
+  // search, matching the table below exactly. This is a separate fetch (not
+  // a client-side slice of cardRows) because the search term is applied
+  // server-side and cardRows above never carries it.
+  useEffect(() => {
+    let cancelled = false;
+    setSeverityLoading(true);
+
+    const accountId = filters.account.length > 0 ? filters.account : '';
+    const activeCategories = filters.category.length > 0 ? filters.category : NON_SECURITY_CATEGORIES;
+
+    const fetchSeverityRows = async () => {
+      try {
+        const rows = await recommendationApi.getK8sRecommendationSummaryByRuleName({
+          accountId,
+          category: activeCategories as any,
+          accountObjectId: filters.search || undefined,
+          status: DEFAULT_STATUS,
+          severity: [...SEVERITY_ORDER],
+        });
+        if (cancelled) {
+          return;
+        }
+        const { summaryItems, sevRules } = processSummaryResults(Array.isArray(rows) ? rows : []);
+        setSummaryData(summaryItems);
+        setPerSeverityRules(sevRules);
+      } catch {
+        if (!cancelled) {
+          snackbar.error('Failed to load recommendation summary. Try refreshing.');
+        }
+      } finally {
+        if (!cancelled) {
+          setSeverityLoading(false);
+        }
+      }
+    };
+
+    fetchSeverityRows();
+    return () => {
+      cancelled = true;
+    };
+  }, [filters.account, filters.category, filters.search, processSummaryResults]);
 
   // Fetch table data — used both by useEffect (with cancellation) and manual refresh calls
   const buildTableQuery = useCallback(() => {
@@ -650,10 +700,13 @@ const OptimizeNewPage = () => {
     [accounts]
   );
 
-  const totalCount = useMemo(() => summaryData.reduce((sum, s) => sum + s.count, 0), [summaryData]);
-  const totalSavings = useMemo(() => summaryData.reduce((sum, s) => sum + s.savings, 0), [summaryData]);
-  const criticalCount = useMemo(() => summaryData.find((s) => s.severity === 'Critical')?.count || 0, [summaryData]);
-  const highCount = useMemo(() => summaryData.find((s) => s.severity === 'High')?.count || 0, [summaryData]);
+  // Card totals: derived from cardRows (unfiltered by category/search) so the
+  // Total Recommendations card stays a static overview, same as the per-category cards above.
+  const cardSummaryData = useMemo(() => processSummaryResults(cardRows).summaryItems, [cardRows, processSummaryResults]);
+  const totalCount = useMemo(() => cardSummaryData.reduce((sum, s) => sum + s.count, 0), [cardSummaryData]);
+  const totalSavings = useMemo(() => cardSummaryData.reduce((sum, s) => sum + s.savings, 0), [cardSummaryData]);
+  const criticalCount = useMemo(() => cardSummaryData.find((s) => s.severity === 'Critical')?.count || 0, [cardSummaryData]);
+  const highCount = useMemo(() => cardSummaryData.find((s) => s.severity === 'High')?.count || 0, [cardSummaryData]);
 
   const hasActiveFilter = useMemo(
     () => filters.severity.length > 0 || filters.account.length > 0 || filters.category.length > 0 || filters.search.length > 0 || topIssuesActive,
@@ -695,6 +748,7 @@ const OptimizeNewPage = () => {
       const newFilters = {
         ...filters,
         category: category ? [category] : [],
+        severity: [],
       };
       handleFiltersChange(newFilters);
     },
@@ -1007,7 +1061,7 @@ const OptimizeNewPage = () => {
             label='Total Recommendations'
             info={{ tooltip: 'Total number of active optimization recommendations across all categories' }}
             value={
-              summaryLoading ? (
+              cardsLoading ? (
                 '…'
               ) : (
                 <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: ds.space[2] }}>
@@ -1056,7 +1110,7 @@ const OptimizeNewPage = () => {
                 label={WIDGET_CATEGORY_LABELS[cat]}
                 info={{ tooltip: WIDGET_CATEGORY_TOOLTIPS[cat] }}
                 value={
-                  summaryLoading ? (
+                  cardsLoading ? (
                     '…'
                   ) : (
                     <Box sx={{ display: 'inline-flex', alignItems: 'baseline', gap: ds.space[2] }}>
@@ -1082,7 +1136,7 @@ const OptimizeNewPage = () => {
             size='md'
             label='Total Savings'
             info={{ tooltip: 'Total estimated monthly savings if all recommendations are applied' }}
-            value={summaryLoading ? '…' : <CostCallout size='md' tone='high-savings' value={totalSavings} period='/ mo' />}
+            value={cardsLoading ? '…' : <CostCallout size='md' tone='high-savings' value={totalSavings} period='/ mo' />}
           />
         </WidgetCard>
       </Box>
@@ -1171,7 +1225,7 @@ const OptimizeNewPage = () => {
           >
             Severity
           </Typography>
-          {summaryLoading
+          {severityLoading
             ? [1, 2, 3, 4, 5].map((i) => <Skeleton key={i} shape='rect' width={88} height={20} />)
             : summaryData.map((item) => {
                 const isActive = (filters.severity.length === 1 ? filters.severity[0] : null) === item.severity;
@@ -1200,7 +1254,7 @@ const OptimizeNewPage = () => {
 
         {/* Top issues row — separate band so the eye reads severity first,
             then "of those, here are the top rule names". */}
-        {!summaryLoading && topIssueData.items.length > 0 && (
+        {!severityLoading && topIssueData.items.length > 0 && (
           <Box
             sx={{
               display: 'flex',
