@@ -772,6 +772,28 @@ func TestReAct3BuildScratchpad_FailureStillGetsFailureMarker(t *testing.T) {
 	assert.NotContains(t, scratchpad, "[SUCCESS-NO-OUTPUT]")
 }
 
+// TestReAct3EmptyResult_FooterExitCodeMatchesSuccessMarker: an empty-but-successful
+// result's footer must show exitStatus 0, matching the [SUCCESS-NO-OUTPUT] marker.
+func TestReAct3EmptyResult_FooterExitCodeMatchesSuccessMarker(t *testing.T) {
+	planner := &NBReActPlanner3{}
+	step := NBAgentPlannerToolActionStep{
+		Action: NBAgentPlannerToolAction{
+			Tool:      "github_execute",
+			ToolInput: `{"command":"gh run rerun 123 --repo org/repo"}`,
+			ToolID:    "github_execute-001",
+		},
+		Observation: plannerToolNoData,
+		Status:      ToolStatusEmptyResult,
+		Metadata:    &toolcore.NBToolResponseMetadata{ExitStatus: toolStatusToExitCode(ToolStatusEmptyResult)},
+	}
+
+	obs := planner.resolveObservation(step)
+	assert.Contains(t, obs, "[SUCCESS-NO-OUTPUT]")
+	assert.Contains(t, obs, "exit code 0")
+	assert.Contains(t, obs, "[exitStatus: 0 |")
+	assert.NotContains(t, obs, "[exitStatus: 2")
+}
+
 // TestReAct3BuildScratchpad_CompressionGatedByWindow verifies the core fix: with
 // many steps (>recentStepsFullContext) but a scratchpad well under the budget, NO
 // older observation is compressed; once the scratchpad exceeds the budget, older

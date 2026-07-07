@@ -1045,7 +1045,7 @@ func TestToolStatusToExitCode(t *testing.T) {
 	}{
 		{"success", ToolStatusSuccess, 0},
 		{"failure", ToolStatusFailure, 1},
-		{"empty result", ToolStatusEmptyResult, 2},
+		{"empty result is success, not error", ToolStatusEmptyResult, 0},
 		{"unknown defaults to success", ToolStatus("weird"), 0},
 	}
 	for _, tc := range cases {
@@ -1058,9 +1058,8 @@ func TestToolStatusToExitCode(t *testing.T) {
 // TestIsNoMatchEnvelope pins the classifier's recognition of the
 // `"no_matches":true` JSON envelope that shell_execute / kubectl_execute
 // / helm_execute emit via successResponseNoMatches. Without this, those
-// tools' non-empty Data falls through to ToolStatusSuccess (ExitStatus=0)
-// even though semantically they ran successfully with no matches — the
-// "exit status 2" signal the footer is supposed to expose.
+// tools' non-empty Data falls through to ToolStatusSuccess instead of
+// ToolStatusEmptyResult, losing the empty-result classification.
 func TestIsNoMatchEnvelope(t *testing.T) {
 	cases := []struct {
 		name string
@@ -1094,13 +1093,9 @@ func TestIsNoMatchEnvelope(t *testing.T) {
 	}
 }
 
-// TestClassifierExitStatus2_FiresForNoMatchEnvelope is the integration-
-// shaped test that pins the EXACT problem from the PR #32253 follow-up
-// discussion: shell_execute's no-match envelope was being classified as
-// ExitStatus=0 instead of 2 because the classifier's "empty Data"
-// heuristic was too narrow. This test asserts the alignment is now
-// correct by walking the classifier's branch logic directly.
-func TestClassifierExitStatus2_FiresForNoMatchEnvelope(t *testing.T) {
+// TestClassifierEmptyResult_FiresForNoMatchEnvelope pins that a no-match envelope
+// classifies as ToolStatusEmptyResult, not Success (PR #32253 follow-up).
+func TestClassifierEmptyResult_FiresForNoMatchEnvelope(t *testing.T) {
 	cases := []struct {
 		name           string
 		status         toolcore.NBToolResponseStatus
@@ -1147,8 +1142,6 @@ func exitCodeFor(s ToolStatus) int {
 	switch s {
 	case ToolStatusFailure:
 		return 1
-	case ToolStatusEmptyResult:
-		return 2
 	default:
 		return 0
 	}
@@ -1163,7 +1156,7 @@ func TestFormatToolMetadataFooter(t *testing.T) {
 		{"nil metadata renders nothing", nil, ""},
 		{"success", &toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: 123}, "\n[exitStatus: 0 | executionDuration: 123ms]"},
 		{"failure", &toolcore.NBToolResponseMetadata{ExitStatus: 1, ExecutionDurationMs: 45}, "\n[exitStatus: 1 | executionDuration: 45ms]"},
-		{"empty result", &toolcore.NBToolResponseMetadata{ExitStatus: 2, ExecutionDurationMs: 8}, "\n[exitStatus: 2 | executionDuration: 8ms]"},
+		{"formatter renders arbitrary exit code faithfully", &toolcore.NBToolResponseMetadata{ExitStatus: 2, ExecutionDurationMs: 8}, "\n[exitStatus: 2 | executionDuration: 8ms]"},
 		{"negative duration clamps to 0", &toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: -1}, "\n[exitStatus: 0 | executionDuration: 0ms]"},
 		{"multi-second renders as ms", &toolcore.NBToolResponseMetadata{ExitStatus: 0, ExecutionDurationMs: 3200}, "\n[exitStatus: 0 | executionDuration: 3200ms]"},
 	}

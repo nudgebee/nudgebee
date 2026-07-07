@@ -1559,16 +1559,12 @@ func (e *plannerExecutor) doIterationParallel(
 	return newStepsThisIteration, nil, nil
 }
 
-// toolStatusToExitCode maps the internal tool status to the integer the
-// planner sees in the footer: 0 success, 1 failure, 2 empty-but-successful.
-// Not a literal shell exit code — it's a uniform POSIX-shaped signal so
-// planner heuristics can distinguish "no match" from "actually failed".
+// toolStatusToExitCode maps tool status to the footer integer: 1 failure, else 0
+// (an empty-but-successful result is a success → 0).
 func toolStatusToExitCode(status ToolStatus) int {
 	switch status {
 	case ToolStatusFailure:
 		return 1
-	case ToolStatusEmptyResult:
-		return 2
 	default:
 		return 0
 	}
@@ -1582,9 +1578,8 @@ func toolStatusToExitCode(status ToolStatus) int {
 // shell_execute / kubectl_execute / helm_execute via
 // successResponseNoMatches; potentially others later) carry the
 // semantic in their Data — but Data is non-empty, so without this
-// recognition the classifier defaults to ToolStatusSuccess (ExitStatus=0)
-// instead of ToolStatusEmptyResult (ExitStatus=2), losing the
-// "empty-but-successful" signal the footer is supposed to expose.
+// recognition the classifier defaults to ToolStatusSuccess instead of
+// ToolStatusEmptyResult, losing the empty-result signal the footer exposes.
 //
 // Substring-match deliberately — anchoring to start-of-string would
 // miss envelopes that put `"stdout":""` first (Go's encoding/json

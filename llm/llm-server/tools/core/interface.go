@@ -82,10 +82,8 @@ type NBToolResponse struct {
 // fields land here without an interface change or DB migration (persisted as
 // one JSONB column on llm_conversation_tool_calls).
 type NBToolResponseMetadata struct {
-	// ExitStatus mirrors POSIX-style intent: 0 success, 1 failure, 2
-	// empty-but-successful (e.g. grep with no match). Not a literal shell
-	// exit code — it's derived from NBToolResponseStatus + empty-data check
-	// in the executor.
+	// ExitStatus mirrors POSIX intent: 1 failure, else 0 (empty-but-successful
+	// counts as success). Derived from NBToolResponseStatus in the executor.
 	ExitStatus int `json:"exit_status"`
 	// ExecutionDurationMs is wall-clock duration of the tool call in
 	// milliseconds. Clamped to 0 on negative input.
