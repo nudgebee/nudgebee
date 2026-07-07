@@ -1037,6 +1037,27 @@ func TestTruncateToolResponse(t *testing.T) {
 	})
 }
 
+func TestIsToolConfirmationApproved(t *testing.T) {
+	cases := []struct {
+		name          string
+		confirmations map[string]string
+		tool          string
+		want          bool
+	}{
+		{"yes", map[string]string{"github_execute": "yes"}, "github_execute", true},
+		{"ok with surrounding space and caps", map[string]string{"t": " OK "}, "t", true},
+		{"true", map[string]string{"t": "true"}, "t", true},
+		{"no", map[string]string{"github_execute": "no"}, "github_execute", false},
+		{"absent key", map[string]string{}, "github_execute", false},
+		{"nil map", nil, "github_execute", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isToolConfirmationApproved(tc.confirmations, tc.tool))
+		})
+	}
+}
+
 func TestToolStatusToExitCode(t *testing.T) {
 	cases := []struct {
 		name   string

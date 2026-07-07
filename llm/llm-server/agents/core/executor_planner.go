@@ -2573,6 +2573,16 @@ func isToolConfigResolved(toolConfigs map[string]string, toolName string) bool {
 	return false
 }
 
+// isToolConfirmationApproved reports whether a write-confirmation for toolName was
+// answered affirmatively (ok/yes/true), mirroring the doAction gate; "no" returns false.
+func isToolConfirmationApproved(confirmations map[string]string, toolName string) bool {
+	v, ok := confirmations[toolName]
+	if !ok {
+		return false
+	}
+	return slices.Contains([]string{"ok", "yes", "true"}, strings.ToLower(strings.TrimSpace(v)))
+}
+
 // isChildAgentCompleted returns true iff the parent's tool_call row for
 // (conversationId, parentAgentId, toolId) has a child_agent_id whose own
 // llm_conversation_agent row has terminated (SUCCESS or FAILED). A FAILED
@@ -3344,11 +3354,12 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 					executor.steps = append(executor.steps, step)
 					executor.stepKeys[action.ToolID] = true
 					ctx.GetLogger().Info("plannerexecutor: recovered tool result from DB", "toolId", toolId)
-				} else if errors.Is(err, sql.ErrNoRows) && !isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool) {
-					// No row found in DB for this tool AND no config was resolved. This means the tool
-					// was waiting for a config selection that never arrived, or the config was not
-					// propagated into QueryConfig. Proceeding would execute the tool with empty/wrong
-					// credentials and silently produce "No Data". Fail fast with a clear error instead.
+				} else if errors.Is(err, sql.ErrNoRows) && !isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool) && !isToolConfirmationApproved(executor.agentRequest.QueryConfig.ToolConfirmations, action.Tool) {
+					// No row found in DB for this tool AND neither a config nor a write-confirmation
+					// was resolved. This means the tool was waiting for a config selection that never
+					// arrived. A confirmation-gated tool whose confirmation was just approved is NOT
+					// this case — it re-executes in the branch below. Proceeding here would run with
+					// empty/wrong credentials and silently produce "No Data". Fail fast instead.
 					// Note: only the "no row" case is treated as a config failure; transient DB errors
 					// fall through to the next branch so they remain retriable.
 					ctx.GetLogger().Error("plannerexecutor: no tool record found in DB and config not resolved, failing fast to avoid running with wrong credentials",
@@ -3397,7 +3408,7 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 					}
 					ctx.GetLogger().Info("plannerexecutor: using completed child agent response for WAITING parent tool_call",
 						"toolId", toolId, "tool", action.Tool, "childStatus", childOut.status)
-				} else if request.Query != "" && (strings.EqualFold(string(status), string(toolcore.NBToolResponseStatusWaiting)) || (errors.Is(err, sql.ErrNoRows) && isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool))) {
+				} else if request.Query != "" && (strings.EqualFold(string(status), string(toolcore.NBToolResponseStatusWaiting)) || (errors.Is(err, sql.ErrNoRows) && (isToolConfigResolved(executor.agentRequest.QueryConfig.ToolConfigs, action.Tool) || isToolConfirmationApproved(executor.agentRequest.QueryConfig.ToolConfirmations, action.Tool)))) {
 					// [Changed for TicketV2] Tool is still waiting — execute it IMMEDIATELY so the planner starts with the result.
 					// Previously, the user's response always replaced tool input. But for tool_config followups
 					// (e.g., user selecting a Jira integration), the user's response is the config choice, not
@@ -3413,9 +3424,11 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 					// we ensure doAction runs again with the newly resolved config — triggering the next
 					// config step (e.g., project selection after integration selection).
 					isConfigResolved := isToolConfigResolved(request.QueryConfig.ToolConfigs, action.Tool)
-					if isConfigResolved {
-						ctx.GetLogger().Info("plannerexecutor: resuming tool after config selection, keeping original input",
-							"tool", action.Tool, "toolId", toolId, "isConfigResolved", true, "dbLookupFailed", err != nil)
+					isConfirmationApproved := isToolConfirmationApproved(executor.agentRequest.QueryConfig.ToolConfirmations, action.Tool)
+					if isConfigResolved || isConfirmationApproved {
+						// The user's answer was a config/confirmation choice, not the tool input — keep the original command.
+						ctx.GetLogger().Info("plannerexecutor: resuming tool after config/confirmation, keeping original input",
+							"tool", action.Tool, "toolId", toolId, "isConfigResolved", isConfigResolved, "isConfirmationApproved", isConfirmationApproved, "dbLookupFailed", err != nil)
 					} else {
 						ctx.GetLogger().Info("plannerexecutor: immediately resuming waiting tool",
 							"tool", action.Tool, "toolId", toolId, "newInput", request.Query)
