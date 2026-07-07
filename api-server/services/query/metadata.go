@@ -615,6 +615,7 @@ var fingerprintDependentColumns = map[string]bool{
 	"is_new_issue":              true,
 	"count_new_issues":          true,
 	"count_recurring_issues":    true,
+	"count_new_issue_events":    true,
 }
 
 // Columns that depend on the event_log_analysis JOIN
@@ -1372,6 +1373,14 @@ var table_metadata = map[string]TableDefinition{
 			"count_new_issues": {
 				Type:         ColumnDefinitionTypeInt,
 				Def:          "count(DISTINCT CASE WHEN ed.absolute_first_seen_at > NOW() - INTERVAL '7 days' THEN events.fingerprint END)",
+				IsAggregated: true,
+			},
+			// Raw (non-deduplicated) event count for the same "new issue" predicate as
+			// count_new_issues/is_new_issue — matches what events_v2's is_new_issue filter
+			// counts in the Events table, so the UI can show both numbers together.
+			"count_new_issue_events": {
+				Type:         ColumnDefinitionTypeInt,
+				Def:          "count(CASE WHEN ed.absolute_first_seen_at > NOW() - INTERVAL '7 days' THEN 1 END)",
 				IsAggregated: true,
 			},
 			"count_recurring_issues": {

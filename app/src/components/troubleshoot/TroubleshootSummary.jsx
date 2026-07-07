@@ -145,6 +145,7 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
     newIssues: 0,
     newIssuesPrev: 0,
     newIssuesDiff: 0,
+    newIssueEvents: 0,
     highSev: 0,
     highSevPrev: 0,
     highSevDiff: 0,
@@ -185,6 +186,7 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
           const previous = prev.event_count || 0;
           const newIssues = cur.count_new_issues || 0;
           const newIssuesPrev = prev.count_new_issues || 0;
+          const newIssueEvents = cur.count_new_issue_events || 0;
           const highSev = cur.count_priority_high || 0;
           const highSevPrev = prev.count_priority_high || 0;
           const attention = res?.data?.data?.current_attention?.rows?.[0]?.event_count || 0;
@@ -201,6 +203,7 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
             newIssues,
             newIssuesPrev,
             newIssuesDiff: pct(newIssues, newIssuesPrev),
+            newIssueEvents,
             highSev,
             highSevPrev,
             highSevDiff: pct(highSev, highSevPrev),
@@ -531,8 +534,7 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
           sx={clickable ? { cursor: 'inherit' } : undefined}
           label='New Issues'
           info={{
-            tooltip:
-              'Distinct issues first seen in the last 7 days that occurred in the last 24 hours, across every status — net-new problems as opposed to recurring noise. The percentage compares against the previous 24-hour period.',
+            tooltip: `Distinct issues first seen in the last 7 days that occurred in the last 24 hours, across every status — net-new problems as opposed to recurring noise. The percentage compares against the previous 24-hour period. Clicking through lists every matching event below (${ev.newIssueEvents.toLocaleString()} events), so the table row count is usually higher than this distinct-issue total.`,
             position: 'right',
           }}
           value={
