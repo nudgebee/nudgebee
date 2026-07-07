@@ -502,6 +502,7 @@ func TestCreateNodeFromResourceProjectID(t *testing.T) {
 	node2 := source.createNodeFromResource(fallback, req)
 	if node2 == nil {
 		t.Fatal("expected a node, got nil")
+		return
 	}
 	if node2.Properties["gcp_project_id"] != "myproj" {
 		t.Errorf("fallback gcp_project_id = %v, want myproj", node2.Properties["gcp_project_id"])
