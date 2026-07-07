@@ -164,6 +164,12 @@ export function TourProvider({ children }: { children: React.ReactNode }): React
 
     const renderStep = (i: number, el: HTMLElement, step: TourStepDef): void => {
       const isLast = i === steps.length - 1;
+      // Bring the target into view before highlighting. driver.js scrolls too,
+      // but its window-based check misses elements clipped inside a scrollable
+      // modal body (e.g. a button below a long form); scrollIntoView walks every
+      // scrollable ancestor. 'nearest' is a no-op for already-visible elements,
+      // so page-level anchors (sidebar, header) don't scroll unexpectedly.
+      el.scrollIntoView({ block: 'nearest' });
       d.highlight({
         element: el,
         popover: {

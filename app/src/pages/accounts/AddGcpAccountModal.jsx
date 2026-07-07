@@ -17,9 +17,11 @@ import { Chip } from '@ui/Chip';
 import { Checkbox } from '@ui/Checkbox';
 import { Input } from '@ui/Input';
 import { ContentCopy, CheckCircleOutline, Check, HelpOutline, ExpandMore, ExpandLess, InfoOutlined, Search, ErrorOutline } from '@mui/icons-material';
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import apiAccount from '@api1/account';
 import apiIntegrations from '@api1/integrations';
+import { Banner } from '@ui/Banner';
+import { useTour } from '@components/common/tour';
 // TODO: Re-enable after Pub/Sub testing
 // import apiKubernetes1 from '@api1/kubernetes1';
 import { Modal } from '@ui/Modal';
@@ -181,6 +183,25 @@ const AddGcpAccountModal = ({ open, onClose }) => {
     clearForm();
     onClose(wasSuccessful);
   };
+
+  // The connect-gcp guided tour drives this modal to preview the Projects and
+  // Billing steps without real data (see the Next buttons + banner below).
+  // isActive is false outside any tour, so normal onboarding is unaffected.
+  const { isActive, activeTourId } = useTour();
+  const isTourDemo = isActive && activeTourId === 'connect-gcp';
+
+  // Close the whole modal when the guide ends — whether it finished or was
+  // closed part-way — since the user was following the tour, not filling the
+  // form in for real. Fires only after the tour was actually active.
+  const wasTourDemoRef = useRef(false);
+  useEffect(() => {
+    if (wasTourDemoRef.current && !isTourDemo && open) {
+      handleCloseModal(false);
+    }
+    wasTourDemoRef.current = isTourDemo;
+    // handleCloseModal is stable enough for this one-shot cleanup.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTourDemo, open]);
 
   // ──── Step 1 Handlers ────
 
@@ -492,6 +513,14 @@ const AddGcpAccountModal = ({ open, onClose }) => {
         ))}
       </Stepper>
 
+      {isTourDemo && step > 0 && (
+        <Banner
+          tone='info'
+          title='Guided tour preview'
+          message='This is a demo of the Projects and Billing steps — no account is created and the data here isn’t real. Close this window when you’re done exploring.'
+        />
+      )}
+
       {/* ──── Step 1: Service Account ──── */}
       {step === 0 && (
         <>
@@ -579,7 +608,7 @@ const AddGcpAccountModal = ({ open, onClose }) => {
             >
               Check Permissions
             </Button>
-            <Button size='md' tone='primary' id='next-step1' disabled={!canProceedStep1} onClick={() => setStep(1)}>
+            <Button size='md' tone='primary' id='next-step1' disabled={!isTourDemo && !canProceedStep1} onClick={() => setStep(1)}>
               Next
             </Button>
           </Box>
@@ -730,7 +759,7 @@ const AddGcpAccountModal = ({ open, onClose }) => {
             <Button id='back-step2' size='md' tone='secondary' onClick={() => setStep(0)}>
               Back
             </Button>
-            <Button size='md' tone='primary' id='next-step2' disabled={!canProceedStep2} onClick={() => setStep(2)}>
+            <Button size='md' tone='primary' id='next-step2' disabled={!isTourDemo && !canProceedStep2} onClick={() => setStep(2)}>
               Next
             </Button>
           </Box>

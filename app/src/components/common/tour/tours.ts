@@ -74,6 +74,13 @@ export interface TourDef {
    * it. Omit to offer the guide to everyone. See `canAccessTour`.
    */
   requires?: TourCapability;
+  /**
+   * Tenant feature flag (a `feature_id`) this guide needs. When set, the guide
+   * is hidden unless the flag is enabled — e.g. the Knowledge Graph guide, whose
+   * whole surface only exists behind its feature flag. Resolved via the cached
+   * feature flags (`hasFeatureAccessCached`); see `canAccessTour`.
+   */
+  requiresFeature?: string;
 }
 
 /**
@@ -161,17 +168,23 @@ const createUserTour: TourDef = {
  *   #k8sName             → K8sAccountModal account-name input
  *   #account-env         → K8sAccountModal environment toggle (prod/non-prod)
  *   #k8s-prerequisites   → K8sAccountModal prerequisites panel
- *   #create-k8s-acc      → K8sAccountModal "Next" button
+ *   #create-k8s-acc          → K8sAccountModal "Next" button
+ *   #learn-how-to-install-btn→ header "Learn How to Install" link (both steps)
+ *   #included-components     → step-2 component checkbox grid
+ *   #advanced-toggle         → step-2 "Advanced" expander (opened to reveal fields)
+ *   #adv-fields-panel        → step-2 Prometheus URL + Image Registry inputs
+ *   #panel-shell             → K8sAccountModal step-2 install-command panel
+ *   #tab-helm                → step-2 "Helm" install-method tab (Tabs id=`tab-<value>`)
  *
- * The tour deliberately stops at "Next" rather than clicking it: that button
- * creates the account (an async, real side-effect) and reveals the install
- * step. We point at it and let the user decide — same as create-user stopping
- * at the submit button.
+ * Clicking "Next" normally creates a real account. To demo the whole flow
+ * without that side-effect, K8sAccountModal detects this tour (`useTour()`) and
+ * previews the install step with a sample key instead — so the tour can walk
+ * the user all the way to the copy-paste command. Nothing is created.
  */
 const connectClusterTour: TourDef = {
   id: 'connect-cluster',
-  title: 'Connect a cluster',
-  module: 'Clusters',
+  title: 'Connect a K8s Cluster',
+  module: 'Accounts',
   description: 'Add a Kubernetes cluster and install the Nudgebee agent.',
   route: '/accounts/account-form?cloudProvider=K8S',
   // Same as create-user: the "Add K8s Account" button is gated on hasWriteAccess().
@@ -179,7 +192,7 @@ const connectClusterTour: TourDef = {
   steps: [
     {
       element: '#add-k8s-account',
-      title: 'Connect a cluster',
+      title: 'Connect a K8s cluster',
       description: 'Start here. Click Next and we’ll open the setup form for you.',
       side: 'bottom',
       align: 'end',
@@ -212,11 +225,68 @@ const connectClusterTour: TourDef = {
     },
     {
       element: '#create-k8s-acc',
-      title: 'Create & get the install command',
-      description:
-        'Click “Next” to create the account. You’ll get a copy-paste command to run against your cluster, and the agent connects shortly after.',
+      title: 'Get your install command',
+      description: 'Click Next and we’ll show you the command you’d run. This is a preview — no cluster is created.',
       side: 'top',
       align: 'end',
+      // Advance the modal to the install step. K8sAccountModal sees this tour is
+      // active and previews step 2 with a sample key instead of creating an account.
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#create-k8s-acc')?.click();
+      },
+    },
+    {
+      element: '#learn-how-to-install-btn',
+      title: 'Finish Setup',
+      description: 'This is where you get everything to install the agent. Prefer to watch? “Learn How to Install” walks through it end to end.',
+      side: 'bottom',
+      align: 'end',
+    },
+    {
+      element: '#included-components',
+      title: 'Choose what to install',
+      description:
+        'Every component ships by default — tick a box to DISABLE one you don’t need (skip OpenCost, the Node Agent, and so on). The install command updates automatically.',
+      side: 'top',
+      align: 'center',
+    },
+    {
+      element: '#advanced-toggle',
+      title: 'Advanced options',
+      description: 'Running your own Prometheus, a private image registry, or an air-gapped cluster? Open Advanced to set those.',
+      side: 'top',
+      align: 'start',
+      // Expand the Advanced panel so the next step's fields are on screen.
+      onBeforeNext: () => {
+        const adv = document.querySelector<HTMLElement>('#advanced-toggle');
+        if (adv?.getAttribute('aria-expanded') !== 'true') {
+          adv?.click();
+        }
+      },
+    },
+    {
+      element: '#adv-fields-panel',
+      title: 'Existing Prometheus & registry',
+      description:
+        'Point the agent at an existing Prometheus URL (required for OpenCost if you disable the built-in stack), or override the image registry for air-gapped and on-prem installs.',
+      side: 'top',
+      align: 'start',
+    },
+    {
+      element: '#panel-shell',
+      title: 'Run this on your cluster',
+      description:
+        'The Shell Script (recommended) auto-discovers existing Prometheus and Loki and installs anything missing — copy it and run it on any machine with kubectl access. The key here is a sample; your real one appears after you create the account.',
+      side: 'top',
+      align: 'center',
+    },
+    {
+      element: '#tab-helm',
+      title: 'Prefer Helm?',
+      description:
+        'Switch to the Helm tab for the equivalent `helm upgrade --install` command with the same options — handy if you manage the agent through your own Helm workflow. Close this window when you’re done exploring.',
+      side: 'bottom',
+      align: 'start',
     },
   ],
 };
@@ -423,6 +493,9 @@ const knowledgeGraphTour: TourDef = {
   module: 'Troubleshoot',
   description: 'Read your live service map — nodes, dependencies, filters, and search.',
   route: '/troubleshoot',
+  // KG is behind a tenant feature flag; hide the guide when it's off (the tab it
+  // drives isn't rendered, so the tour would otherwise dead-end on step 1).
+  requiresFeature: 'TRACES_SERVICE_MAP_KNOWLEDGE_GRAPH',
   steps: [
     {
       element: '[id="anchor-tab-Knowledge Graph"]',
@@ -479,9 +552,313 @@ const knowledgeGraphTour: TourDef = {
   ],
 };
 
+/**
+ * "Connect an AWS account" walkthrough. AWS offers three methods via tabs, so
+ * this tour walks the shared fields, the recommended CloudFormation path, then
+ * clicks into the IAM Role ARN and Access Keys tabs to show their fields. It
+ * never clicks "Connect via AWS Console" (navigates to AWS) or the final connect
+ * button (real action) — those are pointed at for the user to take. Anchors
+ * (all already present in the product):
+ *   #add-aws-account-btn     → CloudAccountTile "Add AWS Account" button
+ *   #account-name            → "Display Name" input
+ *   #aws-access-mode         → Access Mode (Standard / Read-Only) radios
+ *   #connect-aws-console-btn → CloudFormation "Connect via AWS Console" button
+ *   #aws-tab-role-arn / #aws-tab-access-keys → the two manual method tabs
+ *   #aws-role-arn / #aws-external-id          → IAM Role ARN tab fields
+ *   #aws-access-key-id / #aws-secret-access-key / #aws-region → Access Keys fields
+ *   #aws-connect-btn         → validate & connect (pointed at, not clicked)
+ */
+const connectAwsTour: TourDef = {
+  id: 'connect-aws',
+  title: 'Connect an AWS account',
+  module: 'Accounts',
+  description: 'Add an AWS account via 1-click CloudFormation, an IAM role, or access keys.',
+  route: '/accounts/account-form?cloudProvider=AWS',
+  requires: 'write',
+  steps: [
+    {
+      element: '#add-aws-account-btn',
+      title: 'Add an AWS account',
+      description: 'Start here. Click Next and we’ll open the AWS connection form.',
+      side: 'bottom',
+      align: 'center',
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#add-aws-account-btn')?.click();
+      },
+    },
+    {
+      element: '#account-name',
+      title: 'Name this account',
+      description: 'A display name to identify this AWS account in Nudgebee.',
+      side: 'bottom',
+      align: 'start',
+    },
+    {
+      element: '#aws-access-mode',
+      title: 'Access mode',
+      description:
+        'Standard grants the permissions Nudgebee needs to act (create CloudWatch alarms, track events, run remediations). Read-Only limits it to reading — those active features become unavailable.',
+      side: 'bottom',
+      align: 'start',
+    },
+    {
+      element: '#connect-aws-console-btn',
+      title: '1-click CloudFormation (recommended)',
+      description:
+        'The easiest path: this launches a pre-filled CloudFormation stack in the AWS console. Create the stack and Nudgebee auto-detects the account when it finishes — no keys to copy. Or use the tabs above to connect manually.',
+      side: 'top',
+      align: 'start',
+    },
+    {
+      element: '#aws-tab-role-arn',
+      title: 'Method 2 — IAM Role ARN',
+      description: 'Prefer a cross-account IAM role? Click Next to open this tab and we’ll show its fields.',
+      side: 'bottom',
+      align: 'center',
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#aws-tab-role-arn')?.click();
+      },
+    },
+    {
+      element: '#aws-role-arn',
+      title: 'IAM Role ARN',
+      description: 'The ARN of the cross-account role Nudgebee assumes to read your account, e.g. arn:aws:iam::123456789012:role/NudgebeeRole.',
+      side: 'bottom',
+      align: 'start',
+    },
+    {
+      element: '#aws-external-id',
+      title: 'External ID',
+      description: 'Optional. Fill this in only if the role’s trust policy requires an External ID; otherwise leave it blank.',
+      side: 'bottom',
+      align: 'start',
+    },
+    {
+      element: '#aws-tab-access-keys',
+      title: 'Method 3 — Access Keys',
+      description: 'No role available? Click Next to open the Access Keys tab and connect with an IAM user’s keys instead.',
+      side: 'bottom',
+      align: 'center',
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#aws-tab-access-keys')?.click();
+      },
+    },
+    {
+      element: '#aws-access-key-id',
+      title: 'Access Key ID',
+      description: 'The public ID of the IAM user’s key pair (starts with AKIA).',
+      side: 'bottom',
+      align: 'start',
+    },
+    {
+      element: '#aws-secret-access-key',
+      title: 'Secret Access Key',
+      description: 'The secret half of the key pair. Nudgebee stores it encrypted at rest.',
+      side: 'bottom',
+      align: 'start',
+    },
+    {
+      element: '#aws-region',
+      title: 'AWS Region',
+      description: 'Region used to bootstrap the AWS SDK (defaults to us-east-1). Cost & Usage Report discovery always runs in us-east-1.',
+      side: 'top',
+      align: 'start',
+    },
+    {
+      element: '#aws-connect-btn',
+      title: 'Validate & connect',
+      description:
+        'Validate first to catch permission gaps (STS, Cost & Usage Report, S3 access), then click Connect yourself to create the account and start collecting data.',
+      side: 'top',
+      align: 'end',
+    },
+  ],
+};
+
+/**
+ * "Connect a GCP account" walkthrough. Like connect-cluster, this previews the
+ * later steps without real data: AddGcpAccountModal detects this tour and lets
+ * the stepper advance (Service Account → Projects → Billing) without filling the
+ * form or calling the discovery API, then closes itself when the guide ends.
+ * Anchors (all already present in the product):
+ *   #add-gcp-account-btn   → CloudAccountTile "Add GCP Account" button
+ *   #account-name          → "Display Name" input
+ *   #service-account-key   → service-account JSON textarea
+ *   #check-permissions-btn → optional permission pre-check
+ *   #next-step1 / #next-step2 → stepper Next buttons (clicked to preview)
+ *   #discover-projects-btn → Projects step
+ *   #billing-project-id    → Billing step
+ */
+const connectGcpTour: TourDef = {
+  id: 'connect-gcp',
+  title: 'Connect a GCP account',
+  module: 'Accounts',
+  description: 'Add a Google Cloud account with a service-account key.',
+  route: '/accounts/account-form?cloudProvider=GCP',
+  requires: 'write',
+  steps: [
+    {
+      element: '#add-gcp-account-btn',
+      title: 'Add a GCP account',
+      description: 'Start here. Click Next and we’ll open the GCP connection form.',
+      side: 'bottom',
+      align: 'center',
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#add-gcp-account-btn')?.click();
+      },
+    },
+    {
+      element: '#account-name',
+      title: 'Name this account',
+      description: 'A display name to identify this Google Cloud account in Nudgebee.',
+      side: 'bottom',
+      align: 'start',
+    },
+    {
+      element: '#service-account-key',
+      title: 'Paste your service-account key',
+      description: 'Paste the full JSON key for your GCP service account — Nudgebee uses it to read your projects’ resources.',
+      side: 'top',
+      align: 'start',
+    },
+    {
+      element: '#check-permissions-btn',
+      title: 'Check permissions',
+      description: 'Optional. Verify the service account has the IAM permissions Nudgebee needs before you continue.',
+      side: 'top',
+      align: 'center',
+      optional: true,
+    },
+    {
+      element: '#next-step1',
+      title: 'On to projects',
+      description: 'Click Next — we’ll open the Projects step. In a real setup Nudgebee discovers the projects this key can access.',
+      side: 'top',
+      align: 'end',
+      // Preview: the modal advances the stepper without creating anything.
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#next-step1')?.click();
+      },
+    },
+    {
+      element: '#discover-projects-btn',
+      title: 'Pick your projects',
+      description:
+        'This is where you choose which projects to monitor — auto-discover them from the service account, or switch to Manual Entry to type project IDs. Click Next to continue to Billing.',
+      side: 'bottom',
+      align: 'start',
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#next-step2')?.click();
+      },
+    },
+    {
+      element: '#billing-project-id',
+      title: 'Billing export',
+      description:
+        'Finally, point Nudgebee at your BigQuery billing export — project, dataset, and table — so it can pull GCP cost data. That’s the whole flow; close this window when you’re done exploring.',
+      side: 'bottom',
+      align: 'start',
+    },
+  ],
+};
+
+/**
+ * "Connect an Azure account" walkthrough. Like connect-cluster, this previews the
+ * later steps without real data: AddAzureAccountModal detects this tour and lets
+ * the stepper advance (Credentials → Subscriptions → Review) without validating
+ * credentials or listing subscriptions, then closes itself when the guide ends.
+ * Anchors (all already present in the product):
+ *   #add-azure-account-btn → CloudAccountTile "Add Azure Account" button
+ *   #account-name          → "Display Name" input
+ *   #tenant-id / #client-id / #client-secret → service-principal credentials
+ *   #next-to-subscriptions / #next-to-review → stepper Next buttons (clicked to preview)
+ *   #discover-subscriptions → Subscriptions step
+ *   #onboard-subscriptions  → Review step (pointed at, not clicked)
+ */
+const connectAzureTour: TourDef = {
+  id: 'connect-azure',
+  title: 'Connect an Azure account',
+  module: 'Accounts',
+  description: 'Add an Azure account with a service-principal (tenant / client / secret).',
+  route: '/accounts/account-form?cloudProvider=Azure',
+  requires: 'write',
+  steps: [
+    {
+      element: '#add-azure-account-btn',
+      title: 'Add an Azure account',
+      description: 'Start here. Click Next and we’ll open the Azure connection form.',
+      side: 'bottom',
+      align: 'center',
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#add-azure-account-btn')?.click();
+      },
+    },
+    {
+      element: '#account-name',
+      title: 'Name this account',
+      description: 'A display name to identify this Azure account in Nudgebee.',
+      side: 'right',
+      align: 'start',
+    },
+    {
+      element: '#tenant-id',
+      title: 'Directory (tenant) ID',
+      description: 'Your Azure tenant’s ID — find it in the Azure portal under Microsoft Entra ID > Overview.',
+      side: 'right',
+      align: 'start',
+    },
+    {
+      element: '#client-id',
+      title: 'Application (client) ID',
+      description: 'The client ID of the service principal Nudgebee uses — App registrations > your app > Overview.',
+      side: 'right',
+      align: 'start',
+    },
+    {
+      element: '#client-secret',
+      title: 'Client secret',
+      description: 'The secret for that app registration (Certificates & secrets). Use the eye icon to check what you paste.',
+      side: 'right',
+      align: 'start',
+    },
+    {
+      element: '#next-to-subscriptions',
+      title: 'On to subscriptions',
+      description: 'Click Next — we’ll open the Subscriptions step. In a real setup Nudgebee lists the subscriptions these credentials can read.',
+      side: 'top',
+      align: 'end',
+      // Preview: the modal advances the stepper without creating anything.
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#next-to-subscriptions')?.click();
+      },
+    },
+    {
+      element: '#discover-subscriptions',
+      title: 'Pick your subscriptions',
+      description: 'Discover the subscriptions your service principal can access and tick the ones to onboard. Click Next to review.',
+      side: 'bottom',
+      align: 'start',
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#next-to-review')?.click();
+      },
+    },
+    {
+      element: '#onboard-subscriptions',
+      title: 'Review & onboard',
+      description:
+        'A final summary of what will be onboarded. Click Onboard yourself to create the account(s). That’s the whole flow — close this window when you’re done exploring.',
+      side: 'top',
+      align: 'end',
+    },
+  ],
+};
+
 export const TOURS: Record<string, TourDef> = {
   [createUserTour.id]: createUserTour,
   [connectClusterTour.id]: connectClusterTour,
+  [connectAwsTour.id]: connectAwsTour,
+  [connectGcpTour.id]: connectGcpTour,
+  [connectAzureTour.id]: connectAzureTour,
   [appOverviewTour.id]: appOverviewTour,
   [troubleshootTour.id]: troubleshootTour,
   [knowledgeGraphTour.id]: knowledgeGraphTour,

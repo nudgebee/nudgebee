@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import PropTypes from 'prop-types';
 import { Box, Typography } from '@mui/material';
 import { Modal } from '@ui/Modal';
 import SearchInput from '@ui/SearchInput';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { HelpOutlineDarkIcon } from '@assets';
+import { fetchFeatureFlagsForTenant } from '@lib/auth';
 import { TOURS, canAccessTour, useLaunchGuide } from '@components/common/tour';
 import { ds } from 'src/utils/colors';
 
@@ -17,6 +18,15 @@ import { ds } from 'src/utils/colors';
 const GuidesMenu = ({ open, onClose }) => {
   const launch = useLaunchGuide();
   const [query, setQuery] = useState('');
+  // Warm the tenant feature-flag cache so feature-gated guides (e.g. Knowledge
+  // Graph) filter correctly; re-run the filter once it resolves.
+  const [flagsReady, setFlagsReady] = useState(false);
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    fetchFeatureFlagsForTenant().finally(() => setFlagsReady(true));
+  }, [open]);
 
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -39,7 +49,7 @@ const GuidesMenu = ({ open, onClose }) => {
       (byModule[t.module] = byModule[t.module] || []).push(t);
     });
     return Object.entries(byModule);
-  }, [query]);
+  }, [query, flagsReady]);
 
   const handleLaunch = (tourId) => {
     onClose();

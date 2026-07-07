@@ -8,14 +8,18 @@
  * accessors in `@lib/auth` — the same ones the gated action buttons use — so a
  * guide's visibility matches its target button exactly.
  */
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, hasFeatureAccessCached } from '@lib/auth';
 import type { TourDef } from './tours';
 
 export function canAccessTour(tour: TourDef): boolean {
-  switch (tour.requires) {
-    case 'write':
-      return hasWriteAccess();
-    default:
-      return true;
+  if (tour.requires === 'write' && !hasWriteAccess()) {
+    return false;
   }
+  // Feature-gated guides need their flag enabled. Reads the cached flags, so the
+  // caller must have warmed them (GuidesMenu does on open); until then the guide
+  // stays hidden rather than dead-ending.
+  if (tour.requiresFeature && !hasFeatureAccessCached(tour.requiresFeature)) {
+    return false;
+  }
+  return true;
 }

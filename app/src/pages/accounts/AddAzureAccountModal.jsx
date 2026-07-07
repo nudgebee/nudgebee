@@ -14,7 +14,9 @@ import {
   CheckCircleOutline,
   ErrorOutline,
 } from '@mui/icons-material';
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { Banner } from '@ui/Banner';
+import { useTour } from '@components/common/tour';
 import apiAccount from '@api1/account';
 import { Modal } from '@ui/Modal';
 import { isK8sAccountNameValid, parseHttpResponseBodyMessage } from 'src/utils/common';
@@ -150,6 +152,25 @@ const AddAzureAccountModal = ({ open, onClose }) => {
     onClose(wasSuccessful);
   };
 
+  // The connect-azure guided tour drives this modal to preview the Subscriptions
+  // and Review steps without real data (see the Next handlers + banner below).
+  // isActive is false outside any tour, so normal onboarding is unaffected.
+  const { isActive, activeTourId } = useTour();
+  const isTourDemo = isActive && activeTourId === 'connect-azure';
+
+  // Close the whole modal when the guide ends — whether it finished or was
+  // closed part-way — since the user was following the tour, not filling the
+  // form in for real. Fires only after the tour was actually active.
+  const wasTourDemoRef = useRef(false);
+  useEffect(() => {
+    if (wasTourDemoRef.current && !isTourDemo && open) {
+      handleCloseModal(false);
+    }
+    wasTourDemoRef.current = isTourDemo;
+    // handleCloseModal is stable enough for this one-shot cleanup.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isTourDemo, open]);
+
   const validateField = (name, value) => {
     let errorMsg = '';
     if (!value) {
@@ -185,6 +206,11 @@ const AddAzureAccountModal = ({ open, onClose }) => {
   };
 
   const handleNextToSubscriptions = () => {
+    // Tour preview: advance without validating real credentials.
+    if (isTourDemo) {
+      setStep(1);
+      return;
+    }
     const errors = {};
     if (!accountNameValue) {
       errors.accountName = 'This field is required';
@@ -275,7 +301,7 @@ const AddAzureAccountModal = ({ open, onClose }) => {
   };
 
   const handleNextToReview = () => {
-    if (selectedSubscriptionIds.size === 0) {
+    if (!isTourDemo && selectedSubscriptionIds.size === 0) {
       snackbar.error('Please select at least one subscription.');
       return;
     }
@@ -361,6 +387,14 @@ const AddAzureAccountModal = ({ open, onClose }) => {
           </Step>
         ))}
       </Stepper>
+
+      {isTourDemo && step > 0 && (
+        <Banner
+          tone='info'
+          title='Guided tour preview'
+          message='This is a demo of the Subscriptions and Review steps — no account is created and the data here isn’t real. Close this window when you’re done exploring.'
+        />
+      )}
 
       {/* Step 0: Credentials */}
       {step === 0 && (
@@ -604,7 +638,13 @@ const AddAzureAccountModal = ({ open, onClose }) => {
             <Button id='back-to-credentials' size='md' tone='secondary' onClick={() => setStep(0)}>
               Back
             </Button>
-            <Button size='md' id='next-to-review' tone='primary' onClick={handleNextToReview} disabled={selectedSubscriptionIds.size === 0}>
+            <Button
+              size='md'
+              id='next-to-review'
+              tone='primary'
+              onClick={handleNextToReview}
+              disabled={!isTourDemo && selectedSubscriptionIds.size === 0}
+            >
               Next
             </Button>
           </Box>

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Grid, Typography, IconButton, Box, Stepper, Step, StepLabel, Divider, ButtonBase } from '@mui/material';
 import apiAccount from '@api1/account';
 import { Modal } from '@ui/Modal';
@@ -19,6 +19,7 @@ import { useUpdateAllClusterOption } from '@shared/layout/UpdateDataContext';
 import { CopyIconBlue, PlayCircleIcon } from '@assets';
 import SafeIcon from '@shared/icons/SafeIcon';
 import { useBrandingConfig } from '@hooks/useTenantBranding';
+import { useTour } from '@components/common/tour';
 
 const componentCardSx = (isDisabled) => ({
   display: 'flex',
@@ -77,10 +78,34 @@ const K8sAccountModal = ({ openModal, handleClose, handleOnAccountCreate }) => {
   const [externalPrometheusUrl, setExternalPrometheusUrl] = useState('');
   const [imageRegistry, setImageRegistry] = useState(DEFAULT_IMAGE_REGISTRY);
   const [activeInstallTab, setActiveInstallTab] = useState('shell');
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // Advanced options are expanded by default so the existing-Prometheus /
+  // registry / air-gapped fields are visible without an extra click.
+  const [advancedOpen, setAdvancedOpen] = useState(true);
+  // True when the install step is shown as a guided-tour preview (no real account
+  // created). Drives the "preview" banner; reset with the rest of the form.
+  const [isPreview, setIsPreview] = useState(false);
 
   const updateAllClusters = useUpdateAllClusterOption();
   const { relayUrl, k8sCollectorUrl, signingPublicKey } = useBrandingConfig();
+
+  // The "connect-cluster" guided tour drives this modal to demonstrate the flow.
+  // When it's the active tour we preview the install step with a sample key
+  // instead of creating a real account (see handleNext). isActive is false
+  // outside any tour, so real account creation is completely unaffected.
+  const { isActive, activeTourId } = useTour();
+  const isTourDemo = isActive && activeTourId === 'connect-cluster';
+
+  // When the guided tour ends while the install preview is open, close the modal
+  // too — it's a demo with no real account behind it, so leaving it open (with an
+  // enabled Finish) would be confusing.
+  useEffect(() => {
+    if (isPreview && !isTourDemo) {
+      resetState();
+      handleClose();
+    }
+    // resetState/handleClose are stable enough for this one-shot cleanup.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPreview, isTourDemo]);
 
   const resetState = () => {
     setK8sNameValue('');
@@ -96,7 +121,8 @@ const K8sAccountModal = ({ openModal, handleClose, handleOnAccountCreate }) => {
     setExternalPrometheusUrl('');
     setImageRegistry(DEFAULT_IMAGE_REGISTRY);
     setActiveInstallTab('shell');
-    setAdvancedOpen(false);
+    setAdvancedOpen(true);
+    setIsPreview(false);
   };
 
   const handleK8sAccountNameChange = (value) => {
@@ -143,6 +169,15 @@ const K8sAccountModal = ({ openModal, handleClose, handleOnAccountCreate }) => {
   };
 
   const handleNext = () => {
+    // Guided-tour preview: reveal the install step with a sample key rather than
+    // creating a real account. Gated on the connect-cluster tour being active, so
+    // this branch never runs during normal use.
+    if (isTourDemo && currentStep === 1) {
+      setAuthKey('NB-DEMO-ACCESS-KEY:NB-DEMO-SECRET');
+      setIsPreview(true);
+      setCurrentStep(2);
+      return;
+    }
     if (currentStep === 1 && !validationError.k8sAccountName && k8sNameValue) {
       submitForm({
         k8sName: k8sNameValue,
@@ -471,7 +506,9 @@ helm repo update`;
                 tone='primary'
                 size='md'
                 loading={isSubmitting}
-                disabled={isSubmitting || !k8sNameValue || !!validationError.k8sAccountName}
+                // In the tour preview the account name is irrelevant, so keep Next
+                // enabled; otherwise require a valid name as usual.
+                disabled={isSubmitting || (!isTourDemo && (!k8sNameValue || !!validationError.k8sAccountName))}
                 onClick={handleNext}
               >
                 Next
@@ -482,6 +519,13 @@ helm repo update`;
 
         {currentStep === 2 && (
           <>
+            {isPreview && (
+              <Banner
+                tone='info'
+                title='Guided tour preview'
+                message='This is a demo of the install step — no cluster was created. The key shown below is a sample. Close this window when you’re done exploring.'
+              />
+            )}
             <Box mt={2} mb={3}>
               <Grid item xs={12}>
                 <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1, mb: 0.5 }}>
@@ -511,7 +555,7 @@ helm repo update`;
                 </Typography>
               </Grid>
 
-              <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 'var(--ds-space-2)' }}>
+              <Box id='included-components' sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 'var(--ds-space-2)' }}>
                 <Box sx={componentCardSx(disablePrometheusStack)}>
                   <Checkbox
                     size='sm'
@@ -599,6 +643,7 @@ helm repo update`;
                 }}
               >
                 <ButtonBase
+                  id='advanced-toggle'
                   component='div'
                   sx={{
                     display: 'flex',
