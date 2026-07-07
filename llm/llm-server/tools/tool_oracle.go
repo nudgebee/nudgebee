@@ -187,7 +187,15 @@ func (m OracleExecuteTool) Call(nbRequestContext core.NbToolContext, input core.
 		}, err
 	}
 
-	data := response.(string)
+	// Guard the assertion (mirrors tool_mssql): a future ExecuteContainerJob
+	// path could return a non-string / nil response alongside a nil error,
+	// which an unguarded `response.(string)` would turn into a panic. A nil
+	// response falls through as an empty string rather than the literal
+	// "<nil>" that fmt.Sprintf would produce.
+	data, ok := response.(string)
+	if !ok && response != nil {
+		data = fmt.Sprintf("%v", response)
+	}
 	return core.NBToolResponse{
 		Data:   data,
 		Type:   core.NBToolResponseTypeTable,

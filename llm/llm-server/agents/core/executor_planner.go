@@ -3484,10 +3484,12 @@ func executeAgentPlanner(ctx *security.RequestContext, nbAgentPlanner NBAgentPla
 			ctx.GetLogger().Warn("agentexecutor: deadline exceeded, summarizing partial results",
 				"agent", agent.GetName(), "steps_completed", len(executor.steps))
 			result, sumErr := executor.summarizeConversation()
-			if sumErr == nil && result != nil {
+			// comma-ok on result["output"]: a summary map without a string
+			// "output" key must not panic the timeout-recovery path.
+			if summary, ok := result["output"].(string); sumErr == nil && ok {
 				return NBAgentPlannerExecutorResponse{
 					Status:      AgentExecutionStatusSuccess,
-					Response:    result["output"].(string),
+					Response:    summary,
 					Invocations: executor.GetToolInvocations(),
 				}, nil
 			}

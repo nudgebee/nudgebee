@@ -100,27 +100,31 @@ func getRelayCommandResponseData(relayResponse map[string]any) (map[string]any, 
 		return map[string]any{}, nil
 	}
 
-	firstArrayMap := findings[0].(map[string]any)
-	evidenceData := firstArrayMap["evidence"]
-	if evidenceData == nil {
+	// Every assertion below is comma-ok guarded: the relay findings envelope
+	// is external data, so a shape that doesn't match (non-map finding,
+	// non-array evidence, non-string data payload) must degrade to "no data"
+	// rather than panic and abort the whole agent run.
+	firstArrayMap, ok := findings[0].(map[string]any)
+	if !ok {
+		return map[string]any{}, nil
+	}
+	evidenceDataArray, ok := firstArrayMap["evidence"].([]any)
+	if !ok || len(evidenceDataArray) == 0 {
 		return map[string]any{}, nil
 	}
 
-	evidenceDataArray := evidenceData.([]any)
-	if len(evidenceDataArray) == 0 {
+	firstEvidence, ok := evidenceDataArray[0].(map[string]any)
+	if !ok {
 		return map[string]any{}, nil
 	}
 
-	firstEvidence := evidenceDataArray[0].(map[string]any)
-
-	firstEvidenceData := firstEvidence["data"]
-
-	if firstEvidenceData == nil {
+	firstEvidenceData, ok := firstEvidence["data"].(string)
+	if !ok {
 		return map[string]any{}, nil
 	}
 
 	commandResponseArray := []any{}
-	err := common.UnmarshalJson([]byte(firstEvidenceData.(string)), &commandResponseArray)
+	err := common.UnmarshalJson([]byte(firstEvidenceData), &commandResponseArray)
 	if err != nil {
 		return nil, err
 	}
@@ -129,16 +133,18 @@ func getRelayCommandResponseData(relayResponse map[string]any) (map[string]any, 
 		return map[string]any{}, nil
 	}
 
-	firstResponse := commandResponseArray[0].(map[string]any)
+	firstResponse, ok := commandResponseArray[0].(map[string]any)
+	if !ok {
+		return map[string]any{}, nil
+	}
 
-	firstResponseData := firstResponse["data"]
-
-	if firstResponseData == nil {
+	firstResponseData, ok := firstResponse["data"].(string)
+	if !ok {
 		return map[string]any{}, nil
 	}
 
 	commandResponse := map[string]any{}
-	err = common.UnmarshalJson([]byte(firstResponseData.(string)), &commandResponse)
+	err = common.UnmarshalJson([]byte(firstResponseData), &commandResponse)
 
 	if err != nil {
 		return map[string]any{}, err

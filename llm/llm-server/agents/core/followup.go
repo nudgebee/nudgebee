@@ -163,7 +163,14 @@ func FollowupRequestForToolOperationConfirmation(ctx *security.RequestContext, q
 		commandMap := map[string]any{}
 		err := common.UnmarshalJson([]byte(input), &commandMap)
 		if err == nil {
-			input = commandMap["query"].(string)
+			// strings.Contains is only a substring guard — the literal "query"
+			// may appear inside the SQL/command text while the top-level key is
+			// something else (e.g. "command"), leaving commandMap["query"] nil.
+			// Assert with the comma-ok form so a missing/non-string value falls
+			// back to the raw ToolInput instead of panicking mid-confirmation.
+			if q, ok := commandMap["query"].(string); ok {
+				input = q
+			}
 		}
 	}
 	followUpRequest := FollowupRequest{
