@@ -254,11 +254,10 @@ func applyDeterministicGuardrails(v *SignalVerdict, event *models.Event) (*Signa
 // getEnvironmentCategory returns prod|non_prod|unknown for a cloud account (the additive
 // policy needs the category, not the legacy multiplier).
 func getEnvironmentCategory(ctx context.Context, db *sqlx.DB, cloudAccountID string) string {
-	if cloudAccountID == "" {
-		return "unknown"
-	}
-	var accountEnv string
-	if err := db.GetContext(ctx, &accountEnv, `SELECT account_env FROM cloud_accounts WHERE id = $1`, cloudAccountID); err != nil {
+	// Shares envCache with getEnvironmentMultiplier — same account_env column,
+	// one cached lookup per account instead of a second uncached per-event query.
+	accountEnv, ok := getAccountEnv(ctx, db, cloudAccountID)
+	if !ok {
 		return "unknown"
 	}
 	switch strings.ToLower(accountEnv) {
