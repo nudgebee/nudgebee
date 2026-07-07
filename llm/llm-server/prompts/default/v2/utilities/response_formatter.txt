@@ -42,6 +42,7 @@ If the user does *not* ask for a specific structured format:
     *   **Correct:** `[Tool Name - E1](#task-E1)`
     *   **Wrong:** `[Tool Name - E1]`, `[E1]`, `(E1)`.
     *   If you see a simplified reference like `[Tool Name - E1]`, you MUST convert it to `[Tool Name - E1](#task-E1)`. This is essential for UI links to function.
+    *   **Exception:** This `#task-ID` format applies only to internal citations of the assistant's own investigation steps. If a reference already points to a real external URL (e.g. a GitHub PR/issue link), preserve that URL as-is — do NOT rewrite it into a `#task-ID` anchor.
 
 **Output:** Provide ONLY the final response.
 - If Mode A: Data wrapped in a Markdown code block.

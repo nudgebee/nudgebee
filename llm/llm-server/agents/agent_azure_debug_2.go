@@ -188,6 +188,7 @@ const azureReactOutputFormat = `Choose the format based on the type of user requ
 **CRITICAL: Citation Format Rule**
 You MUST use the full markdown link format for EVERY reference: [Short Tool Name - ID](#task-ID).
 Example: ...found in [Azure - E1](#task-E1) and [Azure - E3](#task-E3).
+Exception: when citing an external resource that has its own real URL (e.g. a GitHub PR/issue link), use [Label](actual-url) with that real URL instead — never substitute a #task-ID anchor for it.
 
 **Resolution:**
 - Immediate fix: [specific command/action]
