@@ -8,6 +8,7 @@ import { Box, Typography, Chip } from '@mui/material';
 import Tooltip from '@ui/Tooltip';
 import Tabs from '@shared/navigation/Tabs';
 import CopyButton from '@shared/buttons/CopyButton';
+import Datetime from '@shared/format/Datetime';
 import { snakeToTitleCase } from 'src/utils/common';
 import { getSpecificTime, getYesterday } from '@lib/datetime';
 
@@ -157,6 +158,10 @@ const DetailsBody = ({ node }) => {
   const { headers = [], convertedJson2 = [] } = getTableData4([labels] || [{}]);
   const pathToNode = node?.pathToNode || [];
   const uniqueKey = node?.unique_key || node?.uniqueKey;
+  // "Last Seen" = the last KG build that observed this node. The node upsert
+  // bumps updated_at to NOW() on every sync it appears in, so updated_at is the
+  // last-observed timestamp. (LastUpdated is the same value; kept as a fallback.)
+  const lastSeen = node?.updated_at || node?.LastUpdated;
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -184,6 +189,21 @@ const DetailsBody = ({ node }) => {
             {uniqueKey}
           </Typography>
           <CopyButton text={uniqueKey} size='sm' />
+        </Box>
+      )}
+      {lastSeen && (
+        <Box
+          sx={{
+            padding: 'var(--ds-space-4)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--ds-space-2)',
+            borderBottom: '1px solid var(--ds-gray-200)',
+          }}
+          data-testid='kg-node-last-seen'
+        >
+          <Typography sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-600)', minWidth: '90px', flexShrink: 0 }}>Last Seen:</Typography>
+          <Datetime value={lastSeen} sx={{ fontSize: 'var(--ds-text-small)', color: 'var(--ds-gray-700)' }} sxSuffixSecondary={false} />
         </Box>
       )}
       {/* Path section - show whenever there's path data */}
