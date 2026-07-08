@@ -307,80 +307,91 @@ body {
 
 @font-face {
   font-family: 'Poppins';
-  src: url('../assets/fonts/Poppins/Poppins-Light.ttf');
+  src: url('../assets/fonts/Poppins/Poppins-Light.woff2') format('woff2'), url('../assets/fonts/Poppins/Poppins-Light.ttf') format('truetype');
   font-weight: 300;
   font-style: normal;
+  font-display: swap;
 }
 
 @font-face {
   font-family: 'Poppins';
-  src: url('../assets/fonts/Poppins/Poppins-Regular.ttf');
+  src: url('../assets/fonts/Poppins/Poppins-Regular.woff2') format('woff2'), url('../assets/fonts/Poppins/Poppins-Regular.ttf') format('truetype');
   font-weight: 400;
   font-style: normal;
+  font-display: swap;
 }
 
 @font-face {
   font-family: 'Poppins';
-  src: url('../assets/fonts/Poppins/Poppins-Medium.ttf');
+  src: url('../assets/fonts/Poppins/Poppins-Medium.woff2') format('woff2'), url('../assets/fonts/Poppins/Poppins-Medium.ttf') format('truetype');
   font-weight: 500;
   font-style: normal;
+  font-display: swap;
 }
 
 @font-face {
   font-family: 'Poppins';
-  src: url('../assets/fonts/Poppins/Poppins-SemiBold.ttf');
+  src: url('../assets/fonts/Poppins/Poppins-SemiBold.woff2') format('woff2'), url('../assets/fonts/Poppins/Poppins-SemiBold.ttf') format('truetype');
   font-weight: 600;
   font-style: normal;
+  font-display: swap;
 }
 
 @font-face {
   font-family: 'Poppins';
-  src: url('../assets/fonts/Poppins/Poppins-Bold.ttf');
+  src: url('../assets/fonts/Poppins/Poppins-Bold.woff2') format('woff2'), url('../assets/fonts/Poppins/Poppins-Bold.ttf') format('truetype');
   font-weight: 700;
   font-style: normal;
+  font-display: swap;
 }
 
 /* Roboto Font */
 @font-face {
   font-family: 'Roboto';
-  src: url('../assets/fonts/Roboto/Roboto-Thin.ttf');
+  src: url('../assets/fonts/Roboto/Roboto-Thin.woff2') format('woff2'), url('../assets/fonts/Roboto/Roboto-Thin.ttf') format('truetype');
   font-weight: 100;
   font-style: normal;
+  font-display: swap;
 }
 
 @font-face {
   font-family: 'Roboto';
-  src: url('../assets/fonts/Roboto/Roboto-Light.ttf');
+  src: url('../assets/fonts/Roboto/Roboto-Light.woff2') format('woff2'), url('../assets/fonts/Roboto/Roboto-Light.ttf') format('truetype');
   font-weight: 300;
   font-style: normal;
+  font-display: swap;
 }
 
 @font-face {
   font-family: 'Roboto';
-  src: url('../assets/fonts/Roboto/Roboto-Regular.ttf');
+  src: url('../assets/fonts/Roboto/Roboto-Regular.woff2') format('woff2'), url('../assets/fonts/Roboto/Roboto-Regular.ttf') format('truetype');
   font-weight: 400;
   font-style: normal;
+  font-display: swap;
 }
 
 @font-face {
   font-family: 'Roboto';
-  src: url('../assets/fonts/Roboto/Roboto-Medium.ttf');
+  src: url('../assets/fonts/Roboto/Roboto-Medium.woff2') format('woff2'), url('../assets/fonts/Roboto/Roboto-Medium.ttf') format('truetype');
   font-weight: 500;
   font-style: normal;
+  font-display: swap;
 }
 
 @font-face {
   font-family: 'Roboto';
-  src: url('../assets/fonts/Roboto/Roboto-Bold.ttf');
+  src: url('../assets/fonts/Roboto/Roboto-Bold.woff2') format('woff2'), url('../assets/fonts/Roboto/Roboto-Bold.ttf') format('truetype');
   font-weight: 700;
   font-style: normal;
+  font-display: swap;
 }
 
 @font-face {
   font-family: 'Roboto';
-  src: url('../assets/fonts/Roboto/Roboto-Black.ttf');
+  src: url('../assets/fonts/Roboto/Roboto-Black.woff2') format('woff2'), url('../assets/fonts/Roboto/Roboto-Black.ttf') format('truetype');
   font-weight: 900;
   font-style: normal;
+  font-display: swap;
 }
 
 code {
