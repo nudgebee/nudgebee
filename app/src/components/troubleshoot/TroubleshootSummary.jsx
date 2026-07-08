@@ -254,7 +254,11 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
           const current = comparisonRes?.data?.data?.current?.aggregate?.count ?? 0;
 
           const completedCount = aggregates?.completed_count ?? 0;
-          const wallTimeSeconds = aggregates?.total_wall_time_seconds ?? 0;
+          // total_agent_active_time_seconds (not total_wall_time_seconds) — wall
+          // time spans conversation created_at to updated_at and includes time
+          // spent waiting on user replies, which dwarfs the manual baseline and
+          // clamped every investigation's savings to zero.
+          const activeTimeSeconds = aggregates?.total_agent_active_time_seconds ?? 0;
           const manualBaselineMins = aggregates?.manual_baseline_minutes ?? FALLBACK_MANUAL_MINS;
           const hourlyRate = aggregates?.engineer_hourly_rate_usd ?? FALLBACK_HOURLY_USD;
 
@@ -262,7 +266,7 @@ const TroubleshootSummary = ({ type = 'events', tab = 'auto', onWidgetFilter, ra
           // Capped at the manual baseline so a slow AI run never produces a
           // negative "time saved". Total saved multiplies by completed rows
           // since in-progress/waiting investigations haven't saved time yet.
-          const avgAiMins = completedCount > 0 ? wallTimeSeconds / 60 / completedCount : 0;
+          const avgAiMins = completedCount > 0 ? activeTimeSeconds / 60 / completedCount : 0;
           const savedPerInvestigation = Math.max(0, manualBaselineMins - avgAiMins);
           const currentSavedMinutes = completedCount * savedPerInvestigation;
 
