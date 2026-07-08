@@ -4480,6 +4480,8 @@ var table_metadata = map[string]TableDefinition{
 			// fall back to the correct-but-slower outer-filter path.
 			if !requestReferencesColumns(request, map[string]bool{"is_primary_recommendation": true}) {
 				pushdownFilters += extractFilterSQL(&request, "id", "r.id")
+				pushdownFilters += extractFilterSQL(&request, "rule_name", "r.rule_name")
+				pushdownFilters += extractFilterSQL(&request, "account_object_id", "r.account_object_id")
 			}
 			// Push tenant_id and category into the CTE WHERE so the ROW_NUMBER()
 			// window is computed over only the relevant slice. The window's
