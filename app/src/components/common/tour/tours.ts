@@ -853,6 +853,235 @@ const connectAzureTour: TourDef = {
   ],
 };
 
+/*
+ * Automations (auto-pilot) create guides. The "Create a New Automation" dialog
+ * offers four build paths, and each is its own focused guide rather than one
+ * long tour that has to reopen the dialog or navigate into the builder between
+ * paths. Every guide starts on the Automations page, opens the dialog, then
+ * walks one path. Anchors — the option cards + "Create Automation" button +
+ * builder trigger cards (#wf-builder-trigger-option-*-card) pre-exist; the
+ * sub-modal ids (#wf-code-*, #wf-ai-*, #wf-template-*) were added alongside
+ * these guides. AI and templates are feature-gated, so those two guides declare
+ * `requiresFeature` (WORKFLOWS / WORKFLOW_TEMPLATES) and hide where it's off.
+ */
+const automationFromCodeTour: TourDef = {
+  id: 'automation-from-code',
+  title: 'Create an automation from code',
+  module: 'Automations',
+  description: 'Import an automation by pasting its JSON or YAML definition.',
+  route: '/auto-pilot',
+  // The "Create Automation" button is write-gated (hasWriteAccess(accountId)).
+  requires: 'write',
+  steps: [
+    {
+      element: '#workflow-listing-create-btn',
+      title: 'Create an automation',
+      description: 'Start here — click Next to open the create dialog.',
+      side: 'bottom',
+      align: 'end',
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#workflow-listing-create-btn')?.click();
+      },
+    },
+    {
+      element: '#wf-create-from-code-card',
+      title: 'From code',
+      description: 'Already have an automation as JSON or YAML? Click Next to open the code editor.',
+      side: 'top',
+      align: 'start',
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#wf-create-from-code-card')?.click();
+      },
+    },
+    {
+      element: '#wf-code-format-tabs',
+      title: 'Paste JSON or YAML',
+      description: 'Paste or edit the definition, switching between the JSON and YAML formats here. Nudgebee validates it as you type.',
+      side: 'bottom',
+      align: 'start',
+    },
+    {
+      element: '#wf-code-create-btn',
+      title: 'Create Automation',
+      description: 'Click Create Automation to import it and open it in the editor.',
+      side: 'top',
+      align: 'end',
+    },
+  ],
+};
+
+const automationWithAiTour: TourDef = {
+  id: 'automation-with-ai',
+  title: 'Generate an automation with AI',
+  module: 'Automations',
+  description: 'Describe what you want in plain language and let AI draft the automation.',
+  route: '/auto-pilot',
+  requires: 'write',
+  // The "Ask AI" card is enabled by the WORKFLOWS feature flag.
+  requiresFeature: 'WORKFLOWS',
+  steps: [
+    {
+      element: '#workflow-listing-create-btn',
+      title: 'Create an automation',
+      description: 'Start here — click Next to open the create dialog.',
+      side: 'bottom',
+      align: 'end',
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#workflow-listing-create-btn')?.click();
+      },
+    },
+    {
+      element: '#wf-create-from-ai-card',
+      title: 'Ask AI',
+      description: 'Let AI draft the automation from a plain-language description. Click Next to open it.',
+      side: 'bottom',
+      align: 'center',
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#wf-create-from-ai-card')?.click();
+      },
+    },
+    {
+      element: '#wf-ai-prompt',
+      title: 'Describe your automation',
+      description:
+        'Write what it should do — e.g. “notify the on-call channel when a pod keeps crash-looping”. The more specific, the better the draft.',
+      side: 'bottom',
+      align: 'start',
+    },
+    {
+      element: '#wf-ai-generate-btn',
+      title: 'Generate Automation',
+      description: 'Click Generate Automation and review the draft AI produces before saving.',
+      side: 'top',
+      align: 'end',
+    },
+  ],
+};
+
+const automationFromTemplateTour: TourDef = {
+  id: 'automation-from-template',
+  title: 'Use an automation template',
+  module: 'Automations',
+  description: 'Start from a pre-built automation for a common scenario.',
+  route: '/auto-pilot',
+  requires: 'write',
+  // The "From a template" card is enabled by the WORKFLOW_TEMPLATES flag.
+  requiresFeature: 'WORKFLOW_TEMPLATES',
+  steps: [
+    {
+      element: '#workflow-listing-create-btn',
+      title: 'Create an automation',
+      description: 'Start here — click Next to open the create dialog.',
+      side: 'bottom',
+      align: 'end',
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#workflow-listing-create-btn')?.click();
+      },
+    },
+    {
+      element: '#wf-create-from-template-card',
+      title: 'From a template',
+      description: 'Start from a proven automation for a common scenario. Click Next to open the template gallery.',
+      side: 'bottom',
+      align: 'center',
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#wf-create-from-template-card')?.click();
+      },
+    },
+    {
+      element: '#wf-template-categories',
+      title: 'Browse pre-built templates',
+      description: 'Filter by category (Kubernetes, Monitoring, Security…) and tag (restart, scale, read-only…) to find one that fits.',
+      side: 'bottom',
+      align: 'start',
+      optional: true,
+    },
+    {
+      element: '#wf-template-use-first',
+      title: 'Use Template',
+      description: 'Each card previews what the automation does. Click Use Template to open it in the editor, pre-filled and ready to tweak.',
+      side: 'top',
+      align: 'center',
+      optional: true,
+    },
+    {
+      element: '#wf-template-scratch-btn',
+      title: 'Or start blank',
+      description: 'Not the right fit? Create from scratch opens an empty automation in the editor instead.',
+      side: 'top',
+      align: 'end',
+      optional: true,
+    },
+  ],
+};
+
+const automationFromScratchTour: TourDef = {
+  id: 'automation-from-scratch',
+  title: 'Build an automation from scratch',
+  module: 'Automations',
+  description: 'Open the builder and pick a starting trigger for a blank automation.',
+  route: '/auto-pilot',
+  requires: 'write',
+  steps: [
+    {
+      element: '#workflow-listing-create-btn',
+      title: 'Create an automation',
+      description: 'Start here — click Next to open the create dialog.',
+      side: 'bottom',
+      align: 'end',
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#workflow-listing-create-btn')?.click();
+      },
+    },
+    {
+      element: '#wf-create-from-scratch-card',
+      title: 'From scratch',
+      description: 'Build it yourself in the visual editor. Click Next to open the builder.',
+      side: 'bottom',
+      align: 'start',
+      // Navigates to /workflow/new — the builder's trigger picker mounts next.
+      onBeforeNext: () => {
+        document.querySelector<HTMLElement>('#wf-create-from-scratch-card')?.click();
+      },
+    },
+    {
+      element: '#wf-builder-trigger-option-manual-card',
+      title: 'Pick a starting trigger',
+      description: 'Every automation begins with a trigger. Manual Trigger runs it on demand — one click, whenever you need it.',
+      side: 'bottom',
+      align: 'center',
+    },
+    {
+      element: '#wf-builder-trigger-option-webhook-card',
+      title: 'Webhook',
+      description: 'Kick it off from an external system via an HTTP endpoint Nudgebee gives you.',
+      side: 'bottom',
+      align: 'center',
+    },
+    {
+      element: '#wf-builder-trigger-option-schedule-card',
+      title: 'Schedule',
+      description: 'Run it on a time-based schedule — nightly, hourly, or any cron-like cadence.',
+      side: 'bottom',
+      align: 'center',
+    },
+    {
+      element: '#wf-builder-trigger-option-event-card',
+      title: 'Event Trigger',
+      description: 'React automatically to events — a specific alert firing, a pod crash-looping, and so on.',
+      side: 'bottom',
+      align: 'center',
+    },
+    {
+      element: '#wf-builder-trigger-option-optimization-card',
+      title: 'Optimization',
+      description: 'Run whenever Nudgebee surfaces a new optimization recommendation. Pick any trigger to drop it on the canvas and start building.',
+      side: 'bottom',
+      align: 'center',
+    },
+  ],
+};
+
 export const TOURS: Record<string, TourDef> = {
   [createUserTour.id]: createUserTour,
   [connectClusterTour.id]: connectClusterTour,
@@ -862,4 +1091,8 @@ export const TOURS: Record<string, TourDef> = {
   [appOverviewTour.id]: appOverviewTour,
   [troubleshootTour.id]: troubleshootTour,
   [knowledgeGraphTour.id]: knowledgeGraphTour,
+  [automationFromCodeTour.id]: automationFromCodeTour,
+  [automationWithAiTour.id]: automationWithAiTour,
+  [automationFromTemplateTour.id]: automationFromTemplateTour,
+  [automationFromScratchTour.id]: automationFromScratchTour,
 };

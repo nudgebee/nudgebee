@@ -195,7 +195,7 @@ const NodeIconCircle = ({ icon, index }: { icon: any; index: number }) => (
 );
 
 // Template card component
-const TemplateCard = ({ workflow, onUseTemplate }: { workflow: any; onUseTemplate: (workflow: any) => void }) => {
+const TemplateCard = ({ workflow, onUseTemplate, index }: { workflow: any; onUseTemplate: (workflow: any) => void; index: number }) => {
   // Extract tasks from workflow definition
   const tasks = workflow?.definition?.tasks || [];
   const taskTypes = tasks.map((task: any) => task.type).filter(Boolean);
@@ -342,7 +342,7 @@ const TemplateCard = ({ workflow, onUseTemplate }: { workflow: any; onUseTemplat
 
       {/* Use Template Button */}
       <Box sx={{ mt: 'var(--ds-space-4)', width: '100%' }}>
-        <Button tone='secondary' size='md' fullWidth onClick={() => onUseTemplate(workflow)}>
+        <Button id={index === 0 ? 'wf-template-use-first' : undefined} tone='secondary' size='md' fullWidth onClick={() => onUseTemplate(workflow)}>
           Use Template
         </Button>
       </Box>
@@ -469,7 +469,7 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
         }}
       >
         {/* Category Tabs */}
-        <Box sx={{ mb: 'var(--ds-space-2)' }}>
+        <Box id='wf-template-categories' sx={{ mb: 'var(--ds-space-2)' }}>
           <Tabs
             value={selectedCategory}
             onChange={setSelectedCategory}
@@ -557,8 +557,8 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
                 },
               }}
             >
-              {displayedWorkflows.map((workflow) => (
-                <TemplateCard key={workflow.id} workflow={workflow} onUseTemplate={handleUseTemplate} />
+              {displayedWorkflows.map((workflow, index) => (
+                <TemplateCard key={workflow.id} workflow={workflow} onUseTemplate={handleUseTemplate} index={index} />
               ))}
             </Box>
           )}
@@ -579,7 +579,7 @@ const WorkflowTemplatesModal: React.FC<WorkflowTemplatesModalProps> = ({
               Create with AI
             </Button>
           )}
-          <Button tone='secondary' size='md' onClick={handleCreateFromScratch}>
+          <Button id='wf-template-scratch-btn' tone='secondary' size='md' onClick={handleCreateFromScratch}>
             Create from scratch
           </Button>
         </Box>

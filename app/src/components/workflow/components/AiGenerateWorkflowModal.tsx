@@ -345,7 +345,7 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
     switch (stage) {
       case 'input':
         return (
-          <Box sx={{ mt: 2, mb: 2 }}>
+          <Box id='wf-ai-prompt' sx={{ mt: 2, mb: 2 }}>
             <FormField
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -536,10 +536,10 @@ const AiGenerateWorkflowModal: React.FC<AiGenerateWorkflowModalProps> = ({
       case 'input':
         return (
           <Box sx={{ p: 2, pt: 0, display: 'flex', gap: 2, justifyContent: 'flex-end', '& button': { minWidth: '140px' } }}>
-            <Button tone='secondary' size='md' onClick={handleClose} disabled={loading}>
+            <Button id='wf-ai-cancel-btn' tone='secondary' size='md' onClick={handleClose} disabled={loading}>
               Cancel
             </Button>
-            <Button tone='primary' size='md' onClick={handleSubmit} disabled={loading || !query.trim()} loading={loading}>
+            <Button id='wf-ai-generate-btn' tone='primary' size='md' onClick={handleSubmit} disabled={loading || !query.trim()} loading={loading}>
               {loading ? 'Generating...' : 'Generate Automation'}
             </Button>
           </Box>

@@ -187,17 +187,17 @@ const CreateWorkflowFromCodeModal: React.FC<CreateWorkflowFromCodeModalProps> = 
       subtitle='Paste or edit the automation definition below'
       actionButtons={
         <Box sx={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--ds-space-3)', padding: 'var(--ds-space-3) var(--ds-space-5)' }}>
-          <Button tone='secondary' size='md' onClick={onClose} disabled={submitting}>
+          <Button id='wf-code-cancel-btn' tone='secondary' size='md' onClick={onClose} disabled={submitting}>
             Cancel
           </Button>
-          <Button tone='primary' size='md' onClick={handleCreate} disabled={!isValid || submitting} loading={submitting}>
+          <Button id='wf-code-create-btn' tone='primary' size='md' onClick={handleCreate} disabled={!isValid || submitting} loading={submitting}>
             Create Automation
           </Button>
         </Box>
       }
     >
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 'var(--ds-space-3)', padding: 'var(--ds-space-4) 0' }}>
-        <Box sx={{ display: 'flex', justifyContent: 'flex-start' }}>
+        <Box id='wf-code-format-tabs' sx={{ display: 'flex', justifyContent: 'flex-start' }}>
           <NewToggleButtons options={formatOptions} activeValue={format} onChange={handleFormatChange} size='sm' width='180px' />
         </Box>
 
