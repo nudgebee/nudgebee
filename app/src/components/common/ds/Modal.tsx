@@ -257,6 +257,7 @@ export function Modal({
         <Box sx={{ display: 'flex', flexDirection: 'column' }}>
           <Typography
             id='alert-dialog-title'
+            component={typeof title === 'string' || typeof title === 'number' ? 'p' : 'div'}
             sx={{
               fontSize: 'var(--ds-text-title)',
               fontWeight: 'var(--ds-font-weight-semibold)',
@@ -268,6 +269,7 @@ export function Modal({
           </Typography>
           {subtitle && (
             <Typography
+              component={typeof subtitle === 'string' || typeof subtitle === 'number' ? 'p' : 'div'}
               sx={{
                 fontSize: 'var(--ds-text-small)',
                 fontWeight: 'var(--ds-font-weight-regular)',

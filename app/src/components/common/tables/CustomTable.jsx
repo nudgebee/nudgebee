@@ -76,21 +76,24 @@ const AUTO_PAGINATE_THRESHOLD = 10;
 const TabPanel = (props) => {
   const { children, value, index, ...other } = props;
 
+  // Children here are entire drill-down panels (tables, filter bars, nav
+  // pagination, cards). Wrapping them in <Typography> renders a <p> that then
+  // contains <table>/<nav>/<ul>/<div> — invalid HTML nesting, so React logs
+  // validateDOMNesting warnings. TabPanel content is structural, not text —
+  // render children directly.
   return (
     <div role='tabpanel' hidden={value !== index} id={`table-tabpanel-${index}`} aria-labelledby={`table-tab-${index}`} {...other}>
-      {value === index && (
-        <Box sx={{ pt: 0.2 }}>
-          <Typography>{children}</Typography>
-        </Box>
-      )}
+      {value === index && <Box sx={{ pt: 0.2 }}>{children}</Box>}
     </div>
   );
 };
 
 TabPanel.propTypes = {
   children: PropTypes.node,
-  value: PropTypes.number,
-  index: PropTypes.number,
+  // value/index accept string or number — some tab configs identify tabs by
+  // semantic slugs ('evidence', 'audit-history') instead of numeric indices.
+  value: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
+  index: PropTypes.oneOfType([PropTypes.number, PropTypes.string]),
 };
 
 const getCellTooltipText = (cell) => {
@@ -199,7 +202,9 @@ const getDrillDownQuery = (row) => {
 };
 
 export const ExpandedRowComponent = ({ row = [], tabOptions = [], isExpanded = false, tabPadding }) => {
-  const [tab, setTab] = useState(tabOptions[0]?.value || 0); // Set the default tab value
+  // Use ?? so a valid but falsy tab value (e.g. 0) isn't clobbered by the
+  // fallback. Falls back to 0 only when the first tab has no value at all.
+  const [tab, setTab] = useState(tabOptions[0]?.value ?? 0);
   // Sticky "has been opened" flag, flipped on synchronously during render so
   // the very first render with isExpanded=true already includes the inner
   // content — MUI Collapse then measures the correct expanded height up front
@@ -235,11 +240,20 @@ export const ExpandedRowComponent = ({ row = [], tabOptions = [], isExpanded = f
       <Box mb={ds.space[3]}>
         <Tabs padding={tabPadding} options={tabOptions} value={tab} onChange={handleChangeTab} />
       </Box>
-      {tabOptions.map((option, tabIndex) => (
-        <TabPanel key={option.key || ''} value={tab} index={tabIndex}>
-          {option.componentFn ? option.componentFn(option, getDrillDownQuery(row), row) : <></>}
-        </TabPanel>
-      ))}
+      {tabOptions.map((option, tabIndex) => {
+        // Prefer the tab option's own `value` (semantic slug like 'evidence')
+        // for both the React key and the TabPanel identity — falling back to
+        // the array index if the caller didn't provide one. Using `option.key
+        // || ''` for every option produced duplicate empty-string keys and
+        // broke MUI Tabs' value matching when values were strings but panels
+        // compared to numeric indices.
+        const tabId = option.value ?? tabIndex;
+        return (
+          <TabPanel key={tabId} value={tab} index={tabId}>
+            {option.componentFn ? option.componentFn(option, getDrillDownQuery(row), row) : <></>}
+          </TabPanel>
+        );
+      })}
     </Box>
   );
 };

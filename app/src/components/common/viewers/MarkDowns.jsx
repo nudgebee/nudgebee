@@ -935,7 +935,7 @@ export default withErrorBoundary(MarkDowns);
 MarkDowns.propTypes = {
   data: PropTypes.string,
   sx: PropTypes.object,
-  allowExecutable: PropTypes.func,
+  allowExecutable: PropTypes.oneOfType([PropTypes.func, PropTypes.bool]),
   canRunCode: PropTypes.bool,
   onLinkClick: PropTypes.func,
 };

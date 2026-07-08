@@ -803,9 +803,10 @@ const CloudOptimizeRecommendationsTable = (props: {
             totalRows={recommendationsCount}
             expandable={{
               tabs: [
-                { componentFn: optimizeEvidance, text: 'Evidence' },
-                { componentFn: optimizeDescription, text: 'Description' },
+                { value: 'evidence', componentFn: optimizeEvidance, text: 'Evidence' },
+                { value: 'description', componentFn: optimizeDescription, text: 'Description' },
                 {
+                  value: 'mitigation',
                   componentFn: (_option: any, drilldownQuery: any) => {
                     const row = drilldownQuery?.recommendation;
                     const resolvedStatuses = ['Closed', 'Dismissed', 'Archive'];
@@ -860,6 +861,7 @@ const CloudOptimizeRecommendationsTable = (props: {
                   text: 'Mitigation',
                 },
                 {
+                  value: 'audit-history',
                   text: 'Audit History',
                   componentFn: function (_opt: any, drilldownQuery: any) {
                     const row = drilldownQuery?.recommendation;

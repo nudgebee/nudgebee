@@ -548,6 +548,6 @@ K8sMemoryCpuIndicator.propTypes = {
   primaryPointerColor: PropTypes.string,
   updatedOverview: PropTypes.bool,
   showUsage: PropTypes.bool,
-  hideLabels: PropTypes,
+  hideLabels: PropTypes.bool,
   queries: PropTypes.object,
 };

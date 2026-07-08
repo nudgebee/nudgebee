@@ -272,6 +272,7 @@ const CustomDrawer = ({
         },
       }}
       PaperProps={{
+        tabIndex: -1,
         sx: {
           width: `${effectiveWidth}px`,
           maxWidth: '100vw',

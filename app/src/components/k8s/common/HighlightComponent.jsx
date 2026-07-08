@@ -1,6 +1,5 @@
 import React from 'react';
 import { Typography } from '@mui/material';
-import { Link } from '@ui/Link';
 import { useRouter } from 'next/router';
 import PropTypes from 'prop-types';
 
@@ -29,15 +28,32 @@ const HighlightText = ({ message, highlightWords = DEFAULT_HIGHLIGHT_WORDS, clus
         <React.Fragment key={`${lowerCaseWord}-${index}`}>
           {index > 0 && ' '}
           {match && route ? (
-            <Link
-              href={route}
+            // Rendered as a native <button> (not <a>) so HighlightText is safe
+            // to nest inside another anchor — nested <a> is invalid HTML and
+            // React logs a validateDOMNesting warning. Native button gives
+            // us Enter/Space keyboard activation and focus-ring for free.
+            // stopPropagation stops the outer row-Link (see K8sClusterInsights)
+            // from also navigating on this click.
+            <Typography
+              component='button'
+              type='button'
               onClick={(e) => {
                 e.preventDefault();
+                e.stopPropagation();
                 router.push(route);
+              }}
+              sx={{
+                background: 'none',
+                border: 'none',
+                padding: 0,
+                font: 'inherit',
+                color: 'var(--ds-blue-600)',
+                cursor: 'pointer',
+                '&:hover': { textDecoration: 'underline' },
               }}
             >
               {word}
-            </Link>
+            </Typography>
           ) : (
             word
           )}

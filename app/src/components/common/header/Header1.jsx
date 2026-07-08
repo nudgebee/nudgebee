@@ -81,15 +81,30 @@ const Header1 = ({ showBorder = false }) => {
   const isAlertOpen = useRef(false);
 
   const productUpdates = useProductUpdates();
+  const { markAllSeen: markProductUpdatesSeen } = productUpdates;
   const [updatesDrawerOpen, setUpdatesDrawerOpen] = useState(false);
   const [updatesSeenSnapshot, setUpdatesSeenSnapshot] = useState(null);
   const openProductUpdates = () => {
     // Snapshot the pre-open high-water-mark so the drawer can still flag "New"
-    // items, then advance it to clear the unread badge.
+    // items on the entries the user is about to view. Advancing the mark is
+    // handled by the effect below, not here — see its comment for why.
     setUpdatesSeenSnapshot(productUpdates.lastSeenAt);
     setUpdatesDrawerOpen(true);
-    productUpdates.markAllSeen();
   };
+
+  // Advance the "last seen" high-water-mark whenever the drawer is open.
+  // Calling markAllSeen inside the click handler is racy: the badge renders
+  // before the initial fetch resolves (unreadCount computes optimistically
+  // against a null high-water-mark), so a quick click lands while `updates`
+  // is still empty and markAllSeen no-ops on its own guard. Running it from
+  // an effect keyed on `markProductUpdatesSeen`'s identity — which changes
+  // when `newestPublishedAt` becomes non-null — retries the write once data
+  // has loaded, so the badge persists as cleared across reloads.
+  useEffect(() => {
+    if (updatesDrawerOpen) {
+      markProductUpdatesSeen();
+    }
+  }, [updatesDrawerOpen, markProductUpdatesSeen]);
 
   const [anchorActiveTab, setAnchorActiveTab] = useState('');
   const [snackbarOpen, setSnackbarOpen] = useState(false);
