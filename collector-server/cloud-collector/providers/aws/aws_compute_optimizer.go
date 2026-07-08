@@ -72,7 +72,7 @@ func (a *awsComputeOptimizer) getEC2Recommendations(ctx providers.CloudProviderC
 	}
 
 	for _, rec := range output.InstanceRecommendations {
-		if rec.Finding == cotypes.FindingOptimized {
+		if normCOFinding(rec.Finding) == normFindingOptimized {
 			continue
 		}
 
@@ -365,14 +365,35 @@ func (a *awsComputeOptimizer) getECSRecommendations(ctx providers.CloudProviderC
 }
 
 func mapCOFindingToSeverity(finding cotypes.Finding) providers.RecommendationSeverity {
-	switch finding {
-	case cotypes.FindingOverProvisioned:
+	switch normCOFinding(finding) {
+	case normFindingOverProvisioned:
 		return providers.RecommendationSeverityMedium
-	case cotypes.FindingUnderProvisioned:
+	case normFindingUnderProvisioned:
 		return providers.RecommendationSeverityHigh
 	default:
 		return providers.RecommendationSeverityLow
 	}
+}
+
+// Normalized SDK finding constants, pre-computed once so the per-recommendation
+// comparisons in getEC2Recommendations and mapCOFindingToSeverity avoid
+// redundant string allocations.
+var (
+	normFindingOptimized        = normCOFinding(cotypes.FindingOptimized)
+	normFindingOverProvisioned  = normCOFinding(cotypes.FindingOverProvisioned)
+	normFindingUnderProvisioned = normCOFinding(cotypes.FindingUnderProvisioned)
+)
+
+// normCOFinding normalizes an EC2 Compute Optimizer finding for comparison.
+// The GetEC2InstanceRecommendations API returns findings in
+// SCREAMING_SNAKE_CASE ("OPTIMIZED", "OVER_PROVISIONED", "UNDER_PROVISIONED"),
+// whereas the aws-sdk-go-v2 enum constants are mixed-case ("Optimized",
+// "Overprovisioned", "Underprovisioned"). Comparing the raw values silently
+// fails, so already-optimized instances leak through as bogus rightsize
+// recommendations (current == recommended, $0 savings). Uppercasing and
+// stripping the underscore separators makes both wire forms comparable.
+func normCOFinding(f cotypes.Finding) string {
+	return strings.ReplaceAll(strings.ToUpper(string(f)), "_", "")
 }
 
 func extractRegionFromARN(arn string) string {
