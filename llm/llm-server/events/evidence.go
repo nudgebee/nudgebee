@@ -145,7 +145,10 @@ type InvestigateDataInsight struct {
 }
 
 type InvestigateData struct {
-	LogData          string                   `json:"log_data,omitempty"`
+	LogData string `json:"log_data,omitempty"`
+	// ErrorLogData is []string on the wire in the happy path, but upstream
+	// producers occasionally send heterogeneous shapes (objects, mixed arrays
+	// with trace spans embedded). See UnmarshalJSON below for the tolerance rules.
 	ErrorLogData     []string                 `json:"error_log_data,omitempty"`
 	PodMetrics       []InvestigateDataInsight `json:"pod_metrics"`
 	NodeMetrics      []InvestigateDataInsight `json:"node_metrics"`
@@ -170,4 +173,60 @@ type InvestigateData struct {
 	MetricsData      []InvestigateDataInsight `json:"metrics_queries_data"`
 	ServiceMap       InvestigateDataInsight   `json:"service_map_data"`
 	Others           []InvestigateDataInsight `json:"others"`
+}
+
+// UnmarshalJSON on InvestigateData exists to tolerate upstream producers
+// that occasionally send error_log_data in shapes other than []string.
+// Every other field flows through the default decoder; only error_log_data
+// gets the fallback ladder implemented by normalizeErrorLogLines.
+func (i *InvestigateData) UnmarshalJSON(data []byte) error {
+	type alias InvestigateData
+	aux := struct {
+		ErrorLogData json.RawMessage `json:"error_log_data,omitempty"`
+		*alias
+	}{alias: (*alias)(i)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	i.ErrorLogData = normalizeErrorLogLines(aux.ErrorLogData)
+	return nil
+}
+
+// normalizeErrorLogLines coerces the raw JSON of error_log_data into []string,
+// tolerating: []string (happy path), mixed []any (stringify non-strings via
+// JSON), single string (wrap), and any other valid JSON (encode as one entry).
+// Empty / null / absent input returns nil.
+func normalizeErrorLogLines(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	var lines []string
+	if err := json.Unmarshal(raw, &lines); err == nil {
+		return lines
+	}
+	var mixed []any
+	if err := json.Unmarshal(raw, &mixed); err == nil {
+		// Elements came from json.Unmarshal into any (map/slice/scalar) — every
+		// element is trivially marshalable, so json.Marshal below cannot fail.
+		out := make([]string, len(mixed))
+		for idx, e := range mixed {
+			if s, ok := e.(string); ok {
+				out[idx] = s
+				continue
+			}
+			if b, mErr := json.Marshal(e); mErr == nil {
+				out[idx] = string(b)
+			}
+		}
+		return out
+	}
+	var single string
+	if err := json.Unmarshal(raw, &single); err == nil {
+		return []string{single}
+	}
+	return []string{trimmed}
 }
