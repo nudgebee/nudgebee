@@ -44,32 +44,32 @@ func init() {
 }
 
 func newK8sDebugAgent(accountId string) core.NBAgent {
-	return &K8sDebugAgent2{
+	return &K8sDebugAgent{
 		accountId: accountId,
 	}
 }
 
-type K8sDebugAgent2 struct {
+type K8sDebugAgent struct {
 	accountId string
 }
 
-func (l *K8sDebugAgent2) GetName() string {
+func (l *K8sDebugAgent) GetName() string {
 	return AgentK8sDebugName
 }
 
-func (a *K8sDebugAgent2) GetNameAliases() []string {
+func (a *K8sDebugAgent) GetNameAliases() []string {
 	return []string{"Debugger"}
 }
 
-func (l *K8sDebugAgent2) GetDescription() string {
+func (l *K8sDebugAgent) GetDescription() string {
 	return `SRE/DevOps Troubleshooting expert, with expertise on Kubernetes, AWS, GCP, Azure, CloudNative, Helm, Security, Programming, Prometheus, Loki, ELK, Github, Optimization, Jira, SQL, Databases etc`
 }
 
-func (l *K8sDebugAgent2) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
+func (l *K8sDebugAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	return getSupportedTools(ctx, l.accountId, l.GetName())
 }
 
-func (l *K8sDebugAgent2) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
+func (l *K8sDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 	promptKey := prompts.PromptAgentK8sDebugReact
 	promptRepoKey := prompts_repo.PromptAgentK8sDebugReact
 
@@ -131,15 +131,15 @@ func (l *K8sDebugAgent2) GetSystemPrompt(ctx *security.RequestContext, query cor
 	return prompt
 }
 
-func (l *K8sDebugAgent2) GetPlannerType() core.AgentPlannerType {
+func (l *K8sDebugAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeOrchestrating
 }
 
-func (l *K8sDebugAgent2) GetModelCategory() core.ModelTier {
+func (l *K8sDebugAgent) GetModelCategory() core.ModelTier {
 	return core.ModelTierReasoning
 }
 
-func (l *K8sDebugAgent2) GetCacheScope() core.CacheScope {
+func (l *K8sDebugAgent) GetCacheScope() core.CacheScope {
 	return core.CacheScopeAccount
 }
 

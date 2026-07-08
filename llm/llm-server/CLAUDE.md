@@ -237,15 +237,14 @@ See [docs/caching.md](docs/caching.md) for the ReAct3 planner message layout, ca
 
 The runtime has exactly one planner: **`planner_react_3.go`** (the ReAct3 planner — iterative reasoning with parallel action execution). The executor routes every non-tool/non-custom/non-classification agent to `NewReActAgent3()`. The older `planner_react_2.go` and `planner_rewoo_2.go` have been deleted; symbols they hosted that ReAct3 still needs live in `planner_react_shared.go`.
 
-For agent files, `_2` / `V2` suffixes still mark versioned agents, and both versions may coexist:
+For agent files, `_2` / `V2` suffixes mark genuinely versioned agents where both versions still coexist:
 
 | Component | v1 | v2 | Active? |
 |-----------|----|----|---------|
 | Planner runtime | — | `planner_react_3.go` | Only planner at runtime |
-| AWS | `agent_aws.go` (direct CLI) | `agent_aws_debug_2.go` (orchestrator) | Both active |
-| K8s | None | `agent_k8s_debug_2.go` | v2 only |
-| GCP/Azure | None | `agent_gcp_debug_2.go`, `agent_azure_debug_2.go` | v2 only |
 | Tickets | `agent_tickets.go` | `agent_tickets_V2.go` | Both; v2 opt-in via `TicketV2Enabled` |
+
+The domain debug orchestrators — `agent_k8s_debug.go`, `agent_aws_debug.go`, `agent_gcp_debug.go`, `agent_azure_debug.go` — previously carried a vestigial `_2` suffix (they have no v1); it has been dropped. Note `agent_aws.go` is a *distinct* sub-agent (direct CLI), not a v1 of the `aws_debug` orchestrator.
 
 **Rule: new code targets ReAct3. There is no v1/v2 planner choice to make.**
 

@@ -26,9 +26,6 @@ var logAnalysisCodeDiffGenerateRequest string
 //go:embed planner_react_followup_base.txt
 var plannerReActBaseFollowup string
 
-//go:embed planner_react_base_2.txt
-var plannerReactBase2 string
-
 //go:embed planner_react_3_base.txt
 var plannerReactBase3 string
 
@@ -82,9 +79,6 @@ var executorResponseFormatterSlack string
 
 //go:embed tool_config_auto_selection.txt
 var toolConfigAutoSelection string
-
-//go:embed agent_aws_debug_2.txt
-var agentAwsDebug2 string
 
 //go:embed agent_aws_debug_react.txt
 var agentAwsDebugReact string
@@ -178,7 +172,6 @@ const PromptLogAnalysisFileExtractor = "log_analysis_file_extractor"
 const PromptLogAnalysisCodeDiffGenerateRequest = "log_analysis_codediff_generate_request"
 const PromptConversationSuggestion = "conversation_suggestion"
 const PromptPlannerReActBaseFollowup = "planner_react_base_followup"
-const PromptPlannerReactBase2 = "planner_react_base_2"
 const PromptPlannerReactBase3 = "planner_react_base_3"
 const PromptPlannerReactCritiquer = "planner_react_critiquer"
 
@@ -197,7 +190,6 @@ const PromptSummarizationSecurity = "summarization_security"
 const PromptUnifiedContextMemory = "unified_context_memory"
 const PromptExecutorResponseFormatterSlack = "executor_response_formatter_slack"
 const PromptToolConfigAutoSelection = "tool_config_auto_selection"
-const PromptAgentAwsDebug2 = "agent_aws_debug_2"
 const PromptAgentAwsDebugReact = "agent_aws_debug_react"
 const PromptAgentGcpDebugReact = "agent_gcp_debug_react"
 const PromptAgentAzureDebugReact = "agent_azure_debug_react"
@@ -249,8 +241,6 @@ func GetPrompt(module string, args ...any) string {
 		data = logAnalysisFileExtractor
 	case PromptLogAnalysisCodeDiffGenerateRequest:
 		data = logAnalysisCodeDiffGenerateRequest
-	case PromptPlannerReactBase2:
-		data = plannerReactBase2
 	case PromptPlannerReactBase3:
 		data = plannerReactBase3
 	case PromptPlannerReactCritiquer:
@@ -287,8 +277,6 @@ func GetPrompt(module string, args ...any) string {
 		data = executorResponseFormatterSlack
 	case PromptToolConfigAutoSelection:
 		data = toolConfigAutoSelection
-	case PromptAgentAwsDebug2:
-		data = agentAwsDebug2
 	case PromptAgentAwsDebugReact:
 		data = agentAwsDebugReact
 	case PromptAgentGcpDebugReact:

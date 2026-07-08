@@ -26,54 +26,54 @@ func init() {
 	})
 }
 
-// AwsDebugAgent2 is an agent that helps debug AWS issues.
-type AwsDebugAgent2 struct {
+// AwsDebugAgent is an agent that helps debug AWS issues.
+type AwsDebugAgent struct {
 	accountId            string
 	clusterSnapshot      map[string][]string
 	clusterSnapshotFound bool
 }
 
-// newAwsDebugAgent creates a new AwsDebugAgent2.
+// newAwsDebugAgent creates a new AwsDebugAgent.
 // The factory will provide accountId.
 func newAwsDebugAgent(accountId string) core.NBAgent {
-	return &AwsDebugAgent2{
+	return &AwsDebugAgent{
 		accountId: accountId,
 	}
 }
 
 // GetName returns the name of the agent.
-func (a *AwsDebugAgent2) GetName() string {
+func (a *AwsDebugAgent) GetName() string {
 	return AgentAwsDebugName
 }
 
 // GetNameAliases returns aliases for the agent name.
-func (a *AwsDebugAgent2) GetNameAliases() []string {
+func (a *AwsDebugAgent) GetNameAliases() []string {
 	return []string{"aws debug", "amazon_aws_debug", "aws_debug"}
 }
 
 // GetDescription returns a description of the agent.
-func (a *AwsDebugAgent2) GetDescription() string {
+func (a *AwsDebugAgent) GetDescription() string {
 	return "An expert AWS investigation and troubleshooting orchestrator that delegates to specialized sub-agents: `aws_observability` for CloudWatch Logs/Metrics/Alarms/X-Ray, and `aws` for all other AWS resources (EC2, RDS, S3, VPC, Lambda, Cost, etc.). Generates comprehensive investigation plans."
 }
 
-func (a *AwsDebugAgent2) GetSupportedTools(ctx *security.RequestContext) []tocore.NBTool {
+func (a *AwsDebugAgent) GetSupportedTools(ctx *security.RequestContext) []tocore.NBTool {
 	return getAwsPlannerSupportedTools(ctx, a.accountId)
 }
 
-func (a *AwsDebugAgent2) GetPlannerType() core.AgentPlannerType {
+func (a *AwsDebugAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeOrchestrating
 }
 
-func (a *AwsDebugAgent2) GetModelCategory() core.ModelTier {
+func (a *AwsDebugAgent) GetModelCategory() core.ModelTier {
 	return core.ModelTierReasoning
 }
 
-func (a *AwsDebugAgent2) GetCacheScope() core.CacheScope {
+func (a *AwsDebugAgent) GetCacheScope() core.CacheScope {
 	return core.CacheScopeAccount
 }
 
 // GetSystemPrompt returns the system prompt for the agent.
-func (a *AwsDebugAgent2) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
+func (a *AwsDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 	promptText := prompts_repo.GetPrompt(prompts_repo.PromptAgentAwsDebugReact)
 	instructions := strings.Split(promptText, "\n")
 

@@ -124,7 +124,7 @@ Exposed via RPC actions in [actions_knowledge_graph.go](../api/actions_knowledge
 - `kg_get_node` — drill-down (gated separately by `KGGetNodeEnabled` flag for payload control)
 - `resource_search` — fuzzy name resolver
 
-V2 uses the **ReWOO** planner. V1 and V2 are **mutually exclusive at init time** — when the flag is on, V1's metric-based runtime SDG tool is not registered.
+V2 declares the **ReAct** planner type (runs the ReAct3 engine). V1 and V2 are **mutually exclusive at init time** — when the flag is on, V1's metric-based runtime SDG tool is not registered.
 
 ---
 

@@ -21,7 +21,7 @@
 - **Config:** Service config is via `.env` or environment variables. See `config/config.go` for all options.
 
 ## Key Conventions & Patterns
-- **Agent Naming:** Each agent file is named for its domain (e.g., `agent_aws_debug_2.go`, `agent_log_loki.go`).
+- **Agent Naming:** Each agent file is named for its domain (e.g., `agent_aws_debug.go`, `agent_log_loki.go`).
 - **Provider Abstraction:** LLM and tool providers are abstracted for easy extension. New providers should follow the structure in `llms/` and `tools/`.
 - **Shared Test Code:** For LLM providers, shared tests live in `llms/googleai/shared_test/` and are reused across providers.
 - **API Auth:** All endpoints require a token in the header specified by `LLM_SERVER_TOKEN_HEADER`.

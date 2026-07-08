@@ -22,54 +22,54 @@ func init() {
 	})
 }
 
-// AzureDebugAgent2 is an agent that helps debug Azure issues.
-type AzureDebugAgent2 struct {
+// AzureDebugAgent is an agent that helps debug Azure issues.
+type AzureDebugAgent struct {
 	accountId            string
 	clusterSnapshot      map[string][]string
 	clusterSnapshotFound bool
 }
 
-// newAzureDebugAgent creates a new AzureDebugAgent2.
+// newAzureDebugAgent creates a new AzureDebugAgent.
 // The factory will provide accountId.
 func newAzureDebugAgent(accountId string) core.NBAgent {
-	return &AzureDebugAgent2{
+	return &AzureDebugAgent{
 		accountId: accountId,
 	}
 }
 
 // GetName returns the name of the agent.
-func (a *AzureDebugAgent2) GetName() string {
+func (a *AzureDebugAgent) GetName() string {
 	return AgentAzureDebugName
 }
 
 // GetNameAliases returns aliases for the agent name.
-func (a *AzureDebugAgent2) GetNameAliases() []string {
+func (a *AzureDebugAgent) GetNameAliases() []string {
 	return []string{"azure debug", "microsoft_azure_debug", "azure_debug"}
 }
 
 // GetDescription returns a description of the agent.
-func (a *AzureDebugAgent2) GetDescription() string {
+func (a *AzureDebugAgent) GetDescription() string {
 	return "An agent specialized in troubleshooting and debugging issues within Azure environments, providing step-by-step XML plans."
 }
 
-func (a *AzureDebugAgent2) GetSupportedTools(ctx *security.RequestContext) []tocore.NBTool {
+func (a *AzureDebugAgent) GetSupportedTools(ctx *security.RequestContext) []tocore.NBTool {
 	return getAzurePlannerSupportedTools(ctx, a.accountId)
 }
 
-func (a *AzureDebugAgent2) GetPlannerType() core.AgentPlannerType {
+func (a *AzureDebugAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeOrchestrating
 }
 
-func (a *AzureDebugAgent2) GetModelCategory() core.ModelTier {
+func (a *AzureDebugAgent) GetModelCategory() core.ModelTier {
 	return core.ModelTierReasoning
 }
 
-func (a *AzureDebugAgent2) GetCacheScope() core.CacheScope {
+func (a *AzureDebugAgent) GetCacheScope() core.CacheScope {
 	return core.CacheScopeAccount
 }
 
 // GetSystemPrompt returns the system prompt for the agent.
-func (a *AzureDebugAgent2) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
+func (a *AzureDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 	promptText := prompts_repo.GetPrompt(prompts_repo.PromptAgentAzureDebugReact)
 	instructions := strings.Split(promptText, "\n")
 

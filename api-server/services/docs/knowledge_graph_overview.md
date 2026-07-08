@@ -279,7 +279,7 @@ blast-radius questions and to ground investigations.
 |---|---|
 | **Status** | Merged & in active use — V2 (KG-only) merged 30 Apr 2026 (PR #29505) |
 | **What it does** | Answers natural-language questions about service dependencies, connectivity, and blast radius by reasoning over the KG |
-| **How it works** | KG-only agent using the ReWOO planner; tools = `kg_search_nodes`, `kg_traverse`, `kg_get_node`, `resource_search` |
+| **How it works** | KG-only agent using the ReAct3 planner; tools = `kg_search_nodes`, `kg_traverse`, `kg_get_node`, `resource_search` |
 | **Feature flag** | `llm_server_service_dependency_graph_v2_enabled` flips the agent from V1 (runtime-metric tool) to V2 (KG). V1 and V2 are mutually exclusive at init. |
 | **Validation** | 47 / 47 scripted API scenarios passed; one real bug found & fixed during testing |
 | **Real-world usage** | 264 production invocations (6 May – 17 Jun 2026), 99% success (263/264) |

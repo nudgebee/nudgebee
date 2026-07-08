@@ -10,7 +10,7 @@ For implementation detail on a specific service, read its own `README.md` or `CL
 
 - **`app/`** — Next.js dashboard. See [`app/CLAUDE.md`](../app/CLAUDE.md) for component conventions, API layer (`@lib/rpcGateway`), and design-system rules.
 - **`api-server/services/`** — Core Go backend (Gin). The Knowledge Graph subsystem is documented at [`api-server/services/knowledge_graph/CLAUDE.md`](../api-server/services/knowledge_graph/CLAUDE.md).
-- **`llm/llm-server/`** — LLM agents (ReWOO + ReAct). See [`llm/llm-server/CLAUDE.md`](../llm/llm-server/CLAUDE.md).
+- **`llm/llm-server/`** — LLM agents (Orchestrating + ReAct, both running the ReAct3 planner). See [`llm/llm-server/CLAUDE.md`](../llm/llm-server/CLAUDE.md).
 - **`llm/code-analysis/`** — Log-to-code RCA engine. See [`llm/code-analysis/CLAUDE.md`](../llm/code-analysis/CLAUDE.md).
 - **`collector-server/k8s-collector/relay-server/`** — K8s relay gateway. See [`collector-server/k8s-collector/relay-server/CLAUDE.md`](../collector-server/k8s-collector/relay-server/CLAUDE.md).
 - **`runbook-server/`** — Temporal-backed runbook orchestration. See [`runbook-server/README.md`](../runbook-server/README.md).
