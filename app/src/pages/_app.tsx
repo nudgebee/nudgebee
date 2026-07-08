@@ -30,7 +30,19 @@ export default function App({ Component, pageProps }: AppProps<{ session: Sessio
   return (
     <ThemeProvider theme={theme}>
       <AppErrorBoundary>
-        <SessionProvider session={pageProps.session}>
+        <SessionProvider
+          session={pageProps.session}
+          // Keep an open tab's session alive. NextAuth (jwt strategy) only rolls
+          // the session cookie's expiry when the client hits /api/auth/session;
+          // ordinary /api/graphql traffic does NOT extend it. With no interval,
+          // an open-but-idle tab is never refreshed and the JWT hard-expires at
+          // session.maxAge, after which the next 401/invalid-jwt bounces the user
+          // to /signin. Poll every 5 min (well under maxAge) so any live tab
+          // renews the cookie; only when online, plus the default focus refetch.
+          refetchInterval={5 * 60}
+          refetchOnWindowFocus={true}
+          refetchWhenOffline={false}
+        >
           <GlobalFilterContextProvider>
             {router.pathname.indexOf('signin') >= 0 ||
             router.pathname.indexOf('signup') >= 0 ||
