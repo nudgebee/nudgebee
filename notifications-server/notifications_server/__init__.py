@@ -53,6 +53,7 @@ def make_slack_app():
             "files:write",  # Upload files
             # --- Receiving messages & mentions ---
             "app_mentions:read",  # Receive @mention events
+            "files:read",  # Download user-uploaded files (images in Nubi conversations)
             "channels:history",  # Read messages in public channels the bot is in
             "groups:history",  # Read messages in private channels the bot is in
             "im:history",  # Read messages in DMs

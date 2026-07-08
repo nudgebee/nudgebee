@@ -231,6 +231,41 @@ class Cache:
                 LOG.exception(f"Error removing event entry {thread_ts}: {e}")
                 return False
 
+    def cache_thread_images(self, thread_ts, images):
+        # The current turn's images live under their own key (not the main
+        # chat_event entry) so the potentially-large base64 blob isn't
+        # re-serialized every time the entry's text/state is updated. Written on
+        # every turn — including an empty list — so a later image-less turn does
+        # not resend a prior turn's image.
+        self._ensure_connection()
+        if not self.redis_client:
+            return
+        key = f"chat_images:{thread_ts}"
+        with self.redis_client.pipeline() as pipe:
+            try:
+                pipe.set(key, json.dumps(images))
+                pipe.expire(key, settings.redis.conversation_cache_expiration_minutes * 60)
+                pipe.execute()
+            except (TypeError, redis.RedisError) as e:
+                LOG.exception(f"Error caching thread images {thread_ts}: {e}")
+
+    def get_thread_images(self, thread_ts):
+        self._ensure_connection()
+        if not self.redis_client:
+            return []
+        key = f"chat_images:{thread_ts}"
+        try:
+            images_json = self.redis_client.get(key)
+        except redis.RedisError as e:
+            LOG.exception(f"Error retrieving thread images {thread_ts}: {e}")
+            return []
+        if images_json:
+            try:
+                return json.loads(images_json)
+            except json.JSONDecodeError:
+                return []
+        return []
+
     def cache_channel_session_mapping(self, channel_id, team_id, session_id, account_id=None, tenant_id=None):
         """Cache the mapping between channel_id and session_id from /channels/join"""
         self._ensure_connection()

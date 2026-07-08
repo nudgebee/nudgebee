@@ -18,6 +18,8 @@ from notifications_server.configs.settings import ACCOUNT_SECURITY_CONTEXT, LLM_
 from notifications_server.message_templates.blocks import MarkdownBlock, ContextBlock
 from notifications_server.models.models import ChannelAccountMapping
 from notifications_server.services.cache import Cache
+from notifications_server.services.messaging_installations import load_installation_by_team
+from notifications_server.services.slack_images import collect_slack_images
 from notifications_server.services.actions import (
     validate_and_get_user_tenants,
     CLUSTER_NOT_FOUND,
@@ -160,6 +162,47 @@ class Events:
             "async": True,
         }
 
+    def _slack_bot_token(self, team_id):
+        try:
+            with Session(self.session.get_bind()) as session:
+                installation = load_installation_by_team(session, team_id, "slack")
+            return installation.token if installation else None
+        except Exception as e:
+            LOG.warning("Failed to resolve Slack bot token for team %s: %s", team_id, e)
+            return None
+
+    def _stash_thread_images(self, event, team_id, thread_ts):
+        """Download any images attached to this turn and cache them for the LLM
+        payload. Always overwrites (with an empty list when there are none) so an
+        image-less turn does not resend a previous turn's image. No-op unless the
+        feature is enabled."""
+        if not settings.slack.image_support_enabled:
+            return
+        images, skipped = [], []
+        files = event.get("files") or []
+        if files:
+            token = self._slack_bot_token(team_id)
+            if token:
+                images, skipped = collect_slack_images(
+                    files,
+                    token,
+                    max_count=settings.slack.image_max_per_message,
+                    max_size_mb=settings.slack.image_max_size_mb,
+                )
+            else:
+                LOG.warning("Slack image support enabled but no bot token for team %s; skipping images", team_id)
+        self.cache.cache_thread_images(thread_ts, images)
+        if skipped:
+            LOG.info("Skipped %d Slack image(s) for thread %s: %s", len(skipped), thread_ts, "; ".join(skipped))
+
+    def _attach_images(self, payload, thread_ts):
+        """Attach any cached images for this thread to the outgoing LLM payload."""
+        if not settings.slack.image_support_enabled:
+            return
+        images = self.cache.get_thread_images(thread_ts)
+        if images:
+            payload["images"] = images
+
     @staticmethod
     def _validate_context_response_for_account_ids(context_account_ids, response):
         if isinstance(response, dict) and "context" in response and isinstance(response["context"], dict):
@@ -184,6 +227,8 @@ class Events:
                     get_empty_message_response(),
                 )
                 return
+
+            self._stash_thread_images(event, team_id, thread_ts)
 
             cached_entry = self.cache.get_event_entry(thread_ts)
 
@@ -699,6 +744,8 @@ class Events:
             ["followup_msg_ts", "followup_question", "agent_id", "message_id"],
         )
 
+        self._attach_images(payload, thread_ts)
+
         self.query_llm_server(payload, headers)
 
     def _fetch_and_update_account_details_by_id(self, account_id, channel_id, team_id, thread_ts):
@@ -738,6 +785,8 @@ class Events:
             "x-tenant-id": cached_entry["tenant_id"],
             "x-user-id": cached_entry["user_id"],
         }
+
+        self._attach_images(payload, thread_ts)
 
         try:
             self.query_llm_server(payload, headers)
