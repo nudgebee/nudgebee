@@ -297,7 +297,9 @@ func buildWorkspaceAction(tool, command string, configValues []db.WorkspaceConfi
 	case "psql", "postgres":
 		pgFlags := ""
 		if dbName != "" {
-			pgFlags = " --dbname " + dbName
+			if sanitized := sanitizeNameRe.ReplaceAllString(dbName, ""); sanitized != "" {
+				pgFlags = " --dbname " + sanitized
+			}
 		}
 		if strings.HasPrefix(command, "psql") {
 			command = strings.Replace(command, "psql", "psql"+pgFlags, 1)
@@ -316,7 +318,9 @@ func buildWorkspaceAction(tool, command string, configValues []db.WorkspaceConfi
 	case "mysql":
 		mysqlFlags := `--user=$MYSQL_USER --ssl=0 --password=$MYSQL_PASSWD --host=$MYSQL_HOST --port=$MYSQL_PORT`
 		if dbName != "" {
-			mysqlFlags += " --database=" + dbName
+			if sanitized := sanitizeNameRe.ReplaceAllString(dbName, ""); sanitized != "" {
+				mysqlFlags += " --database=" + sanitized
+			}
 		}
 		if strings.Contains(command, "mysql") {
 			command = strings.Replace(command, "mysql", "mysql "+mysqlFlags, 1)
@@ -358,7 +362,9 @@ func buildWorkspaceAction(tool, command string, configValues []db.WorkspaceConfi
 			chDatabase = v
 		}
 		if dbName != "" {
-			chDatabase = dbName
+			if sanitized := sanitizeNameRe.ReplaceAllString(dbName, ""); sanitized != "" {
+				chDatabase = sanitized
+			}
 		}
 		// chUserKey/chPassKey: env var names referenced in the CLI command (--user $X)
 		chUserKey := "CLICKHOUSE_USER"
