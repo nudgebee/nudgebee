@@ -465,11 +465,16 @@ def retag_legacy_modules() -> Dict[str, Any]:
             logger.exception("retag_migration: failed for collection %s", info.name)
             summary["errors"].append({"collection": info.name, "error": str(exc)})
 
-    # Caches held stale (pre-migration) CollectionInfo. Invalidating here forces
-    # the next list_collections call to re-read from Qdrant, so the UI and the
-    # llm-server filter see the new state immediately.
-    get_collection_list_cache().invalidate()
-    get_metadata_cache().invalidate()
+    # Only invalidate the caches when the migration actually rewrote at least
+    # one collection's metadata. When migrated is empty (typical steady-state:
+    # every collection is already on the new tag layout, everything falls
+    # through the LEGACY_MODULES gate and gets skipped), the freshly-warmed
+    # startup cache is still authoritative. Blindly clearing it here forces
+    # the next ingest to eat another 44s N+1 refresh cycle across every
+    # collection — the exact avoidable work that made this bug visible.
+    if summary["migrated"]:
+        get_collection_list_cache().invalidate()
+        get_metadata_cache().invalidate()
 
     logger.info(
         "retag_migration: complete — scanned=%d migrated=%d skipped=%d errors=%d",

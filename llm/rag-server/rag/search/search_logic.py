@@ -31,15 +31,23 @@ def _search_single_collection_by_vector(
     k: int,
     metadata_filter: Optional[Dict] = None,
 ) -> List[dict]:
-    """Search a single Qdrant collection using a pre-computed query vector."""
+    """Search a single Qdrant collection using a pre-computed query vector.
+
+    ``metadata_filter`` values may be scalars (equality), lists (IN), or dicts
+    with gte/gt/lte/lt keys (Range). Dispatch happens in
+    ``rag.search.filters.build_field_condition`` — kept as one code path so
+    callers can mix predicate shapes in a single request. The memory-v2
+    read path needs this to combine ``agent_module`` equality with an
+    ``expires_at`` freshness range in one call.
+    """
     try:
         query_filter = None
         if metadata_filter:
-            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            from qdrant_client.models import Filter
 
-            conditions = []
-            for key, value in metadata_filter.items():
-                conditions.append(FieldCondition(key=f"metadata.{key}", match=MatchValue(value=value)))
+            from rag.search.filters import build_field_condition
+
+            conditions = [build_field_condition(key, value) for key, value in metadata_filter.items()]
             query_filter = Filter(must=conditions)  # type: ignore[arg-type]
 
         response = client.query_points(

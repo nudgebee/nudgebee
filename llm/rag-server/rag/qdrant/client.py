@@ -347,27 +347,78 @@ class CollectionInfo:
         self.points_count = points_count
 
 
+# Single-flight coordination for list_collections_optimized. When the cache is
+# empty (fresh start, retag_migration clear, TTL expiry), N concurrent callers
+# would each trigger the slow list+metadata iteration — the "thundering herd"
+# we observed after cache clears (5 concurrent ingests, 5 duplicate refreshes,
+# ~5×55 wasted Qdrant round-trips). This event coordinates them so exactly one
+# thread does the work and the rest block on the result.
+#
+# Semantics:
+#   _singleflight_event is None            → no refresh in progress
+#   _singleflight_event is Event object    → a refresh is in flight; waiters .wait() on it
+# Winner is chosen under _singleflight_lock; the actual refresh runs outside the
+# lock so it doesn't serialize cache reads on other paths.
+_singleflight_lock = threading.Lock()
+_singleflight_event: Optional[threading.Event] = None
+
+
 def list_collections_optimized() -> List[CollectionInfo]:
     """
-    List all collections with metadata (cached).
+    List all collections with metadata (cached, single-flight).
 
     Uses a 30-minute TTL cache to avoid repeated N+1 API calls to Qdrant.
     Qdrant's get_collections() doesn't return metadata, so we need to
     call get_collection() for each collection to get metadata.
 
+    Concurrent misses are coalesced: only one thread fetches from Qdrant;
+    others block until the refresh publishes to the cache.
+
     Returns:
         List of CollectionInfo objects with name, metadata, and points_count
     """
+    global _singleflight_event
+
     from rag.core.cache import get_collection_list_cache
     from rag.core.metadata_cache import get_metadata_cache
 
-    # Check cache first
+    # Fast path — cache hit needs no coordination.
     cache = get_collection_list_cache()
     cached_collections = cache.get()
     if cached_collections is not None:
         return cached_collections
 
-    # Cache miss - fetch from Qdrant
+    # Cache miss. Under the single-flight lock, decide winner vs. waiter.
+    with _singleflight_lock:
+        # Re-check now that we hold the lock — a refresh may have completed
+        # between our first cache.get() and the lock acquisition.
+        cached_collections = cache.get()
+        if cached_collections is not None:
+            return cached_collections
+
+        if _singleflight_event is not None:
+            # Someone else is already refreshing. Wait for their result.
+            waiting_on = _singleflight_event
+            do_refresh = False
+        else:
+            # We're the winner — publish an event and proceed to refresh.
+            _singleflight_event = threading.Event()
+            waiting_on = _singleflight_event
+            do_refresh = True
+
+    if not do_refresh:
+        # Bounded wait — a hung refresh must not stall waiters forever. If
+        # the winner errors out and returns [], we do too rather than
+        # kicking off another storm.
+        waiting_on.wait(timeout=120)
+        cached_collections = cache.get()
+        if cached_collections is not None:
+            return cached_collections
+        return []
+
+    # We are the refresh winner. Do the slow work outside the coordination
+    # lock so other paths (add, clear, get) aren't blocked by the fetch.
+    fetched_at_generation = cache.begin_refresh()
     logger.info("Collection list cache MISS - fetching from Qdrant")
     client = get_qdrant_client()
 
@@ -403,8 +454,9 @@ def list_collections_optimized() -> List[CollectionInfo]:
 
         logger.debug(f"Fetched {len(collections_with_metadata)} collections with metadata from Qdrant")
 
-        # Update both caches
-        cache.set(collections_with_metadata)
+        # Update both caches. Pass the pre-fetch generation so a stale
+        # refresh cannot silently drop concurrently-added collections.
+        cache.set(collections_with_metadata, fetched_at_generation=fetched_at_generation)
         get_metadata_cache().update_from_collections(collections_with_metadata)
 
         return collections_with_metadata
@@ -412,3 +464,12 @@ def list_collections_optimized() -> List[CollectionInfo]:
     except Exception as e:
         logger.error(f"Error listing collections: {e}")
         return []
+
+    finally:
+        # Clear the in-flight marker and wake any waiters. Signal outside
+        # the lock so we don't hold it across a potentially large wake-up.
+        with _singleflight_lock:
+            event_to_signal = _singleflight_event
+            _singleflight_event = None
+        if event_to_signal is not None:
+            event_to_signal.set()

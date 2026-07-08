@@ -34,6 +34,48 @@ from qdrant_client.models import (
 logger = logging.getLogger(__name__)
 
 
+# Range operators the value-shape dispatcher recognises. A dict value that
+# contains any of these keys is treated as a Range instead of a MatchValue.
+_RANGE_KEYS = ("gte", "gt", "lte", "lt")
+
+
+def build_field_condition(field: str, value: Any) -> FieldCondition:
+    """
+    Build a single Qdrant FieldCondition, dispatching by value shape.
+
+    - list → MatchAny (IN)
+    - dict containing any of gte/gt/lte/lt → Range
+    - anything else → MatchValue (equality)
+
+    The dispatcher lets callers pass a single ``metadata_filter`` dict that
+    mixes equality, IN, and range predicates per field — needed by the
+    memory-v2 read path (agent_module equality + expires_at range + kind IN
+    in one call). See docs/memory-rag-integration.md.
+
+    Args:
+        field: Metadata field name. ``metadata.`` prefix added if absent.
+        value: Predicate value — scalar, list, or range dict.
+
+    Returns:
+        FieldCondition ready to attach to a Qdrant Filter.
+    """
+    field_key = f"metadata.{field}" if not field.startswith("metadata.") else field
+
+    if isinstance(value, list):
+        return FieldCondition(key=field_key, match=MatchAny(any=value))
+
+    if isinstance(value, dict) and any(k in value for k in _RANGE_KEYS):
+        range_obj = Range(
+            gte=value.get("gte"),
+            gt=value.get("gt"),
+            lte=value.get("lte"),
+            lt=value.get("lt"),
+        )
+        return FieldCondition(key=field_key, range=range_obj)
+
+    return FieldCondition(key=field_key, match=MatchValue(value=value))
+
+
 def build_metadata_filter(
     module: Optional[str] = None,
     account: Optional[str] = None,
@@ -47,7 +89,9 @@ def build_metadata_filter(
         module: Filter by module name (e.g., "support", "billing")
         account: Filter by account ID
         source: Filter by source (e.g., "docs.example.com")
-        custom_fields: Additional custom metadata fields to filter
+        custom_fields: Additional custom metadata fields to filter. Values
+            may be scalars (equality), lists (IN via MatchAny), or dicts
+            with gte/gt/lte/lt keys (Range) — see ``build_field_condition``.
 
     Returns:
         Qdrant Filter object or None if no filters provided
@@ -78,15 +122,7 @@ def build_metadata_filter(
     # Custom fields
     if custom_fields:
         for key, value in custom_fields.items():
-            # Add metadata. prefix if not already present
-            field_key = f"metadata.{key}" if not key.startswith("metadata.") else key
-
-            if isinstance(value, list):
-                # Match any value in list
-                conditions.append(FieldCondition(key=field_key, match=MatchAny(any=value)))
-            else:
-                # Match exact value
-                conditions.append(FieldCondition(key=field_key, match=MatchValue(value=value)))
+            conditions.append(build_field_condition(key, value))
 
     # Return None if no filters (Qdrant will return all results)
     if not conditions:
