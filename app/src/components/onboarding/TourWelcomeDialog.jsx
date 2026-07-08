@@ -3,7 +3,7 @@ import { Box, Typography } from '@mui/material';
 import { Modal } from '@ui/Modal';
 import { Button } from '@ui/Button';
 import SafeIcon from '@shared/icons/SafeIcon';
-import { getNubiIconUrl, getAssistantName, getBrandTitle } from '@hooks/useTenantBranding';
+import { useTenantBranding } from '@hooks/useTenantBranding';
 import { ds } from 'src/utils/colors';
 
 const capitalize = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
@@ -15,13 +15,18 @@ const capitalize = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
  * icon), so it matches white-label deployments automatically.
  */
 const TourWelcomeDialog = ({ open, title, description, totalSteps, onStart, onSnooze }) => {
-  const persona = `${capitalize(getAssistantName())} from ${getBrandTitle()}`;
+  // Reactive branding: re-renders when the async /api/public/app_config fetch
+  // resolves, so white-label partners don't get stuck on Nudgebee defaults when
+  // this dialog mounts before the branding cache is populated.
+  const { assistantName, baseTitle, nubiIconUrl } = useTenantBranding();
+  const persona = `${capitalize(assistantName)} from ${baseTitle}`;
 
   return (
     <Modal
       open={open}
       handleClose={onSnooze}
       width='sm'
+      actionButtonsFullBleed
       title={
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 'var(--ds-space-2)' }}>
           <Box
@@ -37,7 +42,7 @@ const TourWelcomeDialog = ({ open, title, description, totalSteps, onStart, onSn
               flexShrink: 0,
             }}
           >
-            <SafeIcon src={getNubiIconUrl()} alt='' width={20} height={20} />
+            <SafeIcon src={nubiIconUrl} alt='' width={20} height={20} />
           </Box>
           <Typography sx={{ fontSize: ds.text.small, color: ds.gray[500], fontWeight: 500 }}>{persona}</Typography>
         </Box>
@@ -45,6 +50,8 @@ const TourWelcomeDialog = ({ open, title, description, totalSteps, onStart, onSn
       actionButtons={
         <Box
           sx={{
+            width: '100%',
+            boxSizing: 'border-box',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
@@ -53,7 +60,7 @@ const TourWelcomeDialog = ({ open, title, description, totalSteps, onStart, onSn
             background: ds.background[200],
           }}
         >
-          <Button id='tour-welcome-snooze' tone='ghost' size='md' onClick={onSnooze}>
+          <Button id='tour-welcome-snooze' tone='secondary' size='md' onClick={onSnooze}>
             Snooze
           </Button>
           {totalSteps > 1 && <Typography sx={{ fontSize: ds.text.small, color: ds.gray[400] }}>{`1 of ${totalSteps}`}</Typography>}
