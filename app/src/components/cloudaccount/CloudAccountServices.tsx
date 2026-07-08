@@ -550,6 +550,7 @@ const ResourceDetails = (props: { resourceData: IResourceDetail }) => {
           backgroundColor: ds.background[100],
           padding: ds.space[5],
           borderRadius: ds.radius.md,
+          border: `1px solid ${ds.gray[200]}`,
         }}
       >
         {detailedResource.arn && (
@@ -629,6 +630,7 @@ const ResourceDetails = (props: { resourceData: IResourceDetail }) => {
               padding: ds.space[5],
               backgroundColor: ds.background[100],
               borderRadius: ds.radius.md,
+              border: `1px solid ${ds.gray[200]}`,
             }}
           >
             {Object.entries(detailedResource.meta)
@@ -688,6 +690,7 @@ const ResourceDetails = (props: { resourceData: IResourceDetail }) => {
               padding: ds.space[3],
               backgroundColor: ds.background[100],
               borderRadius: ds.radius.md,
+              border: `1px solid ${ds.gray[200]}`,
             }}
           >
             {Object.entries(detailedResource.tags).map(([key, value]: [string, any]) => (

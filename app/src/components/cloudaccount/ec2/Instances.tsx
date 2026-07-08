@@ -771,6 +771,7 @@ const InstancesView = (props: {
                             backgroundColor: ds.background[100],
                             padding: ds.space[5],
                             borderRadius: ds.radius.md,
+                            border: `1px solid ${ds.gray[200]}`,
                           }}
                         >
                           {drilldownQuery.meta?.id && <DataBlock title={'Resource Id'} data={drilldownQuery.meta.id} />}
@@ -855,6 +856,7 @@ const InstancesView = (props: {
                           backgroundColor: ds.background[100],
                           padding: ds.space[5],
                           borderRadius: ds.radius.md,
+                          border: `1px solid ${ds.gray[200]}`,
                         }}
                       >
                         {drilldownQuery.meta.InstanceId && <DataBlock title={'Instance Id'} data={drilldownQuery.meta.InstanceId} />}

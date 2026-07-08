@@ -495,7 +495,14 @@ const ResolutionsView = () => {
 
                   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Object.keys(parsed).length > 0) {
                     return (
-                      <Box sx={{ padding: ds.space[4], backgroundColor: ds.background[100], borderRadius: ds.radius.sm }}>
+                      <Box
+                        sx={{
+                          padding: ds.space[4],
+                          backgroundColor: ds.background[100],
+                          borderRadius: ds.radius.sm,
+                          border: `1px solid ${ds.gray[300]}`,
+                        }}
+                      >
                         <KeyValueList data={parsed} />
                       </Box>
                     );
@@ -508,6 +515,7 @@ const ResolutionsView = () => {
                         padding: ds.space[4],
                         backgroundColor: ds.background[100],
                         borderRadius: ds.radius.sm,
+                        border: `1px solid ${ds.gray[300]}`,
                         fontSize: ds.text.body,
                         color: ds.gray[700],
                         whiteSpace: 'pre-wrap',
@@ -529,6 +537,7 @@ const ResolutionsView = () => {
                         padding: ds.space[4],
                         backgroundColor: ds.background[100],
                         borderRadius: ds.radius.sm,
+                        border: `1px solid ${ds.gray[300]}`,
                         fontSize: ds.text.body,
                         color: ds.gray[700],
                         whiteSpace: 'pre-wrap',

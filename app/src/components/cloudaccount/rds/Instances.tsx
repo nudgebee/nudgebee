@@ -139,6 +139,7 @@ const AzureRdsDetails = ({ drilldownQuery }: { drilldownQuery: any }) => {
           backgroundColor: ds.background[100],
           padding: ds.space[5],
           borderRadius: ds.radius.md,
+          border: `1px solid ${ds.gray[200]}`,
         }}
       >
         {drilldownQuery.meta?.id && <DataBlock title={'Resource Id'} data={drilldownQuery.meta.id} />}
@@ -211,6 +212,7 @@ const AmazonRdsDetails = ({ drilldownQuery }: { drilldownQuery: any }) => {
           backgroundColor: ds.background[100],
           padding: ds.space[5],
           borderRadius: ds.radius.md,
+          border: `1px solid ${ds.gray[200]}`,
         }}
       >
         {drilldownQuery?.meta?.PubliclyAccessible !== undefined && (
@@ -404,6 +406,7 @@ const GCPRdsDetails = ({ drilldownQuery }: { drilldownQuery: any }) => {
           backgroundColor: ds.background[100],
           padding: ds.space[5],
           borderRadius: ds.radius.md,
+          border: `1px solid ${ds.gray[200]}`,
         }}
       >
         {meta.connectionName && <DataBlock title={'Connection Name'} data={meta.connectionName} />}
@@ -479,6 +482,7 @@ const GCPRdsDetails = ({ drilldownQuery }: { drilldownQuery: any }) => {
             backgroundColor: ds.background[100],
             padding: ds.space[5],
             borderRadius: ds.radius.md,
+            border: `1px solid ${ds.gray[200]}`,
           }}
         >
           <Typography sx={{ gridColumn: '1 / -1', fontWeight: ds.weight.semibold, fontSize: ds.text.bodyLg, color: ds.gray[700] }}>
@@ -518,6 +522,7 @@ const GCPRdsDetails = ({ drilldownQuery }: { drilldownQuery: any }) => {
             backgroundColor: ds.background[100],
             padding: ds.space[5],
             borderRadius: ds.radius.md,
+            border: `1px solid ${ds.gray[200]}`,
           }}
         >
           <Typography sx={{ gridColumn: '1 / -1', fontWeight: ds.weight.semibold, fontSize: ds.text.bodyLg, color: ds.gray[700] }}>
@@ -546,6 +551,7 @@ const GCPRdsDetails = ({ drilldownQuery }: { drilldownQuery: any }) => {
             backgroundColor: ds.background[100],
             padding: ds.space[5],
             borderRadius: ds.radius.md,
+            border: `1px solid ${ds.gray[200]}`,
           }}
         >
           <Typography sx={{ gridColumn: '1 / -1', fontWeight: ds.weight.semibold, fontSize: ds.text.bodyLg, color: ds.gray[700] }}>
@@ -579,6 +585,7 @@ const GCPRdsDetails = ({ drilldownQuery }: { drilldownQuery: any }) => {
             backgroundColor: ds.background[100],
             padding: ds.space[5],
             borderRadius: ds.radius.md,
+            border: `1px solid ${ds.gray[200]}`,
           }}
         >
           <Typography sx={{ gridColumn: '1 / -1', fontWeight: ds.weight.semibold, fontSize: ds.text.bodyLg, color: ds.gray[700] }}>

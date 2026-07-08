@@ -23,8 +23,24 @@ import { ToggleGroup, type ToggleGroupOption } from '@ui/ToggleGroup';
 import SearchInput from '@ui/SearchInput';
 import DownloadButton from '@shared/buttons/DownloadButton';
 import ServiceRefreshButton from '@components/cloudaccount/ServiceRefreshButton';
-import { CustomText } from '@components/cloudaccount/common';
+import { CustomText, DataBlock } from '@components/cloudaccount/common';
 import { ds } from '@utils/colors';
+
+// White card frame shared by every ECS drilldown detail panel (matches the EC2/RDS detail cards).
+const DETAIL_CARD_SX = {
+  p: ds.space[5],
+  backgroundColor: ds.background[100],
+  borderRadius: ds.radius.md,
+  border: `1px solid ${ds.gray[200]}`,
+};
+
+// Three-column key/value grid used inside the detail cards (matches the EC2/RDS DataBlock grids).
+const DETAIL_GRID_SX = {
+  display: 'grid',
+  gridTemplateColumns: '1.5fr 1.5fr 1.5fr',
+  columnGap: ds.space[4],
+  rowGap: ds.space[5],
+};
 
 export interface ICustomTableRow {
   component?: JSX.Element;
@@ -646,7 +662,7 @@ const ECSServiceEvent = ({ ecsDetails }: ECSServiceEventProps) => {
   const events = ecsDetails?.meta?.Events || [];
 
   if (events.length === 0) {
-    return <Typography sx={{ p: 2 }}>No events available for this service.</Typography>;
+    return <Typography sx={{ ...DETAIL_CARD_SX, color: ds.gray[600] }}>No events available for this service.</Typography>;
   }
 
   const tableData: ICustomTableRow[][] = events.map((event: ECSEvent) => {
@@ -686,11 +702,11 @@ const ECSNetworkDetails = ({ ecsDetails }: ECSNetworkDetailsProps) => {
   const networkConfig = ecsDetails?.meta?.NetworkConfiguration?.AwsvpcConfiguration;
 
   if (!networkConfig) {
-    return <Typography sx={{ p: 2 }}>No network configuration details available for this service.</Typography>;
+    return <Typography sx={{ ...DETAIL_CARD_SX, color: ds.gray[600] }}>No network configuration details available for this service.</Typography>;
   }
 
   return (
-    <Box sx={{ p: 2 }}>
+    <Box sx={DETAIL_CARD_SX}>
       <Stack spacing={ds.space[4]}>
         <Box>
           <Typography variant='subtitle1' gutterBottom sx={{ fontWeight: ds.weight.semibold }}>
@@ -765,11 +781,11 @@ const ECSDeploymentConfiguration = ({ ecsDetails }: ECSDeploymentConfigurationPr
   const deployConfig = ecsDetails?.meta?.DeploymentConfiguration;
 
   if (!deployConfig) {
-    return <Typography sx={{ p: 2 }}>No deployment configuration details available for this service.</Typography>;
+    return <Typography sx={{ ...DETAIL_CARD_SX, color: ds.gray[600] }}>No deployment configuration details available for this service.</Typography>;
   }
 
   return (
-    <Box sx={{ p: 2 }}>
+    <Box sx={DETAIL_CARD_SX}>
       <Stack spacing={ds.space[5]}>
         <Box>
           <Typography variant='subtitle1' gutterBottom sx={{ fontWeight: ds.weight.semibold }}>
@@ -848,11 +864,11 @@ const ECSDeploymentsDetails = ({ ecsDetails }: ECSDeploymentsDetailsProps) => {
   const deployments = ecsDetails?.meta?.Deployments;
 
   if (!deployments || deployments.length === 0) {
-    return <Typography sx={{ p: 2 }}>No deployment details available for this service.</Typography>;
+    return <Typography sx={{ ...DETAIL_CARD_SX, color: ds.gray[600] }}>No deployment details available for this service.</Typography>;
   }
 
   return (
-    <Box sx={{ p: 2 }}>
+    <Box sx={DETAIL_CARD_SX}>
       <Stack spacing={ds.space[5]}>
         {deployments.map((deployment, index) => (
           <Box key={deployment.Id || index} sx={{ border: `1px solid ${ds.gray[200]}`, borderRadius: ds.radius.sm, p: 2 }}>
@@ -1194,7 +1210,7 @@ export const ECSClusters = (props: {
 const ECSClusterInfo = ({ clusterDetails }: { clusterDetails: any }) => {
   const meta = clusterDetails?.meta;
   if (!meta) {
-    return <Typography sx={{ p: 2 }}>No cluster information available.</Typography>;
+    return <Typography sx={{ ...DETAIL_CARD_SX, color: ds.gray[600] }}>No cluster information available.</Typography>;
   }
 
   const infoSections = [
@@ -1209,14 +1225,9 @@ const ECSClusterInfo = ({ clusterDetails }: { clusterDetails: any }) => {
   ];
 
   return (
-    <Box sx={{ p: 2 }}>
-      <Typography variant='subtitle1' gutterBottom sx={{ fontWeight: ds.weight.semibold }}>
-        Cluster Overview
-      </Typography>
+    <Box sx={{ ...DETAIL_GRID_SX, ...DETAIL_CARD_SX }}>
       {infoSections.map((info) => (
-        <Typography key={info.label} variant='body2' component='div'>
-          <span style={{ fontWeight: ds.weight.medium }}>{info.label}:</span> {info.value ?? 'N/A'}
-        </Typography>
+        <DataBlock key={info.label} title={info.label} data={info.value ?? 'N/A'} />
       ))}
     </Box>
   );
@@ -1227,11 +1238,11 @@ const ECSClusterCapacityProviders = ({ clusterDetails }: { clusterDetails: any }
   const defaultStrategy = clusterDetails?.meta?.DefaultCapacityProviderStrategy;
 
   if ((!capacityProviders || capacityProviders.length === 0) && (!defaultStrategy || defaultStrategy.length === 0)) {
-    return <Typography sx={{ p: 2 }}>No capacity providers configured for this cluster.</Typography>;
+    return <Typography sx={{ ...DETAIL_CARD_SX, color: ds.gray[600] }}>No capacity providers configured for this cluster.</Typography>;
   }
 
   return (
-    <Box sx={{ p: 2 }}>
+    <Box sx={DETAIL_CARD_SX}>
       <Stack spacing={ds.space[4]}>
         {capacityProviders && capacityProviders.length > 0 && (
           <Box>
@@ -1270,18 +1281,13 @@ const ECSClusterSettings = ({ clusterDetails }: { clusterDetails: any }) => {
   const settings = clusterDetails?.meta?.Settings;
 
   if (!settings || settings.length === 0) {
-    return <Typography sx={{ p: 2 }}>No settings available for this cluster.</Typography>;
+    return <Typography sx={{ ...DETAIL_CARD_SX, color: ds.gray[600] }}>No settings available for this cluster.</Typography>;
   }
 
   return (
-    <Box sx={{ p: 2 }}>
-      <Typography variant='subtitle1' gutterBottom sx={{ fontWeight: ds.weight.semibold }}>
-        Cluster Settings
-      </Typography>
+    <Box sx={{ ...DETAIL_GRID_SX, ...DETAIL_CARD_SX }}>
       {settings.map((setting: { Name: string; Value: string }) => (
-        <Typography key={setting.Name} variant='body2' component='div'>
-          <span style={{ fontWeight: ds.weight.medium }}>{setting.Name}:</span> {setting.Value}
-        </Typography>
+        <DataBlock key={setting.Name} title={setting.Name} data={setting.Value} />
       ))}
     </Box>
   );
@@ -1290,10 +1296,10 @@ const ECSClusterSettings = ({ clusterDetails }: { clusterDetails: any }) => {
 const ECSClusterTagsDisplay = ({ clusterDetails }: { clusterDetails: any }) => {
   const tags = clusterDetails?.meta?.Tags;
   if (!tags || tags.length === 0) {
-    return <Typography sx={{ p: 2 }}>No tags available for this cluster.</Typography>;
+    return <Typography sx={{ ...DETAIL_CARD_SX, color: ds.gray[600] }}>No tags available for this cluster.</Typography>;
   }
   return (
-    <Box sx={{ p: 2 }}>
+    <Box sx={DETAIL_CARD_SX}>
       <Typography variant='subtitle1' gutterBottom sx={{ fontWeight: ds.weight.semibold }}>
         Cluster Tags
       </Typography>
@@ -1349,7 +1355,7 @@ interface ECSTaskDetailsProps {
 const ECSTaskInfo = ({ taskDetails }: ECSTaskDetailsProps) => {
   const meta = taskDetails?.meta;
   if (!meta) {
-    return <Typography sx={{ p: 2 }}>No task information available.</Typography>;
+    return <Typography sx={{ ...DETAIL_CARD_SX, color: ds.gray[600] }}>No task information available.</Typography>;
   }
 
   // Task-level Cpu/Memory (from DescribeTasks) are empty for EC2 launch-type tasks,
@@ -1393,41 +1399,35 @@ const ECSTaskInfo = ({ taskDetails }: ECSTaskDetailsProps) => {
   ];
 
   return (
-    <Box sx={{ p: 2 }}>
+    <Box sx={DETAIL_CARD_SX}>
       <Stack spacing={ds.space[5]}>
         <Box>
           <Typography variant='subtitle1' gutterBottom sx={{ fontWeight: ds.weight.semibold }}>
             Task Overview
           </Typography>
-          {infoSections.map((info) =>
-            info.value ? (
-              <Typography key={info.label} variant='body2' component='div'>
-                <span style={{ fontWeight: ds.weight.medium }}>{info.label}:</span> {info.value}
-              </Typography>
-            ) : null
-          )}
+          <Box sx={DETAIL_GRID_SX}>
+            {infoSections.map((info) => (info.value ? <DataBlock key={info.label} title={info.label} data={info.value} /> : null))}
+          </Box>
         </Box>
         <Box>
           <Typography variant='subtitle1' gutterBottom sx={{ fontWeight: ds.weight.semibold }}>
             Timestamps
           </Typography>
-          {timeSections.map((time) => (
-            <Typography key={time.label} variant='body2' component='div'>
-              <span style={{ fontWeight: ds.weight.medium }}>{time.label}:</span> {time.value}
-            </Typography>
-          ))}
+          <Box sx={DETAIL_GRID_SX}>
+            {timeSections.map((time) => (
+              <DataBlock key={time.label} title={time.label} data={time.value} isCopyable={false} />
+            ))}
+          </Box>
         </Box>
         {meta.StoppedReason && (
           <Box>
             <Typography variant='subtitle1' gutterBottom sx={{ fontWeight: ds.weight.semibold }}>
               Stop Information
             </Typography>
-            <Typography variant='body2'>
-              <span style={{ fontWeight: ds.weight.medium }}>Stop Code:</span> {meta.StopCode || 'N/A'}
-            </Typography>
-            <Typography variant='body2'>
-              <span style={{ fontWeight: ds.weight.medium }}>Stop Reason:</span> {meta.StoppedReason}
-            </Typography>
+            <Box sx={DETAIL_GRID_SX}>
+              <DataBlock title='Stop Code' data={meta.StopCode || 'N/A'} />
+              <DataBlock title='Stop Reason' data={meta.StoppedReason} />
+            </Box>
           </Box>
         )}
       </Stack>
@@ -1455,11 +1455,11 @@ interface ECSTaskContainersProps {
 const ECSTaskContainers = ({ taskDetails }: ECSTaskContainersProps) => {
   const containers = taskDetails?.meta?.Containers;
   if (!containers || containers.length === 0) {
-    return <Typography sx={{ p: 2 }}>No container details available for this task.</Typography>;
+    return <Typography sx={{ ...DETAIL_CARD_SX, color: ds.gray[600] }}>No container details available for this task.</Typography>;
   }
 
   return (
-    <Box sx={{ p: 2 }}>
+    <Box sx={DETAIL_CARD_SX}>
       <Stack spacing={ds.space[5]}>
         {containers.map((container, index) => (
           <Box key={container.Name || index} sx={{ border: `1px solid ${ds.gray[200]}`, borderRadius: ds.radius.sm, p: 2 }}>
@@ -1541,11 +1541,11 @@ const ECSTaskNetworkInfo = ({ taskDetails }: ECSTaskNetworkInfoProps) => {
   const connectivityAt = taskDetails?.meta?.ConnectivityAt;
 
   if ((!attachments || attachments.length === 0) && !connectivity) {
-    return <Typography sx={{ p: 2 }}>No network attachment details available.</Typography>;
+    return <Typography sx={{ ...DETAIL_CARD_SX, color: ds.gray[600] }}>No network attachment details available.</Typography>;
   }
 
   return (
-    <Box sx={{ p: 2 }}>
+    <Box sx={DETAIL_CARD_SX}>
       <Stack spacing={ds.space[4]}>
         {connectivity && (
           <Box>
@@ -1589,10 +1589,10 @@ interface ECSTaskTagsDisplayProps {
 const ECSTaskTagsDisplay = ({ taskDetails }: ECSTaskTagsDisplayProps) => {
   const tags = taskDetails?.meta?.Tags;
   if (!tags || tags.length === 0) {
-    return <Typography sx={{ p: 2 }}>No tags available for this task.</Typography>;
+    return <Typography sx={{ ...DETAIL_CARD_SX, color: ds.gray[600] }}>No tags available for this task.</Typography>;
   }
   return (
-    <Box sx={{ p: 2 }}>
+    <Box sx={DETAIL_CARD_SX}>
       <Typography variant='subtitle1' gutterBottom sx={{ fontWeight: ds.weight.semibold }}>
         Task Tags
       </Typography>

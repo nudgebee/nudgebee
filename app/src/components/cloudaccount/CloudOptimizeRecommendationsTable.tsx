@@ -942,7 +942,7 @@ function optimizeEvidance(_accountId: any, drilldownQuery: any) {
   const ruleName = drilldownQuery?.recommendation?.rule_name;
   if (ruleName && SAVINGS_PLAN_RULES.has(ruleName)) {
     return (
-      <Box sx={{ background: ds.background[100], borderRadius: ds.radius.md }}>
+      <Box sx={{ background: ds.background[100], borderRadius: ds.radius.md, border: `1px solid ${ds.gray[200]}` }}>
         <SavingsPlanEvidence
           recommendation={drilldownQuery?.recommendation?.recommendation}
           ruleName={ruleName}
@@ -953,7 +953,7 @@ function optimizeEvidance(_accountId: any, drilldownQuery: any) {
   }
 
   return (
-    <Box sx={{ background: ds.background[100], borderRadius: ds.radius.md, p: ds.space[5] }}>
+    <Box sx={{ background: ds.background[100], borderRadius: ds.radius.md, p: ds.space[5], border: `1px solid ${ds.gray[200]}` }}>
       <DrilldownDetails data={drilldownQuery?.recommendation?.recommendation} showCopyIconOnHover={true} />
     </Box>
   );
@@ -962,7 +962,7 @@ function optimizeEvidance(_accountId: any, drilldownQuery: any) {
 function optimizeDescription(_accountId: any, drilldownQuery: any) {
   const markdown = buildDescriptionMarkdown(drilldownQuery?.recommenedationDetails);
   return (
-    <Box sx={{ background: ds.background[100], borderRadius: ds.radius.md, p: ds.space[2] }}>
+    <Box sx={{ background: ds.background[100], borderRadius: ds.radius.md, p: ds.space[2], border: `1px solid ${ds.gray[200]}` }}>
       {markdown ? (
         <MarkDowns data={markdown} sx={{ padding: 0, '& p:last-child': { marginBottom: 0 } }} allowExecutable={false} onLinkClick={null} />
       ) : (
@@ -1006,7 +1006,16 @@ function OptimizeMitigation({
   const [primaryAction, ...secondaryActions] = sideActions;
 
   return (
-    <Box sx={{ background: ds.background[100], borderRadius: ds.radius.md, p: ds.space[2], display: 'flex', gap: ds.space[4] }}>
+    <Box
+      sx={{
+        background: ds.background[100],
+        borderRadius: ds.radius.md,
+        p: ds.space[2],
+        display: 'flex',
+        gap: ds.space[4],
+        border: `1px solid ${ds.gray[200]}`,
+      }}
+    >
       {/* Left: mitigation content */}
       <Box sx={{ flex: 1, minWidth: 0 }}>
         {alternateOptions.length > 0 && (

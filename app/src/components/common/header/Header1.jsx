@@ -880,7 +880,7 @@ const Header1 = ({ showBorder = false }) => {
                       )
                     }
                   >
-                    <SafeIcon alt={`Ask ${assistantName}`} src={nubiIconLightUrl} height={22} width={22} />
+                    <SafeIcon alt={`Ask ${assistantName}`} src={nubiIconLightUrl} height={26} width={26} />
                     <Typography
                       className='nubi-text'
                       sx={{
