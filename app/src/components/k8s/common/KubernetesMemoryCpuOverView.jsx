@@ -8,6 +8,9 @@ import { getSpecificTime } from '@lib/datetime';
 import { Skeleton } from '@ui/Skeleton';
 import CustomDateTimeRangePicker from '@shared/widgets/CustomDateTimeRangePicker';
 import { ds } from '@utils/colors';
+import { Modal } from '@ui/Modal';
+import Chart from '@ui/Chart';
+import dayjs from 'dayjs';
 
 export const CpuMemorySkeleton = ({ sx = {} }) => (
   <Box sx={{ display: 'flex', gap: 'var(--ds-space-4)', ...sx }}>
@@ -19,6 +22,72 @@ export const CpuMemorySkeleton = ({ sx = {} }) => (
     </Box>
   </Box>
 );
+
+// Per-metric config for the Trend popup — which range-query keys build each line.
+const TREND_CONFIG = {
+  cpu: {
+    title: 'CPU Utilization Trend',
+    unit: 'Cores',
+    divisor: 1,
+    keys: { usage: 'cpu_usage_trend', total: 'cpu_total', request: 'cpu_request', limit: 'cpu_limit' },
+  },
+  memory: {
+    title: 'Memory Utilization Trend',
+    unit: 'GiB',
+    divisor: 1024 ** 3,
+    keys: { usage: 'mem_usage_trend', total: 'mem_total', request: 'memory_request', limit: 'memory_limit' },
+  },
+};
+
+// One line per label — matches the per-workload utilisation chart (Usage amber,
+// Request blue, Limit red), with Total in grey as the capacity ceiling.
+const TREND_SERIES = [
+  { field: 'usage', label: 'Usage', color: ds.amber[500] },
+  { field: 'total', label: 'Total', color: ds.gray[400] },
+  { field: 'request', label: 'Request', color: ds.blue[400] },
+  { field: 'limit', label: 'Limit', color: ds.red[500] },
+];
+
+// Same shortcuts as the card's picker, reused by the popup's own time filter.
+const TREND_SHORTCUTS = [
+  'Last 5 Minutes',
+  'Last 10 Minutes',
+  'Last 15 Minutes',
+  'Last 30 Minutes',
+  'Last 1 Hour',
+  'Last 3 Hours',
+  'Last 6 Hours',
+  'Last 12 Hours',
+  'Last 24 Hours',
+];
+
+const formatTrendTs = (ts) => dayjs(ts > 1e12 ? ts : ts * 1000).format('HH:mm');
+
+// Build Chart.Series { labels, dataset } from a metric group's range-query response.
+const buildTrendChart = (results, cfg) => {
+  const byKey = {};
+  results.forEach((item) => {
+    const first = (item.payload || [])[0];
+    byKey[item.query_key] = { values: (first?.values || []).map((v) => parseFloat(v)), timestamps: first?.timestamps || [] };
+  });
+  // Longest series drives the x-axis labels (a query_range batch shares one time grid).
+  const labelSeries = Object.values(byKey).reduce((a, b) => (b.timestamps.length > a.timestamps.length ? b : a), { timestamps: [] });
+  const labels = labelSeries.timestamps.map(formatTrendTs);
+  const dataset = TREND_SERIES.map((s) => {
+    const series = byKey[cfg.keys[s.field]] || { values: [] };
+    return {
+      label: s.label,
+      data: series.values.map((v) => (Number.isFinite(v) ? v / cfg.divisor : null)),
+      borderColor: s.color,
+      backgroundColor: s.color,
+      borderWidth: 1.5,
+      pointRadius: 0,
+      tension: 0.3,
+      fill: false,
+    };
+  });
+  return { labels, dataset };
+};
 
 const KubernetesMemoryCpuOverView = ({
   showUpdatedUi = false,
@@ -65,6 +134,14 @@ const KubernetesMemoryCpuOverView = ({
   // Executed metric queries (keyed by metric, e.g. cpu_real / mem_total) accumulated across the API calls.
   const [promQueries, setPromQueries] = useState({});
   const mergePromQueries = (response) => setPromQueries((prev) => ({ ...prev, ...buildPromQueries(response) }));
+
+  // Full utilisation timeseries shown in the per-metric Trend popup (fetched on demand).
+  const [trendMetric, setTrendMetric] = useState(null); // 'cpu' | 'memory' | null
+  const [trendChart, setTrendChart] = useState({ labels: [], dataset: [] });
+  const [trendLoading, setTrendLoading] = useState(false);
+  // The popup's own time filter — seeded from the card's selection on open, then
+  // independently adjustable inside the dialog.
+  const [trendRange, setTrendRange] = useState(null);
 
   const [selectedDateRange, setSelectedDateRange] = useState({
     startDate: getSpecificTime(60),
@@ -209,6 +286,51 @@ const KubernetesMemoryCpuOverView = ({
 
     return formattedData;
   };
+
+  // Fetch one metric group's full timeseries (usage/total/request/limit) as a range
+  // query for the given window.
+  const fetchTrendSeries = async (metric, range) => {
+    const cfg = TREND_CONFIG[metric];
+    if (!cfg || !accountId || !range) {
+      return;
+    }
+    setTrendLoading(true);
+    try {
+      const response = await apiKubernetes1.utilisationApi({
+        accountId,
+        metrics: Object.values(cfg.keys),
+        startDate: range.startDate,
+        endDate: range.endDate,
+        instant: false,
+      });
+      if (Array.isArray(response)) {
+        mergePromQueries(response);
+        setTrendChart(buildTrendChart(response, cfg));
+      }
+    } catch (error) {
+      console.error('Error fetching utilisation trend:', error);
+    } finally {
+      setTrendLoading(false);
+    }
+  };
+
+  // Open the Trend popup for a metric, seeding its time filter from the card's current
+  // selection; the fetch runs from the effect below (also on in-popup filter changes).
+  const openTrend = (metric) => {
+    if (!TREND_CONFIG[metric] || !accountId) {
+      return;
+    }
+    setTrendChart({ labels: [], dataset: [] });
+    setTrendRange({ ...selectedDateRange });
+    setTrendMetric(metric);
+  };
+
+  useEffect(() => {
+    if (trendMetric && trendRange) {
+      fetchTrendSeries(trendMetric, trendRange);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trendMetric, trendRange]);
 
   // Make API call for a specific query group with individual response handling
   const makeApiCall = async (accountId, metrics, apiType) => {
@@ -357,6 +479,7 @@ const KubernetesMemoryCpuOverView = ({
                   updatedOverview={updatedOverview}
                   showUsage={showUsage}
                   hideLabels={hideLabels}
+                  onOpenTrend={() => openTrend('cpu')}
                 />
                 {/* Loading indicator for CPU data */}
                 {loadingStates.cpu && !dataLoaded.cpu && (
@@ -396,6 +519,7 @@ const KubernetesMemoryCpuOverView = ({
                   updatedOverview={updatedOverview}
                   showUsage={showUsage}
                   hideLabels={hideLabels}
+                  onOpenTrend={() => openTrend('memory')}
                 />
                 {/* Loading indicator for Memory data */}
                 {loadingStates.memory && !dataLoaded.memory && (
@@ -523,6 +647,59 @@ const KubernetesMemoryCpuOverView = ({
             />
           </Grid>
         </>
+      )}
+      {trendMetric && (
+        <Modal
+          open
+          handleClose={() => setTrendMetric(null)}
+          title={TREND_CONFIG[trendMetric].title}
+          width='lg'
+          rightComponentOnTitle={
+            <Box sx={{ mr: ds.space[4] }}>
+              <CustomDateTimeRangePicker
+                showAbsoluteRange={false}
+                showOnlyCalenderIcon={false}
+                passedSelectedDateTime={{
+                  startTime: trendRange?.startDate,
+                  endTime: trendRange?.endDate,
+                  shortcutClickTime: trendRange?.shortcutClickTime || 0,
+                }}
+                shortCuts={TREND_SHORTCUTS}
+                onChange={(dr) =>
+                  setTrendRange({
+                    startDate: dr.selection.startTime,
+                    endDate: dr.selection.endTime,
+                    shortcutClickTime: dr.selection.shortcutClickTime || 0,
+                  })
+                }
+                sx={{
+                  border: '1px solid var(--ds-gray-200) !important',
+                  borderRadius: 'var(--ds-radius-md) !important',
+                }}
+              />
+            </Box>
+          }
+        >
+          <Box sx={{ height: 360 }}>
+            <Chart.Series
+              id={`${trendMetric}-utilization-trend-chart`}
+              labels={trendChart.labels}
+              dataset={trendChart.dataset}
+              loading={trendLoading}
+              maxHeight={360}
+              options={{
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: { legend: { position: 'bottom' } },
+                scales: {
+                  x: { ticks: { maxTicksLimit: 8, autoSkip: true } },
+                  y: { beginAtZero: true, title: { display: true, text: TREND_CONFIG[trendMetric].unit } },
+                },
+              }}
+            />
+          </Box>
+        </Modal>
       )}
     </>
   );

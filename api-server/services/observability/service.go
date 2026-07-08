@@ -1540,6 +1540,10 @@ func FetchMetricUtilisation(ctx *security.RequestContext, req GetUtilisationTren
 		instant = v
 	}
 
+	// Cluster utilisation aggregations follow the picker range instead of a hardcoded
+	// 24h window. Harmless for other providers/kinds, which ignore these fields.
+	meta.RangeWindow, meta.Step, meta.RateWindow = promAggWindow(req.StartTime, req.EndTime)
+
 	// The helper functions return a fully initialized map, so we don't need to allocate one here.
 	var queries map[string]string
 	// swRequest carries SolarWinds-specific filter/groupBy params passed as FetchMetricsRequest.Request.
@@ -1724,6 +1728,13 @@ type RequestMetadata struct {
 	InternalIP       string
 	RequestedMetrics []string
 	Regex            bool
+	// Aggregation windows (Prometheus/MetricsQL duration literals) for cluster-level
+	// utilisation queries, derived from the picker range so the time filter actually
+	// adjusts the numbers. Empty for direct-constructed metadata (unit tests), where
+	// the query builder falls back to a 24h window.
+	RangeWindow string
+	Step        string
+	RateWindow  string
 }
 
 func parseRequestMetadata(reqMap map[string]any) (RequestMetadata, error) {
@@ -2009,6 +2020,34 @@ func buildPrometheusNodeQueries(meta RequestMetadata, metrics []string) map[stri
 	return queries
 }
 
+// promAggWindow derives the subquery range, step and inner-rate windows (as
+// Prometheus/MetricsQL duration literals) for cluster utilisation aggregations from
+// the picker's start/end (unix millis). The window follows the picker so the usage,
+// P50/P90/Max and the usage-trend sparkline reflect the selected range instead of a
+// hardcoded 24h. Falls back to 24h when the range is missing or invalid.
+func promAggWindow(startMs, endMs int64) (rangeStr, stepStr, rateStr string) {
+	rangeSec := (endMs - startMs) / 1000
+	if rangeSec <= 0 {
+		rangeSec = 24 * 3600
+	}
+	// ~300 sample points across the range, clamped so short ranges keep a 1m
+	// resolution and long ranges don't explode the subquery point count.
+	stepSec := rangeSec / 300
+	if stepSec < 60 {
+		stepSec = 60
+	}
+	if stepSec > 1800 {
+		stepSec = 1800
+	}
+	// Inner rate window: at least 5m (a few scrape intervals) and never finer than
+	// the step, so each sampled point covers its whole interval.
+	rateSec := stepSec
+	if rateSec < 300 {
+		rateSec = 300
+	}
+	return fmt.Sprintf("%ds", rangeSec), fmt.Sprintf("%ds", stepSec), fmt.Sprintf("%ds", rateSec)
+}
+
 func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[string]string {
 	queries := make(map[string]string)
 
@@ -2107,6 +2146,21 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 		pvcFilter += ","
 	}
 
+	// Cluster-level aggregation windows, derived from the picker range (empty for
+	// unit-tested metadata -> fall back to a 24h window / 5m resolution).
+	rangeW := safeMeta.RangeWindow
+	if rangeW == "" {
+		rangeW = "24h"
+	}
+	stepW := safeMeta.Step
+	if stepW == "" {
+		stepW = "5m"
+	}
+	rateW := safeMeta.RateWindow
+	if rateW == "" {
+		rateW = "5m"
+	}
+
 	// --- 5. Build Queries ---
 	for _, metricKey := range metrics {
 		switch metricKey {
@@ -2162,26 +2216,39 @@ func buildPrometheusWorkloadQueries(meta RequestMetadata, metrics []string) map[
 			queries[metricKey] = fmt.Sprintf(`(sum(node_filesystem_size_bytes{ __CLUSTER__ mountpoint="/", instance=~"%s.*"}) - sum(node_filesystem_free_bytes{ __CLUSTER__ mountpoint="/", instance=~"%s.*"})) or (sum(kubelet_volume_stats_capacity_bytes{ __CLUSTER__ instance=~"%s.*"}) - sum(kubelet_volume_stats_available_bytes{ __CLUSTER__ instance=~"%s.*"})) or (sum(kubelet_volume_stats_capacity_bytes{ __CLUSTER__ instance=~"%s.*"}) - sum(kubelet_volume_stats_available_bytes{ __CLUSTER__ instance=~"%s.*"}))`, safeMeta.InternalIP, safeMeta.InternalIP, safeMeta.NodeName, safeMeta.NodeName, safeMeta.NodeIP, safeMeta.NodeIP)
 
 		// --- Node/Cluster Aggregations ---
+		// Usage / percentiles / peak are windowed by the picker range (rangeW) instead of a
+		// hardcoded 24h, so the time filter actually adjusts the numbers. The percentile/peak
+		// queries sum across the per-(node,core,mode) series FIRST, then aggregate over time.
+		// Summing each series' own time-percentile instead (the old form) added peaks that occur
+		// at different instants and produced values above physical capacity (P50/P90/Max >100%).
+		// Valid in both PromQL (prod) and VictoriaMetrics MetricsQL (dev).
 		case "cpu_real":
-			queries[metricKey] = `sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[24h])) or sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[24h]))`
+			queries[metricKey] = fmt.Sprintf(`sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[%s])) or sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[%s]))`, rangeW, rangeW)
 		case "cpu_total":
 			queries[metricKey] = `sum(machine_cpu_cores{__CLUSTER__}) or sum(node_resources_cpu_logical_cores{__CLUSTER__})`
 		case "mem_real":
 			queries[metricKey] = `sum(node_memory_MemTotal_bytes{__CLUSTER__} - node_memory_MemAvailable_bytes{__CLUSTER__}) or sum(node_resources_memory_total_bytes{__CLUSTER__} - node_resources_memory_available_bytes{__CLUSTER__})`
 		case "mem_total":
 			queries[metricKey] = `sum(node_memory_MemTotal_bytes{__CLUSTER__}) or sum(node_resources_memory_total_bytes{__CLUSTER__})`
+		// cpu_usage_trend / mem_usage_trend feed the utilisation sparkline: fetched as a RANGE
+		// query so the relay evaluates them at each step across the picker window. CPU uses a
+		// short rate window (rateW) so spikes register instead of being averaged away.
+		case "cpu_usage_trend":
+			queries[metricKey] = fmt.Sprintf(`sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[%s])) or sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[%s]))`, rateW, rateW)
+		case "mem_usage_trend":
+			queries[metricKey] = `sum(node_memory_MemTotal_bytes{__CLUSTER__} - node_memory_MemAvailable_bytes{__CLUSTER__}) or sum(node_resources_memory_total_bytes{__CLUSTER__} - node_resources_memory_available_bytes{__CLUSTER__})`
 		case "p90_mem":
 			queries[metricKey] = `quantile(0.9, node_memory_MemTotal_bytes{__CLUSTER__} - node_memory_MemAvailable_bytes{__CLUSTER__}) or quantile(0.9, node_resources_memory_total_bytes{__CLUSTER__} - node_resources_memory_available_bytes{__CLUSTER__})`
 		case "p90_cpu":
-			queries[metricKey] = `sum(quantile_over_time(0.90, rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[24h])[24h:])) or sum(quantile_over_time(0.90, rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[24h])[24h:]))`
+			queries[metricKey] = fmt.Sprintf(`quantile_over_time(0.90, sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[%s]))[%s:%s]) or quantile_over_time(0.90, sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[%s]))[%s:%s])`, rateW, rangeW, stepW, rateW, rangeW, stepW)
 		case "p50_mem":
 			queries[metricKey] = `quantile(0.5, node_memory_MemTotal_bytes{__CLUSTER__} - node_memory_MemAvailable_bytes{__CLUSTER__}) or quantile(0.5, node_resources_memory_total_bytes{__CLUSTER__} - node_resources_memory_available_bytes{__CLUSTER__})`
 		case "p50_cpu":
-			queries[metricKey] = `sum(quantile_over_time(0.50, rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[24h])[24h:])) or sum(quantile_over_time(0.50, rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[24h])[24h:]))`
+			queries[metricKey] = fmt.Sprintf(`quantile_over_time(0.50, sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[%s]))[%s:%s]) or quantile_over_time(0.50, sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[%s]))[%s:%s])`, rateW, rangeW, stepW, rateW, rangeW, stepW)
 		case "max_usage_mem":
-			queries[metricKey] = `max_over_time(sum(node_memory_MemTotal_bytes{__CLUSTER__} - node_memory_MemFree_bytes{__CLUSTER__} - node_memory_Buffers_bytes{__CLUSTER__} - node_memory_Cached_bytes{__CLUSTER__})[24h:])`
+			queries[metricKey] = fmt.Sprintf(`max_over_time(sum(node_memory_MemTotal_bytes{__CLUSTER__} - node_memory_MemFree_bytes{__CLUSTER__} - node_memory_Buffers_bytes{__CLUSTER__} - node_memory_Cached_bytes{__CLUSTER__})[%s:%s])`, rangeW, stepW)
 		case "max_usage_cpu":
-			queries[metricKey] = `sum(max_over_time(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[24h])[24h:])) or sum(max_over_time(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[24h])[24h:]))`
+			queries[metricKey] = fmt.Sprintf(`max_over_time(sum(rate(node_cpu_seconds_total{__CLUSTER__ mode!="idle"}[%s]))[%s:%s]) or max_over_time(sum(rate(node_resources_cpu_usage_seconds_total{__CLUSTER__ mode!="idle"}[%s]))[%s:%s])`, rateW, rangeW, stepW, rateW, rangeW, stepW)
 		case "replica_defined":
 			queries[metricKey] = fmt.Sprintf(`sum(kube_replicaset_spec_replicas{ __CLUSTER__ namespace="%s", replicaset=~"%s.*"})`, safeMeta.Namespace, safeMeta.Name)
 		case "replica_ready":
