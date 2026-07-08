@@ -208,6 +208,14 @@ func ConsumeCloudAccountCostReportJobs(ctx *security.RequestContext, concurrency
 // downstream S3/DB call can't leak the consumer worker indefinitely.
 const costBackfillTimeout = 30 * time.Minute
 
+// postReportProcessingTimeout bounds a single post-report job safely under the
+// RabbitMQ consumer_timeout (30m default). Staying under it means a slow account
+// returns a retriable error through the normal retry path, instead of running
+// long enough for the broker to force-close the channel and redeliver the
+// message — where the redelivery is indistinguishable from a pod crash and gets
+// misclassified as a poison message and dropped to the DLQ.
+const postReportProcessingTimeout = 25 * time.Minute
+
 // runHistoricalBackfill discovers the historical billing periods available for an
 // account and processes each one in-process, sequentially (skipping the month the
 // onboarding job already handled). Processing serially rather than fanning jobs
@@ -1173,6 +1181,16 @@ func ConsumeCloudAccountPostReportJobs(ctx *security.RequestContext, concurrency
 
 		logger := ctx.GetLogger().With("accountId", job.AccountId, "job_id", job.JobId)
 
+		// Bound the whole job (lock wait + all steps) safely under the RabbitMQ
+		// consumer_timeout. The steps below are I/O-bound and honour this context, so
+		// a slow account is cut off and the job returns a retriable error instead of
+		// overrunning the broker timeout — see postReportProcessingTimeout.
+		// WithoutCancel detaches from the long-lived consumer context's cancellation
+		// (so a shutdown mid-job doesn't abort it) while retaining its trace/baggage
+		// values; the timeout then bounds it.
+		procCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx.GetContext()), postReportProcessingTimeout)
+		defer cancel()
+
 		// Acquire the per-account sync lock before doing any DB writes. This serializes
 		// post-report (cloud_resourses UPSERT) against StoreUsage (spends INSERT, which
 		// takes KEY SHARE on cloud_resourses via FK). Without this, two transactions
@@ -1186,7 +1204,7 @@ func ConsumeCloudAccountPostReportJobs(ctx *security.RequestContext, concurrency
 		// acquire keeps the AMQP delivery in-flight while we wait, which is well
 		// inside the RabbitMQ consumer_timeout. Cap the wait safely under the
 		// 10-minute lock TTL so we never wait on a stale holder.
-		release, lockErr := common.AcquireSyncLockBlocking(context.Background(), job.AccountId, 8*time.Minute)
+		release, lockErr := common.AcquireSyncLockBlocking(procCtx, job.AccountId, 8*time.Minute)
 		if errors.Is(lockErr, common.ErrLockTimeout) {
 			logger.Warn("postreport: gave up waiting for sync lock, will retry via MQ", "timeout", "8m")
 			return lockErr
@@ -1201,7 +1219,7 @@ func ConsumeCloudAccountPostReportJobs(ctx *security.RequestContext, concurrency
 
 		logger.Info("postreport: processing post-report job")
 
-		jobCtx := security.NewRequestContext(context.Background(), security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), logger, ctx.GetTracer(), ctx.GetMeter())
+		jobCtx := security.NewRequestContext(procCtx, security.NewSecurityContextForSuperAdminWithTenant(job.TenantId), logger, ctx.GetTracer(), ctx.GetMeter())
 
 		// Step 1: Discover and store resources from cloud provider APIs
 		_, err = discoverAndStoreAccountResources(jobCtx, job.AccountId)
@@ -1223,6 +1241,14 @@ func ConsumeCloudAccountPostReportJobs(ctx *security.RequestContext, concurrency
 		_, err = StoreEventRules(jobCtx, job.AccountId)
 		if err != nil {
 			logger.Error("postreport: failed to sync event rules", "error", err)
+		}
+
+		// The steps above swallow their own errors to stay best-effort, so an expired
+		// budget would otherwise be ACKed as success with partial work. Detect it and
+		// return a retriable error so the job is retried cleanly rather than dropped.
+		if procCtx.Err() != nil {
+			logger.Warn("postreport: processing exceeded time budget, will retry via MQ", "timeout", postReportProcessingTimeout.String())
+			return fmt.Errorf("postreport: processing exceeded %s budget: %w", postReportProcessingTimeout, procCtx.Err())
 		}
 
 		logger.Info("postreport: successfully processed post-report job")
