@@ -1479,6 +1479,18 @@ func HandleConversationMessageRequest(accountId, conversationId, messageId strin
 		targetMessageId = waitingMessageId
 	}
 
+	resumeAgentUUID := uuid.Nil
+	resumeAgentValid := false
+	if targetResumeAgentId != "" {
+		parsedUUID, parseErr := uuid.Parse(targetResumeAgentId)
+		if parseErr != nil {
+			slog.Error("conversation: failed to parse resume agent ID, defaulting to nil", "error", parseErr, "id", targetResumeAgentId)
+		} else {
+			resumeAgentUUID = parsedUUID
+			resumeAgentValid = true
+		}
+	}
+
 	response, err := HandleConversationSessionRequest(ctx, agent, conversation.UserID.String(), conversation.AccountID.String(), conversation.SessionID, conversationMessage.Message, ConversationSessionRequestWithMessageId(uuid.NullUUID{
 		UUID:  targetMessageId,
 		Valid: true,
@@ -1486,15 +1498,8 @@ func HandleConversationMessageRequest(accountId, conversationId, messageId strin
 		UUID:  conversation.ID,
 		Valid: true,
 	}), ConversationSessionRequestWithPreviousState(waitingState), ConversationSessionRequestWithAgentId(uuid.NullUUID{
-		UUID: lo.Ternary(targetResumeAgentId != "", func() uuid.UUID {
-			parsedUUID, err := uuid.Parse(targetResumeAgentId)
-			if err != nil {
-				slog.Error("conversation: failed to parse resume agent ID, defaulting to nil", "error", err, "id", targetResumeAgentId)
-				return uuid.Nil
-			}
-			return parsedUUID
-		}(), uuid.Nil),
-		Valid: targetResumeAgentId != "",
+		UUID:  resumeAgentUUID,
+		Valid: resumeAgentValid,
 	}), ConversationSessionRequestWithIsResume(true))
 
 	if err != nil {
