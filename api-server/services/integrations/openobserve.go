@@ -2,7 +2,9 @@ package integrations
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	neturl "net/url"
 	"nudgebee/services/common"
@@ -168,6 +170,9 @@ func (m OpenObserve) TestConnection(sc *security.SecurityContext, config []core.
 		common.HttpWithTimeout(15*time.Second),
 	)
 	if err != nil {
+		if errors.Is(err, io.EOF) || strings.Contains(err.Error(), "connection refused") {
+			return fmt.Errorf("failed to connect to OpenObserve at %s the server may be down, or a tunnel/port-forward may have died: %w", openobserveURL, err)
+		}
 		return fmt.Errorf("failed to connect to OpenObserve at %s: %w", openobserveURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
