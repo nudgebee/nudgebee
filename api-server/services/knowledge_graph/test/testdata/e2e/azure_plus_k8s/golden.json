@@ -1,0 +1,124 @@
+{
+  "nodes": [
+    {
+      "unique_key": "azure:test-account-azure-1:eastus:ManagedCluster:microsoft.containerservice/managedclusters:my-aks",
+      "node_type": "ManagedCluster",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "azure",
+      "properties": {
+        "account_number": "",
+        "arn": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.ContainerService/managedClusters/my-aks",
+        "cloud_provider": "Azure",
+        "external_resource_id": "aks-1",
+        "is_active": true,
+        "labels": null,
+        "name": "my-aks",
+        "nb_account_id": "sub1",
+        "nb_resource_id": "aks-1",
+        "region": "eastus",
+        "resource_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.ContainerService/managedClusters/my-aks",
+        "service_name": "microsoft.containerservice/managedclusters",
+        "source": "azure",
+        "status": "",
+        "subtype": "managedclusters",
+        "type": "managedclusters"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-aks",
+        "region": "eastus",
+        "status": "",
+        "subtype": "managedclusters"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Cluster::my-aks",
+      "node_type": "Cluster",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "name": "my-aks",
+        "source": "k8s",
+        "subtype": "Cluster"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-aks"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Node::node1",
+      "node_type": "Node",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "cluster": "my-aks",
+        "conditions": "",
+        "cpu_allocatable": 0,
+        "cpu_capacity": 0,
+        "is_active": true,
+        "memory_allocatable": "0",
+        "memory_capacity": "0",
+        "name": "node1",
+        "node_creation_time": "0001-01-01T00:00:00Z",
+        "node_flavor": "",
+        "node_region": "",
+        "node_type": "",
+        "node_zone": "",
+        "source": "k8s",
+        "subtype": ""
+      },
+      "labels": {},
+      "query_attributes": {
+        "cluster": "my-aks",
+        "name": "node1"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src_key": "k8s:test-account-k8s-1::Cluster::my-aks",
+      "dst_key": "azure:test-account-azure-1:eastus:ManagedCluster:microsoft.containerservice/managedclusters:my-aks",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-azure-1",
+      "tenant_id": "",
+      "level": "",
+      "source": "cross_account",
+      "properties": {
+        "contributing_sources": [
+          "cross_account"
+        ],
+        "cross_account_rule": "k8s_cluster_to_aks_cluster_by_name",
+        "source_type": "k8s",
+        "target_type": "azure"
+      },
+      "contributing_sources": [
+        "cross_account"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::Node::node1",
+      "dst_key": "k8s:test-account-k8s-1::Cluster::my-aks",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "cluster",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    }
+  ]
+}

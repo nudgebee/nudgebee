@@ -1,0 +1,1536 @@
+{
+  "nodes": [
+    {
+      "unique_key": "aws:test-account-aws-1::RouteTable:main-vpc:rtb-1",
+      "node_type": "RouteTable",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "is_main": false,
+        "labels": {},
+        "meta": {
+          "Associations": [
+            {
+              "AssociationState": {
+                "State": ""
+              },
+              "GatewayId": "",
+              "Main": false,
+              "RouteTableAssociationId": "",
+              "RouteTableId": "",
+              "SubnetId": "subnet-1"
+            }
+          ],
+          "OwnerId": "",
+          "RouteTableId": "rtb-1",
+          "Routes": [
+            {
+              "DestinationCidrBlock": "0.0.0.0/0",
+              "DestinationIpv6CidrBlock": "",
+              "GatewayId": "",
+              "InstanceId": "",
+              "NatGatewayId": "nat-1",
+              "NetworkInterfaceId": "",
+              "Origin": "",
+              "State": "",
+              "TransitGatewayId": "",
+              "VpcPeeringConnectionId": ""
+            },
+            {
+              "DestinationCidrBlock": "10.0.0.0/8",
+              "DestinationIpv6CidrBlock": "",
+              "GatewayId": "igw-1",
+              "InstanceId": "",
+              "NatGatewayId": "",
+              "NetworkInterfaceId": "",
+              "Origin": "",
+              "State": "",
+              "TransitGatewayId": "",
+              "VpcPeeringConnectionId": ""
+            }
+          ],
+          "VpcId": "vpc-1"
+        },
+        "name": "rtb-1",
+        "region": "",
+        "resource_id": "rtb-1",
+        "route_table_id": "rtb-1",
+        "source": "aws",
+        "vpc_id": "vpc-1",
+        "vpc_name_hierarchy": "main-vpc"
+      },
+      "labels": {},
+      "query_attributes": {
+        "is_main": false,
+        "name": "rtb-1",
+        "route_table_id": "rtb-1",
+        "vpc_id": "vpc-1"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:global:ServiceIdentity::admin-role",
+      "node_type": "ServiceIdentity",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "arn": "arn:aws:iam::123456789012:role/admin-role",
+        "aws_account_number": "123456789012",
+        "cloud_provider": "AWS",
+        "description": "",
+        "is_active": true,
+        "max_session_duration": 0,
+        "name": "admin-role",
+        "nb_account_id": "test-account-aws-1",
+        "path": "",
+        "region": "global",
+        "role_id": "",
+        "service_name": "AWSIAM",
+        "source": "aws",
+        "subtype": "IAMRole",
+        "trust_policy": "{}"
+      },
+      "labels": {},
+      "query_attributes": {
+        "arn": "arn:aws:iam::123456789012:role/admin-role",
+        "aws_account_number": "123456789012",
+        "name": "admin-role",
+        "service_name": "AWSIAM",
+        "subtype": "IAMRole",
+        "trust_policy": "{}"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:global:ServiceIdentity::app-role",
+      "node_type": "ServiceIdentity",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "arn": "arn:aws:iam::123456789012:role/app-role",
+        "aws_account_number": "123456789012",
+        "cloud_provider": "AWS",
+        "description": "",
+        "is_active": true,
+        "max_session_duration": 0,
+        "name": "app-role",
+        "nb_account_id": "test-account-aws-1",
+        "path": "",
+        "region": "global",
+        "role_id": "",
+        "service_name": "AWSIAM",
+        "source": "aws",
+        "subtype": "IAMRole",
+        "trust_policy": "{\"Statement\":[{\"Action\":\"sts:AssumeRole\",\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::123456789012:role/admin-role\"}}],\"Version\":\"2012-10-17\"}",
+        "trust_principals": "[\"arn:aws:iam::123456789012:role/admin-role\"]"
+      },
+      "labels": {},
+      "query_attributes": {
+        "arn": "arn:aws:iam::123456789012:role/app-role",
+        "aws_account_number": "123456789012",
+        "name": "app-role",
+        "service_name": "AWSIAM",
+        "subtype": "IAMRole",
+        "trust_policy": "{\"Statement\":[{\"Action\":\"sts:AssumeRole\",\"Effect\":\"Allow\",\"Principal\":{\"AWS\":\"arn:aws:iam::123456789012:role/admin-role\"}}],\"Version\":\"2012-10-17\"}"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:BackupPolicy::my-plan",
+      "node_type": "BackupPolicy",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "bp-a",
+        "is_active": true,
+        "labels": null,
+        "name": "my-plan",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "bp-a",
+        "primary_rule_name": "daily",
+        "region": "us-east-1",
+        "resource_id": "my-plan",
+        "rule_count": 1,
+        "service_name": "AWSBackup",
+        "source": "aws",
+        "status": "",
+        "subtype": "backup-plan",
+        "target_backup_vault_name": "my-vault",
+        "type": "backup-plan"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-plan"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:BackupVault::my-vault",
+      "node_type": "BackupVault",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "encryption_key_arn": "arn:aws:kms:us-east-1:123456789012:key/key-1",
+        "external_resource_id": "bv-a",
+        "is_active": true,
+        "labels": null,
+        "name": "my-vault",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "bv-a",
+        "region": "us-east-1",
+        "resource_id": "my-vault",
+        "service_name": "AWSBackup",
+        "source": "aws",
+        "status": "",
+        "subtype": "backup-vault",
+        "type": "backup-vault"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-vault"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:ComputeInstance:main-vpc:app-ec2",
+      "node_type": "ComputeInstance",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "ec2-a",
+        "is_active": true,
+        "labels": {
+          "eks:cluster-name": "my-eks"
+        },
+        "name": "app-ec2",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "ec2-a",
+        "region": "us-east-1",
+        "resource_id": "i-0aaa",
+        "service_name": "AmazonEC2",
+        "source": "aws",
+        "status": "",
+        "subnet_id": "subnet-1",
+        "subtype": "compute-instance",
+        "type": "compute-instance",
+        "vpc_id": "vpc-1",
+        "vpc_name_hierarchy": "main-vpc"
+      },
+      "labels": {
+        "eks:cluster-name": "my-eks"
+      },
+      "query_attributes": {
+        "name": "app-ec2",
+        "subtype": "compute-instance",
+        "vpc_id": "vpc-1"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:ComputeInstancePool::my-nodegroup",
+      "node_type": "ComputeInstancePool",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "ng-a",
+        "is_active": true,
+        "labels": null,
+        "name": "my-nodegroup",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "ng-a",
+        "region": "us-east-1",
+        "resource_id": "my-nodegroup",
+        "service_name": "AmazonEKS",
+        "source": "aws",
+        "status": "",
+        "subtype": "nodegroup",
+        "type": "nodegroup"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-nodegroup",
+        "region": "us-east-1",
+        "status": ""
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:Database:main-vpc:mydb",
+      "node_type": "Database",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "engine": "postgres",
+        "external_resource_id": "rds-a",
+        "is_active": true,
+        "kms_key_id": "key-1",
+        "labels": null,
+        "name": "mydb",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "rds-a",
+        "region": "us-east-1",
+        "resource_id": "mydb",
+        "service_name": "AmazonRDS",
+        "source": "aws",
+        "status": "",
+        "subtype": "db",
+        "type": "db",
+        "vpc_id": "vpc-1",
+        "vpc_name_hierarchy": "main-vpc"
+      },
+      "labels": {},
+      "query_attributes": {
+        "engine": "postgres",
+        "name": "mydb",
+        "subtype": "db",
+        "vpc_id": "vpc-1"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:EncryptionKey::app-key",
+      "node_type": "EncryptionKey",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "kms-a",
+        "is_active": true,
+        "labels": null,
+        "name": "app-key",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "kms-a",
+        "region": "us-east-1",
+        "resource_id": "key-1",
+        "service_name": "AWSKMS",
+        "source": "aws",
+        "status": "",
+        "subtype": "key",
+        "type": "key"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "app-key"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:LoadBalancer:main-vpc:app-alb",
+      "node_type": "LoadBalancer",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "alb-a",
+        "is_active": true,
+        "is_public_entry": true,
+        "labels": {
+          "elbv2.k8s.aws/cluster": "my-eks"
+        },
+        "load_balancer_type": "application",
+        "name": "app-alb",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "alb-a",
+        "region": "us-east-1",
+        "resource_id": "app-alb",
+        "scheme": "internet-facing",
+        "service_name": "AWSELB",
+        "source": "aws",
+        "status": "",
+        "subtype": "application_loadbalancer",
+        "type": "application_loadbalancer",
+        "vpc_id": "vpc-1",
+        "vpc_name_hierarchy": "main-vpc"
+      },
+      "labels": {
+        "elbv2.k8s.aws/cluster": "my-eks"
+      },
+      "query_attributes": {
+        "name": "app-alb",
+        "scheme": "internet-facing",
+        "type": "application_loadbalancer",
+        "vpc_id": "vpc-1"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:LogAggregator::/aws/rds/instance/mydb/postgresql",
+      "node_type": "LogAggregator",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "lg-a",
+        "is_active": true,
+        "labels": null,
+        "name": "/aws/rds/instance/mydb/postgresql",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "lg-a",
+        "region": "us-east-1",
+        "resource_id": "/aws/rds/instance/mydb/postgresql",
+        "service_name": "AmazonCloudWatch",
+        "source": "aws",
+        "status": "",
+        "subtype": "log-group",
+        "type": "log-group"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "/aws/rds/instance/mydb/postgresql"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:ManagedCluster:ECS:my-ecs",
+      "node_type": "ManagedCluster",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "ecsc-a",
+        "is_active": true,
+        "labels": null,
+        "name": "my-ecs",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "ecsc-a",
+        "region": "us-east-1",
+        "resource_id": "my-ecs",
+        "service_name": "AmazonECS",
+        "source": "aws",
+        "status": "",
+        "subtype": "cluster",
+        "type": "cluster"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-ecs",
+        "region": "us-east-1",
+        "status": "",
+        "subtype": "cluster"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:ManagedCluster:EKS:my-eks",
+      "node_type": "ManagedCluster",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "eks-a",
+        "is_active": true,
+        "labels": null,
+        "name": "my-eks",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "eks-a",
+        "region": "us-east-1",
+        "resource_id": "my-eks",
+        "service_name": "AmazonEKS",
+        "source": "aws",
+        "status": "",
+        "subtype": "cluster",
+        "type": "cluster"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-eks",
+        "region": "us-east-1",
+        "status": "",
+        "subtype": "cluster"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:MessageQueue::dlq",
+      "node_type": "MessageQueue",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "arn:aws:sqs:us-east-1:123456789012:dlq",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "dlq-a",
+        "is_active": true,
+        "labels": null,
+        "name": "dlq",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "dlq-a",
+        "queue_arn": "arn:aws:sqs:us-east-1:123456789012:dlq",
+        "queue_type": "sqs",
+        "region": "us-east-1",
+        "resource_id": "dlq",
+        "service_name": "AWSQueueService",
+        "source": "aws",
+        "status": "",
+        "subtype": "SQS",
+        "type": "queue"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "dlq",
+        "queue_type": "sqs"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:MessageQueue::main-queue",
+      "node_type": "MessageQueue",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "arn:aws:sqs:us-east-1:123456789012:main-queue",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "dead_letter_target_arn": "arn:aws:sqs:us-east-1:123456789012:dlq",
+        "external_resource_id": "sqs-a",
+        "is_active": true,
+        "labels": null,
+        "name": "main-queue",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "sqs-a",
+        "queue_arn": "arn:aws:sqs:us-east-1:123456789012:main-queue",
+        "queue_type": "sqs",
+        "region": "us-east-1",
+        "resource_id": "main-queue",
+        "service_name": "AWSQueueService",
+        "source": "aws",
+        "status": "",
+        "subtype": "SQS",
+        "type": "queue"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "main-queue",
+        "queue_type": "sqs"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:NetworkGateway:main-vpc:app-igw",
+      "node_type": "NetworkGateway",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "igw-a",
+        "is_active": true,
+        "labels": null,
+        "name": "app-igw",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "igw-a",
+        "region": "us-east-1",
+        "resource_id": "igw-1",
+        "service_name": "AmazonVPC",
+        "source": "aws",
+        "status": "",
+        "subtype": "internet-gateway",
+        "type": "internet-gateway",
+        "vpc_id": "vpc-1",
+        "vpc_name_hierarchy": "main-vpc"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "app-igw",
+        "vpc_id": "vpc-1"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:NetworkGateway:main-vpc:app-nat",
+      "node_type": "NetworkGateway",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "nat-a",
+        "is_active": true,
+        "labels": null,
+        "name": "app-nat",
+        "nat_gateway_id": "nat-1",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "nat-a",
+        "region": "us-east-1",
+        "resource_id": "nat-1",
+        "service_name": "AmazonVPC",
+        "source": "aws",
+        "status": "",
+        "subnet_id": "subnet-1",
+        "subtype": "natgateway",
+        "type": "natgateway",
+        "vpc_id": "vpc-1",
+        "vpc_name_hierarchy": "main-vpc"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "app-nat",
+        "vpc_id": "vpc-1"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:PrivateEndpoint:main-vpc:app-vpce",
+      "node_type": "PrivateEndpoint",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "vpce-a",
+        "is_active": true,
+        "labels": null,
+        "name": "app-vpce",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "vpce-a",
+        "private_dns_enabled": false,
+        "region": "us-east-1",
+        "resource_id": "vpce-1",
+        "service_name": "AmazonVPC",
+        "source": "aws",
+        "state": "",
+        "status": "",
+        "subtype": "vpc-endpoint",
+        "target_service_name": "",
+        "type": "vpc-endpoint",
+        "vpc_endpoint_type": "Interface",
+        "vpc_id": "vpc-1",
+        "vpc_name_hierarchy": "main-vpc"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "app-vpce"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:PublicIP::app-eip",
+      "node_type": "PublicIP",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "domain": "",
+        "external_resource_id": "eip-a",
+        "is_active": true,
+        "labels": null,
+        "name": "app-eip",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "eip-a",
+        "private_ip": "",
+        "public_ip": "52.1.2.3",
+        "region": "us-east-1",
+        "resource_id": "eipalloc-1",
+        "service_name": "AmazonVPC",
+        "source": "aws",
+        "status": "",
+        "subtype": "elastic-ip",
+        "type": "elastic-ip"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "app-eip"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:SecurityGroup:main-vpc:app-sg",
+      "node_type": "SecurityGroup",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "sg-a",
+        "is_active": true,
+        "labels": null,
+        "name": "app-sg",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "sg-a",
+        "region": "us-east-1",
+        "resource_id": "sg-1",
+        "service_name": "AmazonVPC",
+        "source": "aws",
+        "status": "",
+        "subtype": "security_group",
+        "type": "security_group",
+        "vpc_id": "vpc-1",
+        "vpc_name_hierarchy": "main-vpc"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "app-sg",
+        "vpc_id": "vpc-1"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:ServerlessFunction::app-func",
+      "node_type": "ServerlessFunction",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "lambda-a",
+        "is_active": true,
+        "labels": null,
+        "name": "app-func",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "lambda-a",
+        "region": "us-east-1",
+        "resource_id": "app-func",
+        "role_arn": "arn:aws:iam::123456789012:role/app-role",
+        "runtime": "python3.12",
+        "service_name": "AWSLambda",
+        "source": "aws",
+        "status": "",
+        "subtype": "function",
+        "type": "function"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "app-func",
+        "runtime": "python3.12"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:Storage::app-bucket",
+      "node_type": "Storage",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "bucket_name": "app-bucket",
+        "cloud_provider": "AWS",
+        "dns_aliases": [
+          "app-bucket.s3.dualstack.us-east-1.amazonaws.com",
+          "app-bucket.s3-website-us-east-1.amazonaws.com",
+          "app-bucket.s3.amazonaws.com"
+        ],
+        "dns_name": "app-bucket.s3.us-east-1.amazonaws.com",
+        "external_resource_id": "s3-a",
+        "is_active": true,
+        "labels": null,
+        "name": "app-bucket",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "s3-a",
+        "notification_topic_arns": "[\"arn:aws:sns:us-east-1:123456789012:app-topic\"]",
+        "region": "us-east-1",
+        "resource_id": "app-bucket",
+        "service_name": "AmazonS3",
+        "source": "aws",
+        "status": "",
+        "subtype": "storage",
+        "type": "storage"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "app-bucket",
+        "subtype": "storage"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:Subnet:main-vpc:main-subnet",
+      "node_type": "Subnet",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "subnet-a",
+        "is_active": true,
+        "labels": null,
+        "name": "main-subnet",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "subnet-a",
+        "region": "us-east-1",
+        "resource_id": "subnet-1",
+        "service_name": "AmazonVPC",
+        "source": "aws",
+        "status": "",
+        "subnet_id": "subnet-1",
+        "subtype": "subnet",
+        "type": "subnet",
+        "vpc_id": "vpc-1",
+        "vpc_name_hierarchy": "main-vpc"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "main-subnet",
+        "subnet_id": "subnet-1",
+        "vpc_id": "vpc-1"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:Topic::app-topic",
+      "node_type": "Topic",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "arn:aws:sns:us-east-1:123456789012:app-topic",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "sns-a",
+        "is_active": true,
+        "labels": null,
+        "name": "app-topic",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "sns-a",
+        "region": "us-east-1",
+        "resource_id": "app-topic",
+        "service_name": "AmazonSNS",
+        "source": "aws",
+        "status": "",
+        "subtype": "SNS",
+        "topic_arn": "arn:aws:sns:us-east-1:123456789012:app-topic",
+        "type": "topic"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "app-topic"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:VPC::app-rtb",
+      "node_type": "VPC",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "rt-a",
+        "is_active": true,
+        "labels": null,
+        "name": "app-rtb",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "rt-a",
+        "region": "us-east-1",
+        "resource_id": "rtb-1",
+        "service_name": "AmazonVPC",
+        "source": "aws",
+        "status": "",
+        "subtype": "route-table",
+        "type": "route-table",
+        "vpc_id": "vpc-1"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "app-rtb"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:VPC::main-vpc",
+      "node_type": "VPC",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "vpc-a",
+        "is_active": true,
+        "labels": null,
+        "name": "main-vpc",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "vpc-a",
+        "region": "us-east-1",
+        "resource_id": "vpc-1",
+        "service_name": "AmazonVPC",
+        "source": "aws",
+        "status": "",
+        "subtype": "vpc",
+        "type": "vpc",
+        "vpc_id": "vpc-1"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "main-vpc"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:Workload:ECS:svc1",
+      "node_type": "Workload",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "arn:aws:ecs:us-east-1:123456789012:service/my-ecs/svc1",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "ecss-a",
+        "is_active": true,
+        "labels": null,
+        "name": "svc1",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "ecss-a",
+        "region": "us-east-1",
+        "resource_id": "svc1",
+        "service_name": "AmazonECS",
+        "source": "aws",
+        "status": "",
+        "subtype": "service",
+        "type": "service"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "svc1"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src_key": "aws:test-account-aws-1::RouteTable:main-vpc:rtb-1",
+      "dst_key": "aws:test-account-aws-1:us-east-1:NetworkGateway:main-vpc:app-igw",
+      "relationship_type": "ROUTES_THROUGH",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "contributing_sources": [
+          "aws"
+        ],
+        "destination_cidr": "10.0.0.0/8",
+        "route_type": "internet_gateway"
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1::RouteTable:main-vpc:rtb-1",
+      "dst_key": "aws:test-account-aws-1:us-east-1:NetworkGateway:main-vpc:app-nat",
+      "relationship_type": "ROUTES_THROUGH",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "contributing_sources": [
+          "aws"
+        ],
+        "destination_cidr": "0.0.0.0/0",
+        "route_type": "nat_gateway"
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1::RouteTable:main-vpc:rtb-1",
+      "dst_key": "aws:test-account-aws-1:us-east-1:Subnet:main-vpc:main-subnet",
+      "relationship_type": "ASSOCIATED_WITH",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "subnet_association",
+        "contributing_sources": [
+          "aws"
+        ],
+        "is_main": false
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1::RouteTable:main-vpc:rtb-1",
+      "dst_key": "aws:test-account-aws-1:us-east-1:VPC::main-vpc",
+      "relationship_type": "BELONGS_TO",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "vpc",
+        "contributing_sources": [
+          "aws"
+        ]
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:global:ServiceIdentity::admin-role",
+      "dst_key": "aws:test-account-aws-1:global:ServiceIdentity::app-role",
+      "relationship_type": "ASSUMES",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "contributing_sources": [
+          "aws"
+        ],
+        "source": "trust_policy"
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:BackupPolicy::my-plan",
+      "dst_key": "aws:test-account-aws-1:us-east-1:BackupVault::my-vault",
+      "relationship_type": "STORES_IN",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "contributing_sources": [
+          "aws"
+        ],
+        "target_vault_name": "my-vault"
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:ComputeInstance:main-vpc:app-ec2",
+      "dst_key": "aws:test-account-aws-1:us-east-1:ManagedCluster:EKS:my-eks",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "cluster_name": "my-eks",
+        "connection_type": "eks_node",
+        "contributing_sources": [
+          "aws"
+        ]
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:ComputeInstance:main-vpc:app-ec2",
+      "dst_key": "aws:test-account-aws-1:us-east-1:Subnet:main-vpc:main-subnet",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "subnet",
+        "contributing_sources": [
+          "aws"
+        ]
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:ComputeInstance:main-vpc:app-ec2",
+      "dst_key": "aws:test-account-aws-1:us-east-1:VPC::main-vpc",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "vpc",
+        "contributing_sources": [
+          "aws"
+        ]
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:ComputeInstancePool::my-nodegroup",
+      "dst_key": "aws:test-account-aws-1:us-east-1:ManagedCluster:EKS:my-eks",
+      "relationship_type": "BELONGS_TO",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "eks_nodegroup",
+        "contributing_sources": [
+          "aws"
+        ]
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:ComputeInstancePool::my-nodegroup",
+      "dst_key": "aws:test-account-aws-1:us-east-1:Subnet:main-vpc:main-subnet",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "subnet",
+        "contributing_sources": [
+          "aws"
+        ]
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:Database:main-vpc:mydb",
+      "dst_key": "aws:test-account-aws-1:us-east-1:EncryptionKey::app-key",
+      "relationship_type": "IS_ENCRYPTED_BY",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "encrypted_by",
+        "contributing_sources": [
+          "aws"
+        ],
+        "encryption_type": "storage"
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:Database:main-vpc:mydb",
+      "dst_key": "aws:test-account-aws-1:us-east-1:LogAggregator::/aws/rds/instance/mydb/postgresql",
+      "relationship_type": "EMITS_LOGS_TO",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "log_group_monitors",
+        "contributing_sources": [
+          "aws"
+        ],
+        "log_group_name": "/aws/rds/instance/mydb/postgresql",
+        "log_type": "postgresql",
+        "matching_pattern": "rds_instance",
+        "resource_type": "Database"
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:Database:main-vpc:mydb",
+      "dst_key": "aws:test-account-aws-1:us-east-1:VPC::main-vpc",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "vpc",
+        "contributing_sources": [
+          "aws"
+        ]
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:LoadBalancer:main-vpc:app-alb",
+      "dst_key": "aws:test-account-aws-1:us-east-1:ManagedCluster:EKS:my-eks",
+      "relationship_type": "BELONGS_TO",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "cluster_name": "my-eks",
+        "connection_type": "kubernetes_cluster",
+        "contributing_sources": [
+          "aws"
+        ],
+        "ownership": "owned"
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:LoadBalancer:main-vpc:app-alb",
+      "dst_key": "aws:test-account-aws-1:us-east-1:VPC::main-vpc",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "vpc",
+        "contributing_sources": [
+          "aws"
+        ],
+        "scheme": "internet-facing"
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:ManagedCluster:EKS:my-eks",
+      "dst_key": "aws:test-account-aws-1:us-east-1:Subnet:main-vpc:main-subnet",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "subnet",
+        "contributing_sources": [
+          "aws"
+        ]
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:ManagedCluster:EKS:my-eks",
+      "dst_key": "aws:test-account-aws-1:us-east-1:VPC::main-vpc",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "vpc",
+        "contributing_sources": [
+          "aws"
+        ],
+        "endpoint_private_access": false,
+        "endpoint_public_access": false
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:MessageQueue::main-queue",
+      "dst_key": "aws:test-account-aws-1:us-east-1:MessageQueue::dlq",
+      "relationship_type": "ROUTES_TO",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "dead_letter_queue",
+        "contributing_sources": [
+          "aws"
+        ]
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:NetworkGateway:main-vpc:app-nat",
+      "dst_key": "aws:test-account-aws-1:us-east-1:Subnet:main-vpc:main-subnet",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "subnet",
+        "contributing_sources": [
+          "aws"
+        ]
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:NetworkGateway:main-vpc:app-nat",
+      "dst_key": "aws:test-account-aws-1:us-east-1:VPC::main-vpc",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "vpc",
+        "contributing_sources": [
+          "aws"
+        ]
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:PrivateEndpoint:main-vpc:app-vpce",
+      "dst_key": "aws:test-account-aws-1:us-east-1:Subnet:main-vpc:main-subnet",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "subnet",
+        "contributing_sources": [
+          "aws"
+        ],
+        "subnet_id": "subnet-1"
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:PrivateEndpoint:main-vpc:app-vpce",
+      "dst_key": "aws:test-account-aws-1:us-east-1:VPC::main-vpc",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "vpc",
+        "contributing_sources": [
+          "aws"
+        ]
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:PublicIP::app-eip",
+      "dst_key": "aws:test-account-aws-1:us-east-1:ComputeInstance:main-vpc:app-ec2",
+      "relationship_type": "ASSOCIATED_WITH",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "association_id": "",
+        "contributing_sources": [
+          "aws"
+        ],
+        "private_ip": "",
+        "public_ip": "52.1.2.3"
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:SecurityGroup:main-vpc:app-sg",
+      "dst_key": "aws:test-account-aws-1:us-east-1:PrivateEndpoint:main-vpc:app-vpce",
+      "relationship_type": "PROTECTS",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "contributing_sources": [
+          "aws"
+        ],
+        "security_group_id": "sg-1",
+        "security_group_name": ""
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:SecurityGroup:main-vpc:app-sg",
+      "dst_key": "aws:test-account-aws-1:us-east-1:VPC::main-vpc",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "vpc",
+        "contributing_sources": [
+          "aws"
+        ]
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:ServerlessFunction::app-func",
+      "dst_key": "aws:test-account-aws-1:global:ServiceIdentity::app-role",
+      "relationship_type": "RUNS_AS",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "contributing_sources": [
+          "aws"
+        ],
+        "source": "iam_role"
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:Storage::app-bucket",
+      "dst_key": "aws:test-account-aws-1:us-east-1:Topic::app-topic",
+      "relationship_type": "PUBLISHES_TO",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "s3_event_notification",
+        "contributing_sources": [
+          "aws"
+        ],
+        "events": "s3:ObjectCreated:*"
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:Subnet:main-vpc:main-subnet",
+      "dst_key": "aws:test-account-aws-1:us-east-1:VPC::main-vpc",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "vpc",
+        "contributing_sources": [
+          "aws"
+        ]
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:Workload:ECS:svc1",
+      "dst_key": "aws:test-account-aws-1:us-east-1:ManagedCluster:ECS:my-ecs",
+      "relationship_type": "RUNS_IN",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "cluster_name": "my-ecs",
+        "connection_type": "ecs_cluster",
+        "contributing_sources": [
+          "aws"
+        ]
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    }
+  ]
+}

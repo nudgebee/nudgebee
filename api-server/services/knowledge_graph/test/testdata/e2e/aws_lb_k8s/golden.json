@@ -1,0 +1,332 @@
+{
+  "nodes": [
+    {
+      "unique_key": "aws:test-account-aws-1::VPC::vpc-1",
+      "node_type": "VPC",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "cloud_provider": "AWS",
+        "inferred": true,
+        "name": "vpc-1",
+        "resource_id": "vpc-1",
+        "service_name": "AmazonVPC",
+        "source": "aws",
+        "subtype": "vpc",
+        "type": "vpc",
+        "vpc_id": "vpc-1"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "vpc-1"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:LoadBalancer:vpc-1:app-alb",
+      "node_type": "LoadBalancer",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "arn:aws:elasticloadbalancing:us-east-1:123456789012:loadbalancer/app/app-alb/abc123",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "alb-1",
+        "is_active": true,
+        "is_public_entry": true,
+        "k8s_service_name": "my-svc",
+        "k8s_service_namespace": "default",
+        "labels": {
+          "kubernetes.io/service-name": "default/my-svc"
+        },
+        "load_balancer_type": "application",
+        "name": "app-alb",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "alb-1",
+        "region": "us-east-1",
+        "resource_id": "app-alb",
+        "scheme": "internet-facing",
+        "service_name": "AWSELB",
+        "source": "aws",
+        "status": "",
+        "subtype": "application_loadbalancer",
+        "type": "application_loadbalancer",
+        "vpc_id": "vpc-1",
+        "vpc_name_hierarchy": "vpc-1"
+      },
+      "labels": {
+        "kubernetes.io/service-name": "default/my-svc"
+      },
+      "query_attributes": {
+        "name": "app-alb",
+        "scheme": "internet-facing",
+        "type": "application_loadbalancer",
+        "vpc_id": "vpc-1"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:ManagedCluster:EKS:my-eks",
+      "node_type": "ManagedCluster",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "eks-1",
+        "is_active": true,
+        "labels": null,
+        "name": "my-eks",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "eks-1",
+        "region": "us-east-1",
+        "resource_id": "my-eks",
+        "service_name": "AmazonEKS",
+        "source": "aws",
+        "status": "",
+        "subtype": "cluster",
+        "type": "cluster"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-eks",
+        "region": "us-east-1",
+        "status": "",
+        "subtype": "cluster"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Cluster::my-eks",
+      "node_type": "Cluster",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "name": "my-eks",
+        "source": "k8s",
+        "subtype": "Cluster"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-eks"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::K8sService:default:my-svc",
+      "node_type": "K8sService",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "cluster": "my-eks",
+        "is_active": true,
+        "k8s_workload_id": "my-svc",
+        "kind": "Service",
+        "name": "my-svc",
+        "namespace": "default",
+        "nb_resource_id": "my-svc",
+        "source": "k8s",
+        "subtype": "Service"
+      },
+      "labels": {},
+      "query_attributes": {
+        "cluster": "my-eks",
+        "name": "my-svc",
+        "namespace": "default"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Namespace::default",
+      "node_type": "Namespace",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "cluster": "my-eks",
+        "name": "default",
+        "source": "k8s",
+        "subtype": "Namespace"
+      },
+      "labels": {},
+      "query_attributes": {
+        "cluster": "my-eks",
+        "name": "default"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Node::k8s-node-1",
+      "node_type": "Node",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "cluster": "my-eks",
+        "conditions": "",
+        "cpu_allocatable": 0,
+        "cpu_capacity": 0,
+        "is_active": true,
+        "memory_allocatable": "0",
+        "memory_capacity": "0",
+        "name": "k8s-node-1",
+        "node_creation_time": "0001-01-01T00:00:00Z",
+        "node_flavor": "",
+        "node_region": "",
+        "node_type": "worker",
+        "node_zone": "",
+        "source": "k8s",
+        "subtype": "worker"
+      },
+      "labels": {},
+      "query_attributes": {
+        "cluster": "my-eks",
+        "name": "k8s-node-1"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:LoadBalancer:vpc-1:app-alb",
+      "dst_key": "aws:test-account-aws-1::VPC::vpc-1",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "vpc",
+        "contributing_sources": [
+          "aws"
+        ],
+        "scheme": "internet-facing"
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:LoadBalancer:vpc-1:app-alb",
+      "dst_key": "k8s:test-account-k8s-1::K8sService:default:my-svc",
+      "relationship_type": "ROUTES_TO",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws_lb_k8s_enricher",
+      "properties": {
+        "contributing_sources": [
+          "aws_lb_k8s_enricher"
+        ],
+        "discovered_from": "cross_source_enrichment",
+        "k8s_service_name": "my-svc",
+        "k8s_service_namespace": "default",
+        "match_strategy": "k8s_tags"
+      },
+      "contributing_sources": [
+        "aws_lb_k8s_enricher"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:ManagedCluster:EKS:my-eks",
+      "dst_key": "aws:test-account-aws-1::VPC::vpc-1",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "vpc",
+        "contributing_sources": [
+          "aws"
+        ],
+        "endpoint_private_access": false,
+        "endpoint_public_access": false
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    },
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:ManagedCluster:EKS:my-eks",
+      "dst_key": "k8s:test-account-k8s-1::Cluster::my-eks",
+      "relationship_type": "MANAGES",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws_lb_k8s_enricher",
+      "properties": {
+        "cluster_name": "my-eks",
+        "connection_type": "eks_cluster_name",
+        "contributing_sources": [
+          "aws_lb_k8s_enricher"
+        ]
+      },
+      "contributing_sources": [
+        "aws_lb_k8s_enricher"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::K8sService:default:my-svc",
+      "dst_key": "k8s:test-account-k8s-1::Namespace::default",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "namespace",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::Namespace::default",
+      "dst_key": "k8s:test-account-k8s-1::Cluster::my-eks",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "cluster",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::Node::k8s-node-1",
+      "dst_key": "k8s:test-account-k8s-1::Cluster::my-eks",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "cluster",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+{
+  "nodes": [
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:ComputeInstance::worker-ec2",
+      "node_type": "ComputeInstance",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "aws-ec2-1",
+        "is_active": true,
+        "labels": null,
+        "name": "worker-ec2",
+        "nb_account_id": "test-account-aws-1",
+        "nb_resource_id": "aws-ec2-1",
+        "region": "us-east-1",
+        "resource_id": "i-0abc123def456",
+        "service_name": "AmazonEC2",
+        "source": "aws",
+        "status": "",
+        "subtype": "compute-instance",
+        "type": "compute-instance"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "worker-ec2",
+        "subtype": "compute-instance"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Node::k8s-worker-1",
+      "node_type": "Node",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "cluster": "",
+        "conditions": "",
+        "cpu_allocatable": 0,
+        "cpu_capacity": 0,
+        "is_active": true,
+        "memory_allocatable": "0",
+        "memory_capacity": "0",
+        "name": "k8s-worker-1",
+        "node_creation_time": "0001-01-01T00:00:00Z",
+        "node_flavor": "",
+        "node_region": "us-east-1",
+        "node_type": "worker",
+        "node_zone": "",
+        "providerID": "aws:///us-east-1a/i-0abc123def456",
+        "source": "k8s",
+        "subtype": "worker"
+      },
+      "labels": {},
+      "query_attributes": {
+        "cluster": "",
+        "name": "k8s-worker-1"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src_key": "k8s:test-account-k8s-1::Node::k8s-worker-1",
+      "dst_key": "aws:test-account-aws-1:us-east-1:ComputeInstance::worker-ec2",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s_ec2_enricher",
+      "properties": {
+        "connection_type": "ec2_provider_id",
+        "contributing_sources": [
+          "k8s_ec2_enricher"
+        ],
+        "instance_id": "i-0abc123def456",
+        "provider_id": "aws:///us-east-1a/i-0abc123def456"
+      },
+      "contributing_sources": [
+        "k8s_ec2_enricher"
+      ]
+    }
+  ]
+}

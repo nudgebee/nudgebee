@@ -1,0 +1,97 @@
+{
+  "nodes": [
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:InfraStack::my-stack",
+      "node_type": "InfraStack",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "cloud_provider": "AWS",
+        "external_resource_id": "cfn-1",
+        "is_active": true,
+        "labels": null,
+        "name": "my-stack",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "cfn-1",
+        "region": "us-east-1",
+        "resource_id": "my-stack",
+        "service_name": "AWSCloudFormation",
+        "source": "aws",
+        "status": "",
+        "subtype": "stack",
+        "type": "stack"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-stack"
+      }
+    },
+    {
+      "unique_key": "aws:test-account-aws-1:us-east-1:Storage::app-bucket",
+      "node_type": "Storage",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "aws_account_number": "",
+        "bucket_name": "app-bucket",
+        "cloud_provider": "AWS",
+        "dns_aliases": [
+          "app-bucket.s3.dualstack.us-east-1.amazonaws.com",
+          "app-bucket.s3-website-us-east-1.amazonaws.com",
+          "app-bucket.s3.amazonaws.com"
+        ],
+        "dns_name": "app-bucket.s3.us-east-1.amazonaws.com",
+        "external_resource_id": "s3-1",
+        "is_active": true,
+        "labels": null,
+        "name": "app-bucket",
+        "nb_account_id": "123456789012",
+        "nb_resource_id": "s3-1",
+        "region": "us-east-1",
+        "resource_id": "app-bucket",
+        "service_name": "AmazonS3",
+        "source": "aws",
+        "status": "",
+        "subtype": "storage",
+        "type": "storage"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "app-bucket",
+        "subtype": "storage"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src_key": "aws:test-account-aws-1:us-east-1:InfraStack::my-stack",
+      "dst_key": "aws:test-account-aws-1:us-east-1:Storage::app-bucket",
+      "relationship_type": "MANAGES",
+      "cloud_account_id": "test-account-aws-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "aws",
+      "properties": {
+        "connection_type": "cloudformation_managed",
+        "contributing_sources": [
+          "aws"
+        ],
+        "logical_resource_id": "AppBucket",
+        "resource_status": "CREATE_COMPLETE",
+        "resource_type": "AWS::S3::Bucket"
+      },
+      "contributing_sources": [
+        "aws"
+      ]
+    }
+  ]
+}

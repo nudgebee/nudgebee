@@ -1,0 +1,807 @@
+{
+  "nodes": [
+    {
+      "unique_key": "gcp:test-account-gcp-1:US:Database:my_dataset:my_dataset",
+      "node_type": "Database",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "bqds-1",
+        "gcp_project_id": "my_dataset",
+        "is_active": true,
+        "labels": {},
+        "name": "my_dataset",
+        "nb_account_id": "proj-1",
+        "nb_resource_id": "bqds-1",
+        "region": "US",
+        "resource_id": "my_dataset",
+        "service_name": "BigQuery",
+        "source": "gcp",
+        "status": "",
+        "subtype": "BigQuery",
+        "type": "bigquery.googleapis.com/Dataset"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my_dataset",
+        "subtype": "BigQuery"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:US:Database:my_table:my_table",
+      "node_type": "Database",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "bqt-1",
+        "gcp_project_id": "my_table",
+        "is_active": true,
+        "labels": {},
+        "meta": {
+          "FullID": "proj-1:my_dataset.my_table"
+        },
+        "name": "my_table",
+        "nb_account_id": "proj-1",
+        "nb_resource_id": "bqt-1",
+        "region": "US",
+        "resource_id": "my_table",
+        "service_name": "BigQuery",
+        "source": "gcp",
+        "status": "",
+        "subtype": "BigQuery",
+        "type": "bigquery.googleapis.com/Table"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my_table",
+        "subtype": "BigQuery"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:US:Storage:my-bucket:my-bucket",
+      "node_type": "Storage",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "dns_name": "my-bucket.storage.googleapis.com",
+        "external_resource_id": "storage-1",
+        "gcp_project_id": "my-bucket",
+        "is_active": true,
+        "labels": {},
+        "name": "my-bucket",
+        "nb_account_id": "proj-1",
+        "nb_resource_id": "storage-1",
+        "region": "US",
+        "resource_id": "my-bucket",
+        "service_name": "Cloud Storage",
+        "source": "gcp",
+        "status": "",
+        "subtype": "CloudStorage",
+        "type": "storage.googleapis.com/Bucket"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-bucket",
+        "subtype": "CloudStorage"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:global:SecretVault:my-secret:my-secret",
+      "node_type": "SecretVault",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "sec-1",
+        "gcp_project_id": "my-secret",
+        "is_active": true,
+        "labels": {},
+        "name": "my-secret",
+        "nb_account_id": "proj-1",
+        "nb_resource_id": "sec-1",
+        "region": "global",
+        "resource_id": "my-secret",
+        "service_name": "Secret Manager",
+        "source": "gcp",
+        "status": "",
+        "subtype": "secret",
+        "type": "secret"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-secret"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:global:SecurityGroup:my-fw:my-fw",
+      "node_type": "SecurityGroup",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "fw-1",
+        "gcp_project_id": "my-fw",
+        "is_active": true,
+        "labels": {},
+        "meta": {
+          "direction": "INGRESS",
+          "network": "projects/proj-1/global/networks/my-vpc"
+        },
+        "name": "my-fw",
+        "nb_account_id": "proj-1",
+        "nb_resource_id": "fw-1",
+        "region": "global",
+        "resource_id": "my-fw",
+        "service_name": "Networking",
+        "source": "gcp",
+        "status": "",
+        "subtype": "FirewallRule",
+        "type": "firewall-rule"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-fw"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:global:ServiceIdentity:GCPServiceAccount:sa@proj-1.iam.gserviceaccount.com",
+      "node_type": "ServiceIdentity",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "arn": "",
+        "cloud_provider": "GCP",
+        "email": "sa@proj-1.iam.gserviceaccount.com",
+        "is_active": true,
+        "meta": {
+          "email": "sa@proj-1.iam.gserviceaccount.com"
+        },
+        "name": "sa@proj-1.iam.gserviceaccount.com",
+        "nb_account_id": "test-account-gcp-1",
+        "region": "global",
+        "resource_id": "sa@proj-1.iam.gserviceaccount.com",
+        "service_name": "GCPIAM",
+        "source": "gcp",
+        "subtype": "GCPServiceAccount"
+      },
+      "labels": {},
+      "query_attributes": {
+        "arn": "",
+        "name": "sa@proj-1.iam.gserviceaccount.com",
+        "service_name": "GCPIAM",
+        "subtype": "GCPServiceAccount"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:global:Topic:my-topic:my-topic",
+      "node_type": "Topic",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "topic-1",
+        "gcp_project_id": "my-topic",
+        "is_active": true,
+        "labels": {},
+        "name": "my-topic",
+        "nb_account_id": "proj-1",
+        "nb_resource_id": "topic-1",
+        "region": "global",
+        "resource_id": "my-topic",
+        "service_name": "Cloud Pub/Sub",
+        "source": "gcp",
+        "status": "",
+        "subtype": "PubSubTopic",
+        "type": "pubsub.googleapis.com/Topic"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-topic"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:global:VPC:my-vpc:my-vpc",
+      "node_type": "VPC",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "vpc-1",
+        "gcp_project_id": "my-vpc",
+        "is_active": true,
+        "labels": {},
+        "name": "my-vpc",
+        "nb_account_id": "proj-1",
+        "nb_resource_id": "vpc-1",
+        "region": "global",
+        "resource_id": "my-vpc",
+        "service_name": "Networking",
+        "source": "gcp",
+        "status": "",
+        "subtype": "vpc-network",
+        "type": "vpc-network"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-vpc"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:Cache:my-cache:my-cache",
+      "node_type": "Cache",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "redis-1",
+        "gcp_project_id": "my-cache",
+        "is_active": true,
+        "labels": {},
+        "meta": {
+          "host": "10.0.0.5"
+        },
+        "name": "my-cache",
+        "nb_account_id": "proj-1",
+        "nb_resource_id": "redis-1",
+        "region": "us-central1",
+        "resource_id": "my-cache",
+        "service_name": "Memorystore",
+        "source": "gcp",
+        "status": "",
+        "subtype": "redis",
+        "type": "redis"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-cache"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:ComputeInstance:my-vm:my-vm",
+      "node_type": "ComputeInstance",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "gce-1",
+        "gcp_project_id": "my-vm",
+        "is_active": true,
+        "labels": {},
+        "meta": {
+          "network_interfaces": [
+            {
+              "network": "projects/proj-1/global/networks/my-vpc",
+              "subnetwork": "projects/proj-1/regions/us-central1/subnetworks/my-subnet"
+            }
+          ]
+        },
+        "name": "my-vm",
+        "nb_account_id": "proj-1",
+        "nb_resource_id": "gce-1",
+        "region": "us-central1",
+        "resource_id": "my-vm",
+        "service_name": "Compute Engine",
+        "source": "gcp",
+        "status": "",
+        "subnet_id": "my-subnet",
+        "subnet_url": "projects/proj-1/regions/us-central1/subnetworks/my-subnet",
+        "subtype": "ComputeEngine",
+        "type": "compute-engine",
+        "vpc_id": "my-vpc",
+        "vpc_network_url": "projects/proj-1/global/networks/my-vpc"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-vm",
+        "subtype": "ComputeEngine",
+        "vpc_id": "my-vpc"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:ContainerRegistry:my-repo:my-repo",
+      "node_type": "ContainerRegistry",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "ar-1",
+        "gcp_project_id": "my-repo",
+        "is_active": true,
+        "labels": {},
+        "name": "my-repo",
+        "nb_account_id": "proj-1",
+        "nb_resource_id": "ar-1",
+        "region": "us-central1",
+        "resource_id": "my-repo",
+        "service_name": "Artifact Registry",
+        "source": "gcp",
+        "status": "",
+        "subtype": "ArtifactRegistry",
+        "type": "artifact-registry"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-repo",
+        "region": "us-central1"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:CronJob:my-cron:my-cron",
+      "node_type": "CronJob",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "cron-1",
+        "gcp_project_id": "my-cron",
+        "is_active": true,
+        "labels": {},
+        "meta": {
+          "target": "projects/proj-1/topics/my-topic",
+          "target_type": "pubsub"
+        },
+        "name": "my-cron",
+        "nb_account_id": "proj-1",
+        "nb_resource_id": "cron-1",
+        "region": "us-central1",
+        "resource_id": "my-cron",
+        "service_name": "Cloud Scheduler",
+        "source": "gcp",
+        "status": "",
+        "subtype": "cloud-scheduler",
+        "type": "cloud-scheduler"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-cron"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:Database:primary-db:primary-db",
+      "node_type": "Database",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "sql-1",
+        "gcp_project_id": "primary-db",
+        "is_active": true,
+        "labels": {},
+        "meta": {
+          "settings": {
+            "ipConfiguration": {
+              "privateNetwork": "projects/proj-1/global/networks/my-vpc"
+            }
+          }
+        },
+        "name": "primary-db",
+        "nb_account_id": "proj-1",
+        "nb_resource_id": "sql-1",
+        "region": "us-central1",
+        "resource_id": "primary-db",
+        "service_name": "Cloud SQL",
+        "source": "gcp",
+        "status": "",
+        "subtype": "CloudSQL",
+        "type": "cloud-sql",
+        "vpc_id": "my-vpc",
+        "vpc_network_url": "projects/proj-1/global/networks/my-vpc"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "primary-db",
+        "subtype": "CloudSQL",
+        "vpc_id": "my-vpc"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:Database:replica-db:replica-db",
+      "node_type": "Database",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "sql-2",
+        "gcp_project_id": "replica-db",
+        "instance_type": "READ_REPLICA_INSTANCE",
+        "is_active": true,
+        "labels": {},
+        "master_instance_name": "primary-db",
+        "meta": {
+          "instanceType": "READ_REPLICA_INSTANCE",
+          "masterInstanceName": "proj-1:primary-db"
+        },
+        "name": "replica-db",
+        "nb_account_id": "proj-1",
+        "nb_resource_id": "sql-2",
+        "region": "us-central1",
+        "resource_id": "replica-db",
+        "service_name": "Cloud SQL",
+        "source": "gcp",
+        "status": "",
+        "subtype": "CloudSQL",
+        "type": "cloud-sql"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "replica-db",
+        "subtype": "CloudSQL"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:ServerlessFunction:my-service:my-service",
+      "node_type": "ServerlessFunction",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "run-1",
+        "gcp_project_id": "my-service",
+        "is_active": true,
+        "labels": {},
+        "meta": {
+          "container_image": "us-central1-docker.pkg.dev/proj-1/my-repo/img@sha256:abc",
+          "redis_endpoints": [
+            "10.0.0.5"
+          ],
+          "secrets": [
+            "my-secret"
+          ],
+          "service_account": "sa@proj-1.iam.gserviceaccount.com"
+        },
+        "name": "my-service",
+        "nb_account_id": "proj-1",
+        "nb_resource_id": "run-1",
+        "region": "us-central1",
+        "registry_name": "my-repo",
+        "resource_id": "my-service",
+        "service_name": "Cloud Run",
+        "source": "gcp",
+        "status": "",
+        "subtype": "CloudRun",
+        "type": "run.googleapis.com/Service"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-service"
+      }
+    },
+    {
+      "unique_key": "gcp:test-account-gcp-1:us-central1:Subnet:my-subnet:my-subnet",
+      "node_type": "Subnet",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "account_number": "",
+        "arn": "",
+        "cloud_provider": "GCP",
+        "external_resource_id": "subnet-1",
+        "gcp_project_id": "my-subnet",
+        "is_active": true,
+        "labels": {},
+        "meta": {
+          "network": "projects/proj-1/global/networks/my-vpc"
+        },
+        "name": "my-subnet",
+        "nb_account_id": "proj-1",
+        "nb_resource_id": "subnet-1",
+        "region": "us-central1",
+        "resource_id": "my-subnet",
+        "service_name": "Networking",
+        "source": "gcp",
+        "status": "",
+        "subtype": "subnet",
+        "type": "subnet",
+        "vpc_id": "my-vpc",
+        "vpc_network_url": "projects/proj-1/global/networks/my-vpc"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-subnet",
+        "vpc_id": "my-vpc"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src_key": "gcp:test-account-gcp-1:US:Database:my_table:my_table",
+      "dst_key": "gcp:test-account-gcp-1:US:Database:my_dataset:my_dataset",
+      "relationship_type": "BELONGS_TO",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "bigquery_dataset",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:global:ServiceIdentity:GCPServiceAccount:sa@proj-1.iam.gserviceaccount.com",
+      "dst_key": "gcp:test-account-gcp-1:US:Storage:my-bucket:my-bucket",
+      "relationship_type": "HAS_ACCESS_TO",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "contributing_sources": [
+          "gcp"
+        ],
+        "evidence": "iam_policy",
+        "granted_role": "roles/storage.admin"
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:global:ServiceIdentity:GCPServiceAccount:sa@proj-1.iam.gserviceaccount.com",
+      "dst_key": "gcp:test-account-gcp-1:global:Topic:my-topic:my-topic",
+      "relationship_type": "SUBSCRIBES_TO",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "contributing_sources": [
+          "gcp"
+        ],
+        "evidence": "iam_policy",
+        "granted_role": "roles/pubsub.subscriber"
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:us-central1:ComputeInstance:my-vm:my-vm",
+      "dst_key": "gcp:test-account-gcp-1:global:VPC:my-vpc:my-vpc",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "vpc",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:us-central1:ComputeInstance:my-vm:my-vm",
+      "dst_key": "gcp:test-account-gcp-1:us-central1:Subnet:my-subnet:my-subnet",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "subnet",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:us-central1:CronJob:my-cron:my-cron",
+      "dst_key": "gcp:test-account-gcp-1:global:Topic:my-topic:my-topic",
+      "relationship_type": "PUBLISHES_TO",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "scheduler_target",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:us-central1:Database:primary-db:primary-db",
+      "dst_key": "gcp:test-account-gcp-1:global:VPC:my-vpc:my-vpc",
+      "relationship_type": "HOSTED_ON",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "vpc",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:us-central1:Database:replica-db:replica-db",
+      "dst_key": "gcp:test-account-gcp-1:us-central1:Database:primary-db:primary-db",
+      "relationship_type": "BELONGS_TO",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "read_replica",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:us-central1:ServerlessFunction:my-service:my-service",
+      "dst_key": "gcp:test-account-gcp-1:global:SecretVault:my-secret:my-secret",
+      "relationship_type": "USES_SECRET",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "secret_ref",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:us-central1:ServerlessFunction:my-service:my-service",
+      "dst_key": "gcp:test-account-gcp-1:global:ServiceIdentity:GCPServiceAccount:sa@proj-1.iam.gserviceaccount.com",
+      "relationship_type": "RUNS_AS",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "service_account",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:us-central1:ServerlessFunction:my-service:my-service",
+      "dst_key": "gcp:test-account-gcp-1:us-central1:Cache:my-cache:my-cache",
+      "relationship_type": "CALLS",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "contributing_sources": [
+          "gcp"
+        ],
+        "endpoint": "10.0.0.5",
+        "evidence": "redis_env_endpoint"
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:us-central1:ServerlessFunction:my-service:my-service",
+      "dst_key": "gcp:test-account-gcp-1:us-central1:ContainerRegistry:my-repo:my-repo",
+      "relationship_type": "PULLS_FROM",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "container_image",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    },
+    {
+      "src_key": "gcp:test-account-gcp-1:us-central1:Subnet:my-subnet:my-subnet",
+      "dst_key": "gcp:test-account-gcp-1:global:VPC:my-vpc:my-vpc",
+      "relationship_type": "BELONGS_TO",
+      "cloud_account_id": "test-account-gcp-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "gcp",
+      "properties": {
+        "connection_type": "vpc",
+        "contributing_sources": [
+          "gcp"
+        ]
+      },
+      "contributing_sources": [
+        "gcp"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+[
+  { "id": "cfn-1", "resourse_id": "my-stack", "name": "my-stack", "type": "stack", "service_name": "AWSCloudFormation", "account": "123456789012", "region": "us-east-1", "cloud_provider": "AWS", "is_active": true, "external_resource_id": "cfn-1", "meta": { "StackName": "my-stack", "StackStatus": "CREATE_COMPLETE" } },
+  { "id": "s3-1", "resourse_id": "app-bucket", "name": "app-bucket", "type": "storage", "service_name": "AmazonS3", "account": "123456789012", "region": "us-east-1", "cloud_provider": "AWS", "is_active": true, "external_resource_id": "s3-1", "meta": { "Name": "app-bucket" } }
+]

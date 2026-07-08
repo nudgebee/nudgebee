@@ -1,0 +1,915 @@
+{
+  "nodes": [
+    {
+      "unique_key": "k8s:test-account-k8s-1::Cluster::my-eks-cluster",
+      "node_type": "Cluster",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "name": "my-eks-cluster",
+        "source": "k8s",
+        "subtype": "Cluster"
+      },
+      "labels": {},
+      "query_attributes": {
+        "name": "my-eks-cluster"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::K8sService:production:api-service",
+      "node_type": "K8sService",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "cluster": "",
+        "cluster_ip": "10.100.10.10",
+        "is_active": false,
+        "k8s_workload_id": "wl-svc-1",
+        "kind": "Service",
+        "labels": {
+          "app": "api"
+        },
+        "name": "api-service",
+        "namespace": "production",
+        "nb_resource_id": "wl-svc-1",
+        "service_ports": [
+          {
+            "name": "http",
+            "port": 80,
+            "protocol": "TCP",
+            "targetPort": 8080
+          }
+        ],
+        "service_type": "ClusterIP",
+        "source": "k8s",
+        "subtype": "Service"
+      },
+      "labels": {
+        "app": "api"
+      },
+      "query_attributes": {
+        "cluster": "",
+        "cluster_ip": "10.100.10.10",
+        "name": "api-service",
+        "namespace": "production",
+        "service_type": "ClusterIP"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Namespace::kube-system",
+      "node_type": "Namespace",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "cluster": "",
+        "name": "kube-system",
+        "source": "k8s",
+        "subtype": "Namespace"
+      },
+      "labels": {},
+      "query_attributes": {
+        "cluster": "",
+        "name": "kube-system"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Namespace::production",
+      "node_type": "Namespace",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "cluster": "",
+        "name": "production",
+        "source": "k8s",
+        "subtype": "Namespace"
+      },
+      "labels": {},
+      "query_attributes": {
+        "cluster": "",
+        "name": "production"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Node::k8s-node-1",
+      "node_type": "Node",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "cluster": "my-eks-cluster",
+        "conditions": "Ready",
+        "cpu_allocatable": 3.5,
+        "cpu_capacity": 4,
+        "is_active": true,
+        "labels": {
+          "beta.kubernetes.io/arch": "amd64",
+          "beta.kubernetes.io/instance-type": "t3.xlarge",
+          "beta.kubernetes.io/os": "linux",
+          "eks.amazonaws.com/nodegroup": "standard-workers",
+          "node-role.kubernetes.io/worker": "true",
+          "node.kubernetes.io/instance-type": "t3.xlarge",
+          "topology.kubernetes.io/region": "us-east-1",
+          "topology.kubernetes.io/zone": "us-east-1a"
+        },
+        "memory_allocatable": "15.00Ki",
+        "memory_capacity": "16.00Ki",
+        "name": "k8s-node-1",
+        "node_creation_time": "2024-12-01T10:30:00Z",
+        "node_flavor": "t3.xlarge",
+        "node_region": "us-east-1",
+        "node_type": "worker",
+        "node_zone": "us-east-1a",
+        "pod_count": 4,
+        "pods": [
+          "api-pod-1",
+          "postgres-0",
+          "monitoring-agent-xyz",
+          "kube-proxy-abc"
+        ],
+        "source": "k8s",
+        "subtype": "worker"
+      },
+      "labels": {
+        "beta.kubernetes.io/arch": "amd64",
+        "beta.kubernetes.io/instance-type": "t3.xlarge",
+        "beta.kubernetes.io/os": "linux",
+        "eks.amazonaws.com/nodegroup": "standard-workers",
+        "node-role.kubernetes.io/worker": "true",
+        "node.kubernetes.io/instance-type": "t3.xlarge",
+        "topology.kubernetes.io/region": "us-east-1",
+        "topology.kubernetes.io/zone": "us-east-1a"
+      },
+      "query_attributes": {
+        "cluster": "my-eks-cluster",
+        "name": "k8s-node-1"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Node::k8s-node-2",
+      "node_type": "Node",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "cluster": "my-eks-cluster",
+        "conditions": "Ready",
+        "cpu_allocatable": 3.5,
+        "cpu_capacity": 4,
+        "is_active": true,
+        "labels": {
+          "beta.kubernetes.io/arch": "amd64",
+          "beta.kubernetes.io/instance-type": "t3.xlarge",
+          "beta.kubernetes.io/os": "linux",
+          "eks.amazonaws.com/nodegroup": "standard-workers",
+          "node-role.kubernetes.io/worker": "true",
+          "node.kubernetes.io/instance-type": "t3.xlarge",
+          "topology.kubernetes.io/region": "us-east-1",
+          "topology.kubernetes.io/zone": "us-east-1b"
+        },
+        "memory_allocatable": "15.00Ki",
+        "memory_capacity": "16.00Ki",
+        "name": "k8s-node-2",
+        "node_creation_time": "2024-12-01T10:30:00Z",
+        "node_flavor": "t3.xlarge",
+        "node_region": "us-east-1",
+        "node_type": "worker",
+        "node_zone": "us-east-1b",
+        "pod_count": 3,
+        "pods": [
+          "api-pod-2",
+          "monitoring-agent-abc",
+          "kube-proxy-def"
+        ],
+        "source": "k8s",
+        "subtype": "worker"
+      },
+      "labels": {
+        "beta.kubernetes.io/arch": "amd64",
+        "beta.kubernetes.io/instance-type": "t3.xlarge",
+        "beta.kubernetes.io/os": "linux",
+        "eks.amazonaws.com/nodegroup": "standard-workers",
+        "node-role.kubernetes.io/worker": "true",
+        "node.kubernetes.io/instance-type": "t3.xlarge",
+        "topology.kubernetes.io/region": "us-east-1",
+        "topology.kubernetes.io/zone": "us-east-1b"
+      },
+      "query_attributes": {
+        "cluster": "my-eks-cluster",
+        "name": "k8s-node-2"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Pod:production:api-pod-1",
+      "node_type": "Pod",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "cluster": "",
+        "is_active": false,
+        "k8s_workload_id": "wl-pod-1",
+        "kind": "Pod",
+        "labels": {
+          "app": "api",
+          "pod-template-hash": "abc123",
+          "version": "v1.2.3"
+        },
+        "name": "api-pod-1",
+        "namespace": "production",
+        "nb_resource_id": "wl-pod-1",
+        "node_name": "k8s-node-1",
+        "phase": "Running",
+        "ready": true,
+        "restart_policy": "Always",
+        "source": "k8s",
+        "subtype": "Pod"
+      },
+      "labels": {
+        "app": "api",
+        "pod-template-hash": "abc123",
+        "version": "v1.2.3"
+      },
+      "query_attributes": {
+        "cluster": "",
+        "name": "api-pod-1",
+        "namespace": "production",
+        "node_name": "k8s-node-1",
+        "phase": "Running"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Pod:production:api-pod-2",
+      "node_type": "Pod",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "cluster": "",
+        "is_active": false,
+        "k8s_workload_id": "wl-pod-2",
+        "kind": "Pod",
+        "labels": {
+          "app": "api",
+          "pod-template-hash": "abc123",
+          "version": "v1.2.3"
+        },
+        "name": "api-pod-2",
+        "namespace": "production",
+        "nb_resource_id": "wl-pod-2",
+        "node_name": "k8s-node-2",
+        "phase": "Running",
+        "source": "k8s",
+        "subtype": "Pod"
+      },
+      "labels": {
+        "app": "api",
+        "pod-template-hash": "abc123",
+        "version": "v1.2.3"
+      },
+      "query_attributes": {
+        "cluster": "",
+        "name": "api-pod-2",
+        "namespace": "production",
+        "node_name": "k8s-node-2",
+        "phase": "Running"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Pod:production:postgres-0",
+      "node_type": "Pod",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "cluster": "",
+        "is_active": false,
+        "k8s_workload_id": "wl-pod-3",
+        "kind": "Pod",
+        "labels": {
+          "app": "postgres",
+          "controller-revision-hash": "postgres-statefulset-xyz",
+          "statefulset.kubernetes.io/pod-name": "postgres-0"
+        },
+        "name": "postgres-0",
+        "namespace": "production",
+        "nb_resource_id": "wl-pod-3",
+        "node_name": "k8s-node-1",
+        "phase": "Running",
+        "source": "k8s",
+        "subtype": "Pod"
+      },
+      "labels": {
+        "app": "postgres",
+        "controller-revision-hash": "postgres-statefulset-xyz",
+        "statefulset.kubernetes.io/pod-name": "postgres-0"
+      },
+      "query_attributes": {
+        "cluster": "",
+        "name": "postgres-0",
+        "namespace": "production",
+        "node_name": "k8s-node-1",
+        "phase": "Running"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Workload:kube-system:monitoring-agent",
+      "node_type": "Workload",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "cluster": "",
+        "is_active": false,
+        "k8s_workload_id": "wl-ds-1",
+        "kind": "DaemonSet",
+        "labels": {
+          "app": "monitoring",
+          "component": "agent"
+        },
+        "name": "monitoring-agent",
+        "namespace": "kube-system",
+        "nb_resource_id": "wl-ds-1",
+        "source": "k8s",
+        "subtype": "DaemonSet"
+      },
+      "labels": {
+        "app": "monitoring",
+        "component": "agent"
+      },
+      "query_attributes": {
+        "cluster": "",
+        "kind": "DaemonSet",
+        "name": "monitoring-agent",
+        "namespace": "kube-system"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Workload:production:api-deployment",
+      "node_type": "Workload",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "annotations": {
+          "deployment.kubernetes.io/revision": "3"
+        },
+        "available_replicas": 3,
+        "cluster": "",
+        "is_active": false,
+        "k8s_workload_id": "wl-deploy-1",
+        "kind": "Deployment",
+        "labels": {
+          "app": "api",
+          "tier": "backend",
+          "version": "v1.2.3"
+        },
+        "name": "api-deployment",
+        "namespace": "production",
+        "nb_resource_id": "wl-deploy-1",
+        "ready_replicas": 3,
+        "replicas": 3,
+        "source": "k8s",
+        "subtype": "Deployment"
+      },
+      "labels": {
+        "app": "api",
+        "tier": "backend",
+        "version": "v1.2.3"
+      },
+      "query_attributes": {
+        "cluster": "",
+        "kind": "Deployment",
+        "name": "api-deployment",
+        "namespace": "production"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Workload:production:api-ingress",
+      "node_type": "Workload",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "annotations": {
+          "cert-manager.io/cluster-issuer": "letsencrypt-prod",
+          "kubernetes.io/ingress.class": "nginx"
+        },
+        "cluster": "",
+        "ingress_hosts": [
+          "api.example.com"
+        ],
+        "is_active": false,
+        "k8s_workload_id": "wl-ingress-1",
+        "kind": "Ingress",
+        "labels": {
+          "app": "api"
+        },
+        "name": "api-ingress",
+        "namespace": "production",
+        "nb_resource_id": "wl-ingress-1",
+        "source": "k8s",
+        "subtype": "Ingress"
+      },
+      "labels": {
+        "app": "api"
+      },
+      "query_attributes": {
+        "cluster": "",
+        "kind": "Ingress",
+        "name": "api-ingress",
+        "namespace": "production"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Workload:production:app-config",
+      "node_type": "Workload",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "cluster": "",
+        "is_active": false,
+        "k8s_workload_id": "wl-configmap-1",
+        "kind": "ConfigMap",
+        "labels": {
+          "app": "api"
+        },
+        "name": "app-config",
+        "namespace": "production",
+        "nb_resource_id": "wl-configmap-1",
+        "source": "k8s",
+        "subtype": "ConfigMap"
+      },
+      "labels": {
+        "app": "api"
+      },
+      "query_attributes": {
+        "cluster": "",
+        "kind": "ConfigMap",
+        "name": "app-config",
+        "namespace": "production"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Workload:production:app-secrets",
+      "node_type": "Workload",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "cluster": "",
+        "is_active": false,
+        "k8s_workload_id": "wl-secret-1",
+        "kind": "Secret",
+        "labels": {
+          "app": "api"
+        },
+        "name": "app-secrets",
+        "namespace": "production",
+        "nb_resource_id": "wl-secret-1",
+        "source": "k8s",
+        "subtype": "Secret"
+      },
+      "labels": {
+        "app": "api"
+      },
+      "query_attributes": {
+        "cluster": "",
+        "kind": "Secret",
+        "name": "app-secrets",
+        "namespace": "production"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Workload:production:frontend-deployment",
+      "node_type": "Workload",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "available_replicas": 2,
+        "cluster": "",
+        "is_active": false,
+        "k8s_workload_id": "wl-deploy-2",
+        "kind": "Deployment",
+        "labels": {
+          "app": "frontend",
+          "tier": "web"
+        },
+        "name": "frontend-deployment",
+        "namespace": "production",
+        "nb_resource_id": "wl-deploy-2",
+        "ready_replicas": 2,
+        "replicas": 2,
+        "source": "k8s",
+        "subtype": "Deployment"
+      },
+      "labels": {
+        "app": "frontend",
+        "tier": "web"
+      },
+      "query_attributes": {
+        "cluster": "",
+        "kind": "Deployment",
+        "name": "frontend-deployment",
+        "namespace": "production"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Workload:production:postgres-data",
+      "node_type": "Workload",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "cluster": "",
+        "is_active": false,
+        "k8s_workload_id": "wl-pvc-1",
+        "kind": "PersistentVolumeClaim",
+        "labels": {
+          "app": "postgres"
+        },
+        "name": "postgres-data",
+        "namespace": "production",
+        "nb_resource_id": "wl-pvc-1",
+        "phase": "Bound",
+        "source": "k8s",
+        "storage_class": "gp3",
+        "storage_request": "10Gi",
+        "subtype": "PersistentVolumeClaim"
+      },
+      "labels": {
+        "app": "postgres"
+      },
+      "query_attributes": {
+        "cluster": "",
+        "kind": "PersistentVolumeClaim",
+        "name": "postgres-data",
+        "namespace": "production"
+      }
+    },
+    {
+      "unique_key": "k8s:test-account-k8s-1::Workload:production:postgres-statefulset",
+      "node_type": "Workload",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "cluster": "",
+        "is_active": false,
+        "k8s_workload_id": "wl-sts-1",
+        "kind": "StatefulSet",
+        "labels": {
+          "app": "postgres",
+          "tier": "database"
+        },
+        "name": "postgres-statefulset",
+        "namespace": "production",
+        "nb_resource_id": "wl-sts-1",
+        "ready_replicas": 1,
+        "replicas": 1,
+        "source": "k8s",
+        "subtype": "StatefulSet"
+      },
+      "labels": {
+        "app": "postgres",
+        "tier": "database"
+      },
+      "query_attributes": {
+        "cluster": "",
+        "kind": "StatefulSet",
+        "name": "postgres-statefulset",
+        "namespace": "production"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "src_key": "k8s:test-account-k8s-1::K8sService:production:api-service",
+      "dst_key": "k8s:test-account-k8s-1::Namespace::production",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "namespace",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::Node::k8s-node-1",
+      "dst_key": "k8s:test-account-k8s-1::Cluster::my-eks-cluster",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "cluster",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::Node::k8s-node-2",
+      "dst_key": "k8s:test-account-k8s-1::Cluster::my-eks-cluster",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "cluster",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::Pod:production:api-pod-1",
+      "dst_key": "k8s:test-account-k8s-1::Namespace::production",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "namespace",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::Pod:production:api-pod-1",
+      "dst_key": "k8s:test-account-k8s-1::Node::k8s-node-1",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "node",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::Pod:production:api-pod-2",
+      "dst_key": "k8s:test-account-k8s-1::Namespace::production",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "namespace",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::Pod:production:api-pod-2",
+      "dst_key": "k8s:test-account-k8s-1::Node::k8s-node-2",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "node",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::Pod:production:postgres-0",
+      "dst_key": "k8s:test-account-k8s-1::Namespace::production",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "namespace",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::Pod:production:postgres-0",
+      "dst_key": "k8s:test-account-k8s-1::Node::k8s-node-1",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "node",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::Workload:kube-system:monitoring-agent",
+      "dst_key": "k8s:test-account-k8s-1::Namespace::kube-system",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "namespace",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::Workload:production:api-deployment",
+      "dst_key": "k8s:test-account-k8s-1::Namespace::production",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "namespace",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::Workload:production:api-ingress",
+      "dst_key": "k8s:test-account-k8s-1::Namespace::production",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "namespace",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::Workload:production:app-config",
+      "dst_key": "k8s:test-account-k8s-1::Namespace::production",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "namespace",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::Workload:production:app-secrets",
+      "dst_key": "k8s:test-account-k8s-1::Namespace::production",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "namespace",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::Workload:production:frontend-deployment",
+      "dst_key": "k8s:test-account-k8s-1::Namespace::production",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "namespace",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::Workload:production:postgres-data",
+      "dst_key": "k8s:test-account-k8s-1::Namespace::production",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "namespace",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    },
+    {
+      "src_key": "k8s:test-account-k8s-1::Workload:production:postgres-statefulset",
+      "dst_key": "k8s:test-account-k8s-1::Namespace::production",
+      "relationship_type": "RUNS_ON",
+      "cloud_account_id": "test-account-k8s-1",
+      "tenant_id": "test-tenant-1",
+      "level": "",
+      "source": "k8s",
+      "properties": {
+        "connection_type": "namespace",
+        "contributing_sources": [
+          "k8s"
+        ]
+      },
+      "contributing_sources": [
+        "k8s"
+      ]
+    }
+  ]
+}
