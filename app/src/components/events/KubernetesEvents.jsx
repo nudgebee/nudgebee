@@ -48,7 +48,7 @@ import k8sApi from '@api1/kubernetes';
 import ticketsApi from '@api1/tickets';
 import apiUser from '@api1/user';
 import { getDateString, getLast24Hrs } from '@lib/datetime';
-import { hasWriteAccess } from '@lib/auth';
+import { hasWriteAccess, getCurrentTenant } from '@lib/auth';
 import { safeJSONParse, titleCaseForAggregationKey, syncFilterFromQuery, toSeverityLevel, EXCLUDED_TRIAGE_AGGREGATION_KEYS } from 'src/utils/common';
 import { applyFiltersOnRouter } from '@lib/router';
 import { action } from 'src/utils/actionStyles';
@@ -248,7 +248,12 @@ const KubernetesEventsTable = ({
   // localStorage is what survives a "leave + come back" round-trip. All other
   // call sites (PodsDetails, KubernetesTable expand, SLO configs, threshold
   // evidence) keep the legacy URL-only behavior.
-  const persistKey = isTroubleshootPage ? TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY : null;
+  // Scoped by tenant: cached filters (namespace, account, etc.) from one tenant
+  // are meaningless after switching to another, so each tenant gets its own key.
+  // withAuth (the shared PageLayout every page is wrapped in) blocks rendering
+  // until the session resolves, so getCurrentTenant() is already populated here.
+  const tenantId = getCurrentTenant()?.id;
+  const persistKey = isTroubleshootPage && tenantId ? `${TROUBLESHOOT_EVENTS_FILTER_STORAGE_KEY}:${tenantId}` : null;
   // Read once on mount; precedence is URL query > localStorage > component default.
   const persisted = useMemo(() => readPersistedFilters(persistKey), [persistKey]);
 
@@ -537,13 +542,32 @@ const KubernetesEventsTable = ({
   }, []);
 
   useEffect(() => {
+    // Only sync from an explicit external source (prop or URL). If neither is
+    // set, leave selectedAccountId as-is — it may have come from persisted
+    // storage on mount, and there's nothing here to override it with.
     const raw = accountId || router.query.accountId;
-    const next = raw ? String(raw).split(',').filter(Boolean) : [];
+    if (!raw) return;
+    const next = String(raw).split(',').filter(Boolean);
     setSelectedAccountId((prev) => {
       if (prev.length === next.length && prev.every((id, i) => id === next[i])) return prev;
       return next;
     });
   }, [accountId, router.query.accountId]);
+
+  // Once the real accounts list has loaded, drop any cached/URL account ids
+  // that no longer exist (deleted account, revoked access). Without this,
+  // a stale id never shows as a selected chip (the dropdown only renders
+  // selections found in `accounts`) yet keeps being sent on every API call.
+  useEffect(() => {
+    if (!accounts.length || !selectedAccountId.length) return;
+    const validIds = new Set(accounts.map((acc) => acc.id || acc.value));
+    const pruned = selectedAccountId.filter((id) => validIds.has(id));
+    if (pruned.length === selectedAccountId.length) return;
+    setSelectedAccountId(pruned);
+    applyFiltersOnRouter(router, { accountId: pruned.join(',') });
+    writePersistedFilters(persistKey, { accountId: pruned });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accounts, selectedAccountId]);
 
   useEffect(() => {
     if (isTroubleshootPage) {
@@ -573,6 +597,13 @@ const KubernetesEventsTable = ({
   }, [tableColumns]);
 
   const prevDefaultAggregationKeyRef = useRef(defaultQuery?.aggregation_key);
+  const rawEventsRef = useRef([]);
+  const ticketReferenceMapRef = useRef(new Map());
+  const buildRowDataRef = useRef(null);
+  // Sequence guards so a slow, superseded request can't overwrite state set by a
+  // later, faster one (e.g. rapid filter changes firing overlapping API calls).
+  const eventsRequestIdRef = useRef(0);
+  const trendRequestIdRef = useRef(0);
   useEffect(() => {
     const next = defaultQuery?.aggregation_key;
     const prev = prevDefaultAggregationKeyRef.current;
@@ -811,8 +842,9 @@ const KubernetesEventsTable = ({
     if (!selectedAccountId.length && !isTroubleshootPage) {
       return;
     }
+    const requestId = ++eventsRequestIdRef.current;
     setData([]);
-    setTotalCount([]);
+    setTotalCount(0);
     let query = {
       exact_subject_name_search: getValidParam(router.query?.exact) === 'true',
     };
@@ -1129,6 +1161,7 @@ const KubernetesEventsTable = ({
 
     // Data + tickets chain: once data arrives, fetch ticket summaries, then render
     const dataAndTicketsPromise = dataPromise.then((res) => {
+      if (requestId !== eventsRequestIdRef.current) return;
       const events = res.data?.events || [];
       const uniqueReferenceIds = new Set();
       events.forEach((item) => {
@@ -1137,6 +1170,7 @@ const KubernetesEventsTable = ({
       const references = Array.from(uniqueReferenceIds);
 
       return ticketsApi.listTicketsSummary({ reference_id: references }).then((ticketRes) => {
+        if (requestId !== eventsRequestIdRef.current) return;
         const ticketReferenceMap = new Map();
         ticketRes?.data?.tickets?.forEach((element) => {
           ticketReferenceMap.set(element.reference_id, element);
@@ -1149,11 +1183,13 @@ const KubernetesEventsTable = ({
 
     // Count updates independently (doesn't block table rendering)
     countPromise.then((countRes) => {
+      if (requestId !== eventsRequestIdRef.current) return;
       setTotalCount(countRes.count);
     });
 
     // Handle errors from the data chain
     dataAndTicketsPromise.catch(() => {
+      if (requestId !== eventsRequestIdRef.current) return;
       setLoading(false);
     });
   };
@@ -1236,10 +1272,12 @@ const KubernetesEventsTable = ({
     if (defaultQuery) {
       query = { ...query, ...defaultQuery };
     }
+    const requestId = ++trendRequestIdRef.current;
     setIsTrendChartLoading(true);
     k8sApi
       .getK8sEventGroupings(1000, 0, query)
       .then((res) => {
+        if (requestId !== trendRequestIdRef.current) return;
         const groupings = res?.data?.event_groupings || [];
 
         // Build a shared, time-sorted x-axis from every distinct bucket so each
@@ -1283,6 +1321,7 @@ const KubernetesEventsTable = ({
         });
       })
       .finally(() => {
+        if (requestId !== trendRequestIdRef.current) return;
         setIsTrendChartLoading(false);
       });
   }, [
