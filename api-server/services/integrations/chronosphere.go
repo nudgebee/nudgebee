@@ -107,7 +107,7 @@ func (m Chronosphere) ValidateConfig(sc *security.SecurityContext, config []core
 	}
 
 	resp, err := common.HttpGet(
-		fmt.Sprintf("%s/api/v1/label/__name__/values", chronosphereURL),
+		fmt.Sprintf("%s/data/metrics/api/v1/label/__name__/values", chronosphereURL),
 		common.HttpWithHeaders(map[string]string{
 			"Authorization": fmt.Sprintf("Bearer %s", chronosphereToken),
 			"Content-Type":  "application/json",
@@ -128,7 +128,7 @@ func (m Chronosphere) ValidateConfig(sc *security.SecurityContext, config []core
 	case http.StatusForbidden:
 		return []error{fmt.Errorf("insufficient permissions for Chronosphere API token (HTTP 403)")}
 	case http.StatusNotFound:
-		return []error{fmt.Errorf("Chronosphere /api/v1/label/__name__/values not found at %s — check chronosphere_url", chronosphereURL)}
+		return []error{fmt.Errorf("Chronosphere /data/metrics/api/v1/label/__name__/values not found at %s — check chronosphere_url", chronosphereURL)}
 	default:
 		return []error{fmt.Errorf("Chronosphere API returned unexpected status: HTTP %d", resp.StatusCode)}
 	}

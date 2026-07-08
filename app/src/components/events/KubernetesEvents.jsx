@@ -81,8 +81,6 @@ const KNOWN_SHORTCUT_DURATIONS_MS = new Set([
   24 * 60 * 60 * 1000,
   7 * 24 * 60 * 60 * 1000,
 ]);
-const CURRENT_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-
 // Distinct line colors for the multi-account trend chart, cycled by account index.
 const TREND_SERIES_COLORS = ['#2f7af0', '#f5b400', '#e5484d', '#16a34a', '#9333ea', '#0891b2', '#db2777', '#65a30d'];
 
@@ -291,10 +289,6 @@ const KubernetesEventsTable = ({
     ) {
       return { startDate: persisted.startDate, endDate: persisted.endDate };
     }
-    if (isTroubleshootPage) {
-      const now = Date.now();
-      return { startDate: now - CURRENT_WEEK_MS, endDate: now, shortcutClickTime: CURRENT_WEEK_MS };
-    }
     return { startDate: getLast24Hrs().getTime(), endDate: new Date().getTime() };
   };
 
@@ -412,13 +406,13 @@ const KubernetesEventsTable = ({
     () => defaultQuery?.eventPriority ?? getValidParam(router.query.eventPriority) ?? persisted?.priority
   );
   const [selectedDateRange, setSelectedDateRange] = useState(() => getInitialTime());
-  const [selectedStatus, setSelectedStatus] = useState(
-    () =>
-      defaultQuery?.eventStatus ??
-      getValidParam(router.query.eventStatus || router.query.status) ??
-      persisted?.status ??
-      (isTroubleshootPage ? 'FIRING' : undefined)
-  );
+  const [selectedStatus, setSelectedStatus] = useState(() => {
+    const initialStatus =
+      defaultQuery?.eventStatus ?? getValidParam(router.query.eventStatus || router.query.status) ?? persisted?.status ?? undefined;
+    // 'ALL' is the summary-widget drill-down sentinel for "every status": clear the
+    // status filter so the list matches the all-status card count.
+    return initialStatus === 'ALL' ? undefined : initialStatus;
+  });
   const [selectedSource, setSelectedSource] = useState([]);
   const [selectedServiceName, setSelectedServiceName] = useState(() => persisted?.serviceName ?? '');
   const [selectedEventName, setSelectedEventName] = useState(() => persisted?.eventName ?? '');
@@ -579,6 +573,20 @@ const KubernetesEventsTable = ({
   }, [JSON.stringify(defaultQuery?.aggregation_key)]);
 
   // --- Filter Handlers ---
+
+  // Derive account type synchronously from the accounts list so isFilterVisible
+  // is correct in the same render that accounts load — avoiding the race where
+  // accountType state (set via setAccountType inside the hook) hasn't flushed yet
+  // when the fetch effect fires due to accounts.length changing.
+  const resolvedAccountType = useMemo(() => {
+    if (!accounts?.length || !selectedAccountId?.length) return accountType;
+    const id = Array.isArray(selectedAccountId) ? selectedAccountId[0] : selectedAccountId;
+    const account = accounts.find((acc) => (acc.id || acc.value) === id);
+    return account?.cloud_provider ?? accountType;
+  }, [accounts, selectedAccountId, accountType]);
+
+  const isK8sFilterVisible = resolvedAccountType === 'K8s' && (!isTroubleshootPage || selectedAccountId.length > 0);
+  const isCloudFilterVisible = ['AWS', 'GCP', 'Azure'].includes(resolvedAccountType) && (!isTroubleshootPage || selectedAccountId.length > 0);
 
   const onPageChange = (page, limit) => {
     setCurrentPage(page - 1);
@@ -802,13 +810,13 @@ const KubernetesEventsTable = ({
     if (defaultQuery) {
       query = { ...query, ...defaultQuery };
     }
-    if (selectedNamespace) {
+    if (selectedNamespace && isK8sFilterVisible) {
       query.subject_namespace = selectedNamespace;
     }
-    if (selectedSubjectType) {
+    if (selectedSubjectType && isK8sFilterVisible) {
       query.subject_type = selectedSubjectType;
     }
-    if (selectedAggregationKey?.length > 0) {
+    if (selectedAggregationKey?.length > 0 && isK8sFilterVisible) {
       query.aggregation_key = selectedAggregationKey.map((f) => f.value || f);
     }
     if (selectedPriority) {
@@ -817,7 +825,7 @@ const KubernetesEventsTable = ({
     if (selectedStatus) {
       query.status = selectedStatus;
     }
-    if (selectedWorkload) {
+    if (selectedWorkload && isK8sFilterVisible) {
       query.subject_name = selectedWorkload;
     }
     if (selectedSource && selectedSource.length > 0) {
@@ -845,7 +853,7 @@ const KubernetesEventsTable = ({
     if (appliedSearchByMessage) {
       query.messageSearch = appliedSearchByMessage;
     }
-    if (accountType === 'AWS' || accountType === 'GCP' || accountType === 'Azure') {
+    if (isCloudFilterVisible) {
       if (selectedServiceName) {
         query.subject_namespace = selectedServiceName;
       }
@@ -903,7 +911,7 @@ const KubernetesEventsTable = ({
 
         if (headersArray.includes('Application')) {
           const account = isTroubleshootPage ? accounts.find((acc) => (acc.id || acc.value) === item.account_id) : null;
-          const cloudProvider = account?.cloud_provider || accountType;
+          const cloudProvider = account?.cloud_provider || resolvedAccountType;
           const namespaceLabel = cloudProvider && cloudProvider !== 'K8s' ? 'svc' : 'ns';
           row.push({
             component: (
@@ -1180,9 +1188,6 @@ const KubernetesEventsTable = ({
       return;
     }
     let query = {
-      subject_namespace: selectedNamespace,
-      subject_type: selectedSubjectType,
-      aggregation_key: selectedAggregationKey,
       priority: selectedPriority,
       start_date: selectedDateRange.startDate,
       end_date: selectedDateRange.endDate,
@@ -1193,14 +1198,23 @@ const KubernetesEventsTable = ({
       query.account_id = selectedAccountId;
     }
 
+    if (isK8sFilterVisible) {
+      if (selectedNamespace) query.subject_namespace = selectedNamespace;
+      if (selectedSubjectType) query.subject_type = selectedSubjectType;
+      if (selectedAggregationKey?.length > 0) query.aggregation_key = selectedAggregationKey.map((f) => f.value || f);
+      if (selectedWorkload) query.subject_name = selectedWorkload;
+    }
+
+    if (isCloudFilterVisible) {
+      if (selectedServiceName) query.subject_namespace = selectedServiceName;
+      if (selectedEventName) query.aggregation_key = selectedEventName;
+    }
+
     if (selectedDateRange?.startDate) {
       query.start_date = new Date(selectedDateRange.startDate);
     }
     if (selectedDateRange?.endDate) {
       query.end_date = new Date(selectedDateRange.endDate);
-    }
-    if (selectedWorkload) {
-      query.subject_name = selectedWorkload;
     }
     if (resource_ids.length) {
       query.resource_ids = resource_ids;
@@ -1271,6 +1285,10 @@ const KubernetesEventsTable = ({
     selectedDateRange,
     showTrendChart,
     isTroubleshootPage,
+    isK8sFilterVisible,
+    isCloudFilterVisible,
+    selectedServiceName,
+    selectedEventName,
   ]);
 
   return (
@@ -1321,7 +1339,7 @@ const KubernetesEventsTable = ({
                   passedSelectedDateTime={{
                     startTime: selectedDateRange.startDate,
                     endTime: selectedDateRange.endDate,
-                    shortcutClickTime: selectedDateRange.shortcutClickTime || 0,
+                    shortcutClickTime: isTroubleshootPage ? 0 : selectedDateRange.shortcutClickTime || 0,
                   }}
                   minDate={new Date(new Date().getFullYear(), new Date().getMonth() - 6, 1)}
                   onChange={({ selection }) => handleDateRangeChange(selection)}
@@ -1406,7 +1424,7 @@ const KubernetesEventsTable = ({
                 />
               )}
 
-              {accountType === 'K8s' && (!isTroubleshootPage || selectedAccountId.length) ? (
+              {isK8sFilterVisible ? (
                 <>
                   {!isTroubleshootPage && !disabledFilters.includes('search_labels') && (
                     <SearchInput
@@ -1478,7 +1496,7 @@ const KubernetesEventsTable = ({
                 </>
               ) : null}
 
-              {(accountType === 'AWS' || accountType === 'GCP' || accountType === 'Azure') && (!isTroubleshootPage || selectedAccountId.length) ? (
+              {isCloudFilterVisible ? (
                 <>
                   <FilterDropdown
                     id='filter-event-name'

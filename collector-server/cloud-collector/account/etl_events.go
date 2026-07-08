@@ -158,11 +158,24 @@ func isPermanentProviderError(err error) bool {
 	if err == nil {
 		return false
 	}
+	// Type-based detection first: cloud SDK auth failures (expired/revoked
+	// credentials, missing permissions) are wrapped errors whose textual form
+	// varies by provider — e.g. the Azure SDK renders 401 as "RESPONSE 401:",
+	// which the string regex below does not match. These never succeed on retry
+	// until an operator rotates the credential, so discard rather than loop.
+	if isAuthFailure(err) {
+		return true
+	}
 	matches := httpStatusCodePattern.FindStringSubmatch(err.Error())
 	if len(matches) < 2 {
 		return false
 	}
-	// HTTP 4xx status codes are permanent client errors
+	// 429 (Too Many Requests) and 408 (Request Timeout) are 4xx but transient —
+	// retrying after backoff can succeed, so don't classify them as permanent.
+	if matches[1] == "429" || matches[1] == "408" {
+		return false
+	}
+	// Remaining HTTP 4xx status codes are permanent client errors
 	return matches[1][0] == '4'
 }
 

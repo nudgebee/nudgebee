@@ -55,7 +55,39 @@ spec:
             {{- range $key, $value := .Values.env }}
             - name: {{ $key }}
               value: {{ $value | quote }}
-            {{- end }}          
+            {{- end }}
+            {{- if and .Values.resources.limits .Values.resources.limits.memory (not (hasKey (default dict .Values.env) "GOMEMLIMIT")) }}
+            {{- /* Compute ~90% of limits.memory as an integer MiB value. Match the
+                   Kubernetes quantity suffixes case-sensitively: binary Gi/Mi and
+                   decimal G/M (1G=1e9 B ≈ 953.674 MiB, 1M=1e6 B ≈ 0.953674 MiB).
+                   NOT lowercased — k8s quantities are case-sensitive, and lowercase
+                   "m" is milli (e.g. 3000m = 3 bytes), not mega. */}}
+            {{- $limMem := .Values.resources.limits.memory | toString }}
+            {{- $mib := 0 }}
+            {{- if hasSuffix "Gi" $limMem }}
+            {{-   $mib = mulf (trimSuffix "Gi" $limMem) 1024 0.9 | floor | int }}
+            {{- else if hasSuffix "Mi" $limMem }}
+            {{-   $mib = mulf (trimSuffix "Mi" $limMem) 0.9 | floor | int }}
+            {{- else if hasSuffix "G" $limMem }}
+            {{-   $mib = mulf (trimSuffix "G" $limMem) 953.674 0.9 | floor | int }}
+            {{- else if hasSuffix "M" $limMem }}
+            {{-   $mib = mulf (trimSuffix "M" $limMem) 0.953674 0.9 | floor | int }}
+            {{- end }}
+            {{- if gt $mib 0 }}
+            # Soft-cap the Go heap at ~90% of the container memory limit so the
+            # runtime GCs (and returns freed pages) aggressively as it approaches
+            # the cgroup cap, instead of being OOM-killed. GOMEMLIMIT bounds only
+            # the Go heap, so the ~10% headroom covers non-heap memory (goroutine
+            # stacks, runtime/GC metadata, freed-but-unreturned pages) that would
+            # otherwise push total RSS over the limit and OOM before a GC fires.
+            # Computed from limits.memory (the downward API can't scale below 100%
+            # for the memory resource — only integer/unit divisors are allowed).
+            # Prevents a large resource scan from OOMing the process, which also
+            # strands the in-process SQS EventBridge consumer.
+            - name: GOMEMLIMIT
+              value: "{{ $mib }}MiB"
+            {{- end }}
+            {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.service.port }}

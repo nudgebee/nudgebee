@@ -30,9 +30,13 @@ interface RunAutomationMenuProps {
   // dropdown is open, so newly triggered runs and their live status stay current.
   eventId: string;
   disabled?: boolean;
-  // Gates the run/create/configure actions. When false the menu still shows the
-  // read-only "Triggered for this event" list, but offers no way to run, create,
-  // or configure automations. Defaults to false so the gate fails closed.
+  // Gates the available "Run an automation" list. When true the menu shows the
+  // configured automations (read-only rows unless `canRun` also holds). Defaults
+  // to false so the gate fails closed. `canRun` implies view.
+  canView?: boolean;
+  // Gates the run/create/configure actions. When false the automation rows are
+  // display-only and the Create / Configure actions are hidden. Defaults to
+  // false so the gate fails closed.
   canRun?: boolean;
   onCreateAutomation?: () => void;
   // Fired after an automation is successfully triggered for this event, so the
@@ -165,6 +169,7 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
   accountId,
   eventId,
   disabled = false,
+  canView = false,
   canRun = false,
   onCreateAutomation,
   onTriggered,
@@ -311,13 +316,13 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
   // value in a ref so we don't repeat the call for an unchanged accountId.
   const lastFetchedAccountIdRef = useRef<string | null>(null);
   useEffect(() => {
-    // View-only users never see the run list, so skip the fetch entirely.
-    if (!canRun) return;
+    // Users with no read access never see the run list, so skip the fetch.
+    if (!canView && !canRun) return;
     if (!accountId) return;
     if (lastFetchedAccountIdRef.current === accountId) return;
     lastFetchedAccountIdRef.current = accountId;
     fetchWorkflows();
-  }, [canRun, accountId, fetchWorkflows]);
+  }, [canView, canRun, accountId, fetchWorkflows]);
 
   const handleSelect = (workflow: WorkflowListItem) => {
     setSelectedWorkflow(workflow);
@@ -397,9 +402,9 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
   }, [validTriggered, goToExecution]);
 
   const items: DropdownMenuItem[] = useMemo(() => {
-    // View-only users (no write access) see just the triggered list — no run,
-    // create, or configure actions.
-    if (!canRun) {
+    // Users with no read access see just the triggered list — no available
+    // automations, run, create, or configure.
+    if (!canView && !canRun) {
       if (triggeredItems.length === 0) {
         return [
           {
@@ -458,21 +463,30 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
           disabled: true,
           onSelect: () => {},
         },
-        { type: 'separator' as const },
-        {
-          label: 'Configure automations →',
-          icon: <SettingsIcon fontSize='small' />,
-          onSelect: goToWorkflowsPage,
-          id: 'run-automation-configure',
-        },
+        // "Configure automations →" opens the editor, so only offer it to users
+        // with write access.
+        ...(canRun
+          ? ([
+              { type: 'separator' as const },
+              {
+                label: 'Configure automations →',
+                icon: <SettingsIcon fontSize='small' />,
+                onSelect: goToWorkflowsPage,
+                id: 'run-automation-configure',
+              },
+            ] as DropdownMenuItem[])
+          : []),
       ];
     }
     return [
       ...triggeredItems,
       ...runHeader,
+      // Read-only (canView, no canRun) users see the list but can't trigger, so
+      // the rows are display-only — disabled so a click is inert.
       ...workflows.map((w) => ({
         label: <WorkflowRow workflow={w} />,
-        onSelect: () => handleSelect(w),
+        onSelect: canRun ? () => handleSelect(w) : () => {},
+        disabled: !canRun,
         id: `run-automation-item-${w.id}`,
         searchText: w.name,
       })),
@@ -481,7 +495,7 @@ const RunAutomationMenu: React.FC<RunAutomationMenuProps> = ({
     // recomputing items on each change of selected workflow would force the
     // menu to remount and close.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canRun, loadState, workflows, errorMessage, triggeredItems, goToWorkflowsPage]);
+  }, [canView, canRun, loadState, workflows, errorMessage, triggeredItems, goToWorkflowsPage]);
 
   const headerActions =
     canRun && onCreateAutomation ? (

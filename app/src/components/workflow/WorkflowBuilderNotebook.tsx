@@ -2331,8 +2331,16 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
 
   // Helper function to prepare dry-run request with optional task filtering
   const prepareDryRunRequest = useCallback(
-    (taskIdsToInclude?: string[], inputsOverride?: any) => {
-      const currentNodes = nodesRef.current;
+    (taskIdsToInclude?: string[], inputsOverride?: any, taskConfigOverride?: { nodeId: string; config: any }) => {
+      // Apply unsaved sidebar edits for a specific task so dry run reflects
+      // what the user is currently typing, not just the last-committed config.
+      const currentNodes = taskConfigOverride
+        ? nodesRef.current.map((node) =>
+            node.id === taskConfigOverride.nodeId && node.data.taskConfig
+              ? { ...node, data: { ...node.data, taskConfig: { ...node.data.taskConfig, config: taskConfigOverride.config } } }
+              : node
+          )
+        : nodesRef.current;
       const currentWorkflowData = workflowDataRef.current;
 
       // Prepare workflow definition, optionally filtering tasks
@@ -2699,7 +2707,7 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
   // Dry-run from start up to and including a specific task. For switch targets, also include
   // direct children so the chosen branch actually runs (the switch alone produces no useful trace).
   const handleDryRunToTask = useCallback(
-    async (targetTaskId: string): Promise<any> => {
+    async (targetTaskId: string, unsavedConfig?: any): Promise<any> => {
       const currentNodes = nodesRef.current;
 
       const previousTasks = getPreviousTasksForNode(targetTaskId, currentNodes, edges, taskDefinitions);
@@ -2710,7 +2718,11 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
       // Sanitize task IDs to match the format used in extractTasksFromWorkflowNodes
       const taskIds = [...previousTasks.map((t: any) => sanitizeTaskId(t.id)), sanitizeTaskId(targetTaskId), ...switchChildIds];
 
-      const request = prepareDryRunRequest(taskIds);
+      const request = prepareDryRunRequest(
+        taskIds,
+        undefined,
+        unsavedConfig !== undefined ? { nodeId: targetTaskId, config: unsavedConfig } : undefined
+      );
       return await triggerAndAwaitDryRun(request);
     },
     [edges, taskDefinitions, prepareDryRunRequest, triggerAndAwaitDryRun]

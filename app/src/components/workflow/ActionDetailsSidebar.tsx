@@ -244,7 +244,7 @@ interface ActionDetailsSidebarProps {
   previousNodeOutputSchema?: any;
   accountId?: string;
   onRunPreviousSteps?: (taskId: string) => Promise<Record<string, any>>;
-  onDryRunToTask?: (taskId: string) => Promise<any>;
+  onDryRunToTask?: (taskId: string, unsavedConfig?: any) => Promise<any>;
   onRunTask?: (taskType: string, params: any) => Promise<any>;
   workflowInputs?: Array<{ id: string; type: string; description?: string; default?: any }>;
   workflowTimeout?: string;
@@ -1403,7 +1403,10 @@ const ActionDetailsSidebar: React.FC<ActionDetailsSidebarProps> = ({
     const switchChildTaskIds = isSwitchTask ? getSwitchChildNodeIds(selectedNode.id, edges ?? []).map(sanitizeTaskId) : [];
 
     try {
-      const result = await onDryRunToTask(selectedNode.id);
+      // Pass the sidebar's buffered form state so dry run uses unsaved edits.
+      // When the form is clean this equals the committed config, so it's safe
+      // to pass unconditionally.
+      const result = await onDryRunToTask(selectedNode.id, localDataRef.current);
 
       if (result?.tasks && Array.isArray(result.tasks)) {
         const { current, children, previous } = splitDryRunResult(

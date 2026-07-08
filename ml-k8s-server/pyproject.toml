@@ -45,6 +45,13 @@ Brotli = ">=1.2.0"
 "jaraco.context" = ">=6.1.0"
 wheel = ">=0.46.2"
 msgpack = ">=1.2.1"
+# Cap setuptools below 81: 82 removed the legacy `pkg_resources` module and 81
+# deprecates it, but opentelemetry-instrumentation-system-metrics (0.48b0) still
+# imports it at startup. The freshly rebuilt conda base ships setuptools 82, so
+# without this pin the service crashes on boot with "No module named
+# 'pkg_resources'". Staying on 80.x keeps pkg_resources present and warning-free.
+# Revisit once the opentelemetry-instrumentation stack is pkg_resources-free.
+setuptools = ">=68,<81"
 
 [build-system]
 requires = ["poetry-core"]

@@ -12,6 +12,7 @@ import (
 	"nudgebee/services/eventrule/playbooks"
 	"nudgebee/services/security"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -122,12 +123,33 @@ func (r cloudTracesResponse) GetInsights() []playbooks.PlaybookActionResponseIns
 }
 
 // cloudTracesAction attaches distributed traces (Cloud Trace) as evidence, rendered by
-// the existing TracesCard. Generic: scopes by the resource + the incident window, no
-// incident-type filter. Gated to Cloud Run (the validated trace-exporting case).
+// the existing TracesCard. Scopes by the incident's workload + window. Gated to the GCP
+// managed-compute resource types whose requests are exported to Cloud Trace (see
+// traceEmittingResourceType).
 type cloudTracesAction struct{}
 
 func init() {
 	playbooks.RegisterAction("cloud_traces", &cloudTracesAction{})
+}
+
+// traceEmittingResourceType reports whether a GCP monitored-resource type is a managed
+// compute workload whose requests land in Cloud Trace. Only these qualify for the
+// cloud_traces enricher.
+//
+// Deliberately excluded:
+//   - gke_* (nodepool/cluster) — GCP GKE monitoring events are cluster/nodepool-level
+//     infra, not a single service, and GKE *workload* spans flow through the node-agent →
+//     ClickHouse trace store, not Cloud Trace.
+//   - l7_lb_rule / http_load_balancer — the LB emits no spans itself; its backend service
+//     would need a separate url-map → backend resolver.
+//   - gce_instance, cloudsql_database, redis, pubsub, cloud_tasks_queue, … — no traces.
+func traceEmittingResourceType(rt string) bool {
+	switch rt {
+	case "cloud_run_revision", "gae_app", "cloud_function":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *cloudTracesAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) bool {
@@ -135,12 +157,12 @@ func (a *cloudTracesAction) CanAutoExecute(ctx playbooks.PlaybookActionContext) 
 	if labels["gcp_account"] == "" && labels["gcp_project_id"] == "" {
 		return false
 	}
-	return labels["gcp_event_resource_type"] == "cloud_run_revision"
+	return traceEmittingResourceType(labels["gcp_event_resource_type"])
 }
 
 func (a *cloudTracesAction) AutoExecute(ctx playbooks.PlaybookActionContext) (playbooks.PlaybookActionResponse, error) {
 	labels := ctx.GetEvent().Labels
-	serviceName := cloudRunServiceFromLabels(labels)
+	serviceName := gcpTraceServiceFromLabels(labels)
 
 	accountId := ""
 	if labels["gcp_account"] != "" {
@@ -201,12 +223,18 @@ func (a *cloudTracesAction) Execute(ctx playbooks.PlaybookActionContext, rawPara
 		return nil, nil
 	}
 
-	spans := mapCloudTraceSpans(resp.Spans, serviceName, project, region)
+	// Cloud Trace v1's ListTraces filter has no service/resource term, so the collector
+	// returns the project's traces in the window. Narrow them to the incident's workload
+	// here (non-destructive — keeps all if the workload can't be matched).
+	scopedSpans := filterSpansByService(resp.Spans, serviceName)
+	traceCount := distinctTraceCount(scopedSpans)
+
+	spans := mapCloudTraceSpans(scopedSpans, serviceName, project, region)
 	return cloudTracesResponse{
 		Data:           map[string]any{"data": spans},
 		AdditionalInfo: map[string]any{"action_name": "cloud_traces", "title": "Traces"},
-		Insight:        generateTraceInsights(resp.Spans, resp.TraceCount),
-		Metadata:       map[string]any{"service_name": serviceName, "trace_count": resp.TraceCount},
+		Insight:        generateTraceInsights(scopedSpans, traceCount),
+		Metadata:       map[string]any{"service_name": serviceName, "trace_count": traceCount},
 	}, nil
 }
 
@@ -262,6 +290,80 @@ func cloudRunServiceFromLabels(labels map[string]string) string {
 		return v
 	}
 	return ""
+}
+
+// gcpTraceServiceFromLabels resolves the workload identifier used to scope Cloud Trace
+// spans, keyed by the monitored-resource type (GCP flattens resource.labels onto the
+// event as resource_<key>):
+//   - cloud_run_revision → resource_service_name  (the Cloud Run service)
+//   - gae_app            → resource_module_id      (the App Engine service/module)
+//   - cloud_function     → resource_function_name  (the function)
+//
+// Falls back to the Cloud Run heuristics for older/partial events.
+func gcpTraceServiceFromLabels(labels map[string]string) string {
+	switch labels["gcp_event_resource_type"] {
+	case "gae_app":
+		if v := labels["resource_module_id"]; v != "" {
+			return v
+		}
+	case "cloud_function":
+		if v := labels["resource_function_name"]; v != "" {
+			return v
+		}
+	}
+	return cloudRunServiceFromLabels(labels)
+}
+
+// filterSpansByService narrows project-wide Cloud Trace spans to the incident's workload.
+// A trace is kept whole (any of its spans matching) so the gantt stays connected. Matching
+// uses the high-confidence request-identifying labels only — for Cloud Run/GAE the service
+// name is a substring of /http/host (default *.run.app / *.appspot.com hosts) or the URL.
+//
+// Non-destructive: if nothing matches (empty service, custom domains, or a label shape we
+// don't recognize) it returns the spans unchanged, so the card degrades to the prior
+// project-window behaviour rather than going empty.
+func filterSpansByService(spans []collectorTraceSpan, service string) []collectorTraceSpan {
+	if service == "" {
+		return spans
+	}
+	svc := strings.ToLower(service)
+	matched := make(map[string]bool)
+	for _, s := range spans {
+		if spanMatchesService(s, svc) {
+			matched[s.TraceId] = true
+		}
+	}
+	if len(matched) == 0 {
+		return spans
+	}
+	out := make([]collectorTraceSpan, 0, len(spans))
+	for _, s := range spans {
+		if matched[s.TraceId] {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// spanMatchesService reports whether a span belongs to the given workload (svc already
+// lower-cased). Checks the request host/url labels and the span name — the places a
+// Cloud Run service / GAE module / function name reliably surfaces.
+func spanMatchesService(s collectorTraceSpan, svc string) bool {
+	for _, key := range []string{"/http/host", "/http/url", "/http/route", "/http/path"} {
+		if v := s.Labels[key]; v != "" && strings.Contains(strings.ToLower(v), svc) {
+			return true
+		}
+	}
+	return strings.Contains(strings.ToLower(s.Name), svc)
+}
+
+// distinctTraceCount counts unique trace ids across the given spans.
+func distinctTraceCount(spans []collectorTraceSpan) int {
+	seen := make(map[string]struct{}, len(spans))
+	for _, s := range spans {
+		seen[s.TraceId] = struct{}{}
+	}
+	return len(seen)
 }
 
 // mapCloudTraceSpans translates the collector's span shape into the snake_case shape

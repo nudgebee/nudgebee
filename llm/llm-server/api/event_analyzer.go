@@ -1225,7 +1225,7 @@ func generateEventAnalysisPrompt(ctx *security.RequestContext, event events.Even
 	}
 
 	// do rootcause analysis
-	eventAnalsysisPrompt := prompts_repo.GetPrompt(prompts_repo.PromptEventInvestigationSummary, request.EventId, eventDefinition, event.Title, event.Description, event.Labels, common.FormatPresentationTime(event.UpdatedAt), event.Source, response.Summary)
+	eventAnalsysisPrompt := prompts_repo.GetPrompt(prompts_repo.PromptEventInvestigation, request.EventId, eventDefinition, event.Title, event.Description, event.Labels, common.FormatPresentationTime(event.UpdatedAt), event.Source, response.Summary)
 
 	// Add account context (cloud provider) to help the LLM tailor its output
 	if cloudProvider := agents.GetCloudProviderForAccount(request.AccountId); cloudProvider != "" {

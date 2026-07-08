@@ -60,7 +60,7 @@ func (s *ChronosphereMetricSaasSource) FetchMetricsLabels(ctx *security.RequestC
 	if err != nil {
 		return nil, err
 	}
-	u, err := url.Parse(fmt.Sprintf("%s/api/v1/labels", chronosphereUrl))
+	u, err := url.Parse(fmt.Sprintf("%s/api/v1/labels", chronosphereMetricsBase(chronosphereUrl)))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse url: %w", err)
 	}
@@ -153,12 +153,30 @@ func GetChronosphereAuth(ctx *security.RequestContext, accountId string) (string
 	return chronosphereUrl, chronosphereToken, nil
 }
 
+// chronosphereMetricsBase returns the base URL for Chronosphere's
+// Prometheus-compatible read API. Chronosphere serves that API under a
+// /data/metrics prefix (e.g. https://<tenant>.chronosphere.io/data/metrics/api/v1/...),
+// not at the tenant root. The stored chronosphere_url is the tenant root, so we
+// rebuild it as scheme://host/data/metrics, tolerating a pasted trailing slash
+// or an accidentally-included /data/metrics path.
+func chronosphereMetricsBase(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return raw
+	}
+	u.Path = "/data/metrics"
+	u.RawPath = ""
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String()
+}
+
 func (s *ChronosphereMetricSaasSource) FetchMetricLabelValues(ctx *security.RequestContext, req FetchMetricsLabelValueRequest) ([]OutputMetricsLabelValues, error) {
 	chronosphereUrl, chronosphereToken, err := GetChronosphereAuth(ctx, req.AccountId)
 	if err != nil {
 		return nil, err
 	}
-	u, err := url.Parse(fmt.Sprintf("%s/api/v1/label/%s/values", chronosphereUrl, req.Label))
+	u, err := url.Parse(fmt.Sprintf("%s/api/v1/label/%s/values", chronosphereMetricsBase(chronosphereUrl), req.Label))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse url: %w", err)
 	}
@@ -224,7 +242,7 @@ func (s *ChronosphereMetricSaasSource) FetchMetricList(ctx *security.RequestCont
 		return nil, err
 	}
 
-	resp, err := common.HttpGet(fmt.Sprintf("%s/api/v1/label/__name__/values", chronosphereUrl), common.HttpWithHeaders(map[string]string{
+	resp, err := common.HttpGet(fmt.Sprintf("%s/api/v1/label/__name__/values", chronosphereMetricsBase(chronosphereUrl)), common.HttpWithHeaders(map[string]string{
 		"Authorization": fmt.Sprintf("Bearer %s", chronosphereToken),
 		"Content-Type":  "application/json",
 	}))
@@ -281,7 +299,7 @@ func (s *ChronosphereMetricSaasSource) FetchMetricsQuery(
 		if err != nil {
 			return OutputMetricQuery{}, err
 		}
-		u, err := url.Parse(chronosphereUrl)
+		u, err := url.Parse(chronosphereMetricsBase(chronosphereUrl))
 		if err != nil {
 			return OutputMetricQuery{}, fmt.Errorf("invalid chronosphere base URL: %w", err)
 		}
@@ -301,7 +319,7 @@ func (s *ChronosphereMetricSaasSource) FetchMetricsQuery(
 			q.Set("step", strconv.Itoa(req.StepInterval))
 		}
 
-		u.Path = endpoint
+		u.Path += endpoint
 		u.RawQuery = q.Encode()
 		urlStr := u.String()
 

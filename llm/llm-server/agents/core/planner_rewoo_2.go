@@ -1922,6 +1922,7 @@ func reWooCreatePrompt2(ctx *security.RequestContext, agentPrompt string, toolsI
 			"time_handling_rules",
 			"code_analysis_rules",
 			"security_rules",
+			"memory_consumption_rules",
 		}))
 
 	// Agent prompt as system message so it falls within the cacheable prefix
@@ -2048,6 +2049,8 @@ func reWooCreatePrompt2(ctx *security.RequestContext, agentPrompt string, toolsI
 		"code_analysis_rules":      prompts_repo.GetPrompt(prompts_repo.PromptSharedCodeAnalysisRules),
 		"security_rules":           prompts_repo.GetPrompt(prompts_repo.PromptSharedSecurityRules),
 		"previous_response":        previousResponse,
+		// memory2 module not yet in OSS — leave unset until it lands.
+		"memory_consumption_rules": "",
 		// Human message template vars (dynamic — change per conversation/call)
 		"today":                    time.Now().Format("January 02, 2006"),
 		"conversation_context":     conversationContext,
