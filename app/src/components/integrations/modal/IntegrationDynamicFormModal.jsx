@@ -1284,6 +1284,18 @@ const IntegrationDynamicFormModal = ({
   // we don't filter the dropdown — just expose the full account list.
   const accountOptions = config.properties?.account_id?.possible_values || [];
 
+  // A fresh tenant with no onboarded cluster / cloud account has nothing to link
+  // an account-scoped integration to. The `account_id` schema field is present
+  // only on non-tenant-scoped integrations (observability, metrics, logs, traces,
+  // database, proxy…); ticketing/messaging omit it and are exempt. When that field
+  // exists but has zero options, core.CreateIntegrationConfig would reject the save
+  // with the cryptic "integrations: accountId is required" — so block submission
+  // here with actionable guidance instead. Edit mode is exempt: an existing
+  // integration already has a linked account.
+  const isEdit = !!(editData && Object.keys(editData).length > 0);
+  const noAccountsAvailable =
+    !isLoadingSchema && !!config.properties?.account_id && !isEdit && !loadingOptions.account_id && accountOptions.length === 0;
+
   return (
     <>
       <VmAgentCredentialsDialog
@@ -1449,6 +1461,27 @@ const IntegrationDynamicFormModal = ({
                       <SafeIcon src={infoIcon} alt='info' width={16} height={16} style={{ marginTop: 2, flexShrink: 0 }} />
                       <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-body)', color: ds.gray[400], lineHeight: 1.5 }}>
                         {config.description}
+                      </Typography>
+                    </Box>
+                  )}
+                  {noAccountsAvailable && (
+                    <Box
+                      sx={{
+                        mb: ds.space[4],
+                        p: 1.5,
+                        borderRadius: ds.radius.sm,
+                        border: `1px solid ${ds.amber[300]}`,
+                        backgroundColor: ds.amber[100],
+                        display: 'flex',
+                        alignItems: 'flex-start',
+                        gap: ds.space[2],
+                      }}
+                      data-testid='integration-no-accounts-warning'
+                    >
+                      <SafeIcon src={infoIcon} alt='info' width={16} height={16} style={{ marginTop: 2, flexShrink: 0 }} />
+                      <Typography variant='body2' sx={{ fontSize: 'var(--ds-text-body)', color: ds.amber[700], lineHeight: 1.5 }}>
+                        No clusters or cloud accounts found for this tenant. Onboard a cluster or cloud account first — this integration must be
+                        linked to at least one account before it can be saved.
                       </Typography>
                     </Box>
                   )}
@@ -2020,7 +2053,7 @@ const IntegrationDynamicFormModal = ({
                   size='md'
                   onClick={handleTestConnection}
                   loading={isTesting}
-                  disabled={isSubmitting || isTesting}
+                  disabled={isSubmitting || isTesting || isLoadingSchema || noAccountsAvailable}
                 >
                   Test Connection
                 </Button>
@@ -2030,7 +2063,7 @@ const IntegrationDynamicFormModal = ({
                 tone='primary'
                 id='create-integration-acc'
                 aria-label='Save Webhook'
-                disabled={isSubmitting || isTesting || (isTestable && !connectionVerified)}
+                disabled={isSubmitting || isTesting || isLoadingSchema || (isTestable && !connectionVerified) || noAccountsAvailable}
                 loading={isSubmitting}
                 onClick={() => {
                   submitForm();
