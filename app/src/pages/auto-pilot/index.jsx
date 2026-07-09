@@ -4,16 +4,10 @@ import AnchorComponent from '@components/common/navigation/AnchorComponent';
 import { withAccountGuard } from '@shared/AccountGuard';
 import ErrorBoundary from '@shared/ErrorBoundary';
 import { useRouter } from 'next/router';
-import { hasWriteAccess, getUserSession } from '@lib/auth';
-import { DropdownMenu as DsDropdownMenu } from '@ui/DropdownMenu';
-import { Button as DsButton } from '@ui/Button';
-import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
-import { BetaIcon, WorkflowIconBlue, AutomateBlue, PlayCircleIcon } from '@assets';
-import { ds } from '@utils/colors';
-import AutoOptimizeTabs from '@components/autopilot/tables/AutoOptimizeTabs';
+import { getUserSession } from '@lib/auth';
+import { WorkflowIconBlue, PlayCircleIcon } from '@assets';
 import WorkflowListing from '@components/workflow/WorkflowListing';
 import TaskRunner from '@components/workflow/TaskRunner';
-import SafeIcon from '@shared/icons/SafeIcon';
 
 const AutoPilot = () => {
   const router = useRouter();
@@ -23,8 +17,6 @@ const AutoPilot = () => {
   // 1. Initialize state with defaults (0) instead of router.query
   const [selectedFilter, setSelectedFilter] = React.useState(null);
   const [subTab, setSubTab] = React.useState(0);
-  const [openCreateAutoOptimize, setOpenCreateAutoOptimize] = React.useState(false);
-  const [openCreateAutoOptimizeType, setOpenCreateAutoOptimizeType] = React.useState(null);
 
   const filterOptions = [
     {
@@ -33,17 +25,6 @@ const AutoPilot = () => {
       disabled: false,
       fragment: 'workflow',
       icon: WorkflowIconBlue,
-    },
-    {
-      name: 'Auto Optimize',
-      value: 1,
-      fragment: 'auto-optimize',
-      disabled: false,
-      icon: AutomateBlue,
-      tabOptions: [
-        { id: 'Optimizations', text: 'Optimizations', value: 0, fragment: 'optimizations' },
-        { id: 'approvals', text: 'Approvals', value: 1, fragment: 'approvals' },
-      ],
     },
     {
       name: 'Task Runner',
@@ -74,53 +55,7 @@ const AutoPilot = () => {
     }
   }, []);
 
-  const handleOpenCreateAutoOptimize = (type) => {
-    setOpenCreateAutoOptimizeType(type);
-    setOpenCreateAutoOptimize(true);
-  };
-
-  const handleCloseCreateAutoOptimize = () => {
-    setOpenCreateAutoOptimizeType('');
-    setOpenCreateAutoOptimize(false);
-  };
-
   const getAnchorComponent = () => {
-    let buttonComponent = null;
-    if (hasWriteAccess(router?.query?.accountId)) {
-      if (selectedFilter === 1) {
-        buttonComponent = (
-          <DsDropdownMenu
-            align='end'
-            disablePortal={false}
-            items={[
-              {
-                id: 'continuous_rightsize',
-                label: (
-                  <span style={{ display: 'flex', alignItems: 'center' }}>
-                    Continuous Vertical Right Sizing
-                    <SafeIcon src={BetaIcon} alt='Beta Icon' width={25} height={20} style={{ marginLeft: ds.space[1] }} />
-                  </span>
-                ),
-                onSelect: () => handleOpenCreateAutoOptimize('continuous_rightsize'),
-              },
-              { id: 'horizontal_rightsize', label: 'Horizontal Right Sizing', onSelect: () => handleOpenCreateAutoOptimize('horizontal_rightsize') },
-              {
-                id: 'vertical_rightsize',
-                label: 'Scheduled Vertical Right Sizing',
-                onSelect: () => handleOpenCreateAutoOptimize('vertical_rightsize'),
-              },
-              { id: 'pvc_rightsize', label: 'PVC Right Sizing', onSelect: () => handleOpenCreateAutoOptimize('pvc_rightsize') },
-            ]}
-            trigger={
-              <DsButton id='create-auto-optimize' tone='primary' size='md' composition='text+icon' icon={<KeyboardArrowDownIcon fontSize='small' />}>
-                Create Auto Optimize
-              </DsButton>
-            }
-          />
-        );
-      }
-    }
-
     let Anchor = (
       <AnchorComponent
         manageRoute={true}
@@ -131,7 +66,6 @@ const AutoPilot = () => {
           setSelectedFilter(val);
           setSubTab(subVal);
         }}
-        buttonComponent={buttonComponent}
       />
     );
     return Anchor;
@@ -144,21 +78,6 @@ const AutoPilot = () => {
       <ErrorBoundary key={`${selectedFilter}-${subTab}`}>
         <Box>
           <Box>{selectedFilter === 0 && <WorkflowListing accountId={router?.query?.accountId} />}</Box>
-
-          <Box>
-            {selectedFilter === 1 && (
-              <AutoOptimizeTabs
-                subTab={subTab}
-                accountId={router?.query?.accountId}
-                openCreateAutoOptimize={openCreateAutoOptimize}
-                openCreateAutoOptimizeType={openCreateAutoOptimizeType}
-                handleCloseCreateAutoOptimize={() => {
-                  handleCloseCreateAutoOptimize();
-                }}
-                handleOpenCreateAutoOptimize={handleOpenCreateAutoOptimize}
-              />
-            )}
-          </Box>
 
           <Box>{selectedFilter === 2 && isAdmin && <TaskRunner accountId={router?.query?.accountId} />}</Box>
         </Box>

@@ -781,7 +781,7 @@ const KubernetesClusterSummaryUtilization = ({ accountId }) => {
                         aria-label='Open auto-optimize'
                         icon={<SafeIcon src={ExternalLinkIcon} alt='redirect' />}
                         onClick={() => {
-                          router.push(`/auto-pilot?accountId=${accountId}#auto-optimize`);
+                          router.push(`/optimise?accountId=${accountId}#auto-optimize`);
                         }}
                       />
                     }

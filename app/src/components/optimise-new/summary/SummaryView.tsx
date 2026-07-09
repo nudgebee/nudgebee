@@ -302,7 +302,9 @@ const SummaryView = () => {
             gap: ds.space[4],
             position: 'sticky',
             top: 0,
-            zIndex: 2,
+            // Keep below the global tab bar (AnchorComponent is z-index 2) so the
+            // Auto Optimize tab's hover dropdown isn't covered by this sticky card.
+            zIndex: 1,
           }}
         >
           {loading || savingsLoading ? (

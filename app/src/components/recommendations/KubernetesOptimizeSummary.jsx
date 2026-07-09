@@ -1084,7 +1084,7 @@ const KubernetesOptimizeSummary = () => {
                         tone='secondary'
                         size='md'
                         onClick={() => {
-                          router.push(`/auto-pilot?accountId=${selectedCluster.value}#auto-optimize/optimizations`);
+                          router.push(`/optimise?accountId=${selectedCluster.value}#auto-optimize/optimizations`);
                         }}
                       >
                         View all

@@ -869,7 +869,7 @@ const KubernetesWorkloadsTable = ({ accountId, resource_ids = [] }) => {
         ? createComponentLink(`/kubernetes/details/${accountId}?accountId=${accountId}#optimize/right-sizing`, recommendationCount)
         : '-';
 
-    const countLink = count > 0 ? createComponentLink(`/auto-pilot?accountId=${accountId}#auto-optimize`, count) : '-';
+    const countLink = count > 0 ? createComponentLink(`/optimise?accountId=${accountId}#auto-optimize`, count) : '-';
 
     return (
       <span>
