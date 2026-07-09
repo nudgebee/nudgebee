@@ -87,6 +87,13 @@ const (
 	EventTypeAutopilotUpdate EventType = "AUTOPILOT_UPDATE"
 	EventTypeAutopilotDelete EventType = "AUTOPILOT_DELETE"
 
+	// Deprecated: AUTORUNBOOK_CREATE/UPDATE/DELETE, MANUAL_RUN and
+	// TASK_MANUAL_RUN are replaced by the AUTOMATION_* event types below for
+	// new runbook-server emissions. Retained because historical rows carry
+	// these values and the legacy auto_playbook pg trigger (V700) still
+	// writes AUTORUNBOOK_CREATE/UPDATE/DELETE under category AUTO_RUNBOOK.
+	// The AUTORUNBOOK_ACTION_* / SKIP / WEBHOOK_TRIGGER types belong to the
+	// legacy playbook-action domain and have no AUTOMATION_* successors.
 	EventTypeAutorunbookCreate             EventType = "AUTORUNBOOK_CREATE"
 	EventTypeAutorunbookUpdate             EventType = "AUTORUNBOOK_UPDATE"
 	EventTypeAutorunbookDelete             EventType = "AUTORUNBOOK_DELETE"
@@ -99,6 +106,27 @@ const (
 	EventTypeAutorunbookWebhookTrigger     EventType = "AUTORUNBOOK_WEBHOOK_TRIGGER"
 	EventTypeAutorunbookActionStatusUpdate EventType = "AUTORUNBOOK_ACTION_STATUS_UPDATE"
 	EventTypeAutorunbookActionExecute      EventType = "AUTORUNBOOK_ACTION_EXECUTE"
+
+	// Workflow-automation event types (category AUTOMATION), emitted by
+	// runbook-server's internal/workflow. One type per operation so the
+	// Audits UI can filter and label each op. Kept in lockstep with
+	// runbook-server/services/audit/model.go (separate Go module — cannot
+	// import this package).
+	EventTypeAutomationCreate              EventType = "AUTOMATION_CREATE"
+	EventTypeAutomationUpdate              EventType = "AUTOMATION_UPDATE"
+	EventTypeAutomationDelete              EventType = "AUTOMATION_DELETE"
+	EventTypeAutomationManualRun           EventType = "AUTOMATION_MANUAL_RUN"
+	EventTypeAutomationStatusUpdate        EventType = "AUTOMATION_STATUS_UPDATE"
+	EventTypeAutomationPause               EventType = "AUTOMATION_PAUSE"
+	EventTypeAutomationResume              EventType = "AUTOMATION_RESUME"
+	EventTypeAutomationExecutionCancel     EventType = "AUTOMATION_EXECUTION_CANCEL"
+	EventTypeAutomationTaskManualRun       EventType = "AUTOMATION_TASK_MANUAL_RUN"
+	EventTypeAutomationVersionRestore      EventType = "AUTOMATION_VERSION_RESTORE"
+	EventTypeAutomationVersionPublish      EventType = "AUTOMATION_VERSION_PUBLISH"
+	EventTypeAutomationVersionSetLive      EventType = "AUTOMATION_VERSION_SET_LIVE"
+	EventTypeAutomationVersionUpdate       EventType = "AUTOMATION_VERSION_UPDATE"
+	EventTypeAutomationVersionStatusUpdate EventType = "AUTOMATION_VERSION_STATUS_UPDATE"
+	EventTypeAutomationVersionDelete       EventType = "AUTOMATION_VERSION_DELETE"
 
 	EventTypeRecommendationJobCreate EventType = "RECOMMENDATION_JOB_CREATE"
 	EventTypeRecommendationApply     EventType = "RECOMMENDATION_APPLY"
@@ -212,6 +240,10 @@ const (
 	EventActionUpdate EventAction = "UPDATE"
 	EventActionDelete EventAction = "DELETE"
 	EventActionRead   EventAction = "READ"
+	// EventActionExecute marks run-type operations (manual runs, retriggers,
+	// approval-task completions) as executions rather than CRUD. Same value
+	// cloud-collector already writes; the UI action filter includes it.
+	EventActionExecute EventAction = "EXECUTE"
 )
 
 type EventStatus string

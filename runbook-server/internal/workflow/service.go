@@ -567,7 +567,7 @@ func (s *Service) CreateWorkflow(ctx *security.RequestContext, accountId string,
 	}
 	emitWorkflowAudit(
 		ctx, accountId,
-		audit.EventTypeAutorunbookCreate, audit.EventActionCreate, audit.EventStatusSuccess,
+		audit.EventTypeAutomationCreate, audit.EventActionCreate, audit.EventStatusSuccess,
 		storedId, nil, workflowAuditSnapshot(&wf), nil,
 	)
 	return storedId, token, nil
@@ -1089,7 +1089,7 @@ func (s *Service) runWorkflow(ctx *security.RequestContext, accountId, id string
 	if triggerType == model.WorkflowTriggerManual {
 		emitWorkflowAudit(
 			ctx, accountId,
-			audit.EventTypeAutorunbookManualRun, audit.EventActionCreate, audit.EventStatusSuccess,
+			audit.EventTypeAutomationManualRun, audit.EventActionExecute, audit.EventStatusSuccess,
 			id, nil,
 			map[string]any{"workflow_id": id, "workflow_name": wf.Name},
 			map[string]any{"execution_id": we.GetRunID(), "trigger_type": string(triggerType)},
@@ -1368,7 +1368,7 @@ func (s *Service) RetriggerWorkflowExecution(ctx *security.RequestContext, accou
 	}
 	emitWorkflowAudit(
 		ctx, accountId,
-		audit.EventTypeAutorunbookManualRun, audit.EventActionCreate, audit.EventStatusSuccess,
+		audit.EventTypeAutomationManualRun, audit.EventActionExecute, audit.EventStatusSuccess,
 		workflowId, nil,
 		map[string]any{"workflow_id": workflowId, "workflow_name": wf.Name},
 		map[string]any{"execution_id": we.GetRunID(), "replay_of": executionId, "trigger_type": "manual"},
@@ -1875,9 +1875,8 @@ func (s *Service) UpdateWorkflow(ctx *security.RequestContext, accountId, id str
 	}
 	emitWorkflowAudit(
 		ctx, accountId,
-		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
-		id, prevSnap, workflowAuditSnapshot(&updated),
-		map[string]any{"action": "edit"},
+		audit.EventTypeAutomationUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, prevSnap, workflowAuditSnapshot(&updated), nil,
 	)
 	return updated, nil
 }
@@ -2183,7 +2182,7 @@ func (s *Service) DeleteWorkflow(ctx *security.RequestContext, accountId, id str
 
 	emitWorkflowAudit(
 		ctx, accountId,
-		audit.EventTypeAutorunbookDelete, audit.EventActionDelete, audit.EventStatusSuccess,
+		audit.EventTypeAutomationDelete, audit.EventActionDelete, audit.EventStatusSuccess,
 		id, workflowAuditSnapshot(wf), nil, nil,
 	)
 	return nil
@@ -2201,6 +2200,10 @@ func (s *Service) UpdateWorkflowStatus(ctx *security.RequestContext, accountId, 
 		}
 		return fmt.Errorf("failed to find workflow to update status: %w", err)
 	}
+
+	// Capture before the switch below mutates wf.Status — the audit's
+	// prev_state must reflect the pre-transition status.
+	prevStatus := wf.Status
 
 	// Handle side-effects based on the new status
 	switch status {
@@ -2233,9 +2236,9 @@ func (s *Service) UpdateWorkflowStatus(ctx *security.RequestContext, accountId, 
 	}
 	emitWorkflowAudit(
 		ctx, accountId,
-		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
-		id, map[string]any{"status": string(wf.Status)}, map[string]any{"status": string(status)},
-		map[string]any{"action": "status_update"},
+		audit.EventTypeAutomationStatusUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		id, map[string]any{"status": string(prevStatus)}, map[string]any{"status": string(status)},
+		nil,
 	)
 	return nil
 }
@@ -2970,7 +2973,7 @@ func (s *Service) CompleteApprovalTask(ctx *security.RequestContext, token, stat
 	if accountID != "" && workflowID != "" && runID != "" && taskID != "" {
 		emitWorkflowAudit(
 			ctx, accountID,
-			audit.EventTypeAutorunbookTaskManualRun, audit.EventActionUpdate, audit.EventStatusSuccess,
+			audit.EventTypeAutomationTaskManualRun, audit.EventActionExecute, audit.EventStatusSuccess,
 			workflowID, nil,
 			map[string]any{"workflow_id": workflowID, "execution_id": runID, "task_id": taskID, "status": status},
 			map[string]any{"source": "compound_token"},
@@ -3024,7 +3027,7 @@ func (s *Service) CompleteApprovalTaskFromUI(ctx *security.RequestContext, accou
 	}
 	emitWorkflowAudit(
 		ctx, accountID,
-		audit.EventTypeAutorunbookTaskManualRun, audit.EventActionUpdate, audit.EventStatusSuccess,
+		audit.EventTypeAutomationTaskManualRun, audit.EventActionExecute, audit.EventStatusSuccess,
 		workflowID, nil,
 		map[string]any{"workflow_id": workflowID, "execution_id": executionID, "task_id": taskID, "status": status},
 		map[string]any{"source": "ui"},
@@ -3072,10 +3075,10 @@ func (s *Service) CancelWorkflowExecution(ctx *security.RequestContext, accountI
 	}
 	emitWorkflowAudit(
 		ctx, accountId,
-		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		audit.EventTypeAutomationExecutionCancel, audit.EventActionUpdate, audit.EventStatusSuccess,
 		workflowId, nil,
 		map[string]any{"workflow_id": workflowId, "execution_id": executionId},
-		map[string]any{"action": "cancel_execution"},
+		nil,
 	)
 	return nil
 }
@@ -3112,10 +3115,10 @@ func (s *Service) PauseWorkflow(ctx *security.RequestContext, accountId, id stri
 	}
 	emitWorkflowAudit(
 		ctx, accountId,
-		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		audit.EventTypeAutomationPause, audit.EventActionUpdate, audit.EventStatusSuccess,
 		id, nil,
 		map[string]any{"status": string(model.WorkflowStatusPaused)},
-		map[string]any{"action": "pause"},
+		nil,
 	)
 	return nil
 }
@@ -3151,10 +3154,10 @@ func (s *Service) ResumeWorkflow(ctx *security.RequestContext, accountId, id str
 	}
 	emitWorkflowAudit(
 		ctx, accountId,
-		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		audit.EventTypeAutomationResume, audit.EventActionUpdate, audit.EventStatusSuccess,
 		id, nil,
 		map[string]any{"status": string(model.WorkflowStatusActive)},
-		map[string]any{"action": "resume"},
+		nil,
 	)
 	return nil
 }
@@ -4371,10 +4374,9 @@ func (s *Service) RestoreWorkflowVersion(ctx *security.RequestContext, accountId
 	}
 	emitWorkflowAudit(
 		ctx, accountId,
-		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		audit.EventTypeAutomationVersionRestore, audit.EventActionUpdate, audit.EventStatusSuccess,
 		id, workflowAuditSnapshot(current), workflowAuditSnapshot(&updated),
 		map[string]any{
-			"action":         "restore_version",
 			"version_number": versionNumber,
 			"version_id":     target.ID,
 		},
@@ -4446,7 +4448,6 @@ func (s *Service) PublishWorkflow(ctx *security.RequestContext, accountId, id st
 		}
 	}
 	publishAttrs := map[string]any{
-		"action":         "publish_version",
 		"version_number": v.VersionNumber,
 		"version_id":     v.ID,
 		"set_live":       setLive,
@@ -4460,7 +4461,7 @@ func (s *Service) PublishWorkflow(ctx *security.RequestContext, accountId, id st
 	}
 	emitWorkflowAudit(
 		ctx, accountId,
-		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		audit.EventTypeAutomationVersionPublish, audit.EventActionCreate, audit.EventStatusSuccess,
 		id, nil, workflowAuditSnapshot(wf), publishAttrs,
 	)
 	return v, nil
@@ -4506,10 +4507,9 @@ func (s *Service) SetLiveWorkflowVersion(ctx *security.RequestContext, accountId
 
 	emitWorkflowAudit(
 		ctx, accountId,
-		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		audit.EventTypeAutomationVersionSetLive, audit.EventActionUpdate, audit.EventStatusSuccess,
 		id, nil, workflowAuditSnapshot(wf),
 		map[string]any{
-			"action":         "set_live_version",
 			"version_number": versionNumber,
 			"version_id":     target.ID,
 		},
@@ -4541,7 +4541,6 @@ func (s *Service) UpdateWorkflowVersionMetadata(ctx *security.RequestContext, ac
 		return nil, err
 	}
 	metaAttrs := map[string]any{
-		"action":         "update_version_metadata",
 		"version_number": versionNumber,
 		"version_id":     v.ID,
 	}
@@ -4553,7 +4552,7 @@ func (s *Service) UpdateWorkflowVersionMetadata(ctx *security.RequestContext, ac
 	}
 	emitWorkflowAudit(
 		ctx, accountId,
-		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		audit.EventTypeAutomationVersionUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
 		id, nil,
 		map[string]any{"version_number": v.VersionNumber, "version_id": v.ID, "name": v.Name, "description": v.Description},
 		metaAttrs,
@@ -4609,10 +4608,10 @@ func (s *Service) UpdateWorkflowVersionStatus(ctx *security.RequestContext, acco
 	target.IsLive = wasLive
 	emitWorkflowAudit(
 		ctx, accountId,
-		audit.EventTypeAutorunbookUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
+		audit.EventTypeAutomationVersionStatusUpdate, audit.EventActionUpdate, audit.EventStatusSuccess,
 		id, nil,
 		map[string]any{"version_number": versionNumber, "version_id": target.ID, "status": string(status), "is_live": wasLive},
-		map[string]any{"action": "update_version_status"},
+		nil,
 	)
 	return target, nil
 }
@@ -4669,9 +4668,9 @@ func (s *Service) DeleteWorkflowVersion(ctx *security.RequestContext, accountId,
 	}
 	emitWorkflowAudit(
 		ctx, accountId,
-		audit.EventTypeAutorunbookDelete, audit.EventActionDelete, audit.EventStatusSuccess,
+		audit.EventTypeAutomationVersionDelete, audit.EventActionDelete, audit.EventStatusSuccess,
 		id, map[string]any{"version_number": versionNumber, "version_id": target.ID}, nil,
-		map[string]any{"action": "delete_version", "version_number": versionNumber, "version_id": target.ID},
+		map[string]any{"version_number": versionNumber, "version_id": target.ID},
 	)
 	return nil
 }
