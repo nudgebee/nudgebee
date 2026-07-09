@@ -443,6 +443,7 @@ query getWorkflowExecution($request: WorkflowExecutionGetRequest!) {
       start_time
       end_time
       input
+      rendered_params
       output
       error
       attempt
