@@ -1,18 +1,13 @@
 package azure
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"nudgebee/collector/cloud/common"
-	"nudgebee/collector/cloud/config"
 	"nudgebee/collector/cloud/providers"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
-	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 )
 
 // EventGridEvent represents the structure of an Azure Event Grid event.
@@ -227,20 +222,6 @@ func ProcessEventGridEventFromBytes(ctx providers.CloudProviderContext, body []b
 	}
 
 	return providers.Event{}, providers.Account{}, fmt.Errorf("failed to parse message as EventGridEvent or CloudEvent")
-}
-
-// processServiceBusMessageForEventGrid is a wrapper around ProcessEventGridEventFromBytes
-// that extracts the nudgebeeAccountToken from the Service Bus message application properties.
-func processServiceBusMessageForEventGrid(ctx providers.CloudProviderContext, message *azservicebus.ReceivedMessage, processor EventGridEventProcessor, eventHandler providers.ProcessedEventHandler) (providers.Event, providers.Account, error) {
-	// Extract nudgebeeAccountToken from Service Bus message application properties
-	var token string
-	if message.ApplicationProperties != nil {
-		if t, ok := message.ApplicationProperties["nudgebeeAccountToken"].(string); ok {
-			token = t
-		}
-	}
-
-	return ProcessEventGridEventFromBytes(ctx, message.Body, token, processor, eventHandler)
 }
 
 // extractOperationName extracts the operationName field from event data JSON.
@@ -519,193 +500,4 @@ func getAzureAccountBySubscriptionId(ctx providers.CloudProviderContext, subscri
 	}
 
 	return account, nil
-}
-
-// StartAzureServiceBusConsumer continuously polls a Service Bus queue (specified in config)
-// for Event Grid events and processes them.
-// This function is designed to run as a long-running goroutine.
-func StartAzureServiceBusConsumer(pCtx providers.CloudProviderContext, eventHandler providers.ProcessedEventHandler) {
-	defer func() {
-		if r := recover(); r != nil {
-			pCtx.GetLogger().Error("Service Bus consumer panicked", "error", r)
-		}
-	}()
-
-	connectionString := config.Config.CloudCollectorAzureServiceBusConnectionString
-	namespace := config.Config.CloudCollectorAzureServiceBusNamespace
-	queueName := config.Config.CloudCollectorAzureServiceBusQueueName
-	logger := pCtx.GetLogger()
-
-	if connectionString == "" && namespace == "" {
-		logger.Warn("azure: Service Bus connection string or namespace not configured. Consumer will not start.")
-		return
-	}
-
-	if queueName == "" {
-		queueName = "resource-events" // Default queue name
-		logger.Info("azure: using default queue name", "queueName", queueName)
-	}
-
-	if eventHandler == nil {
-		logger.Error("azure: ProcessedEventHandler is nil. Service Bus consumer cannot start as it needs a way to handle processed events.")
-		return
-	}
-
-	logger.Info("azure: starting Event Grid Service Bus consumer", "queueName", queueName, "component", "ServiceBusConsumer")
-
-	// Create Service Bus client
-	var client *azservicebus.Client
-	var err error
-
-	if connectionString != "" {
-		// Option 1: Connection String (simpler for development)
-		client, err = azservicebus.NewClientFromConnectionString(connectionString, nil)
-		if err != nil {
-			logger.Error("azure: failed to create Service Bus client from connection string", "error", err)
-			return
-		}
-		logger.Info("azure: created Service Bus client using connection string")
-	} else {
-		// Option 2: Managed Identity / Default Azure Credential (recommended for production)
-		cred, err := azidentity.NewDefaultAzureCredential(nil)
-		if err != nil {
-			logger.Error("azure: failed to create default Azure credential", "error", err)
-			return
-		}
-		client, err = azservicebus.NewClient(namespace, cred, nil)
-		if err != nil {
-			logger.Error("azure: failed to create Service Bus client with managed identity", "error", err)
-			return
-		}
-		logger.Info("azure: created Service Bus client using managed identity", "namespace", namespace)
-	}
-
-	// Create receiver for queue
-	receiver, err := client.NewReceiverForQueue(queueName, nil)
-	if err != nil {
-		logger.Error("azure: failed to create receiver for queue", "queueName", queueName, "error", err)
-		return
-	}
-
-	// Get event rules
-	// Priority: 1. Config value, 2. Environment variable, 3. Default locations
-	rulesPath := config.Config.CloudCollectorAzureEventRulesPath
-	rules, err := GetAzureEventRules(rulesPath)
-	if err != nil {
-		logger.Error("azure: failed to get event rules", "error", err, "component", "ServiceBusConsumer")
-		return
-	}
-	logger.Info("azure: loaded event rules", "ruleCount", len(rules), "component", "ServiceBusConsumer")
-
-	// Use the fully-initialized provider built in init(). A bare `&azureProvider{}`
-	// has nil services/servicesMap, so ListResources would return ErrUnsupported
-	// for every realtime resource lookup.
-	processor := NewTemplatedEventGridProcessor(rules, defaultAzureProvider)
-
-	for {
-		select {
-		case <-pCtx.GetContext().Done():
-			logger.Info(
-				"azure: Service Bus consumer shutting down.",
-				"queueName", queueName,
-				"component", "ServiceBusConsumer",
-			)
-
-			if err := receiver.Close(context.Background()); err != nil {
-				logger.Error("failed to close Service Bus receiver", "error", err)
-			}
-
-			if err := client.Close(context.Background()); err != nil {
-				logger.Error("failed to close Service Bus client", "error", err)
-			}
-
-			return
-
-		default:
-			// Receive up to 10 messages with 20 second timeout
-			messages, err := receiver.ReceiveMessages(pCtx.GetContext(), 10, &azservicebus.ReceiveMessagesOptions{
-				TimeAfterFirstMessage: 20 * time.Second,
-			})
-
-			if err != nil {
-				// Check if the error is due to context cancellation
-				if pCtx.GetContext().Err() == context.Canceled || pCtx.GetContext().Err() == context.DeadlineExceeded {
-					logger.Info("azure: Service Bus consumer context cancelled or deadline exceeded during ReceiveMessages.", "queueName", queueName, "error", err, "component", "ServiceBusConsumer")
-					return // Exit if context is done
-				}
-				logger.Error("azure: error receiving messages from Service Bus", "queueName", queueName, "error", err, "component", "ServiceBusConsumer")
-				time.Sleep(5 * time.Second) // Wait before retrying
-				continue
-			}
-
-			if len(messages) == 0 {
-				logger.Debug("azure: no messages received from Service Bus, continuing to poll.", "queueName", queueName, "component", "ServiceBusConsumer")
-				continue
-			}
-
-			logger.Info("azure: received messages from Service Bus", "count", len(messages), "queueName", queueName, "component", "ServiceBusConsumer")
-
-			for _, msg := range messages {
-				if len(msg.Body) == 0 {
-					logger.Warn("azure: received Service Bus message with nil/empty body", "messageId", msg.MessageID, "queueName", queueName, "component", "ServiceBusConsumer")
-					if err := receiver.CompleteMessage(pCtx.GetContext(), msg, nil); err != nil {
-						logger.Error("azure: failed to complete Service Bus message with nil/empty body", "messageId", msg.MessageID, "error", err, "component", "ServiceBusConsumer")
-					}
-					continue
-				}
-
-				processedEvent, originatingAccount, err := processServiceBusMessageForEventGrid(pCtx, msg, processor, eventHandler)
-				if err != nil {
-					logger.Error("azure: failed to process Service Bus message for Event Grid event", "messageId", msg.MessageID, "error", err, "queueName", queueName, "component", "ServiceBusConsumer")
-
-					// Dead letter the message after max delivery attempts
-					if msg.DeliveryCount >= 3 {
-						errMsg := err.Error()
-						deadLetterOptions := &azservicebus.DeadLetterOptions{
-							ErrorDescription: &errMsg,
-							Reason:           stringPtr("ProcessingFailed"),
-						}
-						if dlErr := receiver.DeadLetterMessage(pCtx.GetContext(), msg, deadLetterOptions); dlErr != nil {
-							logger.Error("azure: failed to dead letter message", "messageId", msg.MessageID, "error", dlErr, "component", "ServiceBusConsumer")
-						} else {
-							logger.Info("azure: dead lettered message after max delivery attempts", "messageId", msg.MessageID, "deliveryCount", msg.DeliveryCount, "component", "ServiceBusConsumer")
-						}
-					} else {
-						// Abandon to retry
-						if abandonErr := receiver.AbandonMessage(pCtx.GetContext(), msg, nil); abandonErr != nil {
-							logger.Error("azure: failed to abandon message", "messageId", msg.MessageID, "error", abandonErr, "component", "ServiceBusConsumer")
-						} else {
-							logger.Info("azure: abandoned message for retry", "messageId", msg.MessageID, "deliveryCount", msg.DeliveryCount, "component", "ServiceBusConsumer")
-						}
-					}
-					continue
-				}
-
-				if processedEvent.EventId == "" {
-					// Event was intentionally skipped by the processor (no matching rule)
-					logger.Info("azure: Event Grid event skipped by processor", "serviceBusMessageId", msg.MessageID, "component", "ServiceBusConsumer")
-				} else {
-					logger.Info("azure: successfully processed Event Grid event from Service Bus message",
-						"processedEventId", processedEvent.EventId, "serviceBusMessageId", msg.MessageID, "eventName", processedEvent.EventName, "component", "ServiceBusConsumer")
-
-					if err := eventHandler.ProcessEvent(pCtx, processedEvent, originatingAccount); err != nil {
-						logger.Error("azure: failed to handle processed event", "error", err, "processedEventId", processedEvent.EventId, "serviceBusMessageId", msg.MessageID, "component", "ServiceBusConsumer")
-						// Decide if message should be deleted or redriven. For now, we continue to complete.
-					}
-				}
-
-				// Complete (delete) message
-				if err := receiver.CompleteMessage(pCtx.GetContext(), msg, nil); err != nil {
-					logger.Error("azure: failed to complete Service Bus message after processing", "messageId", msg.MessageID, "error", err, "component", "ServiceBusConsumer")
-				} else {
-					logger.Debug("azure: successfully completed Service Bus message", "messageId", msg.MessageID, "component", "ServiceBusConsumer")
-				}
-			}
-		}
-	}
-}
-
-// stringPtr is a helper function to get a pointer to a string
-func stringPtr(s string) *string {
-	return &s
 }
