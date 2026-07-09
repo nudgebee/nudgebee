@@ -40,6 +40,13 @@ func newMockManager(t *testing.T) (*Manager, sqlmock.Sqlmock, time.Time) {
 	return m, mock, frozen
 }
 
+// expectNoDuplicate mocks Create's pre-insert dedup SELECT returning no match,
+// so Create proceeds to the quota check + insert.
+func expectNoDuplicate(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery(`SELECT id FROM llm_watch_tasks`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+}
+
 func validCreateInput() CreateInput {
 	return CreateInput{
 		ConversationID:  uuid.MustParse("44444444-4444-4444-4444-444444444444"),
@@ -163,6 +170,7 @@ func TestCreate_ClampsPollIntervalUpward(t *testing.T) {
 		config.Config.WatchMaxPerTenant = 0   // disable quota
 	})
 	m, mock, _ := newMockManager(t)
+	expectNoDuplicate(mock)
 	mock.ExpectExec("INSERT INTO llm_watch_tasks").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -181,6 +189,7 @@ func TestCreate_ClampsMaxDurationDownward(t *testing.T) {
 		config.Config.WatchMaxPerTenant = 0
 	})
 	m, mock, _ := newMockManager(t)
+	expectNoDuplicate(mock)
 	mock.ExpectExec("INSERT INTO llm_watch_tasks").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -200,6 +209,7 @@ func TestCreate_DoesNotClampWhenConfigZero(t *testing.T) {
 		config.Config.WatchMaxPerTenant = 0
 	})
 	m, mock, _ := newMockManager(t)
+	expectNoDuplicate(mock)
 	mock.ExpectExec("INSERT INTO llm_watch_tasks").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
@@ -221,6 +231,7 @@ func TestCreate_RejectsWhenTenantAtCap(t *testing.T) {
 		config.Config.WatchMaxPerTenant = 5
 	})
 	m, mock, _ := newMockManager(t)
+	expectNoDuplicate(mock)
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM llm_watch_tasks`).
 		WithArgs(sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
@@ -235,6 +246,7 @@ func TestCreate_AllowsBelowCap(t *testing.T) {
 		config.Config.WatchMaxPerTenant = 5
 	})
 	m, mock, _ := newMockManager(t)
+	expectNoDuplicate(mock)
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM llm_watch_tasks`).
 		WithArgs(sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(4))
@@ -255,6 +267,7 @@ func TestCreate_AtomicQuotaGuardRejectsWhenInsertAffectsZeroRows(t *testing.T) {
 		config.Config.WatchMaxPerTenant = 5
 	})
 	m, mock, _ := newMockManager(t)
+	expectNoDuplicate(mock)
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM llm_watch_tasks`).
 		WithArgs(sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(4))
@@ -273,6 +286,7 @@ func TestCreate_QuotaCheckBypassedWhenConfigIsZero(t *testing.T) {
 		config.Config.WatchMaxPerTenant = 0
 	})
 	m, mock, _ := newMockManager(t)
+	expectNoDuplicate(mock)
 	// No COUNT expectation — only INSERT.
 	mock.ExpectExec("INSERT INTO llm_watch_tasks").
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -285,6 +299,7 @@ func TestCreate_QuotaCheckBypassedWhenConfigIsZero(t *testing.T) {
 func TestCreate_PersistsAllFields(t *testing.T) {
 	withConfig(t, func() { config.Config.WatchMaxPerTenant = 0 })
 	m, mock, frozen := newMockManager(t)
+	expectNoDuplicate(mock)
 	in := validCreateInput()
 	in.PredicateNegate = true
 	in.NotifyTemplate = "Done: {summary}"
@@ -311,6 +326,44 @@ func TestCreate_PersistsAllFields(t *testing.T) {
 	assert.True(t, w.PredicateNegate)
 	require.NotNil(t, w.NotifyTemplate)
 	assert.Equal(t, "Done: {summary}", *w.NotifyTemplate)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestCreate_DedupesDuplicateObservation: when a non-terminal watch already
+// observes the same target, Create returns it instead of inserting a duplicate.
+func TestCreate_DedupesDuplicateObservation(t *testing.T) {
+	withConfig(t, func() { config.Config.WatchMaxPerTenant = 0 })
+	m, mock, frozen := newMockManager(t)
+
+	existingID := uuid.New()
+	in := validCreateInput()
+
+	// Dedup SELECT finds a matching non-terminal watch...
+	mock.ExpectQuery(`SELECT id FROM llm_watch_tasks`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(existingID))
+	// ...which Get returns; no INSERT must run.
+	cols := []string{
+		"id", "conversation_id", "account_id", "tenant_id", "user_id",
+		"source_kind", "source_config", "predicate_kind", "predicate_expr", "predicate_negate",
+		"notify_template", "poll_interval_sec", "max_duration_sec",
+		"status", "poll_count", "failure_count",
+		"next_poll_at", "last_poll_at", "last_poll_result", "final_result", "error",
+		"expires_at", "created_at", "updated_at", "parent_message_id",
+	}
+	mock.ExpectQuery(`SELECT .* FROM llm_watch_tasks WHERE id = \$1 AND tenant_id = \$2`).
+		WithArgs(existingID, in.TenantID).
+		WillReturnRows(sqlmock.NewRows(cols).AddRow(
+			existingID, in.ConversationID, in.AccountID, in.TenantID, nil,
+			"tool", string(in.SourceConfig), "regex", "ok", false,
+			nil, 60, 3600,
+			"PENDING", 0, 0,
+			frozen, nil, nil, nil, nil,
+			frozen, frozen, frozen, nil,
+		))
+
+	w, err := m.Create(context.Background(), in)
+	require.NoError(t, err)
+	assert.Equal(t, existingID, w.ID, "should reuse the existing watch, not insert a new one")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -571,6 +624,7 @@ func TestAssertTenantQuota_BoundaryAtCap(t *testing.T) {
 
 	// At exactly cap → reject.
 	m, mock, _ := newMockManager(t)
+	expectNoDuplicate(mock)
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM llm_watch_tasks`).
 		WithArgs(sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(5))
@@ -579,6 +633,7 @@ func TestAssertTenantQuota_BoundaryAtCap(t *testing.T) {
 
 	// One below cap → accept.
 	m2, mock2, _ := newMockManager(t)
+	expectNoDuplicate(mock2)
 	mock2.ExpectQuery(`SELECT COUNT\(\*\) FROM llm_watch_tasks`).
 		WithArgs(sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(4))
@@ -614,6 +669,9 @@ func TestAssertTenantQuota_TOCTOU_DocumentsBug(t *testing.T) {
 	withConfig(t, func() { config.Config.WatchMaxPerTenant = 5 })
 
 	m, mock, _ := newMockManager(t)
+	// One dedup SELECT per Create (both miss → both proceed).
+	expectNoDuplicate(mock)
+	expectNoDuplicate(mock)
 	// First create: count=4 → ok, insert.
 	mock.ExpectQuery(`SELECT COUNT\(\*\) FROM llm_watch_tasks`).
 		WithArgs(sqlmock.AnyArg()).

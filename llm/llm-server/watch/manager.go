@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"nudgebee/llm/common"
 	"nudgebee/llm/config"
 	"strings"
@@ -91,6 +92,16 @@ func (m *Manager) Create(ctx context.Context, in CreateInput) (*Watch, error) {
 	db, err := m.dbHandle()
 	if err != nil {
 		return nil, err
+	}
+
+	// Dedup: watch_resource is injected into every agent, so an orchestrator and
+	// its sub-agent can each register a watch for the same observation. Reuse it.
+	if existing, derr := m.findDuplicate(ctx, db, in); derr != nil {
+		return nil, derr
+	} else if existing != nil {
+		slog.Info("watch: deduped duplicate registration; reusing existing watch",
+			"conversation_id", in.ConversationID.String(), "watch_id", existing.ID.String())
+		return existing, nil
 	}
 
 	now := m.clock()
@@ -187,6 +198,32 @@ WHERE (
 		}
 	}
 	return w, nil
+}
+
+// findDuplicate returns a non-terminal watch in this conversation observing the
+// same target (same source tool_input + predicate) as `in`, ignoring which tool
+// runs the poll (tool_name / tool_config_name); nil if none. First-registered
+// wins. sql sources (no tool_input) are not deduped.
+func (m *Manager) findDuplicate(ctx context.Context, db *sqlx.DB, in CreateInput) (*Watch, error) {
+	const q = `
+SELECT id FROM llm_watch_tasks
+WHERE conversation_id = $1 AND tenant_id = $2
+  AND status IN ('PENDING','ACTIVE')
+  AND ($3::jsonb) -> 'tool_input' IS NOT NULL
+  AND source_config -> 'tool_input' = ($3::jsonb) -> 'tool_input'
+  AND predicate_kind = $4 AND predicate_expr = $5 AND predicate_negate = $6
+ORDER BY created_at ASC
+LIMIT 1`
+	var id uuid.UUID
+	err := db.GetContext(ctx, &id, q,
+		in.ConversationID, in.TenantID, string(in.SourceConfig), string(in.PredicateKind), in.PredicateExpr, in.PredicateNegate)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("watch: dedup check failed: %w", err)
+	}
+	return m.Get(ctx, in.TenantID, id)
 }
 
 func validateCreateInput(in CreateInput) error {
