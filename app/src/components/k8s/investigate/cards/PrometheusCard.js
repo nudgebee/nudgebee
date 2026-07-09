@@ -6,7 +6,7 @@ class PrometheusCard {
   constructor(data, _event) {
     this.id = 'PrometheusCard';
     this.icon = PrometheusIcon;
-    this.text = data?.additional_info?.title || 'Prometheus Query Result';
+    this.text = data?.additional_info?.title || (typeof data?.metadata?.query === 'string' ? data.metadata.query : null) || 'Prometheus Query Result';
     this.resolveButton = false;
     this.insightData = [];
     this.renderContent = false;
