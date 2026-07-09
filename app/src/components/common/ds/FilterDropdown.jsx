@@ -44,6 +44,9 @@ import SafeIcon from '@shared/icons/SafeIcon';
 const VIRTUALIZATION_THRESHOLD = 200;
 const OPTION_HEIGHT = 36;
 const OVERSCAN_COUNT = 10;
+// Floor for the options panel so a narrow trigger (e.g. compact toolbar
+// filters) still opens a panel wide enough to read labels comfortably.
+const MIN_POPOVER_WIDTH = 220;
 
 // Field chrome scale — mirrors ds/Input so FilterDropdown triggers align
 // with Input rows when placed in a form/toolbar together.
@@ -161,7 +164,7 @@ OptionLabel.propTypes = {
   label: PropTypes.string,
 };
 
-const OptionItem = React.memo(function OptionItem({ opt, selected, multiple, onToggle, style }) {
+const OptionItem = React.memo(function OptionItem({ opt, selected, multiple, onToggle }) {
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
@@ -180,6 +183,7 @@ const OptionItem = React.memo(function OptionItem({ opt, selected, multiple, onT
         display: 'flex',
         alignItems: 'center',
         gap: ds.space.mul(0, 5),
+        height: `${OPTION_HEIGHT}px`,
         padding: 'var(--ds-overlay-item-padding-md)',
         margin: '0 var(--ds-overlay-item-margin-x)',
         borderRadius: 'var(--ds-overlay-item-radius)',
@@ -193,15 +197,14 @@ const OptionItem = React.memo(function OptionItem({ opt, selected, multiple, onT
         '&:hover': {
           backgroundColor: selected ? 'var(--ds-overlay-item-selected-bg)' : 'var(--ds-overlay-item-hover-bg)',
         },
-        ...style,
       }}
     >
       {multiple && <OverlayCheckbox checked={selected} />}
       {opt?.icon && <SafeIcon src={opt.icon} alt={opt?.type ?? ''} style={{ width: 16, height: 16, flexShrink: 0, objectFit: 'contain' }} />}
       <OptionLabel label={getLabel(opt)} />
       {opt?.type && (
-        <Box sx={{ ml: 'auto', flexShrink: 0 }}>
-          <Label text={opt.type} />
+        <Box sx={{ ml: 'auto', flexShrink: 0, maxWidth: '40%' }}>
+          <Label text={opt.type} maxWidth='100%' displayTooltip tooltipCharLimit={15} />
         </Box>
       )}
     </Box>
@@ -213,7 +216,6 @@ OptionItem.propTypes = {
   selected: PropTypes.bool,
   multiple: PropTypes.bool,
   onToggle: PropTypes.func,
-  style: PropTypes.object,
 };
 
 // Loading affordance: a short list of skeleton rows that mirror OptionItem's
@@ -399,14 +401,7 @@ function OptionsList({ isOptionsLoading, filteredOptions, multiple, isSelected, 
       {/* Selected section — always fully rendered (small count) */}
       {selectedOptions.length > 0 &&
         selectedOptions.map((opt, idx) => (
-          <OptionItem
-            key={`sel-${getOptionKey(opt, idx)}`}
-            opt={opt}
-            selected
-            multiple={multiple}
-            onToggle={handleToggle}
-            style={{ height: `${OPTION_HEIGHT}px` }}
-          />
+          <OptionItem key={`sel-${getOptionKey(opt, idx)}`} opt={opt} selected multiple={multiple} onToggle={handleToggle} />
         ))}
 
       {/* Unselected section — virtualized when large */}
@@ -415,16 +410,7 @@ function OptionsList({ isOptionsLoading, filteredOptions, multiple, isSelected, 
           <div style={{ height: virtualizedContent.topSpacerHeight }} aria-hidden='true' />
           {unselectedOptions.slice(virtualizedContent.startIndex, virtualizedContent.endIndex).map((opt, i) => {
             const idx = virtualizedContent.startIndex + i;
-            return (
-              <OptionItem
-                key={`unsel-${getOptionKey(opt, idx)}`}
-                opt={opt}
-                selected={false}
-                multiple={multiple}
-                onToggle={handleToggle}
-                style={{ height: `${OPTION_HEIGHT}px` }}
-              />
-            );
+            return <OptionItem key={`unsel-${getOptionKey(opt, idx)}`} opt={opt} selected={false} multiple={multiple} onToggle={handleToggle} />;
           })}
           <div style={{ height: virtualizedContent.bottomSpacerHeight }} aria-hidden='true' />
         </>
@@ -778,6 +764,10 @@ function FilterDropdownButton({
   const [anchorEl, setAnchorEl] = useState(null);
   const [search, setSearch] = useState('');
   const searchRef = useRef(null);
+  // Captured on open and left untouched on close so the panel doesn't visibly
+  // shrink to the {MIN_POPOVER_WIDTH}px floor while it fades out (anchorEl is already null
+  // during that exit transition, so deriving width from it live breaks this).
+  const triggerWidthRef = useRef(MIN_POPOVER_WIDTH);
   const open = Boolean(anchorEl);
 
   // Compute selected count and display text
@@ -870,29 +860,32 @@ function FilterDropdownButton({
     [multiple, value]
   );
 
-  const handleToggle = (opt) => {
-    if (!onSelect) return;
+  const handleToggle = useCallback(
+    (opt) => {
+      if (!onSelect) return;
 
-    if (multiple) {
-      const optVal = getValue(opt);
-      const currentArr = Array.isArray(value) ? value : [];
-      let newValue;
-      if (currentArr.some((v) => getValue(v) === optVal)) {
-        newValue = currentArr.filter((v) => getValue(v) !== optVal);
-      } else if (selectionWithinGroup && grouped) {
-        const optGroup = opt?.group || 'Other';
-        const sameGroupItems = currentArr.filter((v) => (v?.group || 'Other') === optGroup);
-        newValue = [...sameGroupItems, opt];
+      if (multiple) {
+        const optVal = getValue(opt);
+        const currentArr = Array.isArray(value) ? value : [];
+        let newValue;
+        if (currentArr.some((v) => getValue(v) === optVal)) {
+          newValue = currentArr.filter((v) => getValue(v) !== optVal);
+        } else if (selectionWithinGroup && grouped) {
+          const optGroup = opt?.group || 'Other';
+          const sameGroupItems = currentArr.filter((v) => (v?.group || 'Other') === optGroup);
+          newValue = [...sameGroupItems, opt];
+        } else {
+          newValue = [...currentArr, opt];
+        }
+        onSelect({ target: { value: newValue } }, newValue);
       } else {
-        newValue = [...currentArr, opt];
+        const newVal = opt?.value ?? opt;
+        onSelect({ target: { value: newVal } }, opt);
+        setAnchorEl(null);
       }
-      onSelect({ target: { value: newValue } }, newValue);
-    } else {
-      const newVal = opt?.value ?? opt;
-      onSelect({ target: { value: newVal } }, opt);
-      setAnchorEl(null);
-    }
-  };
+    },
+    [onSelect, multiple, value, selectionWithinGroup, grouped]
+  );
 
   const handleClear = (e) => {
     e.stopPropagation();
@@ -982,6 +975,7 @@ function FilterDropdownButton({
           // Lets callers lazy-load options on first open instead of eagerly on
           // mount. Fired before opening so the loading state shows immediately.
           onOpen?.();
+          triggerWidthRef.current = e.currentTarget.clientWidth;
           setAnchorEl(e.currentTarget);
         }}
         onKeyDown={handleKeyDown}
@@ -1122,7 +1116,7 @@ function FilterDropdownButton({
               // Panel is never narrower than its trigger: a full-width form
               // trigger (e.g. workflow action sidebar fields) gets a matching
               // full-width panel; compact toolbar triggers keep the 220px floor.
-              width: popoverWidth ?? `${Math.max(220, anchorEl?.clientWidth || 0)}px`,
+              width: popoverWidth ?? `${Math.max(MIN_POPOVER_WIDTH, triggerWidthRef.current)}px`,
               overflow: 'hidden',
               transformOrigin: 'top left',
               animation: 'filterDropdownSlideIn var(--ds-overlay-enter-duration) var(--ds-overlay-enter-easing)',
