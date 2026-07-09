@@ -796,7 +796,7 @@ const renderContent = (title, accountId, cloudProvider, noData = false) => {
   const detailsBase = isK8s ? '/kubernetes/details' : '/cloud-account/details';
   const getLink = (type) => {
     if (type == 'workflow') {
-      return `/auto-pilot?${accountId}#workflow`;
+      return `/automation?accountId=${accountId}`;
     } else if (type == 'image-scan') {
       return `/kubernetes/details/${accountId}#security/image-scan`;
     } else if (type == 'certificate') {
@@ -1144,7 +1144,7 @@ const buildUrl = (selectedCluster, id, fragment, navigate, additionalQuery = {})
     // Construct Full URL: /path/id?query=params#fragment
     route = `${base}/${id}${queryPart}${fragmentPart}`;
   } else if (navigate === 'auto-pilot') {
-    route = `/auto-pilot?accountId=${id}`;
+    route = `/automation?accountId=${id}`;
   }
 
   return route;
@@ -2381,7 +2381,7 @@ const Home = () => {
         <AutomationsCard
           workflowData={workflowData}
           accountId={selectedCluster?.value || ''}
-          onManage={(id) => window.open(`/auto-pilot?accountId=${id}&status=Active`, '_blank')}
+          onManage={(id) => window.open(`/automation?accountId=${id}&status=Active`, '_blank')}
         />
         <PendingFollowUps accountId={cluster} />
         <HomeWidgets selectedCluster={selectedCluster} cluster={cluster} />

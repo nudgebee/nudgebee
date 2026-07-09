@@ -9,7 +9,7 @@ import { WorkflowIconBlue, PlayCircleIcon } from '@assets';
 import WorkflowListing from '@components/workflow/WorkflowListing';
 import TaskRunner from '@components/workflow/TaskRunner';
 
-const AutoPilot = () => {
+const Automation = () => {
   const router = useRouter();
   const session = getUserSession();
   const isAdmin = session?.roles?.includes('tenant_admin') || session?.roles?.includes('account_admin');
@@ -86,4 +86,4 @@ const AutoPilot = () => {
   );
 };
 
-export default withAccountGuard(AutoPilot, { hideContent: true });
+export default withAccountGuard(Automation, { hideContent: true });

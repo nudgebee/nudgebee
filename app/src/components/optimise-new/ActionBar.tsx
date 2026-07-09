@@ -138,7 +138,7 @@ const ActionBar = ({ fullRecommendation: rec, onCreateTicket, onResolve, onCopyC
               icon={<AutoFixHighOutlinedIcon />}
               tooltip='Setup HPA AutoPilot'
               aria-label='Setup HPA AutoPilot'
-              onClick={() => window.open(`/auto-pilot?accountId=${accountId}`, '_blank')}
+              onClick={() => window.open(`/automation?accountId=${accountId}`, '_blank')}
               id='action-bar-autopilot'
             />
           )}

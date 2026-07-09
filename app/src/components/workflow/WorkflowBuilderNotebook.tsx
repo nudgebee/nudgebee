@@ -1191,14 +1191,14 @@ const WorkflowBuilderNoteBook: React.FC<WorkflowBuilderNotebookProps> = ({ mode 
             setIsInitialized(true);
           } else {
             snackbar.error('Failed to load automation');
-            router.push('/auto-pilot?accountId=' + accountId + '#workflow');
+            router.push('/automation?accountId=' + accountId);
 
             setLoading(false);
           }
         } catch (error) {
           console.error('Error loading workflow:', error);
           snackbar.error('Failed to load automation');
-          router.push('/auto-pilot?accountId=' + accountId + '#workflow');
+          router.push('/automation?accountId=' + accountId);
         } finally {
           setLoading(false);
         }

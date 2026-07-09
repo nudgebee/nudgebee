@@ -799,7 +799,7 @@ const CostSummary = ({ clusterSummary = {}, accountId }) => {
       }
       route = `${route}#${fragment}`;
     } else if (navigate === 'auto-pilot') {
-      route = `/auto-pilot?accountId=${id}`;
+      route = `/automation?accountId=${id}`;
     }
     return route;
   };

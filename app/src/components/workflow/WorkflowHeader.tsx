@@ -109,7 +109,7 @@ const WorkflowHeader: React.FC<WorkflowHeaderProps> = ({
     if (isSameOriginPath) {
       router.push(candidate);
     } else {
-      const backButtonPath = `/auto-pilot?accountId=${accountId}#workflow`;
+      const backButtonPath = `/automation?accountId=${accountId}`;
       router.push(backButtonPath);
     }
   };

@@ -672,7 +672,7 @@ const KubernetesClusterSummaryUtilization = ({ accountId }) => {
                   size='sm'
                   icon={<SafeIcon src={addIcon} alt='add' />}
                   onClick={() => {
-                    router.push(`/auto-pilot?accountId=${accountId}`);
+                    router.push(`/automation?accountId=${accountId}`);
                   }}
                 >
                   Add new
@@ -722,7 +722,7 @@ const KubernetesClusterSummaryUtilization = ({ accountId }) => {
                           aria-label='Open automation'
                           icon={<SafeIcon src={ExternalLinkIcon} alt='redirect' />}
                           onClick={() => {
-                            router.push(`/auto-pilot?accountId=${accountId}`);
+                            router.push(`/automation?accountId=${accountId}`);
                           }}
                         />
                       }

@@ -310,7 +310,7 @@ const Header1 = ({ showBorder = false }) => {
       },
       {
         name: 'Automation',
-        route: '/auto-pilot',
+        route: '/automation',
         icon: WorkflowIconBlue,
         clusterDetailButton: true,
         showActiveCluster: true,
@@ -595,12 +595,12 @@ const Header1 = ({ showBorder = false }) => {
     }
 
     // 3. Handle Auto Pilot Route (NEW)
-    else if (currentRouter.pathname.indexOf('/auto-pilot') > -1) {
+    else if (currentRouter.pathname.indexOf('/automation') > -1 || currentRouter.pathname.indexOf('/auto-pilot') > -1) {
       const currentAccountId = currentRouter.query.accountId;
       if (currentAccountId !== e.value) {
         updateClusterState(e);
         // Switch account but keep the same tab (hash)
-        currentRouter.push(`/auto-pilot?accountId=${e.value}${hashString}`);
+        currentRouter.push(`/automation?accountId=${e.value}${hashString}`);
         return;
       }
     }
