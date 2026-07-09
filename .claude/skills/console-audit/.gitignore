@@ -1,0 +1,2 @@
+# Never commit local credentials — this file stays on the machine only.
+.credentials.local
