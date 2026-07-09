@@ -346,21 +346,6 @@ const (
 // must select react-style behavior before the planner instance is created.
 const AgentPlannerTypeReAct3 AgentPlannerType = "react_3"
 
-// legacyExecutorTypeRewoo is the pre-#33515 persisted value for
-// AgentPlannerTypeOrchestrating. Rows written before the V777 migration — or by
-// an old pod during a rolling deploy — may still carry it, so reads normalize it.
-const legacyExecutorTypeRewoo = "rewoo"
-
-// ParseExecutorType converts a persisted llm_agents.executor_type string into an
-// AgentPlannerType, dual-mapping the legacy "rewoo" value to Orchestrating. Use
-// this at every DB read boundary instead of a bare AgentPlannerType(s) cast.
-func ParseExecutorType(s string) AgentPlannerType {
-	if s == legacyExecutorTypeRewoo {
-		return AgentPlannerTypeOrchestrating
-	}
-	return AgentPlannerType(s)
-}
-
 type NBAgentPromptRagFormat string
 
 const (

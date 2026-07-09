@@ -57,7 +57,7 @@ The server employs a sophisticated hierarchical agent architecture, allowing for
 *   **Orchestrating Agents** (`AgentPlannerTypeOrchestrating`):
     *   Top-level coordinators — `k8s_orchestrator`, `aws_orchestrator`, `gcp_orchestrator`, `azure_orchestrator`, `datadog_orchestrator`.
     *   Delegate to specialized sub-agents via ReAct3.
-    *   Persisted as `"orchestrating"` in `llm_agents.executor_type` (migration V777). The legacy `"rewoo"` value is still dual-read via `ParseExecutorType` for rows written before the migration.
+    *   Persisted as `"orchestrating"` in `llm_agents.executor_type` (migration V777; V779 backfilled any stragglers and dropped the legacy `"rewoo"` value from the CHECK constraint).
 
 *   **ReAct Agents** (`AgentPlannerTypeReAct`):
     *   Task-focused executors — `prometheus`, `postgres`, `promql`, `traces`, `elastic`, etc.
