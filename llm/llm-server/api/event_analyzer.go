@@ -787,8 +787,61 @@ func executeEventInvestigation(ctx *security.RequestContext, request EventAnalys
 		return
 	}
 
-	// Mark all as in progress
+	// Atomically claim log_analysis as the lead row before dispatching. This is
+	// the same concurrency gate getOrCreateEventAnalysisStatus uses for the MQ
+	// path: the HTTP endpoint and the MQ consumers can fire for one event in the
+	// same window, all having read a non-terminal status above. Only the winner of
+	// the atomic claim dispatches the pipeline; a lost claim reports IN_PROGRESS so
+	// the caller doesn't run a duplicate summary → investigation → log →
+	// detailed-response cycle (the observed duplicate-task bug).
+	//
+	// Partial-completion carve-out: when log_analysis is already COMPLETED but the
+	// pipeline is partial (reached here because some other type is not COMPLETED,
+	// and not regenerating), skip the claim gate and dispatch. Leaving log_analysis
+	// COMPLETED lets Step 3's cache skip it and avoids the redundant log + synthesis
+	// re-run that resetting it would force. (The mark-remaining loop below still
+	// resets the other types to IN_PROGRESS, matching the pre-existing HTTP behavior
+	// of re-running summary/investigation/detailed_response on a partial state; only
+	// log_analysis is preserved. This narrow path is not atomically gated, but it is
+	// the recovery of an already-started analysis, not the fresh-event race that
+	// produced the duplicate-pipeline bug.)
+	logCompleted := dbAnalyses[events.AnalysisTypeLog] != nil &&
+		dbAnalyses[events.AnalysisTypeLog].Status == string(events.AnalysisStatusCompleted)
+	claimedLog := false
+	if request.Regenerate || !logCompleted {
+		claimed, claimErr := eventAnalysisRepo.ClaimEventAnalysis(ctx, request.EventId, eventInfo.Fingerprint, request.AccountId, eventInfo.AggregationKey, events.AnalysisTypeLog, request.Regenerate)
+		if claimErr != nil {
+			// Fail closed: a claim DB error means we can't tell whether we own
+			// the run, and subsequent DB writes would fail too. Return 500 like
+			// the other DB-error paths in this handler rather than reporting a
+			// misleading IN_PROGRESS.
+			ctx.GetLogger().Error("analyzer: failed to claim analysis", "error", claimErr, "event_id", request.EventId)
+			c.JSON(500, buildApiResponse(nil, []error{common.Error{Message: "analyzer: failed to claim analysis: " + claimErr.Error()}}))
+			return
+		}
+		if !claimed {
+			ctx.GetLogger().Info("analyzer: lost analysis claim, another dispatcher owns this run", "event_id", request.EventId)
+			finalResponse.Status = string(events.AnalysisStatusInProgress)
+			for _, aType := range analysisTypes {
+				finalResponse.TaskStatuses[string(aType)] = string(events.AnalysisStatusInProgress)
+			}
+			c.JSON(200, buildApiResponse(finalResponse, nil))
+			return
+		}
+		claimedLog = true
+	}
+
+	// Dispatching. Mark every type IN_PROGRESS so the UI reflects a running
+	// pipeline. log_analysis is IN_PROGRESS only when we actually claimed/reset
+	// it above; in the preserved-COMPLETED partial case it stays COMPLETED, so
+	// reporting IN_PROGRESS here would flicker back to COMPLETED on the next poll.
 	for _, aType := range analysisTypes {
+		if aType == events.AnalysisTypeLog {
+			if claimedLog {
+				finalResponse.TaskStatuses[string(aType)] = string(events.AnalysisStatusInProgress)
+			}
+			continue
+		}
 		if err := eventAnalysisRepo.UpsertEventAnalysisInProgress(ctx, request.EventId, eventInfo.Fingerprint, request.AccountId, eventInfo.AggregationKey, aType); err != nil {
 			ctx.GetLogger().Warn("failed to upsert event analysis in progress", "error", err, "analysis_type", aType)
 		}
@@ -906,22 +959,42 @@ func getOrCreateEventAnalysisStatus(ctx *security.RequestContext, request EventA
 	}
 
 	if createAnalysis {
-		// Only mark log_analysis as IN_PROGRESS when it isn't already COMPLETED.
-		// Resetting a COMPLETED row would force Step 3 in
-		// analyzeEventUsingAgentsAndUpdateDb to bypass its cache (which gates on
-		// existingLog.Status == COMPLETED) and re-run log analysis or re-emit the
-		// "skipped - no logs" path, which then unconditionally re-runs Step 4
-		// synthesis — the exact duplicate-LLM-call pattern this fix targets.
+		// Atomically claim log_analysis as the pipeline's lead row. This is the
+		// concurrency gate: multiple dispatchers (the two MQ consumers, the HTTP
+		// endpoint, sync-recovery) can reach this point for the same event in the
+		// same window, having all read a non-terminal status above. ClaimEventAnalysis
+		// transitions to IN_PROGRESS in a single statement and reports whether THIS
+		// caller won; a lost claim means another dispatcher already owns the run, so
+		// we report IN_PROGRESS and let the caller skip its own pipeline instead of
+		// running a duplicate summary → investigation → log → detailed-response cycle.
 		//
-		// When log_analysis is COMPLETED but other types are not (e.g.
-		// detailed_response missing after a Step-4 crash), the per-step caches
-		// in analyzeEventUsingAgentsAndUpdateDb skip completed steps and only
-		// re-run what's missing.
-		if existingAnalysis == nil || existingAnalysis.Status != string(events.AnalysisStatusCompleted) {
-			err = eventAnalysisRepo.UpsertEventAnalysisInProgress(ctx, request.EventId, eventInfo.Fingerprint, request.AccountId, eventInfo.AggregationKey, events.AnalysisTypeLog)
-			if err != nil {
-				return EventAnalysisResponse{}, err
-			}
+		// A COMPLETED row is never re-claimed (ClaimEventAnalysis's WHERE excludes it),
+		// so completed log analysis keeps its cached result and the per-step caches in
+		// analyzeEventUsingAgentsAndUpdateDb still skip finished steps and only re-run
+		// what's missing.
+		// Partial-completion carve-out (non-regenerate only): when log_analysis is
+		// already COMPLETED but the overall pipeline is not (e.g. detailed_response
+		// missing after a Step-4 crash), do NOT reset it to IN_PROGRESS — that would
+		// force Step 3 to re-run log analysis and unconditionally re-run Step 4
+		// synthesis. Proceed to dispatch instead; the per-step caches in
+		// analyzeEventUsingAgentsAndUpdateDb skip the completed steps and only re-run
+		// what's missing. (This narrow path is not atomically gated, but the per-step
+		// caches dedupe it; the fresh-event race below is the one that produced the
+		// observed duplicate-pipeline bug.)
+		if !request.Regenerate && existingAnalysis != nil && existingAnalysis.Status == string(events.AnalysisStatusCompleted) {
+			response.Status = string(events.AnalysisStatusCreated)
+			response.RelatedEventId = request.EventId
+			return response, nil
+		}
+		claimed, err := eventAnalysisRepo.ClaimEventAnalysis(ctx, request.EventId, eventInfo.Fingerprint, request.AccountId, eventInfo.AggregationKey, events.AnalysisTypeLog, request.Regenerate)
+		if err != nil {
+			return EventAnalysisResponse{}, err
+		}
+		if !claimed {
+			// Another dispatcher won the claim between our status read and here.
+			ctx.GetLogger().Info("analyzer: lost analysis claim, another dispatcher owns this run", "event_id", request.EventId)
+			response.Status = string(core.ConversationStatusInProgress)
+			return response, nil
 		}
 		response.Status = string(events.AnalysisStatusCreated)
 		response.RelatedEventId = request.EventId
