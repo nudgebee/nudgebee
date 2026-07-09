@@ -2820,7 +2820,7 @@ func TestPhase1_GCPResourceSource(t *testing.T) {
 
 	expectedNodeCounts := map[core.NodeType]int{
 		core.NodeTypeComputeInstance:   3, // web-server-1, gke-instance, web-server-2 (cost)
-		core.NodeTypeDatabase:          3, // my-sql-instance, my-sql-cost, my-bq-dataset
+		core.NodeTypeDatabase:          2, // my-sql-instance, my-sql-cost (my-bq-dataset dropped by shouldSuppressGCPResource)
 		core.NodeTypeManagedCluster:    2, // my-cluster, my-cluster-cost
 		core.NodeTypeStorage:           1, // my-bucket
 		core.NodeTypeVPC:               1, // default

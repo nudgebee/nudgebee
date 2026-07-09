@@ -1,73 +1,6 @@
 {
   "nodes": [
     {
-      "unique_key": "gcp:test-account-gcp-1:US:Database:my_dataset:my_dataset",
-      "node_type": "Database",
-      "cloud_account_id": "test-account-gcp-1",
-      "tenant_id": "test-tenant-1",
-      "level": "",
-      "source": "gcp",
-      "properties": {
-        "account_number": "",
-        "arn": "",
-        "cloud_provider": "GCP",
-        "external_resource_id": "bqds-1",
-        "gcp_project_id": "my_dataset",
-        "is_active": true,
-        "labels": {},
-        "name": "my_dataset",
-        "nb_account_id": "proj-1",
-        "nb_resource_id": "bqds-1",
-        "region": "US",
-        "resource_id": "my_dataset",
-        "service_name": "BigQuery",
-        "source": "gcp",
-        "status": "",
-        "subtype": "BigQuery",
-        "type": "bigquery.googleapis.com/Dataset"
-      },
-      "labels": {},
-      "query_attributes": {
-        "name": "my_dataset",
-        "subtype": "BigQuery"
-      }
-    },
-    {
-      "unique_key": "gcp:test-account-gcp-1:US:Database:my_table:my_table",
-      "node_type": "Database",
-      "cloud_account_id": "test-account-gcp-1",
-      "tenant_id": "test-tenant-1",
-      "level": "",
-      "source": "gcp",
-      "properties": {
-        "account_number": "",
-        "arn": "",
-        "cloud_provider": "GCP",
-        "external_resource_id": "bqt-1",
-        "gcp_project_id": "my_table",
-        "is_active": true,
-        "labels": {},
-        "meta": {
-          "FullID": "proj-1:my_dataset.my_table"
-        },
-        "name": "my_table",
-        "nb_account_id": "proj-1",
-        "nb_resource_id": "bqt-1",
-        "region": "US",
-        "resource_id": "my_table",
-        "service_name": "BigQuery",
-        "source": "gcp",
-        "status": "",
-        "subtype": "BigQuery",
-        "type": "bigquery.googleapis.com/Table"
-      },
-      "labels": {},
-      "query_attributes": {
-        "name": "my_table",
-        "subtype": "BigQuery"
-      }
-    },
-    {
       "unique_key": "gcp:test-account-gcp-1:US:Storage:my-bucket:my-bucket",
       "node_type": "Storage",
       "cloud_account_id": "test-account-gcp-1",
@@ -566,24 +499,6 @@
     }
   ],
   "edges": [
-    {
-      "src_key": "gcp:test-account-gcp-1:US:Database:my_table:my_table",
-      "dst_key": "gcp:test-account-gcp-1:US:Database:my_dataset:my_dataset",
-      "relationship_type": "BELONGS_TO",
-      "cloud_account_id": "test-account-gcp-1",
-      "tenant_id": "test-tenant-1",
-      "level": "",
-      "source": "gcp",
-      "properties": {
-        "connection_type": "bigquery_dataset",
-        "contributing_sources": [
-          "gcp"
-        ]
-      },
-      "contributing_sources": [
-        "gcp"
-      ]
-    },
     {
       "src_key": "gcp:test-account-gcp-1:global:ServiceIdentity:GCPServiceAccount:sa@proj-1.iam.gserviceaccount.com",
       "dst_key": "gcp:test-account-gcp-1:US:Storage:my-bucket:my-bucket",

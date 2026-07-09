@@ -3760,6 +3760,22 @@ func shouldSuppressGCPResource(r *CloudResourceRow) bool {
 	if strings.EqualFold(r.ServiceName, gcpIAMPolicyServiceName) || strings.EqualFold(r.Type, gcpIAMBindingType) {
 		return true
 	}
+	// BigQuery dataset/table/view rows are high-cardinality data-tier leaf nodes —
+	// the collector emits one row per table and a single project can hold tens of
+	// thousands, swamping the graph with nodes that carry no topology value — so
+	// these three resource types are excluded from the KG. Only the dataset/table/view
+	// leaves are dropped; the BigQuery service is otherwise untouched (MaterializedView
+	// and ExternalTable are already excluded upstream by GCPDefaultServiceTypeFilter).
+	// This gate is the single on/off switch — the BigQuery type mappings, hierarchy
+	// edge builder (createBigQueryEdges) and IAM dataset target are deliberately left
+	// in place (inert while this gate drops the rows) so re-enabling is a one-line
+	// removal here.
+	switch strings.ToLower(r.Type) {
+	case "bigquery.googleapis.com/dataset",
+		"bigquery.googleapis.com/table",
+		"bigquery.googleapis.com/view":
+		return true
+	}
 	// GCP billing-export rollup rows (meta.nb_source="billing") are cost-reporting
 	// aggregates — one per project per billed service, always named after the project
 	// — not real resources. They carry no topology data and would otherwise become

@@ -181,38 +181,6 @@
       }
     },
     {
-      "unique_key": "gcp:test-account-gcp-1:us-central1:Database:my-bq-dataset:my-bq-dataset",
-      "node_type": "Database",
-      "cloud_account_id": "test-account-gcp-1",
-      "tenant_id": "test-tenant-1",
-      "level": "",
-      "source": "gcp",
-      "properties": {
-        "account_number": "my-project",
-        "arn": "",
-        "cloud_provider": "GCP",
-        "external_resource_id": "ext-gcp-bq-1",
-        "gcp_project_id": "my-project",
-        "is_active": true,
-        "labels": {},
-        "name": "my-bq-dataset",
-        "nb_account_id": "gcp-account-1",
-        "nb_resource_id": "gcp-res-9",
-        "region": "us-central1",
-        "resource_id": "gcp-bq-1",
-        "service_name": "BigQuery",
-        "source": "gcp",
-        "status": "active",
-        "subtype": "BigQuery",
-        "type": "bigquery.googleapis.com/Dataset"
-      },
-      "labels": {},
-      "query_attributes": {
-        "name": "my-bq-dataset",
-        "subtype": "BigQuery"
-      }
-    },
-    {
       "unique_key": "gcp:test-account-gcp-1:us-central1:Database:my-sql-cost:my-sql-cost",
       "node_type": "Database",
       "cloud_account_id": "test-account-gcp-1",
