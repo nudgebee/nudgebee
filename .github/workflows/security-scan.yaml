@@ -78,6 +78,23 @@ jobs:
           sudo tar -C /usr/local/bin -xzf /tmp/trivy.tgz trivy
           trivy --version
 
+      - name: Update Trivy vulnerability DB
+        # Fetch the latest DB up front, with retries, so every scan runs against
+        # current advisories. Aqua republishes the DB roughly daily; combined with
+        # this workflow's daily schedule, newly-disclosed CVEs surface within ~a
+        # day with no code change. Fail-closed: if the DB can't be fetched after
+        # retries the job errors, rather than scanning against a stale/empty DB.
+        # The ghcr login above authenticates this pull, avoiding anonymous rate
+        # limits. Scans below run with --skip-db-update to reuse this exact DB.
+        run: |
+          set -euo pipefail
+          n=0
+          until trivy image --download-db-only; do
+            n=$((n + 1))
+            if [ "$n" -ge 3 ]; then echo "::error::Trivy DB download failed after $n attempts"; exit 1; fi
+            echo "DB download attempt $n failed; retrying in 15s..."; sleep 15
+          done
+
       - name: Scan ${{ matrix.image }}
         env:
           IMAGE_REF: ${{ env.REGISTRY }}/${{ steps.ns.outputs.namespace }}/${{ matrix.image }}:${{ github.event.inputs.tag || 'edge' }}
@@ -86,11 +103,13 @@ jobs:
           echo "Scanning $IMAGE_REF"
 
           # Full table (all severities) for the log; JSON for counting.
+          # --skip-db-update: reuse the DB fetched in the step above (already
+          # current) instead of re-downloading per scan.
           trivy image --scanners vuln --severity CRITICAL,HIGH,MEDIUM \
-            --format table "$IMAGE_REF" || true
+            --skip-db-update --format table "$IMAGE_REF" || true
 
           trivy image --scanners vuln --severity CRITICAL,HIGH,MEDIUM \
-            --format json -o result.json "$IMAGE_REF"
+            --skip-db-update --format json -o result.json "$IMAGE_REF"
 
           # Count fixable (has FixedVersion) vs unfixable, per severity.
           python3 - "$IMAGE_REF" <<'PY' | tee counts.env
