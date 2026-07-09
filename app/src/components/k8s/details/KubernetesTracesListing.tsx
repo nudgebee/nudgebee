@@ -690,52 +690,35 @@ const KubernetesTracesListing: React.FC<KubernetesTracesListingProps> = ({
     }
   }, [traceData]);
 
-  const traceDeps =
-    traceProvider != 'otel_clickhouse'
-      ? [
-          currentPage,
-          time,
-          selectedK8sAccount,
-          recordsPerPage,
-          selectedWorkload,
-          selectedStatusCode,
-          selectedHttpStatus,
-          selectedHttpSpan,
-          destinationSelectedNamespace,
-          destinationSelectedWorkload,
-          resource,
-          traceId,
-          selectedHttpSpan,
-          sortObject,
-          traceView,
-        ]
-      : [
-          currentPage,
-          recordsPerPage,
-          selectedNamespace,
-          selectedWorkload,
-          time,
-          selectedHttpStatus,
-          selectedHttpSpan,
-          selectedK8sAccount,
-          sortObject,
-          destinationSelectedNamespace,
-          destinationSelectedWorkload,
-          selectedStatusCode,
-          selectedTracesSource,
-          resource,
-          traceId,
-          header,
-          traceView,
-        ];
-
   useEffect(() => {
     if (traceData.length > 0 || !traceProvider) {
       return;
     }
     listTraces();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [traceProvider, ...traceDeps]);
+  }, [
+    traceProvider,
+    currentPage,
+    recordsPerPage,
+    selectedNamespace,
+    selectedWorkload,
+    time,
+    selectedHttpStatus,
+    selectedHttpSpan,
+    selectedK8sAccount,
+    sortObject,
+    destinationSelectedNamespace,
+    destinationSelectedWorkload,
+    selectedStatusCode,
+    selectedTracesSource,
+    resource,
+    traceId,
+    header,
+    traceView,
+    destinationName,
+    fromWorkload,
+    duration,
+    traceIds?.join(','),
+  ]);
 
   const filterWorkloadOnSelectedNamespace = (value: string | string[]) => {
     let filteredWorkloads;

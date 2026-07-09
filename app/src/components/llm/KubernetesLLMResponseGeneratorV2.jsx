@@ -927,7 +927,6 @@ const KubernetesLLMResponseGenerator = ({
       showStatusIndicator={true}
       headerStyle={true}
       showIndicator={true}
-      rounded={0}
       onChange={handleDropdownChange}
       noLabel
       onClusterDataLoaded={handleClusterData}

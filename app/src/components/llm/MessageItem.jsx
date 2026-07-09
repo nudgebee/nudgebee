@@ -441,20 +441,22 @@ const MessageItem = ({
                     }
                     placement='top'
                   >
-                    <SafeIcon
-                      src={
-                        message.response_status == 'fail'
-                          ? AskNudgebeeErrorIcon
-                          : message.response_status == 'skipped'
-                          ? AskNudgebeeSkipIcon
-                          : message.response_status === 'waiting'
-                          ? AskNudgebeeWaitingIcon
-                          : message.response_status === 'in_progress'
-                          ? AskNudgebeeInProgressIcon
-                          : AskNudgebeeSuccessIcon
-                      }
-                      alt='status icon'
-                    />
+                    <Box component='span' sx={{ display: 'inline-flex', lineHeight: 0 }}>
+                      <SafeIcon
+                        src={
+                          message.response_status == 'fail'
+                            ? AskNudgebeeErrorIcon
+                            : message.response_status == 'skipped'
+                            ? AskNudgebeeSkipIcon
+                            : message.response_status === 'waiting'
+                            ? AskNudgebeeWaitingIcon
+                            : message.response_status === 'in_progress'
+                            ? AskNudgebeeInProgressIcon
+                            : AskNudgebeeSuccessIcon
+                        }
+                        alt='status icon'
+                      />
+                    </Box>
                   </Tooltip>
                   <Text
                     value={

@@ -62,7 +62,7 @@ const SideDrawerButton = ({ open = false, item = {}, handleDrawerOpen, isFirstIt
         sx={{
           ...(isActive ? styles.activeButton : undefined),
           ...(isFirstItem && {
-            '& > :first-child': {
+            '& > div:first-of-type': {
               padding: 'var(--ds-space-2)',
               border: `1px solid #93C5FD`,
               borderRadius: 'var(--ds-radius-xl)',
@@ -101,8 +101,8 @@ const SideDrawerButton = ({ open = false, item = {}, handleDrawerOpen, isFirstIt
             <SafeIcon
               priority
               src={item.icon}
-              alt={item.text}
-              aria-label={item.text}
+              alt={item.text || item.ariaLabel || 'icon'}
+              aria-label={item.text || item.ariaLabel}
               style={{ objectFit: 'contain', width: `${item.iconSize || 22}px`, height: `${item.iconSize || 22}px` }}
               width={item.iconSize || 22}
               height={item.iconSize || 18}
@@ -281,7 +281,7 @@ const AskNudgebeeLayout = ({
 
   const menuItems = [
     { icon: ArrowBackGrayIcon, text: 'App', onClick: handleHomePage, iconSize: 16 },
-    { icon: PlusIconSecondary, text: null, onClick: handleNewChat },
+    { icon: PlusIconSecondary, text: null, ariaLabel: 'New chat', onClick: handleNewChat },
     {
       icon: ChatOutlineDarkIcon,
       text: 'Chats',

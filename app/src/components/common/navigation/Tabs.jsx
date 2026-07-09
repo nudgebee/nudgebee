@@ -67,6 +67,7 @@ const Tabs = ({
   const router = useRouter();
   const selectedOption = options?.tabOptions?.find((opt) => opt.value === value);
   const showBottomMargin = selectedOption?.showBottomMargin || false;
+  const safeValue = options?.tabOptions?.some((opt) => !opt.hidden && opt.value === value) ? value : false;
 
   const getTabUrl = (opt) => {
     // 1. Get the current resolved path (e.g., "/kubernetes/details/123?tab=1")
@@ -240,7 +241,7 @@ const Tabs = ({
         <Box sx={containerSx}>
           <MuiTabs
             ref={tabsRootRef}
-            value={value}
+            value={safeValue}
             onChange={(_event, newValue) => onChange(newValue)}
             aria-label={ariaLabel}
             variant='scrollable'
