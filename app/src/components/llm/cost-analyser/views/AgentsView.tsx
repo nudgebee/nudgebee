@@ -53,9 +53,28 @@ const SORT_OPTIONS: { value: AgentSortBy; label: string; icon: React.ReactNode }
   { value: 'errors', label: 'By errors', icon: <ErrorOutlineIcon sx={{ fontSize: 14 }} /> },
 ];
 
-// The infra/cloud-debug agents dominate the leaderboard; exclude them by default so
-// the app-level agents are visible. The user can clear/adjust these.
-const DEFAULT_EXCLUDE = ['k8s_debug', 'aws', 'gcp', 'azure'];
+// The top-level orchestrator ("planner") agents dominate the leaderboard; exclude
+// them by default so the app-level agents are visible. The user can clear/adjust.
+// All five orchestrators are listed under both their current "*_orchestrator" names
+// and their legacy "*_debug" names, so runs stored under either name stay excluded.
+// (The original list only had 'k8s_debug' + the bare cloud sub-agents; the intent
+// was to exclude the orchestrators, so the other four are added here.)
+const DEFAULT_EXCLUDE = [
+  'k8s_orchestrator',
+  'aws_orchestrator',
+  'gcp_orchestrator',
+  'azure_orchestrator',
+  'datadog_orchestrator',
+  'k8s_debug',
+  'aws_debug',
+  'gcp_debug',
+  'azure_debug',
+  'datadog_debug',
+  // Cloud sub-agents (leaf, frequently delegated) — kept excluded as in the original list.
+  'aws',
+  'gcp',
+  'azure',
+];
 
 // Latency-outlier filter: show only invocations whose total latency ≥ the chosen
 // pXX (over the trailing-24h baseline). 'All' = no filter. Defaults to p90.

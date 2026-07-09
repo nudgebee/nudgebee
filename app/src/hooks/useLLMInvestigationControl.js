@@ -151,7 +151,21 @@ const parseConversationMessages = (conversationMessages, accountId) => {
       // Pre-pass: collect all sub-agent IDs that should be hidden as separate task cards.
       // Building this upfront ensures correct exclusion regardless of iteration order —
       // previously, a child agent appearing before its parent in the list would not be skipped.
-      const debugAgentNames = ['k8s_debug', 'aws_debug', 'gcp_debug', 'azure_debug', 'datadog_debug'];
+      // Current "*_orchestrator" names plus the legacy "*_debug" names, so runs stored
+      // under either name are recognized as top-level orchestrators (whose sub-agent
+      // task cards are hidden).
+      const debugAgentNames = [
+        'k8s_orchestrator',
+        'aws_orchestrator',
+        'gcp_orchestrator',
+        'azure_orchestrator',
+        'datadog_orchestrator',
+        'k8s_debug',
+        'aws_debug',
+        'gcp_debug',
+        'azure_debug',
+        'datadog_debug',
+      ];
       agentsWithoutRouter.forEach((agent) => {
         if (!debugAgentNames.includes(agent?.agent_name)) {
           (agent?.llm_conversation_tool_calls || []).forEach((t) => {
