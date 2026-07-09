@@ -86,8 +86,8 @@ Machine-readable snapshot: [`baseline.json`](baseline.json).
 | rag-server | CVE-2025-14009 | nltk 3.9.1 | nltk 3.9.3 ✅ fixable |
 | ml-k8s-server | CVE-2026-42496 | perl-base 5.40.1-6 | ❌ no fix (Debian `fix_deferred`) |
 | ml-k8s-server | CVE-2026-8376 | perl-base 5.40.1-6 | ❌ no fix (Debian `affected`) |
-| rag-server | CVE-2026-42496 | perl-base 5.40.1-6 | ❌ no fix |
-| rag-server | CVE-2026-8376 | perl-base 5.40.1-6 | ❌ no fix |
+| rag-server | CVE-2026-42496 | perl-base 5.40.1-6 | ❌ no fix (Debian `fix_deferred`) |
+| rag-server | CVE-2026-8376 | perl-base 5.40.1-6 | ❌ no fix (Debian `affected`) |
 
 ---
 
