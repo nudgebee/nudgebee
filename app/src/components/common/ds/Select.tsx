@@ -246,6 +246,16 @@ export function Select(props: SelectProps) {
   } = props;
 
   const options = React.useMemo(() => rawOptions.map(normalizeOption), [rawOptions]);
+  // O(1) value→option lookup; loop preserves first-match-wins for duplicate values
+  const optionsByValue = React.useMemo(() => {
+    const map = new Map<string, SelectOption>();
+    for (const o of options) {
+      if (!map.has(o.value)) {
+        map.set(o.value, o);
+      }
+    }
+    return map;
+  }, [options]);
   const tokens = SIZE_TOKENS[size];
   const reactId = React.useId();
   const inputId = id ?? reactId;
@@ -277,8 +287,11 @@ export function Select(props: SelectProps) {
     });
   }, [options, search]);
 
+  // Set for O(1) membership checks in multi-select mode
+  const selectedValueSet = React.useMemo(() => (props.multiple ? new Set(props.value) : null), [props.value, props.multiple]);
+
   const isSelected = (optValue: string): boolean => {
-    if (props.multiple) return props.value.includes(optValue);
+    if (props.multiple) return selectedValueSet!.has(optValue);
     return props.value === optValue;
   };
 
@@ -353,13 +366,13 @@ export function Select(props: SelectProps) {
       );
 
     if (!props.multiple) {
-      const opt = options.find((o) => o.value === props.value);
+      const opt = optionsByValue.get(props.value as string);
       return <>{opt?.label ?? props.value}</>;
     }
 
     // Multi-mode: render up to maxChips labels then '+N' for the rest
     const maxChips = props.maxChips ?? 2;
-    const selectedOpts = props.value.map((v) => options.find((o) => o.value === v)).filter((o): o is SelectOption => Boolean(o));
+    const selectedOpts = props.value.map((v) => optionsByValue.get(v)).filter((o): o is SelectOption => Boolean(o));
     const visible = selectedOpts.slice(0, maxChips);
     const hidden = selectedOpts.length - visible.length;
     return (
