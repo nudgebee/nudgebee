@@ -9,19 +9,20 @@ RUN apk add --no-cache git
 WORKDIR /build
 ARG GOLANG_MIGRATE_VERSION=v4.19.1
 RUN git clone --depth 1 --branch "${GOLANG_MIGRATE_VERSION}" https://github.com/golang-migrate/migrate .
-# Freshen the CVE-carrying transitive deps (each @latest is major-bounded by its
-# module path, so no surprise major jumps) and rebuild the module graph, then
+# Freshen the CVE-carrying transitive deps and rebuild the module graph, then
 # compile a static binary with only the drivers run-migrations.sh uses
-# (postgres + clickhouse).
+# (postgres + clickhouse). Versions are pinned (not @latest) for reproducible
+# builds — these exact versions were verified to scan 0 CVEs on a current Trivy
+# DB (bump them when a scan later flags one; don't float to @latest).
 RUN go get \
-        golang.org/x/crypto@latest \
-        golang.org/x/net@latest \
-        github.com/jackc/pgx/v5@latest \
-        google.golang.org/grpc@latest \
-        go.opentelemetry.io/otel@latest \
-        go.opentelemetry.io/otel/sdk@latest \
-        github.com/go-jose/go-jose/v4@latest \
-        go.mongodb.org/mongo-driver@latest \
+        golang.org/x/crypto@v0.54.0 \
+        golang.org/x/net@v0.57.0 \
+        github.com/jackc/pgx/v5@v5.10.0 \
+        google.golang.org/grpc@v1.82.0 \
+        go.opentelemetry.io/otel@v1.44.0 \
+        go.opentelemetry.io/otel/sdk@v1.44.0 \
+        github.com/go-jose/go-jose/v4@v4.1.4 \
+        go.mongodb.org/mongo-driver@v1.17.9 \
     && go mod tidy
 RUN CGO_ENABLED=0 go build -tags 'postgres clickhouse' \
         -ldflags "-X main.Version=${GOLANG_MIGRATE_VERSION}" \
