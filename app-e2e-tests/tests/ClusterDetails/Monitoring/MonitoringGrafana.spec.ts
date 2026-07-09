@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { MonitoringTabLocator } from "../Monitoring/MonitoringTabLocator";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
@@ -12,8 +12,7 @@ test("API testing Cluster Details->Monitoring-> Grafana", async ({ page }, testI
   await loginPage.doFullLogin();
   await locators.navigateToMonitoringTab();
 
-  await expect(locators.MonitoringDropdownGrafana).toBeVisible();
-  await locators.MonitoringDropdownGrafana.click();
+  await locators.clickTab(locators.MonitoringDropdownGrafana);
 
   // await waitForGraphQLAndValidate(
   //   page,

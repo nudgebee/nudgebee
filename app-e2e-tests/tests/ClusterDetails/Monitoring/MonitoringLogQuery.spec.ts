@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { MonitoringTabLocator } from "../Monitoring/MonitoringTabLocator";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
@@ -12,12 +12,10 @@ test("API testing Cluster Details->Monitoring-> Query Logs", async ({ page }, te
   await loginPage.doFullLogin();
   await locators.navigateToMonitoringTab();
 
-  await expect(locators.MonitoringDropdownQueryLogs).toBeVisible();
-  
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.MonitoringDropdownQueryLogs.click();
+      await locators.clickTab(locators.MonitoringDropdownQueryLogs);
     },
     {
       testName: testInfo.title,
@@ -34,8 +32,7 @@ test("API testing Cluster Details->Monitoring-> Query Logs -> Run Query", async 
   const locators = new MonitoringTabLocator(page);
   await loginPage.doFullLogin();
   await locators.navigateToMonitoringTab();
-  await expect(locators.MonitoringDropdownQueryLogs).toBeVisible();
-  await locators.MonitoringDropdownQueryLogs.click();
+  await locators.clickTab(locators.MonitoringDropdownQueryLogs);
 
   await waitForGraphQLAndValidate(
     page,

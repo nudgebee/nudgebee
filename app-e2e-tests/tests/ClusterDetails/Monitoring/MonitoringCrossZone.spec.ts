@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test } from "@playwright/test";
 import { LoginPage } from "../../../pages/LoginPage";
 import { MonitoringTabLocator } from "../Monitoring/MonitoringTabLocator";
 import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";
@@ -12,12 +12,10 @@ test("API testing Cluster Details->Monitoring-> Cross Zone", async ({ page }, te
   await loginPage.doFullLogin();
   await locators.navigateToMonitoringTab();
 
-  await expect(locators.MonitoringDropdownCrossZone).toBeVisible();
-
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.MonitoringDropdownCrossZone.click();
+      await locators.clickTab(locators.MonitoringDropdownCrossZone);
     },
     {
       testName: testInfo.title,

@@ -1,9 +1,9 @@
 import { test } from "@playwright/test";
-import { LoginPage } from "../../../../pages/LoginPage";
-import { AppsAndInfraLocators } from "../AppsAndInfraLocators";
-import { waitForGraphQLAndValidate } from "../../../utils/GraphQLNetworkWatcher";   
+import { LoginPage } from "../../../pages/LoginPage";
+import { AppsAndInfraLocators } from "./AppsAndInfraLocators";
+import { waitForGraphQLAndValidate } from "../../utils/GraphQLNetworkWatcher";   
 
-test("API testing Cluster Details->Apps And Infra-> Databases", async ({ page }, testInfo) => {
+test("API testing Cluster Details->Apps And Infra-> PVC", async ({ page }, testInfo) => {
   test.setTimeout(120000);
 
   const loginPage = new LoginPage(page);
@@ -16,7 +16,7 @@ test("API testing Cluster Details->Apps And Infra-> Databases", async ({ page },
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.clickTab(locators.Databases);
+      await locators.clickTab(locators.PVC);
     },
     {
       testName: testInfo.title,

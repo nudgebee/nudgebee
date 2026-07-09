@@ -8,7 +8,6 @@ let locators: MonitoringTabLocator;
 test.beforeEach(async ({ page }) => {
   locators = new MonitoringTabLocator(page);
   await locators.setupMonitoringPage();
-  await expect(locators.MonitoringDropdownSLo).toBeVisible();
 });
 
 test("API testing Cluster Details->Monitoring-> SLO", async ({ page }, testInfo) => {
@@ -17,7 +16,7 @@ test("API testing Cluster Details->Monitoring-> SLO", async ({ page }, testInfo)
   await waitForGraphQLAndValidate(
     page,
     async () => {
-      await locators.MonitoringDropdownSLo.click();
+      await locators.clickTab(locators.MonitoringDropdownSLo);
     },
     {
       testName: testInfo.title,
@@ -27,10 +26,13 @@ test("API testing Cluster Details->Monitoring-> SLO", async ({ page }, testInfo)
 });
 
 test("API testing Cluster Details->Monitoring-> Configure SLO", async ({ page }, testInfo) => {
-  test.setTimeout(180000);
+  test.setTimeout(120000);
 
-  await locators.MonitoringDropdownSLo.click();
+  await locators.clickTab(locators.MonitoringDropdownSLo);
   await expect(locators.AddSLOConfigBtn).toBeVisible({ timeout: 15000 });
+
+  const failures: string[] = [];
+  let consecutiveFailures = 0;
 
   for (const { namespace, workload } of sloWorkloads) {
     await test.step(`Configure SLO: ${namespace} / ${workload}`, async () => {
@@ -58,15 +60,26 @@ test("API testing Cluster Details->Monitoring-> Configure SLO", async ({ page },
           }
         );
 
+        await expect(page.getByText(/SLO Config (Created|Updated)/).first()).toBeVisible({ timeout: 3000 });
         await locators.SloDialogSubmitBtn.waitFor({ state: "hidden", timeout: 8000 });
+        consecutiveFailures = 0;
         console.log(`SUCCESS: SLO configured for ${namespace}/${workload}`);
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
-        console.error(`SKIPPED/ERROR: ${namespace}/${workload} — ${msg}`);
+        console.error(`FAILED: ${namespace}/${workload} — ${msg}`);
+        failures.push(`${namespace}/${workload}: ${msg}`);
+        consecutiveFailures++;
         if (await locators.SloDialogCancelBtn.isVisible()) {
           await locators.closeSLODialog();
         }
       }
     });
+
+    if (consecutiveFailures >= 3) break;
   }
+
+  expect(
+    failures,
+    `SLO configuration failed for ${failures.length}/${sloWorkloads.length} workload(s):\n${failures.join("\n")}`
+  ).toEqual([]);
 });
