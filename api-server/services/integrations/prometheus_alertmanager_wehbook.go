@@ -96,6 +96,14 @@ func (m PrometheusAlertManagerWebhook) ProcessEventWebook(sc *security.RequestCo
 		}
 		annotations := mapStringAnyToStringString(alert["annotations"])
 
+		// Alertmanager carries runbook_url as an annotation, not a label, but the
+		// downstream alert-rule evidence card (buildAlertRuleEvidence) reads Labels.
+		// Surface it there (non-clobber) so the runbook link renders — mirrors the
+		// zenduty/pagerduty parser, which flattens annotations into labels.
+		if rb := annotations["runbook_url"]; rb != "" && labels["runbook_url"] == "" {
+			labels["runbook_url"] = rb
+		}
+
 		startsAtStr, _ := alert["startsAt"].(string)
 		startsAt, err := time.Parse(time.RFC3339, startsAtStr)
 		if err != nil && startsAtStr != "" {

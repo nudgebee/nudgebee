@@ -92,6 +92,9 @@ func TestTools_ParsePrometheusAlertManagerWebhookPayload(t *testing.T) {
 	eventData, err := prometheusAlertManagerWebhookIntgeration.ProcessEventWebook(security.NewRequestContextForUserTenant(userId, os.Getenv("TEST_TENANT"), nil, nil, nil), []core.IntegrationConfigValue{}, os.Getenv("TEST_ACCOUNT"), prometheusAlertManagerWebhookPayload)
 	assert.Nil(t, err)
 	assert.NotEmpty(t, eventData)
+	// runbook_url arrives as an Alertmanager annotation; it must be surfaced into
+	// Investigation.Labels so the alert-rule evidence card renders the runbook link.
+	assert.Equal(t, "https://runbooks.prometheus-operator.dev/runbooks/kubernetes/cputhrottlinghigh", eventData[0].Investigation.Labels["runbook_url"])
 	eventData, err = prometheusAlertManagerWebhookIntgeration.ProcessEventWebook(security.NewRequestContextForUserTenant(userId, os.Getenv("TEST_TENANT"), nil, nil, nil), []core.IntegrationConfigValue{}, os.Getenv("TEST_ACCOUNT"), prometheusAlertManagerWebhookResolvedPayload)
 	assert.Nil(t, err)
 	assert.NotEmpty(t, eventData)
