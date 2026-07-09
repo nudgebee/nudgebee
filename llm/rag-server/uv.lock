@@ -79,6 +79,8 @@ cryptography==48.0.1
     #   unstructured-client
 dataclasses-json==0.6.7
     # via unstructured
+defusedxml==0.7.1
+    # via nltk
 deprecated==1.2.18
     # via atlassian-python-api
 distlib==0.4.0
@@ -244,7 +246,7 @@ nest-asyncio==1.6.0
     # via unstructured-client
 networkx==3.6.1
     # via torch
-nltk==3.9.1
+nltk==3.10.0
     # via unstructured
 nodeenv==1.9.1
     # via pre-commit

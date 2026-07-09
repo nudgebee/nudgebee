@@ -145,17 +145,25 @@ const CATEGORY_HUE: Record<string, 'blue' | 'violet' | 'amber' | 'green' | 'pink
   K8sVersionUpgrade: 'pink',
 };
 
-// Severity → DS Chip tone for the Severity filter row. We reuse the Chip's
-// built-in dot+tone composition (small coloured dot + neutral gray label)
-// instead of a SeverityIcon badge, so the chip text reads quietly. Medium
-// borrows the `agent` tone purely for its purple dot — the alternative
-// (warning) would collide with High.
-const SEVERITY_TONE: Record<SeverityLevel, 'critical' | 'warning' | 'agent' | 'info' | 'neutral'> = {
+// Severity → DS Chip tone for the Severity filter row. These are `filter` chips
+// (they carry `pressed`), so the tone only drives the leading dot — the chip's
+// bg/text come from the filter-selection palette. We pick the nearest semantic
+// tone here and pin the exact dot shade below so the colour is unambiguously
+// correct regardless of which tone we land on.
+const SEVERITY_TONE: Record<SeverityLevel, 'critical' | 'warning' | 'info' | 'neutral'> = {
   Critical: 'critical',
-  High: 'warning',
-  Medium: 'agent',
+  High: 'critical',
+  Medium: 'warning',
   Low: 'info',
   Info: 'neutral',
+};
+
+const SEVERITY_DOT_COLOR: Record<SeverityLevel, string> = {
+  Critical: 'var(--ds-red-700)',
+  High: 'var(--ds-red-500)',
+  Medium: 'var(--ds-amber-500)',
+  Low: 'var(--ds-blue-500)',
+  Info: 'var(--ds-gray-400)',
 };
 
 const getTicketSourceFromCloudProvider = (cloudProvider: string | undefined): string => {
@@ -1110,6 +1118,12 @@ const OptimizeNewPage = () => {
                     tone={SEVERITY_TONE[item.severity]}
                     count={item.count}
                     data-testid={`severity-chip-${item.severity.toLowerCase()}`}
+                    sx={{
+                      '& [data-dot]': {
+                        backgroundColor: SEVERITY_DOT_COLOR[item.severity],
+                        borderColor: SEVERITY_DOT_COLOR[item.severity],
+                      },
+                    }}
                   >
                     {item.severity}
                   </Chip>

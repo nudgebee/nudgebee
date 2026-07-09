@@ -107,6 +107,16 @@ type appConfig struct {
 	CloudCollectorGcpPubSubSubscriptionID string `mapstructure:"cloud_collector_gcp_pubsub_subscription_id"`
 	CloudCollectorGcpEventRulesPath       string `mapstructure:"cloud_collector_gcp_event_rules_path"`
 
+	// CloudCollectorGcpBigqueryTableDiscoveryEnabled gates per-table BigQuery discovery. Disabled
+	// by default: enumerating every table in a project (one Metadata() call each) is
+	// the dominant cost of GCP resource discovery — a large project has tens of
+	// thousands of tables and none of them carry any spend (BigQuery cost attributes
+	// to a single service-level resource). Table resources feed only the BigQuery
+	// table-level recommendations and knowledge-graph table nodes. Datasets are still
+	// discovered when this is off. Re-enable once discovery is moved to a bulk
+	// INFORMATION_SCHEMA query and/or a longer refresh cadence.
+	CloudCollectorGcpBigqueryTableDiscoveryEnabled bool `mapstructure:"cloud_collector_gcp_bigquery_table_discovery_enabled"`
+
 	// Request timeout in seconds for API handler context and HTTP server read/write
 	CloudCollectorRequestTimeoutSeconds int `mapstructure:"cloud_collector_request_timeout_seconds"`
 
@@ -200,6 +210,9 @@ func init() {
 	viper.SetDefault("cloud_collector_gcp_pubsub_project_id", "")
 	viper.SetDefault("cloud_collector_gcp_pubsub_subscription_id", "")
 	viper.SetDefault("cloud_collector_gcp_event_rules_path", "")
+
+	// Per-table BigQuery discovery is off by default — see CloudCollectorGcpBigqueryTableDiscoveryEnabled.
+	viper.SetDefault("cloud_collector_gcp_bigquery_table_discovery_enabled", false)
 
 	viper.SetDefault("cloud_collector_server_cost_processing_workers_max", 1)
 	// Max number of trailing months of historical CUR data to backfill at new-account onboarding (0 disables).

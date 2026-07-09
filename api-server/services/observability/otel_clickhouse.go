@@ -247,20 +247,10 @@ func (s *OtelClickhouseTraceSource) CountTraces(ctx *security.RequestContext, fe
 	}
 	result := common.OpenTelemetryTraceCount{}
 	if len(rows) > 0 {
-		if countVal, ok := rows[0]["count"]; ok {
-			if countFloat, ok := countVal.(float64); ok {
-				result.Count = int(countFloat)
-			} else {
-				// handle wrong type
-				result.Count = 0
-			}
-		} else {
-			// handle missing key
-			result.Count = 0
-		}
-	} else {
-		// handle empty rows
-		result.Count = 0
+		// count(*) is a ClickHouse UInt64, which the relay's FORMAT JSON round-trip
+		// delivers as a quoted string ("42"), not a float64. Decode via clickhouseInt64
+		// so the count is not silently zeroed on the string shape.
+		result.Count = int(clickhouseInt64(rows[0]["count"]))
 	}
 	return result, nil
 }

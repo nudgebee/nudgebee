@@ -321,6 +321,60 @@ func TestModelUsageStatsCalculation(t *testing.T) {
 	assert.Equal(t, 0.0, *googleStat.SuccessRatePercentage)
 }
 
+// fixedPricingDao is a fake IConversationDao that returns a canned pricing
+// map, letting tests exercise CalculateTotalCost's long-ctx tiering without a
+// database. Embedding the interface panics loudly on any other DAO call.
+type fixedPricingDao struct {
+	IConversationDao
+	pricing map[string]modelPricing
+}
+
+func (d *fixedPricingDao) GetConversationCosts(models []string) (map[string]modelPricing, error) {
+	return d.pricing, nil
+}
+
+// TestModelUsageStatsCalculation_PerCallTiering locks in the fix for a cost
+// bug where two individually-small calls, once summed across the whole
+// conversation, tripped a model's long-ctx pricing tier that neither call
+// would have hit on its own — inflating a real conversation's reported cost
+// from $16 to $30. CalculateTotalCost tiers on a single call's own prompt
+// size, so calculateModelUsageStats must price each record independently and
+// sum the resulting dollars, not sum tokens first and price the aggregate.
+func TestModelUsageStatsCalculation_PerCallTiering(t *testing.T) {
+	original := GetConversationDao()
+	defer SetConversationDao(original)
+	SetConversationDao(&fixedPricingDao{
+		pricing: map[string]modelPricing{
+			"googleai:gemini-3.1-pro-preview": {
+				CostPerMillionInput:         2,
+				CostPerMillionOutput:        12,
+				ContextThresholdTokens:      sql.NullInt64{Int64: 200_000, Valid: true},
+				CostPerMillionInputLongCtx:  sql.NullFloat64{Float64: 4, Valid: true},
+				CostPerMillionOutputLongCtx: sql.NullFloat64{Float64: 18, Valid: true},
+			},
+		},
+	})
+
+	// Two calls, each with a 150K-token prompt (under the 200K threshold
+	// individually) but summing to 300K across the conversation.
+	records := []TokenUsageDetailedRecord{
+		{LLMProvider: "googleai", LLMModel: "gemini-3.1-pro-preview", InputTokens: 150_000, RequestStatus: "success"},
+		{LLMProvider: "googleai", LLMModel: "gemini-3.1-pro-preview", InputTokens: 150_000, RequestStatus: "success"},
+	}
+
+	stats := calculateModelUsageStats(records)
+	assert.Equal(t, 1, len(stats))
+
+	// Correct (per-call): both calls priced at the standard $2/M rate.
+	wantCost := (150_000.0 / 1_000_000.0 * 2) * 2
+	assert.InDelta(t, wantCost, stats[0].CostUsd, 1e-9)
+
+	// The bug's signature: pricing the 300K aggregate at the long-ctx $4/M
+	// rate would double this. Guard against regressing back to that.
+	buggyCost := (300_000.0 / 1_000_000.0) * 4
+	assert.NotEqual(t, buggyCost, stats[0].CostUsd)
+}
+
 func TestCacheSavingsCalculation(t *testing.T) {
 	// Test cache savings calculation
 	records := []TokenUsageDetailedRecord{

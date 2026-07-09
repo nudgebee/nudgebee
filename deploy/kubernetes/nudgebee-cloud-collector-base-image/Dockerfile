@@ -21,6 +21,14 @@ RUN apk add --no-cache \
     cargo \
     make
 
+# Upgrade the system-Python cryptography that Alpine's aws-cli (and the gcloud
+# SDK, which runs on the system interpreter) pull in. Alpine's py3-cryptography
+# lags at 44/46 — a HIGH that cloud-collector-server inherits from
+# /usr/lib/pythonX/site-packages, distinct from the azure venv patched below.
+# --break-system-packages is required on Alpine's PEP-668 externally-managed
+# env; the gcc/cargo/openssl-dev build deps above let the 48 wheel compile.
+RUN pip install --no-cache-dir --break-system-packages --upgrade "cryptography>=48.0.1"
+
 # Azure CLI. Install azure-cli and cryptography>=48.0.1 in one resolver pass so
 # pip satisfies both constraints simultaneously (azure-cli-core declares a bare
 # `cryptography` requirement with no ceiling, so >=48 resolves cleanly). This

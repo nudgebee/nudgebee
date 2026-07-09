@@ -64,6 +64,14 @@ RUN chown nextjs:nodejs .next
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
+# Drop the base image's bundled npm from the runtime. A Next.js standalone
+# server runs via `node server.js` and never invokes npm at runtime; npm's
+# vendored node_modules (sigstore, tar, picomatch, ip-address, brace-expansion,
+# @sigstore/*) are the sole source of this image's flagged CVEs, so removing
+# them clears all of them with zero functional impact. Runs as root before the
+# USER switch below.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
 USER nextjs
 
 EXPOSE 3000

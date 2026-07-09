@@ -107,6 +107,7 @@ RUN apk add --no-cache --virtual .build-deps \
     /opt/azure-cli-venv/bin/pip install --no-cache-dir --upgrade pip && \
     /opt/azure-cli-venv/bin/pip install --no-cache-dir azure-cli "cryptography>=48.0.1" && \
     ln -s /opt/azure-cli-venv/bin/az /usr/local/bin/az && \
+    pip install --no-cache-dir --break-system-packages --upgrade "cryptography>=48.0.1" && \
     apk del .build-deps
 
 # Pre-install Azure CLI extensions to a fixed directory.

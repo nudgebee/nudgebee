@@ -2,7 +2,9 @@ package gcloud
 
 import (
 	"fmt"
+	"nudgebee/collector/cloud/config"
 	"nudgebee/collector/cloud/providers"
+	"sync"
 	"time"
 
 	"cloud.google.com/go/bigquery"
@@ -19,6 +21,14 @@ const (
 	// - getQueriedTablesFromJobs (INFORMATION_SCHEMA.JOBS query window)
 	// IMPORTANT: If changed, must be updated in both locations to maintain consistency.
 	bigQueryUnusedTableLookbackDays = 60
+
+	// bqMetadataConcurrency bounds the number of concurrent BigQuery dataset/table
+	// Metadata() RPCs. Discovery makes one Metadata() call per dataset and per table;
+	// a large project (tens of thousands of tables) done serially takes tens of
+	// minutes, which exceeds the RabbitMQ consumer_timeout and gets the post-report
+	// job misclassified as a poison message. The value stays well within BigQuery's
+	// metadata read quota.
+	bqMetadataConcurrency = 20
 )
 
 type bigQueryService struct{}
@@ -48,8 +58,12 @@ func (s *bigQueryService) GetResources(ctx providers.CloudProviderContext, accou
 
 	var resources []providers.Resource
 
-	// List all datasets in the project
-	// BigQuery datasets can be regional or multi-regional, but we fetch them all once
+	// List all datasets in the project. BigQuery datasets can be regional or
+	// multi-regional, but we fetch them all once; the region argument is ignored
+	// (the caller collapses global services to a single pass — see ListResources).
+	// The list iterator only paginates dataset references and issues no per-dataset
+	// RPC; the expensive Metadata() calls happen concurrently below.
+	var datasets []*bigquery.Dataset
 	dit := client.Datasets(ctx.GetContext())
 	for {
 		dataset, err := dit.Next()
@@ -65,31 +79,65 @@ func (s *bigQueryService) GetResources(ctx providers.CloudProviderContext, accou
 			ctx.GetLogger().Error("failed to list datasets", "error", err)
 			break
 		}
-
-		// Get dataset metadata
-		metadata, err := dataset.Metadata(ctx.GetContext())
-		if err != nil {
-			ctx.GetLogger().Error("failed to get dataset metadata", "error", err, "dataset", dataset.DatasetID)
-			RecordGCPPermissionError(ctx, err)
-			continue
-		}
-
-		// No region filtering - return all datasets with their actual location
-		resource := s.datasetToResource(dataset.DatasetID, metadata, session.ProjectId)
-		resources = append(resources, resource)
-
-		// Also list tables within the dataset
-		tableResources := s.getTablesInDataset(ctx, dataset, metadata.Location, session.ProjectId)
-		resources = append(resources, tableResources...)
+		datasets = append(datasets, dataset)
 	}
+
+	// Per-table discovery is gated behind a flag (off by default): enumerating every
+	// table is the dominant cost of GCP discovery and none of those tables carry any
+	// spend. When disabled we still discover datasets, just not their tables.
+	tableDiscovery := config.Config.CloudCollectorGcpBigqueryTableDiscoveryEnabled
+	if !tableDiscovery {
+		ctx.GetLogger().Info("bigquery per-table discovery disabled by flag; enumerating datasets only",
+			"flag", "cloud_collector_gcp_bigquery_table_discovery_enabled")
+	}
+
+	// Fetch dataset and table metadata concurrently, bounded by a shared semaphore
+	// so the total number of in-flight BigQuery API calls stays within quota no
+	// matter how tables are distributed across datasets. Each dataset goroutine
+	// releases its semaphore slot before descending into its tables, so the nested
+	// table fetches cannot deadlock against the outer datasets.
+	sem := make(chan struct{}, bqMetadataConcurrency)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for _, dataset := range datasets {
+		wg.Add(1)
+		go func(dataset *bigquery.Dataset) {
+			defer wg.Done()
+
+			sem <- struct{}{}
+			metadata, err := dataset.Metadata(ctx.GetContext())
+			<-sem
+			if err != nil {
+				ctx.GetLogger().Error("failed to get dataset metadata", "error", err, "dataset", dataset.DatasetID)
+				RecordGCPPermissionError(ctx, err)
+				return
+			}
+
+			// No region filtering - return all datasets with their actual location
+			datasetResource := s.datasetToResource(dataset.DatasetID, metadata, session.ProjectId)
+			var tableResources []providers.Resource
+			if tableDiscovery {
+				tableResources = s.getTablesInDataset(ctx, dataset, metadata.Location, session.ProjectId, sem)
+			}
+
+			mu.Lock()
+			resources = append(resources, datasetResource)
+			resources = append(resources, tableResources...)
+			mu.Unlock()
+		}(dataset)
+	}
+	wg.Wait()
 
 	ctx.GetLogger().Info("fetched bigquery datasets and tables", "count", len(resources), "region", region)
 	return resources, nil
 }
 
-func (s *bigQueryService) getTablesInDataset(ctx providers.CloudProviderContext, dataset *bigquery.Dataset, location, projectId string) []providers.Resource {
-	var resources []providers.Resource
-
+func (s *bigQueryService) getTablesInDataset(ctx providers.CloudProviderContext, dataset *bigquery.Dataset, location, projectId string, sem chan struct{}) []providers.Resource {
+	// Collect table references first — the list iterator only paginates and issues
+	// no per-table RPC. The Metadata() call for each table is the costly part and is
+	// fetched concurrently below, sharing the caller's semaphore so total in-flight
+	// BigQuery calls across all datasets stay bounded.
+	var tables []*bigquery.Table
 	tit := dataset.Tables(ctx.GetContext())
 	for {
 		table, err := tit.Next()
@@ -105,19 +153,38 @@ func (s *bigQueryService) getTablesInDataset(ctx providers.CloudProviderContext,
 			}
 			break
 		}
-
-		metadata, err := table.Metadata(ctx.GetContext())
-		if err != nil {
-			ctx.GetLogger().Error("failed to get table metadata", "error", err, "table", table.TableID)
-			RecordGCPPermissionError(ctx, err)
-			continue
-		}
-
-		resource := s.tableToResource(dataset.DatasetID, table.TableID, metadata, location, projectId)
-		resources = append(resources, resource)
+		tables = append(tables, table)
 	}
 
-	return resources
+	resources := make([]providers.Resource, len(tables))
+	valid := make([]bool, len(tables))
+	var wg sync.WaitGroup
+	for i, table := range tables {
+		wg.Add(1)
+		go func(i int, table *bigquery.Table) {
+			defer wg.Done()
+
+			sem <- struct{}{}
+			metadata, err := table.Metadata(ctx.GetContext())
+			<-sem
+			if err != nil {
+				ctx.GetLogger().Error("failed to get table metadata", "error", err, "table", table.TableID)
+				RecordGCPPermissionError(ctx, err)
+				return
+			}
+			resources[i] = s.tableToResource(dataset.DatasetID, table.TableID, metadata, location, projectId)
+			valid[i] = true
+		}(i, table)
+	}
+	wg.Wait()
+
+	out := make([]providers.Resource, 0, len(tables))
+	for i := range resources {
+		if valid[i] {
+			out = append(out, resources[i])
+		}
+	}
+	return out
 }
 
 func (s *bigQueryService) datasetToResource(datasetId string, metadata *bigquery.DatasetMetadata, projectId string) providers.Resource {
