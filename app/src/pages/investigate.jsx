@@ -1568,7 +1568,9 @@ const Investigate = () => {
     setIsTroubleshootFormOpen(false);
   };
 
-  const getInvestigateDescription = (logText) => {
+  // Memoized: avoids re-running 3 regexes on every render (was called 5× inline with same args)
+  const investigateDescription = useMemo(() => {
+    let logText = row?.description;
     if (isK8s && alertLabels?.nb_webhook_url) {
       logText = (logText || '') + `\n\n**Alert Url -** [${alertLabels.alertname || alertLabels.nb_webhook_event_id}](${alertLabels.nb_webhook_url})`;
     }
@@ -1583,7 +1585,7 @@ const Investigate = () => {
       };
     }
     return { logSample: '', containerId: '', failureCount: '' };
-  };
+  }, [row?.description, isK8s, alertLabels]);
 
   const handleGenerateRCA = () => {
     apiKubernetes.generateRCA(id, router.query.accountId, true).then((response) => {
@@ -2490,36 +2492,27 @@ const Investigate = () => {
                   )}
                   {row?.description && (
                     <>
-                      {getInvestigateDescription(row?.description).containerId && (
+                      {investigateDescription.containerId && (
                         <>
                           <Text value={'Container Id'} secondaryText />
                           <Text
-                            value={getInvestigateDescription(row?.description).containerId || '-'}
+                            value={investigateDescription.containerId || '-'}
                             copyableTooltip
                             showAutoEllipsis
                             sx={{ fontSize: 'var(--ds-text-small)', color: ds.gray[700] }}
                           />
                         </>
                       )}
-                      {getInvestigateDescription(row?.description).failureCount && (
+                      {investigateDescription.failureCount && (
                         <>
                           <Text value={'Failure Count'} secondaryText />
-                          <Text
-                            className='text-value'
-                            value={getInvestigateDescription(row?.description).failureCount}
-                            secondaryText
-                            sx={{ color: ds.gray[700] }}
-                          />
+                          <Text className='text-value' value={investigateDescription.failureCount} secondaryText sx={{ color: ds.gray[700] }} />
                         </>
                       )}
                       {isCloud && (
                         <>
                           <Text value={'Description'} secondaryText />
-                          <Text
-                            value={getInvestigateDescription(row?.description).logSample}
-                            showAutoEllipsis
-                            sx={{ fontSize: 'var(--ds-text-small)' }}
-                          />
+                          <Text value={investigateDescription.logSample} showAutoEllipsis sx={{ fontSize: 'var(--ds-text-small)' }} />
                         </>
                       )}
                     </>
