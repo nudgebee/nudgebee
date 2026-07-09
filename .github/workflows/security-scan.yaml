@@ -1,0 +1,122 @@
+name: Image Security Scan
+
+# Trivy vulnerability scan of every first-party image this repo publishes.
+# Part of the image-hardening program — see docs/security/image-hardening.md.
+#
+# Ratchet model: we gate on FIXABLE CRITICAL/HIGH/MEDIUM only (--ignore-unfixed),
+# because ~389 baseline findings live in Debian/UBI9/Ubuntu base-OS packages that
+# upstream has not patched yet (those are chased via base migration in Iter 3, not
+# a dependency bump). Un-fixable findings must never be able to keep CI red.
+#
+# GATE (env below):
+#   report  — always exit 0; print counts to the job summary. Current mode (Iter 0).
+#   enforce — fail the job if an image has any fixable C/H/M. Flip to this in Iter 4,
+#             once Iter 1/2 have driven the fixable count to zero.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'   # daily 06:17 UTC
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to scan (default: edge = tip of main)'
+        default: edge
+        type: string
+  pull_request:
+    paths:
+      - '.github/workflows/security-scan.yaml'
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  REGISTRY: ghcr.io
+  # Iter 0: report-only. Change to "enforce" in Iter 4.
+  GATE: report
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - services-server
+          - services-server-sidecar
+          - migrations
+          - app
+          - ticket-server
+          - code-analysis-agent
+          - notifications
+          - k8s-collector
+          - cloud-collector-server
+          - cost-server
+          - relay-server
+          - workflow-server
+          - llm-server
+          - rag-server
+          - ml-k8s-server
+    steps:
+      - name: Resolve namespace
+        id: ns
+        run: echo "namespace=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Trivy
+        run: |
+          set -euo pipefail
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sudo sh -s -- -b /usr/local/bin v0.58.0
+          trivy --version
+
+      - name: Scan ${{ matrix.image }}
+        env:
+          IMAGE_REF: ${{ env.REGISTRY }}/${{ steps.ns.outputs.namespace }}/${{ matrix.image }}:${{ github.event.inputs.tag || 'edge' }}
+        run: |
+          set -euo pipefail
+          echo "Scanning $IMAGE_REF"
+
+          # Full table (all severities) for the log; JSON for counting.
+          trivy image --scanners vuln --severity CRITICAL,HIGH,MEDIUM \
+            --format table "$IMAGE_REF" || true
+
+          trivy image --scanners vuln --severity CRITICAL,HIGH,MEDIUM \
+            --format json -o result.json "$IMAGE_REF"
+
+          # Count fixable (has FixedVersion) vs unfixable, per severity.
+          python3 - "$IMAGE_REF" <<'PY' | tee counts.env
+          import json, sys, os
+          d = json.load(open("result.json"))
+          fx = {"CRITICAL":0,"HIGH":0,"MEDIUM":0}
+          nf = {"CRITICAL":0,"HIGH":0,"MEDIUM":0}
+          for r in d.get("Results") or []:
+              for v in r.get("Vulnerabilities") or []:
+                  s = v.get("Severity")
+                  if s not in fx: continue
+                  (fx if v.get("FixedVersion") else nf)[s] += 1
+          fixable_total = sum(fx.values())
+          ref = sys.argv[1]
+          print(f"FIXABLE_TOTAL={fixable_total}")
+          summary = os.environ["GITHUB_STEP_SUMMARY"]
+          with open(summary, "a") as f:
+              f.write(f"### `{ref}`\n\n")
+              f.write("| | CRITICAL | HIGH | MEDIUM |\n|---|---|---|---|\n")
+              f.write(f"| **fixable** | {fx['CRITICAL']} | {fx['HIGH']} | {fx['MEDIUM']} |\n")
+              f.write(f"| unfixable (no upstream patch) | {nf['CRITICAL']} | {nf['HIGH']} | {nf['MEDIUM']} |\n\n")
+          PY
+
+          # shellcheck disable=SC1091
+          source counts.env
+
+          if [ "${GATE}" = "enforce" ] && [ "${FIXABLE_TOTAL}" -gt 0 ]; then
+            echo "::error title=Fixable vulnerabilities in ${{ matrix.image }}::${FIXABLE_TOTAL} fixable CRITICAL/HIGH/MEDIUM — bump the dependency/base and rebuild."
+            exit 1
+          fi
+          echo "GATE=${GATE}; fixable C/H/M total=${FIXABLE_TOTAL} (report-only)"
