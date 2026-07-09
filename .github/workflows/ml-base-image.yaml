@@ -14,13 +14,17 @@ name: nudgebee-ml base image
 # latest Debian security releases. The weekly `schedule` rebuilds even when the
 # Dockerfile hasn't changed, so the base can't silently go stale again.
 #
-# amd64 only: ml-k8s-server (the sole consumer) is built amd64-only in edge.yaml
-# / release.yaml, so this base doesn't need arm64.
+# amd64 only for now: the consumers (ml-k8s-server AND rag-server) are built
+# amd64-only in edge.yaml / release.yaml, so this base follows. The Dockerfile is
+# arch-aware (Wolfi + conda + the ML wheels all have aarch64 builds), so arm64
+# can be enabled here + on the consumers once their full dep trees are confirmed
+# on aarch64.
 #
 # Tags (on push to main / schedule / manual dispatch):
-#   :debian13              version-rolling tag consumers pin (tracks the Debian
-#                          major the base is built on; rolls patches, never
-#                          silently jumps a major)
+#   :wolfi                 version-rolling tag consumers pin (tracks the base
+#                          distro/toolchain family; rolls patches on every
+#                          rebuild). Renamed from the legacy :debian13 when the
+#                          base migrated off Debian to Wolfi.
 #   :latest                rolling
 #   :<YYYYMMDD>-<sha7>      immutable snapshot for reproducible pins
 # PRs build to validate, but do not push.
@@ -57,7 +61,7 @@ env:
   IMAGE: nudgebee-ml-base
   CONTEXT: deploy/kubernetes/nudgebee-ml-base-image
   # Debian major the base tracks; also the rolling tag consumers pin.
-  STABLE_TAG: debian13
+  STABLE_TAG: wolfi
 
 jobs:
   build:
