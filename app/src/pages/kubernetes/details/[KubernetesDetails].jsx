@@ -3,7 +3,6 @@ import { useRouter } from 'next/router';
 import dynamic from 'next/dynamic';
 import AnchorComponent from '@components/common/navigation/AnchorComponent';
 import ErrorBoundary from '@shared/ErrorBoundary';
-import KuberneteUtilizationSummary from '@components/k8s/KuberneteUtilizationSummary';
 import k8sApi from '@api1/kubernetes';
 import { useData } from '@context/DataContext';
 import { hasWriteAccess } from '@lib/auth';
@@ -88,10 +87,7 @@ import {
   SLOInspectionIcon,
   GrafanaIconBlue,
 } from '@assets';
-import KubernetesClusterSummary from '@components/k8s/KubernetesClusterSummary';
-import KuberneteComputeSummary from '@components/k8s/KubernetesComputeSummary';
 import PropTypes from 'prop-types';
-import KubernetesClusterSummaryUtilization from '@components/k8s/KubernetesClusterSummaryUtilization';
 import apiKubernetes1 from '@api1/kubernetes1';
 import { Chip } from '@ui/Chip';
 import apiRecommendations from '@api1/recommendation';
@@ -134,6 +130,14 @@ const KubernetesClusterUpgradePlanner = dynamic(() => import('@components/k8s/cl
 });
 const QueryMetrics = dynamic(() => import('@components/k8s/details/QueryMetrics'), { ssr: false });
 const KubernetesGroupedEventsTable = dynamic(() => import('@components/k8s/details/groupedevents/KubernetesGroupedEventsTable'), { ssr: false });
+
+// Summary-tab widgets: only rendered on the default tab, behind the `clusterSummary` loader
+// gate (see render). 3 of the 4 pull chart.js — lazy-load them so chart.js is not in the
+// route's entry chunk.
+const KubernetesClusterSummary = dynamic(() => import('@components/k8s/KubernetesClusterSummary'), { ssr: false });
+const KubernetesClusterSummaryUtilization = dynamic(() => import('@components/k8s/KubernetesClusterSummaryUtilization'), { ssr: false });
+const KuberneteComputeSummary = dynamic(() => import('@components/k8s/KubernetesComputeSummary'), { ssr: false });
+const KuberneteUtilizationSummary = dynamic(() => import('@components/k8s/KuberneteUtilizationSummary'), { ssr: false });
 
 const GrafanaIframe = ({ accountId }) => {
   const iframeRef = useRef(null);
