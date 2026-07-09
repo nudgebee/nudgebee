@@ -6,14 +6,14 @@ import (
 	"nudgebee/services/relay"
 )
 
-// job_pod_enricher attaches the failed pod's events + (previous) logs to the
+// job_pod_enricher attaches the failed pod's events + logs to the
 // Job-failure finding. Selects the latest failed pod for the Job
 // (label-selector `job-name=<job>`) and renders events + logs.
 //
 // Flow:
 //  1. Use get_resource with a label-selector to find pods for the job.
 //  2. Pick the first pod whose status indicates failure.
-//  3. Use logs_enricher (via relay) for previous-container logs.
+//  3. Use logs_enricher (via relay) for container logs.
 //  4. Reuse eventListToTable for the pod's events.
 type jobPodAction struct{}
 
@@ -56,7 +56,7 @@ func (a *jobPodAction) Execute(ctx PlaybookActionContext, rawParams map[string]a
 		return nil, errors.New("job_pod_enricher: no failed pod found for job")
 	}
 
-	// Fetch previous-container logs through relay's logs_enricher.
+	// Fetch current container logs through relay's logs_enricher.
 	logsResp, _, err := relay.ExecuteAndExtractResponse(relay.RelayExecuteRequest{
 		Body: relay.ActionExecuteBody{
 			AccountID:  ctx.GetAccountId(),
@@ -64,7 +64,7 @@ func (a *jobPodAction) Execute(ctx PlaybookActionContext, rawParams map[string]a
 			ActionParams: map[string]any{
 				"name":      podName,
 				"namespace": namespace,
-				"previous":  true,
+				"previous":  false,
 			},
 			Origin: "services-server",
 		},
@@ -86,7 +86,7 @@ func (a *jobPodAction) Execute(ctx PlaybookActionContext, rawParams map[string]a
 				Filename: filename,
 				Data:     data,
 				AdditionalInfo: map[string]any{
-					"title":              "Failed job pod logs (previous)",
+					"title":              "Failed job pod logs",
 					"action_name":        "job_pod_enricher",
 					"actual_action_name": "job_pod_enricher",
 					"pod_name":           podName,
