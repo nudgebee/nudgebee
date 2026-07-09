@@ -35,6 +35,28 @@ type NBMultiCommandTool interface {
 	GetSubCommands() ([]NBToolCommand, error)
 }
 
+// MissingFieldsResponder lets a tool override the generic
+// "<tool>: missing required fields — <field> (<type>): <description>"
+// line the planner emits when schema-Required validation fails, without
+// changing the schema (so the LLM still sees the correct spec at call
+// time).
+//
+// The handler receives the request the LLM actually sent so it can
+// inspect misplaced content (e.g. narration text landing on Command
+// when Arguments["reasoning"] was required) and return a response that
+// names the specific misuse instead of the generic line.
+//
+// Return nil to fall back to the generic message.
+//
+// Implementers SHOULD add a compile-time interface check next to their
+// registration so a typo in the receiver-method name fails the build
+// instead of silently opting the tool out of the escape hatch:
+//
+//	var _ core.MissingFieldsResponder = (*myTool)(nil)
+type MissingFieldsResponder interface {
+	OnMissingRequiredFields(request NBToolCallRequest, missing []string) *NBToolResponse
+}
+
 type NBToolResposeType string
 
 const (

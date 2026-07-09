@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	core "nudgebee/llm/tools/core"
 	"nudgebee/llm/workspace"
 
 	"github.com/stretchr/testify/assert"
@@ -350,5 +351,46 @@ func TestShellToolDescription_CarriesWorkspaceContract(t *testing.T) {
 	for snippet, why := range forbidden {
 		assert.NotContains(t, desc, snippet,
 			"ShellTool.Description() reintroduced a known-wrong claim %q — %s", snippet, why)
+	}
+}
+
+// TestShellTool_SchemaKeepsCommandRequired pins that the LLM-facing schema
+// still declares command as required. Rejection message customization
+// flows through OnMissingRequiredFields (see below) so the model still
+// sees the honest spec at call time but gets an actionable message on
+// screwup.
+func TestShellTool_SchemaKeepsCommandRequired(t *testing.T) {
+	tool := ShellTool{}
+	schema := tool.InputSchema()
+	assert.Contains(t, schema.Properties, "command")
+	assert.Contains(t, schema.Properties, "work_dir")
+	assert.Equal(t, []string{"command"}, schema.Required,
+		"Required stays honest so the LLM sees the correct spec")
+}
+
+// TestShellTool_EmptyCommandRejectedByCall pins the belt-and-suspenders
+// empty-check inside Call(). Planner-level validation normally catches
+// this via schema-Required + OnMissingRequiredFields, but Call() is
+// invoked directly in tests and by custom invokers, so the defensive
+// check stays.
+func TestShellTool_EmptyCommandRejectedByCall(t *testing.T) {
+	tool := ShellTool{}
+	cases := []struct {
+		name string
+		req  core.NBToolCallRequest
+	}{
+		{"nil arguments and empty command", core.NBToolCallRequest{}},
+		{"whitespace-only command", core.NBToolCallRequest{Command: "   \n\t  "}},
+		{"empty command in arguments", core.NBToolCallRequest{Arguments: map[string]any{"command": ""}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			resp, err := tool.Call(core.NbToolContext{}, c.req)
+			assert.Error(t, err)
+			assert.Equal(t, core.NBToolResponseStatusError, resp.Status)
+			assert.Contains(t, resp.Data, "empty 'command'")
+			assert.Contains(t, resp.Data, "drop this action",
+				"must nudge the model at the universal recovery — drop the action if no work")
+		})
 	}
 }

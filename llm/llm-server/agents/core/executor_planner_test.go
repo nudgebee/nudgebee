@@ -1359,6 +1359,12 @@ func TestValidateToolInput_EmptyCommand(t *testing.T) {
 	assert.Contains(t, resp.Data, "command")
 	assert.Contains(t, resp.Data, "string")
 	assert.Contains(t, resp.Data, "Kubectl command to execute")
+	// Universal recovery guidance — applies to any tool, not just shell —
+	// so the model can pick either path: populate the field or drop the
+	// action from the batch. Locks in the executor_planner.go enhancement
+	// that replaced the per-tool shell responder.
+	assert.Contains(t, resp.Data, "drop this action from your batch",
+		"generic hint must nudge the model at the universal recovery — drop the action if no work")
 }
 
 // TestValidateToolInput_ValidInput confirms no false positives — a well-formed
@@ -1403,6 +1409,68 @@ func TestValidateToolInput_NoRequiredFields(t *testing.T) {
 	tool := &stubTool{name: "shell_execute", required: nil}
 	resp := validateToolInput(tool, toolcore.NBToolCallRequest{})
 	assert.Nil(t, resp, "tool with no required fields must always pass")
+}
+
+// stubResponderTool is a stubTool that implements MissingFieldsResponder,
+// used to pin the escape-hatch that lets a tool override the generic
+// missing-fields line without weakening the schema-Required spec the LLM
+// sees at call time.
+type stubResponderTool struct {
+	stubTool
+	response *toolcore.NBToolResponse
+}
+
+func (s *stubResponderTool) OnMissingRequiredFields(_ toolcore.NBToolCallRequest, _ []string) *toolcore.NBToolResponse {
+	return s.response
+}
+
+// TestValidateToolInput_ResponderOverridesGenericMessage pins the escape
+// hatch: when a tool implements MissingFieldsResponder and returns a
+// non-nil response, that response reaches the LLM instead of the generic
+// "<tool>: missing required fields — <field> (<type>): <desc>" line.
+func TestValidateToolInput_ResponderOverridesGenericMessage(t *testing.T) {
+	custom := &toolcore.NBToolResponse{
+		Status: toolcore.NBToolResponseStatusError,
+		Data:   "think rejected: reasoning belongs in the 'reasoning' field, not the top-level command.",
+	}
+	tool := &stubResponderTool{
+		stubTool: stubTool{
+			name:     "think",
+			required: []string{"reasoning"},
+			props: map[string]toolcore.ToolSchemaProperty{
+				"reasoning": {Type: "string", Description: "The conflict, stuck point, etc."},
+			},
+		},
+		response: custom,
+	}
+	resp := validateToolInput(tool, toolcore.NBToolCallRequest{Command: "I have all the evidence needed."})
+	if assert.NotNil(t, resp, "responder must produce a response, not nil") {
+		assert.Equal(t, custom, resp, "responder response must be returned verbatim")
+		assert.NotContains(t, resp.Data, "missing required fields",
+			"responder overrides the generic missing-fields line")
+	}
+}
+
+// TestValidateToolInput_ResponderFallsBackWhenNil confirms that a responder
+// returning nil falls back to the generic message — so a tool can opt out
+// case-by-case without breaking the default validator behavior.
+func TestValidateToolInput_ResponderFallsBackWhenNil(t *testing.T) {
+	tool := &stubResponderTool{
+		stubTool: stubTool{
+			name:     "think",
+			required: []string{"reasoning"},
+			props: map[string]toolcore.ToolSchemaProperty{
+				"reasoning": {Type: "string", Description: "The conflict, stuck point, etc."},
+			},
+		},
+		response: nil,
+	}
+	resp := validateToolInput(tool, toolcore.NBToolCallRequest{})
+	if assert.NotNil(t, resp) {
+		assert.Contains(t, resp.Data, "missing required fields",
+			"nil responder must fall back to the generic message")
+		assert.Contains(t, resp.Data, "reasoning")
+	}
 }
 
 // newAccumulateStepsExecutor builds a minimal plannerExecutor suitable for

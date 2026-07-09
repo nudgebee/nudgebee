@@ -18,6 +18,14 @@ import (
 
 var wm = workspace.NewWorkspaceManager()
 
+// shellEmptyCommandRejectionMsg is a defensive check inside Call() for
+// direct-invocation callers (tests, custom invokers). The planner-level
+// path is handled by the generic missing-fields hint in
+// executor_planner.go:validateToolInput, which already includes the
+// universal "populate the field or drop this action" guidance that
+// applies to every tool — no per-tool nuance is needed here.
+const shellEmptyCommandRejectionMsg = "shell_execute called with empty 'command'. Populate 'command' or drop this action from your batch."
+
 func init() {
 	core.RegisterNBToolFactory(core.ToolExecuteShellCommand, func(accountId string) (core.NBTool, error) {
 		return ShellTool{AccountId: accountId}, nil
@@ -97,7 +105,7 @@ func (m ShellTool) Call(nbRequestContext core.NbToolContext, input core.NBToolCa
 	command = strings.TrimSpace(command)
 	if command == "" {
 		return core.NBToolResponse{
-			Data:   "shell_execute requires a non-empty 'command'. If you meant to call a different tool, use that tool name directly instead of shell_execute with an empty input.",
+			Data:   shellEmptyCommandRejectionMsg,
 			Status: core.NBToolResponseStatusError,
 		}, fmt.Errorf("empty command")
 	}

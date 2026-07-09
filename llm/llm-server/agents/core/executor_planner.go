@@ -3106,6 +3106,16 @@ func validateToolInput(tool toolcore.NBTool, request toolcore.NBToolCallRequest)
 	if len(missing) == 0 {
 		return nil
 	}
+	// Give the tool a chance to emit a per-tool actionable message
+	// (e.g. narration guard for think, "use that other tool name
+	// directly" nudge for shell_execute) instead of the generic
+	// missing-fields line. Schema stays honest — the LLM still sees
+	// Required at call time — but the rejection is teachable.
+	if responder, ok := tool.(toolcore.MissingFieldsResponder); ok {
+		if custom := responder.OnMissingRequiredFields(request, missing); custom != nil {
+			return custom
+		}
+	}
 	var hints []string
 	for _, name := range missing {
 		hint := name
@@ -3119,9 +3129,19 @@ func validateToolInput(tool toolcore.NBTool, request toolcore.NBToolCallRequest)
 		}
 		hints = append(hints, hint)
 	}
+	// Universal recovery guidance appended to every missing-fields hint: any
+	// tool can be dropped from the plan if the model has no work for it this
+	// turn (parallel-action batches don't require every slot to be populated),
+	// and any missing field can be corrected by populating it. Tool-specific
+	// nuance (narration guard, wrong-field detection) belongs in the tool's
+	// MissingFieldsResponder implementation — this line is the common
+	// fallback that renders when no responder overrides.
 	resp := toolcore.NBToolResponse{
 		Status: toolcore.NBToolResponseStatusError,
-		Data:   fmt.Sprintf("%s: missing required fields — %s.", tool.Name(), strings.Join(hints, "; ")),
+		Data: fmt.Sprintf(
+			"%s: missing required fields — %s. Populate the field(s) above, or drop this action from your batch if you had no work for %s this turn.",
+			tool.Name(), strings.Join(hints, "; "), tool.Name(),
+		),
 	}
 	return &resp
 }
