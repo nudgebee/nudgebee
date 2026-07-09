@@ -28,6 +28,11 @@ import (
 	"github.com/samber/lo"
 )
 
+// maxMetricDataQueries is the maximum number of MetricDataQuery entries CloudWatch
+// GetMetricData accepts in a single request. Queries beyond this are split into
+// separate requests (see getAwsCloudwatchMetrics).
+const maxMetricDataQueries = 500
+
 type serviceNamespace struct {
 	Name                          string
 	ResourceDimensionName         string
@@ -1025,42 +1030,54 @@ func getAwsCloudwatchMetrics(ctx providers.CloudProviderContext, account provide
 		}
 	}
 
-	// get results
-	metrics := []providers.MetricItem{}
-	var token *string
-	for {
-		result, err := svc.GetMetricData(ctx.GetContext(), &cloudwatch.GetMetricDataInput{
-			StartTime:         aws.Time(startTime),
-			EndTime:           aws.Time(endTime),
-			MetricDataQueries: queries,
-			NextToken:         token,
-		})
-
-		if err != nil {
-			jsonQuery, _ := common.MarshalJson(queries)
-			ctx.GetLogger().Error("failed to fetch metrics", "error", err, "accountNumber", account.AccountNumber, "region", filter.Region, "query", string(jsonQuery))
-			return providers.QueryMetricsResponse{}, err
+	// get results. GetMetricData accepts at most maxMetricDataQueries per request, so
+	// split the queries into chunks — this lets callers batch many resources into one
+	// getAwsCloudwatchMetrics call (e.g. all instances in a region) instead of one
+	// call per resource. For a single chunk (every current caller) behaviour is
+	// unchanged.
+	metrics := make([]providers.MetricItem, 0, len(queries))
+	for start := 0; start < len(queries); start += maxMetricDataQueries {
+		end := start + maxMetricDataQueries
+		if end > len(queries) {
+			end = len(queries)
 		}
+		chunk := queries[start:end]
 
-		for _, result := range result.MetricDataResults {
-			meta, ok := queryIdMap[*result.Id]
-			if !ok {
-				ctx.GetLogger().Warn("Could not map query ID back to metric metadata", "id", *result.Id)
-				continue
-			}
-			metrics = append(metrics, providers.MetricItem{
-				Name:       meta.metricName,
-				Values:     result.Values,
-				ResourceId: meta.resourceId,
-				Timestamps: result.Timestamps,
-				Statistics: meta.stat,
+		var token *string
+		for {
+			result, err := svc.GetMetricData(ctx.GetContext(), &cloudwatch.GetMetricDataInput{
+				StartTime:         aws.Time(startTime),
+				EndTime:           aws.Time(endTime),
+				MetricDataQueries: chunk,
+				NextToken:         token,
 			})
-		}
 
-		if result.NextToken == nil {
-			break
+			if err != nil {
+				jsonQuery, _ := common.MarshalJson(chunk)
+				ctx.GetLogger().Error("failed to fetch metrics", "error", err, "accountNumber", account.AccountNumber, "region", filter.Region, "query", string(jsonQuery))
+				return providers.QueryMetricsResponse{}, err
+			}
+
+			for _, result := range result.MetricDataResults {
+				meta, ok := queryIdMap[*result.Id]
+				if !ok {
+					ctx.GetLogger().Warn("Could not map query ID back to metric metadata", "id", *result.Id)
+					continue
+				}
+				metrics = append(metrics, providers.MetricItem{
+					Name:       meta.metricName,
+					Values:     result.Values,
+					ResourceId: meta.resourceId,
+					Timestamps: result.Timestamps,
+					Statistics: meta.stat,
+				})
+			}
+
+			if result.NextToken == nil {
+				break
+			}
+			token = result.NextToken
 		}
-		token = result.NextToken
 	}
 
 	//combine data for services that have multiple metrics
