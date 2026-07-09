@@ -632,9 +632,11 @@ function forwardErrorMessage(err: ForwardError): string {
     case 'forbidden':
       return `Role '${err.role}' is not permitted to invoke '${err.method}'`;
     case 'upstream_unreachable':
-      return `Upstream unreachable for ${err.method} at ${err.url}: ${err.detail}`;
+      console.error(`[graphql-gateway] upstream_unreachable method=${err.method} url=${err.url} detail=${err.detail}`);
+      return `Upstream unreachable for ${err.method}`;
     case 'upstream_parse_failed':
-      return `Upstream response parse failed for ${err.method} at ${err.url}: ${err.detail}`;
+      console.error(`[graphql-gateway] upstream_parse_failed method=${err.method} url=${err.url} detail=${err.detail}`);
+      return `Upstream response parse failed for ${err.method}`;
     case 'upstream_error':
       return extractUpstreamErrorDetail(err.payload) || genericMessageForStatus(err.status);
   }
