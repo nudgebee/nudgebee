@@ -68,7 +68,10 @@ func CheckAndFollowupOpenPRs(ctx *security.RequestContext) error {
 	ctx.GetLogger().Info("pr_lifecycle: found open PRs to check", "count", len(rows))
 
 	for _, row := range rows {
-		if err := processResolution(ctx, dbms, row, maxRedispatchChain); err != nil {
+		// Cron entries already passed the 60m cooldown in queryOpenPRResolutions,
+		// so the shorter webhook debounce is a no-op for them; pass false anyway to
+		// keep "external entry point" behaviour explicit.
+		if err := processResolution(ctx, dbms, row, maxRedispatchChain, false); err != nil {
 			ctx.GetLogger().Error("pr_lifecycle: failed to process resolution",
 				"id", row.ID, "table", row.TableName, "error", err)
 			continue
@@ -92,6 +95,14 @@ const (
 	followupCooldown          = "60 minutes"
 	followupRecoveryInterval  = "6 hours"
 	followupRecoveryHardLimit = 20
+	// followupWebhookDebounce collapses a burst of webhook events on the same PR
+	// (a CI run emits many check_run transitions over several minutes) into a
+	// single followup. The cron path already spaces itself with followupCooldown,
+	// but ProcessOpenPRResolution (the webhook path) had no rate limit, so a
+	// no-op-producing PR re-dispatched once per event — the observed storm of 15
+	// followups in 16 minutes. A genuinely new event still triggers a followup
+	// once the window elapses; the 60m cron is the backstop if it is debounced.
+	followupWebhookDebounce = "10 minutes"
 	// followupStaleAfter retires a followup that has been open this long while
 	// still unmerged after at least followupIterationCap attempts. These are
 	// auto-generated PRs nobody reviewed or merged; without a stale exit they
@@ -376,7 +387,8 @@ func ProcessOpenPRResolution(ctx *security.RequestContext, resolutionID, tableNa
 	// re-dispatch after the in-flight run), or skip (terminal / capped). This
 	// closes the lost-update window where an event arriving during 'addressing'
 	// was silently dropped.
-	return processResolution(ctx, dbms, row, maxRedispatchChain)
+	// Webhook entry: debounce a burst of events on the same PR into one followup.
+	return processResolution(ctx, dbms, row, maxRedispatchChain, false)
 }
 
 // fetchResolutionRow loads the metadata a followup needs (data, iteration count,
@@ -510,48 +522,85 @@ func resurrectStaleResolution(ctx *security.RequestContext, dbms *database.Datab
 // so it linearizes with applyFollowupOutcome's finalize: no interleaving can both
 // miss the re-dispatch and skip the claim, so a signal arriving any time during a
 // run is never lost and the pending flag is never orphaned.
-func claimOrMarkResolution(dbms *database.DatabaseManager, tableName, id string) (oldState string, oldIters int, err error) {
+func claimOrMarkResolution(dbms *database.DatabaseManager, tableName, id string, bypassDebounce bool) (claimed bool, oldState string, oldIters int, err error) {
+	// The claim to 'addressing' additionally requires that the row was not checked
+	// within the webhook debounce window, so a burst of webhook events on one PR
+	// collapses to a single followup. A row skipped for debounce (or cap) keeps
+	// its state; only a genuine claim flips it to 'addressing'.
+	//
+	// The debounce window is measured against the caller's clock ($3), not the DB's
+	// now(), so the comparison does not depend on app/DB clock synchronisation.
+	//
+	// This is a LEADING debounce: last_pr_check_at is NOT reset for an event that is
+	// ignored *solely because* it fell inside the window (debounceBlocked). That
+	// keeps the window anchored to the last claim, so a PR under a continuous event
+	// stream still gets a followup once per window instead of being starved until
+	// the events stop. For every OTHER outcome — a claim, a mark-pending, or a skip
+	// for cap/terminal reasons — last_pr_check_at is advanced to $3, which the cron
+	// relies on to space its own re-selection (queryOpenPRResolutions).
+	//
+	// bypassDebounce skips only the debounce clause (never the cap/state guards):
+	// the internal mid-run re-dispatch uses it because it fires for a signal that
+	// genuinely arrived during the just-finished run, and finalize has already
+	// stamped last_pr_check_at, which would otherwise debounce it away.
+	window := fmt.Sprintf("$3 - interval '%s'", followupWebhookDebounce)
+	debounceClause := fmt.Sprintf("AND (cur.last_check IS NULL OR cur.last_check < %s)", window)
+	// debounceBlocked is true exactly when the row would have been claimed but for
+	// the debounce window — the one case where we preserve last_pr_check_at.
+	debounceBlocked := fmt.Sprintf("cur.old_state IN ('created', 'needs_followup') AND cur.old_iters < $2 AND cur.last_check IS NOT NULL AND cur.last_check >= %s", window)
+	if bypassDebounce {
+		debounceClause = ""
+		debounceBlocked = "false"
+	}
 	query := fmt.Sprintf(`
 		WITH cur AS (
-			SELECT pr_lifecycle_state AS old_state, pr_iteration_count AS old_iters
+			SELECT pr_lifecycle_state AS old_state, pr_iteration_count AS old_iters, last_pr_check_at AS last_check
 			FROM %s WHERE id = $1 FOR UPDATE
 		),
 		upd AS (
 			UPDATE %s t SET
 				pr_lifecycle_state = CASE
 					WHEN cur.old_state IN ('created', 'needs_followup') AND cur.old_iters < $2
+						%s
 						THEN 'addressing'
 					ELSE t.pr_lifecycle_state END,
 				pr_followup_pending = CASE
 					WHEN cur.old_state = 'addressing' THEN true
 					ELSE t.pr_followup_pending END,
-				last_pr_check_at = $3
+				last_pr_check_at = CASE WHEN %s THEN t.last_pr_check_at ELSE $3 END
 			FROM cur WHERE t.id = $1
-			RETURNING cur.old_state, cur.old_iters
+			RETURNING cur.old_state, cur.old_iters, t.pr_lifecycle_state AS new_state
 		)
-		SELECT old_state, old_iters FROM upd`, tableName, tableName)
+		SELECT old_state, old_iters, new_state FROM upd`, tableName, tableName, debounceClause, debounceBlocked)
 	dbCtx, cancel := context.WithTimeout(context.Background(), prDBOpTimeout)
 	defer cancel()
-	err = dbms.Db.QueryRowContext(dbCtx, query, id, followupIterationCap, time.Now()).
-		Scan(&oldState, &oldIters)
-	return oldState, oldIters, err
+	var newState string
+	if err = dbms.Db.QueryRowContext(dbCtx, query, id, followupIterationCap, time.Now()).
+		Scan(&oldState, &oldIters, &newState); err != nil {
+		return false, oldState, oldIters, err
+	}
+	// A claim happened only when a claimable row actually transitioned to
+	// 'addressing' — this folds in the cap and debounce checks so the caller does
+	// not re-derive (and mis-derive) the decision.
+	claimed = (oldState == "created" || oldState == "needs_followup") && newState == "addressing"
+	return claimed, oldState, oldIters, nil
 }
 
-func processResolution(ctx *security.RequestContext, dbms *database.DatabaseManager, row prResolutionRow, redispatchBudget int) error {
-	oldState, oldIters, err := claimOrMarkResolution(dbms, row.TableName, row.ID)
+func processResolution(ctx *security.RequestContext, dbms *database.DatabaseManager, row prResolutionRow, redispatchBudget int, bypassDebounce bool) error {
+	claimed, oldState, oldIters, err := claimOrMarkResolution(dbms, row.TableName, row.ID, bypassDebounce)
 	if err != nil {
 		return fmt.Errorf("failed to claim resolution row: %w", err)
 	}
 
-	claimed := (oldState == "created" || oldState == "needs_followup") && oldIters < followupIterationCap
 	if !claimed {
 		switch oldState {
 		case "addressing":
 			ctx.GetLogger().Info("pr_lifecycle: followup in flight, marked pending for re-dispatch",
 				"id", row.ID, "table", row.TableName)
 		case "created", "needs_followup":
-			// reached here only when !claimed, i.e. iteration cap hit.
-			ctx.GetLogger().Info("pr_lifecycle: skipping, iteration cap reached",
+			// reached here only when !claimed: iteration cap hit, or the row was
+			// checked within the webhook debounce window.
+			ctx.GetLogger().Info("pr_lifecycle: skipping, iteration cap reached or within debounce window",
 				"id", row.ID, "iteration_count", oldIters)
 		default:
 			ctx.GetLogger().Info("pr_lifecycle: skipping, state not actionable",
@@ -681,7 +730,10 @@ func processResolution(ctx *security.RequestContext, dbms *database.DatabaseMana
 				tenantCtx.GetLogger().Error("pr_lifecycle: re-dispatch fetch failed", "id", row.ID, "error", ferr)
 				return
 			}
-			if perr := processResolution(tenantCtx, dbms, next, redispatchBudget-1); perr != nil {
+			// bypassDebounce: this fires for a real signal that arrived mid-run;
+			// finalize just stamped last_pr_check_at=now(), which would otherwise
+			// debounce the re-dispatch away. Bounded by redispatchBudget.
+			if perr := processResolution(tenantCtx, dbms, next, redispatchBudget-1, true); perr != nil {
 				tenantCtx.GetLogger().Error("pr_lifecycle: re-dispatch failed", "id", row.ID, "error", perr)
 			}
 		}

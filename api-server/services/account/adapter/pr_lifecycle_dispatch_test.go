@@ -1,6 +1,7 @@
 package adapter
 
 import (
+	"database/sql"
 	"fmt"
 	"testing"
 
@@ -67,14 +68,61 @@ func TestPRLifecycleDispatchSQL_DB(t *testing.T) {
 		}
 		for _, c := range cases {
 			seed(c.id, c.state, c.iters, false)
-			old, iters, e := claimOrMarkResolution(dbms, tbl, c.id)
+			claimed, old, iters, e := claimOrMarkResolution(dbms, tbl, c.id, false)
 			require.NoError(t, e, c.id)
+			assert.Equal(t, c.wantNewState == "addressing", claimed, "claimed for %s", c.id)
 			assert.Equal(t, c.wantOld, old, "old_state for %s", c.id)
 			assert.Equal(t, c.iters, iters, "old_iters for %s", c.id)
 			st, _, pend := get(c.id)
 			assert.Equal(t, c.wantNewState, st, "new state for %s", c.id)
 			assert.Equal(t, c.wantPending, pend, "pending for %s", c.id)
 		}
+
+		checkAt := func(id string) (t0 sql.NullTime) {
+			require.NoError(t, dbms.Db.QueryRow(
+				fmt.Sprintf(`SELECT last_pr_check_at FROM %s WHERE id=$1`, tbl), id).Scan(&t0))
+			return
+		}
+
+		// Webhook debounce: a claimable row checked within the debounce window is
+		// NOT re-claimed (state stays needs_followup), collapsing an event burst.
+		seed("debounced", "needs_followup", 0, false)
+		mustExec(fmt.Sprintf(`UPDATE %s SET last_pr_check_at = now() - interval '1 minute' WHERE id = $1`, tbl), "debounced")
+		before := checkAt("debounced")
+		claimed, _, _, e := claimOrMarkResolution(dbms, tbl, "debounced", false)
+		require.NoError(t, e)
+		assert.False(t, claimed, "row within debounce window must not be claimed")
+		st, _, _ := get("debounced")
+		assert.Equal(t, "needs_followup", st, "debounced row keeps its state")
+		// Leading debounce: an event ignored *for the window* must NOT reset the
+		// window, else a continuous event stream starves the PR of followups.
+		assert.Equal(t, before.Time.UnixMilli(), checkAt("debounced").Time.UnixMilli(),
+			"debounced event must not advance last_pr_check_at (leading debounce)")
+
+		// A skip for a non-debounce reason (cap) DOES advance last_pr_check_at, so
+		// the cron's time-based re-selection stays spaced.
+		seed("capped", "needs_followup", followupIterationCap, false)
+		mustExec(fmt.Sprintf(`UPDATE %s SET last_pr_check_at = now() - interval '1 hour' WHERE id = $1`, tbl), "capped")
+		cappedBefore := checkAt("capped")
+		claimed, _, _, e = claimOrMarkResolution(dbms, tbl, "capped", false)
+		require.NoError(t, e)
+		assert.False(t, claimed, "capped row must not be claimed")
+		assert.Greater(t, checkAt("capped").Time.UnixMilli(), cappedBefore.Time.UnixMilli(),
+			"a cap skip must advance last_pr_check_at to keep cron re-selection spaced")
+
+		// bypassDebounce (internal mid-run re-dispatch) claims the same row despite
+		// the recent check — a real signal arrived during the just-finished run.
+		claimed, _, _, e = claimOrMarkResolution(dbms, tbl, "debounced", true)
+		require.NoError(t, e)
+		assert.True(t, claimed, "bypassDebounce must claim within the window")
+		// reset it out of 'addressing' for the next assertion
+		mustExec(fmt.Sprintf(`UPDATE %s SET pr_lifecycle_state='needs_followup' WHERE id=$1`, tbl), "debounced")
+
+		// The same row claims via the normal path once the window has elapsed.
+		mustExec(fmt.Sprintf(`UPDATE %s SET last_pr_check_at = now() - interval '1 hour' WHERE id = $1`, tbl), "debounced")
+		claimed, _, _, e = claimOrMarkResolution(dbms, tbl, "debounced", false)
+		require.NoError(t, e)
+		assert.True(t, claimed, "row past the debounce window must claim")
 	})
 
 	t.Run("finalize", func(t *testing.T) {
