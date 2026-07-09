@@ -105,7 +105,7 @@ func TestLogAnalysis_WithfollowupForPlanner(t *testing.T) {
 		assert.NotNil(t, resp.AgentStepResponse)
 		assert.Greater(t, len(resp.Response), 0)
 
-		debuggerAgent := newK8sDebugAgent(tc.AccountId)
+		debuggerAgent := newK8sOrchestratorAgent(tc.AccountId)
 		resp, err = core.HandleConversationSessionRequest(sc, debuggerAgent, tc.UserId, tc.AccountId, tc.SessionId, "Can you investigate based on previous suggestions?")
 		assert.Nil(t, err)
 		assert.NotNil(t, resp)

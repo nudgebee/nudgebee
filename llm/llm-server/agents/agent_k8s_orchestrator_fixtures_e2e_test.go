@@ -82,7 +82,7 @@ func TestK8sAgent_Fixture_MisconfiguredIngressClass(t *testing.T) {
 	// Tier-4 opt-in: the LLM judges every claim from the fixture YAML.
 	tc.WantLLMClaims = f.YAML.ExpectedOutput
 
-	agent := f.Agent(t, newK8sDebugAgent(os.Getenv("TEST_ACCOUNT")))
+	agent := f.Agent(t, newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT")))
 	runTestMinimal(t, agent, tc)
 }
 
@@ -113,7 +113,7 @@ func TestK8sAgent_Fixture_NetworkPolicyBlockingTraffic(t *testing.T) {
 	// distinguish a correct diagnosis from a generic "I see a problem" answer.
 	tc.WantLLMClaims = f.YAML.ExpectedOutput
 
-	agent := f.Agent(t, newK8sDebugAgent(os.Getenv("TEST_ACCOUNT")))
+	agent := f.Agent(t, newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT")))
 	runTestMinimal(t, agent, tc)
 }
 
@@ -144,7 +144,7 @@ func TestK8sAgent_Fixture_PVCStorageClassMismatch(t *testing.T) {
 	// carries correctness.
 	tc.WantLLMClaims = f.YAML.ExpectedOutput
 
-	agent := f.Agent(t, newK8sDebugAgent(os.Getenv("TEST_ACCOUNT")))
+	agent := f.Agent(t, newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT")))
 	runTestMinimal(t, agent, tc)
 }
 
@@ -165,7 +165,7 @@ func TestK8sAgent_Fixture_CascadingFailures(t *testing.T) {
 	tc.WantMinToolCalls = 3
 	tc.WantContainsAny = []string{"redis", "auth", "cascading", "connection"}
 
-	agent := f.Agent(t, newK8sDebugAgent(os.Getenv("TEST_ACCOUNT")))
+	agent := f.Agent(t, newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT")))
 	runTestMinimal(t, agent, tc)
 }
 
@@ -204,6 +204,6 @@ func TestK8sAgent_Fixture_ElectricityMarketBiddingBug(t *testing.T) {
 	tc.WantMinToolCalls = 2
 	tc.WantContainsAny = []string{"nordpool", "acceptance"}
 
-	agent := f.Agent(t, newK8sDebugAgent(os.Getenv("TEST_ACCOUNT")))
+	agent := f.Agent(t, newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT")))
 	runTestMinimal(t, agent, tc)
 }

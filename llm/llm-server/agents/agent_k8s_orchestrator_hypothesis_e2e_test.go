@@ -113,7 +113,7 @@ func TestK8sAgent_Fixture_HypothesisDrivenRCA(t *testing.T) {
 		"The answer identifies auth-service losing its Redis connection as the upstream root cause, "+
 			"rather than concluding the payment-processor itself is the root cause.")
 
-	agent := f.Agent(t, newK8sDebugAgent(os.Getenv("TEST_ACCOUNT")))
+	agent := f.Agent(t, newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT")))
 	runTestMinimal(t, agent, tc)
 
 	// ---- PROCESS tier: the model actually worked a hypothesis tree ----

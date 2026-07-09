@@ -19,19 +19,19 @@ import (
 	"github.com/samber/lo"
 )
 
-const AgentK8sDebugName = "k8s_debug"
+const AgentK8sOrchestratorName = "k8s_orchestrator"
 
 func init() {
-	core.RegisterNBAgentFactory(AgentK8sDebugName, func(accountId string) (core.NBAgent, error) {
-		return newK8sDebugAgent(accountId), nil
-	})
+	core.RegisterNBAgentFactoryWithAliases(AgentK8sOrchestratorName, func(accountId string) (core.NBAgent, error) {
+		return newK8sOrchestratorAgent(accountId), nil
+	}, "k8s_debug")
 	core.RegisterAgentCacheInvalidator(func(accountId string, agentName string) {
-		if agentName == "" || agentName == AgentK8sDebugName {
-			InvalidateAgentSupportedToolsCache(accountId, AgentK8sDebugName)
+		if agentName == "" || agentName == AgentK8sOrchestratorName {
+			InvalidateAgentSupportedToolsCache(accountId, AgentK8sOrchestratorName)
 		}
 	})
 	toolcore.RegisterToolCacheInvalidator(func(accountId string) {
-		InvalidateAgentSupportedToolsCache(accountId, AgentK8sDebugName)
+		InvalidateAgentSupportedToolsCache(accountId, AgentK8sOrchestratorName)
 	})
 
 	common.CacheSubscribe("agent_invalidation", func(message string) {
@@ -43,33 +43,33 @@ func init() {
 	})
 }
 
-func newK8sDebugAgent(accountId string) core.NBAgent {
-	return &K8sDebugAgent{
+func newK8sOrchestratorAgent(accountId string) core.NBAgent {
+	return &K8sOrchestratorAgent{
 		accountId: accountId,
 	}
 }
 
-type K8sDebugAgent struct {
+type K8sOrchestratorAgent struct {
 	accountId string
 }
 
-func (l *K8sDebugAgent) GetName() string {
-	return AgentK8sDebugName
+func (l *K8sOrchestratorAgent) GetName() string {
+	return AgentK8sOrchestratorName
 }
 
-func (a *K8sDebugAgent) GetNameAliases() []string {
-	return []string{"Debugger"}
+func (a *K8sOrchestratorAgent) GetNameAliases() []string {
+	return []string{"Debugger", "k8s_debug"}
 }
 
-func (l *K8sDebugAgent) GetDescription() string {
+func (l *K8sOrchestratorAgent) GetDescription() string {
 	return `SRE/DevOps Troubleshooting expert, with expertise on Kubernetes, AWS, GCP, Azure, CloudNative, Helm, Security, Programming, Prometheus, Loki, ELK, Github, Optimization, Jira, SQL, Databases etc`
 }
 
-func (l *K8sDebugAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
+func (l *K8sOrchestratorAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	return getSupportedTools(ctx, l.accountId, l.GetName())
 }
 
-func (l *K8sDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
+func (l *K8sOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 	promptKey := prompts.PromptAgentK8sDebugReact
 	promptRepoKey := prompts_repo.PromptAgentK8sDebugReact
 
@@ -131,15 +131,15 @@ func (l *K8sDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query core
 	return prompt
 }
 
-func (l *K8sDebugAgent) GetPlannerType() core.AgentPlannerType {
+func (l *K8sOrchestratorAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeOrchestrating
 }
 
-func (l *K8sDebugAgent) GetModelCategory() core.ModelTier {
+func (l *K8sOrchestratorAgent) GetModelCategory() core.ModelTier {
 	return core.ModelTierReasoning
 }
 
-func (l *K8sDebugAgent) GetCacheScope() core.CacheScope {
+func (l *K8sOrchestratorAgent) GetCacheScope() core.CacheScope {
 	return core.CacheScopeAccount
 }
 
@@ -241,7 +241,7 @@ func getSupportedTools(ctx *security.RequestContext, accountId string, agentName
 		}
 
 		// Add Datadog debug as an optional extra tool
-		toolNames = append(toolNames, AgentDatadogDebugName)
+		toolNames = append(toolNames, AgentDatadogOrchestratorName)
 
 		enabledTools := toolcore.GetEnabledNBTools(ctx, accountId)
 		enabledMap := make(map[string]toolcore.NBTool)

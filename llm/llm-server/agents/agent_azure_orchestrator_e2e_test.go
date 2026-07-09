@@ -29,7 +29,7 @@ func TestAzureAgentReWoo_VMStatus(t *testing.T) {
 
 	for _, tc := range tests {
 
-		azureDebugAgentent := newAzureDebugAgent(tc.AccountId)
+		azureDebugAgentent := newAzureOrchestratorAgent(tc.AccountId)
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -62,7 +62,7 @@ func TestAzureAgentReWoo_CostBreakDown(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		azureDebugAgentent := newAzureDebugAgent(tc.AccountId)
+		azureDebugAgentent := newAzureOrchestratorAgent(tc.AccountId)
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -95,7 +95,7 @@ func TestAzureAgentReWoo_AKSDetails(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		azureDebugAgentent := newAzureDebugAgent(tc.AccountId)
+		azureDebugAgentent := newAzureOrchestratorAgent(tc.AccountId)
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)
@@ -128,7 +128,7 @@ func TestAzureAgentReWoo_AzureMonitor(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		azureDebugAgentent := newAzureDebugAgent(tc.AccountId)
+		azureDebugAgentent := newAzureOrchestratorAgent(tc.AccountId)
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)

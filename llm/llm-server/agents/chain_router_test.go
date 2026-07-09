@@ -457,7 +457,7 @@ func TestRouterAgen5(t *testing.T) {
 			ParentAgentId:  uuid.New().String(),
 		})
 		assert.Nil(t, err)
-		assert.Equal(t, AgentK8sDebugName, resp)
+		assert.Equal(t, AgentK8sOrchestratorName, resp)
 		chain, ok := getAgent(sc, resp.Response[0], os.Getenv("TEST_ROUTERCHAIN_ACCOUNT"))
 		assert.True(t, ok)
 		assert.NotNil(t, chain)
@@ -501,7 +501,7 @@ func TestRouterAgen6(t *testing.T) {
 			ParentAgentId:  uuid.New().String(),
 		})
 		assert.Nil(t, err)
-		assert.Equal(t, AgentK8sDebugName, resp)
+		assert.Equal(t, AgentK8sOrchestratorName, resp)
 		chain, ok := getAgent(sc, resp.Response[0], os.Getenv("TEST_ROUTERCHAIN_ACCOUNT"))
 		assert.True(t, ok)
 		assert.NotNil(t, chain)

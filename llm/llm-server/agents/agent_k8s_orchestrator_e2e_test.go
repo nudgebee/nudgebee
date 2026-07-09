@@ -386,7 +386,7 @@ func runTestMinimal(t *testing.T, agent core.NBAgent, tc k8sTestCase) core.NBAge
 // TestK8sAgent_DirectAnswer covers queries the planner answers without calling tools.
 func TestK8sAgent_DirectAnswer(t *testing.T) {
 	skipIfNoFixtureEnv(t)
-	agent := newK8sDebugAgent(os.Getenv("TEST_ACCOUNT"))
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 
 	mk := func(name, sessionId, query string) k8sTestCase {
 		c := defaultCase(name, sessionId, query)
@@ -424,7 +424,7 @@ func TestK8sAgent_MemoryCreation(t *testing.T) {
 	query := `can you remember that if i ask you to fetch logs of llm server you should always look for llm-server deployment in nudgebee namespace`
 	accountId := os.Getenv("TEST_ACCOUNT")
 	keywords := []string{"llm-server", "nudgebee"}
-	agent := newK8sDebugAgent(accountId)
+	agent := newK8sOrchestratorAgent(accountId)
 
 	for _, sessionId := range []string{"ut-mem-create-0", "ut-mem-create-1"} {
 		tc := defaultCase("memory_create_"+sessionId, sessionId, query)
@@ -453,7 +453,7 @@ func TestK8sAgent_MemoryCreation(t *testing.T) {
 // TestK8sAgent_MemoryUsage covers queries that read or report on memory consumption.
 func TestK8sAgent_MemoryUsage(t *testing.T) {
 	skipIfNoFixtureEnv(t)
-	agent := newK8sDebugAgent(os.Getenv("TEST_ACCOUNT"))
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 
 	// Any memory-related investigation should reach for at least one of these
 	// tool families. Substring match keeps the assertion robust against the
@@ -497,7 +497,7 @@ func TestK8sAgent_MemoryUsage(t *testing.T) {
 // TestK8sAgent_PodDebugging covers pod-level failure scenarios.
 func TestK8sAgent_PodDebugging(t *testing.T) {
 	skipIfNoFixtureEnv(t)
-	agent := newK8sDebugAgent(os.Getenv("TEST_ACCOUNT"))
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 
 	// Pod debugging should reach for kubectl describe / events / logs.
 	podTools := []string{"kubectl", "describe", "logs", "event", "k8s_"}
@@ -555,7 +555,7 @@ func TestK8sAgent_PodDebugging(t *testing.T) {
 // TestK8sAgent_SkillExecution covers cases that rely on specific tool invocations.
 func TestK8sAgent_SkillExecution(t *testing.T) {
 	skipIfNoFixtureEnv(t)
-	agent := newK8sDebugAgent(os.Getenv("TEST_ACCOUNT"))
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 
 	cases := []k8sTestCase{
 		{
@@ -649,7 +649,7 @@ func TestK8sAgent_SkillExecution(t *testing.T) {
 func TestK8sAgent_RCAWithRabbitMQ(t *testing.T) {
 	skipIfNoFixtureEnv(t)
 	eventID := FetchRecentEventID(t, os.Getenv("TEST_ACCOUNT"))
-	agent := newK8sDebugAgent(os.Getenv("TEST_ACCOUNT"))
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 
 	tc := k8sTestCase{
 		Name:        "rca_event_rabbit_workspace",
@@ -682,7 +682,7 @@ func TestK8sAgent_RCAWithRabbitMQ(t *testing.T) {
 // across runs.
 func TestK8sAgent_ApprovalFlows(t *testing.T) {
 	skipIfNoFixtureEnv(t)
-	agent := newK8sDebugAgent(os.Getenv("TEST_ACCOUNT"))
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 
 	t.Run("scale_rag_server", func(t *testing.T) {
 		const ns, deploy = "nudgebee", "rag-server"
@@ -769,7 +769,7 @@ func TestK8sAgent_ApprovalFlows(t *testing.T) {
 // TestK8sAgent_PostgresApprovalFlow tests a multi-round approval for database selection.
 func TestK8sAgent_PostgresApprovalFlow(t *testing.T) {
 	skipIfNoFixtureEnv(t)
-	agent := newK8sDebugAgent(os.Getenv("TEST_ACCOUNT"))
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 
 	tc := k8sTestCase{
 		Name:      "postgres_event_schema",
@@ -809,7 +809,7 @@ func TestK8sAgent_PostgresApprovalFlow(t *testing.T) {
 // accounts, not envs — only the multi-approval plumbing itself.
 func TestK8sAgent_HealthCheckMultiApproval(t *testing.T) {
 	skipIfNoFixtureEnv(t)
-	agent := newK8sDebugAgent(os.Getenv("TEST_ACCOUNT"))
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 
 	tc := k8sTestCase{
 		Name:      "health_check_dev",
@@ -846,7 +846,7 @@ func TestK8sAgent_HealthCheckMultiApproval(t *testing.T) {
 // conditions and skips or executes downstream steps accordingly.
 func TestK8sAgent_ConditionalExecution(t *testing.T) {
 	skipIfNoFixtureEnv(t)
-	agent := newK8sDebugAgent(os.Getenv("TEST_ACCOUNT"))
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 
 	t.Run("kube_system_then_default_pods", func(t *testing.T) {
 		tc := defaultCase("kube_system_then_default_pods", "ut-cond-kubesys-0",
@@ -908,7 +908,7 @@ func TestK8sAgent_ConditionalExecution(t *testing.T) {
 // logs, and traces for a service concurrently and synthesize the results.
 func TestK8sAgent_ParallelExecution(t *testing.T) {
 	skipIfNoFixtureEnv(t)
-	agent := newK8sDebugAgent(os.Getenv("TEST_ACCOUNT"))
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 
 	cases := []k8sTestCase{
 		{
@@ -947,7 +947,7 @@ func TestK8sAgent_ParallelExecution(t *testing.T) {
 // TestK8sAgent_LargeData verifies agent stability with large or complex query payloads.
 func TestK8sAgent_LargeData(t *testing.T) {
 	skipIfNoFixtureEnv(t)
-	agent := newK8sDebugAgent(os.Getenv("TEST_ACCOUNT"))
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 
 	t.Run("java_heap_dump", func(t *testing.T) {
 		tc := defaultCase("java_heap_dump", "ut-large-heap-0",
@@ -993,7 +993,7 @@ func TestK8sAgent_WorkspaceFeatures(t *testing.T) {
 	config.Config.LlmServerShellToolEnabled = true
 	t.Cleanup(func() { config.Config.LlmServerShellToolEnabled = orig })
 
-	agent := newK8sDebugAgent(os.Getenv("TEST_ACCOUNT"))
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 
 	shellTools := []string{"shell_execute", "workspace"}
 	mk := func(name, sessionId, query string) k8sTestCase {
@@ -1025,7 +1025,7 @@ func TestK8sAgent_WorkspaceFeatures(t *testing.T) {
 // (Prometheus, Loki/log backends, distributed tracing).
 func TestK8sAgent_Observability(t *testing.T) {
 	skipIfNoFixtureEnv(t)
-	agent := newK8sDebugAgent(os.Getenv("TEST_ACCOUNT"))
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 
 	obsTools := []string{"trace", "loki", "logs", "prometheus", "metric", "tempo"}
 	mk := func(name, sessionId, query string) k8sTestCase {
@@ -1086,7 +1086,7 @@ func TestK8sAgent_PrometheusAgent(t *testing.T) {
 // TestK8sAgent_ClusterOperations covers general cluster-level queries.
 func TestK8sAgent_ClusterOperations(t *testing.T) {
 	skipIfNoFixtureEnv(t)
-	agent := newK8sDebugAgent(os.Getenv("TEST_ACCOUNT"))
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 
 	clusterTools := []string{"kubectl", "k8s_", "describe", "get_", "list_"}
 	clusterCase := func(name, sessionId, query string) k8sTestCase {
@@ -1147,7 +1147,7 @@ func TestK8sAgent_MultiStepConversation(t *testing.T) {
 	accountId := os.Getenv("TEST_ACCOUNT")
 	userId := os.Getenv("TEST_USER")
 	sessionId := "ut-multistep-conv-0"
-	agent := newK8sDebugAgent(accountId)
+	agent := newK8sOrchestratorAgent(accountId)
 	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), userId, []string{accountId})
 
 	err := core.DeleteConversationBySession(sessionId, accountId, userId)
@@ -1197,7 +1197,7 @@ func TestK8sAgent_MultiStepConversation(t *testing.T) {
 // Python benchmark harness which captures per-run token cost.
 func TestK8sAgent_RepeatedQueries(t *testing.T) {
 	skipIfNoFixtureEnv(t)
-	agent := newK8sDebugAgent(os.Getenv("TEST_ACCOUNT"))
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 
 	sessions := []string{"ut-repeat-pods-0", "ut-repeat-pods-1"}
 	for i, sessionId := range sessions {
@@ -1224,7 +1224,7 @@ func TestK8sAgent_RepeatedQueries(t *testing.T) {
 // (architecture diagrams, metric charts).
 func TestK8sAgent_Visualization(t *testing.T) {
 	skipIfNoFixtureEnv(t)
-	agent := newK8sDebugAgent(os.Getenv("TEST_ACCOUNT"))
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 
 	cases := []k8sTestCase{
 		{
@@ -1263,7 +1263,7 @@ func TestK8sAgent_Visualization(t *testing.T) {
 // when explicitly requested.
 func TestK8sAgent_ResponseFormatJSON(t *testing.T) {
 	skipIfNoFixtureEnv(t)
-	agent := newK8sDebugAgent(os.Getenv("TEST_ACCOUNT"))
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 
 	tc := defaultCase("pods_json_format", "ut-fmt-json-pods-0",
 		`get pod list in nudgebee namespace in json format only with fields name, status, node, ip address`)
@@ -1308,7 +1308,7 @@ func TestK8sAgent_MCPInvocation(t *testing.T) {
 	accountId := os.Getenv("TEST_MCP_ACCOUNT")
 	userId := os.Getenv("TEST_USER")
 	sessionId := "ut-mcp-fetch-0"
-	agent := newK8sDebugAgent(accountId)
+	agent := newK8sOrchestratorAgent(accountId)
 	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), userId, []string{accountId})
 
 	err := core.DeleteConversationBySession(sessionId, accountId, userId)
@@ -1340,7 +1340,7 @@ func TestK8sAgent_CrossAccount(t *testing.T) {
 	accountId := os.Getenv("TEST_ACCOUNT")
 	userId := os.Getenv("TEST_USER")
 	sessionId := "ut-xacct-gcp-sql-0"
-	agent := newK8sDebugAgent(accountId)
+	agent := newK8sOrchestratorAgent(accountId)
 	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), userId, []string{accountId})
 
 	err := core.DeleteConversationBySession(sessionId, accountId, userId)
@@ -1420,7 +1420,7 @@ func TestK8sAgent_CustomAgentFromDB(t *testing.T) {
 	assert.Nil(t, err)
 
 	// Agent loaded dynamically from DB
-	agent, ok := core.GetNBAgent(sc, AgentK8sDebugName, accountId, core.AgentStatusEnabled)
+	agent, ok := core.GetNBAgent(sc, AgentK8sOrchestratorName, accountId, core.AgentStatusEnabled)
 	assert.True(t, ok, "k8s_debug agent should be retrievable from DB")
 
 	resp, err := core.HandleConversationSessionRequest(sc, agent, userId, accountId, sessionId,
@@ -1471,7 +1471,7 @@ func TestK8sAgent_RAGIntegration(t *testing.T) {
 	sessionId := "ut-rag-prompt-0"
 	query := `My app is slow how I can troubleshoot this`
 
-	agent := newK8sDebugAgent(accountId)
+	agent := newK8sOrchestratorAgent(accountId)
 	sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), userId, []string{accountId})
 
 	prompt := agent.GetSystemPrompt(sc, core.NBAgentRequest{
@@ -1507,7 +1507,7 @@ func TestK8sAgent_FunctionExecutionWithApproval(t *testing.T) {
 		approval = "test-user"
 	}
 
-	agent := newK8sDebugAgent(os.Getenv("TEST_ACCOUNT"))
+	agent := newK8sOrchestratorAgent(os.Getenv("TEST_ACCOUNT"))
 
 	tc := k8sTestCase{
 		Name:              "ci_failure_investigation",

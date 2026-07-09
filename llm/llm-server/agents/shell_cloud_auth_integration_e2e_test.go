@@ -61,7 +61,7 @@ func TestAwsAgent_ShellExecuteWithCloudAuth(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.SessionId, func(t *testing.T) {
-			awsAgent := newAwsDebugAgent(accountId)
+			awsAgent := newAwsOrchestratorAgent(accountId)
 
 			err := core.DeleteConversationBySession(tc.SessionId, accountId, os.Getenv("TEST_USER"))
 			assert.Nil(t, err)
@@ -121,7 +121,7 @@ func TestGcpAgent_ShellExecuteWithCloudAuth(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.SessionId, func(t *testing.T) {
-			gcpAgent := newGcpDebugAgent(accountId)
+			gcpAgent := newGcpOrchestratorAgent(accountId)
 
 			err := core.DeleteConversationBySession(tc.SessionId, accountId, os.Getenv("TEST_USER"))
 			assert.Nil(t, err)
@@ -205,7 +205,7 @@ func TestK8sAgent_ShellExecuteGcloudCrossAccount(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.SessionId, func(t *testing.T) {
-			k8sAgent := newK8sDebugAgent(k8sAccountId)
+			k8sAgent := newK8sOrchestratorAgent(k8sAccountId)
 
 			err := core.DeleteConversationBySession(tc.SessionId, k8sAccountId, os.Getenv("TEST_USER"))
 			assert.Nil(t, err)
@@ -266,7 +266,7 @@ func TestAzureAgent_ShellExecuteWithCloudAuth(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.SessionId, func(t *testing.T) {
-			azureAgent := newAzureDebugAgent(accountId)
+			azureAgent := newAzureOrchestratorAgent(accountId)
 
 			err := core.DeleteConversationBySession(tc.SessionId, accountId, os.Getenv("TEST_USER"))
 			assert.Nil(t, err)

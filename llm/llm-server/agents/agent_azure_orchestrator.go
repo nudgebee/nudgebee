@@ -13,63 +13,63 @@ import (
 )
 
 const (
-	AgentAzureDebugName = "azure_debug"
+	AgentAzureOrchestratorName = "azure_orchestrator"
 )
 
 func init() {
-	core.RegisterNBAgentFactory(AgentAzureDebugName, func(accountId string) (core.NBAgent, error) {
-		return newAzureDebugAgent(accountId), nil
-	})
+	core.RegisterNBAgentFactoryWithAliases(AgentAzureOrchestratorName, func(accountId string) (core.NBAgent, error) {
+		return newAzureOrchestratorAgent(accountId), nil
+	}, "azure_debug")
 }
 
-// AzureDebugAgent is an agent that helps debug Azure issues.
-type AzureDebugAgent struct {
+// AzureOrchestratorAgent is an agent that helps debug Azure issues.
+type AzureOrchestratorAgent struct {
 	accountId            string
 	clusterSnapshot      map[string][]string
 	clusterSnapshotFound bool
 }
 
-// newAzureDebugAgent creates a new AzureDebugAgent.
+// newAzureOrchestratorAgent creates a new AzureOrchestratorAgent.
 // The factory will provide accountId.
-func newAzureDebugAgent(accountId string) core.NBAgent {
-	return &AzureDebugAgent{
+func newAzureOrchestratorAgent(accountId string) core.NBAgent {
+	return &AzureOrchestratorAgent{
 		accountId: accountId,
 	}
 }
 
 // GetName returns the name of the agent.
-func (a *AzureDebugAgent) GetName() string {
-	return AgentAzureDebugName
+func (a *AzureOrchestratorAgent) GetName() string {
+	return AgentAzureOrchestratorName
 }
 
 // GetNameAliases returns aliases for the agent name.
-func (a *AzureDebugAgent) GetNameAliases() []string {
+func (a *AzureOrchestratorAgent) GetNameAliases() []string {
 	return []string{"azure debug", "microsoft_azure_debug", "azure_debug"}
 }
 
 // GetDescription returns a description of the agent.
-func (a *AzureDebugAgent) GetDescription() string {
+func (a *AzureOrchestratorAgent) GetDescription() string {
 	return "An agent specialized in troubleshooting and debugging issues within Azure environments, providing step-by-step XML plans."
 }
 
-func (a *AzureDebugAgent) GetSupportedTools(ctx *security.RequestContext) []tocore.NBTool {
+func (a *AzureOrchestratorAgent) GetSupportedTools(ctx *security.RequestContext) []tocore.NBTool {
 	return getAzurePlannerSupportedTools(ctx, a.accountId)
 }
 
-func (a *AzureDebugAgent) GetPlannerType() core.AgentPlannerType {
+func (a *AzureOrchestratorAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeOrchestrating
 }
 
-func (a *AzureDebugAgent) GetModelCategory() core.ModelTier {
+func (a *AzureOrchestratorAgent) GetModelCategory() core.ModelTier {
 	return core.ModelTierReasoning
 }
 
-func (a *AzureDebugAgent) GetCacheScope() core.CacheScope {
+func (a *AzureOrchestratorAgent) GetCacheScope() core.CacheScope {
 	return core.CacheScopeAccount
 }
 
 // GetSystemPrompt returns the system prompt for the agent.
-func (a *AzureDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
+func (a *AzureOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 	promptText := prompts_repo.GetPrompt(prompts_repo.PromptAgentAzureDebugReact)
 	instructions := strings.Split(promptText, "\n")
 
@@ -165,7 +165,7 @@ func getAzurePlannerSupportedTools(ctx *security.RequestContext, accountId strin
 
 	summary, err := tocore.GetAccountConfigSummary(ctx, accountId)
 	if err != nil {
-		slog.Error("agent: failed to get account config summary", "error", err, "agent", AgentAzureDebugName)
+		slog.Error("agent: failed to get account config summary", "error", err, "agent", AgentAzureOrchestratorName)
 	}
 
 	tools := make([]tocore.NBTool, 0, len(supportedToolNames))
@@ -173,7 +173,7 @@ func getAzurePlannerSupportedTools(ctx *security.RequestContext, accountId strin
 		tool, found := tocore.GetNBTool(accountId, toolName)
 		if found {
 			if !tocore.IsToolConfigured(ctx, accountId, tool, summary) {
-				slog.Warn("skipping tool as not configured", "tool", tool.Name(), "agent", AgentAzureDebugName)
+				slog.Warn("skipping tool as not configured", "tool", tool.Name(), "agent", AgentAzureOrchestratorName)
 				continue
 			}
 			tools = append(tools, tool)

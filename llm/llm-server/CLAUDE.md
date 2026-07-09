@@ -54,7 +54,7 @@ curl http://localhost:9999/health                                          # Hea
 curl -H "Authorization: <token>" http://localhost:9999/agents              # List agents
 curl -X POST http://localhost:9999/agent/invoke \
      -H "Authorization: <token>" -H "Content-Type: application/json" \
-     -d '{"agent":"k8s_debug","query":"Check pod status","accountId":"<id>"}'
+     -d '{"agent":"k8s_orchestrator","query":"Check pod status","accountId":"<id>"}'
 ```
 
 ### Troubleshooting
@@ -244,7 +244,7 @@ For agent files, `_2` / `V2` suffixes mark genuinely versioned agents where both
 | Planner runtime | — | `planner_react_3.go` | Only planner at runtime |
 | Tickets | `agent_tickets.go` | `agent_tickets_V2.go` | Both; v2 opt-in via `TicketV2Enabled` |
 
-The domain debug orchestrators — `agent_k8s_debug.go`, `agent_aws_debug.go`, `agent_gcp_debug.go`, `agent_azure_debug.go` — previously carried a vestigial `_2` suffix (they have no v1); it has been dropped. Note `agent_aws.go` is a *distinct* sub-agent (direct CLI), not a v1 of the `aws_debug` orchestrator.
+The domain orchestrators — `agent_k8s_orchestrator.go`, `agent_aws_orchestrator.go`, `agent_gcp_orchestrator.go`, `agent_azure_orchestrator.go`, `agent_datadog_orchestrator.go` — declare `Orchestrating` and run under ReAct3. They were renamed from `*_debug` (which itself dropped a vestigial `_2`); the old `*_debug` names stay registered as back-compat aliases (`RegisterNBAgentFactoryWithAliases`) so stored history and `@*_debug` invocations keep resolving. Note `agent_aws.go` is a *distinct* sub-agent (direct CLI), not the AWS orchestrator.
 
 **Rule: new code targets ReAct3. There is no v1/v2 planner choice to make.**
 
@@ -315,7 +315,7 @@ How a user request flows through the system, from API entry to final response.
 ```
 User (UI/API)
   → LLM Server (Go) — api/chains.go, POST /v1/completions/chat
-  → Agent Router — selects agent (aws_debug, k8s_debug, etc.)
+  → Agent Router — selects agent (aws_orchestrator, k8s_orchestrator, etc.)
   → ReAct3 Planner (planner_react_3.go) — iterative think → act → observe loop,
     with parallel action batches when steps are independent
       → Sub-Agents — e.g. aws, aws_observability (also ReAct3)
@@ -332,7 +332,7 @@ Request arrives at `POST /v1/completions/chat` via an RPC action handler dispatc
 
 ### 2. Agent Selection (`api/chains.go` ~line 301)
 
-Explicit (`@aws_debug` in query) or implicit (Router Agent infers via LLM). Agent lookup via `core.GetNBAgent(name, accountId)`. Each agent declares a planner type (`Orchestrating` / `ReAct` / `Tool` / `Custom` / `Classification` / `Conversational`), tools, and system prompt path. Everything except `Tool` / `Custom` / `Classification` runs via ReAct3.
+Explicit (`@aws_orchestrator` in query) or implicit (Router Agent infers via LLM). Agent lookup via `core.GetNBAgent(name, accountId)`. Each agent declares a planner type (`Orchestrating` / `ReAct` / `Tool` / `Custom` / `Classification` / `Conversational`), tools, and system prompt path. Everything except `Tool` / `Custom` / `Classification` runs via ReAct3.
 
 ### 3. System Prompt Assembly
 

@@ -135,7 +135,7 @@ func TestK8sAgent_WithMemory_EndToEnd(t *testing.T) {
 
 	// ── Run a real agent turn ─────────────────────────────────────────────
 	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
-	k8sAgent := newK8sDebugAgent(accountID)
+	k8sAgent := newK8sOrchestratorAgent(accountID)
 
 	query := "list my kubernetes clusters and give me a one-line summary for each"
 	resp, err := core.HandleConversationSessionRequest(sc, k8sAgent, userID, accountID, sessionID, query)
@@ -320,7 +320,7 @@ func TestK8sAgent_WithMemory_MultiTurn_EndToEnd(t *testing.T) {
 	t.Logf("DEBUG: cleanup disabled; session=%s (inspect via DB after run)", sessionID)
 
 	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
-	k8sAgent := newK8sDebugAgent(accountID)
+	k8sAgent := newK8sOrchestratorAgent(accountID)
 
 	// ── Turn 1 ────────────────────────────────────────────────────────────
 	query1 := "list my kubernetes clusters and give a one-line summary for each"
@@ -517,7 +517,7 @@ func TestK8sAgent_WithMemory_ExtendedMultiTurn_EndToEnd(t *testing.T) {
 	t.Logf("NOTE: cleanup disabled; session=%s (inspect DB after run)", sessionID)
 
 	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
-	k8sAgent := newK8sDebugAgent(accountID)
+	k8sAgent := newK8sOrchestratorAgent(accountID)
 
 	// 12 progressively-dependent queries. Keep them short so tool-loops
 	// don't dominate wall-clock. The first mentions a sentinel ("CANARY-42")

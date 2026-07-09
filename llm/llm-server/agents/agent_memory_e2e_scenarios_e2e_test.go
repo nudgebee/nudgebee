@@ -235,7 +235,7 @@ func TestScenario_MidConversationSoulUpdate_EndToEnd(t *testing.T) {
 	t.Logf("session=%s preserved for UI inspection", sessionID)
 
 	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
-	k8sAgent := newK8sDebugAgent(accountID)
+	k8sAgent := newK8sOrchestratorAgent(accountID)
 
 	// Soul v1 — active for turns 1-2.
 	scenarioSeedSoul(t, m, tenantID, userID, "terse", "SENTINEL_FIRST unique marker.")
@@ -301,7 +301,7 @@ func TestScenario_TwoUsersIsolation_EndToEnd(t *testing.T) {
 	scenarioSeedSoul(t, m, tenantID, userA, "terse", "USER_A_ONLY sentinel")
 	scenarioSeedSoul(t, m, tenantID, userB, "terse", "USER_B_ONLY sentinel")
 
-	k8sAgent := newK8sDebugAgent(accountID)
+	k8sAgent := newK8sOrchestratorAgent(accountID)
 	sessA := "iso-a-" + uuid.NewString()[:8]
 	scA := security.NewRequestContextForTenantAccountAdmin(tenantID, userA, []string{accountID})
 
@@ -347,7 +347,7 @@ func TestScenario_FlagOffMidSession_EndToEnd(t *testing.T) {
 	scenarioSeedSoul(t, m, tenantID, userID, "terse", "ROLLBACK_CANARY seed")
 
 	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
-	k8sAgent := newK8sDebugAgent(accountID)
+	k8sAgent := newK8sOrchestratorAgent(accountID)
 
 	// Phase 1: flag on — memory block must land in every turn.
 	for i, q := range scenarioInvestigationQueries[:2] {
@@ -411,7 +411,7 @@ func TestScenario_ColdStartUser_EndToEnd(t *testing.T) {
 	defer scenarioEraseUser(m, tenantID, userID)
 
 	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
-	k8sAgent := newK8sDebugAgent(accountID)
+	k8sAgent := newK8sOrchestratorAgent(accountID)
 
 	// Cold-start assertion checks for the CLOSING tag fragment, not the bare
 	// substring. A rendered memory block always carries `</user_style>` and
@@ -462,7 +462,7 @@ func TestScenario_ImperativeInstruction_ExtractsAsPreference_EndToEnd(t *testing
 	defer scenarioEraseUser(m, tenantID, userID)
 
 	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
-	k8sAgent := newK8sDebugAgent(accountID)
+	k8sAgent := newK8sOrchestratorAgent(accountID)
 
 	// ── Session A: imperative instruction ───────────────────────────────
 	const imperative = "remember to use the nudgebee namespace for all kubectl lookups"
@@ -585,7 +585,7 @@ func TestScenario_SessionContinuity_EndToEnd(t *testing.T) {
 	// Drive a turn in the SAME session_id. Compose should attach the
 	// seeded blob under <session_working_memory>.
 	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
-	k8sAgent := newK8sDebugAgent(accountID)
+	k8sAgent := newK8sOrchestratorAgent(accountID)
 
 	turn := "what is the current investigation context"
 	t.Logf("\n======== SESSION CONTINUITY TURN ========\nquery: %s", turn)
@@ -653,7 +653,7 @@ func TestScenario_PatternExtractsFromTurn_EndToEnd(t *testing.T) {
 	}))
 
 	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
-	k8sAgent := newK8sDebugAgent(accountID)
+	k8sAgent := newK8sOrchestratorAgent(accountID)
 
 	// Drive any turn; composePatternsLayer does not apply a keyword filter,
 	// so the seeded row will appear in every prompt for this (tenant, user).
@@ -722,7 +722,7 @@ func TestScenario_DecisionExtractsFromTurn_EndToEnd(t *testing.T) {
 	}))
 
 	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
-	k8sAgent := newK8sDebugAgent(accountID)
+	k8sAgent := newK8sOrchestratorAgent(accountID)
 
 	// composeDecisionsLayer applies Postgres FTS with plainto_tsquery, which
 	// AND-joins every term in the query. Use a query that contains ONLY
@@ -787,7 +787,7 @@ func TestScenario_CollectiveExtractsFromTurn_EndToEnd(t *testing.T) {
 	}))
 
 	sc := security.NewRequestContextForTenantAccountAdmin(tenantID, userID, []string{accountID})
-	k8sAgent := newK8sDebugAgent(accountID)
+	k8sAgent := newK8sOrchestratorAgent(accountID)
 
 	// composeCollectiveLayer applies Postgres FTS with plainto_tsquery
 	// (AND of all terms) on subject+body. Use a query that contains ONLY

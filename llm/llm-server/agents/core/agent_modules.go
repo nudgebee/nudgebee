@@ -81,6 +81,10 @@ func init() {
 	// and observability — primary = CloudOps because they orchestrate
 	// across the cloud surface; FinOps + Observability stay on the tag
 	// list so memory queries scoped to those modules can still find rows.
+	RegisterAgentModulePrefix("aws_orchestrator", AgentModuleCloudOps, AgentModuleFinOps, AgentModuleObservability)
+	RegisterAgentModulePrefix("gcp_orchestrator", AgentModuleCloudOps, AgentModuleFinOps, AgentModuleObservability)
+	RegisterAgentModulePrefix("azure_orchestrator", AgentModuleCloudOps, AgentModuleFinOps, AgentModuleObservability)
+	// Legacy "*_debug" prefixes kept for back-compat (custom agents / lingering old names).
 	RegisterAgentModulePrefix("aws_debug", AgentModuleCloudOps, AgentModuleFinOps, AgentModuleObservability)
 	RegisterAgentModulePrefix("gcp_debug", AgentModuleCloudOps, AgentModuleFinOps, AgentModuleObservability)
 	RegisterAgentModulePrefix("azure_debug", AgentModuleCloudOps, AgentModuleFinOps, AgentModuleObservability)

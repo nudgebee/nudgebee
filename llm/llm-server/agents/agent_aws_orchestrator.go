@@ -14,66 +14,66 @@ import (
 
 // AWS Agent name constants
 const (
-	// AgentAwsDebugName is the name for the AWS debug agent
-	AgentAwsDebugName = "aws_debug"
+	// AgentAwsOrchestratorName is the name for the AWS debug agent
+	AgentAwsOrchestratorName = "aws_orchestrator"
 	// AwsAgentName is the name for the AWS agent
 	AwsAgentName = "aws"
 )
 
 func init() {
-	core.RegisterNBAgentFactory(AgentAwsDebugName, func(accountId string) (core.NBAgent, error) {
-		return newAwsDebugAgent(accountId), nil
-	})
+	core.RegisterNBAgentFactoryWithAliases(AgentAwsOrchestratorName, func(accountId string) (core.NBAgent, error) {
+		return newAwsOrchestratorAgent(accountId), nil
+	}, "aws_debug")
 }
 
-// AwsDebugAgent is an agent that helps debug AWS issues.
-type AwsDebugAgent struct {
+// AwsOrchestratorAgent is an agent that helps debug AWS issues.
+type AwsOrchestratorAgent struct {
 	accountId            string
 	clusterSnapshot      map[string][]string
 	clusterSnapshotFound bool
 }
 
-// newAwsDebugAgent creates a new AwsDebugAgent.
+// newAwsOrchestratorAgent creates a new AwsOrchestratorAgent.
 // The factory will provide accountId.
-func newAwsDebugAgent(accountId string) core.NBAgent {
-	return &AwsDebugAgent{
+func newAwsOrchestratorAgent(accountId string) core.NBAgent {
+	return &AwsOrchestratorAgent{
 		accountId: accountId,
 	}
 }
 
 // GetName returns the name of the agent.
-func (a *AwsDebugAgent) GetName() string {
-	return AgentAwsDebugName
+func (a *AwsOrchestratorAgent) GetName() string {
+	return AgentAwsOrchestratorName
 }
 
 // GetNameAliases returns aliases for the agent name.
-func (a *AwsDebugAgent) GetNameAliases() []string {
+func (a *AwsOrchestratorAgent) GetNameAliases() []string {
 	return []string{"aws debug", "amazon_aws_debug", "aws_debug"}
 }
 
 // GetDescription returns a description of the agent.
-func (a *AwsDebugAgent) GetDescription() string {
+func (a *AwsOrchestratorAgent) GetDescription() string {
 	return "An expert AWS investigation and troubleshooting orchestrator that delegates to specialized sub-agents: `aws_observability` for CloudWatch Logs/Metrics/Alarms/X-Ray, and `aws` for all other AWS resources (EC2, RDS, S3, VPC, Lambda, Cost, etc.). Generates comprehensive investigation plans."
 }
 
-func (a *AwsDebugAgent) GetSupportedTools(ctx *security.RequestContext) []tocore.NBTool {
+func (a *AwsOrchestratorAgent) GetSupportedTools(ctx *security.RequestContext) []tocore.NBTool {
 	return getAwsPlannerSupportedTools(ctx, a.accountId)
 }
 
-func (a *AwsDebugAgent) GetPlannerType() core.AgentPlannerType {
+func (a *AwsOrchestratorAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeOrchestrating
 }
 
-func (a *AwsDebugAgent) GetModelCategory() core.ModelTier {
+func (a *AwsOrchestratorAgent) GetModelCategory() core.ModelTier {
 	return core.ModelTierReasoning
 }
 
-func (a *AwsDebugAgent) GetCacheScope() core.CacheScope {
+func (a *AwsOrchestratorAgent) GetCacheScope() core.CacheScope {
 	return core.CacheScopeAccount
 }
 
 // GetSystemPrompt returns the system prompt for the agent.
-func (a *AwsDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
+func (a *AwsOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 	promptText := prompts_repo.GetPrompt(prompts_repo.PromptAgentAwsDebugReact)
 	instructions := strings.Split(promptText, "\n")
 
@@ -203,7 +203,7 @@ func getAwsPlannerSupportedTools(ctx *security.RequestContext, accountId string)
 
 	summary, err := tocore.GetAccountConfigSummary(ctx, accountId)
 	if err != nil {
-		slog.Error("agent: failed to get account config summary", "error", err, "agent", AgentAwsDebugName)
+		slog.Error("agent: failed to get account config summary", "error", err, "agent", AgentAwsOrchestratorName)
 	}
 
 	tools := make([]tocore.NBTool, 0, len(supportedToolNames))
@@ -212,7 +212,7 @@ func getAwsPlannerSupportedTools(ctx *security.RequestContext, accountId string)
 		if found {
 			// Check if tool is configured before adding it
 			if !tocore.IsToolConfigured(ctx, accountId, tool, summary) {
-				slog.Warn("skipping tool as not configured", "tool", tool.Name(), "agent", AgentAwsDebugName)
+				slog.Warn("skipping tool as not configured", "tool", tool.Name(), "agent", AgentAwsOrchestratorName)
 				continue
 			}
 			tools = append(tools, tool)

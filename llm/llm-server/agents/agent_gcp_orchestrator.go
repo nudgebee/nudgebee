@@ -13,56 +13,56 @@ import (
 )
 
 const (
-	AgentGcpDebugName = "gcp_debug"
+	AgentGcpOrchestratorName = "gcp_orchestrator"
 )
 
 func init() {
-	core.RegisterNBAgentFactory(AgentGcpDebugName, func(accountId string) (core.NBAgent, error) {
-		return newGcpDebugAgent(accountId), nil
-	})
+	core.RegisterNBAgentFactoryWithAliases(AgentGcpOrchestratorName, func(accountId string) (core.NBAgent, error) {
+		return newGcpOrchestratorAgent(accountId), nil
+	}, "gcp_debug")
 }
 
-type GcpDebugAgent struct {
+type GcpOrchestratorAgent struct {
 	accountId            string
 	clusterSnapshot      map[string][]string
 	clusterSnapshotFound bool
 }
 
-func newGcpDebugAgent(accountId string) core.NBAgent {
-	return &GcpDebugAgent{
+func newGcpOrchestratorAgent(accountId string) core.NBAgent {
+	return &GcpOrchestratorAgent{
 		accountId: accountId,
 	}
 }
 
-func (a *GcpDebugAgent) GetName() string {
-	return AgentGcpDebugName
+func (a *GcpOrchestratorAgent) GetName() string {
+	return AgentGcpOrchestratorName
 }
 
-func (a *GcpDebugAgent) GetNameAliases() []string {
+func (a *GcpOrchestratorAgent) GetNameAliases() []string {
 	return []string{"gcp debug", "google_cloud_debug", "gcp_debug"}
 }
 
-func (a *GcpDebugAgent) GetDescription() string {
+func (a *GcpOrchestratorAgent) GetDescription() string {
 	return "An agent specialized in troubleshooting and debugging issues within GCP environments, providing step-by-step XML plans."
 }
 
-func (a *GcpDebugAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
+func (a *GcpOrchestratorAgent) GetSupportedTools(ctx *security.RequestContext) []toolcore.NBTool {
 	return getGcpPlannerSupportedTools(ctx, a.accountId)
 }
 
-func (a *GcpDebugAgent) GetPlannerType() core.AgentPlannerType {
+func (a *GcpOrchestratorAgent) GetPlannerType() core.AgentPlannerType {
 	return core.AgentPlannerTypeOrchestrating
 }
 
-func (a *GcpDebugAgent) GetModelCategory() core.ModelTier {
+func (a *GcpOrchestratorAgent) GetModelCategory() core.ModelTier {
 	return core.ModelTierReasoning
 }
 
-func (a *GcpDebugAgent) GetCacheScope() core.CacheScope {
+func (a *GcpOrchestratorAgent) GetCacheScope() core.CacheScope {
 	return core.CacheScopeAccount
 }
 
-func (a *GcpDebugAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
+func (a *GcpOrchestratorAgent) GetSystemPrompt(ctx *security.RequestContext, query core.NBAgentRequest) core.NBAgentPrompt {
 	promptText := prompts_repo.GetPrompt(prompts_repo.PromptAgentGcpDebugReact)
 	instructions := strings.Split(promptText, "\n")
 
@@ -157,7 +157,7 @@ func getGcpPlannerSupportedTools(ctx *security.RequestContext, accountId string)
 
 	summary, err := toolcore.GetAccountConfigSummary(ctx, accountId)
 	if err != nil {
-		slog.Error("agent: failed to get account config summary", "error", err, "agent", AgentGcpDebugName)
+		slog.Error("agent: failed to get account config summary", "error", err, "agent", AgentGcpOrchestratorName)
 	}
 
 	tools := make([]toolcore.NBTool, 0, len(supportedToolNames))
@@ -165,7 +165,7 @@ func getGcpPlannerSupportedTools(ctx *security.RequestContext, accountId string)
 		tool, found := toolcore.GetNBTool(accountId, toolName)
 		if found {
 			if !toolcore.IsToolConfigured(ctx, accountId, tool, summary) {
-				slog.Warn("skipping tool as not configured", "tool", tool.Name(), "agent", AgentGcpDebugName)
+				slog.Warn("skipping tool as not configured", "tool", tool.Name(), "agent", AgentGcpOrchestratorName)
 				continue
 			}
 			tools = append(tools, tool)

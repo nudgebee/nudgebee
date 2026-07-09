@@ -104,7 +104,7 @@ func TestTracesAgent_K8sDebug(t *testing.T) {
 			},
 		}
 	for _, tc := range testCases {
-		debugAgent := newK8sDebugAgent(tc.AccountId)
+		debugAgent := newK8sOrchestratorAgent(tc.AccountId)
 
 		err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 		assert.Nil(t, err)

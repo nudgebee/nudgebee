@@ -151,7 +151,7 @@ func TestLLMProvider_AllScenarios(t *testing.T) {
 		t.Run(fmt.Sprintf("%s_%d_%s", tc.Difficulty, i+1, tc.Description), func(t *testing.T) {
 			// Setup
 			sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), tc.UserId, []string{tc.AccountId})
-			k8sAgent := newK8sDebugAgent(tc.AccountId)
+			k8sAgent := newK8sOrchestratorAgent(tc.AccountId)
 
 			// Clean up previous conversation
 			err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
@@ -370,7 +370,7 @@ func runTestsByDifficulty(t *testing.T, difficulty string) {
 	for i, tc := range filteredTests {
 		t.Run(fmt.Sprintf("%s_%d_%s", tc.Difficulty, i+1, tc.Description), func(t *testing.T) {
 			sc := security.NewRequestContextForTenantAccountAdmin(os.Getenv("TEST_TENANT"), tc.UserId, []string{tc.AccountId})
-			k8sAgent := newK8sDebugAgent(tc.AccountId)
+			k8sAgent := newK8sOrchestratorAgent(tc.AccountId)
 
 			err := core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId)
 			assert.Nil(t, err)

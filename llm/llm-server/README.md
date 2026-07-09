@@ -41,7 +41,7 @@ The server employs a sophisticated hierarchical agent architecture, allowing for
 *   **Agent-Declared Intent, Not Implementation:** Each agent declares a planner *type* — `Orchestrating` for top-level "manager" agents, `ReAct` for task executors. The type expresses intent (does this agent orchestrate multi-tool work?); the executor picks the implementation (ReAct3). This mirrors the `ModelTier` pattern where an agent asks for `reasoning` or `retrieval` and config decides the model.
 
 *   **Hierarchical Structure:** Agents can be used as tools by other agents:
-    1.  A top-level **Orchestrating agent** (e.g. `k8s_debug`, `aws_debug`) receives a user query.
+    1.  A top-level **Orchestrating agent** (e.g. `k8s_orchestrator`, `aws_orchestrator`) receives a user query.
     2.  Its ReAct3 loop calls specialized **sub-agents** (also ReAct3) as tools.
     3.  Sub-agents execute primitive tools (shell commands, cloud APIs).
 
@@ -55,7 +55,7 @@ The server employs a sophisticated hierarchical agent architecture, allowing for
 ### Agent Types
 
 *   **Orchestrating Agents** (`AgentPlannerTypeOrchestrating`):
-    *   Top-level coordinators — `k8s_debug`, `aws_debug`, `gcp_debug`, `azure_debug`, `datadog_debug`.
+    *   Top-level coordinators — `k8s_orchestrator`, `aws_orchestrator`, `gcp_orchestrator`, `azure_orchestrator`, `datadog_orchestrator`.
     *   Delegate to specialized sub-agents via ReAct3.
     *   Persisted as `"orchestrating"` in `llm_agents.executor_type` (migration V777). The legacy `"rewoo"` value is still dual-read via `ParseExecutorType` for rows written before the migration.
 
@@ -213,7 +213,7 @@ The LLM Server uses a modular design for APIs (`api/`), agents (`agents/`), tool
 
 ### Development Conventions
 - **Hierarchical Agent Architecture**:
-  1. **Orchestrating Agents**: Top-level coordinators (`k8s_debug`, `aws_debug`, etc.). Declare `AgentPlannerTypeOrchestrating`; run under ReAct3 at runtime.
+  1. **Orchestrating Agents**: Top-level coordinators (`k8s_orchestrator`, `aws_orchestrator`, etc.). Declare `AgentPlannerTypeOrchestrating`; run under ReAct3 at runtime.
   2. **ReAct Agents**: Task-focused executors (`prometheus`, `postgres`, etc.). Declare `AgentPlannerTypeReAct`; also run under ReAct3.
   A single planner (`planner_react_3.go`) drives both. The declared type expresses intent, not implementation.
 - **Accuracy & Reliability Features**:

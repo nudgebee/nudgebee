@@ -45,7 +45,7 @@ func TestK8sDebugAgent_WatchResource_RegistersAndTerminates(t *testing.T) {
 		Query: "scale deployment slow-rollout-app in namespace otel-demo to 3 replicas and let me know when it's ready",
 	}
 
-	k8sAgent := newK8sDebugAgent(tc.AccountId)
+	k8sAgent := newK8sOrchestratorAgent(tc.AccountId)
 	require.NoError(t, core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId))
 
 	resp, err := core.HandleConversationSessionRequest(sc, k8sAgent, tc.UserId, tc.AccountId, tc.SessionId, tc.Query)
@@ -108,7 +108,7 @@ func TestK8sDebugAgent_NoWatch_OnInvestigationOnly(t *testing.T) {
 		Query:     "list the deployments in namespace otel-demo",
 	}
 
-	k8sAgent := newK8sDebugAgent(tc.AccountId)
+	k8sAgent := newK8sOrchestratorAgent(tc.AccountId)
 	require.NoError(t, core.DeleteConversationBySession(tc.SessionId, tc.AccountId, tc.UserId))
 
 	resp, err := core.HandleConversationSessionRequest(sc, k8sAgent, tc.UserId, tc.AccountId, tc.SessionId, tc.Query)

@@ -121,18 +121,18 @@ func TestKBPrestepE2E(t *testing.T) {
 	t.Logf("KB %s indexed (status=active)", kb.Id)
 
 	// 3. Map the KB to the k8s_debug agent so the pre-step picks it up.
-	if _, err = toolcore.MapKBToAgent(sc, accountID, kb.Id, AgentK8sDebugName); err != nil {
+	if _, err = toolcore.MapKBToAgent(sc, accountID, kb.Id, AgentK8sOrchestratorName); err != nil {
 		t.Fatalf("map KB to agent: %v", err)
 	}
 	defer func() {
-		if uerr := toolcore.UnmapKBFromAgent(sc, accountID, kb.Id, AgentK8sDebugName); uerr != nil {
+		if uerr := toolcore.UnmapKBFromAgent(sc, accountID, kb.Id, AgentK8sOrchestratorName); uerr != nil {
 			t.Logf("cleanup: unmap KB failed: %v", uerr)
 		}
 	}()
 
 	// 4. Run a real conversation whose question the canary article answers.
 	sessionID := "kb-prestep-e2e-" + uuid.NewString()[:8]
-	agent := newK8sDebugAgent(accountID)
+	agent := newK8sOrchestratorAgent(accountID)
 	resp, err := core.HandleConversationSessionRequest(sc, agent, userID, accountID, sessionID,
 		"investigate the high memory alert on checkout-api")
 	require.NoError(t, err, "conversation turn")
