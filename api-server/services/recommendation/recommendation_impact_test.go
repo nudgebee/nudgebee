@@ -9,26 +9,28 @@ import (
 // annotateBreakdownWithImpact must be a safe no-op when the knowledge-graph
 // service is unavailable or the recommendation's identity is incomplete, so the
 // always-on recompute cron never panics or stamps a band it can't justify.
-// Resolution against a live graph is exercised by the post-deploy cron run (this
-// path now derives ns+name from the cloud_resourses join, not the rec JSONB), not
-// by a unit test.
+// Incomplete identity (no k8s namespace and no cloud resource_id) must return
+// before any graph call. Resolution against a live graph — k8s by (namespace,
+// name), cloud by resource_id — is exercised by the post-deploy cron run, not here.
 func TestAnnotateBreakdownWithImpactNoOp(t *testing.T) {
 	cases := []struct {
-		name      string
-		kg        *core.Service
-		namespace string
-		workload  string
+		name       string
+		kg         *core.Service
+		namespace  string
+		workload   string
+		resourceID string
 	}{
-		{"nil graph service", nil, "shop", "checkout"},
-		{"blank namespace", &core.Service{}, "   ", "checkout"},
-		{"blank workload", &core.Service{}, "shop", ""},
+		{"nil graph service", nil, "shop", "checkout", ""},
+		{"blank namespace", &core.Service{}, "   ", "checkout", ""},
+		{"blank workload", &core.Service{}, "shop", "", ""},
+		{"no namespace and no resource id", &core.Service{}, "", "", "   "},
 	}
 
 	cache := map[string]*recommendationImpact{}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			bd := map[string]any{"base_score": 10}
-			annotateBreakdownWithImpact(tc.kg, "tenant", "acct", tc.namespace, tc.workload, bd, cache)
+			annotateBreakdownWithImpact(tc.kg, "tenant", "acct", tc.namespace, tc.workload, tc.resourceID, bd, cache)
 			if _, ok := bd["safety_band"]; ok {
 				t.Error("must not stamp safety_band on a no-op path")
 			}

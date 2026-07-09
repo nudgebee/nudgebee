@@ -4076,6 +4076,16 @@ func (s *Service) SearchNodes(tenantID string, params SearchNodesParams) (*Searc
 		args = append(args, params.Cluster)
 		argIdx++
 	}
+	if params.ResourceID != "" {
+		// nb_resource_id is a stable identity key present in properties on every
+		// node (it is not hoisted into query_attributes); filtering it here is no
+		// less indexed than the name filter above and, unlike query_attributes,
+		// needs no graph rebuild to take effect. Always paired with the indexed
+		// tenant/account predicates, so the scan stays bounded.
+		whereClause += fmt.Sprintf(" AND properties->>'nb_resource_id' = $%d", argIdx)
+		args = append(args, params.ResourceID)
+		argIdx++
+	}
 	if len(params.NodeTypes) > 0 {
 		nodeTypeStrings := make([]string, len(params.NodeTypes))
 		for i, nt := range params.NodeTypes {

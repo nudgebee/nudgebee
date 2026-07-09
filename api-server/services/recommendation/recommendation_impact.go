@@ -43,6 +43,47 @@ func resolveK8sWorkloadNodeID(kg *core.Service, tenantID, accountID string, ref 
 	return res.Nodes[0].ID, true
 }
 
+// blastRadiusCloudNodeTypes are the cloud resource node types whose knowledge-graph
+// dependency edges point at genuine application-level dependents ("who CALLS / RUNS_ON
+// me"), so an upstream traversal yields a meaningful blast radius: a compute instance
+// carries the k8s node (and its pods) it hosts; a database, cache or queue carries the
+// services observed calling it. LoadBalancer and Storage are deliberately excluded — a
+// load balancer's edges point downstream (at what it fronts, not what depends on it),
+// and a directly-attached volume's edge points at its instance the wrong way, so a
+// traversal returns empty and would understate risk rather than reveal it. Those are a
+// separate follow-up.
+var blastRadiusCloudNodeTypes = []core.NodeType{
+	core.NodeTypeComputeInstance,
+	core.NodeTypeDatabase,
+	core.NodeTypeCache,
+	core.NodeTypeMessageQueue,
+	core.NodeTypeQueue,
+	core.NodeTypeTopic,
+}
+
+// resolveCloudResourceNodeID finds the knowledge-graph node for a cloud recommendation
+// by its resource_id — the cloud_resourses row id the recommendation points at, which
+// the graph persists on every node as the nb_resource_id property. Being an exact
+// identity match (unlike the k8s path's name lookup) it is robust to duplicate resource
+// names, e.g. an autoscaling group whose instances share a Name tag. The node-type
+// filter both scopes to resources with a meaningful blast radius and guards against a
+// stray non-cloud node sharing the id. Ambiguity (more than one match) is unresolved.
+func resolveCloudResourceNodeID(kg *core.Service, tenantID, accountID, resourceID string) (string, bool) {
+	params := core.SearchNodesParams{
+		ResourceID: resourceID,
+		NodeTypes:  blastRadiusCloudNodeTypes,
+		Limit:      2,
+	}
+	if accountID != "" {
+		params.AccountIDs = []string{accountID}
+	}
+	res, err := kg.SearchNodes(tenantID, params)
+	if err != nil || res == nil || len(res.Nodes) != 1 {
+		return "", false
+	}
+	return res.Nodes[0].ID, true
+}
+
 // maxStoredDependents caps how many dependent identities we persist in the
 // impact_summary. Dependents arrive sorted closest-first (fewest hops, then
 // name), so the stored prefix is the most relevant slice of a large blast
@@ -89,18 +130,10 @@ func compactDependents(deps []core.ImpactedService) []dependentRef {
 	return out
 }
 
-// resolveK8sRecommendationImpact resolves a k8s recommendation to its workload
-// node, computes the blast radius, and derives the safety band. ok=false means
-// the recommendation could not be resolved (caller should leave it unannotated).
-func resolveK8sRecommendationImpact(kg *core.Service, tenantID, accountID string, ref k8sRecRef) (recommendationImpact, bool) {
-	nodeID, ok := resolveK8sWorkloadNodeID(kg, tenantID, accountID, ref)
-	if !ok {
-		return recommendationImpact{}, false
-	}
-	impact, err := kg.GetImpactedServices(tenantID, nodeID, nil, 2)
-	if err != nil {
-		return recommendationImpact{}, false
-	}
+// buildRecommendationImpact derives the safety band and the persisted impact summary
+// from a knowledge-graph blast radius. The shape is provider-agnostic: the k8s and
+// cloud resolution paths differ only in how they locate the seed node, then share this.
+func buildRecommendationImpact(impact *core.ImpactSummary) recommendationImpact {
 	band, reason := DeriveSafetyBand(impact)
 	return recommendationImpact{
 		Band:   band,
@@ -113,32 +146,89 @@ func resolveK8sRecommendationImpact(kg *core.Service, tenantID, accountID string
 			"safety_reason":         reason,
 			"dependents":            compactDependents(impact.Dependents),
 		},
-	}, true
+	}
 }
 
-// annotateBreakdownWithImpact resolves a k8s recommendation's blast radius and
-// stamps safety_band + impact_summary into the score breakdown map. namespace and
-// workload are the recommendation's identity as the caller derived it from the
+// resolveK8sRecommendationImpact resolves a k8s recommendation to its workload
+// node, computes the blast radius, and derives the safety band. ok=false means
+// the recommendation could not be resolved (caller should leave it unannotated).
+func resolveK8sRecommendationImpact(kg *core.Service, tenantID, accountID string, ref k8sRecRef) (recommendationImpact, bool) {
+	nodeID, ok := resolveK8sWorkloadNodeID(kg, tenantID, accountID, ref)
+	if !ok {
+		return recommendationImpact{}, false
+	}
+	impact, err := kg.GetImpactedServices(tenantID, nodeID, nil, 2)
+	// Fail closed: guard the nil impact buildRecommendationImpact would deref, even
+	// though GetImpactedServices only ever returns it paired with an error.
+	if err != nil || impact == nil {
+		return recommendationImpact{}, false
+	}
+	return buildRecommendationImpact(impact), true
+}
+
+// resolveCloudRecommendationImpact resolves a cloud recommendation to its resource
+// node by resource_id, computes the blast radius, and derives the safety band.
+// Restricted to the cloud resource types whose graph edges expose real dependents
+// (see blastRadiusCloudNodeTypes); any other cloud resource resolves to no node and
+// is left unannotated. ok=false means the recommendation could not be resolved.
+func resolveCloudRecommendationImpact(kg *core.Service, tenantID, accountID, resourceID string) (recommendationImpact, bool) {
+	nodeID, ok := resolveCloudResourceNodeID(kg, tenantID, accountID, resourceID)
+	if !ok {
+		return recommendationImpact{}, false
+	}
+	impact, err := kg.GetImpactedServices(tenantID, nodeID, nil, 2)
+	// Fail closed: guard the nil impact buildRecommendationImpact would deref, even
+	// though GetImpactedServices only ever returns it paired with an error.
+	if err != nil || impact == nil {
+		return recommendationImpact{}, false
+	}
+	return buildRecommendationImpact(impact), true
+}
+
+// annotateBreakdownWithImpact resolves a recommendation's blast radius and stamps
+// safety_band + impact_summary into the score breakdown map. Identity comes from the
 // cloud_resourses join the recommendations view uses — NOT the raw recommendation
-// JSONB, whose shape varies per rule type and frequently omits the namespace. It
-// is a no-op when identity is incomplete (non-k8s), or the workload is ambiguous /
-// absent from the graph. Results are memoized per workload via cache.
-func annotateBreakdownWithImpact(kg *core.Service, tenantID, accountID, namespace, workload string, breakdown map[string]any, cache map[string]*recommendationImpact) {
+// JSONB, whose shape varies per rule type and frequently omits the namespace. A
+// recommendation carrying a k8s namespace is resolved by (namespace, workload) to its
+// Workload node; otherwise a cloud resource recommendation is resolved by resource_id
+// to its cloud node. Both paths fail safe: a misrouted recommendation resolves to no
+// node (wrong node type / missing identity) and is left unannotated, never stamped
+// with another resource's blast radius. It is a no-op when neither identity is present,
+// or the resource is ambiguous / absent from the graph / not a type we compute impact
+// for. Results are memoized per resolved identity via cache.
+func annotateBreakdownWithImpact(kg *core.Service, tenantID, accountID, namespace, workload, resourceID string, breakdown map[string]any, cache map[string]*recommendationImpact) {
 	if kg == nil || breakdown == nil {
 		return
 	}
 	namespace = strings.TrimSpace(namespace)
 	workload = strings.TrimSpace(workload)
-	if namespace == "" || workload == "" {
+	resourceID = strings.TrimSpace(resourceID)
+
+	var (
+		key     string
+		resolve func() (recommendationImpact, bool)
+	)
+	switch {
+	case namespace != "" && workload != "":
+		key = tenantID + "|" + accountID + "|k8s|" + namespace + "|" + workload
+		resolve = func() (recommendationImpact, bool) {
+			return resolveK8sRecommendationImpact(kg, tenantID, accountID, k8sRecRef{Namespace: namespace, Workload: workload})
+		}
+	case resourceID != "":
+		key = tenantID + "|" + accountID + "|cloud|" + resourceID
+		resolve = func() (recommendationImpact, bool) {
+			return resolveCloudRecommendationImpact(kg, tenantID, accountID, resourceID)
+		}
+	default:
 		return
 	}
-	key := tenantID + "|" + accountID + "|" + namespace + "|" + workload
+
 	imp, seen := cache[key]
 	if !seen {
-		// Cache the negative too (nil): a workload that can't be resolved once
-		// won't resolve for the next recommendation either, so don't re-run the
-		// search + traversal for every rec on the same unresolved workload.
-		if resolved, ok := resolveK8sRecommendationImpact(kg, tenantID, accountID, k8sRecRef{Namespace: namespace, Workload: workload}); ok {
+		// Cache the negative too (nil): a resource that can't be resolved once won't
+		// resolve for the next recommendation either, so don't re-run the search +
+		// traversal for every recommendation on the same unresolved resource.
+		if resolved, ok := resolve(); ok {
 			imp = &resolved
 		}
 		cache[key] = imp
