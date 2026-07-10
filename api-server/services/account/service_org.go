@@ -32,6 +32,16 @@ func AwsOrgOnboard(ctx *security.RequestContext, req AwsOrgOnboardRequest) (AwsO
 	tokenHash := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(verificationToken)))
 	tokenPrefix := verificationToken[:8]
 
+	// Member accounts are inserted later by cloud-collector, so the org-wide environment
+	// travels through tenant_attrs. Unlike the single-account attrs — keyed by a fresh
+	// external_id and deleted after registration — this key is fixed per tenant and reused
+	// across re-onboarding, so it is always written. Omitting it for the default would
+	// leave a stale 'prod' behind and silently mark the new members Production.
+	accountEnv := req.AccountEnv
+	if accountEnv == "" {
+		accountEnv = "non_prod"
+	}
+
 	// Upsert tenant_attrs for org metadata
 	_, err = tenantpkg.UpsertTenantAttributes(ctx, tenantpkg.TenantAttributeUpsertRequest{
 		Object: []tenantpkg.AttributeObject{
@@ -39,6 +49,7 @@ func AwsOrgOnboard(ctx *security.RequestContext, req AwsOrgOnboardRequest) (AwsO
 			{Name: "aws_org_verification_token_hash", Value: tokenHash},
 			{Name: "aws_org_verification_token_prefix", Value: tokenPrefix},
 			{Name: "aws_org_status", Value: "pending"},
+			{Name: "aws_org_account_env", Value: accountEnv},
 		},
 	})
 	if err != nil {

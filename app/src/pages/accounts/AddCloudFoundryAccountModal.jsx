@@ -9,6 +9,7 @@ import { isK8sAccountNameValid } from 'src/utils/common';
 import { Button } from '@ui/Button';
 import { snackbar } from '@shared/snackbarService';
 import MarkDowns from '@shared/viewers/MarkDowns';
+import AccountEnvToggle, { DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
 
 const SETUP_INSTRUCTIONS = `### Cloud Foundry Account Setup
   ### Step 1. Enter Account Name
@@ -23,6 +24,7 @@ const SETUP_INSTRUCTIONS = `### Cloud Foundry Account Setup
 
 const AddCloudFoundryAccountModal = ({ open, onClose }) => {
   const [accountNameValue, setAccountNameValue] = useState('');
+  const [accountEnvValue, setAccountEnvValue] = useState(DEFAULT_ACCOUNT_ENV);
   const [cfApiUrl, setCfApiUrl] = useState('');
   const [authType, setAuthType] = useState('token');
   const [bearerToken, setBearerToken] = useState('');
@@ -34,6 +36,7 @@ const AddCloudFoundryAccountModal = ({ open, onClose }) => {
 
   const resetForm = () => {
     setAccountNameValue('');
+    setAccountEnvValue(DEFAULT_ACCOUNT_ENV);
     setCfApiUrl('');
     setAuthType('token');
     setBearerToken('');
@@ -103,6 +106,7 @@ const AddCloudFoundryAccountModal = ({ open, onClose }) => {
 
     const body = {
       account_name: accountNameValue,
+      account_env: accountEnvValue,
       access_secret: authType === 'token' ? bearerToken : clientSecret,
       access_key: authType === 'uaa' ? clientId : '',
       data: data,
@@ -162,6 +166,10 @@ const AddCloudFoundryAccountModal = ({ open, onClose }) => {
             placeholder='https://api.sys.example.com'
           />
         </Box>
+
+        <Grid item xs={12} sx={{ mt: 2, mb: 1 }}>
+          <AccountEnvToggle id='cf-account-env' value={accountEnvValue} onChange={setAccountEnvValue} disabled={isSubmitting} />
+        </Grid>
 
         <Grid item xs={12} sx={{ mt: 1, mb: 1 }}>
           <RadioGroup row value={authType} onChange={(e) => setAuthType(e.target.value)}>

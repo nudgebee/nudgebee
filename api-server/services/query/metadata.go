@@ -6353,6 +6353,7 @@ var table_metadata = map[string]TableDefinition{
 				ca.cloud_provider,
 				ca.tenant::text AS tenant_id,
 				ca.account_type,
+				ca.account_env,
 				ca.account_access,
 				ca.synced_at,
 				ca.agent_synced_at,
@@ -6434,6 +6435,10 @@ var table_metadata = map[string]TableDefinition{
 			"account_type": {
 				Type: ColumnDefinitionTypeString,
 				Def:  "account_type",
+			},
+			"account_env": {
+				Type: ColumnDefinitionTypeString,
+				Def:  "account_env",
 			},
 			"account_access": {
 				Type: ColumnDefinitionTypeJson,

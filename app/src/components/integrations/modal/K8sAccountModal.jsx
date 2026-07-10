@@ -1,17 +1,15 @@
 import { useState, useMemo, useEffect } from 'react';
-import { Grid, Typography, IconButton, Box, Stepper, Step, StepLabel, Divider, ButtonBase } from '@mui/material';
+import { Grid, Typography, Box, Stepper, Step, StepLabel, Divider, ButtonBase } from '@mui/material';
 import apiAccount from '@api1/account';
 import { Modal } from '@ui/Modal';
 import { Input } from '@ui/Input';
 import { Button } from '@ui/Button';
 import { Checkbox } from '@ui/Checkbox';
-import { ToggleGroup } from '@ui/ToggleGroup';
+import AccountEnvToggle, { DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
 import Tabs from '@shared/navigation/Tabs';
 import { Banner } from '@ui/Banner';
-import Tooltip from '@ui/Tooltip';
 import { isK8sAccountNameValid } from 'src/utils/common';
 import { DEFAULT_IMAGE_REGISTRY, docsUrl } from '@lib/externalUrls';
-import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import PropTypes from 'prop-types';
 import { ds } from 'src/utils/colors';
 import { toast as snackbar } from '@ui/Toast';
@@ -66,7 +64,7 @@ const K8sAccountModal = ({ openModal, handleClose, handleOnAccountCreate }) => {
   const [k8sNameValue, setK8sNameValue] = useState('');
   const [validationError, setValidationError] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [accountEnvValue, setAccountEnvValue] = useState('non_prod');
+  const [accountEnvValue, setAccountEnvValue] = useState(DEFAULT_ACCOUNT_ENV);
   const [currentStep, setCurrentStep] = useState(1);
 
   const [authKey, setAuthKey] = useState('');
@@ -109,7 +107,7 @@ const K8sAccountModal = ({ openModal, handleClose, handleOnAccountCreate }) => {
 
   const resetState = () => {
     setK8sNameValue('');
-    setAccountEnvValue('non_prod');
+    setAccountEnvValue(DEFAULT_ACCOUNT_ENV);
     setValidationError({});
     setCurrentStep(1);
     setAuthKey('');
@@ -406,30 +404,8 @@ helm repo update`;
             </Grid>
 
             <Grid item xs={12}>
-              <Box display='flex' alignItems='center' mt={2} gap={2}>
-                <Typography variant='body2' sx={{ fontWeight: 'var(--ds-font-weight-medium)' }}>
-                  Account Type:
-                </Typography>
-                <ToggleGroup
-                  id='account-env'
-                  ariaLabel='Account environment type'
-                  selection='single'
-                  size='md'
-                  value={accountEnvValue}
-                  onChange={setAccountEnvValue}
-                  options={[
-                    { value: 'prod', label: 'Production', disabled: isSubmitting },
-                    { value: 'non_prod', label: 'Non-production', disabled: isSubmitting },
-                  ]}
-                />
-                <Tooltip
-                  title='Used to preset notification policies based on the environment type. You can modify these policies anytime later.'
-                  placement='right'
-                >
-                  <IconButton id='info-btn' size='small' sx={{ p: 0.5 }}>
-                    <InfoOutlinedIcon fontSize='small' />
-                  </IconButton>
-                </Tooltip>
+              <Box mt={2}>
+                <AccountEnvToggle value={accountEnvValue} onChange={setAccountEnvValue} disabled={isSubmitting} />
               </Box>
             </Grid>
 

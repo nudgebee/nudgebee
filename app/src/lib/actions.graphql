@@ -2507,6 +2507,7 @@ input aws_account_onboard_input {
 
 input AwsOrgOnboardInput {
   account_name: String!
+  account_env: String
 }
 
 input get_openai_query_recommendations_input {
@@ -3462,6 +3463,7 @@ input AWSCloudFormationInput {
   account_name: String!
   cloud_provider: String!
   account_type: String!
+  account_env: String
   account_access: String
   ssm_access: Boolean
 }
@@ -5510,6 +5512,7 @@ input cloud_account_update_input {
   id: uuid!
   status: String
   account_name: String
+  account_env: String
   data: jsonb
 }
 
@@ -5904,6 +5907,7 @@ input AzureBulkOnboardSubInput {
 
 input AzureBulkOnboardInput {
   account_name: String!
+  account_env: String
   tenant_id: String!
   client_id: String!
   client_secret: String!
@@ -5938,6 +5942,7 @@ type GcpListProjectsOutput {
 
 input GcpBulkOnboardInput {
   account_name: String!
+  account_env: String
   credentials_json: String!
   project_ids: [String!]!
   billing_project_id: String

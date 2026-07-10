@@ -26,6 +26,7 @@ import apiUser from '@api1/user';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import CfUpdateModal from './CfUpdateModal';
 import EnableGcpWebhookModal from './EnableGcpWebhookModal';
+import AccountEnvToggle, { ACCOUNT_ENV_PROD, DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
 
 const EVENTGRID_INSTRUCTIONS = `### Enable Real-Time Resource Events
   ### Step 1. Copy the values below
@@ -49,11 +50,12 @@ const EVENTBRIDGE_INSTRUCTIONS = `### Enable Real-Time Resource Events
    - The stack automatically covers all enabled AWS regions.`;
 
 const TABLE_HEADERS = [
-  { name: 'Name', width: '22%' },
-  { name: 'Created At', width: '12%' },
-  { name: 'Created By', width: '12%' },
-  { name: 'Account Number', width: '20%' },
-  { name: 'Status', width: '10%' },
+  { name: 'Name', width: '20%' },
+  { name: 'Created At', width: '11%' },
+  { name: 'Created By', width: '11%' },
+  { name: 'Account Number', width: '17%' },
+  { name: 'Status', width: '9%' },
+  { name: 'Environment', width: '13%' },
   { name: 'Real-Time Events', width: '14%' },
   { name: '', width: '5%' },
 ];
@@ -70,6 +72,9 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
   const [newAccountName, setNewAccountName] = useState('');
   const [renameLoading, setRenameLoading] = useState(false);
   const [renameError, setRenameError] = useState('');
+  const [envModalOpen, setEnvModalOpen] = useState(false);
+  const [newAccountEnv, setNewAccountEnv] = useState(DEFAULT_ACCOUNT_ENV);
+  const [envLoading, setEnvLoading] = useState(false);
   const updateAllClusters = useUpdateAllClusterOption();
   const [currentPage, setCurrentPage] = useState(0);
   const [recordsPerPage, setRecordsPerPage] = useState(apiUser.getUserPreferencesTablePageSize());
@@ -240,6 +245,10 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
         label: item.status == 'disabled' ? 'Enable' : 'Disable',
         id: 1,
       },
+      {
+        label: 'Change Environment',
+        id: 7,
+      },
     ];
     if (cloudProvider === 'Azure') {
       items.push({
@@ -304,6 +313,10 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
       setWebhookModalOpen(true);
     } else if (menuItem.id === 6) {
       handleUpdatePermissions(data);
+    } else if (menuItem.id === 7) {
+      setSelectedAccount(data);
+      setNewAccountEnv(data.account_env || DEFAULT_ACCOUNT_ENV);
+      setEnvModalOpen(true);
     }
   };
 
@@ -315,6 +328,7 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
         { component: <Text value={item?.created_by_name || '-'} /> },
         { component: <Text value={item.account_number || '-'} /> },
         { component: <Label text={item.status || '-'} /> },
+        { component: <Text value={item.account_env === ACCOUNT_ENV_PROD ? 'Production' : 'Non-production'} /> },
         { component: realtimeEventAccountIds.has(item.id) ? <Label text='active' /> : <Text value='-' /> },
         { component: <ThreeDotsMenu sx={{ ...action.primary }} menuItems={getMenuItems(item)} data={item} onMenuClick={onMenuClick} /> },
       ]),
@@ -465,6 +479,40 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
       });
   };
 
+  const closeEnvModal = () => {
+    setEnvModalOpen(false);
+    setSelectedAccount(null);
+    setNewAccountEnv(DEFAULT_ACCOUNT_ENV);
+    setEnvLoading(false);
+  };
+
+  const handleEnvSubmit = () => {
+    if (!selectedAccount) {
+      return;
+    }
+
+    setEnvLoading(true);
+    apiAccount
+      .updateAccount({ id: selectedAccount.id }, { account_env: newAccountEnv })
+      .then((res) => {
+        if (res?.data?.errors?.length > 0) {
+          const error = res?.data?.errors?.[0]?.message || 'Failed to Update Environment';
+          snackbar.error(error);
+        } else {
+          snackbar.success('Account Environment updated successfully');
+          closeEnvModal();
+          listCloudAccounts();
+        }
+      })
+      .catch((error) => {
+        console.error('Failed to update account environment:', error);
+        snackbar.error('Failed to Update Environment');
+      })
+      .finally(() => {
+        setEnvLoading(false);
+      });
+  };
+
   const handleUpdateAccountStatus = () => {
     if (!updateAccountStatus.id) {
       return;
@@ -608,6 +656,40 @@ const CloudAccountTile = ({ cloudProvider, title, AddAccountModalComponent, addA
           >
             Save
           </DsButton>
+        </Box>
+      </Modal>
+      <Modal
+        handleClose={envLoading ? () => {} : closeEnvModal}
+        open={envModalOpen}
+        title={
+          <Typography component='h2' variant='h6' fontWeight={600}>
+            Change Environment
+          </Typography>
+        }
+        width='md'
+        loader={envLoading}
+        actionButtons={
+          <>
+            <DsButton id='cloud-account-env-cancel-btn' tone='secondary' onClick={closeEnvModal} disabled={envLoading}>
+              Cancel
+            </DsButton>
+            <DsButton
+              id='cloud-account-env-save-btn'
+              tone='primary'
+              loading={envLoading}
+              disabled={envLoading || newAccountEnv === (selectedAccount?.account_env || DEFAULT_ACCOUNT_ENV)}
+              onClick={handleEnvSubmit}
+            >
+              Save
+            </DsButton>
+          </>
+        }
+      >
+        <Box sx={{ px: ds.space[4], py: ds.space[2] }}>
+          <Typography variant='body2' sx={{ mb: ds.space[4], color: ds.gray[400] }}>
+            {`Set the environment type for "${selectedAccount?.account_name}". This determines how NudgeBee prioritises its alerts, recommendations and incidents.`}
+          </Typography>
+          <AccountEnvToggle id='cloud-account-env' value={newAccountEnv} onChange={setNewAccountEnv} disabled={envLoading} />
         </Box>
       </Modal>
       <Modal

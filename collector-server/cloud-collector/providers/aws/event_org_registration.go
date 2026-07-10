@@ -24,6 +24,10 @@ import (
 	"nudgebee/collector/cloud/providers"
 )
 
+// defaultAccountEnv mirrors the cloud_accounts.account_env column default. Used when
+// the onboarding flow did not record an explicit environment choice.
+const defaultAccountEnv = "non_prod"
+
 // CfnCustomResourceEvent represents a CloudFormation Custom Resource event
 // received via SNS → SQS when a StackSet deploys to an org member account.
 type CfnCustomResourceEvent struct {
@@ -403,12 +407,18 @@ func handleOrgAccountCreate(
 		createdBy = props.UserId
 	}
 
+	// Org-wide environment type chosen when the StackSet onboarding was initiated.
+	orgAccountEnv, ok := lookupOnboardAccountEnv(dbms, tenant.TenantID, "aws_org_account_env", logger)
+	if !ok {
+		orgAccountEnv = defaultAccountEnv
+	}
+
 	_, err = dbms.Exec(
 		`INSERT INTO cloud_accounts (
 			id, cloud_provider, account_number, account_name, account_type,
 			assume_role, external_id, tenant,
-			created_by, updated_by, status, data, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())`,
+			created_by, updated_by, status, data, account_env, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())`,
 		newAccountId,        // $1 id
 		"AWS",               // $2 cloud_provider
 		accountNumber,       // $3 account_number
@@ -421,6 +431,7 @@ func handleOrgAccountCreate(
 		createdBy,           // $10 updated_by
 		"active",            // $11 status
 		string(curDataJSON), // $12 data
+		orgAccountEnv,       // $13 account_env
 	)
 	if err != nil {
 		return fmt.Errorf("failed to insert cloud account: %w", err)
@@ -550,6 +561,26 @@ func upsertOrgTypeAttr(dbms *common.DatabaseManager, accountId string, orgType s
 	if err != nil {
 		logger.Error("aws: failed to upsert aws_org_type attr", "error", err, "accountId", accountId)
 	}
+}
+
+// lookupOnboardAccountEnv reads the environment type the user picked during onboarding.
+// api-server stores it in tenant_attrs because the cloud_accounts row is only created
+// here, once the stack calls back. The bool reports whether the attribute was present:
+// absent means the user kept the default, so callers must not overwrite an existing value.
+func lookupOnboardAccountEnv(dbms *common.DatabaseManager, tenantId string, attrName string, logger *slog.Logger) (string, bool) {
+	row, err := dbms.QueryRow(
+		"SELECT value FROM tenant_attrs WHERE tenant_id = $1 AND name = $2",
+		tenantId, attrName,
+	)
+	if err != nil {
+		return "", false
+	}
+	var envVal string
+	if scanErr := row.Scan(&envVal); scanErr != nil || envVal == "" {
+		return "", false
+	}
+	logger.Info("aws: resolved account environment", "accountEnv", envVal, "attr", attrName)
+	return envVal, true
 }
 
 // verifySingleAccountToken verifies a per-request onboarding token stored in tenant_attrs.
@@ -710,6 +741,19 @@ func handleSingleAccountCreate(
 	}
 	logger.Info("aws: resolved account access mode", "accessMode", accountAccess, "externalId", externalId)
 
+	// Environment type chosen in the onboarding modal, stashed by api-server's AwsOnBoardUrl.
+	accountEnv, accountEnvSet := lookupOnboardAccountEnv(
+		dbms, tenant.TenantID, fmt.Sprintf("aws_onboard_env_%s", externalId), logger,
+	)
+	// accountEnvArg stays nil when the user kept the default, so the UPDATE below
+	// never clobbers an account already marked Production on re-onboarding.
+	var accountEnvArg any
+	insertAccountEnv := defaultAccountEnv
+	if accountEnvSet {
+		accountEnvArg = accountEnv
+		insertAccountEnv = accountEnv
+	}
+
 	if existingAccountId != "" {
 		logger.Info("aws: updating existing account via single-account auto-registration", "accountNumber", accountNumber, "existingId", existingAccountId)
 		_, err = dbms.Exec(
@@ -724,9 +768,11 @@ func handleSingleAccountCreate(
 					) THEN $5
 					ELSE account_name
 				END,
-				account_access = $6, updated_at = NOW()
+				account_access = $6,
+				account_env = COALESCE($8, account_env),
+				updated_at = NOW()
 			WHERE id = $3`,
-			string(curDataJSON), props.RoleArn, existingAccountId, externalId, accountName, accountAccess, tenant.TenantID,
+			string(curDataJSON), props.RoleArn, existingAccountId, externalId, accountName, accountAccess, tenant.TenantID, accountEnvArg,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to update existing account: %w", err)
@@ -750,8 +796,8 @@ func handleSingleAccountCreate(
 		`INSERT INTO cloud_accounts (
 			id, cloud_provider, account_number, account_name, account_type,
 			assume_role, external_id, tenant,
-			created_by, updated_by, status, data, account_access, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW())`,
+			created_by, updated_by, status, data, account_access, account_env, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NOW(), NOW())`,
 		newAccountId,        // $1 id
 		"AWS",               // $2 cloud_provider
 		accountNumber,       // $3 account_number
@@ -765,6 +811,7 @@ func handleSingleAccountCreate(
 		"active",            // $11 status
 		string(curDataJSON), // $12 data
 		accountAccess,       // $13 account_access
+		insertAccountEnv,    // $14 account_env
 	)
 	if err != nil {
 		return fmt.Errorf("failed to insert cloud account: %w", err)
@@ -781,13 +828,14 @@ func handleSingleAccountCreate(
 	return nil
 }
 
-// cleanupOnboardToken deletes the one-time onboard token and access mode attr from tenant_attrs after successful registration.
+// cleanupOnboardToken deletes the one-time onboard token, access mode and environment attrs from tenant_attrs after successful registration.
 func cleanupOnboardToken(dbms *common.DatabaseManager, tenantId string, externalId string, logger *slog.Logger) {
 	tokenAttr := fmt.Sprintf("aws_onboard_token_%s", externalId)
 	accessModeAttr := fmt.Sprintf("aws_onboard_access_mode_%s", externalId)
+	accountEnvAttr := fmt.Sprintf("aws_onboard_env_%s", externalId)
 	_, err := dbms.Exec(
-		"DELETE FROM tenant_attrs WHERE tenant_id = $1 AND name IN ($2, $3)",
-		tenantId, tokenAttr, accessModeAttr,
+		"DELETE FROM tenant_attrs WHERE tenant_id = $1 AND name IN ($2, $3, $4)",
+		tenantId, tokenAttr, accessModeAttr, accountEnvAttr,
 	)
 	if err != nil {
 		logger.Error("aws: failed to cleanup onboard attrs", "error", err, "tenantId", tenantId, "externalId", externalId)

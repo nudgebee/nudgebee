@@ -30,6 +30,7 @@ import { Button } from '@ui/Button';
 import { toast as snackbar } from '@ui/Toast';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import ValidationResultBanner from '@components/accounts/ValidationResultBanner';
+import AccountEnvToggle, { DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
 import { ds } from 'src/utils/colors';
 
 const StepConnectorStyled = styled(StepConnector)(() => ({
@@ -112,6 +113,7 @@ const STEPS = ['Service Account', 'Projects', 'Billing'];
 const AddGcpAccountModal = ({ open, onClose }) => {
   // Step 1: Service Account
   const [accountNameValue, setAccountNameValue] = useState('');
+  const [accountEnvValue, setAccountEnvValue] = useState(DEFAULT_ACCOUNT_ENV);
   const [serviceAccountKey, setServiceAccountKey] = useState('');
   const [serviceAccountData, setServiceAccountData] = useState(null);
   const [validationError, setValidationError] = useState({});
@@ -151,6 +153,7 @@ const AddGcpAccountModal = ({ open, onClose }) => {
 
   const clearForm = () => {
     setAccountNameValue('');
+    setAccountEnvValue(DEFAULT_ACCOUNT_ENV);
     setServiceAccountKey('');
     setServiceAccountData(null);
     setValidationError({});
@@ -385,6 +388,7 @@ const AddGcpAccountModal = ({ open, onClose }) => {
     try {
       const payload = {
         account_name: accountNameValue,
+        account_env: accountEnvValue,
         credentials_json: serviceAccountKey,
         project_ids: projectIds,
         billing_project_id: billingProjectId.trim(),
@@ -566,6 +570,9 @@ const AddGcpAccountModal = ({ open, onClose }) => {
                 onChange={handleAccountNameChange}
                 error={validationError.gcpAccountName || undefined}
               />
+            </Box>
+            <Box sx={{ mt: ds.space[4], width: '100%' }}>
+              <AccountEnvToggle id='gcp-account-env' value={accountEnvValue} onChange={setAccountEnvValue} disabled={isSubmitting} />
             </Box>
             <Box sx={{ mt: ds.space[4], width: '100%' }}>
               <Input

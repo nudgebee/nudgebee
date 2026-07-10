@@ -98,6 +98,7 @@ query ListAcc($limit: Int, $offset: Int) {
       created_by
       created_by_name
       status
+      account_env
       data
       cloud_account_attrs
       agents

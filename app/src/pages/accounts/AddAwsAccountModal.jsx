@@ -10,6 +10,7 @@ import { Button } from '@ui/Button';
 import { snackbar } from '@shared/snackbarService';
 import MarkDowns from '@shared/viewers/MarkDowns';
 import ValidationResultBanner from '@components/accounts/ValidationResultBanner';
+import AccountEnvToggle, { DEFAULT_ACCOUNT_ENV } from '@shared/forms/AccountEnvToggle';
 
 const CF_INSTRUCTIONS = `### Step 1. Give Account Name
   ### Step 2. Click on Connect via AWS Console
@@ -41,6 +42,7 @@ const TAB_ACCESS_KEYS = 2;
 const AddAwsAccountModal = ({ open, onClose }) => {
   const [activeTab, setActiveTab] = useState(TAB_CLOUDFORMATION);
   const [accountNameValue, setAccountNameValue] = useState('');
+  const [accountEnvValue, setAccountEnvValue] = useState(DEFAULT_ACCOUNT_ENV);
   const [validationError, setValidationError] = useState({});
   const [isFetchingCloudFormationUrl, setIsFetchingCloudFormationUrl] = useState(false);
   const [externalId, setExternalId] = useState('');
@@ -68,6 +70,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
 
   const resetForm = useCallback(() => {
     setAccountNameValue('');
+    setAccountEnvValue(DEFAULT_ACCOUNT_ENV);
     setExternalId('');
     setValidationError({});
     setIsFetchingCloudFormationUrl(false);
@@ -132,6 +135,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
         account_name: accountNameValue,
         account_type: 'cloud',
         cloud_provider: 'AWS',
+        account_env: accountEnvValue,
         account_access: accessMode === 'readonly' ? 'readonly' : undefined,
         ssm_access: ssmAccess || undefined,
       })
@@ -216,6 +220,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
       account_name: accountNameValue,
       cloud_provider: 'AWS',
       account_type: 'cloud',
+      account_env: accountEnvValue,
       account_access: accessMode === 'readonly' ? 'readonly' : undefined,
     };
     if (activeTab === TAB_ROLE_ARN) {
@@ -261,6 +266,7 @@ const AddAwsAccountModal = ({ open, onClose }) => {
         account_name: accountNameValue,
         cloud_provider: 'AWS',
         account_type: 'cloud',
+        account_env: accountEnvValue,
         assume_role: roleArn,
         account_access: accessMode === 'readonly' ? 'readonly' : undefined,
       })
@@ -537,6 +543,10 @@ const AddAwsAccountModal = ({ open, onClose }) => {
             disabled={!!externalId}
           />
         </Box>
+
+        <Grid item xs={12} sx={{ mt: 2, mb: 1 }}>
+          <AccountEnvToggle id='aws-account-env' value={accountEnvValue} onChange={setAccountEnvValue} disabled={!!externalId || isSubmitting} />
+        </Grid>
 
         <Grid item xs={12} id='aws-access-mode' sx={{ mt: 1, mb: 1 }}>
           <Typography variant='subtitle2' sx={{ mb: 0.5 }}>
