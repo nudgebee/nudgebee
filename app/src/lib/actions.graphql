@@ -2454,6 +2454,7 @@ input user_update_accessed_input {
   auth_id: String
   username: String
   tenant_id: String!
+  token_sha256: String
 }
 
 input auth_delete_session_input {

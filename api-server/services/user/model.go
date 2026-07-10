@@ -86,6 +86,9 @@ type UserUpdateAccessedRequest struct {
 	AuthId   string `json:"auth_id" mapstructure:"auth_id"`
 	Username string `json:"username" mapstructure:"username"`
 	TenantId string `json:"tenant_id" mapstructure:"tenant_id" validate:"required"`
+	// TokenSha256, when set (auth_id path only), lazily backfills the sha256 of a
+	// pre-existing Personal Access Token so the gateway can resolve it by value.
+	TokenSha256 string `json:"token_sha256" mapstructure:"token_sha256"`
 }
 
 type UserUpdateAccessedResponse struct {

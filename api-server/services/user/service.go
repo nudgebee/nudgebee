@@ -18,6 +18,12 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
+// TokenPrefix is prepended to every newly minted Personal Access Token
+// (provider_type='credentials', provider='token'). Tokens created before this
+// prefix existed are raw hex and keep working — validation and the sha256
+// lookup operate on the exact presented string, whatever its format.
+const TokenPrefix = "sk-nb-"
+
 // createOrGetUser inserts a user or returns the existing one if username conflicts.
 // Returns the user model and whether it was newly created.
 func createOrGetUser(dbms *database.DatabaseManager, displayName, status, username string, createdBy *string) (models.User, bool, error) {
@@ -477,18 +483,28 @@ func CreateUserAuthToken(context *security.RequestContext, tokenCreateRequest Us
 		return UserTokenCreateResponse{}, common.ErrorConflict("Token with same name already exists")
 	}
 
-	// generate random string token && store hashed value
-	token, err := common.GenerateRandomHexString(32)
+	// generate random string token && store hashed value.
+	// TokenPrefix marks the value as an NB Personal Access Token: it lets secret
+	// scanners detect a leaked key and lets the gateway cheaply tell a static
+	// bearer apart from a JWT before hashing. Both hashes below cover the full
+	// prefixed string, and the gateway hashes the whole presented bearer, so the
+	// prefix is part of the token value end to end.
+	random, err := common.GenerateRandomHexString(32)
 	if err != nil {
 		return UserTokenCreateResponse{}, err
 	}
+	token := TokenPrefix + random
 	hashedToken, err := common.HashPassword(token)
 	if err != nil {
 		return UserTokenCreateResponse{}, err
 	}
+	// sha256 alongside bcrypt: bcrypt is salted and cannot be looked up by value, so the
+	// gateway resolves a raw bearer token via token_sha256. Same hex encoding the gateway
+	// and token.ts backfill compute (sha256 of the token string, lowercase hex).
+	tokenSha256 := common.HashTextFast(token)
 
 	// store hashed value
-	_, err = databaseManager.Db.Exec(`INSERT INTO user_auths ("user", tenant_id, name, credential, provider_type, provider, status) VALUES ($1, $2, $3, $4, $5, $6, $7)`, context.GetSecurityContext().GetUserId(), context.GetSecurityContext().GetTenantId(), tokenCreateRequest.Name, hashedToken, "credentials", "token", "active")
+	_, err = databaseManager.Db.Exec(`INSERT INTO user_auths ("user", tenant_id, name, credential, token_sha256, provider_type, provider, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, context.GetSecurityContext().GetUserId(), context.GetSecurityContext().GetTenantId(), tokenCreateRequest.Name, hashedToken, tokenSha256, "credentials", "token", "active")
 
 	if err != nil {
 		return UserTokenCreateResponse{}, err
@@ -1126,9 +1142,14 @@ func UpdateUserAccessed(context *security.RequestContext, request UserUpdateAcce
 
 	var result sql.Result
 	if request.AuthId != "" {
+		// Lazily backfill token_sha256 for tokens created before the column existed.
+		// NULLIF('' -> NULL) + COALESCE keeps the existing hash, so this writes only
+		// when still NULL and is a plain accessed-update when no hash is supplied. The
+		// caller (token.ts login, super_admin via server bypass) has the plaintext token
+		// and computes the same lowercase-hex sha256 the gateway resolves by.
 		result, err = manager.Db.Exec(
-			`UPDATE user_auths SET accessed_at = NOW(), tenant_id = $1 WHERE id = $2`,
-			request.TenantId, request.AuthId)
+			`UPDATE user_auths SET accessed_at = NOW(), tenant_id = $1, token_sha256 = COALESCE(token_sha256, NULLIF($2, '')) WHERE id = $3`,
+			request.TenantId, request.TokenSha256, request.AuthId)
 	} else {
 		result, err = manager.Db.Exec(
 			`UPDATE user_auths SET accessed_at = NOW(), tenant_id = $1 WHERE "user" IN (SELECT id FROM users WHERE username = $2)`,
